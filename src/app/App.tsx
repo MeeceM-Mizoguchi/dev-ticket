@@ -2505,7 +2505,9 @@ export default function App() {
       setUserRole((sessionStorage.getItem("userRole") as Role) || "developer");
       return;
     }
+    const authTimer = setTimeout(() => setAuthReady(true), 5000);
     supabase!.auth.getSession().then(async ({ data: { session } }) => {
+      clearTimeout(authTimer);
       if (session) {
         const { data: p } = await supabase!.from("profiles").select("name, role").eq("id", session.user.id).single();
         if (p) {
@@ -2516,7 +2518,7 @@ export default function App() {
         }
       }
       setAuthReady(true);
-    }).catch(() => setAuthReady(true));
+    }).catch(() => { clearTimeout(authTimer); setAuthReady(true); });
     const { data: { subscription } } = supabase!.auth.onAuthStateChange(async (_event, session) => {
       if (session) {
         const { data: p } = await supabase!.from("profiles").select("name, role").eq("id", session.user.id).single();
@@ -2533,7 +2535,7 @@ export default function App() {
         sessionStorage.removeItem("userRole");
       }
     });
-    return () => subscription.unsubscribe();
+    return () => { clearTimeout(authTimer); subscription.unsubscribe(); };
   }, []);
 
   const login = async (email: string, password: string): Promise<string | null> => {
