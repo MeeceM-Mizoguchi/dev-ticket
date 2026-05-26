@@ -2516,7 +2516,7 @@ export default function App() {
         }
       }
       setAuthReady(true);
-    });
+    }).catch(() => setAuthReady(true));
     const { data: { subscription } } = supabase!.auth.onAuthStateChange(async (_event, session) => {
       if (session) {
         const { data: p } = await supabase!.from("profiles").select("name, role").eq("id", session.user.id).single();
