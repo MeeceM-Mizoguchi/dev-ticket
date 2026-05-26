@@ -280,11 +280,22 @@ function FieldInput({ label, type = "text", placeholder, required, value, onChan
     </div>
   );
 }
-function FieldTextarea({ label, placeholder }: { label: string; placeholder?: string }) {
-  return <div><label className={labelCls}>{label}</label><textarea rows={3} placeholder={placeholder} className={inputCls + " resize-none"} /></div>;
+function FieldTextarea({ label, placeholder, value, onChange }: { label: string; placeholder?: string; value?: string; onChange?: (v: string) => void }) {
+  return <div><label className={labelCls}>{label}</label><textarea rows={3} placeholder={placeholder} value={value} onChange={e => onChange?.(e.target.value)} className={inputCls + " resize-none"} /></div>;
 }
-function FieldSelect({ label, children, required }: { label: string; children: ReactNode; required?: boolean }) {
-  return <div><label className={labelCls}>{label}{required && " *"}</label><select className={inputCls + " appearance-none cursor-pointer"}>{children}</select></div>;
+function FieldSelect({ label, children, required, value, onChange }: { label: string; children: ReactNode; required?: boolean; value?: string; onChange?: (v: string) => void }) {
+  return <div><label className={labelCls}>{label}{required && " *"}</label><select value={value} onChange={e => onChange?.(e.target.value)} className={inputCls + " appearance-none cursor-pointer"}>{children}</select></div>;
+}
+function ConfirmDialog({ message, onConfirm, onClose }: { message: string; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <DialogShell title="削除の確認" onClose={onClose}
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>
+        <button type="button" onClick={() => { onConfirm(); onClose(); }} style={{ padding:"9px 20px", background:"#DC2626", color:"#fff", fontSize:13, fontWeight:700, borderRadius:10, border:"none", cursor:"pointer", boxShadow:"0 2px 8px rgba(220,38,38,0.30)" }}>削除する</button>
+      </>}>
+      <p style={{ fontSize:14, color:"#1A1714", lineHeight:1.7 }}>{message}</p>
+      <p style={{ fontSize:12, color:"#A09790" }}>この操作は取り消せません。</p>
+    </DialogShell>
+  );
 }
 function DialogShell({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode }) {
   return (
@@ -809,7 +820,7 @@ function Dashboard() {
 }
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
-function ProjectCard({ project, onNavigate }: { project: Project; onNavigate: () => void }) {
+function ProjectCard({ project, onNavigate, onDelete }: { project: Project; onNavigate: () => void; onDelete?: () => void }) {
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
   const sm = getStatusMeta(project.status);
@@ -832,11 +843,19 @@ function ProjectCard({ project, onNavigate }: { project: Project; onNavigate: ()
               <Building2 style={{ width: 10, height: 10 }} />{project.client}
             </p>
           </div>
-          <button onClick={e => e.stopPropagation()} style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-            <MoreHorizontal style={{ width: 14, height: 14 }} />
-          </button>
+          {onDelete ? (
+            <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+              <Trash2 style={{ width: 13, height: 13 }} />
+            </button>
+          ) : (
+            <button onClick={e => e.stopPropagation()} style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+              <MoreHorizontal style={{ width: 14, height: 14 }} />
+            </button>
+          )}
         </div>
 
         {project.description && (
@@ -874,15 +893,44 @@ function ProjectCard({ project, onNavigate }: { project: Project; onNavigate: ()
   );
 }
 
-function NewProjectDialog({ onClose }: { onClose: () => void }) {
+function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () => void; clients: Client[]; onCreated?: () => void }) {
+  const [name, setName] = useState("");
+  const [clientName, setClientName] = useState("");
+  const [description, setDescription] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [status, setStatus] = useState<ProjectStatus>("planning");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    if (isSupabaseEnabled) {
+      setSaving(true);
+      await supabase!.from("projects").insert({
+        id: `P-${Date.now()}`, name, client: clientName, description,
+        start_date: startDate || null, end_date: endDate || null,
+        status, members: [], done: 0, in_progress: 0, todo: 0,
+      });
+      setSaving(false);
+    }
+    onCreated?.();
+    onClose();
+  };
+
   return (
     <DialogShell title="新規プロジェクト作成" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={onClose}>作成する</BtnPrimary></>}>
-      <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required />
-      <FieldSelect label="クライアント" required><option value="">クライアントを選択</option>{CLIENTS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</FieldSelect>
-      <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." />
-      <div className="grid grid-cols-2 gap-3"><FieldInput label="開始日" type="date" required /><FieldInput label="終了日" type="date" required /></div>
-      <FieldSelect label="ステータス">
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
+      <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required value={name} onChange={setName} />
+      <FieldSelect label="クライアント" required value={clientName} onChange={setClientName}>
+        <option value="">クライアントを選択</option>
+        {clients.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+      </FieldSelect>
+      <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
+      <div className="grid grid-cols-2 gap-3">
+        <FieldInput label="開始日" type="date" required value={startDate} onChange={setStartDate} />
+        <FieldInput label="終了日" type="date" required value={endDate} onChange={setEndDate} />
+      </div>
+      <FieldSelect label="ステータス" value={status} onChange={setStatus as (v: string) => void}>
         <option value="planning">計画中</option><option value="in-progress">進行中</option>
         <option value="completed">完了</option><option value="on-hold">保留中</option>
       </FieldSelect>
@@ -897,13 +945,28 @@ function ProjectsPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [showDialog, setShowDialog] = useState(false);
   const [projects, setProjects] = useState<Project[]>(PROJECTS);
+  const [clients, setClients] = useState<Client[]>(CLIENTS);
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const canManage = userRole === "admin" || userRole === "project-manager";
+
+  const refreshProjects = () => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("projects").select("*").order("id")
+      .then(({ data }) => { if (data?.length) setProjects(data.map(mapProject)); });
+  };
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     supabase!.from("projects").select("*").order("id")
       .then(({ data }) => { if (data?.length) setProjects(data.map(mapProject)); });
+    supabase!.from("clients").select("*").order("id")
+      .then(({ data }) => { if (data?.length) setClients(data.map(mapClient)); });
   }, []);
+
+  const handleDeleteProject = async (project: Project) => {
+    if (isSupabaseEnabled) await supabase!.from("projects").delete().eq("id", project.id);
+    setProjects(prev => prev.filter(p => p.id !== project.id));
+  };
 
   const filtered = projects.filter(p => {
     const ms = p.name.includes(search) || p.client.includes(search) || p.id.includes(search);
@@ -964,24 +1027,45 @@ function ProjectsPage() {
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
-          {filtered.map(p => <ProjectCard key={p.id} project={p} onNavigate={() => navigate(`/projects/${p.id}/sprints`)} />)}
+          {filtered.map(p => <ProjectCard key={p.id} project={p} onNavigate={() => navigate(`/projects/${p.id}/sprints`)} onDelete={canManage ? () => setDeleteTarget(p) : undefined} />)}
         </div>
       )}
-      {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} />}
+      {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients} onCreated={refreshProjects} />}
+      {deleteTarget && <ConfirmDialog message={`「${deleteTarget.name}」を削除しますか？関連するスプリントとチケットもすべて削除されます。`} onConfirm={() => handleDeleteProject(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
     </div>
   );
 }
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
-function NewClientDialog({ onClose }: { onClose: () => void }) {
+function NewClientDialog({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
+  const [name, setName] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [status, setStatus] = useState<"active" | "inactive">("active");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    if (isSupabaseEnabled) {
+      setSaving(true);
+      await supabase!.from("clients").insert({ id: `C-${Date.now()}`, name, industry, email, phone, status });
+      setSaving(false);
+    }
+    onCreated?.();
+    onClose();
+  };
+
   return (
     <DialogShell title="新規クライアント追加" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={onClose}>保存する</BtnPrimary></>}>
-      <FieldInput label="会社名" placeholder="例: 株式会社サンプル" required />
-      <FieldInput label="業界" placeholder="例: IT・通信" />
-      <FieldInput label="メールアドレス" type="email" placeholder="例: info@example.com" />
-      <FieldInput label="電話番号" placeholder="例: 03-1234-5678" />
-      <FieldSelect label="ステータス"><option value="active">アクティブ</option><option value="inactive">非アクティブ</option></FieldSelect>
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
+      <FieldInput label="会社名" placeholder="例: 株式会社サンプル" required value={name} onChange={setName} />
+      <FieldInput label="業界" placeholder="例: IT・通信" value={industry} onChange={setIndustry} />
+      <FieldInput label="メールアドレス" type="email" placeholder="例: info@example.com" value={email} onChange={setEmail} />
+      <FieldInput label="電話番号" placeholder="例: 03-1234-5678" value={phone} onChange={setPhone} />
+      <FieldSelect label="ステータス" value={status} onChange={setStatus as (v: string) => void}>
+        <option value="active">アクティブ</option><option value="inactive">非アクティブ</option>
+      </FieldSelect>
     </DialogShell>
   );
 }
@@ -991,13 +1075,25 @@ function ClientsPage() {
   const [search, setSearch] = useState("");
   const [showDialog, setShowDialog] = useState(false);
   const [clients, setClients] = useState<Client[]>(CLIENTS);
+  const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
   const isAdmin = userRole === "admin";
+
+  const refreshClients = () => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("clients").select("*").order("id")
+      .then(({ data }) => { if (data?.length) setClients(data.map(mapClient)); });
+  };
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     supabase!.from("clients").select("*").order("id")
       .then(({ data }) => { if (data?.length) setClients(data.map(mapClient)); });
   }, []);
+
+  const handleDeleteClient = async (client: Client) => {
+    if (isSupabaseEnabled) await supabase!.from("clients").delete().eq("id", client.id);
+    setClients(prev => prev.filter(c => c.id !== client.id));
+  };
 
   const filtered = clients.filter(c => c.name.includes(search) || c.industry.includes(search) || c.id.includes(search));
 
@@ -1065,7 +1161,7 @@ function ClientsPage() {
                   <Eye style={{ width: 13, height: 13 }} />
                 </button>
                 {isAdmin && (
-                  <button style={{ padding: 7, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+                  <button onClick={() => setDeleteTarget(client)} style={{ padding: 7, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
                     <Trash2 style={{ width: 13, height: 13 }} />
@@ -1075,31 +1171,60 @@ function ClientsPage() {
             </div>
           ))}
       </div>
-      {showDialog && <NewClientDialog onClose={() => setShowDialog(false)} />}
+      {showDialog && <NewClientDialog onClose={() => setShowDialog(false)} onCreated={refreshClients} />}
+      {deleteTarget && <ConfirmDialog message={`「${deleteTarget.name}」を削除しますか？`} onConfirm={() => handleDeleteClient(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
     </div>
   );
 }
 
 // ─── Members ──────────────────────────────────────────────────────────────────
 function InviteDialog({ onClose }: { onClose: () => void }) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("developer");
+  const [group, setGroup] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  const handleSend = async () => {
+    if (!email.trim()) return;
+    setSending(true); setError("");
+    try {
+      const res = await fetch("/api/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, name, role, group }),
+      });
+      const json = await res.json();
+      if (!res.ok) { setError(json.error || "送信に失敗しました"); setSending(false); }
+      else { setSuccess(true); setTimeout(() => { onClose(); }, 2000); }
+    } catch {
+      setError("ネットワークエラーが発生しました"); setSending(false);
+    }
+  };
+
   return (
     <DialogShell title="メンバーを招待" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={onClose}>招待メールを送信</BtnPrimary></>}>
-      <FieldTextarea label="招待するメールアドレス" placeholder={"taro@example.com, jiro@example.com\nカンマまたは改行で複数入力できます"} />
-      <FieldSelect label="付与する権限">
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSend}>{sending ? "送信中..." : success ? "✓ 送信しました" : "招待メールを送信"}</BtnPrimary></>}>
+      {error && <div style={{ padding:"10px 14px", background:"#FEF2F2", borderRadius:8, fontSize:12, color:"#DC2626", border:"1px solid rgba(220,38,38,0.2)" }}>{error}</div>}
+      {success && <div style={{ padding:"10px 14px", background:"#ECFDF5", borderRadius:8, fontSize:12, color:"#059669", border:"1px solid rgba(5,150,105,0.2)" }}>招待メールを送信しました。メールを確認してください。</div>}
+      <FieldInput label="メールアドレス" type="email" placeholder="taro@example.com" required value={email} onChange={setEmail} />
+      <FieldInput label="氏名（任意）" placeholder="例: 田中太郎" value={name} onChange={setName} />
+      <FieldSelect label="付与する権限" value={role} onChange={setRole}>
         <option value="developer">開発者</option><option value="designer">デザイナー</option>
         <option value="project-manager">PM</option><option value="admin">管理者</option>
       </FieldSelect>
-      <FieldSelect label="所属グループ">
-        <option value="">未割り当て</option><option value="management">マネジメント</option>
-        <option value="dev1">開発第1チーム</option><option value="dev2">開発第2チーム</option>
-        <option value="design">デザインチーム</option>
+      <FieldSelect label="所属グループ" value={group} onChange={setGroup}>
+        <option value="">未割り当て</option><option value="マネジメント">マネジメント</option>
+        <option value="開発第1チーム">開発第1チーム</option><option value="開発第2チーム">開発第2チーム</option>
+        <option value="デザインチーム">デザインチーム</option>
       </FieldSelect>
     </DialogShell>
   );
 }
 
-function MemberCard({ member, canEdit }: { member: Member; canEdit: boolean }) {
+function MemberCard({ member, canEdit, onDelete }: { member: Member; canEdit: boolean; onDelete?: () => void }) {
   const roleColors: Record<Role, { grad: string; badge: string; text: string }> = {
     admin:             { grad: "linear-gradient(135deg,#FB7185,#F43F5E)", badge: "#FFF1F2", text: "#F43F5E" },
     "project-manager": { grad: "linear-gradient(135deg,#34D399,#059669)", badge: "#ECFDF5", text: "#059669" },
@@ -1170,6 +1295,13 @@ function MemberCard({ member, canEdit }: { member: Member; canEdit: boolean }) {
               <Edit2 style={{ width: 12, height: 12 }} />編集
             </button>
           )}
+          {onDelete && (
+            <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ padding: "9px 10px", fontSize: 12, borderRadius: 9, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(220,38,38,0.25)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.10)"; }}>
+              <Trash2 style={{ width: 12, height: 12 }} />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1182,6 +1314,7 @@ function MembersPage() {
   const [group, setGroup] = useState("すべて");
   const [showInvite, setShowInvite] = useState(false);
   const [members, setMembers] = useState<Member[]>(MEMBERS);
+  const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
   const canAdd = userRole === "admin" || userRole === "project-manager";
 
   useEffect(() => {
@@ -1189,6 +1322,17 @@ function MembersPage() {
     supabase!.from("profiles").select("*").order("name")
       .then(({ data }) => { if (data?.length) setMembers(data.map(mapMember)); });
   }, []);
+
+  const handleDeleteMember = async (member: Member) => {
+    try {
+      const res = await fetch("/api/delete-member", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: member.id, memberName: member.name }),
+      });
+      if (res.ok) setMembers(prev => prev.filter(m => m.id !== member.id));
+    } catch { /* ignore */ }
+  };
 
   const filtered = members.filter(m => {
     return (m.name.includes(search) || m.email.includes(search)) && (group === "すべて" || m.group === group);
@@ -1232,10 +1376,11 @@ function MembersPage() {
       {filtered.length === 0
         ? <div style={{ textAlign: "center", padding: "80px 0" }}><p style={{ fontSize: 13, color: "#A09790" }}>メンバーが見つかりません</p></div>
         : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
-            {filtered.map(m => <MemberCard key={m.id} member={m} canEdit={canAdd} />)}
+            {filtered.map(m => <MemberCard key={m.id} member={m} canEdit={canAdd} onDelete={canAdd ? () => setDeleteTarget(m) : undefined} />)}
           </div>
       }
       {showInvite && <InviteDialog onClose={() => setShowInvite(false)} />}
+      {deleteTarget && <ConfirmDialog message={`「${deleteTarget.name}」をチームから削除しますか？担当チケットの割り当てもすべて解除されます。`} onConfirm={() => handleDeleteMember(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
     </div>
   );
 }
@@ -1383,14 +1528,14 @@ function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: string; o
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "作成する"}</BtnPrimary></>}>
       <FieldInput label="チケット名" placeholder="例: ログイン機能の修正" required value={title} onChange={setTitle} />
       <div className="grid grid-cols-2 gap-3">
-        <FieldSelect label="ステータス">
+        <FieldSelect label="ステータス" value={status} onChange={setStatus as (v: string) => void}>
           <option value="todo">未着手</option><option value="in-progress">進行中</option><option value="done">完了</option>
         </FieldSelect>
-        <FieldSelect label="優先度">
+        <FieldSelect label="優先度" value={priority} onChange={setPriority as (v: string) => void}>
           <option value="high">高</option><option value="medium">中</option><option value="low">低</option>
         </FieldSelect>
       </div>
-      <FieldSelect label="担当者">
+      <FieldSelect label="担当者" value={assignee} onChange={setAssignee}>
         {MEMBERS.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
       </FieldSelect>
       <div className="grid grid-cols-2 gap-3">
@@ -1398,7 +1543,7 @@ function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: string; o
         <FieldInput label="終了日" type="date" value={dueDate} onChange={setDueDate} />
       </div>
       <FieldInput label="見積工数（時間）" type="number" placeholder="例: 8" value={estimatedHours} onChange={setEstimatedHours} />
-      <FieldTextarea label="詳細・概要" placeholder="チケットの詳細説明、要件、受け入れ条件などを入力してください..." />
+      <FieldTextarea label="詳細・概要" placeholder="チケットの詳細説明、要件、受け入れ条件などを入力してください..." value={description} onChange={setDescription} />
 
       {/* Image upload */}
       <div>
@@ -1439,7 +1584,23 @@ function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: string; o
 }
 
 // ─── Ticket Detail Panel ───────────────────────────────────────────────────────
-function TicketDetailPanel({ ticket, onClose }: { ticket: SprintTicket | null; onClose: () => void }) {
+function TicketDetailPanel({ ticket, onClose, onUpdated }: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void }) {
+  const [newStatus, setNewStatus] = useState<TicketStatus>("todo");
+  const [updating, setUpdating] = useState(false);
+
+  useEffect(() => { if (ticket) setNewStatus(ticket.status); }, [ticket?.id]);
+
+  const handleStatusUpdate = async () => {
+    if (!ticket || newStatus === ticket.status) { onClose(); return; }
+    if (isSupabaseEnabled) {
+      setUpdating(true);
+      await supabase!.from("sprint_tickets").update({ status: newStatus }).eq("id", ticket.id);
+      setUpdating(false);
+    }
+    onUpdated?.();
+    onClose();
+  };
+
   if (!ticket) return null;
   const todayStr = new Date().toISOString().split("T")[0];
   const isOverdue = ticket.status !== "done" && ticket.dueDate < todayStr;
@@ -1537,10 +1698,21 @@ function TicketDetailPanel({ ticket, onClose }: { ticket: SprintTicket | null; o
             </div>
           </div>
 
-          {/* Actions */}
-          <div style={{ display:"flex", gap:8, paddingBottom:8 }}>
-            <BtnPrimary>ステータスを更新</BtnPrimary>
-            <BtnSecondary onClick={onClose}>閉じる</BtnSecondary>
+          {/* Status Update */}
+          <div style={{ background:"#FFFFFF", border:"1px solid rgba(26,23,20,0.07)", borderRadius:12, padding:"14px 16px" }}>
+            <p style={{ fontSize:11, fontWeight:700, color:"#6B6458", marginBottom:10 }}>ステータス変更</p>
+            <div style={{ display:"flex", gap:6, marginBottom:12 }}>
+              {([ ["todo","未着手","#DC2626","#FEF2F2"], ["in-progress","進行中","#D97706","#FFF7ED"], ["done","完了","#059669","#ECFDF5"] ] as [TicketStatus,string,string,string][]).map(([s,l,c,bg]) => (
+                <button key={s} onClick={() => setNewStatus(s)}
+                  style={{ flex:1, padding:"7px 0", fontSize:11, fontWeight:700, borderRadius:8, border:`1.5px solid ${newStatus===s?c:"rgba(26,23,20,0.10)"}`, background:newStatus===s?bg:"transparent", color:newStatus===s?c:"#9E9690", cursor:"pointer", transition:"all 0.15s" }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <BtnPrimary onClick={handleStatusUpdate}>{updating ? "更新中..." : "ステータスを更新"}</BtnPrimary>
+              <BtnSecondary onClick={onClose}>閉じる</BtnSecondary>
+            </div>
           </div>
         </div>
       </div>
@@ -1563,6 +1735,7 @@ function SprintDetailPage() {
   const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !sprintId) return;
@@ -1574,6 +1747,14 @@ function SprintDetailPage() {
     if (!isSupabaseEnabled || !sprintId) return;
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).single()
       .then(({ data }) => { if (data) setSprint(mapSprint(data)); });
+  };
+
+  const handleDeleteTicket = async (ticket: SprintTicket) => {
+    if (isSupabaseEnabled) await supabase!.from("sprint_tickets").delete().eq("id", ticket.id);
+    refreshSprint();
+    if (!isSupabaseEnabled && sprint) {
+      setSprint({ ...sprint, tickets: sprint.tickets.filter(t => t.id !== ticket.id) });
+    }
   };
 
   if (!project || !sprint) return <Navigate to="/projects" replace />;
@@ -1694,7 +1875,7 @@ function SprintDetailPage() {
 
       {/* WBS Table */}
       <div style={{ background:"#FFFFFF", borderRadius:14, overflow:"hidden", border:"1px solid rgba(26,23,20,0.08)", boxShadow:"0 1px 2px rgba(0,0,0,0.04)" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"56px 1fr 90px 60px 100px 72px 72px 52px 130px", padding:"10px 16px", background:"#F4F5F6", borderBottom:"1px solid rgba(26,23,20,0.06)", gap:8, alignItems:"center" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px", padding:"10px 16px", background:"#F4F5F6", borderBottom:"1px solid rgba(26,23,20,0.06)", gap:8, alignItems:"center" }}>
           <SortTh col="wbs" label="WBS" />
           <SortTh col="title" label="チケット名" />
           <SortTh col="status" label="ステータス" />
@@ -1704,6 +1885,7 @@ function SprintDetailPage() {
           <SortTh col="dueDate" label="終了日" />
           <SortTh col="estimatedHours" label="工数" />
           <SortTh col="progress" label="進捗" />
+          <span />
         </div>
         {displayTickets.length === 0 ? (
           <div style={{ padding:"40px 0", textAlign:"center" as const, color:"#B0A9A4", fontSize:13 }}>条件に一致するチケットがありません</div>
@@ -1716,7 +1898,7 @@ function SprintDetailPage() {
           const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
           const barColor = ticket.progress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
           return (
-            <div key={ticket.id} onClick={() => setSelectedTicket(ticket)} style={{ display:"grid", gridTemplateColumns:"56px 1fr 90px 60px 100px 72px 72px 52px 130px", padding:"11px 16px", alignItems:"center", gap:8, borderBottom:i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background:i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition:"background 0.1s", cursor:"pointer" }}
+            <div key={ticket.id} onClick={() => setSelectedTicket(ticket)} style={{ display:"grid", gridTemplateColumns:"56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px", padding:"11px 16px", alignItems:"center", gap:8, borderBottom:i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background:i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition:"background 0.1s", cursor:"pointer" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent"; }}>
               <span style={{ fontSize:11, fontFamily:"var(--font-mono)", color:"#B0A9A4", fontWeight:600 }}>{ticket.wbs}</span>
@@ -1739,19 +1921,26 @@ function SprintDetailPage() {
                 </div>
                 <span style={{ fontSize:10, fontFamily:"var(--font-mono)", color:"#6B6458", fontWeight:600, minWidth:28 }}>{ticket.progress}%</span>
               </div>
+              <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(ticket); }}
+                style={{ padding:4, borderRadius:6, border:"none", background:"transparent", cursor:"pointer", color:"#D5D0CB" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                <Trash2 style={{ width:12, height:12 }} />
+              </button>
             </div>
           );
         })}
       </div>
       {showCreate && <NewTicketDialog sprintId={sprintId!} onClose={() => setShowCreate(false)} onCreated={refreshSprint} />}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />
+      {deleteTicketTarget && <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />}
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicket(null)} onUpdated={refreshSprint} />
     </div>
   );
 }
 
 // ─── Sprint List / Board / Gantt Views ───────────────────────────────────────
 
-function SprintListView({ sprints, onSelectSprint }: { sprints: Sprint[]; onSelectSprint: (s: Sprint) => void }) {
+function SprintListView({ sprints, onSelectSprint, onDeleteSprint }: { sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onDeleteSprint?: (s: Sprint) => void }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
       {sprints.map(sprint => {
@@ -1774,13 +1963,21 @@ function SprintListView({ sprints, onSelectSprint }: { sprints: Sprint[]; onSele
                 <h3 style={{ fontSize:15, fontWeight:700, color:"#1A1714", fontFamily:"var(--font-heading)", letterSpacing:"-0.02em", marginBottom:4 }}>{sprint.name}</h3>
                 <p style={{ fontSize:11, color:"#A09790" }}>{sprint.goal}</p>
               </div>
-              <div style={{ display:"flex", gap:16, flexShrink:0, marginLeft:20 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:16, flexShrink:0, marginLeft:20 }}>
                 {[{ label:"チケット", value:sprint.tickets.length }, { label:"完了", value:done }, { label:"進行中", value:inProg }, { label:"工数(h)", value:totalHours }].map(({ label, value }) => (
                   <div key={label} style={{ textAlign:"center" as const }}>
                     <p style={{ fontSize:18, fontWeight:800, color:"#1A1714", fontFamily:"var(--font-heading)", letterSpacing:"-0.03em" }}>{value}</p>
                     <p style={{ fontSize:10, color:"#B0A9A4" }}>{label}</p>
                   </div>
                 ))}
+                {onDeleteSprint && (
+                  <button onClick={e => { e.stopPropagation(); onDeleteSprint(sprint); }}
+                    style={{ padding:6, borderRadius:7, border:"none", background:"transparent", cursor:"pointer", color:"#C9C4BB", flexShrink:0 }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                    <Trash2 style={{ width:14, height:14 }} />
+                  </button>
+                )}
               </div>
             </div>
             <div style={{ marginBottom:10 }}>
@@ -2045,17 +2242,38 @@ function SprintGanttView({ sprints, onSelectSprint, onSelectTicket }: { sprints:
 }
 
 // ─── New Sprint Dialog ────────────────────────────────────────────────────────
-function NewSprintDialog({ onClose }: { onClose: () => void }) {
+function NewSprintDialog({ onClose, projectId, onCreated }: { onClose: () => void; projectId: string; onCreated?: () => void }) {
+  const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [status, setStatus] = useState<SprintStatus>("planning");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    if (isSupabaseEnabled) {
+      setSaving(true);
+      await supabase!.from("sprints").insert({
+        id: `S-${Date.now()}`, project_id: projectId, name, goal,
+        start_date: startDate || null, end_date: endDate || null, status,
+      });
+      setSaving(false);
+    }
+    onCreated?.();
+    onClose();
+  };
+
   return (
     <DialogShell title="新規スプリント作成" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={onClose}>作成する</BtnPrimary></>}>
-      <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required />
-      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." />
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
+      <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
+      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
       <div className="grid grid-cols-2 gap-3">
-        <FieldInput label="開始日" type="date" required />
-        <FieldInput label="終了日" type="date" required />
+        <FieldInput label="開始日" type="date" required value={startDate} onChange={setStartDate} />
+        <FieldInput label="終了日" type="date" required value={endDate} onChange={setEndDate} />
       </div>
-      <FieldSelect label="ステータス">
+      <FieldSelect label="ステータス" value={status} onChange={setStatus as (v: string) => void}>
         <option value="planning">計画中</option>
         <option value="active">進行中</option>
         <option value="completed">完了</option>
@@ -2074,12 +2292,24 @@ function SprintPage() {
   const [viewMode, setViewMode] = useState<SprintView>("list");
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
+
+  const refreshSprints = () => {
+    if (!isSupabaseEnabled || !projectId) return;
+    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date")
+      .then(({ data }) => { if (data?.length) setSprints(data.map(mapSprint)); });
+  };
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date")
       .then(({ data }) => { if (data?.length) setSprints(data.map(mapSprint)); });
   }, [projectId]);
+
+  const handleDeleteSprint = async (sprint: Sprint) => {
+    if (isSupabaseEnabled) await supabase!.from("sprints").delete().eq("id", sprint.id);
+    setSprints(prev => prev.filter(s => s.id !== sprint.id));
+  };
 
   if (!project) return <Navigate to="/projects" replace />;
 
@@ -2129,12 +2359,100 @@ function SprintPage() {
       </div>
 
       {/* Views */}
-      {viewMode === "list"  && <SprintListView sprints={sprints} onSelectSprint={goToSprint} />}
+      {viewMode === "list"  && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={s => setDeleteTarget(s)} />}
       {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={setSelectedTicket} />}
 
-      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} />}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />
+      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
+      {deleteTarget && <ConfirmDialog message={`「${deleteTarget.name}」を削除しますか？関連するチケットもすべて削除されます。`} onConfirm={() => handleDeleteSprint(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicket(null)} onUpdated={refreshSprints} />
+    </div>
+  );
+}
+
+// ─── Accept Invite ────────────────────────────────────────────────────────────
+function AcceptInvitePage() {
+  const navigate = useNavigate();
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) { setSessionReady(true); return; }
+    supabase!.auth.getSession().then(({ data: { session } }) => {
+      if (session) { setSessionReady(true); return; }
+      const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
+        if (session) { setSessionReady(true); subscription.unsubscribe(); }
+      });
+    });
+  }, []);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (password.length < 8) { setError("パスワードは8文字以上にしてください"); return; }
+    if (password !== confirm) { setError("パスワードが一致しません"); return; }
+    setLoading(true); setError("");
+    if (!isSupabaseEnabled) { navigate("/dashboard"); return; }
+    const { error } = await supabase!.auth.updateUser({ password });
+    if (error) { setError(error.message); setLoading(false); }
+    else { sessionStorage.setItem("isLoggedIn", "true"); navigate("/dashboard"); }
+  };
+
+  if (!sessionReady) return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", background:"#F5F6F8" }}>
+      <div style={{ textAlign:"center" as const }}>
+        <div style={{ width:38, height:38, borderRadius:11, background:"linear-gradient(145deg,#34D399,#059669)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px", boxShadow:"0 4px 12px rgba(5,150,105,0.35)" }}>
+          <Ticket style={{ width:17, height:17, color:"#fff" }} />
+        </div>
+        <p style={{ fontSize:12, color:"#A09790" }}>招待を確認中...</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen flex bg-white">
+      <div className="hidden lg:flex w-[42%] bg-teal-700 flex-col justify-between p-12 relative overflow-hidden"
+        style={{ backgroundImage: "radial-gradient(circle at 70% 30%, rgba(255,255,255,0.07) 0%, transparent 60%)" }}>
+        <div className="absolute inset-0 opacity-20" style={{ backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.6) 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
+        <div className="relative">
+          <div className="flex items-center gap-3 mb-16">
+            <div className="w-9 h-9 bg-white rounded-xl flex items-center justify-center shadow-md">
+              <Ticket className="text-teal-700" style={{ width: 18, height: 18 }} />
+            </div>
+            <span className="text-lg font-bold text-white" style={{ fontFamily: "var(--font-heading)" }}>Dev Ticket</span>
+          </div>
+          <h2 className="text-4xl font-bold text-white leading-tight mb-5" style={{ fontFamily: "var(--font-heading)" }}>チームへ<br />ようこそ。</h2>
+          <p className="text-teal-100 text-sm leading-relaxed max-w-xs">パスワードを設定してアカウントを有効化してください。チームのプロジェクトやチケット管理にすぐ参加できます。</p>
+        </div>
+        <p className="relative text-xs text-teal-400">© 2026 Dev Ticket. All rights reserved.</p>
+      </div>
+      <div className="flex-1 flex items-center justify-center p-8 bg-[#F5F6F8]">
+        <div className="w-full max-w-[360px]">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-stone-900 mb-1" style={{ fontFamily: "var(--font-heading)" }}>パスワード設定</h1>
+            <p className="text-sm text-stone-500">新しいパスワードを入力してアカウントを有効化してください</p>
+          </div>
+          <div className="bg-white rounded-2xl border border-stone-200 p-7 shadow-sm">
+            <form onSubmit={handleSubmit} className="space-y-5">
+              {error && (
+                <div className="flex items-center gap-2.5 p-3.5 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />{error}
+                </div>
+              )}
+              <FieldInput label="新しいパスワード" type="password" placeholder="8文字以上" value={password} onChange={setPassword} />
+              <FieldInput label="パスワード（確認）" type="password" placeholder="もう一度入力" value={confirm} onChange={setConfirm} />
+              <button type="submit" disabled={loading}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-sm flex items-center justify-center gap-2 shadow-sm shadow-emerald-200 mt-1">
+                {loading
+                  ? <><div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />設定中...</>
+                  : <>パスワードを設定 <ArrowRight className="w-4 h-4" /></>}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2258,6 +2576,7 @@ export default function App() {
     <AuthContext.Provider value={{ userName, userRole, login, logout }}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/accept-invite" element={<AcceptInvitePage />} />
         <Route element={<ProtectedShell />}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/projects" element={<ProjectsPage />} />
