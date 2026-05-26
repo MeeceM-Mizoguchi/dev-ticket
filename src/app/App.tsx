@@ -2519,15 +2519,16 @@ export default function App() {
       }
       setAuthReady(true);
     }).catch(() => { clearTimeout(authTimer); setAuthReady(true); });
-    const { data: { subscription } } = supabase!.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        const { data: p } = await supabase!.from("profiles").select("name, role").eq("id", session.user.id).single();
-        if (p) {
-          setUserName(p.name); setUserRole(p.role as Role);
-          sessionStorage.setItem("isLoggedIn", "true");
-          sessionStorage.setItem("userName", p.name);
-          sessionStorage.setItem("userRole", p.role);
-        }
+        supabase!.from("profiles").select("name, role").eq("id", session.user.id).single()
+          .then(({ data: p }) => {
+            if (p) {
+              setUserName(p.name); setUserRole(p.role as Role);
+              sessionStorage.setItem("userName", p.name);
+              sessionStorage.setItem("userRole", p.role);
+            }
+          });
       } else {
         setUserName(""); setUserRole("developer");
         sessionStorage.removeItem("isLoggedIn");
@@ -2551,8 +2552,10 @@ export default function App() {
       }
       return "メールアドレスまたはパスワードが正しくありません。";
     }
-    const { error } = await supabase!.auth.signInWithPassword({ email, password });
-    return error ? error.message : null;
+    const { data, error } = await supabase!.auth.signInWithPassword({ email, password });
+    if (error) return error.message;
+    if (data.session) sessionStorage.setItem("isLoggedIn", "true");
+    return null;
   };
 
   const logout = () => {
