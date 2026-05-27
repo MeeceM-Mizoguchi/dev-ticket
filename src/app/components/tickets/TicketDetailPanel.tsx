@@ -162,6 +162,20 @@ export function TicketDetailPanel({
     save({ status: newStatus, progress: p });
   };
 
+  const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
+    if (!ticket) return;
+    const newStatus = btn.next;
+    const p = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(p);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+    }
+    const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
+    await addComment(`<p>${btn.label}：ステータスを「${newLabel}」に変更しました</p>`, "comment", [], newStatus);
+    onUpdated?.();
+  };
+
   const saveAssignees = (newList: string[]) => {
     setAssignees(newList);
     save({ assignees: newList, assignee: newList[0] || "" });
@@ -351,7 +365,7 @@ export function TicketDetailPanel({
 
           {/* Action button */}
           {actionBtn && isAssignee && (
-            <button onClick={() => setStatusAndProgress(actionBtn.next)}
+            <button onClick={() => handleStatusAction(actionBtn)}
               style={{ padding: "11px 0", fontSize: 13, fontWeight: 700, borderRadius: 10, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, width: "100%" }}>
               {actionBtn.label} →
             </button>
