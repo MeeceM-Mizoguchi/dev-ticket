@@ -1,0 +1,40 @@
+import type { Member, Role } from "@/app/types";
+import { getRoleMeta } from "@/app/lib/helpers";
+import { Avatar } from "@/app/components/shared/Avatar";
+import { DialogShell } from "@/app/components/shared/DialogShell";
+import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+
+const roleColors: Record<Role, { grad: string; badge: string; text: string }> = {
+  admin:             { grad: "linear-gradient(135deg,#FB7185,#F43F5E)", badge: "#FFF1F2", text: "#F43F5E" },
+  "project-manager": { grad: "linear-gradient(135deg,#34D399,#059669)", badge: "#ECFDF5", text: "#059669" },
+  developer:         { grad: "linear-gradient(135deg,#38BDF8,#0284C7)", badge: "#F0F9FF", text: "#0284C7" },
+  designer:          { grad: "linear-gradient(135deg,#A78BFA,#7C3AED)", badge: "#F5F3FF", text: "#7C3AED" },
+};
+
+export function MemberDetailDialog({ member, onClose }: { member: Member; onClose: () => void }) {
+  const rc = roleColors[member.role];
+  const statusLabel = member.status === "active" ? "アクティブ" : member.status === "invited" ? "招待中" : "非アクティブ";
+  return (
+    <DialogShell title="メンバー詳細" onClose={onClose} footer={<BtnSecondary onClick={onClose}>閉じる</BtnSecondary>}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16, padding: "14px", background: "#F4F5F6", borderRadius: 12 }}>
+        <Avatar name={member.name} size="lg" />
+        <div>
+          <p style={{ fontSize: 16, fontWeight: 700, color: "#1A1714" }}>{member.name}</p>
+          <p style={{ fontSize: 12, color: "#B0A9A4", marginTop: 2 }}>{member.email}</p>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: rc.badge, color: rc.text }}>{getRoleMeta(member.role).label}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: "#F4F5F6", color: "#6B6458" }}>{statusLabel}</span>
+          </div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {[{ label: "所属グループ", value: member.group || "—" }, { label: "担当プロジェクト", value: `${member.projects}件` }, { label: "担当チケット", value: `${member.tickets}件` }, { label: "ID", value: member.id }].map(({ label, value }) => (
+          <div key={label} style={{ background: "#F4F5F6", borderRadius: 10, padding: "12px 14px" }}>
+            <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</p>
+            <p style={{ fontSize: 13, color: "#1A1714", fontWeight: 600 }}>{value}</p>
+          </div>
+        ))}
+      </div>
+    </DialogShell>
+  );
+}

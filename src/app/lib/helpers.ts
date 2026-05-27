@@ -1,0 +1,62 @@
+import type { ProjectStatus, TicketStatus, Priority, Role, Sprint, SprintStatus } from "@/app/types";
+
+export function getStatusMeta(status: ProjectStatus | TicketStatus) {
+  const map: Record<string, { label: string; cls: string; dot: string; bar: string }> = {
+    planning:      { label: "計画中", cls: "bg-slate-100 text-slate-600",    dot: "bg-slate-400",  bar: "bg-slate-300" },
+    "in-progress": { label: "進行中", cls: "bg-orange-50 text-orange-700",   dot: "bg-orange-400", bar: "bg-orange-400" },
+    completed:     { label: "完了",   cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500",bar: "bg-emerald-500" },
+    "on-hold":     { label: "保留中", cls: "bg-amber-50 text-amber-700",     dot: "bg-amber-400",  bar: "bg-amber-400" },
+    todo:          { label: "未着手", cls: "bg-stone-100 text-stone-500",    dot: "bg-stone-400",  bar: "bg-stone-300" },
+    done:          { label: "完了",   cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500",bar: "bg-emerald-500" },
+  };
+  return map[status] ?? { label: status, cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" };
+}
+
+export function getPriorityMeta(p: Priority) {
+  return {
+    high:   { label: "高", cls: "bg-red-50 text-red-600",    dot: "bg-red-500" },
+    medium: { label: "中", cls: "bg-amber-50 text-amber-700",dot: "bg-amber-400" },
+    low:    { label: "低", cls: "bg-sky-50 text-sky-600",    dot: "bg-sky-400" },
+  }[p];
+}
+
+export function getRoleMeta(role: Role) {
+  return {
+    admin:             { label: "管理者",    cls: "bg-rose-50 text-rose-700",      gradient: "from-rose-500 to-rose-600" },
+    "project-manager": { label: "PM",        cls: "bg-orange-50 text-orange-700",   gradient: "from-orange-500 to-orange-600" },
+    developer:         { label: "開発者",    cls: "bg-sky-50 text-sky-700",         gradient: "from-sky-500 to-sky-600" },
+    designer:          { label: "デザイナー", cls: "bg-violet-50 text-violet-700",   gradient: "from-violet-500 to-violet-600" },
+  }[role];
+}
+
+export function getAvatarColor(name: string) {
+  const colors = ["#059669","#D97706","#059669","#0284C7","#7C3AED","#DB2777"];
+  return colors[name.charCodeAt(0) % colors.length];
+}
+
+export function calcProgress(done: number, ip: number, todo: number) {
+  const t = done + ip + todo; return t === 0 ? 0 : Math.round((done / t) * 100);
+}
+
+export function getInitials(n: string) { return n.replace(/\s/g, "").slice(0, 2); }
+export function formatDate(d: string) { return d.slice(5).replace("-", "/"); }
+export function daysBetween(a: string, b: string) {
+  return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+}
+
+export function getSprintStatusMeta(status: SprintStatus) {
+  return {
+    planning:  { label:"計画中", bg:"#F4F5F6", color:"#6B6458", dot:"#B0A9A4", barColor:"#B0A9A4" },
+    active:    { label:"進行中", bg:"#ECFDF5", color:"#059669", dot:"#059669", barColor:"#059669" },
+    completed: { label:"完了",   bg:"#F0F9FF", color:"#0284C7", dot:"#0284C7", barColor:"#0284C7" },
+    cancelled: { label:"中止",   bg:"#FEF2F2", color:"#DC2626", dot:"#DC2626", barColor:"#DC2626" },
+  }[status];
+}
+
+export function sprintProgress(s: Sprint) {
+  if (!s.tickets.length) return 0;
+  return Math.round(s.tickets.filter(t => t.status === "done").length / s.tickets.length * 100);
+}
+
+export const inputCls = "w-full bg-[#F7F8F9] border border-stone-200/70 rounded-xl px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 focus:bg-white transition-all";
+export const labelCls = "block text-[10px] font-bold text-stone-400 uppercase tracking-widest mb-1.5";

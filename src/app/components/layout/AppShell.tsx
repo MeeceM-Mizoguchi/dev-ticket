@@ -1,0 +1,22 @@
+import { Navigate, Outlet } from "react-router";
+import { Sidebar } from "./Sidebar";
+import { Topbar } from "./Topbar";
+
+export function AppShell() {
+  return (
+    <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#F5F6F8" }}>
+      <Sidebar />
+      <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <Topbar />
+        <main style={{ flex:1, overflowY:"auto" }}>
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export function ProtectedShell() {
+  if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
+  return <AppShell />;
+}
