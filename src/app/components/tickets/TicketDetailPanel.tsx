@@ -324,6 +324,7 @@ export function TicketDetailPanel({
   const canSendReview = status === "in-progress" && !!reviewerName && isAssignee;
   // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつ担当者ではない
   const canReview = (userName === reviewerName || isAdminOrPM) && !isAssignee;
+  const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
 
   const assigneeLabel = assignees.length === 0 ? "未割り当て"
     : assignees.length === 1 ? assignees[0]
@@ -602,14 +603,12 @@ export function TicketDetailPanel({
               const isStatusChange = c.commentType === "status_change";
               const isSystem = isReviewReq || isRevisionReq || isApproved || isStatusChange;
 
-              // system comment label & colors
               const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : "#6B7280";
               const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : "#F4F5F6";
               const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : "rgba(26,23,20,0.08)";
               const sysLabel = isReviewReq ? "レビュー依頼" : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : "";
 
-              if (isSystem) {
-                // compact timeline event display
+              if (isStatusChange) {
                 return (
                   <div key={c.id} style={{ margin: "6px 0" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -617,28 +616,47 @@ export function TicketDetailPanel({
                       <Avatar name={c.userName} size="xs" />
                       <span style={{ fontSize: 10, fontWeight: 600, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.userName}</span>
                       <span style={{ fontSize: 10, color: "#C9C4BB", whiteSpace: "nowrap" as const }}>{formatTs(c.createdAt)}</span>
-                      {sysLabel && <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, whiteSpace: "nowrap" as const }}>{sysLabel}</span>}
-                      {isStatusChange && <span style={{ fontSize: 10, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()}</span>}
+                      <span style={{ fontSize: 10, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()}</span>
                       <div style={{ flex: 1, height: 1, background: "rgba(26,23,20,0.06)" }} />
                     </div>
+                  </div>
+                );
+              }
 
-                    {/* reviewer action area: only on review_request, only for canReview, only when still in-review */}
-                    {isReviewReq && canReview && status === "in-review" && (
-                      <div style={{ margin: "10px 0 4px", padding: "14px 16px", background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 10 }}>
-                        <p style={{ fontSize: 10, fontWeight: 700, color: sysColor, marginBottom: 8 }}>レビューコメント（任意）</p>
-                        <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力..." minHeight={60} />
-                        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                          <button onClick={() => handleRevisionRequest(revisionInput)}
-                            style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
-                            修正依頼（差戻し）
-                          </button>
-                          <button onClick={() => handleReviewApproval(revisionInput)}
-                            style={{ flex: 1, padding: "8px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
-                            ✅ レビュー承認
-                          </button>
-                        </div>
+              if (isSystem) {
+                const isLatestReviewReq = isReviewReq && c.id === latestReviewReqId;
+                const showReviewForm = isLatestReviewReq && canReview && status === "in-review";
+                return (
+                  <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                    <Avatar name={c.userName} size="xs" />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" as const }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, flexShrink: 0 }}>{sysLabel}</span>
+                        <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
                       </div>
-                    )}
+                      {c.content && (
+                        <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                          <RichEditor value={c.content} readOnly minHeight={20} />
+                        </div>
+                      )}
+                      {showReviewForm && (
+                        <div style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
+                          <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力..." minHeight={60} />
+                          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                            <button onClick={() => handleRevisionRequest(revisionInput)}
+                              style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
+                              修正依頼（差戻し）
+                            </button>
+                            <button onClick={() => handleReviewApproval(revisionInput)}
+                              style={{ flex: 1, padding: "8px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
+                              ✅ レビュー承認
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               }
