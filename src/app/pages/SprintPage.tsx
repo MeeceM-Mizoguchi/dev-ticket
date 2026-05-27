@@ -93,8 +93,8 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={s => setDeleteTarget(s)} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} />}
+      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={s => setDeleteTarget(s)} onSelectTicket={setSelectedTicket} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={setSelectedTicket} onUpdated={refreshSprints} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={setSelectedTicket} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}

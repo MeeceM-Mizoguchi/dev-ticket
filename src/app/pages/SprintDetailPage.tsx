@@ -154,7 +154,7 @@ export function SprintDetailPage() {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em" }}>ステータス</span>
-          {([ ["all","すべて"], ["todo","未着手"], ["in-progress","進行中"], ["done","完了"] ] as [TicketStatus|"all", string][]).map(([v, l]) => (
+          {([{ value: "all" as const, label: "すべて" }, ...TICKET_STATUSES] as { value: TicketStatus | "all"; label: string }[]).map(({ value: v, label: l }) => (
             <button key={v} onClick={() => setFilterStatus(v)}
               style={{ padding: "4px 10px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: 500, transition: "all 0.12s",
                 background: filterStatus === v ? "#059669" : "transparent",

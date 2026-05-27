@@ -625,7 +625,7 @@ export function TicketDetailPanel({
 
               if (isSystem) {
                 const isLatestReviewReq = isReviewReq && c.id === latestReviewReqId;
-                const showReviewForm = isLatestReviewReq && canReview && status === "in-review";
+                const showReviewForm = isLatestReviewReq && canReview && status === "in-review" && editingId !== c.id;
                 return (
                   <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                     <Avatar name={c.userName} size="xs" />
@@ -634,11 +634,39 @@ export function TicketDetailPanel({
                         <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
                         <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, flexShrink: 0 }}>{sysLabel}</span>
                         <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                      </div>
-                      {c.content && (
-                        <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                          <RichEditor value={c.content} readOnly minHeight={20} />
+                        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                          {isOwn && editingId !== c.id && (
+                            <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                              <Pencil style={{ width: 11, height: 11 }} />
+                            </button>
+                          )}
+                          {isOwn && (
+                            <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                              <Trash2 style={{ width: 11, height: 11 }} />
+                            </button>
+                          )}
                         </div>
+                      </div>
+                      {editingId === c.id ? (
+                        <div>
+                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} />
+                          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                            <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                              <Check style={{ width: 11, height: 11 }} />保存
+                            </button>
+                            <button onClick={() => setEditingId(null)} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                          </div>
+                        </div>
+                      ) : (
+                        c.content && (
+                          <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                            <RichEditor value={c.content} readOnly minHeight={20} />
+                          </div>
+                        )
                       )}
                       {showReviewForm && (
                         <div style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
