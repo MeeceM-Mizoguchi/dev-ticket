@@ -10,6 +10,7 @@ import type { Project, Client } from "@/app/types";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { PageLoader } from "@/app/components/shared/PageLoader";
 
 export function ProjectsPage() {
   const { userRole } = useAuth();
@@ -21,6 +22,7 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(isSupabaseEnabled ? [] : PROJECTS);
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [loading, setLoading] = useState(isSupabaseEnabled);
   const canManage = userRole === "admin" || userRole === "project-manager";
 
   const refreshProjects = () => {
@@ -31,22 +33,23 @@ export function ProjectsPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("projects").select("*").order("id")
-      .then(({ data }) => setProjects((data ?? []).map(mapProject)));
-    supabase!.from("clients").select("*").order("id")
-      .then(({ data }) => setClients((data ?? []).map(mapClient)));
+    Promise.all([
+      supabase!.from("projects").select("*").order("id"),
+      supabase!.from("clients").select("*").order("id"),
+    ]).then(([{ data: p }, { data: c }]) => {
+      if (p) setProjects(p.map(mapProject));
+      if (c) setClients(c.map(mapClient));
+      setLoading(false);
+    }).catch(() => setLoading(false));
   }, []);
 
   const handleDeleteProject = async (project: Project) => {
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("projects").delete().eq("id", project.id);
-      if (error) { toast("削除に失敗しました", "error"); return; }
-      toast(`「${project.name}」を削除しました`);
-      refreshProjects();
-    } else {
-      setProjects(prev => prev.filter(p => p.id !== project.id));
-      toast(`「${project.name}」を削除しました`);
+      if (error) { toast("削除に失敗しました", "error"); throw error; }
     }
+    setProjects(prev => prev.filter(p => p.id !== project.id));
+    toast(`「${project.name}」を削除しました`);
   };
 
   const filtered = projects.filter(p => {
@@ -61,6 +64,8 @@ export function ProjectsPage() {
     { value: "on-hold", label: "保留中", count: projects.filter(p => p.status === "on-hold").length },
     { value: "completed", label: "完了", count: projects.filter(p => p.status === "completed").length },
   ];
+
+  if (loading) return <PageLoader />;
 
   return (
     <div style={{ padding: "24px" }}>

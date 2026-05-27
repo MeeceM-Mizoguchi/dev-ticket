@@ -11,6 +11,7 @@ import { MemberDetailDialog } from "@/app/components/members/MemberDetailDialog"
 import { MemberEditDialog } from "@/app/components/members/MemberEditDialog";
 import { InviteDialog } from "@/app/components/members/InviteDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { PageLoader } from "@/app/components/shared/PageLoader";
 
 export function MembersPage() {
   const { userRole, userId } = useAuth();
@@ -22,6 +23,7 @@ export function MembersPage() {
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
   const [detailTarget, setDetailTarget] = useState<Member | null>(null);
   const [editTarget, setEditTarget] = useState<Member | null>(null);
+  const [loading, setLoading] = useState(isSupabaseEnabled);
   const canAdd = userRole === "admin" || userRole === "project-manager";
   const canEdit = userRole === "admin" || userRole === "project-manager";
   const canDelete = userRole === "admin";
@@ -35,7 +37,8 @@ export function MembersPage() {
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     supabase!.from("profiles").select("*").order("name")
-      .then(({ data }) => setMembers((data ?? []).map(mapMember)));
+      .then(({ data }) => { if (data) setMembers(data.map(mapMember)); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   const handleDeleteMember = async (member: Member) => {
@@ -46,7 +49,7 @@ export function MembersPage() {
         body: JSON.stringify({ userId: member.id, memberName: member.name }),
       });
       const json = await res.json();
-      if (!res.ok) { toast(json.error || "削除に失敗しました", "error"); return; }
+      if (!res.ok) { toast(json.error || "削除に失敗しました", "error"); throw new Error(json.error); }
     }
     setMembers(prev => prev.filter(m => m.id !== member.id));
     toast(`「${member.name}」を削除しました`);
@@ -55,6 +58,8 @@ export function MembersPage() {
   const filtered = members.filter(m => {
     return (m.name.includes(search) || m.email.includes(search)) && (group === "すべて" || m.group === group);
   });
+
+  if (loading) return <PageLoader />;
 
   return (
     <div style={{ padding: "24px" }}>

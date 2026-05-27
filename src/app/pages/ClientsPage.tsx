@@ -9,6 +9,7 @@ import { mapClient } from "@/app/lib/mappers";
 import type { Client } from "@/app/types";
 import { ClientFormDialog } from "@/app/components/clients/ClientFormDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { PageLoader } from "@/app/components/shared/PageLoader";
 
 type ClientSortField = "name" | "industry" | "status";
 
@@ -23,6 +24,7 @@ export function ClientsPage() {
   const [editTarget, setEditTarget] = useState<Client | null>(null);
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
+  const [loading, setLoading] = useState(isSupabaseEnabled);
   const isAdmin = userRole === "admin";
   const canManage = userRole === "admin" || userRole === "project-manager";
 
@@ -35,16 +37,17 @@ export function ClientsPage() {
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     supabase!.from("clients").select("*").order("id")
-      .then(({ data }) => setClients((data ?? []).map(mapClient)));
+      .then(({ data }) => { if (data) setClients(data.map(mapClient)); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   const handleDeleteClient = async (client: Client) => {
-    setClients(prev => prev.filter(c => c.id !== client.id));
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("clients").delete().eq("id", client.id);
-      if (error) { toast("削除に失敗しました", "error"); refreshClients(); return; }
-      toast(`「${client.name}」を削除しました`);
+      if (error) { toast("削除に失敗しました", "error"); throw error; }
     }
+    setClients(prev => prev.filter(c => c.id !== client.id));
+    toast(`「${client.name}」を削除しました`);
   };
 
   const handleSort = (field: ClientSortField) => {
@@ -75,6 +78,8 @@ export function ClientsPage() {
       <span style={{ fontSize: 10, opacity: sortField === field ? 1 : 0.4 }}>{sortField === field ? (sortDir === "asc" ? "↑" : "↓") : "↕"}</span>
     </button>
   );
+
+  if (loading) return <PageLoader />;
 
   return (
     <div style={{ padding: "24px" }}>
