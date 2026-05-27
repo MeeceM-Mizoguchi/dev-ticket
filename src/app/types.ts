@@ -17,9 +17,12 @@ export interface SprintTicket {
   description?: string; reviewerName?: string; reviewRound?: number;
 }
 
+export type CommentType = "comment" | "review_request" | "revision_request" | "review_approved";
+
 export interface TicketComment {
   id: string; ticketId: string; userName: string; content: string;
   ticketStatus: TicketStatus; images: string[]; createdAt: string;
+  commentType: CommentType;
 }
 
 export interface TicketSourceFile {

@@ -33,9 +33,13 @@ CREATE TABLE IF NOT EXISTS ticket_comments (
   user_name     TEXT NOT NULL,
   content       TEXT NOT NULL,
   ticket_status TEXT NOT NULL DEFAULT 'todo',
+  comment_type  TEXT NOT NULL DEFAULT 'comment',
   images        JSONB DEFAULT '[]',
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+
+-- 既存テーブルへの追加（既に作成済みの場合）
+ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS comment_type TEXT NOT NULL DEFAULT 'comment';
 
 ALTER TABLE ticket_comments ENABLE ROW LEVEL SECURITY;
 

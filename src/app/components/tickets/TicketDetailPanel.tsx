@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Plus, Send, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon } from "lucide-react";
-import type { SprintTicket, TicketComment, TicketSourceFile, Priority } from "@/app/types";
+import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check } from "lucide-react";
+import type { SprintTicket, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -8,28 +8,19 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile } from "@/app/lib/mappers";
 
-// ───────────────── helpers ──────────────────────────────────────────────────
+// ─── Status→Progress mapping ──────────────────────────────────────────────────
+const STATUS_PROGRESS: Record<TicketStatus, number> = {
+  todo: 0, "in-progress": 10, "in-review": 30,
+  "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100,
+};
 
-function calcHoursFromDates(start: string, due: string): number {
-  if (!start || !due) return 0;
-  const days = Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000);
-  return Math.max(0, days) * 8;
-}
-
-function formatTs(ts: string) {
-  if (!ts) return "";
-  const d = new Date(ts);
-  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-function statusBadge(status: string) {
-  const s = TICKET_STATUSES.find(x => x.value === status);
-  return s ? (
-    <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: s.bg, color: s.color, flexShrink: 0 }}>
-      {s.label}
-    </span>
-  ) : null;
-}
+// Action buttons: current status → next action
+const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
+  todo:          { label: "着手開始",       next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
+  "review-done": { label: "STGテスト完了",  next: "stg-test",    color: "#0D9488", bg: "#F0FDFA" },
+  "stg-test":    { label: "UAT完了",        next: "uat",         color: "#4F46E5", bg: "#EEF2FF" },
+  uat:           { label: "リリース完了",   next: "closed",      color: "#6B7280", bg: "#F3F4F6" },
+};
 
 const priorityMeta: Record<Priority, { label: string; color: string; bg: string }> = {
   high:   { label: "高", color: "#DC2626", bg: "#FEF2F2" },
@@ -37,34 +28,60 @@ const priorityMeta: Record<Priority, { label: string; color: string; bg: string 
   low:    { label: "低", color: "#0284C7", bg: "#F0F9FF" },
 };
 
-// ───────────────── main component ───────────────────────────────────────────
+function formatTs(ts: string) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = TICKET_STATUSES.find(x => x.value === status);
+  if (!s) return null;
+  return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: s.bg, color: s.color, flexShrink: 0 }}>{s.label}</span>;
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export function TicketDetailPanel({
   ticket, onClose, onUpdated,
 }: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void }) {
 
   const { userName, userRole } = useAuth();
+  const isReviewer = userRole === "admin" || userRole === "project-manager";
 
-  // local editable state (synced from ticket prop)
-  const [status, setStatus] = useState(ticket?.status ?? "todo");
-  const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
-  const [assignee, setAssignee] = useState(ticket?.assignee ?? "");
-  const [startDate, setStartDate] = useState(ticket?.startDate ?? "");
-  const [dueDate, setDueDate] = useState(ticket?.dueDate ?? "");
-  const [estimatedHours, setEstimatedHours] = useState(ticket?.estimatedHours ?? 0);
-  const [progress, setProgress] = useState(ticket?.progress ?? 0);
+  // editable state
+  const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
+  const [priority, setPriority]     = useState<Priority>(ticket?.priority ?? "medium");
+  const [assignee, setAssignee]     = useState(ticket?.assignee ?? "");
+  const [startDate, setStartDate]   = useState(ticket?.startDate ?? "");
+  const [dueDate, setDueDate]       = useState(ticket?.dueDate ?? "");
+  const [estimatedH, setEstimatedH] = useState(ticket?.estimatedHours ?? 0);
+  const [progress, setProgress]     = useState(ticket?.progress ?? 0);
   const [description, setDescription] = useState(ticket?.description ?? "");
   const [reviewerName, setReviewerName] = useState(ticket?.reviewerName ?? "");
-  const [reviewRound, setReviewRound] = useState(ticket?.reviewRound ?? 0);
+  const [reviewRound, setReviewRound]   = useState(ticket?.reviewRound ?? 0);
 
   // related data
-  const [comments, setComments] = useState<TicketComment[]>([]);
+  const [comments, setComments]       = useState<TicketComment[]>([]);
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
   const [memberNames, setMemberNames] = useState<string[]>([]);
 
-  // UI state
-  const [commentText, setCommentText] = useState("");
+  // review request form
+  const [reviewContent, setReviewContent] = useState("");
+  const [reviewFiles, setReviewFiles]     = useState<{ name: string; file: File }[]>([]);
+
+  // comment form
+  const [commentText, setCommentText]     = useState("");
   const [commentImages, setCommentImages] = useState<string[]>([]);
+
+  // ticket-level images (separate from comments)
+  const [ticketImages, setTicketImages] = useState<string[]>([]);
+
+  // comment editing
+  const [editingId, setEditingId]     = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+
+  // accordion
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set([1]));
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -77,12 +94,12 @@ export function TicketDetailPanel({
     setAssignee(ticket.assignee);
     setStartDate(ticket.startDate ?? "");
     setDueDate(ticket.dueDate ?? "");
-    setEstimatedHours(ticket.estimatedHours);
+    setEstimatedH(ticket.estimatedHours);
     setProgress(ticket.progress);
     setDescription(ticket.description ?? "");
     setReviewerName(ticket.reviewerName ?? "");
     setReviewRound(ticket.reviewRound ?? 0);
-    loadRelated(ticket.id);
+    if (ticket.id) loadRelated(ticket.id);
   }, [ticket?.id]);
 
   useEffect(() => {
@@ -101,7 +118,7 @@ export function TicketDetailPanel({
     if (fData) setSourceFiles(fData.map(mapSourceFile));
   }, []);
 
-  // ── auto-save helpers ────────────────────────────────────────────────────
+  // ── auto-save ─────────────────────────────────────────────────────────────
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
     await supabase!.from("sprint_tickets").update(fields).eq("id", ticket.id);
@@ -113,68 +130,79 @@ export function TicketDetailPanel({
     timerRef.current = setTimeout(() => save(fields), 1200);
   }, [save]);
 
-  // ── handlers ─────────────────────────────────────────────────────────────
-  const handleStatus = (v: typeof status) => { setStatus(v); save({ status: v }); };
-  const handlePriority = (v: Priority) => { setPriority(v); save({ priority: v }); };
-  const handleAssignee = (v: string) => { setAssignee(v); save({ assignee: v }); };
+  // ── helpers ───────────────────────────────────────────────────────────────
+  const setStatusAndProgress = (newStatus: TicketStatus) => {
+    const p = STATUS_PROGRESS[newStatus] ?? progress;
+    setStatus(newStatus);
+    setProgress(p);
+    save({ status: newStatus, progress: p });
+  };
 
+  const addComment = async (content: string, type: CommentType = "comment", images: string[] = []) => {
+    if (!ticket) return;
+    const row = { id: `CMT-${Date.now()}`, ticket_id: ticket.id, user_name: userName, content, ticket_status: status, comment_type: type, images };
+    if (isSupabaseEnabled) {
+      await supabase!.from("ticket_comments").insert(row);
+      await loadRelated(ticket.id);
+    } else {
+      setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: status, commentType: type, createdAt: new Date().toISOString() }]);
+    }
+  };
+
+  const uploadSourceFile = async (file: File, round: number): Promise<string> => {
+    if (!ticket || !isSupabaseEnabled) return "";
+    const path = `${ticket.id}/${round}/${Date.now()}_${file.name}`;
+    const { data } = await supabase!.storage.from("ticket-files").upload(path, file, { upsert: true });
+    if (!data) return "";
+    const { data: urlData } = supabase!.storage.from("ticket-files").getPublicUrl(path);
+    const row = { id: `SF-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, ticket_id: ticket.id, file_name: file.name, file_size: file.size, file_type: file.type, uploaded_by: userName, review_round: round, file_url: urlData.publicUrl };
+    await supabase!.from("ticket_source_files").insert(row);
+    return urlData.publicUrl;
+  };
+
+  // ── handlers ─────────────────────────────────────────────────────────────
   const handleDate = (field: "start_date" | "due_date", v: string) => {
-    const newStart = field === "start_date" ? v : startDate;
-    const newDue   = field === "due_date"   ? v : dueDate;
-    if (field === "start_date") setStartDate(v);
-    else setDueDate(v);
-    const h = calcHoursFromDates(newStart, newDue);
-    setEstimatedHours(h);
+    const s = field === "start_date" ? v : startDate;
+    const d = field === "due_date"   ? v : dueDate;
+    if (field === "start_date") setStartDate(v); else setDueDate(v);
+    const days = s && d ? Math.max(0, Math.round((new Date(d).getTime() - new Date(s).getTime()) / 86400000)) : 0;
+    const h = days * 8;
+    setEstimatedH(h);
     save({ [field]: v || null, estimated_hours: h });
   };
 
-  const handleProgress = (v: number) => { setProgress(v); saveDebounced({ progress: v }); };
-  const handleDescription = (html: string) => { setDescription(html); saveDebounced({ description: html }); };
-  const handleReviewer = (v: string) => { setReviewerName(v); saveDebounced({ reviewer_name: v }); };
-
   const handleReviewRequest = async () => {
-    if (!ticket || !reviewerName.trim()) return;
+    if (!reviewerName || status !== "in-progress" || !ticket) return;
     const round = reviewRound + 1;
     setReviewRound(round);
-    setStatus("in-review");
-    await save({ status: "in-review", reviewer_name: reviewerName, review_round: round });
+    setStatusAndProgress("in-review");
+    save({ reviewer_name: reviewerName, review_round: round });
+    for (const rf of reviewFiles) await uploadSourceFile(rf.file, round);
+    setReviewFiles([]);
+    const content = reviewContent.trim()
+      ? reviewContent
+      : `<p><strong>@${reviewerName}</strong> にレビュー依頼を送信しました（第${round}回）</p>`;
+    await addComment(content, "review_request");
+    setReviewContent("");
     setExpandedRounds(prev => new Set([...prev, round]));
-    // post comment about review request
-    await addSystemComment(`@${reviewerName} にレビュー依頼を送信しました（第${round}回）`);
+    if (isSupabaseEnabled) loadRelated(ticket.id);
   };
 
   const handleRevisionRequest = async () => {
-    if (!ticket) return;
-    setStatus("in-progress");
-    await save({ status: "in-progress" });
-    await addSystemComment(`@${ticket.assignee} に修正依頼を送信しました`);
+    setStatusAndProgress("in-progress");
+    await addComment(`<p><strong>@${assignee}</strong> に修正依頼を送信しました</p>`, "revision_request");
   };
 
-  const addSystemComment = async (text: string) => {
-    if (!ticket || !isSupabaseEnabled) return;
-    const c = { id: `CMT-${Date.now()}`, ticket_id: ticket.id, user_name: userName, content: `<p>${text}</p>`, ticket_status: status, images: [] };
-    await supabase!.from("ticket_comments").insert(c);
-    loadRelated(ticket.id);
+  const handleReviewApproval = async () => {
+    setStatusAndProgress("review-done");
+    await addComment("<p>✅ レビューを承認しました</p>", "review_approved");
   };
 
   const handleAddComment = async () => {
     if (!commentText.trim() || !ticket) return;
-    const c = {
-      id: `CMT-${Date.now()}`,
-      ticket_id: ticket.id,
-      user_name: userName,
-      content: commentText,
-      ticket_status: status,
-      images: commentImages,
-    };
-    if (isSupabaseEnabled) {
-      await supabase!.from("ticket_comments").insert(c);
-    } else {
-      setComments(prev => [...prev, { ...c, ticketId: ticket.id, userName: userName, ticketStatus: status, createdAt: new Date().toISOString() }]);
-    }
+    await addComment(commentText, "comment", commentImages);
     setCommentText("");
     setCommentImages([]);
-    if (isSupabaseEnabled) loadRelated(ticket.id);
   };
 
   const handleDeleteComment = async (id: string) => {
@@ -182,37 +210,11 @@ export function TicketDetailPanel({
     setComments(prev => prev.filter(c => c.id !== id));
   };
 
-  const handleUploadSourceFile = async (files: FileList | null) => {
-    if (!files || !ticket) return;
-    const round = reviewRound || 1;
-    for (const file of Array.from(files)) {
-      let fileUrl = "";
-      if (isSupabaseEnabled) {
-        const path = `${ticket.id}/${round}/${Date.now()}_${file.name}`;
-        const { data: upData } = await supabase!.storage.from("ticket-files").upload(path, file, { upsert: true });
-        if (upData) {
-          const { data: urlData } = supabase!.storage.from("ticket-files").getPublicUrl(path);
-          fileUrl = urlData.publicUrl;
-        }
-      }
-      const row = {
-        id: `SF-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        ticket_id: ticket.id,
-        file_name: file.name,
-        file_size: file.size,
-        file_type: file.type,
-        uploaded_by: userName,
-        review_round: round,
-        file_url: fileUrl,
-      };
-      if (isSupabaseEnabled) {
-        await supabase!.from("ticket_source_files").insert(row);
-      } else {
-        setSourceFiles(prev => [...prev, { ...row, ticketId: ticket.id, fileName: file.name, fileSize: file.size, fileType: file.type, uploadedBy: userName, reviewRound: round, fileUrl, createdAt: new Date().toISOString() }]);
-      }
-    }
-    if (isSupabaseEnabled) loadRelated(ticket.id);
-    setExpandedRounds(prev => new Set([...prev, round]));
+  const handleEditComment = (c: TicketComment) => { setEditingId(c.id); setEditContent(c.content); };
+  const handleSaveEdit = async (id: string) => {
+    if (isSupabaseEnabled) await supabase!.from("ticket_comments").update({ content: editContent }).eq("id", id);
+    setComments(prev => prev.map(c => c.id === id ? { ...c, content: editContent } : c));
+    setEditingId(null);
   };
 
   const handleDeleteSourceFile = async (id: string) => {
@@ -225,15 +227,15 @@ export function TicketDetailPanel({
   const todayStr = new Date().toISOString().split("T")[0];
   const isOverdue = status !== "done" && status !== "closed" && !!dueDate && dueDate < todayStr;
   const pm = priorityMeta[priority];
+  const smeta = TICKET_STATUSES.find(s => s.value === status)!;
 
-  // group source files by review round
   const filesByRound = sourceFiles.reduce<Record<number, TicketSourceFile[]>>((acc, f) => {
-    (acc[f.reviewRound] = acc[f.reviewRound] || []).push(f);
-    return acc;
+    (acc[f.reviewRound] = acc[f.reviewRound] || []).push(f); return acc;
   }, {});
   const rounds = Object.keys(filesByRound).map(Number).sort((a, b) => a - b);
 
-  const canReview = userRole === "admin" || userRole === "project-manager";
+  const actionBtn = ACTION_BUTTONS[status];
+  const canSendReview = status === "in-progress" && !!reviewerName;
 
   return (
     <>
@@ -248,6 +250,7 @@ export function TicketDetailPanel({
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.id}</span>
                 {ticket.wbs && <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>WBS {ticket.wbs}</span>}
+                <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: smeta?.bg ?? "#F4F5F6", color: smeta?.color ?? "#9E9690" }}>{smeta?.label}</span>
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
               </div>
@@ -261,95 +264,99 @@ export function TicketDetailPanel({
           </div>
         </div>
 
-        {/* ── Scrollable body ── */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* ── Body ── */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* ── Status buttons ── */}
-          <div>
-            <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>ステータス</p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {TICKET_STATUSES.map(s => (
-                <button key={s.value} onClick={() => handleStatus(s.value)}
-                  style={{ padding: "5px 11px", fontSize: 11, fontWeight: 700, borderRadius: 8, border: `1.5px solid ${status === s.value ? s.color : "rgba(26,23,20,0.10)"}`, background: status === s.value ? s.bg : "transparent", color: status === s.value ? s.color : "#9E9690", cursor: "pointer", transition: "all 0.12s" }}>
-                  {s.label}
-                </button>
-              ))}
+          {/* ── Progress bar ── */}
+          <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "12px 14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>進捗</span>
+              <span style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{progress}%</span>
+            </div>
+            <div style={{ height: 8, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#059669" : "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
             </div>
           </div>
 
-          {/* ── Metadata grid ── */}
+          {/* ── Action button (context-sensitive) ── */}
+          {actionBtn && (
+            <button onClick={() => setStatusAndProgress(actionBtn.next)}
+              style={{ padding: "11px 0", fontSize: 13, fontWeight: 700, borderRadius: 10, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, width: "100%" }}>
+              {actionBtn.label} →
+            </button>
+          )}
+
+          {/* ── Metadata ── */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {/* Assignee */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
-              <select value={assignee} onChange={e => handleAssignee(e.target.value)}
+              <select value={assignee} onChange={e => { setAssignee(e.target.value); save({ assignee: e.target.value }); }}
                 style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: "#1A1714", cursor: "pointer" }}>
                 {memberNames.length > 0
                   ? memberNames.map(n => <option key={n} value={n}>{n}</option>)
-                  : <option value={assignee}>{assignee || "—"}</option>
-                }
+                  : <option value={assignee}>{assignee || "—"}</option>}
               </select>
             </div>
-            {/* Priority */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
-              <select value={priority} onChange={e => handlePriority(e.target.value as Priority)}
+              <select value={priority} onChange={e => { const v = e.target.value as Priority; setPriority(v); save({ priority: v }); }}
                 style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: pm.color, cursor: "pointer" }}>
-                {(["high", "medium", "low"] as Priority[]).map(p => (
-                  <option key={p} value={p}>{priorityMeta[p].label}</option>
-                ))}
+                <option value="high">高</option><option value="medium">中</option><option value="low">低</option>
               </select>
             </div>
-            {/* Start date */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>開始日</p>
               <input type="date" value={startDate} onChange={e => handleDate("start_date", e.target.value)}
                 style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 12, color: "#6B6458", fontFamily: "var(--font-mono)", cursor: "pointer" }} />
             </div>
-            {/* Due date */}
             <div style={{ background: "#FFF", border: `1px solid ${isOverdue ? "rgba(220,38,38,0.30)" : "rgba(26,23,20,0.07)"}`, borderRadius: 10, padding: "10px 12px" }}>
               <p style={{ fontSize: 9, color: isOverdue ? "#DC2626" : "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>期限日 {isOverdue ? "⚠" : ""}</p>
               <input type="date" value={dueDate} onChange={e => handleDate("due_date", e.target.value)}
                 style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 12, color: isOverdue ? "#DC2626" : "#6B6458", fontFamily: "var(--font-mono)", fontWeight: isOverdue ? 700 : 400, cursor: "pointer" }} />
             </div>
-            {/* Estimated hours (auto-calc) */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>見積工数（自動計算）</p>
-              <span style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedHours}<span style={{ fontSize: 11, fontWeight: 400, color: "#9E9690", marginLeft: 2 }}>h</span></span>
+              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>見積工数（自動）</p>
+              <span style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}<span style={{ fontSize: 11, fontWeight: 400, color: "#9E9690", marginLeft: 2 }}>h</span></span>
             </div>
-            {/* Progress */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>進捗: {progress}%</p>
-              <input type="range" min={0} max={100} value={progress} onChange={e => handleProgress(Number(e.target.value))}
-                style={{ width: "100%", accentColor: "#059669", cursor: "pointer" }} />
+              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                <div style={{ width: 7, height: 7, borderRadius: "50%", background: smeta?.color }} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: smeta?.color }}>{smeta?.label}</span>
+              </div>
             </div>
           </div>
 
-          {/* ── Description (rich text) ── */}
+          {/* ── Description ── */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細・説明</p>
-            <RichEditor value={description} onChange={handleDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={140} />
+            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={120} />
           </div>
 
-          {/* ── Image attachments ── */}
+          {/* ── Ticket images (separate from comment images) ── */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>
-              <ImageIcon style={{ width: 10, height: 10, display: "inline", marginRight: 4 }} />画像添付
+              <ImageIcon style={{ width: 10, height: 10, display: "inline", marginRight: 4 }} />チケット添付画像
             </p>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px", border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, cursor: "pointer", background: "#FAFAF8" }}>
-              <Plus style={{ width: 14, height: 14, color: "#B0A9A4" }} />
-              <span style={{ fontSize: 12, color: "#B0A9A4" }}>画像をクリックして追加</span>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, cursor: "pointer", background: "#FAFAF8" }}>
+              <ImageIcon style={{ width: 14, height: 14, color: "#B0A9A4" }} />
+              <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を追加</span>
               <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                onChange={e => {
-                  Array.from(e.target.files || []).forEach(file => {
-                    if (!file.type.startsWith("image/")) return;
-                    const url = URL.createObjectURL(file);
-                    // store in comment images or ticket description as attachment
-                    setCommentImages(prev => [...prev, url]);
-                  });
-                  e.target.value = "";
-                }} />
+                onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setTicketImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
             </label>
+            {ticketImages.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                {ticketImages.map((img, i) => (
+                  <div key={i} style={{ position: "relative" }}>
+                    <img src={img} alt="" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)" }} />
+                    <button onClick={() => setTicketImages(prev => prev.filter((_, j) => j !== i))}
+                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <X style={{ width: 9, height: 9, color: "#FFF" }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* ── Source files (versioned accordion) ── */}
@@ -360,37 +367,45 @@ export function TicketDetailPanel({
               </p>
               <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, cursor: "pointer", border: "1px solid rgba(5,150,105,0.20)" }}>
                 <Paperclip style={{ width: 11, height: 11 }} />アップロード
-                <input type="file" multiple style={{ display: "none" }} onChange={e => handleUploadSourceFile(e.target.files)} />
+                <input type="file" multiple style={{ display: "none" }}
+                  onChange={async e => {
+                    if (!e.target.files) return;
+                    const round = reviewRound || 1;
+                    for (const f of Array.from(e.target.files)) await uploadSourceFile(f, round);
+                    if (isSupabaseEnabled && ticket) loadRelated(ticket.id);
+                    else {
+                      const newFiles: TicketSourceFile[] = Array.from(e.target.files).map(f => ({ id: `SF-${Date.now()}`, ticketId: ticket!.id, fileName: f.name, fileSize: f.size, fileType: f.type, uploadedBy: userName, reviewRound: round, fileUrl: "", createdAt: new Date().toISOString() }));
+                      setSourceFiles(prev => [...prev, ...newFiles]);
+                    }
+                    setExpandedRounds(prev => new Set([...prev, round]));
+                    e.target.value = "";
+                  }} />
               </label>
             </div>
-
             {rounds.length === 0 ? (
-              <div style={{ background: "#FFF", border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, padding: "20px", textAlign: "center", color: "#C9C4BB", fontSize: 12 }}>
-                ファイルがありません
-              </div>
+              <div style={{ border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, padding: "20px", textAlign: "center", color: "#C9C4BB", fontSize: 12 }}>ファイルがありません</div>
             ) : rounds.map(round => {
               const isOpen = expandedRounds.has(round);
               const files = filesByRound[round];
               return (
                 <div key={round} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, marginBottom: 6, overflow: "hidden" }}>
                   <button onClick={() => setExpandedRounds(prev => { const s = new Set(prev); isOpen ? s.delete(round) : s.add(round); return s; })}
-                    style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#1A1714" }}>
+                    style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#1A1714" }}>
                     <span>第{round}回レビュー <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({files.length}ファイル)</span></span>
                     {isOpen ? <ChevronUp style={{ width: 13, height: 13, color: "#B0A9A4" }} /> : <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4" }} />}
                   </button>
                   {isOpen && (
-                    <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", padding: "8px 14px" }}>
+                    <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", padding: "6px 14px" }}>
                       {files.map(f => (
-                        <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid rgba(26,23,20,0.04)" }}>
-                          <FileCode2 style={{ width: 14, height: 14, color: "#059669", flexShrink: 0 }} />
+                        <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid rgba(26,23,20,0.04)" }}>
+                          <FileCode2 style={{ width: 13, height: 13, color: "#059669", flexShrink: 0 }} />
                           <div style={{ flex: 1, minWidth: 0 }}>
                             {f.fileUrl
-                              ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 500, color: "#059669", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{f.fileName}</a>
-                              : <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{f.fileName}</span>
-                            }
+                              ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 500, color: "#059669", textDecoration: "none", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.fileName}</a>
+                              : <span style={{ fontSize: 12, color: "#1A1714", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.fileName}</span>}
                             <span style={{ fontSize: 10, color: "#B0A9A4" }}>{f.uploadedBy} · {formatTs(f.createdAt)}</span>
                           </div>
-                          <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                          <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
                             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
                             <Trash2 style={{ width: 12, height: 12 }} />
@@ -404,76 +419,155 @@ export function TicketDetailPanel({
             })}
           </div>
 
-          {/* ── Review flow ── */}
+          {/* ── Review flow section ── */}
           <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
-            <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 10 }}>レビューフロー {reviewRound > 0 && <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>（第{reviewRound}回）</span>}</p>
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <input value={reviewerName} onChange={e => handleReviewer(e.target.value)} placeholder="レビュアー名を入力..."
-                list="reviewer-list"
-                style={{ flex: 1, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, outline: "none", color: "#1A1714" }} />
-              <datalist id="reviewer-list">
-                {memberNames.map(n => <option key={n} value={n} />)}
-              </datalist>
-              <button onClick={handleReviewRequest} disabled={!reviewerName.trim()}
-                style={{ padding: "7px 14px", background: !reviewerName.trim() ? "#F4F5F6" : "#7C3AED", color: !reviewerName.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !reviewerName.trim() ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}>
-                レビュー依頼
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
+              レビューフロー
+              {reviewRound > 0 && <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400, marginLeft: 6 }}>第{reviewRound}回</span>}
+              {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
+            </p>
+
+            {/* Reviewer select */}
+            <div style={{ marginBottom: 10 }}>
+              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュアー</p>
+              <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
+                disabled={status === "in-review"}
+                style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
+                <option value="">レビュアーを選択...</option>
+                {memberNames.filter(n => n !== userName).map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+
+            {/* Review content textarea */}
+            <div style={{ marginBottom: 10 }}>
+              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
+              <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+              </div>
+            </div>
+
+            {/* Attached files preview */}
+            {reviewFiles.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                {reviewFiles.map((rf, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
+                    <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
+                    <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* File attach + Send button */}
+            <div style={{ display: "flex", gap: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
+                <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
+              </label>
+              <button onClick={handleReviewRequest}
+                disabled={!canSendReview}
+                style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
+                {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
               </button>
             </div>
-            {canReview && (
-              <button onClick={handleRevisionRequest}
-                style={{ padding: "7px 14px", background: "#FFF7ED", color: "#D97706", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer", width: "100%" }}>
-                修正依頼（担当者に差し戻し）
-              </button>
-            )}
+            {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
           </div>
 
           {/* ── Comments ── */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>コメント ({comments.length})</p>
 
-            {comments.map(c => (
-              <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                <Avatar name={c.userName} size="xs" />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
-                    {statusBadge(c.ticketStatus)}
-                    <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                    <button onClick={() => handleDeleteComment(c.id)} style={{ marginLeft: "auto", padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                      <Trash2 style={{ width: 11, height: 11 }} />
-                    </button>
-                  </div>
-                  <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                    <RichEditor value={c.content} readOnly minHeight={20} />
-                  </div>
-                  {c.images.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                      {c.images.map((img, i) => (
-                        <img key={i} src={img} alt="" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)" }} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
+            {comments.map(c => {
+              const isOwn = c.userName === userName;
+              const isReviewReq = c.commentType === "review_request";
+              const isRevisionReq = c.commentType === "revision_request";
+              const isApproved = c.commentType === "review_approved";
+              const isSystem = isReviewReq || isRevisionReq || isApproved;
+              const systemBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : "#ECFDF5";
+              const systemBorder = isReviewReq ? "rgba(124,58,237,0.20)" : isRevisionReq ? "rgba(217,119,6,0.20)" : "rgba(5,150,105,0.20)";
 
-            {/* Add comment */}
+              return (
+                <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                  <Avatar name={c.userName} size="xs" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                      <StatusBadge status={c.ticketStatus} />
+                      <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                      <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                        {isOwn && editingId !== c.id && (
+                          <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                            <Pencil style={{ width: 11, height: 11 }} />
+                          </button>
+                        )}
+                        {isOwn && (
+                          <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                            <Trash2 style={{ width: 11, height: 11 }} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Comment body */}
+                    {editingId === c.id ? (
+                      <div>
+                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} />
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                            <Check style={{ width: 11, height: 11 }} />保存
+                          </button>
+                          <button onClick={() => setEditingId(null)} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ background: isSystem ? systemBg : "#FFF", border: `1px solid ${isSystem ? systemBorder : "rgba(26,23,20,0.07)"}`, borderRadius: 8, padding: "10px 12px" }}>
+                        <RichEditor value={c.content} readOnly minHeight={20} />
+                        {c.images.length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                            {c.images.map((img, i) => <img key={i} src={img} alt="" style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)" }} />)}
+                          </div>
+                        )}
+                        {/* 修正依頼/承認 buttons on review_request comments */}
+                        {isReviewReq && isReviewer && status === "in-review" && (
+                          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(124,58,237,0.12)" }}>
+                            <button onClick={handleRevisionRequest}
+                              style={{ flex: 1, padding: "7px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
+                              修正依頼（差戻し）
+                            </button>
+                            <button onClick={handleReviewApproval}
+                              style={{ flex: 1, padding: "7px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
+                              ✅ レビュー承認
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Add comment form */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <Avatar name={userName} size="xs" />
-                <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", alignSelf: "center" }}>{userName}</span>
-                {statusBadge(status)}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714" }}>{userName}</span>
+                  <StatusBadge status={status} />
+                </div>
               </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力... (@名前でメンション)" minHeight={80} />
+              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} />
               {commentImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                   {commentImages.map((img, i) => (
                     <div key={i} style={{ position: "relative" }}>
-                      <img src={img} alt="" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6 }} />
+                      <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6 }} />
                       <button onClick={() => setCommentImages(prev => prev.filter((_, j) => j !== i))}
-                        style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <X style={{ width: 8, height: 8, color: "#FFF" }} />
                       </button>
                     </div>
@@ -482,16 +576,13 @@ export function TicketDetailPanel({
               )}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                  <ImageIcon style={{ width: 13, height: 13 }} />画像添付
+                  <ImageIcon style={{ width: 13, height: 13 }} />画像
                   <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                    onChange={e => {
-                      Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setCommentImages(prev => [...prev, URL.createObjectURL(f)]); });
-                      e.target.value = "";
-                    }} />
+                    onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setCommentImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
                 </label>
                 <button onClick={handleAddComment} disabled={!commentText.trim()}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", background: !commentText.trim() ? "#F4F5F6" : "#059669", color: !commentText.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !commentText.trim() ? "not-allowed" : "pointer" }}>
-                  <Send style={{ width: 12, height: 12 }} />投稿
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: !commentText.trim() ? "#F4F5F6" : "#059669", color: !commentText.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !commentText.trim() ? "not-allowed" : "pointer" }}>
+                  投稿
                 </button>
               </div>
             </div>
