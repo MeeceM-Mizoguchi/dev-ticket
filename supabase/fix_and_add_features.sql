@@ -89,3 +89,32 @@ END $$;
 --    ※ ダッシュボード > Storage > New bucket > ticket-files
 --    　 Public bucket: ON で作成してください
 -- ------------------------------------------------------------
+
+-- ------------------------------------------------------------
+-- 6. sprint_ticketsにassignees列を追加（複数担当者対応）
+-- ------------------------------------------------------------
+ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS assignees TEXT[] DEFAULT '{}';
+
+-- ------------------------------------------------------------
+-- 7. handle_new_userトリガー更新
+--    招待受諾時にprofileのstatusをinvited→activeに更新する
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION handle_new_user()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, name, email, role, group_name, status)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'name', SPLIT_PART(NEW.email,'@',1)),
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'role', 'developer'),
+    COALESCE(NEW.raw_user_meta_data->>'group_name', ''),
+    'active'
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    status = 'active',
+    name = COALESCE(EXCLUDED.name, profiles.name),
+    email = EXCLUDED.email;
+  RETURN NEW;
+END;
+$$;

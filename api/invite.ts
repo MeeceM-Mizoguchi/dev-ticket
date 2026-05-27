@@ -146,6 +146,18 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: error?.message || "招待リンクの生成に失敗しました" });
   }
 
+  // Pre-create profile with status='invited' so member appears immediately in the list
+  if (data.user?.id) {
+    await sb.from("profiles").upsert({
+      id: data.user.id,
+      name: name || email.split("@")[0],
+      email,
+      role: role || "developer",
+      group_name: group || "",
+      status: "invited",
+    }, { onConflict: "id" });
+  }
+
   // Send beautiful email via Resend
   const resend = new Resend(resendKey);
   const { error: mailError } = await resend.emails.send({

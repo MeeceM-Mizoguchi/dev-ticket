@@ -110,7 +110,7 @@ export function MembersPage() {
           </div>
       }
 
-      {showInvite && <InviteDialog onClose={() => setShowInvite(false)} />}
+      {showInvite && <InviteDialog onClose={() => setShowInvite(false)} onInvited={refreshMembers} />}
       {detailTarget && <MemberDetailDialog member={detailTarget} onClose={() => setDetailTarget(null)} />}
       {editTarget && <MemberEditDialog member={editTarget} onClose={() => setEditTarget(null)} onSaved={refreshMembers} />}
       {deleteTarget && (

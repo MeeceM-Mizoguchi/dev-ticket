@@ -38,7 +38,12 @@ export function MemberCard({ member, canEdit, canDelete, onEdit, onDetail, onDel
         <div style={{ marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <p style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>{member.name}</p>
-            {member.status === "invited" && <span style={{ fontSize: 9, background: "#FFFBEB", color: "#D97706", padding: "2px 6px", borderRadius: 20, fontWeight: 600 }}>招待中</span>}
+            {member.status === "invited"
+              ? <span style={{ fontSize: 9, background: "#FFFBEB", color: "#D97706", padding: "2px 6px", borderRadius: 20, fontWeight: 600 }}>招待中</span>
+              : member.status === "inactive"
+              ? <span style={{ fontSize: 9, background: "#F3F4F6", color: "#9CA3AF", padding: "2px 6px", borderRadius: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: "#D1D5DB", display: "inline-block" }} />オフライン</span>
+              : <span style={{ fontSize: 9, background: "#ECFDF5", color: "#059669", padding: "2px 6px", borderRadius: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />アクティブ</span>
+            }
           </div>
           <p style={{ fontSize: 11, color: "#B0A9A4", marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
             <Mail style={{ width: 9, height: 9 }} />{member.email}

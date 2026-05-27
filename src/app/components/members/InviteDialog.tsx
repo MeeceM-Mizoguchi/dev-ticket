@@ -6,7 +6,7 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 import { useToast } from "@/app/contexts/ToastContext";
 
-export function InviteDialog({ onClose }: { onClose: () => void }) {
+export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited?: () => void }) {
   const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -30,6 +30,7 @@ export function InviteDialog({ onClose }: { onClose: () => void }) {
         setSending(false);
       } else {
         toast(`${email} に招待メールを送信しました`);
+        onInvited?.();
         onClose();
       }
     } catch {
