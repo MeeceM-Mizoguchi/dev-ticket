@@ -70,7 +70,10 @@ export function SprintDetailPage() {
   const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
   const sm = getSprintStatusMeta(sprint.status);
 
-  const statusOrder: Record<TicketStatus, number> = { todo: 0, "in-progress": 1, done: 2 };
+  const statusOrder: Record<TicketStatus, number> = {
+    todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
+    "stg-test": 4, uat: 5, done: 6, closed: 7,
+  };
   const priorityOrder: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 
   const displayTickets = [...sprint.tickets]
@@ -79,12 +82,14 @@ export function SprintDetailPage() {
       let v = 0;
       if (sortCol === "wbs") v = a.wbs.localeCompare(b.wbs);
       else if (sortCol === "title") v = a.title.localeCompare(b.title);
-      else if (sortCol === "status") v = statusOrder[a.status] - statusOrder[b.status];
+      else if (sortCol === "status") v = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
       else if (sortCol === "priority") v = priorityOrder[a.priority] - priorityOrder[b.priority];
       else if (sortCol === "startDate") v = (a.startDate || "").localeCompare(b.startDate || "");
       else if (sortCol === "dueDate") v = (a.dueDate || "").localeCompare(b.dueDate || "");
       else if (sortCol === "estimatedHours") v = a.estimatedHours - b.estimatedHours;
       else if (sortCol === "progress") v = a.progress - b.progress;
+      // stable tiebreaker: ID ensures same-value rows always sort identically
+      if (v === 0) v = a.id.localeCompare(b.id);
       return sortDir === "asc" ? v : -v;
     });
 
