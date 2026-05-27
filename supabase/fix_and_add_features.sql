@@ -91,12 +91,20 @@ END $$;
 -- ------------------------------------------------------------
 
 -- ------------------------------------------------------------
--- 6. sprint_ticketsにassignees列を追加（複数担当者対応）
+-- 6. sprint_ticketsのstatusチェック制約を更新（in-review等を追加）
+--    元の制約は ('todo','in-progress','done') のみで保存が失敗していた
+-- ------------------------------------------------------------
+ALTER TABLE sprint_tickets DROP CONSTRAINT IF EXISTS sprint_tickets_status_check;
+ALTER TABLE sprint_tickets ADD CONSTRAINT sprint_tickets_status_check
+  CHECK (status IN ('todo','in-progress','in-review','review-done','stg-test','uat','done','closed'));
+
+-- ------------------------------------------------------------
+-- 7. sprint_ticketsにassignees列を追加（複数担当者対応）
 -- ------------------------------------------------------------
 ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS assignees TEXT[] DEFAULT '{}';
 
 -- ------------------------------------------------------------
--- 7. handle_new_userトリガー更新
+-- 8. handle_new_userトリガー更新
 --    招待受諾時にprofileのstatusをinvited→activeに更新する
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION handle_new_user()
