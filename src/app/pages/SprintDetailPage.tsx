@@ -25,7 +25,7 @@ export function SprintDetailPage() {
   const [filterStatus, setFilterStatus] = useState<TicketStatus | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
-  const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
 
   useEffect(() => {
@@ -60,6 +60,9 @@ export function SprintDetailPage() {
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
+
+  // 常にsprintの最新データから導出 → stale closure バグ回避
+  const selectedTicket = sprint.tickets.find(t => t.id === selectedTicketId) ?? null;
 
   const done = sprint.tickets.filter(t => t.status === "done").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
@@ -199,7 +202,7 @@ export function SprintDetailPage() {
           const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
           const barColor = ticket.progress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
           return (
-            <div key={ticket.id} onClick={() => setSelectedTicket(ticket)}
+            <div key={ticket.id} onClick={() => setSelectedTicketId(ticket.id)}
               style={{ display: "grid", gridTemplateColumns: "56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px", padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition: "background 0.1s", cursor: "pointer" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent"; }}>
@@ -241,7 +244,7 @@ export function SprintDetailPage() {
           onConfirm={() => handleDeleteTicket(deleteTicketTarget)}
           onClose={() => setDeleteTicketTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicket(null)} onUpdated={refreshSprint} />
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprint} />
     </div>
   );
 }

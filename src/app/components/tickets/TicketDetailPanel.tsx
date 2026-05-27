@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check } from "lucide-react";
+import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown } from "lucide-react";
 import type { SprintTicket, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
@@ -8,18 +8,16 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile } from "@/app/lib/mappers";
 
-// ─── Status→Progress mapping ──────────────────────────────────────────────────
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100,
 };
 
-// Action buttons: current status → next action
 const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
-  todo:          { label: "着手開始",       next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
-  "review-done": { label: "STGテスト完了",  next: "stg-test",    color: "#0D9488", bg: "#F0FDFA" },
-  "stg-test":    { label: "UAT完了",        next: "uat",         color: "#4F46E5", bg: "#EEF2FF" },
-  uat:           { label: "リリース完了",   next: "closed",      color: "#6B7280", bg: "#F3F4F6" },
+  todo:          { label: "着手開始",      next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
+  "review-done": { label: "STGテスト完了", next: "stg-test",    color: "#0D9488", bg: "#F0FDFA" },
+  "stg-test":    { label: "UAT完了",       next: "uat",         color: "#4F46E5", bg: "#EEF2FF" },
+  uat:           { label: "リリース完了",  next: "closed",      color: "#6B7280", bg: "#F3F4F6" },
 };
 
 const priorityMeta: Record<Priority, { label: string; color: string; bg: string }> = {
@@ -40,19 +38,20 @@ function StatusBadge({ status }: { status: string }) {
   return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: s.bg, color: s.color, flexShrink: 0 }}>{s.label}</span>;
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 export function TicketDetailPanel({
   ticket, onClose, onUpdated,
 }: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void }) {
 
   const { userName, userRole } = useAuth();
-  const isReviewer = userRole === "admin" || userRole === "project-manager";
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
 
   // editable state
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
   const [priority, setPriority]     = useState<Priority>(ticket?.priority ?? "medium");
-  const [assignee, setAssignee]     = useState(ticket?.assignee ?? "");
+  const [assignees, setAssignees]   = useState<string[]>(
+    ticket?.assignees?.length ? ticket.assignees : (ticket?.assignee ? [ticket.assignee] : [])
+  );
+  const [assigneesOpen, setAssigneesOpen] = useState(false);
   const [startDate, setStartDate]   = useState(ticket?.startDate ?? "");
   const [dueDate, setDueDate]       = useState(ticket?.dueDate ?? "");
   const [estimatedH, setEstimatedH] = useState(ticket?.estimatedHours ?? 0);
@@ -74,7 +73,7 @@ export function TicketDetailPanel({
   const [commentText, setCommentText]     = useState("");
   const [commentImages, setCommentImages] = useState<string[]>([]);
 
-  // ticket-level images (separate from comments)
+  // ticket-level images
   const [ticketImages, setTicketImages] = useState<string[]>([]);
 
   // comment editing
@@ -86,12 +85,13 @@ export function TicketDetailPanel({
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // ── sync when ticket changes ──────────────────────────────────────────────
+  // sync when ticket changes
   useEffect(() => {
     if (!ticket) return;
     setStatus(ticket.status);
     setPriority(ticket.priority);
-    setAssignee(ticket.assignee);
+    const a = ticket.assignees?.length ? ticket.assignees : (ticket.assignee ? [ticket.assignee] : []);
+    setAssignees(a);
     setStartDate(ticket.startDate ?? "");
     setDueDate(ticket.dueDate ?? "");
     setEstimatedH(ticket.estimatedHours);
@@ -99,6 +99,13 @@ export function TicketDetailPanel({
     setDescription(ticket.description ?? "");
     setReviewerName(ticket.reviewerName ?? "");
     setReviewRound(ticket.reviewRound ?? 0);
+    // reset form state on ticket change
+    setCommentText("");
+    setCommentImages([]);
+    setReviewContent("");
+    setReviewFiles([]);
+    setEditingId(null);
+    setAssigneesOpen(false);
     if (ticket.id) loadRelated(ticket.id);
   }, [ticket?.id]);
 
@@ -118,7 +125,6 @@ export function TicketDetailPanel({
     if (fData) setSourceFiles(fData.map(mapSourceFile));
   }, []);
 
-  // ── auto-save ─────────────────────────────────────────────────────────────
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
     await supabase!.from("sprint_tickets").update(fields).eq("id", ticket.id);
@@ -130,12 +136,16 @@ export function TicketDetailPanel({
     timerRef.current = setTimeout(() => save(fields), 1200);
   }, [save]);
 
-  // ── helpers ───────────────────────────────────────────────────────────────
   const setStatusAndProgress = (newStatus: TicketStatus) => {
     const p = STATUS_PROGRESS[newStatus] ?? progress;
     setStatus(newStatus);
     setProgress(p);
     save({ status: newStatus, progress: p });
+  };
+
+  const saveAssignees = (newList: string[]) => {
+    setAssignees(newList);
+    save({ assignees: newList, assignee: newList[0] || "" });
   };
 
   const addComment = async (content: string, type: CommentType = "comment", images: string[] = []) => {
@@ -160,7 +170,6 @@ export function TicketDetailPanel({
     return urlData.publicUrl;
   };
 
-  // ── handlers ─────────────────────────────────────────────────────────────
   const handleDate = (field: "start_date" | "due_date", v: string) => {
     const s = field === "start_date" ? v : startDate;
     const d = field === "due_date"   ? v : dueDate;
@@ -190,7 +199,10 @@ export function TicketDetailPanel({
 
   const handleRevisionRequest = async () => {
     setStatusAndProgress("in-progress");
-    await addComment(`<p><strong>@${assignee}</strong> に修正依頼を送信しました</p>`, "revision_request");
+    const mentions = assignees.length > 0
+      ? assignees.map(a => `<strong>@${a}</strong>`).join(" ")
+      : "";
+    await addComment(`<p>${mentions} に修正依頼を送信しました</p>`, "revision_request");
   };
 
   const handleReviewApproval = async () => {
@@ -235,7 +247,16 @@ export function TicketDetailPanel({
   const rounds = Object.keys(filesByRound).map(Number).sort((a, b) => a - b);
 
   const actionBtn = ACTION_BUTTONS[status];
-  const canSendReview = status === "in-progress" && !!reviewerName;
+
+  // 担当者チェック: 自分が担当者かどうか
+  const isAssignee = assignees.length === 0 || assignees.includes(userName);
+  const canSendReview = status === "in-progress" && !!reviewerName && isAssignee;
+  // レビュアーボタン: 指定されたレビュアー or 管理者/PM
+  const canReview = userName === reviewerName || isAdminOrPM;
+
+  const assigneeLabel = assignees.length === 0 ? "未割り当て"
+    : assignees.length === 1 ? assignees[0]
+    : `${assignees[0]} 他${assignees.length - 1}名`;
 
   return (
     <>
@@ -243,7 +264,7 @@ export function TicketDetailPanel({
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
-        {/* ── Header ── */}
+        {/* Header */}
         <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -264,39 +285,66 @@ export function TicketDetailPanel({
           </div>
         </div>
 
-        {/* ── Body ── */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }} onClick={() => assigneesOpen && setAssigneesOpen(false)}>
 
-          {/* ── Progress bar ── */}
+          {/* Progress bar */}
           <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "12px 14px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
               <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>進捗</span>
               <span style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{progress}%</span>
             </div>
             <div style={{ height: 8, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#059669" : "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
+              <div style={{ height: "100%", width: `${progress}%`, background: "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
             </div>
           </div>
 
-          {/* ── Action button (context-sensitive) ── */}
-          {actionBtn && (
+          {/* Action button */}
+          {actionBtn && isAssignee && (
             <button onClick={() => setStatusAndProgress(actionBtn.next)}
               style={{ padding: "11px 0", fontSize: 13, fontWeight: 700, borderRadius: 10, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, width: "100%" }}>
               {actionBtn.label} →
             </button>
           )}
 
-          {/* ── Metadata ── */}
+          {/* Metadata */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+            {/* 担当者 (複数選択) */}
+            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
-              <select value={assignee} onChange={e => { setAssignee(e.target.value); save({ assignee: e.target.value }); }}
-                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: "#1A1714", cursor: "pointer" }}>
-                {memberNames.length > 0
-                  ? memberNames.map(n => <option key={n} value={n}>{n}</option>)
-                  : <option value={assignee}>{assignee || "—"}</option>}
-              </select>
+              <button onClick={e => { e.stopPropagation(); setAssigneesOpen(o => !o); }}
+                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: assignees.length === 0 ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
+                <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneesOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+              </button>
+              {assigneesOpen && (
+                <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", marginTop: 4 }}>
+                  {memberNames.length === 0
+                    ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
+                    : memberNames.map(n => (
+                      <label key={n} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignees.includes(n) ? "#ECFDF5" : "transparent", transition: "background 0.1s" }}
+                        onMouseEnter={e => { if (!assignees.includes(n)) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = assignees.includes(n) ? "#ECFDF5" : "transparent"; }}>
+                        <input type="checkbox" checked={assignees.includes(n)} style={{ accentColor: "#059669", width: 14, height: 14 }}
+                          onChange={e => {
+                            const next = e.target.checked ? [...assignees, n] : assignees.filter(a => a !== n);
+                            saveAssignees(next);
+                          }} />
+                        <Avatar name={n} size="xs" />
+                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714" }}>{n}</span>
+                        {assignees.includes(n) && <Check style={{ width: 12, height: 12, color: "#059669", marginLeft: "auto" }} />}
+                      </label>
+                    ))}
+                  <div style={{ padding: "6px 12px", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
+                    <button onClick={() => { saveAssignees([]); setAssigneesOpen(false); }}
+                      style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      割り当て解除
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
+
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
               <select value={priority} onChange={e => { const v = e.target.value as Priority; setPriority(v); save({ priority: v }); }}
@@ -327,13 +375,13 @@ export function TicketDetailPanel({
             </div>
           </div>
 
-          {/* ── Description ── */}
+          {/* Description */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細・説明</p>
             <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={120} />
           </div>
 
-          {/* ── Ticket images (separate from comment images) ── */}
+          {/* Ticket images */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>
               <ImageIcon style={{ width: 10, height: 10, display: "inline", marginRight: 4 }} />チケット添付画像
@@ -359,7 +407,7 @@ export function TicketDetailPanel({
             )}
           </div>
 
-          {/* ── Source files (versioned accordion) ── */}
+          {/* Source files */}
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
               <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>
@@ -419,61 +467,59 @@ export function TicketDetailPanel({
             })}
           </div>
 
-          {/* ── Review flow section ── */}
-          <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
-            <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
-              レビューフロー
-              {reviewRound > 0 && <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400, marginLeft: 6 }}>第{reviewRound}回</span>}
-              {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
-            </p>
+          {/* ── Review flow (担当者のみ表示) ── */}
+          {isAssignee && (
+            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
+                レビューフロー
+                {reviewRound > 0 && <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400, marginLeft: 6 }}>第{reviewRound}回</span>}
+                {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
+              </p>
 
-            {/* Reviewer select */}
-            <div style={{ marginBottom: 10 }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュアー</p>
-              <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
-                disabled={status === "in-review"}
-                style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
-                <option value="">レビュアーを選択...</option>
-                {memberNames.filter(n => n !== userName).map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </div>
-
-            {/* Review content textarea */}
-            <div style={{ marginBottom: 10 }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
-              <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+              <div style={{ marginBottom: 10 }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュアー</p>
+                <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
+                  disabled={status === "in-review"}
+                  style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
+                  <option value="">レビュアーを選択...</option>
+                  {memberNames.filter(n => !assignees.includes(n)).map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
               </div>
-            </div>
 
-            {/* Attached files preview */}
-            {reviewFiles.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
-                {reviewFiles.map((rf, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
-                    <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
-                    <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
-                  </div>
-                ))}
+              <div style={{ marginBottom: 10 }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
+                <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                  <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+                </div>
               </div>
-            )}
 
-            {/* File attach + Send button */}
-            <div style={{ display: "flex", gap: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
-                <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
-              </label>
-              <button onClick={handleReviewRequest}
-                disabled={!canSendReview}
-                style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
-                {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
-              </button>
+              {reviewFiles.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                  {reviewFiles.map((rf, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
+                      <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
+                      <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                  <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
+                  <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
+                </label>
+                <button onClick={handleReviewRequest}
+                  disabled={!canSendReview}
+                  style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
+                  {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
+                </button>
+              </div>
+              {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
             </div>
-            {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
-          </div>
+          )}
 
-          {/* ── Comments ── */}
+          {/* Comments */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>コメント ({comments.length})</p>
 
@@ -512,7 +558,6 @@ export function TicketDetailPanel({
                       </div>
                     </div>
 
-                    {/* Comment body */}
                     {editingId === c.id ? (
                       <div>
                         <RichEditor value={editContent} onChange={setEditContent} minHeight={60} />
@@ -531,8 +576,8 @@ export function TicketDetailPanel({
                             {c.images.map((img, i) => <img key={i} src={img} alt="" style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)" }} />)}
                           </div>
                         )}
-                        {/* 修正依頼/承認 buttons on review_request comments */}
-                        {isReviewReq && isReviewer && status === "in-review" && (
+                        {/* 修正依頼/承認ボタン: レビュアー or 管理者/PM */}
+                        {isReviewReq && canReview && status === "in-review" && (
                           <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(124,58,237,0.12)" }}>
                             <button onClick={handleRevisionRequest}
                               style={{ flex: 1, padding: "7px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
@@ -551,7 +596,7 @@ export function TicketDetailPanel({
               );
             })}
 
-            {/* Add comment form */}
+            {/* Add comment */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <Avatar name={userName} size="xs" />

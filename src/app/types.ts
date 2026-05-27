@@ -12,7 +12,7 @@ export type SortCol = "wbs" | "title" | "status" | "priority" | "startDate" | "d
 
 export interface SprintTicket {
   id: string; wbs: string; title: string; status: TicketStatus;
-  priority: Priority; assignee: string; startDate: string; dueDate: string;
+  priority: Priority; assignee: string; assignees: string[]; startDate: string; dueDate: string;
   estimatedHours: number; progress: number;
   description?: string; reviewerName?: string; reviewRound?: number;
 }

@@ -12,7 +12,9 @@ export function mapClient(r: any): Client {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapSprintTicket(r: any): SprintTicket {
-  return { id:r.id, wbs:r.wbs||"", title:r.title, status:r.status, priority:r.priority, assignee:r.assignee||"", startDate:r.start_date||"", dueDate:r.due_date||"", estimatedHours:r.estimated_hours||0, progress:r.progress||0, description:r.description||"", reviewerName:r.reviewer_name||"", reviewRound:r.review_round||0 };
+  const assignees: string[] = Array.isArray(r.assignees) && r.assignees.length > 0
+    ? r.assignees : (r.assignee ? [r.assignee] : []);
+  return { id:r.id, wbs:r.wbs||"", title:r.title, status:r.status, priority:r.priority, assignee:assignees[0]||"", assignees, startDate:r.start_date||"", dueDate:r.due_date||"", estimatedHours:r.estimated_hours||0, progress:r.progress||0, description:r.description||"", reviewerName:r.reviewer_name||"", reviewRound:r.review_round||0 };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
