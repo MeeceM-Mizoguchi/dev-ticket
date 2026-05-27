@@ -6,6 +6,7 @@ import { MEMBERS } from "@/app/data/mock";
 import { labelCls, inputCls } from "@/app/lib/helpers";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { RichEditor } from "@/app/components/shared/RichEditor";
 
 export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: string; onClose: () => void; onCreated?: () => void }) {
   const [title, setTitle] = useState("");
@@ -17,7 +18,19 @@ export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: st
   const [assignee, setAssignee] = useState(MEMBERS[0]?.name || "");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [estimatedHours, setEstimatedHours] = useState("");
+  const [estimatedHours, setEstimatedHours] = useState(0);
+
+  const calcHours = (start: string, due: string) => {
+    if (!start || !due) return 0;
+    const days = Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000);
+    return Math.max(0, days) * 8;
+  };
+  const handleDateChange = (field: "start" | "due", v: string) => {
+    const s = field === "start" ? v : startDate;
+    const d = field === "due"   ? v : dueDate;
+    if (field === "start") setStartDate(v); else setDueDate(v);
+    setEstimatedHours(calcHours(s, d));
+  };
   const [description, setDescription] = useState("");
   const [images, setImages] = useState<{ name: string; url: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -41,7 +54,7 @@ export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: st
         id: `T-${Date.now()}`, sprint_id: sprintId, wbs: "",
         title, status, priority, assignee,
         start_date: startDate || null, due_date: dueDate || null,
-        estimated_hours: parseInt(estimatedHours) || 0, progress: 0,
+        estimated_hours: estimatedHours || 0, progress: 0,
         description: description || null,
       });
       setSaving(false);
@@ -105,22 +118,25 @@ export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: st
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label className={labelCls}>開始日</label>
-              <input className={inputCls} type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+              <input className={inputCls} type="date" value={startDate} onChange={e => handleDateChange("start", e.target.value)} />
             </div>
             <div>
               <label className={labelCls}>終了日</label>
-              <input className={inputCls} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
+              <input className={inputCls} type="date" value={dueDate} onChange={e => handleDateChange("due", e.target.value)} />
             </div>
           </div>
 
           <div>
-            <label className={labelCls}>見積工数（時間）</label>
-            <input className={inputCls} type="number" placeholder="例: 8" value={estimatedHours} onChange={e => setEstimatedHours(e.target.value)} />
+            <label className={labelCls}>見積工数（開始・終了日から自動計算）</label>
+            <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#6B6458" }}>
+              <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedHours}</span> h
+              {estimatedHours === 0 && <span style={{ fontSize: 11, color: "#C9C4BB", marginLeft: 8 }}>（開始日・終了日を入力すると自動計算されます）</span>}
+            </div>
           </div>
 
           <div>
             <label className={labelCls}>詳細・概要</label>
-            <textarea rows={7} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力してください..." value={description} onChange={e => setDescription(e.target.value)} className={inputCls + " resize-none"} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={160} />
           </div>
 
           <div>

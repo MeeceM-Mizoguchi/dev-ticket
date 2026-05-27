@@ -2,7 +2,7 @@ export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | 
 export type PermissionType = "none" | "view" | "edit" | "admin";
 export type Role = "admin" | "project-manager" | "developer" | "designer";
 export type ProjectStatus = "planning" | "in-progress" | "completed" | "on-hold";
-export type TicketStatus = "todo" | "in-progress" | "done";
+export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed";
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
 export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
@@ -14,6 +14,18 @@ export interface SprintTicket {
   id: string; wbs: string; title: string; status: TicketStatus;
   priority: Priority; assignee: string; startDate: string; dueDate: string;
   estimatedHours: number; progress: number;
+  description?: string; reviewerName?: string; reviewRound?: number;
+}
+
+export interface TicketComment {
+  id: string; ticketId: string; userName: string; content: string;
+  ticketStatus: TicketStatus; images: string[]; createdAt: string;
+}
+
+export interface TicketSourceFile {
+  id: string; ticketId: string; fileName: string; fileSize: number;
+  fileType: string; uploadedBy: string; reviewRound: number;
+  fileUrl?: string; createdAt: string;
 }
 export interface Sprint {
   id: string; projectId: string; name: string; goal: string;

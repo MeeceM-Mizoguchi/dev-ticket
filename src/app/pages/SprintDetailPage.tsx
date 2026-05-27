@@ -6,7 +6,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { Project, Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -190,9 +190,10 @@ export function SprintDetailPage() {
         {displayTickets.length === 0 ? (
           <div style={{ padding: "40px 0", textAlign: "center" as const, color: "#B0A9A4", fontSize: 13 }}>条件に一致するチケットがありません</div>
         ) : displayTickets.map((ticket, i) => {
-          const statusBg = ticket.status === "done" ? "#ECFDF5" : ticket.status === "in-progress" ? "#FFF7ED" : "#F4F5F6";
-          const statusColor = ticket.status === "done" ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#9E9690";
-          const statusLabel = ticket.status === "done" ? "完了" : ticket.status === "in-progress" ? "進行中" : "未着手";
+          const sm = TICKET_STATUSES.find(s => s.value === ticket.status) ?? TICKET_STATUSES[0];
+          const statusBg = sm.bg;
+          const statusColor = sm.color;
+          const statusLabel = sm.label;
           const priBg = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
           const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
           const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
