@@ -434,7 +434,7 @@ export function TicketDetailPanel({
                 disabled={status === "in-review"}
                 style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
                 <option value="">レビュアーを選択...</option>
-                {memberNames.filter(n => n !== userName).map(n => <option key={n} value={n}>{n}</option>)}
+                {(memberNames.length <= 1 ? memberNames : memberNames.filter(n => n !== userName)).map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
 
