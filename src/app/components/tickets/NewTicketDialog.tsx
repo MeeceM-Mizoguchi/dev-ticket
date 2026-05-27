@@ -3,12 +3,16 @@ import { Plus, X } from "lucide-react";
 import type { TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MEMBERS } from "@/app/data/mock";
-import { labelCls, inputCls } from "@/app/lib/helpers";
+import { labelCls, inputCls, TICKET_STATUSES } from "@/app/lib/helpers";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { DatePicker } from "@/app/components/shared/DatePicker";
 
-export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: string; onClose: () => void; onCreated?: () => void }) {
+export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate, sprintEndDate }: {
+  sprintId: string; onClose: () => void; onCreated?: () => void;
+  sprintStartDate?: string; sprintEndDate?: string;
+}) {
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<TicketStatus>("todo");
   const [priority, setPriority] = useState<Priority>("medium");
@@ -93,9 +97,7 @@ export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: st
             <div>
               <label className={labelCls}>ステータス</label>
               <select className={inputCls} value={status} onChange={e => setStatus(e.target.value as TicketStatus)}>
-                <option value="todo">未着手</option>
-                <option value="in-progress">進行中</option>
-                <option value="done">完了</option>
+                {TICKET_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
               </select>
             </div>
             <div>
@@ -116,14 +118,12 @@ export function NewTicketDialog({ sprintId, onClose, onCreated }: { sprintId: st
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label className={labelCls}>開始日</label>
-              <input className={inputCls} type="date" value={startDate} onChange={e => handleDateChange("start", e.target.value)} />
-            </div>
-            <div>
-              <label className={labelCls}>終了日</label>
-              <input className={inputCls} type="date" value={dueDate} onChange={e => handleDateChange("due", e.target.value)} />
-            </div>
+            <DatePicker label="開始日" value={startDate}
+              onChange={v => handleDateChange("start", v)}
+              min={sprintStartDate} max={sprintEndDate} />
+            <DatePicker label="終了日" value={dueDate}
+              onChange={v => handleDateChange("due", v)}
+              min={startDate || sprintStartDate} max={sprintEndDate} />
           </div>
 
           <div>

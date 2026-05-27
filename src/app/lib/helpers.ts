@@ -1,4 +1,15 @@
-import type { ProjectStatus, TicketStatus, Priority, Role, Sprint, SprintStatus } from "@/app/types";
+import type { ProjectStatus, TicketStatus, Priority, Role, Sprint, SprintStatus, SprintTicket } from "@/app/types";
+
+// Compute sprint status dynamically from ticket states + deadline
+export function computeSprintStatus(sprint: Sprint): SprintStatus {
+  const today = new Date().toISOString().split("T")[0];
+  const { tickets, endDate } = sprint;
+  const active: TicketStatus[] = ["in-progress", "in-review", "review-done", "stg-test", "uat", "done"];
+  if (tickets.length > 0 && tickets.every((t: SprintTicket) => t.status === "done" || t.status === "closed")) return "completed";
+  if (endDate && endDate < today) return "delayed";
+  if (tickets.some((t: SprintTicket) => active.includes(t.status))) return "active";
+  return "planning";
+}
 
 export function getStatusMeta(status: ProjectStatus | TicketStatus) {
   const map: Record<string, { label: string; cls: string; dot: string; bar: string }> = {
@@ -61,12 +72,13 @@ export function daysBetween(a: string, b: string) {
 }
 
 export function getSprintStatusMeta(status: SprintStatus) {
-  return {
+  return ({
     planning:  { label:"計画中", bg:"#F4F5F6", color:"#6B6458", dot:"#B0A9A4", barColor:"#B0A9A4" },
     active:    { label:"進行中", bg:"#ECFDF5", color:"#059669", dot:"#059669", barColor:"#059669" },
     completed: { label:"完了",   bg:"#F0F9FF", color:"#0284C7", dot:"#0284C7", barColor:"#0284C7" },
-    cancelled: { label:"中止",   bg:"#FEF2F2", color:"#DC2626", dot:"#DC2626", barColor:"#DC2626" },
-  }[status];
+    delayed:   { label:"遅延",   bg:"#FEF2F2", color:"#DC2626", dot:"#DC2626", barColor:"#DC2626" },
+  } as Record<string, { label:string; bg:string; color:string; dot:string; barColor:string }>)[status]
+    ?? { label: status, bg: "#F4F5F6", color: "#6B6458", dot: "#B0A9A4", barColor: "#B0A9A4" };
 }
 
 export function sprintProgress(s: Sprint) {

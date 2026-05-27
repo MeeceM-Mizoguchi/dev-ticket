@@ -6,7 +6,7 @@ export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" 
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
 export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
-export type SprintStatus = "planning" | "active" | "completed" | "cancelled";
+export type SprintStatus = "planning" | "active" | "completed" | "delayed";
 export type SprintView = "list" | "board" | "gantt";
 export type SortCol = "wbs" | "title" | "status" | "priority" | "startDate" | "dueDate" | "estimatedHours" | "progress";
 

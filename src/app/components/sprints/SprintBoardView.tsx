@@ -1,16 +1,16 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
-import { ChevronDown, ExternalLink, X, MessageSquare } from "lucide-react";
+import { ChevronDown, ExternalLink, X, MessageSquare, Paperclip, User } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
-import { TICKET_STATUSES, getSprintStatusMeta, formatDate } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getSprintStatusMeta, formatDate, computeSprintStatus } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { MEMBERS } from "@/app/data/mock";
 
 const DRAG_TYPE = "SPRINT_TICKET";
 
-// Statuses that trigger a comment modal on drop
 const MODAL_STATUSES: TicketStatus[] = ["in-review", "review-done"];
 
 const MODAL_LABELS: Partial<Record<TicketStatus, { title: string; placeholder: string; commentType: string }>> = {
@@ -70,7 +70,7 @@ function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket }: {
   const isActive = isOver && canDrop;
 
   return (
-    <div ref={drop} style={{ flex: "0 0 170px", borderRadius: 8, padding: 8, minHeight: 80, transition: "background 0.15s, border-color 0.15s",
+    <div ref={drop} style={{ flex: "0 0 170px", boxSizing: "border-box", borderRadius: 8, padding: 8, minHeight: 80, transition: "background 0.15s, border-color 0.15s",
       background: isActive ? col.bg : "rgba(26,23,20,0.02)",
       border: `1.5px ${isActive ? "solid" : "dashed"} ${isActive ? col.color + "55" : "rgba(26,23,20,0.08)"}` }}>
       {tickets.length === 0 && !isActive && (
@@ -92,17 +92,33 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [modalComment, setModalComment] = useState("");
+  const [reviewerName, setReviewerName] = useState("");
+  const [reviewerList, setReviewerList] = useState<string[]>(MEMBERS.map(m => m.name));
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("profiles").select("name").order("name")
+      .then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
+  }, []);
 
   const toggle = (id: string) => setExpanded(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  const applyStatusUpdate = useCallback(async (ticketId: string, newStatus: TicketStatus, comment: string) => {
+  const applyStatusUpdate = useCallback(async (
+    ticketId: string, newStatus: TicketStatus, comment: string,
+    reviewer?: string, srcFile?: File | null, srcUrl?: string
+  ) => {
     setSaving(true);
     try {
       if (isSupabaseEnabled) {
-        await supabase!.from("sprint_tickets").update({ status: newStatus }).eq("id", ticketId);
+        const updateData: Record<string, unknown> = { status: newStatus };
+        if (newStatus === "in-review" && reviewer) updateData.reviewer_name = reviewer;
+        await supabase!.from("sprint_tickets").update(updateData).eq("id", ticketId);
+
         if (comment.trim()) {
           const meta = MODAL_LABELS[newStatus];
           await supabase!.from("ticket_comments").insert({
@@ -115,12 +131,38 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
             images: [],
           });
         }
+
+        if (newStatus === "in-review") {
+          if (srcFile) {
+            const path = `${ticketId}/${Date.now()}_${srcFile.name}`;
+            const { data: uploadData } = await supabase!.storage.from("ticket-files").upload(path, srcFile);
+            if (uploadData) {
+              const { data: urlData } = supabase!.storage.from("ticket-files").getPublicUrl(path);
+              await supabase!.from("ticket_source_files").insert({
+                id: `SF-${Date.now()}`, ticket_id: ticketId,
+                file_name: srcFile.name, file_size: srcFile.size, file_type: srcFile.type,
+                uploaded_by: userName, review_round: 1,
+                file_url: urlData.publicUrl, created_at: new Date().toISOString(),
+              });
+            }
+          } else if (srcUrl?.trim()) {
+            await supabase!.from("ticket_source_files").insert({
+              id: `SF-${Date.now()}`, ticket_id: ticketId,
+              file_name: srcUrl, file_size: 0, file_type: "url",
+              uploaded_by: userName, review_round: 1,
+              file_url: srcUrl, created_at: new Date().toISOString(),
+            });
+          }
+        }
       }
       onUpdated?.();
     } finally {
       setSaving(false);
       setPendingDrop(null);
       setModalComment("");
+      setReviewerName("");
+      setSourceUrl("");
+      setSourceFile(null);
     }
   }, [userName, onUpdated]);
 
@@ -134,12 +176,19 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
 
   const confirmModal = () => {
     if (!pendingDrop || saving) return;
-    applyStatusUpdate(pendingDrop.ticketId, pendingDrop.newStatus, modalComment);
+    applyStatusUpdate(pendingDrop.ticketId, pendingDrop.newStatus, modalComment, reviewerName, sourceFile, sourceUrl);
   };
 
-  const cancelModal = () => { setPendingDrop(null); setModalComment(""); };
+  const cancelModal = () => {
+    setPendingDrop(null);
+    setModalComment("");
+    setReviewerName("");
+    setSourceUrl("");
+    setSourceFile(null);
+  };
 
   const modalMeta = pendingDrop ? MODAL_LABELS[pendingDrop.newStatus] : null;
+  const isReviewRequest = pendingDrop?.newStatus === "in-review";
 
   return (
     <div>
@@ -149,7 +198,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
 
       {sprints.map(sprint => {
         const isExp = expanded.has(sprint.id);
-        const sm = getSprintStatusMeta(sprint.status);
+        const sm = getSprintStatusMeta(computeSprintStatus(sprint));
 
         return (
           <div key={sprint.id} style={{ background: "#FFFFFF", borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", marginBottom: 12, overflow: "hidden" }}>
@@ -182,7 +231,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
                   {TICKET_STATUSES.map(col => {
                     const count = sprint.tickets.filter(t => t.status === col.value).length;
                     return (
-                      <div key={col.value} style={{ flex: "0 0 170px", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
+                      <div key={col.value} style={{ flex: "0 0 170px", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
                         <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
                         <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{count}</span>
                       </div>
@@ -212,11 +261,11 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
       {pendingDrop && modalMeta && (
         <div style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={e => { if (e.target === e.currentTarget) cancelModal(); }}>
-          <div style={{ background: "#FFFFFF", borderRadius: 16, padding: "28px 28px 24px", width: 480, boxShadow: "0 20px 60px rgba(0,0,0,0.20)" }}>
+          <div style={{ background: "#FFFFFF", borderRadius: 16, padding: "28px 28px 24px", width: 500, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.20)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
               <div>
                 <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{modalMeta.title}</h3>
-                <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>ステータスを変更します。コメントは省略可能です。</p>
+                <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>ステータスを変更します。各項目は省略可能です。</p>
               </div>
               <button onClick={cancelModal} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -224,16 +273,63 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
                 <X style={{ width: 16, height: 16 }} />
               </button>
             </div>
-            <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
-              <MessageSquare style={{ width: 12, height: 12, color: "#B0A9A4" }} />
-              <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>コメント（任意）</span>
+
+            {/* Comment field */}
+            <div style={{ marginBottom: isReviewRequest ? 0 : 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+                <MessageSquare style={{ width: 12, height: 12, color: "#B0A9A4" }} />
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>コメント（任意）</span>
+              </div>
+              <textarea value={modalComment} onChange={e => setModalComment(e.target.value)}
+                placeholder={modalMeta.placeholder}
+                style={{ width: "100%", minHeight: 80, padding: "10px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: "#1A1714", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
+                onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = "#059669"; (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
+                onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.10)"; (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }} />
             </div>
-            <textarea value={modalComment} onChange={e => setModalComment(e.target.value)}
-              placeholder={modalMeta.placeholder}
-              style={{ width: "100%", minHeight: 90, padding: "10px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: "#1A1714", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
-              onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = "#059669"; (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
-              onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.10)"; (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }} />
-            <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+
+            {/* Reviewer selection — only for レビュー依頼 */}
+            {isReviewRequest && (
+              <>
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+                    <User style={{ width: 12, height: 12, color: "#B0A9A4" }} />
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>レビュアー（任意）</span>
+                  </div>
+                  <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
+                    style={{ width: "100%", padding: "9px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: reviewerName ? "#1A1714" : "#B0A9A4", cursor: "pointer", boxSizing: "border-box" as const, outline: "none" }}
+                    onFocus={e => { e.currentTarget.style.borderColor = "#059669"; e.currentTarget.style.background = "#FFF"; }}
+                    onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }}>
+                    <option value="">担当者を選択...</option>
+                    {reviewerList.map(name => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </div>
+
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+                    <Paperclip style={{ width: 12, height: 12, color: "#B0A9A4" }} />
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>ソースファイル（任意）</span>
+                  </div>
+                  <input type="text" value={sourceUrl} onChange={e => setSourceUrl(e.target.value)}
+                    placeholder="URLを入力（例: https://github.com/...）"
+                    style={{ width: "100%", padding: "9px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const, marginBottom: 8, fontFamily: "inherit" }}
+                    onFocus={e => { e.currentTarget.style.borderColor = "#059669"; e.currentTarget.style.background = "#FFF"; }}
+                    onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: "#F4F5F6", border: "1.5px dashed rgba(26,23,20,0.15)", borderRadius: 9, cursor: "pointer", fontSize: 12, color: sourceFile ? "#1A1714" : "#9E9690", boxSizing: "border-box" as const }}>
+                    <Paperclip style={{ width: 13, height: 13, color: "#B0A9A4", flexShrink: 0 }} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sourceFile ? sourceFile.name : "ファイルを選択..."}</span>
+                    <input type="file" style={{ display: "none" }} onChange={e => setSourceFile(e.target.files?.[0] ?? null)} />
+                  </label>
+                  {sourceFile && (
+                    <button onClick={() => setSourceFile(null)}
+                      style={{ marginTop: 4, fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      削除
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+
+            <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
               <button onClick={confirmModal} disabled={saving}
                 style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
                 {saving ? "処理中..." : "確定"}

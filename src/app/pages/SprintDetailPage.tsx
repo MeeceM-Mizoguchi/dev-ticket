@@ -242,7 +242,7 @@ export function SprintDetailPage() {
         })}
       </div>
 
-      {showCreate && <NewTicketDialog sprintId={sprintId!} onClose={() => setShowCreate(false)} onCreated={refreshSprint} />}
+      {showCreate && <NewTicketDialog sprintId={sprintId!} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} />}
       {deleteTicketTarget && (
         <ConfirmDialog
           message={`「${deleteTicketTarget.title}」を削除しますか？`}
