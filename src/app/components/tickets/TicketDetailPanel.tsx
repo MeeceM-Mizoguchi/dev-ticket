@@ -6,7 +6,7 @@ import { TICKET_STATUSES } from "@/app/lib/helpers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
-import { mapComment, mapSourceFile } from "@/app/lib/mappers";
+import { mapComment, mapSourceFile, mapSprintTicket } from "@/app/lib/mappers";
 
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
@@ -85,7 +85,7 @@ export function TicketDetailPanel({
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // sync when ticket changes
+  // sync when ticket changes — set from prop immediately, then fetch fresh from DB
   useEffect(() => {
     if (!ticket) return;
     setStatus(ticket.status);
@@ -106,6 +106,25 @@ export function TicketDetailPanel({
     setReviewFiles([]);
     setEditingId(null);
     setAssigneesOpen(false);
+    // fetch fresh data from DB (in case sprint cache is stale)
+    if (ticket.id && isSupabaseEnabled) {
+      supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
+        .then(({ data }) => {
+          if (!data) return;
+          const t = mapSprintTicket(data);
+          setStatus(t.status);
+          setPriority(t.priority);
+          const fresh = t.assignees?.length ? t.assignees : (t.assignee ? [t.assignee] : []);
+          setAssignees(fresh);
+          setStartDate(t.startDate ?? "");
+          setDueDate(t.dueDate ?? "");
+          setEstimatedH(t.estimatedHours);
+          setProgress(t.progress);
+          setDescription(t.description ?? "");
+          setReviewerName(t.reviewerName ?? "");
+          setReviewRound(t.reviewRound ?? 0);
+        });
+    }
     if (ticket.id) loadRelated(ticket.id);
   }, [ticket?.id]);
 
@@ -148,14 +167,16 @@ export function TicketDetailPanel({
     save({ assignees: newList, assignee: newList[0] || "" });
   };
 
-  const addComment = async (content: string, type: CommentType = "comment", images: string[] = []) => {
+  const addComment = async (content: string, type: CommentType = "comment", images: string[] = [], explicitStatus?: TicketStatus) => {
     if (!ticket) return;
-    const row = { id: `CMT-${Date.now()}`, ticket_id: ticket.id, user_name: userName, content, ticket_status: status, comment_type: type, images };
+    const ts = explicitStatus ?? status;
+    const row = { id: `CMT-${Date.now()}`, ticket_id: ticket.id, user_name: userName, content, ticket_status: ts, comment_type: type, images };
     if (isSupabaseEnabled) {
-      await supabase!.from("ticket_comments").insert(row);
+      const { error } = await supabase!.from("ticket_comments").insert(row);
+      if (error) { console.error("comment insert failed:", error); return; }
       await loadRelated(ticket.id);
     } else {
-      setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: status, commentType: type, createdAt: new Date().toISOString() }]);
+      setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
     }
   };
 
@@ -183,31 +204,60 @@ export function TicketDetailPanel({
   const handleReviewRequest = async () => {
     if (!reviewerName || status !== "in-progress" || !ticket) return;
     const round = reviewRound + 1;
+    const newStatus: TicketStatus = "in-review";
+    const newProgress = STATUS_PROGRESS[newStatus];
+    // update local state immediately
     setReviewRound(round);
-    setStatusAndProgress("in-review");
-    save({ reviewer_name: reviewerName, review_round: round });
+    setStatus(newStatus);
+    setProgress(newProgress);
+    // single awaited DB save (prevents onUpdated firing mid-flow)
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!.from("sprint_tickets").update({
+        status: newStatus, progress: newProgress,
+        reviewer_name: reviewerName, review_round: round,
+      }).eq("id", ticket.id);
+      if (error) {
+        console.error("handleReviewRequest save failed:", error);
+        setStatus("in-progress"); setProgress(STATUS_PROGRESS["in-progress"]); setReviewRound(round - 1);
+        return;
+      }
+    }
     for (const rf of reviewFiles) await uploadSourceFile(rf.file, round);
     setReviewFiles([]);
     const content = reviewContent.trim()
       ? reviewContent
       : `<p><strong>@${reviewerName}</strong> にレビュー依頼を送信しました（第${round}回）</p>`;
-    await addComment(content, "review_request");
+    await addComment(content, "review_request", [], newStatus);
     setReviewContent("");
     setExpandedRounds(prev => new Set([...prev, round]));
-    if (isSupabaseEnabled) loadRelated(ticket.id);
+    onUpdated?.();
   };
 
   const handleRevisionRequest = async () => {
-    setStatusAndProgress("in-progress");
+    if (!ticket) return;
+    const newStatus: TicketStatus = "in-progress";
+    const newProgress = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus); setProgress(newProgress);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
+    }
     const mentions = assignees.length > 0
       ? assignees.map(a => `<strong>@${a}</strong>`).join(" ")
       : "";
-    await addComment(`<p>${mentions} に修正依頼を送信しました</p>`, "revision_request");
+    await addComment(`<p>${mentions} に修正依頼を送信しました</p>`, "revision_request", [], newStatus);
+    onUpdated?.();
   };
 
   const handleReviewApproval = async () => {
-    setStatusAndProgress("review-done");
-    await addComment("<p>✅ レビューを承認しました</p>", "review_approved");
+    if (!ticket) return;
+    const newStatus: TicketStatus = "review-done";
+    const newProgress = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus); setProgress(newProgress);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
+    }
+    await addComment("<p>✅ レビューを承認しました</p>", "review_approved", [], newStatus);
+    onUpdated?.();
   };
 
   const handleAddComment = async () => {
