@@ -78,8 +78,8 @@ export function SprintDetailPage() {
       else if (sortCol === "title") v = a.title.localeCompare(b.title);
       else if (sortCol === "status") v = statusOrder[a.status] - statusOrder[b.status];
       else if (sortCol === "priority") v = priorityOrder[a.priority] - priorityOrder[b.priority];
-      else if (sortCol === "startDate") v = a.startDate.localeCompare(b.startDate);
-      else if (sortCol === "dueDate") v = a.dueDate.localeCompare(b.dueDate);
+      else if (sortCol === "startDate") v = (a.startDate || "").localeCompare(b.startDate || "");
+      else if (sortCol === "dueDate") v = (a.dueDate || "").localeCompare(b.dueDate || "");
       else if (sortCol === "estimatedHours") v = a.estimatedHours - b.estimatedHours;
       else if (sortCol === "progress") v = a.progress - b.progress;
       return sortDir === "asc" ? v : -v;

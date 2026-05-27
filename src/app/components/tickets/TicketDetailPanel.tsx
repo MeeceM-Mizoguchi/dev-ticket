@@ -25,7 +25,7 @@ export function TicketDetailPanel({ ticket, onClose, onUpdated }: { ticket: Spri
 
   if (!ticket) return null;
   const todayStr = new Date().toISOString().split("T")[0];
-  const isOverdue = ticket.status !== "done" && ticket.dueDate < todayStr;
+  const isOverdue = ticket.status !== "done" && !!ticket.dueDate && ticket.dueDate < todayStr;
   const statusMeta = ticket.status === "done"
     ? { label:"完了",   bg:"#ECFDF5", color:"#059669", border:"none" }
     : ticket.status === "in-progress"

@@ -39,13 +39,11 @@ export function ClientsPage() {
   }, []);
 
   const handleDeleteClient = async (client: Client) => {
+    setClients(prev => prev.filter(c => c.id !== client.id));
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("clients").delete().eq("id", client.id);
-      if (error) { toast("削除に失敗しました", "error"); return; }
+      if (error) { toast("削除に失敗しました", "error"); refreshClients(); return; }
       toast(`「${client.name}」を削除しました`);
-      refreshClients();
-    } else {
-      setClients(prev => prev.filter(c => c.id !== client.id));
     }
   };
 
@@ -115,7 +113,7 @@ export function ClientsPage() {
       </div>
 
       <div style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 140px 100px", padding: "12px 20px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", alignItems: "center" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.5fr 1fr 100px 72px", padding: "12px 20px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", alignItems: "center" }}>
           <SortBtn field="name" label="企業名" />
           <SortBtn field="industry" label="業界" />
           <span style={{ fontSize: 11, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>連絡先</span>
@@ -127,7 +125,7 @@ export function ClientsPage() {
           ? <div style={{ textAlign: "center", padding: "60px 0" }}><p style={{ fontSize: 14, color: "#A09790" }}>クライアントが見つかりません</p></div>
           : filtered.map((client, i) => (
             <div key={client.id} onClick={() => canManage && setEditTarget(client)}
-              style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 140px 100px", padding: "16px 20px", alignItems: "center", borderBottom: i < filtered.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none", cursor: canManage ? "pointer" : "default", transition: "background 0.12s" }}
+              style={{ display: "grid", gridTemplateColumns: "1.6fr 0.5fr 1fr 100px 72px", padding: "16px 20px", alignItems: "center", borderBottom: i < filtered.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none", cursor: canManage ? "pointer" : "default", transition: "background 0.12s" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FAF8F4"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
 
@@ -159,21 +157,21 @@ export function ClientsPage() {
                 </span>
               </div>
 
-              <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+              <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }} onClick={e => e.stopPropagation()}>
                 {canManage && (
-                  <button onClick={() => setEditTarget(client)}
-                    style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 500, transition: "all 0.15s" }}
+                  <button onClick={() => setEditTarget(client)} title="編集"
+                    style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#6B6458", flexShrink: 0, transition: "all 0.15s" }}
                     onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#ECFDF5"; el.style.color = "#059669"; el.style.borderColor = "rgba(5,150,105,0.25)"; }}
                     onMouseLeave={e => { const el = e.currentTarget as HTMLElement; el.style.background = "transparent"; el.style.color = "#6B6458"; el.style.borderColor = "rgba(26,23,20,0.10)"; }}>
-                    <Edit2 style={{ width: 13, height: 13 }} />編集
+                    <Edit2 style={{ width: 14, height: 14 }} />
                   </button>
                 )}
                 {isAdmin && (
-                  <button onClick={() => setDeleteTarget(client)}
-                    style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 500, transition: "all 0.15s" }}
+                  <button onClick={() => setDeleteTarget(client)} title="削除"
+                    style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, transition: "all 0.15s" }}
                     onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#FEF2F2"; el.style.color = "#DC2626"; el.style.borderColor = "rgba(220,38,38,0.25)"; }}
                     onMouseLeave={e => { const el = e.currentTarget as HTMLElement; el.style.background = "transparent"; el.style.color = "#C9C4BB"; el.style.borderColor = "rgba(26,23,20,0.10)"; }}>
-                    <Trash2 style={{ width: 13, height: 13 }} />削除
+                    <Trash2 style={{ width: 14, height: 14 }} />
                   </button>
                 )}
               </div>

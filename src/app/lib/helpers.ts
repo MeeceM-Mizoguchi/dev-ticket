@@ -38,8 +38,8 @@ export function calcProgress(done: number, ip: number, todo: number) {
   const t = done + ip + todo; return t === 0 ? 0 : Math.round((done / t) * 100);
 }
 
-export function getInitials(n: string) { return n.replace(/\s/g, "").slice(0, 2); }
-export function formatDate(d: string) { return d.slice(5).replace("-", "/"); }
+export function getInitials(n: string) { return (n || "?").replace(/\s/g, "").slice(0, 2); }
+export function formatDate(d: string | null | undefined) { if (!d) return "—"; return d.slice(5).replace("-", "/"); }
 export function daysBetween(a: string, b: string) {
   return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
 }
