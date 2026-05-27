@@ -40,14 +40,16 @@ export function MembersPage() {
 
   const handleDeleteMember = async (member: Member) => {
     if (isSupabaseEnabled) {
-      const { error } = await supabase!.from("profiles").delete().eq("id", member.id);
-      if (error) { toast("削除に失敗しました", "error"); return; }
-      toast(`「${member.name}」を削除しました`);
-      refreshMembers();
-    } else {
-      setMembers(prev => prev.filter(m => m.id !== member.id));
-      toast(`「${member.name}」を削除しました`);
+      const res = await fetch("/api/delete-member", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: member.id, memberName: member.name }),
+      });
+      const json = await res.json();
+      if (!res.ok) { toast(json.error || "削除に失敗しました", "error"); return; }
     }
+    setMembers(prev => prev.filter(m => m.id !== member.id));
+    toast(`「${member.name}」を削除しました`);
   };
 
   const filtered = members.filter(m => {
