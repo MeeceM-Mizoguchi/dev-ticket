@@ -447,9 +447,13 @@ function MemberPermModal({ member, onClose }: { member: Member; onClose: () => v
   const handleSave = async () => {
     setSaving(true);
     if (isSupabaseEnabled) {
-      const { error } = await supabase!.from("profiles").update({ permissions: local }).eq("id", member.id);
-      if (error) {
-        toast("権限の保存に失敗しました。Supabaseで permissions 列の追加が必要です。", "error");
+      const { data: updated, error } = await supabase!
+        .from("profiles")
+        .update({ permissions: local })
+        .eq("id", member.id)
+        .select("id");
+      if (error || !updated?.length) {
+        toast("権限の保存に失敗しました。SupabaseのRLSポリシーを確認してください。", "error");
         setSaving(false);
         return;
       }

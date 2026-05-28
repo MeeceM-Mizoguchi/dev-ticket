@@ -70,9 +70,13 @@ export function PermissionsPage() {
 
   const assignMemberToGroup = async (memberId: string, groupId: number | null) => {
     if (isSupabaseEnabled) {
-      const { error } = await supabase!.from("profiles").update({ permission_group_id: groupId }).eq("id", memberId);
-      if (error) {
-        toast("グループ割り当ての保存に失敗しました。Supabaseで permission_group_id 列の追加が必要です。", "error");
+      const { data: updated, error } = await supabase!
+        .from("profiles")
+        .update({ permission_group_id: groupId })
+        .eq("id", memberId)
+        .select("id");
+      if (error || !updated?.length) {
+        toast("グループへの保存に失敗しました。SupabaseのRLSポリシーを確認してください。", "error");
         return;
       }
     }
@@ -95,9 +99,13 @@ export function PermissionsPage() {
 
   const handleSaveGroupPerms = async (groupId: number, perms: UserPermissions) => {
     if (isSupabaseEnabled) {
-      const { error } = await supabase!.from("permission_groups").update({ permissions: perms }).eq("id", groupId);
-      if (error) {
-        toast("権限の保存に失敗しました。Supabaseで permissions 列の追加が必要です。", "error");
+      const { data: updated, error } = await supabase!
+        .from("permission_groups")
+        .update({ permissions: perms })
+        .eq("id", groupId)
+        .select("id");
+      if (error || !updated?.length) {
+        toast("グループ権限の保存に失敗しました。SupabaseのRLSポリシーを確認してください。", "error");
         return;
       }
     }
