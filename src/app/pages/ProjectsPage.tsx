@@ -71,9 +71,27 @@ export function ProjectsPage() {
     toast(`「${project.name}」を削除しました`);
   };
 
-  const handleSaveAssign = async (project: Project, memberNames: string[], groupIds: number[]) => {
+  const handleSaveAssign = async (
+    project: Project,
+    memberNames: string[],
+    groupIds: number[],
+    removedFromGroup: string[],
+  ) => {
     if (isSupabaseEnabled) {
+      // Remove excluded members from their groups in DB (set permission_group_id = null)
+      for (const name of removedFromGroup) {
+        const m = allMembers.find(mb => mb.name === name);
+        if (m?.permission_group_id != null) {
+          await supabase!.from("profiles").update({ permission_group_id: null }).eq("id", m.id);
+        }
+      }
       await supabase!.from("projects").update({ members: memberNames, group_ids: groupIds }).eq("id", project.id);
+    }
+    // Update local allMembers so next modal open has correct group membership
+    if (removedFromGroup.length > 0) {
+      setAllMembers(prev => prev.map(m =>
+        removedFromGroup.includes(m.name) ? { ...m, permission_group_id: null } : m
+      ));
     }
     setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: memberNames, groupIds } : p));
     toast(`「${project.name}」のメンバーを更新しました`);
@@ -169,7 +187,7 @@ export function ProjectsPage() {
           allMembers={allMembers}
           groups={groups}
           onClose={() => setAssignTarget(null)}
-          onSave={(names, groupIds) => handleSaveAssign(assignTarget, names, groupIds)} />
+          onSave={(names, groupIds, rfg) => handleSaveAssign(assignTarget, names, groupIds, rfg)} />
       )}
     </div>
   );
@@ -181,41 +199,49 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
   allMembers: Member[];
   groups: PermissionGroup[];
   onClose: () => void;
-  onSave: (names: string[], groupIds: number[]) => void;
+  onSave: (names: string[], groupIds: number[], removedFromGroup: string[]) => void;
 }) {
-  // Restore group selections from project.groupIds
+  // ── Initial state (computed once on mount) ──────────────────────────────
   const initialGroupIds = new Set<number>(project.groupIds || []);
-  // Compute which members are covered by pre-selected groups on open
-  const initialGroupCovered = new Set<string>();
+  const initGroupCovered = new Set<string>();
   for (const gid of initialGroupIds) {
-    allMembers.filter(m => m.permission_group_id === gid).forEach(m => initialGroupCovered.add(m.name));
+    allMembers.filter(m => m.permission_group_id === gid).forEach(m => initGroupCovered.add(m.name));
   }
-  // Individual selection = project members minus those already covered by restored groups
+
+  // ── State ────────────────────────────────────────────────────────────────
+  // Individually selected members (excludes those covered by groups on open)
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(project.members.filter(name => !initialGroupCovered.has(name)))
+    new Set(project.members.filter(name => !initGroupCovered.has(name)))
   );
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(initialGroupIds);
-  // Per-group member exclusions (members excluded from group when conflict resolved as "keep individual")
-  const [groupExclusions, setGroupExclusions] = useState<Record<number, string[]>>({});
-  // Active conflict info
+  // Members removed from their group this session (treated as permission_group_id=null)
+  const [removedFromGroup, setRemovedFromGroup] = useState<Set<string>>(new Set());
   const [conflict, setConflict] = useState<{ groupId: number; groupName: string; names: string[] } | null>(null);
-  // Per-user permission modal target
   const [permTarget, setPermTarget] = useState<Member | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const nonAdminMembers = allMembers.filter(m => m.role !== "admin");
+  // ── Derived: treat removedFromGroup members as ungrouped ─────────────────
+  const effectiveAllMembers = useMemo(() =>
+    removedFromGroup.size === 0
+      ? allMembers
+      : allMembers.map(m => removedFromGroup.has(m.name) ? { ...m, permission_group_id: null as null } : m),
+    [allMembers, removedFromGroup]
+  );
 
+  const nonAdminMembers = effectiveAllMembers.filter(m => m.role !== "admin");
+
+  // Names covered by currently selected groups (using effectiveAllMembers)
   const groupCoveredNames = useMemo(() => {
     const names = new Set<string>();
     for (const gid of selectedGroupIds) {
-      const excl = groupExclusions[gid] || [];
-      allMembers
-        .filter(m => m.permission_group_id === gid && !excl.includes(m.name))
+      effectiveAllMembers
+        .filter(m => m.permission_group_id === gid)
         .forEach(m => names.add(m.name));
     }
     return names;
-  }, [selectedGroupIds, groupExclusions, allMembers]);
+  }, [selectedGroupIds, effectiveAllMembers]);
 
+  // ── Handlers ─────────────────────────────────────────────────────────────
   const toggleMember = (name: string) => {
     setSelected(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
   };
@@ -225,8 +251,8 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
       setSelectedGroupIds(prev => { const n = new Set(prev); n.delete(groupId); return n; });
       return;
     }
-    // Check for conflicts: members in this group that are also individually selected
-    const groupMemberNames = allMembers.filter(m => m.permission_group_id === groupId).map(m => m.name);
+    // Conflict = members in this group that are also individually selected
+    const groupMemberNames = effectiveAllMembers.filter(m => m.permission_group_id === groupId).map(m => m.name);
     const conflicts = groupMemberNames.filter(n => selected.has(n));
     if (conflicts.length > 0) {
       setConflict({ groupId, groupName, names: conflicts });
@@ -237,21 +263,20 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
 
   const resolveConflict = (resolution: "remove-individual" | "exclude-from-group") => {
     if (!conflict) return;
-    // Capture values before clearing state to avoid stale closure issues
     const groupId = conflict.groupId;
     const names = [...conflict.names];
 
     if (resolution === "remove-individual") {
+      // Remove from individual selection → they become group-only
       setSelected(prev => {
         const n = new Set(prev);
         names.forEach(name => n.delete(name));
         return n;
       });
     } else {
-      setGroupExclusions(prev => ({
-        ...prev,
-        [groupId]: [...(prev[groupId] || []), ...names],
-      }));
+      // Mark as removed from group → effectiveAllMembers treats them as ungrouped
+      // so count decreases immediately and groupCoveredNames excludes them
+      setRemovedFromGroup(prev => new Set([...prev, ...names]));
     }
     setSelectedGroupIds(prev => new Set([...prev, groupId]));
     setConflict(null);
@@ -260,28 +285,25 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
   const getEffectiveNames = (): string[] => {
     const all = new Set([...selected]);
     for (const gid of selectedGroupIds) {
-      const excl = groupExclusions[gid] || [];
-      allMembers.filter(m => m.permission_group_id === gid && !excl.includes(m.name)).forEach(m => all.add(m.name));
+      effectiveAllMembers.filter(m => m.permission_group_id === gid).forEach(m => all.add(m.name));
     }
     return [...all];
   };
 
   const handleSave = async () => {
     setSaving(true);
-    // Apply group permissions to group members
     if (isSupabaseEnabled) {
       for (const gid of selectedGroupIds) {
         const grp = groups.find(g => g.id === gid);
         if (grp?.permissions) {
-          const excl = groupExclusions[gid] || [];
-          const memberIds = allMembers.filter(m => m.permission_group_id === gid && !excl.includes(m.name)).map(m => m.id);
+          const memberIds = effectiveAllMembers.filter(m => m.permission_group_id === gid).map(m => m.id);
           for (const mid of memberIds) {
             await supabase!.from("profiles").update({ permissions: grp.permissions }).eq("id", mid);
           }
         }
       }
     }
-    await onSave(getEffectiveNames(), [...selectedGroupIds]);
+    await onSave(getEffectiveNames(), [...selectedGroupIds], [...removedFromGroup]);
     setSaving(false);
   };
 
@@ -344,7 +366,7 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
                 <Users style={{ width: 11, height: 11 }} />グループ
               </p>
               {groups.map(group => {
-                const groupMembers = allMembers.filter(m => m.permission_group_id === group.id);
+                const groupMembers = effectiveAllMembers.filter(m => m.permission_group_id === group.id);
                 const isSelected = selectedGroupIds.has(group.id);
                 const activePerms = PERM_FLAGS.filter(f => group.permissions?.[f.key]);
                 return (
