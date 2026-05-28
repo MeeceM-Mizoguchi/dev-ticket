@@ -52,7 +52,7 @@ export function SprintPage() {
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" })
-      .then(({ data }) => { if (data?.length) setSprints(data.map(mapSprint)); });
+      .then(({ data }) => { if (data) setSprints(data.map(mapSprint)); });
   };
 
   // Initial load
@@ -158,7 +158,12 @@ export function SprintPage() {
           otherSprints={otherSprints}
           projectId={projectId!}
           onClose={() => setDeleteTarget(null)}
-          onDeleted={() => { refreshSprints(); setDeleteTarget(null); }} />
+          onDeleted={() => {
+            const deletedId = deleteTarget.id;
+            setSprints(prev => prev.filter(s => s.id !== deletedId));
+            refreshSprints();
+            setDeleteTarget(null);
+          }} />
       )}
       <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} />
     </div>

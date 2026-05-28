@@ -68,6 +68,7 @@ export function TicketDetailPanel({
   const [comments, setComments]       = useState<TicketComment[]>([]);
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
   const [memberNames, setMemberNames] = useState<string[]>([]);
+  const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -157,8 +158,17 @@ export function TicketDetailPanel({
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("profiles").select("name").order("name")
-      .then(({ data }) => { if (data) setMemberNames(data.map((r: { name: string }) => r.name)); });
+    supabase!.from("profiles").select("name, role, permissions").order("name")
+      .then(({ data }) => {
+        if (!data) return;
+        setMemberNames(data.map((r: { name: string }) => r.name));
+        const eligible = data
+          .filter((r: { name: string; role: string; permissions?: Record<string, boolean> | null }) =>
+            r.role === "admin" || r.role === "project-manager" || r.permissions?.canReview === true
+          )
+          .map((r: { name: string }) => r.name);
+        setReviewerEligibleNames(eligible);
+      });
   }, []);
 
   // Poll for fresh comments/source files every 10s while panel is open
@@ -635,7 +645,7 @@ export function TicketDetailPanel({
           </div>
 
           {/* ── Review flow ── */}
-          {hasReviewPermission && isAssignee && (
+          {isAssignee && (
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
                 レビューフロー
@@ -666,7 +676,7 @@ export function TicketDetailPanel({
                             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
                             レビュアーを選択...
                           </button>
-                          {memberNames.filter(n => !assignees.includes(n)).map(n => (
+                          {reviewerEligibleNames.filter(n => !assignees.includes(n)).map(n => (
                             <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
                               style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
                               onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
