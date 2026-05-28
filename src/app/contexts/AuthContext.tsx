@@ -39,6 +39,14 @@ function resolvePermissions(role: Role, rawPerms: unknown): UserPermissions {
   return { ...DEFAULT_PERMISSIONS, ...(rawPerms as Partial<UserPermissions> ?? {}) };
 }
 
+async function fetchProfile(uid: string) {
+  // Try with permissions column first; fall back if the column doesn't exist yet
+  const { data, error } = await supabase!.from("profiles").select("name, role, permissions").eq("id", uid).single();
+  if (!error) return data;
+  const { data: d2 } = await supabase!.from("profiles").select("name, role").eq("id", uid).single();
+  return d2 ?? null;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [userName, setUserName] = useState("");
   const [userRole, setUserRole] = useState<Role>("developer");
@@ -61,10 +69,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase!.auth.getSession().then(async ({ data: { session } }) => {
       clearTimeout(authTimer);
       if (session) {
-        const { data: p } = await supabase!.from("profiles").select("name, role, permissions").eq("id", session.user.id).single();
+        const p = await fetchProfile(session.user.id);
         if (p) {
           const role = p.role as Role;
-          const perms = resolvePermissions(role, p.permissions);
+          const perms = resolvePermissions(role, (p as { permissions?: unknown }).permissions ?? null);
           setUserName(p.name); setUserRole(role); setUserId(session.user.id);
           setUserPermissions(perms);
           sessionStorage.setItem("isLoggedIn", "true");
@@ -79,19 +87,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        supabase!.from("profiles").select("name, role, permissions").eq("id", session.user.id).single()
-          .then(({ data: p }) => {
-            if (p) {
-              const role = p.role as Role;
-              const perms = resolvePermissions(role, p.permissions);
-              setUserName(p.name); setUserRole(role); setUserId(session.user.id);
-              setUserPermissions(perms);
-              sessionStorage.setItem("userName", p.name);
-              sessionStorage.setItem("userRole", p.role);
-              sessionStorage.setItem("userId", session.user.id);
-              sessionStorage.setItem("userPermissions", JSON.stringify(perms));
-            }
-          });
+        fetchProfile(session.user.id).then(p => {
+          if (p) {
+            const role = p.role as Role;
+            const perms = resolvePermissions(role, (p as { permissions?: unknown }).permissions ?? null);
+            setUserName(p.name); setUserRole(role); setUserId(session.user.id);
+            setUserPermissions(perms);
+            sessionStorage.setItem("userName", p.name);
+            sessionStorage.setItem("userRole", p.role);
+            sessionStorage.setItem("userId", session.user.id);
+            sessionStorage.setItem("userPermissions", JSON.stringify(perms));
+          }
+        });
       } else {
         setUserName(""); setUserRole("developer"); setUserId("");
         setUserPermissions({ ...DEFAULT_PERMISSIONS });
