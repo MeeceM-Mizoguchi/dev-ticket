@@ -14,7 +14,7 @@ export interface SprintTicket {
   id: string; wbs: string; title: string; status: TicketStatus;
   priority: Priority; assignee: string; assignees: string[]; startDate: string; dueDate: string;
   estimatedHours: number; progress: number;
-  description?: string; reviewerName?: string; reviewRound?: number;
+  description?: string; reviewerName?: string; reviewRound?: number; generatedPrompt?: string;
 }
 
 export type CommentType = "comment" | "review_request" | "revision_request" | "review_approved" | "status_change";

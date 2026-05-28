@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown } from "lucide-react";
+import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck } from "lucide-react";
 import type { SprintTicket, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, inputCls } from "@/app/lib/helpers";
@@ -81,6 +81,11 @@ export function TicketDetailPanel({
   // ticket-level images
   const [ticketImages, setTicketImages] = useState<string[]>([]);
 
+  // AI prompt generation
+  const [generatedPrompt, setGeneratedPrompt] = useState(ticket?.generatedPrompt ?? "");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
+
   // comment editing
   const [editingId, setEditingId]     = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
@@ -123,6 +128,7 @@ export function TicketDetailPanel({
     setRevisionInput("");
     setEditingId(null);
     setAssigneesOpen(false);
+    setGeneratedPrompt(ticket.generatedPrompt ?? "");
     // fetch fresh data from DB (in case sprint cache is stale)
     if (ticket.id && isSupabaseEnabled) {
       supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
@@ -140,6 +146,7 @@ export function TicketDetailPanel({
           setDescription(t.description ?? "");
           setReviewerName(t.reviewerName ?? "");
           setReviewRound(t.reviewRound ?? 0);
+          setGeneratedPrompt(t.generatedPrompt ?? "");
         });
     }
     if (ticket.id) loadRelated(ticket.id);
@@ -177,6 +184,42 @@ export function TicketDetailPanel({
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => save(fields), 1200);
   }, [save]);
+
+  const handleGeneratePrompt = async () => {
+    if (!ticket || isGenerating) return;
+    setIsGenerating(true);
+    try {
+      const res = await fetch("/api/generate-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: ticket.title,
+          description,
+          priority,
+          status,
+          assignees,
+          startDate,
+          dueDate,
+          estimatedHours: estimatedH,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "生成に失敗しました");
+      const generated: string = data.prompt;
+      setGeneratedPrompt(generated);
+      await save({ generated_prompt: generated });
+    } catch (e: unknown) {
+      alert((e as Error).message ?? "プロンプト生成に失敗しました");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleCopyPrompt = () => {
+    navigator.clipboard.writeText(generatedPrompt);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const setStatusAndProgress = (newStatus: TicketStatus) => {
     const p = STATUS_PROGRESS[newStatus] ?? progress;
@@ -476,6 +519,31 @@ export function TicketDetailPanel({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+
+          {/* AI Prompt Generation */}
+          <div style={{ background: "#FFF", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 12, padding: "14px 16px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: generatedPrompt ? 10 : 0 }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#7C3AED", display: "flex", alignItems: "center", gap: 5 }}>
+                <Sparkles style={{ width: 13, height: 13 }} />ClaudeCode プロンプト
+              </p>
+              <button onClick={handleGeneratePrompt} disabled={isGenerating}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: isGenerating ? "#F5F3FF" : "#7C3AED", color: isGenerating ? "#7C3AED" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "none", cursor: isGenerating ? "not-allowed" : "pointer", transition: "all 0.15s" }}>
+                <Sparkles style={{ width: 11, height: 11 }} />
+                {isGenerating ? "生成中..." : generatedPrompt ? "再生成" : "プロンプト生成"}
+              </button>
+            </div>
+            {generatedPrompt && (
+              <div style={{ position: "relative" }}>
+                <textarea readOnly value={generatedPrompt}
+                  style={{ width: "100%", minHeight: 160, resize: "vertical", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 9, padding: "10px 12px", fontSize: 12, color: "#3B0764", lineHeight: 1.7, fontFamily: "var(--font-mono)", boxSizing: "border-box", outline: "none" }} />
+                <button onClick={handleCopyPrompt}
+                  style={{ position: "absolute", bottom: 10, right: 10, display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: copied ? "#059669" : "#7C3AED", color: "#FFF", fontSize: 10, fontWeight: 700, borderRadius: 6, border: "none", cursor: "pointer", transition: "background 0.2s" }}>
+                  {copied ? <CheckCheck style={{ width: 11, height: 11 }} /> : <Copy style={{ width: 11, height: 11 }} />}
+                  {copied ? "コピーしました" : "コピー"}
+                </button>
               </div>
             )}
           </div>
