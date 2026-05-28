@@ -1,15 +1,16 @@
-import { useEffect, useState, type ElementType } from "react";
+import { useEffect, useState, useMemo, type ElementType } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
-import type { Project, Sprint, SprintTicket, SprintView } from "@/app/types";
+import type { Project, Sprint, SprintView } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
 import { SprintBoardView } from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
@@ -21,9 +22,25 @@ export function SprintPage() {
   const [sprints, setSprints] = useState<Sprint[]>(SPRINTS.filter(s => s.projectId === projectId));
   const [viewMode, setViewMode] = useState<SprintView>("list");
   const [showCreate, setShowCreate] = useState(false);
-  const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [createForSprintId, setCreateForSprintId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
+
+  // Derive selected ticket from live sprint data so it stays fresh after polling
+  const selectedTicket = useMemo(() => {
+    if (!selectedTicketId) return null;
+    for (const sprint of sprints) {
+      const t = sprint.tickets.find(t => t.id === selectedTicketId);
+      if (t) return t;
+    }
+    return null;
+  }, [selectedTicketId, sprints]);
+
+  const createForSprint = useMemo(
+    () => sprints.find(s => s.id === createForSprintId) ?? null,
+    [createForSprintId, sprints]
+  );
 
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -31,6 +48,7 @@ export function SprintPage() {
       .then(({ data }) => { if (data?.length) setSprints(data.map(mapSprint)); });
   };
 
+  // Initial load
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
     Promise.all([
@@ -42,6 +60,13 @@ export function SprintPage() {
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [projectId]);
+
+  // 10-second polling
+  useEffect(() => {
+    if (!isSupabaseEnabled || !projectId) return;
+    const id = setInterval(refreshSprints, 10000);
+    return () => clearInterval(id);
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteSprint = async (sprint: Sprint) => {
     if (isSupabaseEnabled) await supabase!.from("sprints").delete().eq("id", sprint.id);
@@ -93,18 +118,27 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={s => setDeleteTarget(s)} onSelectTicket={setSelectedTicket} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={setSelectedTicket} onUpdated={refreshSprints} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={setSelectedTicket} />}
+      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={s => setDeleteTarget(s)} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={setCreateForSprintId} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onUpdated={refreshSprints} onCreateTicket={setCreateForSprintId} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={setCreateForSprintId} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
+      {createForSprintId && createForSprint && (
+        <NewTicketDialog
+          sprintId={createForSprintId}
+          onClose={() => setCreateForSprintId(null)}
+          onCreated={() => { refreshSprints(); setCreateForSprintId(null); }}
+          sprintStartDate={createForSprint.startDate || undefined}
+          sprintEndDate={createForSprint.endDate || undefined}
+        />
+      )}
       {deleteTarget && (
         <ConfirmDialog
           message={`「${deleteTarget.name}」を削除しますか？関連するチケットもすべて削除されます。`}
           onConfirm={() => handleDeleteSprint(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicket(null)} onUpdated={refreshSprints} />
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} />
     </div>
   );
 }

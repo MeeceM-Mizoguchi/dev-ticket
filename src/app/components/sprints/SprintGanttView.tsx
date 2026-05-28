@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { ChevronDown, ExternalLink, Plus } from "lucide-react";
 import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
 
-export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket }: {
-  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void;
+export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket }: {
+  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -101,6 +101,14 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket }: {
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
                     <ExternalLink style={{ width: 11, height: 11 }} />
                   </button>
+                  {onCreateTicket && (
+                    <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
+                      style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                      <Plus style={{ width: 11, height: 11 }} />
+                    </button>
+                  )}
                 </div>
                 {isExp && sprint.tickets.map(t => {
                   const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];

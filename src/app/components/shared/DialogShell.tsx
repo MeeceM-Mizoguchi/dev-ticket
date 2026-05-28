@@ -21,7 +21,7 @@ export function DialogShell({ title, onClose, children, footer }: { title: strin
             </button>
           </div>
         </div>
-        <div style={{ padding: "24px 24px 20px", display: "flex", flexDirection: "column", gap: 14, maxHeight: "60vh", overflowY: "auto" }}>{children}</div>
+        <div style={{ padding: "24px 24px 20px", display: "flex", flexDirection: "column", gap: 14, maxHeight: "75vh", overflowY: "auto" }}>{children}</div>
         <div style={{ padding: "14px 24px 20px", display: "flex", justifyContent: "flex-end", gap: 8, borderTop: "1px solid rgba(26,23,20,0.07)" }}>{footer}</div>
       </div>
     </div>

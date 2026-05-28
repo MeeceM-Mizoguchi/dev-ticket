@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import { labelCls } from "@/app/lib/helpers";
 
@@ -26,7 +26,9 @@ function parseDate(s: string): [number, number, number] | null {
 export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required }: Props) {
   const today = new Date().toISOString().split("T")[0];
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
 
   // Calendar month navigation
   const parsed = parseDate(value);
@@ -34,16 +36,31 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   const [calYear, setCalYear]   = useState(parsed ? parsed[0] : todayParsed[0]);
   const [calMonth, setCalMonth] = useState(parsed ? parsed[1] : todayParsed[1]);
 
-  // Sync calendar to selected value when it changes externally
   useEffect(() => {
     const p = parseDate(value);
     if (p) { setCalYear(p[0]); setCalMonth(p[1]); }
   }, [value]);
 
+  const calcPosition = useCallback(() => {
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const POPUP_H = 320;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const top = spaceBelow >= POPUP_H ? rect.bottom + 6 : Math.max(8, rect.top - POPUP_H - 6);
+    setPopupPos({ top, left: rect.left });
+  }, []);
+
+  const handleToggle = useCallback(() => {
+    calcPosition();
+    setOpen(o => !o);
+  }, [calcPosition]);
+
   // Close on outside click
   useEffect(() => {
     if (!open) return;
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const h = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [open]);
@@ -73,20 +90,20 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   const todayInRange = today >= (min ?? "0000-00-00") && today <= (max ?? "9999-99-99");
 
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       {label && (
         <label className={labelCls}>
           {label}{required && <span style={{ color: "#DC2626", marginLeft: 2 }}>*</span>}
         </label>
       )}
-      <div onClick={() => setOpen(o => !o)}
+      <div ref={triggerRef} onClick={handleToggle}
         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: open ? "#FFF" : "#F7F8F9", border: `1px solid ${open ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontSize: 13, color: displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.08)" : "none" }}>
         <span>{displayValue || placeholder}</span>
         <Calendar style={{ width: 14, height: 14, color: open ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
       </div>
 
       {open && (
-        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 200, background: "#FFFFFF", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.07)", border: "1px solid rgba(26,23,20,0.09)", padding: "14px 14px 12px", width: 262 }}>
+        <div style={{ position: "fixed", top: popupPos.top, left: popupPos.left, zIndex: 9999, background: "#FFFFFF", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.07)", border: "1px solid rgba(26,23,20,0.09)", padding: "14px 14px 12px", width: 262 }}>
           {/* Month nav */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
             <button onClick={e => { e.stopPropagation(); prevMonth(); }} style={{ padding: "3px 6px", borderRadius: 6, border: "none", background: "#F4F5F6", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center" }}>

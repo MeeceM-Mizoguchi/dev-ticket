@@ -38,6 +38,7 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
   const [description, setDescription] = useState("");
   const [images, setImages] = useState<{ name: string; url: string }[]>([]);
   const [saving, setSaving] = useState(false);
+  const [titleError, setTitleError] = useState(false);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -51,7 +52,7 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
   }, []);
 
   const handleSave = async () => {
-    if (!title.trim()) return;
+    if (!title.trim()) { setTitleError(true); return; }
     if (isSupabaseEnabled) {
       setSaving(true);
       await supabase!.from("sprint_tickets").insert({
@@ -90,7 +91,10 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
             <label className={labelCls}>チケット名 <span style={{ color: "#DC2626" }}>*</span></label>
-            <input className={inputCls} placeholder="例: ログイン機能の修正" value={title} onChange={e => setTitle(e.target.value)} />
+            <input className={inputCls} placeholder="例: ログイン機能の修正" value={title}
+              onChange={e => { setTitle(e.target.value); if (e.target.value.trim()) setTitleError(false); }}
+              style={titleError ? { outline: "2px solid #DC2626", outlineOffset: 1 } : undefined} />
+            {titleError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 5 }}>チケット名を入力してください</p>}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>

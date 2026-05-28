@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ChevronDown, Trash2, ExternalLink, Filter, ArrowUpDown } from "lucide-react";
+import { ChevronDown, Trash2, ExternalLink, Filter, ArrowUpDown, Plus } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -13,11 +13,12 @@ const selStyle = (active: boolean): React.CSSProperties => ({
   cursor: "pointer", outline: "none",
 });
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onSelectTicket }: {
+export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onSelectTicket, onCreateTicket }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
+  onCreateTicket?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
   const [filterStatus, setFilterStatus]   = useState<TicketStatus | "all">("all");
@@ -166,6 +167,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onSele
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
                     <ExternalLink style={{ width: 11, height: 11 }} />詳細
                   </button>
+                  {onCreateTicket && (
+                    <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                      <Plus style={{ width: 11, height: 11 }} />新規チケット
+                    </button>
+                  )}
                   {onDeleteSprint && (
                     <button onClick={e => { e.stopPropagation(); onDeleteSprint(sprint); }}
                       style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}

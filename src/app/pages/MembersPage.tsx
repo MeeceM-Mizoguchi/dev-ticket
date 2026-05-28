@@ -41,6 +41,13 @@ export function MembersPage() {
       .catch(() => setLoading(false));
   }, []);
 
+  // 10-second polling
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    const id = setInterval(refreshMembers, 10000);
+    return () => clearInterval(id);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleDeleteMember = async (member: Member) => {
     if (isSupabaseEnabled) {
       const res = await fetch("/api/delete-member", {

@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
-import { ChevronDown, ExternalLink, X, MessageSquare, Paperclip, User } from "lucide-react";
+import { ExternalLink, X, MessageSquare, Paperclip, User, Plus } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, getSprintStatusMeta, formatDate, computeSprintStatus } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -70,7 +70,7 @@ function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket }: {
   const isActive = isOver && canDrop;
 
   return (
-    <div ref={drop} style={{ flex: "0 0 170px", boxSizing: "border-box", borderRadius: 8, padding: 8, minHeight: 80, transition: "background 0.15s, border-color 0.15s",
+    <div ref={drop} style={{ borderRadius: 8, padding: 8, minHeight: 120, transition: "background 0.15s, border-color 0.15s",
       background: isActive ? col.bg : "rgba(26,23,20,0.02)",
       border: `1.5px ${isActive ? "solid" : "dashed"} ${isActive ? col.color + "55" : "rgba(26,23,20,0.08)"}` }}>
       {tickets.length === 0 && !isActive && (
@@ -82,14 +82,15 @@ function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket }: {
 }
 
 // ── Main component (exported) ──────────────────────────────────────────────
-function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }: {
+function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
+  onCreateTicket?: (sprintId: string) => void;
 }) {
   const { userName } = useAuth();
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
+  const [selectedSprintId, setSelectedSprintId] = useState(sprints[0]?.id ?? "");
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [modalComment, setModalComment] = useState("");
   const [reviewerName, setReviewerName] = useState("");
@@ -98,15 +99,20 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Keep selectedSprintId valid when sprints prop changes
+  useEffect(() => {
+    if (sprints.length && !sprints.find(s => s.id === selectedSprintId)) {
+      setSelectedSprintId(sprints[0].id);
+    }
+  }, [sprints, selectedSprintId]);
+
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     supabase!.from("profiles").select("name").order("name")
       .then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
   }, []);
 
-  const toggle = (id: string) => setExpanded(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
-  });
+  const currentSprint = sprints.find(s => s.id === selectedSprintId) ?? sprints[0] ?? null;
 
   const applyStatusUpdate = useCallback(async (
     ticketId: string, newStatus: TicketStatus, comment: string,
@@ -122,13 +128,9 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
         if (comment.trim()) {
           const meta = MODAL_LABELS[newStatus];
           await supabase!.from("ticket_comments").insert({
-            id: `CMT-${Date.now()}`,
-            ticket_id: ticketId,
-            user_name: userName,
+            id: `CMT-${Date.now()}`, ticket_id: ticketId, user_name: userName,
             content: `<p>${comment.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`,
-            ticket_status: newStatus,
-            comment_type: meta?.commentType ?? "comment",
-            images: [],
+            ticket_status: newStatus, comment_type: meta?.commentType ?? "comment", images: [],
           });
         }
 
@@ -139,17 +141,15 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
             if (uploadData) {
               const { data: urlData } = supabase!.storage.from("ticket-files").getPublicUrl(path);
               await supabase!.from("ticket_source_files").insert({
-                id: `SF-${Date.now()}`, ticket_id: ticketId,
-                file_name: srcFile.name, file_size: srcFile.size, file_type: srcFile.type,
-                uploaded_by: userName, review_round: 1,
+                id: `SF-${Date.now()}`, ticket_id: ticketId, file_name: srcFile.name, file_size: srcFile.size,
+                file_type: srcFile.type, uploaded_by: userName, review_round: 1,
                 file_url: urlData.publicUrl, created_at: new Date().toISOString(),
               });
             }
           } else if (srcUrl?.trim()) {
             await supabase!.from("ticket_source_files").insert({
-              id: `SF-${Date.now()}`, ticket_id: ticketId,
-              file_name: srcUrl, file_size: 0, file_type: "url",
-              uploaded_by: userName, review_round: 1,
+              id: `SF-${Date.now()}`, ticket_id: ticketId, file_name: srcUrl, file_size: 0,
+              file_type: "url", uploaded_by: userName, review_round: 1,
               file_url: srcUrl, created_at: new Date().toISOString(),
             });
           }
@@ -179,85 +179,83 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
     applyStatusUpdate(pendingDrop.ticketId, pendingDrop.newStatus, modalComment, reviewerName, sourceFile, sourceUrl);
   };
 
-  const cancelModal = () => {
-    setPendingDrop(null);
-    setModalComment("");
-    setReviewerName("");
-    setSourceUrl("");
-    setSourceFile(null);
-  };
+  const cancelModal = () => { setPendingDrop(null); setModalComment(""); setReviewerName(""); setSourceUrl(""); setSourceFile(null); };
 
   const modalMeta = pendingDrop ? MODAL_LABELS[pendingDrop.newStatus] : null;
   const isReviewRequest = pendingDrop?.newStatus === "in-review";
 
+  if (sprints.length === 0) return (
+    <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
+  );
+
   return (
     <div>
-      {sprints.length === 0 && (
-        <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
+      {/* ── Tab bar ── */}
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid rgba(26,23,20,0.08)", marginBottom: 16, overflowX: "auto" }}>
+        {sprints.map(sprint => {
+          const isActive = sprint.id === selectedSprintId;
+          const sm = getSprintStatusMeta(computeSprintStatus(sprint));
+          return (
+            <button key={sprint.id} onClick={() => setSelectedSprintId(sprint.id)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", fontSize: 12, fontWeight: isActive ? 700 : 500, color: isActive ? "#059669" : "#6B6458", border: "none", borderBottom: isActive ? "2px solid #059669" : "2px solid transparent", background: "transparent", cursor: "pointer", whiteSpace: "nowrap" as const, transition: "all 0.15s", marginBottom: -2 }}
+              onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.color = "#1A1714"; }}
+              onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}>
+              {sprint.name}
+              <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
+              <span style={{ fontSize: 10, color: "#B0A9A4" }}>{sprint.tickets.length}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Sprint info bar ── */}
+      {currentSprint && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "0 2px" }}>
+          {currentSprint.goal && (
+            <p style={{ flex: 1, fontSize: 12, color: "#9E9690", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, minWidth: 0 }}>{currentSprint.goal}</p>
+          )}
+          {!currentSprint.goal && <div style={{ flex: 1 }} />}
+          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const, flexShrink: 0 }}>{formatDate(currentSprint.startDate)} → {formatDate(currentSprint.endDate)}</span>
+          <button onClick={() => onSelectSprint(currentSprint)}
+            style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+            <ExternalLink style={{ width: 11, height: 11 }} />詳細
+          </button>
+          {onCreateTicket && (
+            <button onClick={() => onCreateTicket(currentSprint.id)}
+              style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+              <Plus style={{ width: 11, height: 11 }} />新規チケット
+            </button>
+          )}
+        </div>
       )}
 
-      {sprints.map(sprint => {
-        const isExp = expanded.has(sprint.id);
-        const sm = getSprintStatusMeta(computeSprintStatus(sprint));
-
-        return (
-          <div key={sprint.id} style={{ background: "#FFFFFF", borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", marginBottom: 12, overflow: "hidden" }}>
-            {/* Sprint swimlane header */}
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none" }}
-              onClick={() => toggle(sprint.id)}>
-              <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{sprint.name}</span>
-                  <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
-                  <span style={{ fontSize: 10, color: "#B0A9A4" }}>{sprint.tickets.length}チケット</span>
+      {/* ── Kanban board ── */}
+      {currentSprint && (
+        <div style={{ overflowX: "auto" }}>
+          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", alignItems: "flex-start" }}>
+            {TICKET_STATUSES.map(col => {
+              const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
+              return (
+                <div key={col.value} style={{ flex: "0 0 170px", display: "flex", flexDirection: "column", gap: 4 }}>
+                  {/* Column header */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{colTickets.length}</span>
+                  </div>
+                  {/* Drop zone */}
+                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket} />
                 </div>
-                {sprint.goal && <p style={{ fontSize: 11, color: "#A09790", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sprint.goal}</p>}
-              </div>
-              <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const, marginRight: 8 }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
-              <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
-                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                <ExternalLink style={{ width: 11, height: 11 }} />詳細
-              </button>
-            </div>
-
-            {/* Kanban columns */}
-            {isExp && (
-              <div style={{ overflowX: "auto", padding: "12px 14px" }}>
-                {/* Column headers */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 8, minWidth: "fit-content" }}>
-                  {TICKET_STATUSES.map(col => {
-                    const count = sprint.tickets.filter(t => t.status === col.value).length;
-                    return (
-                      <div key={col.value} style={{ flex: "0 0 170px", boxSizing: "border-box", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{count}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {/* Drop zones */}
-                <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
-                  {TICKET_STATUSES.map(col => (
-                    <DropColumn
-                      key={col.value}
-                      sprintId={sprint.id}
-                      col={col}
-                      tickets={sprint.tickets.filter(t => t.status === col.value)}
-                      onDrop={handleDrop}
-                      onSelectTicket={onSelectTicket}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
+              );
+            })}
           </div>
-        );
-      })}
+        </div>
+      )}
 
-      {/* Comment modal for review-related status drops */}
+      {/* ── Review modal ── */}
       {pendingDrop && modalMeta && (
         <div style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={e => { if (e.target === e.currentTarget) cancelModal(); }}>
@@ -274,20 +272,16 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
               </button>
             </div>
 
-            {/* Comment field */}
-            <div style={{ marginBottom: isReviewRequest ? 0 : 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
-                <MessageSquare style={{ width: 12, height: 12, color: "#B0A9A4" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>コメント（任意）</span>
-              </div>
-              <textarea value={modalComment} onChange={e => setModalComment(e.target.value)}
-                placeholder={modalMeta.placeholder}
-                style={{ width: "100%", minHeight: 80, padding: "10px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: "#1A1714", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
-                onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = "#059669"; (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
-                onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.10)"; (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
+              <MessageSquare style={{ width: 12, height: 12, color: "#B0A9A4" }} />
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>コメント（任意）</span>
             </div>
+            <textarea value={modalComment} onChange={e => setModalComment(e.target.value)}
+              placeholder={modalMeta.placeholder}
+              style={{ width: "100%", minHeight: 80, padding: "10px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: "#1A1714", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
+              onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = "#059669"; (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
+              onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.10)"; (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }} />
 
-            {/* Reviewer selection — only for レビュー依頼 */}
             {isReviewRequest && (
               <>
                 <div style={{ marginTop: 14 }}>
@@ -303,7 +297,6 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
                     {reviewerList.map(name => <option key={name} value={name}>{name}</option>)}
                   </select>
                 </div>
-
                 <div style={{ marginTop: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}>
                     <Paperclip style={{ width: 12, height: 12, color: "#B0A9A4" }} />
@@ -320,10 +313,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
                     <input type="file" style={{ display: "none" }} onChange={e => setSourceFile(e.target.files?.[0] ?? null)} />
                   </label>
                   {sourceFile && (
-                    <button onClick={() => setSourceFile(null)}
-                      style={{ marginTop: 4, fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                      削除
-                    </button>
+                    <button onClick={() => setSourceFile(null)} style={{ marginTop: 4, fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>削除</button>
                   )}
                 </div>
               </>
@@ -331,7 +321,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated }
 
             <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
               <button onClick={confirmModal} disabled={saving}
-                style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
+                style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
                 {saving ? "処理中..." : "確定"}
               </button>
               <button onClick={cancelModal} disabled={saving}
@@ -351,6 +341,7 @@ export function SprintBoardView(props: {
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
+  onCreateTicket?: (sprintId: string) => void;
 }) {
   return (
     <DndProvider backend={HTML5Backend}>

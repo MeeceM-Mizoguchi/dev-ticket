@@ -137,6 +137,13 @@ export function TicketDetailPanel({
       .then(({ data }) => { if (data) setMemberNames(data.map((r: { name: string }) => r.name)); });
   }, []);
 
+  // Poll for fresh comments/source files every 10s while panel is open
+  useEffect(() => {
+    if (!ticket?.id || !isSupabaseEnabled) return;
+    const id = setInterval(() => loadRelated(ticket.id), 10000);
+    return () => clearInterval(id);
+  }, [ticket?.id, loadRelated]);
+
   const loadRelated = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
     const [{ data: cData }, { data: fData }] = await Promise.all([
@@ -337,17 +344,17 @@ export function TicketDetailPanel({
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
         {/* Header */}
-        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
+        <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.id}</span>
                 {ticket.wbs && <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>WBS {ticket.wbs}</span>}
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: smeta?.bg ?? "#F4F5F6", color: smeta?.color ?? "#9E9690" }}>{smeta?.label}</span>
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
               </div>
-              <h2 style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3 }}>{ticket.title}</h2>
+              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3 }}>{ticket.title}</h2>
             </div>
             <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", flexShrink: 0 }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -355,29 +362,24 @@ export function TicketDetailPanel({
               <X style={{ width: 16, height: 16 }} />
             </button>
           </div>
+          {/* Progress bar in header */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+            <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progress}%`, background: "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", flexShrink: 0 }}>{progress}%</span>
+          </div>
+          {/* Action button in header */}
+          {actionBtn && isAssignee && (
+            <button onClick={() => handleStatusAction(actionBtn)}
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, marginTop: 10 }}>
+              {actionBtn.label} →
+            </button>
+          )}
         </div>
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }} onClick={() => assigneesOpen && setAssigneesOpen(false)}>
-
-          {/* Progress bar */}
-          <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "12px 14px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>進捗</span>
-              <span style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{progress}%</span>
-            </div>
-            <div style={{ height: 8, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${progress}%`, background: "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
-            </div>
-          </div>
-
-          {/* Action button */}
-          {actionBtn && isAssignee && (
-            <button onClick={() => handleStatusAction(actionBtn)}
-              style={{ padding: "11px 0", fontSize: 13, fontWeight: 700, borderRadius: 10, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, width: "100%" }}>
-              {actionBtn.label} →
-            </button>
-          )}
 
           {/* Metadata */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -447,19 +449,13 @@ export function TicketDetailPanel({
             </div>
           </div>
 
-          {/* Description */}
+          {/* 詳細 + 画像 */}
           <div>
-            <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細・説明</p>
-            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={120} />
-          </div>
-
-          {/* Ticket images */}
-          <div>
-            <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>
-              <ImageIcon style={{ width: 10, height: 10, display: "inline", marginRight: 4 }} />チケット添付画像
-            </p>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, cursor: "pointer", background: "#FAFAF8" }}>
-              <ImageIcon style={{ width: 14, height: 14, color: "#B0A9A4" }} />
+            <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
+            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={200} />
+            {/* Inline image attachment */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 9, cursor: "pointer", background: "#FAFAF8", marginTop: 8 }}>
+              <ImageIcon style={{ width: 13, height: 13, color: "#B0A9A4" }} />
               <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を追加</span>
               <input type="file" accept="image/*" multiple style={{ display: "none" }}
                 onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setTicketImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
@@ -548,46 +544,51 @@ export function TicketDetailPanel({
                 {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
               </p>
 
-              <div style={{ marginBottom: 10 }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュアー</p>
-                <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
-                  disabled={status === "in-review"}
-                  style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
-                  <option value="">レビュアーを選択...</option>
-                  {memberNames.filter(n => !assignees.includes(n)).map(n => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </div>
-
-              <div style={{ marginBottom: 10 }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
-                <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                  <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+              {status === "todo" ? (
+                <div style={{ padding: "16px", background: "#FFF7ED", borderRadius: 9, border: "1px solid rgba(217,119,6,0.20)", textAlign: "center" as const }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: "#D97706", marginBottom: 4 }}>まず着手を開始してください</p>
+                  <p style={{ fontSize: 12, color: "#9E9690" }}>「着手開始」ボタンを押してから<br />レビュー依頼を送信できます</p>
                 </div>
-              </div>
-
-              {reviewFiles.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
-                  {reviewFiles.map((rf, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
-                      <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
-                      <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
+              ) : (
+                <>
+                  <div style={{ marginBottom: 10 }}>
+                    <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュアー</p>
+                    <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
+                      disabled={status === "in-review"}
+                      style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
+                      <option value="">レビュアーを選択...</option>
+                      {memberNames.filter(n => !assignees.includes(n)).map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
+                    <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                      <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
                     </div>
-                  ))}
-                </div>
+                  </div>
+                  {reviewFiles.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                      {reviewFiles.map((rf, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
+                          <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
+                          <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                      <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
+                      <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
+                    </label>
+                    <button onClick={handleReviewRequest} disabled={!canSendReview}
+                      style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
+                      {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
+                    </button>
+                  </div>
+                  {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
+                </>
               )}
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                  <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
-                  <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
-                </label>
-                <button onClick={handleReviewRequest}
-                  disabled={!canSendReview}
-                  style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
-                  {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
-                </button>
-              </div>
-              {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
             </div>
           )}
 
