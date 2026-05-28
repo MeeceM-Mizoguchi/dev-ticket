@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ChevronDown, Trash2, ExternalLink, Filter, ArrowUpDown, Plus } from "lucide-react";
+import { ChevronDown, Trash2, ExternalLink, Filter, ArrowUpDown, Plus, Pencil } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -13,10 +13,11 @@ const selStyle = (active: boolean): React.CSSProperties => ({
   cursor: "pointer", outline: "none",
 });
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onSelectTicket, onCreateTicket }: {
+export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
+  onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
 }) {
@@ -173,6 +174,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onSele
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
                       <Plus style={{ width: 11, height: 11 }} />新規チケット
+                    </button>
+                  )}
+                  {onEditSprint && (
+                    <button onClick={e => { e.stopPropagation(); onEditSprint(sprint); }}
+                      style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EFF6FF"; (e.currentTarget as HTMLElement).style.color = "#2563EB"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                      <Pencil style={{ width: 14, height: 14 }} />
                     </button>
                   )}
                   {onDeleteSprint && (

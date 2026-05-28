@@ -1,0 +1,73 @@
+import { useState } from "react";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { DialogShell } from "@/app/components/shared/DialogShell";
+import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
+import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { FieldInput } from "@/app/components/shared/FieldInput";
+import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
+import { DatePicker } from "@/app/components/shared/DatePicker";
+import type { Sprint, SprintStatus } from "@/app/types";
+
+const SPRINT_STATUSES: { value: SprintStatus; label: string }[] = [
+  { value: "planning", label: "計画中" },
+  { value: "active", label: "進行中" },
+  { value: "completed", label: "完了" },
+  { value: "delayed", label: "遅延" },
+];
+
+export function EditSprintDialog({ sprint, onClose, onUpdated }: {
+  sprint: Sprint;
+  onClose: () => void;
+  onUpdated?: () => void;
+}) {
+  const [name, setName] = useState(sprint.name);
+  const [goal, setGoal] = useState(sprint.goal);
+  const [startDate, setStartDate] = useState(sprint.startDate || "");
+  const [endDate, setEndDate] = useState(sprint.endDate || "");
+  const [status, setStatus] = useState<SprintStatus>(sprint.status);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    if (isSupabaseEnabled) {
+      setSaving(true);
+      await supabase!.from("sprints").update({
+        name, goal, status,
+        start_date: startDate || null,
+        end_date: endDate || null,
+      }).eq("id", sprint.id);
+      setSaving(false);
+    }
+    onUpdated?.();
+    onClose();
+  };
+
+  return (
+    <DialogShell title="スプリント編集" onClose={onClose}
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
+      <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
+      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
+      <div className="grid grid-cols-2 gap-3">
+        <DatePicker label="開始日" value={startDate} onChange={setStartDate} placeholder="年/月/日" />
+        <DatePicker label="終了日" value={endDate} onChange={setEndDate} placeholder="年/月/日" min={startDate || undefined} />
+      </div>
+      <div>
+        <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>ステータス</label>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {SPRINT_STATUSES.map(s => (
+            <button key={s.value} type="button" onClick={() => setStatus(s.value)}
+              style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                border: `1.5px solid ${status === s.value ? "#059669" : "rgba(26,23,20,0.12)"}`,
+                background: status === s.value ? "#059669" : "#F7F8F9",
+                color: status === s.value ? "#fff" : "#6B6458",
+                transition: "all 0.15s",
+              }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </DialogShell>
+  );
+}
