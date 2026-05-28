@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown } from "lucide-react";
 import type { SprintTicket, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { TICKET_STATUSES } from "@/app/lib/helpers";
+import { TICKET_STATUSES, labelCls, inputCls } from "@/app/lib/helpers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket } from "@/app/lib/mappers";
+import { DatePicker } from "@/app/components/shared/DatePicker";
 
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
@@ -60,6 +61,7 @@ export function TicketDetailPanel({
   const [description, setDescription] = useState(ticket?.description ?? "");
   const [reviewerName, setReviewerName] = useState(ticket?.reviewerName ?? "");
   const [reviewRound, setReviewRound]   = useState(ticket?.reviewRound ?? 0);
+  const [reviewerOpen, setReviewerOpen] = useState(false);
 
   // related data
   const [comments, setComments]       = useState<TicketComment[]>([]);
@@ -87,6 +89,7 @@ export function TicketDetailPanel({
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set([1]));
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const reviewerDropRef = useRef<HTMLDivElement>(null);
 
   const loadRelated = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
@@ -154,6 +157,15 @@ export function TicketDetailPanel({
     const id = setInterval(() => loadRelated(ticket.id), 10000);
     return () => clearInterval(id);
   }, [ticket?.id, loadRelated]);
+
+  useEffect(() => {
+    if (!reviewerOpen) return;
+    const h = (e: MouseEvent) => {
+      if (reviewerDropRef.current && !reviewerDropRef.current.contains(e.target as Node)) setReviewerOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [reviewerOpen]);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
@@ -420,23 +432,15 @@ export function TicketDetailPanel({
               )}
             </div>
 
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
+            <div>
+              <label className={labelCls}>優先度</label>
               <select value={priority} onChange={e => { const v = e.target.value as Priority; setPriority(v); save({ priority: v }); }}
-                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: pm.color, cursor: "pointer" }}>
+                className={inputCls} style={{ color: pm.color, fontWeight: 600 }}>
                 <option value="high">高</option><option value="medium">中</option><option value="low">低</option>
               </select>
             </div>
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>開始日</p>
-              <input type="date" value={startDate} onChange={e => handleDate("start_date", e.target.value)}
-                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 12, color: "#6B6458", fontFamily: "var(--font-mono)", cursor: "pointer" }} />
-            </div>
-            <div style={{ background: "#FFF", border: `1px solid ${isOverdue ? "rgba(220,38,38,0.30)" : "rgba(26,23,20,0.07)"}`, borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: isOverdue ? "#DC2626" : "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>期限日 {isOverdue ? "⚠" : ""}</p>
-              <input type="date" value={dueDate} onChange={e => handleDate("due_date", e.target.value)}
-                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 12, color: isOverdue ? "#DC2626" : "#6B6458", fontFamily: "var(--font-mono)", fontWeight: isOverdue ? 700 : 400, cursor: "pointer" }} />
-            </div>
+            <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" />
+            <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" />
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>見積工数（自動）</p>
               <span style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}<span style={{ fontSize: 11, fontWeight: 400, color: "#9E9690", marginLeft: 2 }}>h</span></span>
@@ -553,13 +557,34 @@ export function TicketDetailPanel({
               ) : (
                 <>
                   <div style={{ marginBottom: 10 }}>
-                    <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュアー</p>
-                    <select value={reviewerName} onChange={e => setReviewerName(e.target.value)}
-                      disabled={status === "in-review"}
-                      style={{ width: "100%", background: status === "in-review" ? "#F4F5F6" : "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, padding: "7px 10px", fontSize: 12, color: "#1A1714", outline: "none", cursor: status === "in-review" ? "default" : "pointer", opacity: status === "in-review" ? 0.7 : 1 }}>
-                      <option value="">レビュアーを選択...</option>
-                      {memberNames.filter(n => !assignees.includes(n)).map(n => <option key={n} value={n}>{n}</option>)}
-                    </select>
+                    <label className={labelCls}>レビュアー</label>
+                    <div ref={reviewerDropRef} style={{ position: "relative" }}>
+                      <button onClick={() => { if (status !== "in-review") setReviewerOpen(o => !o); }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: status === "in-review" ? "#F4F5F6" : reviewerOpen ? "#FFF" : "#F7F8F9", border: `1px solid ${reviewerOpen ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, color: reviewerName ? "#1A1714" : "#B0A9A4", cursor: status === "in-review" ? "default" : "pointer", outline: "none", opacity: status === "in-review" ? 0.7 : 1, boxShadow: reviewerOpen ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", transition: "all 0.15s", textAlign: "left" as const }}>
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{reviewerName || "レビュアーを選択..."}</span>
+                        <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: reviewerOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                      </button>
+                      {reviewerOpen && (
+                        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden" }}>
+                          <button onClick={() => { setReviewerName(""); setReviewerOpen(false); }}
+                            style={{ width: "100%", padding: "8px 12px", textAlign: "left" as const, background: !reviewerName ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "#B0A9A4" }}
+                            onMouseEnter={e => { if (reviewerName) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
+                            レビュアーを選択...
+                          </button>
+                          {memberNames.filter(n => !assignees.includes(n)).map(n => (
+                            <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
+                              style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
+                              onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = reviewerName === n ? "#ECFDF5" : "transparent"; }}>
+                              <Avatar name={n} size="xs" />
+                              <span style={{ flex: 1 }}>{n}</span>
+                              {reviewerName === n && <Check style={{ width: 11, height: 11, color: "#059669", marginLeft: "auto" }} />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div style={{ marginBottom: 10 }}>
                     <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>

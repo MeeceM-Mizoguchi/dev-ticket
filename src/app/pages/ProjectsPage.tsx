@@ -428,6 +428,7 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
 
 // ── Per-user permission modal (from assign modal) ────────────────────────────
 function MemberPermModal({ member, onClose }: { member: Member; onClose: () => void }) {
+  const { toast } = useToast();
   const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_PERMS });
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -435,8 +436,8 @@ function MemberPermModal({ member, onClose }: { member: Member; onClose: () => v
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoaded(true); return; }
     supabase!.from("profiles").select("permissions").eq("id", member.id).single()
-      .then(({ data }) => {
-        if (data?.permissions) setLocal({ ...DEFAULT_PERMS, ...(data.permissions as Partial<UserPermissions>) });
+      .then(({ data, error }) => {
+        if (!error && data?.permissions) setLocal({ ...DEFAULT_PERMS, ...(data.permissions as Partial<UserPermissions>) });
         setLoaded(true);
       }).catch(() => setLoaded(true));
   }, [member.id]);
@@ -446,7 +447,12 @@ function MemberPermModal({ member, onClose }: { member: Member; onClose: () => v
   const handleSave = async () => {
     setSaving(true);
     if (isSupabaseEnabled) {
-      await supabase!.from("profiles").update({ permissions: local }).eq("id", member.id);
+      const { error } = await supabase!.from("profiles").update({ permissions: local }).eq("id", member.id);
+      if (error) {
+        toast("権限の保存に失敗しました。Supabaseで permissions 列の追加が必要です。", "error");
+        setSaving(false);
+        return;
+      }
     }
     onClose();
     setSaving(false);

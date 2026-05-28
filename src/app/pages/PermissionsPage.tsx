@@ -5,6 +5,7 @@ import { mapMember } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
 import type { Member, PermissionGroup, UserPermissions } from "@/app/types";
 import { Avatar } from "@/app/components/shared/Avatar";
+import { useToast } from "@/app/contexts/ToastContext";
 
 const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false,
@@ -21,6 +22,7 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; col
 ];
 
 export function PermissionsPage() {
+  const { toast } = useToast();
   const [groups, setGroups] = useState<PermissionGroup[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [newGroupName, setNewGroupName] = useState("");
@@ -68,7 +70,11 @@ export function PermissionsPage() {
 
   const assignMemberToGroup = async (memberId: string, groupId: number | null) => {
     if (isSupabaseEnabled) {
-      await supabase!.from("profiles").update({ permission_group_id: groupId }).eq("id", memberId);
+      const { error } = await supabase!.from("profiles").update({ permission_group_id: groupId }).eq("id", memberId);
+      if (error) {
+        toast("グループ割り当ての保存に失敗しました。Supabaseで permission_group_id 列の追加が必要です。", "error");
+        return;
+      }
     }
     setMembers(prev => prev.map(m => m.id === memberId ? { ...m, permission_group_id: groupId } : m));
   };
@@ -88,10 +94,14 @@ export function PermissionsPage() {
   };
 
   const handleSaveGroupPerms = async (groupId: number, perms: UserPermissions) => {
-    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, permissions: perms } : g));
     if (isSupabaseEnabled) {
-      await supabase!.from("permission_groups").update({ permissions: perms }).eq("id", groupId);
+      const { error } = await supabase!.from("permission_groups").update({ permissions: perms }).eq("id", groupId);
+      if (error) {
+        toast("権限の保存に失敗しました。Supabaseで permissions 列の追加が必要です。", "error");
+        return;
+      }
     }
+    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, permissions: perms } : g));
     setSettingsGroupId(null);
   };
 
