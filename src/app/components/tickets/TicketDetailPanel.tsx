@@ -87,6 +87,16 @@ export function TicketDetailPanel({
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
+  const loadRelated = useCallback(async (ticketId: string) => {
+    if (!isSupabaseEnabled) return;
+    const [{ data: cData }, { data: fData }] = await Promise.all([
+      supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at"),
+      supabase!.from("ticket_source_files").select("*").eq("ticket_id", ticketId).order("created_at"),
+    ]);
+    if (cData) setComments(cData.map(mapComment));
+    if (fData) setSourceFiles(fData.map(mapSourceFile));
+  }, []);
+
   // sync when ticket changes — set from prop immediately, then fetch fresh from DB
   useEffect(() => {
     if (!ticket) return;
@@ -129,7 +139,7 @@ export function TicketDetailPanel({
         });
     }
     if (ticket.id) loadRelated(ticket.id);
-  }, [ticket?.id]);
+  }, [ticket?.id, loadRelated]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -143,16 +153,6 @@ export function TicketDetailPanel({
     const id = setInterval(() => loadRelated(ticket.id), 10000);
     return () => clearInterval(id);
   }, [ticket?.id, loadRelated]);
-
-  const loadRelated = useCallback(async (ticketId: string) => {
-    if (!isSupabaseEnabled) return;
-    const [{ data: cData }, { data: fData }] = await Promise.all([
-      supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at"),
-      supabase!.from("ticket_source_files").select("*").eq("ticket_id", ticketId).order("created_at"),
-    ]);
-    if (cData) setComments(cData.map(mapComment));
-    if (fData) setSourceFiles(fData.map(mapSourceFile));
-  }, []);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
