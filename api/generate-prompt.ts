@@ -10,8 +10,8 @@ export default async function handler(req: any, res: any) {
   const { title, description, priority, status, assignees, startDate, dueDate, estimatedHours } = req.body ?? {};
   if (!title) return res.status(400).json({ error: "title is required" });
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) return res.status(500).json({ error: "Gemini API key not configured" });
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey) return res.status(500).json({ error: "Groq API key not configured" });
 
   const plainDescription = (description || "")
     .replace(/<[^>]*>/g, " ")
@@ -47,28 +47,33 @@ ClaudeCodeへの指示として、以下を含む明確なプロンプトを作�
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+      "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${groqKey}`,
+        },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
+          model: "llama-3.3-70b-versatile",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.4,
+          max_tokens: 1024,
         }),
       }
     );
 
-    if (!response.ok) {
-      const err = await response.text();
-      return res.status(500).json({ error: "Gemini API error: " + err });
-    }
+    if (!response.ok) {
+      const err = await response.text();
+      return res.status(500).json({ error: "Groq API error: " + err });
+    }
 
-    const data = await response.json();
-    const generated: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    if (!generated) return res.status(500).json({ error: "プロンプトの生成に失敗しました" });
+    const data = await response.json();
+    const generated: string = data.choices?.[0]?.message?.content ?? "";
+    if (!generated) return res.status(500).json({ error: "プロンプトの生成に失敗しました" });
 
-    res.json({ prompt: generated });
-  } catch (e: any) {
-    res.status(500).json({ error: e?.message ?? "Unknown error" });
-  }
+    res.json({ prompt: generated });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? "Unknown error" });
+  }
 }
