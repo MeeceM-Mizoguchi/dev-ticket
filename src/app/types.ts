@@ -51,6 +51,7 @@ export interface Member {
 }
 export interface PermissionGroup {
   id: number; name: string; description: string;
+  permissions?: UserPermissions | null;
 }
 export interface GroupProjectPermission {
   group_id: number; project_id: string; permission_type: PermissionType;

@@ -59,7 +59,7 @@ export function ProjectCard({
             </button>
 
             {menuOpen && (
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 50, background: "#FFF", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.09)", padding: "4px", minWidth: 140, overflow: "hidden" }}>
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 50, background: "#FFF", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.09)", padding: "4px", minWidth: 170, overflow: "hidden" }}>
                 {onEdit && (
                   <MenuItem icon={<Pencil style={{ width: 12, height: 12 }} />} label="編集" onClick={() => { setMenuOpen(false); onEdit(); }} color="#1A1714" />
                 )}
@@ -119,7 +119,7 @@ export function ProjectCard({
 function MenuItem({ icon, label, onClick, color }: { icon: React.ReactNode; label: string; onClick: () => void; color: string }) {
   return (
     <button onClick={onClick}
-      style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "transparent", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500, color, textAlign: "left" as const, transition: "background 0.1s" }}
+      style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "transparent", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500, color, textAlign: "left" as const, transition: "background 0.1s", whiteSpace: "nowrap" as const }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = color === "#DC2626" ? "#FEF2F2" : "#F4F5F6"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
       {icon}{label}

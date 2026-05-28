@@ -1,12 +1,12 @@
 import { useEffect, useState, type DragEvent } from "react";
-import { Plus, X, Check, Users } from "lucide-react";
+import { Plus, Settings, X, Check, Users } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
 import type { Member, PermissionGroup, UserPermissions } from "@/app/types";
 import { Avatar } from "@/app/components/shared/Avatar";
 
-const DEFAULT_USER_PERMS: UserPermissions = {
+const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false,
   canCreateSprint: false,
   canEditDelete: false,
@@ -25,7 +25,7 @@ export function PermissionsPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [newGroupName, setNewGroupName] = useState("");
   const [dragOverTarget, setDragOverTarget] = useState<number | "unassigned" | null>(null);
-  const [permTarget, setPermTarget] = useState<Member | null>(null);
+  const [settingsGroupId, setSettingsGroupId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -40,13 +40,14 @@ export function PermissionsPage() {
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return;
+    const newPerms = { ...DEFAULT_GROUP_PERMS };
     if (isSupabaseEnabled) {
       const { data } = await supabase!.from("permission_groups")
-        .insert({ name: newGroupName.trim(), description: "" }).select().single();
-      if (data) setGroups(prev => [...prev, data as PermissionGroup]);
+        .insert({ name: newGroupName.trim(), description: "", permissions: newPerms }).select().single();
+      if (data) setGroups(prev => [...prev, { ...(data as PermissionGroup), permissions: newPerms }]);
     } else {
       const newId = groups.length > 0 ? Math.max(...groups.map(g => g.id)) + 1 : 1;
-      setGroups(prev => [...prev, { id: newId, name: newGroupName.trim(), description: "" }]);
+      setGroups(prev => [...prev, { id: newId, name: newGroupName.trim(), description: "", permissions: newPerms }]);
     }
     setNewGroupName("");
   };
@@ -86,13 +87,21 @@ export function PermissionsPage() {
     setDragOverTarget(null);
   };
 
-  const unassigned = members.filter(m => !m.permission_group_id);
+  const handleSaveGroupPerms = async (groupId: number, perms: UserPermissions) => {
+    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, permissions: perms } : g));
+    if (isSupabaseEnabled) {
+      await supabase!.from("permission_groups").update({ permissions: perms }).eq("id", groupId);
+    }
+    setSettingsGroupId(null);
+  };
+
+  const settingsGroup = groups.find(g => g.id === settingsGroupId);
 
   return (
     <div style={{ padding: "24px" }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>グループ管理</h1>
-        <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>メンバーをグループに割り当てて個別権限を設定</p>
+        <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>グループを作成してメンバーを割り当て、グループ単位で権限を設定</p>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16, alignItems: "start" }}>
@@ -111,11 +120,12 @@ export function PermissionsPage() {
               ? <div style={{ textAlign: "center" as const, padding: "20px 0", color: "#B0A9A4", fontSize: 12 }}>メンバーなし</div>
               : members.map(m => {
                 const groupName = m.permission_group_id ? groups.find(g => g.id === m.permission_group_id)?.name : null;
+                const isAdmin = m.role === "admin";
                 return (
-                  <div key={m.id} draggable onDragStart={e => handleDragStart(e as DragEvent<HTMLDivElement>, m.id)}
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, cursor: "grab", marginBottom: 4, background: "#F4F5F6", userSelect: "none" as const, opacity: m.role === "admin" ? 0.5 : 1 }}
-                    title={m.role === "admin" ? "管理者は全アクセス権があります" : ""}
-                    onMouseEnter={e => { if (m.role !== "admin") (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+                  <div key={m.id} draggable={!isAdmin} onDragStart={e => !isAdmin && handleDragStart(e as DragEvent<HTMLDivElement>, m.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, cursor: isAdmin ? "default" : "grab", marginBottom: 4, background: "#F4F5F6", userSelect: "none" as const, opacity: isAdmin ? 0.5 : 1 }}
+                    title={isAdmin ? "管理者は全アクセス権があります" : ""}
+                    onMouseEnter={e => { if (!isAdmin) (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
                     <Avatar name={m.name} size="xs" />
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -123,7 +133,7 @@ export function PermissionsPage() {
                       <p style={{ fontSize: 10, color: "#B0A9A4" }}>{getRoleMeta(m.role).label}</p>
                     </div>
                     {groupName && (
-                      <span style={{ fontSize: 9, background: "#ECFDF5", color: "#059669", padding: "1px 6px", borderRadius: 10, fontWeight: 600, flexShrink: 0, maxWidth: 70, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{groupName}</span>
+                      <span style={{ fontSize: 9, background: "#ECFDF5", color: "#059669", padding: "1px 6px", borderRadius: 10, fontWeight: 600, flexShrink: 0, maxWidth: 72, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{groupName}</span>
                     )}
                   </div>
                 );
@@ -169,35 +179,75 @@ export function PermissionsPage() {
                 {groups.map(group => {
                   const groupMembers = members.filter(m => m.permission_group_id === group.id);
                   const isOver = dragOverTarget === group.id;
+                  const perms = group.permissions ?? DEFAULT_GROUP_PERMS;
+                  const activePerms = PERM_FLAGS.filter(f => perms[f.key]);
                   return (
                     <div key={group.id}
                       onDragOver={e => { e.preventDefault(); setDragOverTarget(group.id); }}
                       onDragLeave={() => setDragOverTarget(null)}
                       onDrop={e => handleDropOnGroup(e as DragEvent<HTMLDivElement>, group.id)}
                       style={{ background: "#FFFFFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px", transition: "all 0.15s" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+
+                      {/* Group header */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                         <div>
                           <p style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{group.name}</p>
                           <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>{groupMembers.length}名</p>
                         </div>
-                        <button onClick={() => handleDeleteGroup(group.id)}
-                          style={{ padding: 5, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                          <X style={{ width: 13, height: 13 }} />
-                        </button>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button onClick={() => setSettingsGroupId(group.id)}
+                            style={{ padding: 5, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}
+                            title="権限設定">
+                            <Settings style={{ width: 13, height: 13 }} />
+                          </button>
+                          <button onClick={() => handleDeleteGroup(group.id)}
+                            style={{ padding: 5, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB", display: "flex" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                            <X style={{ width: 13, height: 13 }} />
+                          </button>
+                        </div>
                       </div>
 
+                      {/* Active permission badges */}
+                      {activePerms.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4, marginBottom: 8 }}>
+                          {activePerms.map(f => (
+                            <span key={f.key} style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: f.color + "15", color: f.color }}>{f.label}</span>
+                          ))}
+                        </div>
+                      )}
+                      {activePerms.length === 0 && (
+                        <p style={{ fontSize: 10, color: "#C9C4BB", marginBottom: 8 }}>チケット参照・コメントのみ</p>
+                      )}
+
+                      {/* Member chips */}
                       {groupMembers.length === 0
                         ? (
-                          <div style={{ padding: "16px 0", textAlign: "center" as const, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>
+                          <div style={{ padding: "12px 0", textAlign: "center" as const, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>
                             <p style={{ fontSize: 11, color: "#C9C4BB" }}>メンバーをここにドラッグ</p>
                           </div>
                         )
                         : (
-                          <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 6 }}>
+                          <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 5 }}>
                             {groupMembers.map(m => (
-                              <MemberChip key={m.id} member={m} onDragStart={handleDragStart} onClick={() => setPermTarget(m)} />
+                              <div key={m.id} draggable
+                                onDragStart={e => { e.stopPropagation(); handleDragStart(e as DragEvent<HTMLDivElement>, m.id); }}
+                                style={{ display: "flex", alignItems: "center", gap: 4, background: "#F4F5F6", borderRadius: 20, padding: "3px 4px 3px 5px", cursor: "grab", userSelect: "none" as const }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
+                                <Avatar name={m.name} size="xs" />
+                                <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732" }}>{m.name}</span>
+                                <button
+                                  onClick={e => { e.stopPropagation(); assignMemberToGroup(m.id, null); }}
+                                  style={{ padding: "1px 3px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", borderRadius: 4 }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                                  <X style={{ width: 10, height: 10 }} />
+                                </button>
+                              </div>
                             ))}
                           </div>
                         )
@@ -208,79 +258,33 @@ export function PermissionsPage() {
               </div>
             )
           }
-
-          {unassigned.length > 0 && (
-            <p style={{ fontSize: 11, color: "#B0A9A4", marginTop: 12 }}>
-              未割り当て: {unassigned.map(m => m.name).join("、")}
-            </p>
-          )}
         </div>
       </div>
 
-      {permTarget && (
-        <UserPermModal
-          member={permTarget}
-          onClose={() => setPermTarget(null)}
-          onSaved={(perms) => {
-            setMembers(prev => prev.map(m => m.id === permTarget.id ? { ...m } : m));
-            setPermTarget(null);
-            // Reflect updated permissions label if needed
-          }}
+      {/* Group permissions settings modal */}
+      {settingsGroupId !== null && settingsGroup && (
+        <GroupSettingsModal
+          group={settingsGroup}
+          onClose={() => setSettingsGroupId(null)}
+          onSave={perms => handleSaveGroupPerms(settingsGroupId, perms)}
         />
       )}
     </div>
   );
 }
 
-// ── Member chip inside a group ──────────────────────────────────────────────
-function MemberChip({ member, onDragStart, onClick }: {
-  member: Member;
-  onDragStart: (e: DragEvent<HTMLDivElement>, id: string) => void;
-  onClick: () => void;
-}) {
-  return (
-    <div
-      draggable
-      onDragStart={e => { e.stopPropagation(); onDragStart(e as DragEvent<HTMLDivElement>, member.id); }}
-      onClick={onClick}
-      style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 20, padding: "4px 10px 4px 5px", cursor: "pointer", userSelect: "none" as const, transition: "background 0.1s" }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
-      <Avatar name={member.name} size="xs" />
-      <span style={{ fontSize: 11, fontWeight: 600, color: "#3D3732" }}>{member.name}</span>
-    </div>
-  );
-}
-
-// ── Per-user permission modal ────────────────────────────────────────────────
-function UserPermModal({ member, onClose, onSaved }: {
-  member: Member;
+// ── Group permissions modal ──────────────────────────────────────────────────
+function GroupSettingsModal({ group, onClose, onSave }: {
+  group: PermissionGroup;
   onClose: () => void;
-  onSaved: (perms: UserPermissions) => void;
+  onSave: (perms: UserPermissions) => void;
 }) {
-  const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_USER_PERMS });
+  const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS, ...(group.permissions ?? {}) });
   const [saving, setSaving] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    if (!isSupabaseEnabled) { setLoaded(true); return; }
-    supabase!.from("profiles").select("permissions").eq("id", member.id).single()
-      .then(({ data }) => {
-        if (data?.permissions) setLocal({ ...DEFAULT_USER_PERMS, ...(data.permissions as Partial<UserPermissions>) });
-        setLoaded(true);
-      }).catch(() => setLoaded(true));
-  }, [member.id]);
-
-  const toggle = (key: keyof UserPermissions) => {
-    setLocal(prev => ({ ...prev, [key]: !prev[key] }));
-  };
 
   const handleSave = async () => {
     setSaving(true);
-    if (isSupabaseEnabled) {
-      await supabase!.from("profiles").update({ permissions: local }).eq("id", member.id);
-    }
-    onSaved(local);
+    await onSave(local);
     setSaving(false);
   };
 
@@ -289,12 +293,9 @@ function UserPermModal({ member, onClose, onSaved }: {
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)" }} />
       <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 20px 60px rgba(0,0,0,0.20)", width: 440 }}>
         <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Avatar name={member.name} size="sm" />
-            <div>
-              <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{member.name}</h3>
-              <p style={{ fontSize: 12, color: "#A09790", marginTop: 2 }}>個別権限設定</p>
-            </div>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>グループ権限設定</h3>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{group.name}</p>
           </div>
           <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -307,30 +308,27 @@ function UserPermModal({ member, onClose, onSaved }: {
           <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14 }}>
             チケット参照・コメントはすべてのメンバーにデフォルトで付与されます。
           </p>
-          {!loaded
-            ? <p style={{ textAlign: "center" as const, color: "#B0A9A4", fontSize: 13, padding: "20px 0" }}>読み込み中...</p>
-            : PERM_FLAGS.map(f => {
-              const active = local[f.key];
-              return (
-                <label key={f.key}
-                  onClick={() => toggle(f.key)}
-                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "33" : "transparent"}`, transition: "all 0.15s" }}>
-                  <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
-                    {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 2 }}>{f.label}</p>
-                    <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
-                  </div>
-                </label>
-              );
-            })
-          }
+          {PERM_FLAGS.map(f => {
+            const active = local[f.key];
+            return (
+              <label key={f.key}
+                onClick={() => setLocal(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "33" : "transparent"}`, transition: "all 0.15s" }}>
+                <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                  {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 2 }}>{f.label}</p>
+                  <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
+                </div>
+              </label>
+            );
+          })}
         </div>
 
         <div style={{ padding: "14px 24px 20px", display: "flex", gap: 8 }}>
-          <button onClick={handleSave} disabled={saving || !loaded}
-            style={{ flex: 1, padding: "10px 0", background: (saving || !loaded) ? "#F4F5F6" : "#059669", color: (saving || !loaded) ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: (saving || !loaded) ? "not-allowed" : "pointer" }}>
+          <button onClick={handleSave} disabled={saving}
+            style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
             {saving ? "保存中..." : "保存"}
           </button>
           <button onClick={onClose}
