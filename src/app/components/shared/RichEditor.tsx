@@ -4,7 +4,7 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 const btnStyle = (active?: boolean): React.CSSProperties => ({
   padding: "3px 7px", fontSize: 11, fontWeight: 600, borderRadius: 5,
@@ -20,6 +20,9 @@ export function RichEditor({
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number; readOnly?: boolean;
 }) {
+  const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
+  const id = idRef.current;
+
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -45,9 +48,10 @@ export function RichEditor({
   if (!editor) return null;
 
   return (
-    <div style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF" }}>
+    <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF" }}>
       <style>{`
         .tiptap { outline: none; padding: 12px 14px; min-height: ${minHeight}px; font-size: 13px; line-height: 1.7; color: #1A1714; }
+        #${id} .tiptap { min-height: ${minHeight}px; }
         .tiptap p { margin: 0 0 6px; }
         .tiptap p:last-child { margin-bottom: 0; }
         .tiptap strong { font-weight: 700; }

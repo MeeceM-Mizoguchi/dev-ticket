@@ -451,8 +451,26 @@ export function TicketDetailPanel({
         <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }} onClick={() => assigneesOpen && setAssigneesOpen(false)}>
 
           {/* Metadata */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {/* 担当者 (複数選択) */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* ステータス | 優先度 */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: smeta?.color }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: smeta?.color }}>{smeta?.label}</span>
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>優先度</label>
+                <select value={priority} onChange={e => { const v = e.target.value as Priority; setPriority(v); save({ priority: v }); }}
+                  className={inputCls} style={{ color: pm.color, fontWeight: 600 }}>
+                  <option value="high">高</option><option value="medium">中</option><option value="low">低</option>
+                </select>
+              </div>
+            </div>
+
+            {/* 担当者 (全幅・複数選択) */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
               <button onClick={e => { e.stopPropagation(); setAssigneesOpen(o => !o); }}
@@ -488,24 +506,19 @@ export function TicketDetailPanel({
               )}
             </div>
 
+            {/* 開始日 | 期限日 */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" />
+              <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" />
+            </div>
+
+            {/* 見積工数 (全幅) */}
             <div>
-              <label className={labelCls}>優先度</label>
-              <select value={priority} onChange={e => { const v = e.target.value as Priority; setPriority(v); save({ priority: v }); }}
-                className={inputCls} style={{ color: pm.color, fontWeight: 600 }}>
-                <option value="high">高</option><option value="medium">中</option><option value="low">低</option>
-              </select>
-            </div>
-            <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" />
-            <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" />
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>見積工数（自動）</p>
-              <span style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}<span style={{ fontSize: 11, fontWeight: 400, color: "#9E9690", marginLeft: 2 }}>h</span></span>
-            </div>
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
-              <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                <div style={{ width: 7, height: 7, borderRadius: "50%", background: smeta?.color }} />
-                <span style={{ fontSize: 12, fontWeight: 600, color: smeta?.color }}>{smeta?.label}</span>
+              <label className={labelCls}>見積工数（開始・終了日から自動計算）</label>
+              <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#6B6458" }}>
+                <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}</span>
+                <span style={{ marginLeft: 2 }}> h</span>
+                {estimatedH === 0 && <span style={{ fontSize: 11, color: "#C9C4BB", marginLeft: 8 }}>（開始日・終了日を入力すると自動計算されます）</span>}
               </div>
             </div>
           </div>

@@ -14,14 +14,15 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 import { Avatar } from "@/app/components/shared/Avatar";
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; color: string }[] = [
-  { key: "canCreateTicket", label: "チケット作成",   color: "#059669" },
-  { key: "canCreateSprint", label: "スプリント作成", color: "#0284C7" },
-  { key: "canEditDelete",   label: "編集・削除",     color: "#D97706" },
-  { key: "canReview",       label: "レビュー権限",   color: "#7C3AED" },
+  { key: "canCreateTicket",    label: "チケット作成",   color: "#059669" },
+  { key: "canCreateSprint",    label: "スプリント作成", color: "#0284C7" },
+  { key: "canEditDelete",      label: "編集・削除",     color: "#D97706" },
+  { key: "canReview",          label: "レビュー権限",   color: "#7C3AED" },
+  { key: "canGeneratePrompt",  label: "プロンプト生成", color: "#DB2777" },
 ];
 
 const DEFAULT_PERMS: UserPermissions = {
-  canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false,
+  canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false,
 };
 
 export function ProjectsPage() {
@@ -506,10 +507,11 @@ function MemberPermModal({ member, onClose }: { member: Member; onClose: () => v
   };
 
   const PERM_FLAGS_FULL = [
-    { key: "canCreateTicket" as keyof UserPermissions, label: "チケット作成", desc: "チケットの新規作成が可能", color: "#059669" },
-    { key: "canCreateSprint" as keyof UserPermissions, label: "スプリント作成", desc: "スプリントの新規作成が可能", color: "#0284C7" },
-    { key: "canEditDelete" as keyof UserPermissions,   label: "編集・削除",     desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
-    { key: "canReview" as keyof UserPermissions,       label: "レビュー権限",   desc: "レビュアーとして承認・差し戻しが可能", color: "#7C3AED" },
+    { key: "canCreateTicket"   as keyof UserPermissions, label: "チケット作成",   desc: "チケットの新規作成が可能", color: "#059669" },
+    { key: "canCreateSprint"   as keyof UserPermissions, label: "スプリント作成", desc: "スプリントの新規作成が可能", color: "#0284C7" },
+    { key: "canEditDelete"     as keyof UserPermissions, label: "編集・削除",     desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
+    { key: "canReview"         as keyof UserPermissions, label: "レビュー権限",   desc: "レビュアーとして承認・差し戻しが可能", color: "#7C3AED" },
+    { key: "canGeneratePrompt" as keyof UserPermissions, label: "プロンプト生成", desc: "ClaudeCode プロンプトの生成が可能", color: "#DB2777" },
   ];
 
   return (
