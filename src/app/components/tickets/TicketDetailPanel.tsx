@@ -46,6 +46,7 @@ export function TicketDetailPanel({
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const hasReviewPermission = isAdminOrPM || userPermissions.canReview;
+  const hasGeneratePromptPermission = isAdminOrPM || userPermissions.canGeneratePrompt;
 
   // editable state
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
@@ -536,7 +537,7 @@ export function TicketDetailPanel({
           </div>
 
           {/* AI Prompt Generation */}
-          <div style={{ background: "#FFF", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 12, padding: "14px 16px" }}>
+          {hasGeneratePromptPermission && <div style={{ background: "#FFF", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 12, padding: "14px 16px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: generatedPrompt ? 10 : 0 }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: "#7C3AED", display: "flex", alignItems: "center", gap: 5 }}>
                 <Sparkles style={{ width: 13, height: 13 }} />ClaudeCode プロンプト
@@ -558,7 +559,7 @@ export function TicketDetailPanel({
                 </button>
               </div>
             )}
-          </div>
+          </div>}
 
           {/* Source files */}
           <div>

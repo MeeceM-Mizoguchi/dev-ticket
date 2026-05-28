@@ -8,6 +8,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canCreateSprint: false,
   canEditDelete: false,
   canReview: false,
+  canGeneratePrompt: false,
 };
 
 const ALL_PERMISSIONS: UserPermissions = {
@@ -15,6 +16,7 @@ const ALL_PERMISSIONS: UserPermissions = {
   canCreateSprint: true,
   canEditDelete: true,
   canReview: true,
+  canGeneratePrompt: true,
 };
 
 interface AuthCtxType {

@@ -65,4 +65,5 @@ export interface UserPermissions {
   canCreateSprint: boolean;
   canEditDelete: boolean;
   canReview: boolean;
+  canGeneratePrompt: boolean;
 }

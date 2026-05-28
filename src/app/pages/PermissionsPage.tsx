@@ -12,13 +12,15 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateSprint: false,
   canEditDelete: false,
   canReview: false,
+  canGeneratePrompt: false,
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; color: string }[] = [
-  { key: "canCreateTicket", label: "チケット作成",   desc: "チケットの新規作成が可能", color: "#059669" },
-  { key: "canCreateSprint", label: "スプリント作成", desc: "スプリントの新規作成が可能", color: "#0284C7" },
-  { key: "canEditDelete",   label: "編集・削除",     desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
-  { key: "canReview",       label: "レビュー権限",   desc: "レビュアーとして承認・差し戻しが可能", color: "#7C3AED" },
+  { key: "canCreateTicket",    label: "チケット作成",        desc: "チケットの新規作成が可能", color: "#059669" },
+  { key: "canCreateSprint",    label: "スプリント作成",      desc: "スプリントの新規作成が可能", color: "#0284C7" },
+  { key: "canEditDelete",      label: "編集・削除",          desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
+  { key: "canReview",          label: "レビュー権限",        desc: "レビュアーとして承認・差し戻しが可能", color: "#7C3AED" },
+  { key: "canGeneratePrompt",  label: "プロンプト生成",      desc: "ClaudeCode プロンプトの生成が可能", color: "#DB2777" },
 ];
 
 export function PermissionsPage() {
