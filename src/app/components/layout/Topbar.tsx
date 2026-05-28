@@ -13,7 +13,7 @@ const PAGE_META: Record<Exclude<Page, "login">, { title: string; sub: string }> 
   members:     { title: "メンバー", sub: "チーム構成と担当状況" },
   settings:    { title: "設定", sub: "アカウントとシステム設定" },
   sprint:      { title: "スプリント管理", sub: "スプリントと進捗" },
-  permissions: { title: "権限管理", sub: "メンバーとプロジェクトのアクセス制御" },
+  permissions: { title: "グループ管理", sub: "メンバーのグループとアクセス権限を設定" },
 };
 
 export function Topbar() {

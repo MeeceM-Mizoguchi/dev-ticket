@@ -14,7 +14,7 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 import { Avatar } from "@/app/components/shared/Avatar";
 
 export function ProjectsPage() {
-  const { userRole } = useAuth();
+  const { userRole, userName } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
@@ -66,17 +66,22 @@ export function ProjectsPage() {
     setAssignTarget(null);
   };
 
-  const filtered = projects.filter(p => {
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const visibleProjects = isAdminOrPM
+    ? projects
+    : projects.filter(p => p.members.includes(userName));
+
+  const filtered = visibleProjects.filter(p => {
     const ms = p.name.includes(search) || p.client.includes(search) || p.id.includes(search);
     return ms && (statusFilter === "all" || p.status === statusFilter);
   });
 
   const statusOpts = [
-    { value: "all", label: "すべて", count: projects.length },
-    { value: "in-progress", label: "進行中", count: projects.filter(p => p.status === "in-progress").length },
-    { value: "planning", label: "計画中", count: projects.filter(p => p.status === "planning").length },
-    { value: "on-hold", label: "保留中", count: projects.filter(p => p.status === "on-hold").length },
-    { value: "completed", label: "完了", count: projects.filter(p => p.status === "completed").length },
+    { value: "all", label: "すべて", count: visibleProjects.length },
+    { value: "in-progress", label: "進行中", count: visibleProjects.filter(p => p.status === "in-progress").length },
+    { value: "planning", label: "計画中", count: visibleProjects.filter(p => p.status === "planning").length },
+    { value: "on-hold", label: "保留中", count: visibleProjects.filter(p => p.status === "on-hold").length },
+    { value: "completed", label: "完了", count: visibleProjects.filter(p => p.status === "completed").length },
   ];
 
   if (loading) return <PageLoader />;
@@ -196,9 +201,9 @@ function AssignMembersModal({ project, allMembers, onClose, onSave }: {
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-          {allMembers.length === 0 ? (
+          {allMembers.filter(m => m.role !== "admin").length === 0 ? (
             <p style={{ textAlign: "center", color: "#B0A9A4", fontSize: 13, padding: "24px 0" }}>メンバーが登録されていません</p>
-          ) : allMembers.map(m => {
+          ) : allMembers.filter(m => m.role !== "admin").map(m => {
             const isSelected = selected.has(m.name);
             return (
               <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 9, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 2, transition: "background 0.1s" }}

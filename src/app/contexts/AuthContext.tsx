@@ -1,27 +1,49 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
-import type { Role } from "@/app/types";
+import type { Role, UserPermissions } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MEMBERS } from "@/app/data/mock";
+
+const DEFAULT_PERMISSIONS: UserPermissions = {
+  canCreateTicket: false,
+  canCreateSprint: false,
+  canEditDelete: false,
+  canReview: false,
+};
+
+const ALL_PERMISSIONS: UserPermissions = {
+  canCreateTicket: true,
+  canCreateSprint: true,
+  canEditDelete: true,
+  canReview: true,
+};
 
 interface AuthCtxType {
   userName: string;
   userRole: Role;
   userId: string;
+  userPermissions: UserPermissions;
   login: (email: string, password: string) => Promise<string | null>;
   logout: () => void;
 }
 
 export const AuthContext = createContext<AuthCtxType>({
   userName: "", userRole: "developer", userId: "",
+  userPermissions: { ...DEFAULT_PERMISSIONS },
   login: async () => null, logout: () => {},
 });
 
 export function useAuth() { return useContext(AuthContext); }
 
+function resolvePermissions(role: Role, rawPerms: unknown): UserPermissions {
+  if (role === "admin" || role === "project-manager") return { ...ALL_PERMISSIONS };
+  return { ...DEFAULT_PERMISSIONS, ...(rawPerms as Partial<UserPermissions> ?? {}) };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [userName, setUserName] = useState("");
   const [userRole, setUserRole] = useState<Role>("developer");
   const [userId, setUserId] = useState("");
+  const [userPermissions, setUserPermissions] = useState<UserPermissions>({ ...DEFAULT_PERMISSIONS });
   const [authReady, setAuthReady] = useState(!isSupabaseEnabled);
 
   useEffect(() => {
@@ -29,19 +51,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUserName(sessionStorage.getItem("userName") || "");
       setUserRole((sessionStorage.getItem("userRole") as Role) || "developer");
       setUserId(sessionStorage.getItem("userId") || "");
+      const savedPerms = sessionStorage.getItem("userPermissions");
+      if (savedPerms) {
+        try { setUserPermissions(JSON.parse(savedPerms)); } catch { /* ignore */ }
+      }
       return;
     }
     const authTimer = setTimeout(() => setAuthReady(true), 5000);
     supabase!.auth.getSession().then(async ({ data: { session } }) => {
       clearTimeout(authTimer);
       if (session) {
-        const { data: p } = await supabase!.from("profiles").select("name, role").eq("id", session.user.id).single();
+        const { data: p } = await supabase!.from("profiles").select("name, role, permissions").eq("id", session.user.id).single();
         if (p) {
-          setUserName(p.name); setUserRole(p.role as Role); setUserId(session.user.id);
+          const role = p.role as Role;
+          const perms = resolvePermissions(role, p.permissions);
+          setUserName(p.name); setUserRole(role); setUserId(session.user.id);
+          setUserPermissions(perms);
           sessionStorage.setItem("isLoggedIn", "true");
           sessionStorage.setItem("userName", p.name);
           sessionStorage.setItem("userRole", p.role);
           sessionStorage.setItem("userId", session.user.id);
+          sessionStorage.setItem("userPermissions", JSON.stringify(perms));
         }
       }
       setAuthReady(true);
@@ -49,21 +79,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        supabase!.from("profiles").select("name, role").eq("id", session.user.id).single()
+        supabase!.from("profiles").select("name, role, permissions").eq("id", session.user.id).single()
           .then(({ data: p }) => {
             if (p) {
-              setUserName(p.name); setUserRole(p.role as Role); setUserId(session.user.id);
+              const role = p.role as Role;
+              const perms = resolvePermissions(role, p.permissions);
+              setUserName(p.name); setUserRole(role); setUserId(session.user.id);
+              setUserPermissions(perms);
               sessionStorage.setItem("userName", p.name);
               sessionStorage.setItem("userRole", p.role);
               sessionStorage.setItem("userId", session.user.id);
+              sessionStorage.setItem("userPermissions", JSON.stringify(perms));
             }
           });
       } else {
         setUserName(""); setUserRole("developer"); setUserId("");
+        setUserPermissions({ ...DEFAULT_PERMISSIONS });
         sessionStorage.removeItem("isLoggedIn");
         sessionStorage.removeItem("userName");
         sessionStorage.removeItem("userRole");
         sessionStorage.removeItem("userId");
+        sessionStorage.removeItem("userPermissions");
       }
     });
     return () => { clearTimeout(authTimer); subscription.unsubscribe(); };
@@ -74,11 +110,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await new Promise(r => setTimeout(r, 650));
       const member = MEMBERS.find(m => m.email === email);
       if (member && password === "password") {
-        setUserName(member.name); setUserRole(member.role); setUserId(member.id);
+        const role = member.role as Role;
+        const perms = resolvePermissions(role, null);
+        setUserName(member.name); setUserRole(role); setUserId(member.id);
+        setUserPermissions(perms);
         sessionStorage.setItem("isLoggedIn", "true");
         sessionStorage.setItem("userName", member.name);
         sessionStorage.setItem("userRole", member.role);
         sessionStorage.setItem("userId", member.id);
+        sessionStorage.setItem("userPermissions", JSON.stringify(perms));
         return null;
       }
       return "メールアドレスまたはパスワードが正しくありません。";
@@ -92,10 +132,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     if (isSupabaseEnabled) supabase!.auth.signOut();
     setUserName(""); setUserRole("developer"); setUserId("");
+    setUserPermissions({ ...DEFAULT_PERMISSIONS });
     sessionStorage.removeItem("isLoggedIn");
     sessionStorage.removeItem("userName");
     sessionStorage.removeItem("userRole");
     sessionStorage.removeItem("userId");
+    sessionStorage.removeItem("userPermissions");
   };
 
   if (!authReady) return (
@@ -110,7 +152,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ userName, userRole, userId, login, logout }}>
+    <AuthContext.Provider value={{ userName, userRole, userId, userPermissions, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

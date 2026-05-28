@@ -42,8 +42,9 @@ export function TicketDetailPanel({
   ticket, onClose, onUpdated,
 }: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void }) {
 
-  const { userName, userRole } = useAuth();
+  const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const hasReviewPermission = isAdminOrPM || userPermissions.canReview;
 
   // editable state
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
@@ -329,8 +330,8 @@ export function TicketDetailPanel({
   // 担当者チェック: 自分が担当者かどうか
   const isAssignee = assignees.length === 0 || assignees.includes(userName);
   const canSendReview = status === "in-progress" && !!reviewerName && isAssignee;
-  // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつ担当者ではない
-  const canReview = (userName === reviewerName || isAdminOrPM) && !isAssignee;
+  // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつ担当者ではない、かつレビュー権限あり
+  const canReview = (userName === reviewerName || isAdminOrPM) && !isAssignee && hasReviewPermission;
   const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
 
   const assigneeLabel = assignees.length === 0 ? "未割り当て"
@@ -535,8 +536,8 @@ export function TicketDetailPanel({
             })}
           </div>
 
-          {/* ── Review flow (担当者のみ表示) ── */}
-          {isAssignee && (
+          {/* ── Review flow ── */}
+          {hasReviewPermission && isAssignee && (
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
                 レビューフロー

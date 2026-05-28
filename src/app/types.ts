@@ -59,3 +59,9 @@ export interface TicketItem {
   id: string; title: string; project: string; status: TicketStatus;
   priority: Priority; assignee: string; dueDate: string;
 }
+export interface UserPermissions {
+  canCreateTicket: boolean;
+  canCreateSprint: boolean;
+  canEditDelete: boolean;
+  canReview: boolean;
+}

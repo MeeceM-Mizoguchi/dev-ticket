@@ -9,7 +9,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[] }[
   { id: "projects",    label: "PJ一覧",       icon: FolderKanban },
   { id: "clients",     label: "クライアント", icon: Building2,   roles: ["admin", "project-manager"] },
   { id: "members",     label: "メンバー",     icon: Users,        roles: ["admin", "project-manager"] },
-  { id: "permissions", label: "権限管理",     icon: ShieldCheck,  roles: ["admin", "project-manager"] },
+  { id: "permissions", label: "グループ管理", icon: ShieldCheck,  roles: ["admin", "project-manager"] },
 ];
 
 export function Sidebar() {

@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, type ElementType } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
@@ -18,6 +19,10 @@ export function SprintPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { toast: _toast } = useToast();
+  const { userRole, userPermissions } = useAuth();
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const canCreateSprint = isAdminOrPM || userPermissions.canCreateSprint;
+  const canCreateTicket = isAdminOrPM || userPermissions.canCreateTicket;
   const [project, setProject] = useState<Project | null>(PROJECTS.find(p => p.id === projectId) ?? null);
   const [sprints, setSprints] = useState<Sprint[]>(SPRINTS.filter(s => s.projectId === projectId));
   const [viewMode, setViewMode] = useState<SprintView>("list");
@@ -101,12 +106,14 @@ export function SprintPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>スプリント管理</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project.name} · {sprints.length} スプリント</p>
         </div>
-        <button onClick={() => setShowCreate(true)}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-          <Plus style={{ width: 15, height: 15 }} />新規スプリント
-        </button>
+        {canCreateSprint && (
+          <button onClick={() => setShowCreate(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+            <Plus style={{ width: 15, height: 15 }} />新規スプリント
+          </button>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 4, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: 4, marginBottom: 20, width: "fit-content" }}>
@@ -118,9 +125,9 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={s => setDeleteTarget(s)} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={setCreateForSprintId} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onUpdated={refreshSprints} onCreateTicket={setCreateForSprintId} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={setCreateForSprintId} />}
+      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={isAdminOrPM ? s => setDeleteTarget(s) : undefined} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
       {createForSprintId && createForSprint && (

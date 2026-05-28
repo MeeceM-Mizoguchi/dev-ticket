@@ -3,7 +3,7 @@ import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { ExternalLink, X, MessageSquare, Paperclip, User, Plus } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
-import { TICKET_STATUSES, getSprintStatusMeta, formatDate, computeSprintStatus } from "@/app/lib/helpers";
+import { TICKET_STATUSES, formatDate } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -91,7 +91,9 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
 }) {
-  const { userName } = useAuth();
+  const { userName, userRole, userPermissions } = useAuth();
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const canCreateTicket = isAdminOrPM || userPermissions.canCreateTicket;
   const [selectedSprintId, setSelectedSprintId] = useState(sprints[0]?.id ?? "");
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [modalComment, setModalComment] = useState("");
@@ -193,18 +195,15 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   return (
     <div>
       {/* ── Tab bar ── */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid rgba(26,23,20,0.08)", marginBottom: 16, overflowX: "auto" }}>
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid rgba(26,23,20,0.08)", marginBottom: 16, flexWrap: "wrap" as const }}>
         {sprints.map(sprint => {
           const isActive = sprint.id === selectedSprintId;
-          const sm = getSprintStatusMeta(computeSprintStatus(sprint));
           return (
             <button key={sprint.id} onClick={() => setSelectedSprintId(sprint.id)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", fontSize: 12, fontWeight: isActive ? 700 : 500, color: isActive ? "#059669" : "#6B6458", border: "none", borderBottom: isActive ? "2px solid #059669" : "2px solid transparent", background: "transparent", cursor: "pointer", whiteSpace: "nowrap" as const, transition: "all 0.15s", marginBottom: -2 }}
+              style={{ padding: "10px 16px", fontSize: 12, fontWeight: isActive ? 700 : 500, color: isActive ? "#059669" : "#6B6458", border: "none", borderBottom: isActive ? "2px solid #059669" : "2px solid transparent", background: "transparent", cursor: "pointer", whiteSpace: "nowrap" as const, transition: "all 0.15s", marginBottom: -2 }}
               onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.color = "#1A1714"; }}
               onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}>
               {sprint.name}
-              <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
-              <span style={{ fontSize: 10, color: "#B0A9A4" }}>{sprint.tickets.length}</span>
             </button>
           );
         })}
@@ -224,7 +223,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
             <ExternalLink style={{ width: 11, height: 11 }} />詳細
           </button>
-          {onCreateTicket && (
+          {onCreateTicket && canCreateTicket && (
             <button onClick={() => onCreateTicket(currentSprint.id)}
               style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
@@ -237,20 +236,19 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
       {/* ── Kanban board ── */}
       {currentSprint && (
-        <div style={{ overflowX: "auto", height: "calc(100vh - 320px)", minHeight: 320 }}>
-          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", height: "100%" }}>
+        <div style={{ overflowX: "auto" }}>
+          <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
             {TICKET_STATUSES.map(col => {
               const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
               return (
-                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 4, height: "100%" }}>
+                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 4 }}>
                   {/* Column header */}
                   <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{colTickets.length}</span>
                   </div>
-                  {/* Drop zone — fills remaining height and scrolls internally */}
-                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                    style={{ flex: 1, minHeight: 0, overflowY: "auto" }} />
+                  {/* Drop zone */}
+                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket} />
                 </div>
               );
             })}
