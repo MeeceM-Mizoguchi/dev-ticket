@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { Search, Plus, FolderKanban, X, Check, AlertTriangle, ShieldCheck, Users } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -197,13 +197,16 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
 
   const nonAdminMembers = allMembers.filter(m => m.role !== "admin");
 
-  // Names already covered by selected groups (to avoid showing them in individual list)
-  const groupCoveredNames = new Set<string>();
-  for (const gid of selectedGroupIds) {
-    const excl = groupExclusions[gid] || [];
-    allMembers.filter(m => m.permission_group_id === gid && !excl.includes(m.name))
-      .forEach(m => groupCoveredNames.add(m.name));
-  }
+  const groupCoveredNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const gid of selectedGroupIds) {
+      const excl = groupExclusions[gid] || [];
+      allMembers
+        .filter(m => m.permission_group_id === gid && !excl.includes(m.name))
+        .forEach(m => names.add(m.name));
+    }
+    return names;
+  }, [selectedGroupIds, groupExclusions, allMembers]);
 
   const toggleMember = (name: string) => {
     setSelected(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
@@ -226,14 +229,23 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
 
   const resolveConflict = (resolution: "remove-individual" | "exclude-from-group") => {
     if (!conflict) return;
+    // Capture values before clearing state to avoid stale closure issues
+    const groupId = conflict.groupId;
+    const names = [...conflict.names];
+
     if (resolution === "remove-individual") {
-      // Remove from individual selection, add group
-      setSelected(prev => { const n = new Set(prev); conflict.names.forEach(name => n.delete(name)); return n; });
+      setSelected(prev => {
+        const n = new Set(prev);
+        names.forEach(name => n.delete(name));
+        return n;
+      });
     } else {
-      // Exclude conflicting members from the group, keep individual
-      setGroupExclusions(prev => ({ ...prev, [conflict.groupId]: [...(prev[conflict.groupId] || []), ...conflict.names] }));
+      setGroupExclusions(prev => ({
+        ...prev,
+        [groupId]: [...(prev[groupId] || []), ...names],
+      }));
     }
-    setSelectedGroupIds(prev => new Set([...prev, conflict.groupId]));
+    setSelectedGroupIds(prev => new Set([...prev, groupId]));
     setConflict(null);
   };
 
@@ -330,13 +342,15 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
                 const isSelected = selectedGroupIds.has(group.id);
                 const activePerms = PERM_FLAGS.filter(f => group.permissions?.[f.key]);
                 return (
-                  <label key={group.id}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 9, cursor: "pointer", background: isSelected ? "#ECFDF5" : "#F9F8F6", marginBottom: 4, transition: "background 0.1s", border: `1px solid ${isSelected ? "rgba(5,150,105,0.25)" : "transparent"}` }}
+                  <div key={group.id}
+                    onClick={() => toggleGroup(group.id, group.name)}
+                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 9, cursor: "pointer", background: isSelected ? "#ECFDF5" : "#F9F8F6", marginBottom: 4, transition: "background 0.1s", border: `1px solid ${isSelected ? "rgba(5,150,105,0.25)" : "transparent"}`, userSelect: "none" as const }}
                     onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isSelected ? "#ECFDF5" : "#F9F8F6"; }}>
-                    <input type="checkbox" checked={isSelected} onChange={() => toggleGroup(group.id, group.name)}
-                      style={{ accentColor: "#059669", width: 15, height: 15, cursor: "pointer" }} />
-                    <div style={{ width: 30, height: 30, borderRadius: 8, background: isSelected ? "#ECFDF5" : "#F4F5F6", border: `1px solid ${isSelected ? "rgba(5,150,105,0.25)" : "rgba(26,23,20,0.08)"}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <div style={{ width: 16, height: 16, borderRadius: 4, border: `2px solid ${isSelected ? "#059669" : "rgba(26,23,20,0.25)"}`, background: isSelected ? "#059669" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                      {isSelected && <Check style={{ width: 10, height: 10, color: "#FFF" }} />}
+                    </div>
+                    <div style={{ width: 30, height: 30, borderRadius: 8, background: isSelected ? "#D1FAE5" : "#F4F5F6", border: `1px solid ${isSelected ? "rgba(5,150,105,0.25)" : "rgba(26,23,20,0.08)"}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
                       <Users style={{ width: 14, height: 14, color: isSelected ? "#059669" : "#B0A9A4" }} />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
@@ -349,8 +363,7 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
                         {activePerms.length === 0 && <span style={{ fontSize: 9, color: "#C9C4BB" }}>チケット参照のみ</span>}
                       </div>
                     </div>
-                    {isSelected && <Check style={{ width: 13, height: 13, color: "#059669", flexShrink: 0 }} />}
-                  </label>
+                  </div>
                 );
               })}
             </div>
@@ -367,11 +380,13 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
             if (groupCoveredNames.has(m.name)) {
               return (
                 <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 9, marginBottom: 2, background: "#F0FDF8", border: "1px solid rgba(5,150,105,0.15)", opacity: 0.7 }}>
-                  <Check style={{ width: 13, height: 13, color: "#059669", flexShrink: 0 }} />
+                  <div style={{ width: 16, height: 16, borderRadius: 4, border: "2px solid rgba(5,150,105,0.30)", background: "transparent", flexShrink: 0 }} />
                   <Avatar name={m.name} size="xs" />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: 12, fontWeight: 600, color: "#1A1714" }}>{m.name}</p>
-                    <p style={{ fontSize: 10, color: "#059669" }}>グループ経由でアサイン済み</p>
+                    <p style={{ fontSize: 10, color: "#059669", display: "flex", alignItems: "center", gap: 3 }}>
+                      <Users style={{ width: 9, height: 9 }} />グループ経由でアサイン済み
+                    </p>
                   </div>
                 </div>
               );

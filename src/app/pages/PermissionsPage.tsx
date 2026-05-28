@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent } from "react";
-import { Plus, Settings, X, Check, Users } from "lucide-react";
+import { Plus, Search, Settings, X, Check, Users } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
@@ -25,7 +25,8 @@ export function PermissionsPage() {
   const { toast } = useToast();
   const [groups, setGroups] = useState<PermissionGroup[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
-  const [newGroupName, setNewGroupName] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [dragOverTarget, setDragOverTarget] = useState<number | "unassigned" | null>(null);
   const [settingsGroupId, setSettingsGroupId] = useState<number | null>(null);
 
@@ -40,18 +41,16 @@ export function PermissionsPage() {
     });
   }, []);
 
-  const handleCreateGroup = async () => {
-    if (!newGroupName.trim()) return;
+  const handleCreateGroup = async (name: string) => {
     const newPerms = { ...DEFAULT_GROUP_PERMS };
     if (isSupabaseEnabled) {
       const { data } = await supabase!.from("permission_groups")
-        .insert({ name: newGroupName.trim(), description: "", permissions: newPerms }).select().single();
+        .insert({ name, description: "", permissions: newPerms }).select().single();
       if (data) setGroups(prev => [...prev, { ...(data as PermissionGroup), permissions: newPerms }]);
     } else {
       const newId = groups.length > 0 ? Math.max(...groups.map(g => g.id)) + 1 : 1;
-      setGroups(prev => [...prev, { id: newId, name: newGroupName.trim(), description: "", permissions: newPerms }]);
+      setGroups(prev => [...prev, { id: newId, name, description: "", permissions: newPerms }]);
     }
-    setNewGroupName("");
   };
 
   const handleDeleteGroup = async (groupId: number) => {
@@ -113,6 +112,9 @@ export function PermissionsPage() {
     setSettingsGroupId(null);
   };
 
+  const filteredGroups = searchQuery.trim()
+    ? groups.filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    : groups;
   const settingsGroup = groups.find(g => g.id === settingsGroupId);
 
   return (
@@ -168,20 +170,22 @@ export function PermissionsPage() {
           </p>
 
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <input
-              value={newGroupName}
-              onChange={e => setNewGroupName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") handleCreateGroup(); }}
-              placeholder="新しいグループ名..."
-              style={{ flex: 1, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px", fontSize: 12, color: "#1A1714", outline: "none" }}
-              onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; }}
-              onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; }}
-            />
-            <button onClick={handleCreateGroup}
-              style={{ padding: "8px 14px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center" }}
+            <div style={{ position: "relative", flex: 1 }}>
+              <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 13, height: 13, color: "#B0A9A4", pointerEvents: "none" }} />
+              <input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="グループを検索..."
+                style={{ width: "100%", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px 8px 30px", fontSize: 12, color: "#1A1714", outline: "none", boxSizing: "border-box" as const }}
+                onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; }}
+                onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; }}
+              />
+            </div>
+            <button onClick={() => setShowNewGroupModal(true)}
+              style={{ padding: "8px 14px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" as const }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-              <Plus style={{ width: 14, height: 14 }} />
+              <Plus style={{ width: 13, height: 13 }} />新規グループ追加
             </button>
           </div>
 
@@ -192,9 +196,16 @@ export function PermissionsPage() {
                 <p style={{ fontSize: 13, color: "#B0A9A4" }}>グループを作成して<br />メンバーを割り当てましょう</p>
               </div>
             )
+            : filteredGroups.length === 0
+            ? (
+              <div style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "32px 20px", textAlign: "center" as const }}>
+                <Search style={{ width: 22, height: 22, color: "#C9C4BB", margin: "0 auto 10px" }} />
+                <p style={{ fontSize: 13, color: "#B0A9A4" }}>「{searchQuery}」に一致するグループが見つかりません</p>
+              </div>
+            )
             : (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
-                {groups.map(group => {
+                {filteredGroups.map(group => {
                   const groupMembers = members.filter(m => m.permission_group_id === group.id);
                   const isOver = dragOverTarget === group.id;
                   const perms = group.permissions ?? DEFAULT_GROUP_PERMS;
@@ -279,6 +290,14 @@ export function PermissionsPage() {
         </div>
       </div>
 
+      {/* New group modal */}
+      {showNewGroupModal && (
+        <NewGroupModal
+          onClose={() => setShowNewGroupModal(false)}
+          onCreate={handleCreateGroup}
+        />
+      )}
+
       {/* Group permissions settings modal */}
       {settingsGroupId !== null && settingsGroup && (
         <GroupSettingsModal
@@ -288,6 +307,60 @@ export function PermissionsPage() {
         />
       )}
     </div>
+  );
+}
+
+// ── New group modal ──────────────────────────────────────────────────────────
+function NewGroupModal({ onClose, onCreate }: {
+  onClose: () => void;
+  onCreate: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+
+  const handleCreate = () => {
+    if (!name.trim()) return;
+    onCreate(name.trim());
+    onClose();
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 20px 60px rgba(0,0,0,0.20)", width: 400 }}>
+        <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>新規グループ追加</h3>
+          <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+            <X style={{ width: 15, height: 15 }} />
+          </button>
+        </div>
+        <div style={{ padding: "20px 24px" }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6, letterSpacing: "0.04em" }}>グループ名</label>
+          <input
+            // eslint-disable-next-line jsx-a11y/no-autofocus
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") onClose(); }}
+            placeholder="例: フロントエンドチーム"
+            style={{ width: "100%", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "10px 12px", fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const }}
+            onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; e.currentTarget.style.background = "#FFF"; }}
+            onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }}
+          />
+        </div>
+        <div style={{ padding: "0 24px 20px", display: "flex", gap: 8 }}>
+          <button onClick={handleCreate} disabled={!name.trim()}
+            style={{ flex: 1, padding: "10px 0", background: !name.trim() ? "#F4F5F6" : "#059669", color: !name.trim() ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: !name.trim() ? "not-allowed" : "pointer" }}>
+            作成
+          </button>
+          <button onClick={onClose}
+            style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 
