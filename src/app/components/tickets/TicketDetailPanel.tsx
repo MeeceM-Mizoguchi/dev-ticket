@@ -73,6 +73,7 @@ export function TicketDetailPanel({
   const [reviewFiles, setReviewFiles]     = useState<{ name: string; file: File }[]>([]);
   // reviewer's input for revision/approval comment
   const [revisionInput, setRevisionInput] = useState("");
+  const [revisionImages, setRevisionImages] = useState<string[]>([]);
 
   // comment form
   const [commentText, setCommentText]     = useState("");
@@ -126,6 +127,7 @@ export function TicketDetailPanel({
     setReviewContent("");
     setReviewFiles([]);
     setRevisionInput("");
+    setRevisionImages([]);
     setEditingId(null);
     setAssigneesOpen(false);
     setGeneratedPrompt(ticket.generatedPrompt ?? "");
@@ -220,6 +222,14 @@ export function TicketDetailPanel({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const pasteImage = useCallback((e: React.ClipboardEvent, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const imgItems = items.filter(i => i.type.startsWith("image/"));
+    if (imgItems.length === 0) return;
+    e.preventDefault();
+    imgItems.forEach(item => { const f = item.getAsFile(); if (f) setter(prev => [...prev, URL.createObjectURL(f)]); });
+  }, []);
 
   const setStatusAndProgress = (newStatus: TicketStatus) => {
     const p = STATUS_PROGRESS[newStatus] ?? progress;
@@ -325,8 +335,9 @@ export function TicketDetailPanel({
     const content = revisionText.trim()
       ? revisionText
       : `<p>${mentions} に修正依頼を送信しました</p>`;
-    await addComment(content, "revision_request", [], newStatus);
+    await addComment(content, "revision_request", revisionImages, newStatus);
     setRevisionInput("");
+    setRevisionImages([]);
     onUpdated?.();
   };
 
@@ -339,8 +350,9 @@ export function TicketDetailPanel({
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
     }
     const content = approvalText.trim() ? approvalText : "<p>✅ レビューを承認しました</p>";
-    await addComment(content, "review_approved", [], newStatus);
+    await addComment(content, "review_approved", revisionImages, newStatus);
     setRevisionInput("");
+    setRevisionImages([]);
     onUpdated?.();
   };
 
@@ -498,13 +510,13 @@ export function TicketDetailPanel({
           </div>
 
           {/* 詳細 + 画像 */}
-          <div>
+          <div onPaste={e => pasteImage(e, setTicketImages)}>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
             <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} />
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 9, cursor: "pointer", background: "#FAFAF8", marginTop: 8 }}>
               <ImageIcon style={{ width: 13, height: 13, color: "#B0A9A4" }} />
-              <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を追加</span>
+              <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を追加、または Ctrl+V で貼り付け</span>
               <input type="file" accept="image/*" multiple style={{ display: "none" }}
                 onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setTicketImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
             </label>
@@ -764,9 +776,22 @@ export function TicketDetailPanel({
                         )
                       )}
                       {showReviewForm && (
-                        <div style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
+                        <div onPaste={e => pasteImage(e, setRevisionImages)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                           <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力..." minHeight={60} />
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} />
+                          {revisionImages.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                              {revisionImages.map((img, i) => (
+                                <div key={i} style={{ position: "relative" }}>
+                                  <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)" }} />
+                                  <button onClick={() => setRevisionImages(prev => prev.filter((_, j) => j !== i))}
+                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                             <button onClick={() => handleRevisionRequest(revisionInput)}
                               style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
@@ -837,7 +862,7 @@ export function TicketDetailPanel({
             })}
 
             {/* Add comment */}
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
+            <div onPaste={e => pasteImage(e, setCommentImages)} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <Avatar name={userName} size="xs" />
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -861,7 +886,7 @@ export function TicketDetailPanel({
               )}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
                 <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                  <ImageIcon style={{ width: 13, height: 13 }} />画像
+                  <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
                   <input type="file" accept="image/*" multiple style={{ display: "none" }}
                     onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setCommentImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
                 </label>
