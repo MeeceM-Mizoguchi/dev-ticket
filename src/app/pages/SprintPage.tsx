@@ -49,7 +49,7 @@ export function SprintPage() {
 
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date")
+    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" })
       .then(({ data }) => { if (data?.length) setSprints(data.map(mapSprint)); });
   };
 
@@ -58,7 +58,7 @@ export function SprintPage() {
     if (!isSupabaseEnabled || !projectId) return;
     Promise.all([
       supabase!.from("projects").select("*").eq("id", projectId).single(),
-      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date"),
+      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }),
     ]).then(([{ data: p }, { data: s }]) => {
       if (p) setProject(mapProject(p));
       if (s?.length) setSprints(s.map(mapSprint));
