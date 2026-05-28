@@ -2,7 +2,7 @@ import type { Project, Client, Sprint, SprintTicket, Member, TicketComment, Tick
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
-  return { id:r.id, name:r.name, client:r.client, status:r.status, startDate:r.start_date, endDate:r.end_date, members:r.members||[], done:r.done||0, inProgress:r.in_progress||0, todo:r.todo||0, description:r.description||"" };
+  return { id:r.id, name:r.name, client:r.client, status:r.status, startDate:r.start_date, endDate:r.end_date, members:r.members||[], groupIds:r.group_ids||[], done:r.done||0, inProgress:r.in_progress||0, todo:r.todo||0, description:r.description||"" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

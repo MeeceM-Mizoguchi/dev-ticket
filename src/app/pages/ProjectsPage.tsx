@@ -71,11 +71,11 @@ export function ProjectsPage() {
     toast(`「${project.name}」を削除しました`);
   };
 
-  const handleSaveAssign = async (project: Project, memberNames: string[]) => {
+  const handleSaveAssign = async (project: Project, memberNames: string[], groupIds: number[]) => {
     if (isSupabaseEnabled) {
-      await supabase!.from("projects").update({ members: memberNames }).eq("id", project.id);
+      await supabase!.from("projects").update({ members: memberNames, group_ids: groupIds }).eq("id", project.id);
     }
-    setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: memberNames } : p));
+    setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: memberNames, groupIds } : p));
     toast(`「${project.name}」のメンバーを更新しました`);
     setAssignTarget(null);
   };
@@ -169,7 +169,7 @@ export function ProjectsPage() {
           allMembers={allMembers}
           groups={groups}
           onClose={() => setAssignTarget(null)}
-          onSave={(names) => handleSaveAssign(assignTarget, names)} />
+          onSave={(names, groupIds) => handleSaveAssign(assignTarget, names, groupIds)} />
       )}
     </div>
   );
@@ -181,12 +181,20 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
   allMembers: Member[];
   groups: PermissionGroup[];
   onClose: () => void;
-  onSave: (names: string[]) => void;
+  onSave: (names: string[], groupIds: number[]) => void;
 }) {
-  // Individual member selection
-  const [selected, setSelected] = useState<Set<string>>(new Set(project.members));
-  // Selected group IDs
-  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set());
+  // Restore group selections from project.groupIds
+  const initialGroupIds = new Set<number>(project.groupIds || []);
+  // Compute which members are covered by pre-selected groups on open
+  const initialGroupCovered = new Set<string>();
+  for (const gid of initialGroupIds) {
+    allMembers.filter(m => m.permission_group_id === gid).forEach(m => initialGroupCovered.add(m.name));
+  }
+  // Individual selection = project members minus those already covered by restored groups
+  const [selected, setSelected] = useState<Set<string>>(
+    new Set(project.members.filter(name => !initialGroupCovered.has(name)))
+  );
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(initialGroupIds);
   // Per-group member exclusions (members excluded from group when conflict resolved as "keep individual")
   const [groupExclusions, setGroupExclusions] = useState<Record<number, string[]>>({});
   // Active conflict info
@@ -273,11 +281,9 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
         }
       }
     }
-    await onSave(getEffectiveNames());
+    await onSave(getEffectiveNames(), [...selectedGroupIds]);
     setSaving(false);
   };
-
-  const effectiveCount = getEffectiveNames().length;
 
   return (
     <>
@@ -421,10 +427,10 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
         <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(26,23,20,0.07)", display: "flex", gap: 8, flexShrink: 0 }}>
           <button onClick={handleSave} disabled={saving}
             style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
-            {saving ? "保存中..." : `${effectiveCount}名を割り当て`}
+            {saving ? "保存中..." : "アサイン"}
           </button>
           <button onClick={onClose}
-            style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+            style={{ flex: 1, padding: "10px 0", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
             キャンセル
           </button>
         </div>

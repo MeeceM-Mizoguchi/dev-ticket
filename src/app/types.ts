@@ -37,7 +37,7 @@ export interface Sprint {
 }
 export interface Project {
   id: string; name: string; client: string; status: ProjectStatus;
-  startDate: string; endDate: string; members: string[];
+  startDate: string; endDate: string; members: string[]; groupIds: number[];
   done: number; inProgress: number; todo: number; description: string;
 }
 export interface Client {
