@@ -1,10 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 import { useToast } from "@/app/contexts/ToastContext";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import type { RoleDefinition } from "@/app/types";
+
+const FALLBACK_ROLES: RoleDefinition[] = [
+  { id: 1, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
+  { id: 2, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
+  { id: 3, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true } },
+  { id: 4, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true } },
+];
 
 export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited?: () => void }) {
   const { toast } = useToast();
@@ -14,6 +23,13 @@ export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onIn
   const [group, setGroup] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [roles, setRoles] = useState<RoleDefinition[]>(FALLBACK_ROLES);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("roles").select("*").order("id")
+      .then(({ data }) => { if (data?.length) setRoles(data as RoleDefinition[]); });
+  }, []);
 
   const handleSend = async () => {
     if (!email.trim()) return;
@@ -52,9 +68,8 @@ export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onIn
       {error && <div style={{ padding: "10px 14px", background: "#FEF2F2", borderRadius: 8, fontSize: 12, color: "#DC2626", border: "1px solid rgba(220,38,38,0.2)" }}>{error}</div>}
       <FieldInput label="メールアドレス" type="email" placeholder="taro@example.com" required value={email} onChange={setEmail} />
       <FieldInput label="氏名（任意）" placeholder="例: 田中太郎" value={name} onChange={setName} />
-      <FieldSelect label="付与する権限" value={role} onChange={setRole}>
-        <option value="developer">開発者</option><option value="designer">デザイナー</option>
-        <option value="project-manager">PM</option><option value="admin">管理者</option>
+      <FieldSelect label="付与するロール" value={role} onChange={setRole}>
+        {roles.map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
       </FieldSelect>
       <FieldSelect label="所属グループ" value={group} onChange={setGroup}>
         <option value="">未割り当て</option><option value="マネジメント">マネジメント</option>

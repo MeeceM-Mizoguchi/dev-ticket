@@ -1,6 +1,12 @@
 export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions";
 export type PermissionType = "none" | "view" | "edit" | "admin";
-export type Role = "admin" | "project-manager" | "developer" | "designer";
+export type Role = string;
+export interface RoleDefinition {
+  id: number;
+  name: string;
+  label: string;
+  base_permissions: UserPermissions;
+}
 export type ProjectStatus = "planning" | "in-progress" | "completed" | "on-hold";
 export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed";
 export type Priority = "low" | "medium" | "high";

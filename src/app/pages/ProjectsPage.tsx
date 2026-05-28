@@ -463,6 +463,7 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
       {permTarget && (
         <MemberPermModal
           member={permTarget}
+          projectId={project.id}
           onClose={() => setPermTarget(null)}
         />
       )}
@@ -471,7 +472,7 @@ function AssignMembersModal({ project, allMembers, groups, onClose, onSave }: {
 }
 
 // ── Per-user permission modal (from assign modal) ────────────────────────────
-function MemberPermModal({ member, onClose }: { member: Member; onClose: () => void }) {
+function MemberPermModal({ member, projectId, onClose }: { member: Member; projectId: string; onClose: () => void }) {
   const { toast } = useToast();
   const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_PERMS });
   const [saving, setSaving] = useState(false);
@@ -479,25 +480,32 @@ function MemberPermModal({ member, onClose }: { member: Member; onClose: () => v
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoaded(true); return; }
-    supabase!.from("profiles").select("permissions").eq("id", member.id).single()
-      .then(({ data, error }) => {
-        if (!error && data?.permissions) setLocal({ ...DEFAULT_PERMS, ...(data.permissions as Partial<UserPermissions>) });
-        setLoaded(true);
-      }).catch(() => setLoaded(true));
-  }, [member.id]);
+    // Load: role base_permissions → merge project-specific override if exists
+    Promise.all([
+      supabase!.from("roles").select("base_permissions").eq("name", member.role).single(),
+      supabase!.from("project_member_permissions")
+        .select("permissions").eq("project_id", projectId).eq("member_id", member.id).maybeSingle(),
+    ]).then(([{ data: roleData }, { data: projData }]) => {
+      const base = { ...DEFAULT_PERMS, ...(roleData?.base_permissions as Partial<UserPermissions> ?? {}) };
+      if (projData?.permissions) {
+        setLocal({ ...base, ...(projData.permissions as Partial<UserPermissions>) });
+      } else {
+        setLocal(base);
+      }
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, [member.id, member.role, projectId]);
 
   const toggle = (key: keyof UserPermissions) => setLocal(prev => ({ ...prev, [key]: !prev[key] }));
 
   const handleSave = async () => {
     setSaving(true);
     if (isSupabaseEnabled) {
-      const { data: updated, error } = await supabase!
-        .from("profiles")
-        .update({ permissions: local })
-        .eq("id", member.id)
-        .select("id");
-      if (error || !updated?.length) {
-        toast("権限の保存に失敗しました。SupabaseのRLSポリシーを確認してください。", "error");
+      const { error } = await supabase!
+        .from("project_member_permissions")
+        .upsert({ project_id: projectId, member_id: member.id, permissions: local });
+      if (error) {
+        toast("権限の保存に失敗しました。", "error");
         setSaving(false);
         return;
       }

@@ -1,11 +1,12 @@
 import { useEffect, useState, type DragEvent } from "react";
-import { Plus, Search, Settings, X, Check, Users } from "lucide-react";
+import { Plus, Search, Settings, X, Check, Users, Shield } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
-import type { Member, PermissionGroup, UserPermissions } from "@/app/types";
+import type { Member, PermissionGroup, UserPermissions, RoleDefinition } from "@/app/types";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useAuth } from "@/app/contexts/AuthContext";
 
 const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false,
@@ -25,21 +26,28 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; col
 
 export function PermissionsPage() {
   const { toast } = useToast();
+  const { userRole } = useAuth();
+  const isAdmin = userRole === "admin";
   const [groups, setGroups] = useState<PermissionGroup[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
+  const [roles, setRoles] = useState<RoleDefinition[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [dragOverTarget, setDragOverTarget] = useState<number | "unassigned" | null>(null);
   const [settingsGroupId, setSettingsGroupId] = useState<number | null>(null);
+  const [roleSettingsId, setRoleSettingsId] = useState<number | null>(null);
+  const [showNewRoleModal, setShowNewRoleModal] = useState(false);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
       supabase!.from("permission_groups").select("*").order("id"),
       supabase!.from("profiles").select("*").order("name"),
-    ]).then(([{ data: gData }, { data: mData }]) => {
+      supabase!.from("roles").select("*").order("id"),
+    ]).then(([{ data: gData }, { data: mData }, { data: rData }]) => {
       if (gData) setGroups(gData as PermissionGroup[]);
       if (mData) setMembers(mData.map(mapMember));
+      if (rData) setRoles(rData as RoleDefinition[]);
     });
   }, []);
 
@@ -118,6 +126,29 @@ export function PermissionsPage() {
     ? groups.filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
     : groups;
   const settingsGroup = groups.find(g => g.id === settingsGroupId);
+  const roleSettingsTarget = roles.find(r => r.id === roleSettingsId);
+
+  const handleCreateRole = async (name: string, label: string) => {
+    const newPerms = { ...DEFAULT_GROUP_PERMS };
+    if (isSupabaseEnabled) {
+      const { data } = await supabase!.from("roles")
+        .insert({ name, label, base_permissions: newPerms }).select().single();
+      if (data) setRoles(prev => [...prev, data as RoleDefinition]);
+    } else {
+      const newId = roles.length > 0 ? Math.max(...roles.map(r => r.id)) + 1 : 1;
+      setRoles(prev => [...prev, { id: newId, name, label, base_permissions: newPerms }]);
+    }
+  };
+
+  const handleSaveRolePerms = async (roleId: number, perms: UserPermissions) => {
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!.from("roles").update({ base_permissions: perms }).eq("id", roleId);
+      if (error) { toast("ロール権限の保存に失敗しました", "error"); return; }
+    }
+    setRoles(prev => prev.map(r => r.id === roleId ? { ...r, base_permissions: perms } : r));
+    setRoleSettingsId(null);
+    toast("ロール権限を保存しました");
+  };
 
   return (
     <div style={{ padding: "24px" }}>
@@ -308,6 +339,64 @@ export function PermissionsPage() {
           onSave={perms => handleSaveGroupPerms(settingsGroupId, perms)}
         />
       )}
+
+      {/* ── Role management section (admin only) ── */}
+      {isAdmin && (
+        <div style={{ marginTop: 32 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", display: "flex", alignItems: "center", gap: 6 }}>
+                <Shield style={{ width: 16, height: 16, color: "#7C3AED" }} />ロール設定
+              </h2>
+              <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>ロールごとの基本権限を設定。メンバー招待時のロール選択肢にも反映されます。</p>
+            </div>
+            <button onClick={() => setShowNewRoleModal(true)}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 14px", background: "#7C3AED", color: "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", cursor: "pointer" }}>
+              <Plus style={{ width: 13, height: 13 }} />ロール追加
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+            {roles.map(role => {
+              const activePerms = PERM_FLAGS.filter(f => role.base_permissions?.[f.key]);
+              return (
+                <div key={role.id} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{role.label}</p>
+                      <p style={{ fontSize: 10, color: "#B0A9A4" }}>{role.name}</p>
+                    </div>
+                    <button onClick={() => setRoleSettingsId(role.id)}
+                      style={{ padding: 6, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#6B6458" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                      <Settings style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4 }}>
+                    {activePerms.length === 0
+                      ? <span style={{ fontSize: 10, color: "#B0A9A4" }}>基本権限なし</span>
+                      : activePerms.map(f => (
+                        <span key={f.key} style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: f.color + "15", color: f.color }}>{f.label}</span>
+                      ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {showNewRoleModal && (
+        <NewRoleModal onClose={() => setShowNewRoleModal(false)} onCreate={handleCreateRole} />
+      )}
+      {roleSettingsId !== null && roleSettingsTarget && (
+        <RoleSettingsModal
+          role={roleSettingsTarget}
+          onClose={() => setRoleSettingsId(null)}
+          onSave={perms => handleSaveRolePerms(roleSettingsId, perms)}
+        />
+      )}
     </div>
   );
 }
@@ -358,6 +447,116 @@ function NewGroupModal({ onClose, onCreate }: {
           </button>
           <button onClick={onClose}
             style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── New role modal ───────────────────────────────────────────────────────────
+function NewRoleModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, label: string) => void }) {
+  const [name, setName] = useState("");
+  const [label, setLabel] = useState("");
+
+  const handleCreate = () => {
+    if (!name.trim() || !label.trim()) return;
+    onCreate(name.trim().toLowerCase().replace(/\s+/g, "-"), label.trim());
+    onClose();
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 20px 60px rgba(0,0,0,0.20)", width: 400 }}>
+        <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>新規ロール追加</h3>
+          <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
+            <X style={{ width: 15, height: 15 }} />
+          </button>
+        </div>
+        <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column" as const, gap: 12 }}>
+          <div>
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 5 }}>表示名</p>
+            <input value={label} onChange={e => setLabel(e.target.value)} placeholder="例: QAエンジニア"
+              style={{ width: "100%", padding: "9px 12px", border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 5 }}>識別子（英数字・ハイフン）</p>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="例: qa-engineer"
+              style={{ width: "100%", padding: "9px 12px", border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+        </div>
+        <div style={{ padding: "14px 24px 20px", display: "flex", gap: 8 }}>
+          <button onClick={handleCreate} disabled={!name.trim() || !label.trim()}
+            style={{ flex: 1, padding: "10px 0", background: !name.trim() || !label.trim() ? "#F4F5F6" : "#7C3AED", color: !name.trim() || !label.trim() ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: !name.trim() || !label.trim() ? "not-allowed" : "pointer" }}>
+            追加
+          </button>
+          <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Role settings modal ──────────────────────────────────────────────────────
+function RoleSettingsModal({ role, onClose, onSave }: {
+  role: RoleDefinition;
+  onClose: () => void;
+  onSave: (perms: UserPermissions) => void;
+}) {
+  const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS, ...(role.base_permissions ?? {}) });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSave(local);
+    setSaving(false);
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 20px 60px rgba(0,0,0,0.20)", width: 440 }}>
+        <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>ロール基本権限設定</h3>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{role.label}</p>
+          </div>
+          <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
+            <X style={{ width: 15, height: 15 }} />
+          </button>
+        </div>
+        <div style={{ padding: "16px 24px" }}>
+          <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14 }}>
+            このロールを持つメンバーのデフォルト権限を設定します。プロジェクト個別設定で上書き可能です。
+          </p>
+          {PERM_FLAGS.map(f => {
+            const active = local[f.key];
+            return (
+              <label key={f.key}
+                onClick={() => setLocal(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "33" : "transparent"}`, transition: "all 0.15s" }}>
+                <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                  {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 2 }}>{f.label}</p>
+                  <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+        <div style={{ padding: "14px 24px 20px", display: "flex", gap: 8 }}>
+          <button onClick={handleSave} disabled={saving}
+            style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#7C3AED", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
+            {saving ? "保存中..." : "保存"}
+          </button>
+          <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
             キャンセル
           </button>
         </div>

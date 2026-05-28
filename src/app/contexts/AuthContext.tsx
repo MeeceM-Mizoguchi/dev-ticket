@@ -11,14 +11,6 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canGeneratePrompt: false,
 };
 
-const ALL_PERMISSIONS: UserPermissions = {
-  canCreateTicket: true,
-  canCreateSprint: true,
-  canEditDelete: true,
-  canReview: true,
-  canGeneratePrompt: true,
-};
-
 interface AuthCtxType {
   userName: string;
   userRole: Role;
@@ -36,13 +28,22 @@ export const AuthContext = createContext<AuthCtxType>({
 
 export function useAuth() { return useContext(AuthContext); }
 
-function resolvePermissions(role: Role, rawPerms: unknown): UserPermissions {
-  if (role === "admin" || role === "project-manager") return { ...ALL_PERMISSIONS };
-  return { ...DEFAULT_PERMISSIONS, ...(rawPerms as Partial<UserPermissions> ?? {}) };
+async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> {
+  if (!isSupabaseEnabled) return { ...DEFAULT_PERMISSIONS };
+  const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).single();
+  if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
+  // fallback: admin/PM get all permissions if roles table not yet seeded
+  if (role === "admin" || role === "project-manager") {
+    return { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true };
+  }
+  return { ...DEFAULT_PERMISSIONS };
+}
+
+function resolvePermissions(basePerms: UserPermissions, rawPerms: unknown): UserPermissions {
+  return { ...basePerms, ...(rawPerms as Partial<UserPermissions> ?? {}) };
 }
 
 async function fetchProfile(uid: string) {
-  // Try with permissions column first; fall back if the column doesn't exist yet
   const { data, error } = await supabase!.from("profiles").select("name, role, permissions").eq("id", uid).single();
   if (!error) return data;
   const { data: d2 } = await supabase!.from("profiles").select("name, role").eq("id", uid).single();
@@ -59,7 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isSupabaseEnabled) {
       setUserName(sessionStorage.getItem("userName") || "");
-      setUserRole((sessionStorage.getItem("userRole") as Role) || "developer");
+      setUserRole(sessionStorage.getItem("userRole") || "developer");
       setUserId(sessionStorage.getItem("userId") || "");
       const savedPerms = sessionStorage.getItem("userPermissions");
       if (savedPerms) {
@@ -74,7 +75,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const p = await fetchProfile(session.user.id);
         if (p) {
           const role = p.role as Role;
-          const perms = resolvePermissions(role, (p as { permissions?: unknown }).permissions ?? null);
+          const basePerms = await fetchRoleBasePermissions(role);
+          const perms = resolvePermissions(basePerms, (p as { permissions?: unknown }).permissions ?? null);
           setUserName(p.name); setUserRole(role); setUserId(session.user.id);
           setUserPermissions(perms);
           sessionStorage.setItem("isLoggedIn", "true");
@@ -89,10 +91,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        fetchProfile(session.user.id).then(p => {
+        fetchProfile(session.user.id).then(async p => {
           if (p) {
             const role = p.role as Role;
-            const perms = resolvePermissions(role, (p as { permissions?: unknown }).permissions ?? null);
+            const basePerms = await fetchRoleBasePermissions(role);
+            const perms = resolvePermissions(basePerms, (p as { permissions?: unknown }).permissions ?? null);
             setUserName(p.name); setUserRole(role); setUserId(session.user.id);
             setUserPermissions(perms);
             sessionStorage.setItem("userName", p.name);
@@ -120,7 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const member = MEMBERS.find(m => m.email === email);
       if (member && password === "password") {
         const role = member.role as Role;
-        const perms = resolvePermissions(role, null);
+        const perms = resolvePermissions({ ...DEFAULT_PERMISSIONS }, null);
         setUserName(member.name); setUserRole(role); setUserId(member.id);
         setUserPermissions(perms);
         sessionStorage.setItem("isLoggedIn", "true");

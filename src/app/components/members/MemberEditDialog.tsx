@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Member } from "@/app/types";
+import { useState, useEffect } from "react";
+import type { Member, RoleDefinition } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { GROUPS } from "@/app/data/mock";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -9,6 +9,13 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 
+const FALLBACK_ROLES: RoleDefinition[] = [
+  { id: 1, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true } },
+  { id: 2, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true } },
+  { id: 3, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
+  { id: 4, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
+];
+
 export function MemberEditDialog({ member, onClose, onSaved }: { member: Member; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
   const [name, setName] = useState(member.name);
@@ -16,6 +23,13 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
   const [group, setGroup] = useState(member.group);
   const [status, setStatus] = useState(member.status);
   const [saving, setSaving] = useState(false);
+  const [roles, setRoles] = useState<RoleDefinition[]>(FALLBACK_ROLES);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("roles").select("*").order("id")
+      .then(({ data }) => { if (data?.length) setRoles(data as RoleDefinition[]); });
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
@@ -34,10 +48,7 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
       <FieldInput label="名前" value={name} onChange={setName} required />
       <FieldSelect label="権限ロール" value={role} onChange={setRole as (v: string) => void}>
-        <option value="admin">管理者</option>
-        <option value="project-manager">プロジェクトマネージャー</option>
-        <option value="developer">開発者</option>
-        <option value="designer">デザイナー</option>
+        {roles.map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
       </FieldSelect>
       <FieldSelect label="所属グループ" value={group} onChange={setGroup}>
         {GROUPS.filter(g => g !== "すべて").map(g => <option key={g} value={g}>{g}</option>)}

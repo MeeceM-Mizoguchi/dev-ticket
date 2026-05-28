@@ -40,13 +40,14 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, onClose, onUpdated,
-}: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void }) {
+  ticket, onClose, onUpdated, projectPermissions,
+}: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void; projectPermissions?: import("@/app/types").UserPermissions }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-  const hasReviewPermission = isAdminOrPM || userPermissions.canReview;
-  const hasGeneratePromptPermission = isAdminOrPM || userPermissions.canGeneratePrompt;
+  const effectivePermissions = projectPermissions ?? userPermissions;
+  const hasReviewPermission = isAdminOrPM || effectivePermissions.canReview;
+  const hasGeneratePromptPermission = isAdminOrPM || effectivePermissions.canGeneratePrompt;
 
   // editable state
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");

@@ -20,10 +20,12 @@ export function SprintPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { toast: _toast } = useToast();
-  const { userRole, userPermissions } = useAuth();
+  const { userRole, userId, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-  const canCreateSprint = isAdminOrPM || userPermissions.canCreateSprint;
-  const canCreateTicket = isAdminOrPM || userPermissions.canCreateTicket;
+  const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
+  const effectivePermissions = projectPermissions ?? userPermissions;
+  const canCreateSprint = isAdminOrPM || effectivePermissions.canCreateSprint;
+  const canCreateTicket = isAdminOrPM || effectivePermissions.canCreateTicket;
   const [project, setProject] = useState<Project | null>(PROJECTS.find(p => p.id === projectId) ?? null);
   const [sprints, setSprints] = useState<Sprint[]>(SPRINTS.filter(s => s.projectId === projectId));
   const [viewMode, setViewMode] = useState<SprintView>("list");
@@ -61,12 +63,14 @@ export function SprintPage() {
     Promise.all([
       supabase!.from("projects").select("*").eq("id", projectId).single(),
       supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }),
-    ]).then(([{ data: p }, { data: s }]) => {
+      userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", projectId).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
+    ]).then(([{ data: p }, { data: s }, { data: pmp }]) => {
       if (p) setProject(mapProject(p));
       if (s?.length) setSprints(s.map(mapSprint));
+      if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [projectId]);
+  }, [projectId, userId]);
 
   // 10-second polling
   useEffect(() => {
@@ -165,7 +169,7 @@ export function SprintPage() {
             setDeleteTarget(null);
           }} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} />
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} projectPermissions={projectPermissions ?? undefined} />
     </div>
   );
 }
