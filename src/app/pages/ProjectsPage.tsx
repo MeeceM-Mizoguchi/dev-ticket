@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Search, Plus, FolderKanban } from "lucide-react";
+import { Search, Plus, FolderKanban, X, Check } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { PROJECTS, CLIENTS } from "@/app/data/mock";
-import { mapProject, mapClient } from "@/app/lib/mappers";
-import type { Project, Client } from "@/app/types";
+import { PROJECTS, CLIENTS, MEMBERS } from "@/app/data/mock";
+import { mapProject, mapClient, mapMember } from "@/app/lib/mappers";
+import type { Project, Client, Member } from "@/app/types";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
+import { Avatar } from "@/app/components/shared/Avatar";
 
 export function ProjectsPage() {
   const { userRole } = useAuth();
@@ -22,6 +23,8 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(isSupabaseEnabled ? [] : PROJECTS);
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [assignTarget, setAssignTarget] = useState<Project | null>(null);
+  const [allMembers, setAllMembers] = useState<Member[]>(isSupabaseEnabled ? [] : MEMBERS);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const canManage = userRole === "admin" || userRole === "project-manager";
 
@@ -36,9 +39,11 @@ export function ProjectsPage() {
     Promise.all([
       supabase!.from("projects").select("*").order("id"),
       supabase!.from("clients").select("*").order("id"),
-    ]).then(([{ data: p }, { data: c }]) => {
+      supabase!.from("profiles").select("*").order("name"),
+    ]).then(([{ data: p }, { data: c }, { data: m }]) => {
       if (p) setProjects(p.map(mapProject));
       if (c) setClients(c.map(mapClient));
+      if (m) setAllMembers(m.map(mapMember));
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -50,6 +55,15 @@ export function ProjectsPage() {
     }
     setProjects(prev => prev.filter(p => p.id !== project.id));
     toast(`「${project.name}」を削除しました`);
+  };
+
+  const handleSaveAssign = async (project: Project, memberNames: string[]) => {
+    if (isSupabaseEnabled) {
+      await supabase!.from("projects").update({ members: memberNames }).eq("id", project.id);
+    }
+    setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: memberNames } : p));
+    toast(`「${project.name}」のメンバーを更新しました`);
+    setAssignTarget(null);
   };
 
   const filtered = projects.filter(p => {
@@ -116,7 +130,9 @@ export function ProjectsPage() {
           {filtered.map(p => (
             <ProjectCard key={p.id} project={p}
               onNavigate={() => navigate(`/projects/${p.id}/sprints`)}
-              onDelete={canManage ? () => setDeleteTarget(p) : undefined} />
+              onDelete={canManage ? () => setDeleteTarget(p) : undefined}
+              onAssign={canManage ? () => setAssignTarget(p) : undefined}
+            />
           ))}
         </div>
       )}
@@ -128,6 +144,90 @@ export function ProjectsPage() {
           onConfirm={() => handleDeleteProject(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}
+      {assignTarget && (
+        <AssignMembersModal
+          project={assignTarget}
+          allMembers={allMembers}
+          onClose={() => setAssignTarget(null)}
+          onSave={(names) => handleSaveAssign(assignTarget, names)} />
+      )}
     </div>
+  );
+}
+
+// ── Assign members modal ────────────────────────────────────────────────────
+function AssignMembersModal({ project, allMembers, onClose, onSave }: {
+  project: Project;
+  allMembers: Member[];
+  onClose: () => void;
+  onSave: (names: string[]) => void;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set(project.members));
+  const [saving, setSaving] = useState(false);
+
+  const toggle = (name: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSave([...selected]);
+    setSaving(false);
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 20px 60px rgba(0,0,0,0.20)", width: 460, maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>メンバー割り当て</h3>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project.name}</p>
+          </div>
+          <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+            <X style={{ width: 15, height: 15 }} />
+          </button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+          {allMembers.length === 0 ? (
+            <p style={{ textAlign: "center", color: "#B0A9A4", fontSize: 13, padding: "24px 0" }}>メンバーが登録されていません</p>
+          ) : allMembers.map(m => {
+            const isSelected = selected.has(m.name);
+            return (
+              <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 9, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 2, transition: "background 0.1s" }}
+                onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isSelected ? "#ECFDF5" : "transparent"; }}>
+                <input type="checkbox" checked={isSelected} onChange={() => toggle(m.name)}
+                  style={{ accentColor: "#059669", width: 15, height: 15, cursor: "pointer" }} />
+                <Avatar name={m.name} size="xs" />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</p>
+                  <p style={{ fontSize: 10, color: "#B0A9A4" }}>{m.email}</p>
+                </div>
+                {isSelected && <Check style={{ width: 13, height: 13, color: "#059669", flexShrink: 0 }} />}
+              </label>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(26,23,20,0.07)", display: "flex", gap: 8 }}>
+          <button onClick={handleSave} disabled={saving}
+            style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
+            {saving ? "保存中..." : `${selected.size}名を割り当て`}
+          </button>
+          <button onClick={onClose}
+            style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </>
   );
 }

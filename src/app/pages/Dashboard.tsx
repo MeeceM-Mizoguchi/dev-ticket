@@ -1,30 +1,98 @@
-import { type ElementType } from "react";
+import { useEffect, useState, type ElementType } from "react";
 import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, CheckCircle2, Circle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKETS, PROJECTS } from "@/app/data/mock";
+import { mapProject } from "@/app/lib/mappers";
 import { calcProgress, formatDate, getPriorityMeta } from "@/app/lib/helpers";
 import type { ProjectStatus } from "@/app/types";
+
+type DashTicket = {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  dueDate?: string;
+};
+
+type DashProject = {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  client: string;
+  done: number;
+  inProgress: number;
+  todo: number;
+};
 
 export function Dashboard() {
   const { userName } = useAuth();
   const firstName = userName.split(/[\s　]/)[0];
-  const doneCount = TICKETS.filter(t => t.status === "done").length;
-  const inProgressCount = TICKETS.filter(t => t.status === "in-progress").length;
-  const todoCount = TICKETS.filter(t => t.status === "todo").length;
-  const completionRate = Math.round((doneCount / TICKETS.length) * 100);
-  const activeProjects = PROJECTS.filter(p => p.status === "in-progress").length;
 
-  const chartData = PROJECTS.map(p => ({
+  const [tickets, setTickets] = useState<DashTicket[]>(
+    isSupabaseEnabled ? [] : TICKETS.map(t => ({ id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.dueDate }))
+  );
+  const [projects, setProjects] = useState<DashProject[]>(
+    isSupabaseEnabled ? [] : PROJECTS.map(p => ({ id: p.id, name: p.name, status: p.status, client: p.client, done: p.done, inProgress: p.inProgress, todo: p.todo }))
+  );
+  const [loading, setLoading] = useState(isSupabaseEnabled);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    Promise.all([
+      supabase!.from("sprint_tickets").select("id, title, status, priority, due_date"),
+      supabase!.from("sprints").select("id, project_id, sprint_tickets(status)"),
+      supabase!.from("projects").select("id, name, status, client"),
+    ]).then(([{ data: tData }, { data: sData }, { data: pData }]) => {
+      if (tData) {
+        setTickets(tData.map((t: { id: string; title: string; status: string; priority: string; due_date?: string }) => ({
+          id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.due_date,
+        })));
+      }
+      if (pData && sData) {
+        const mapped = pData.map((p: { id: string; name: string; status: string; client: string }) => {
+          const sprintsForProject = sData.filter((s: { project_id: string }) => s.project_id === p.id);
+          const allTickets = sprintsForProject.flatMap((s: { sprint_tickets: { status: string }[] }) => s.sprint_tickets ?? []);
+          return {
+            id: p.id,
+            name: p.name,
+            status: p.status as ProjectStatus,
+            client: p.client,
+            done: allTickets.filter((t: { status: string }) => t.status === "done" || t.status === "closed").length,
+            inProgress: allTickets.filter((t: { status: string }) => t.status === "in-progress" || t.status === "in-review" || t.status === "review-done" || t.status === "stg-test" || t.status === "uat").length,
+            todo: allTickets.filter((t: { status: string }) => t.status === "todo").length,
+          };
+        });
+        setProjects(mapped);
+      }
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const doneCount = tickets.filter(t => t.status === "done" || t.status === "closed").length;
+  const inProgressCount = tickets.filter(t => ["in-progress", "in-review", "review-done", "stg-test", "uat"].includes(t.status)).length;
+  const todoCount = tickets.filter(t => t.status === "todo").length;
+  const completionRate = tickets.length > 0 ? Math.round((doneCount / tickets.length) * 100) : 0;
+  const activeProjects = projects.filter(p => p.status === "in-progress").length;
+
+  const chartData = projects.map(p => ({
     name: p.name.length > 8 ? p.name.slice(0, 8) + "…" : p.name,
     完了: p.done, 進行中: p.inProgress, 未着手: p.todo,
   }));
 
+  const activeTickets = tickets.filter(t => t.status !== "done" && t.status !== "closed").slice(0, 5);
+
+  const overdueCount = tickets.filter(t => {
+    if (!t.dueDate || t.status === "done" || t.status === "closed") return false;
+    return t.dueDate < new Date().toISOString().split("T")[0];
+  }).length;
+
   const statTiles: { value: number | string; label: string; icon: ElementType; accent: string; accentBg: string; trend: string; up: boolean }[] = [
-    { value: activeProjects, label: "進行中プロジェクト", icon: FolderKanban, accent: "#059669", accentBg: "#ECFDF5", trend: "今月 +1件", up: true },
-    { value: inProgressCount, label: "進行中チケット", icon: Zap, accent: "#D97706", accentBg: "#FFFBEB", trend: "期限近い 3件", up: false },
-    { value: todoCount, label: "未着手チケット", icon: Clock, accent: "#0284C7", accentBg: "#F0F9FF", trend: "新規 2件", up: true },
-    { value: `${completionRate}%`, label: "チーム完了率", icon: TrendingUp, accent: "#059669", accentBg: "#ECFDF5", trend: "先月比 +5%", up: true },
+    { value: activeProjects, label: "進行中プロジェクト", icon: FolderKanban, accent: "#059669", accentBg: "#ECFDF5", trend: `全${projects.length}件`, up: true },
+    { value: inProgressCount, label: "進行中チケット", icon: Zap, accent: "#D97706", accentBg: "#FFFBEB", trend: overdueCount > 0 ? `期限超過 ${overdueCount}件` : "遅延なし", up: overdueCount === 0 },
+    { value: todoCount, label: "未着手チケット", icon: Clock, accent: "#0284C7", accentBg: "#F0F9FF", trend: `全${tickets.length}件`, up: true },
+    { value: `${completionRate}%`, label: "チーム完了率", icon: TrendingUp, accent: "#059669", accentBg: "#ECFDF5", trend: `完了 ${doneCount}件`, up: true },
   ];
 
   return (
@@ -46,23 +114,37 @@ export function Dashboard() {
         </button>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
-        {statTiles.map(({ value, label, icon: Icon, accent, accentBg, trend, up }) => (
-          <div key={label} style={{ background: "#FFFFFF", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex" }}>
-            <div style={{ width: 4, background: accent, flexShrink: 0 }} />
-            <div style={{ flex: 1, padding: "18px 18px 18px 16px" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Icon style={{ width: 15, height: 15, color: accent }} />
-                </div>
-                <span style={{ fontSize: 9, color: up ? "#059669" : "#D97706", fontFamily: "var(--font-mono)", fontWeight: 600, background: up ? "#ECFDF5" : "#FFFBEB", padding: "2px 7px", borderRadius: 20 }}>{trend}</span>
+      {loading ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
+          {[0,1,2,3].map(i => (
+            <div key={i} style={{ background: "#FFFFFF", borderRadius: 14, height: 112, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", display: "flex" }}>
+              <div style={{ width: 4, background: "#F4F5F6", flexShrink: 0 }} />
+              <div style={{ flex: 1, padding: 18 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 9, background: "#F4F5F6", marginBottom: 14 }} />
+                <div style={{ width: "60%", height: 32, borderRadius: 6, background: "#F4F5F6" }} />
               </div>
-              <p style={{ fontSize: 34, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.04em", lineHeight: 1 }}>{value}</p>
-              <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1 }}>{label}</p>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
+          {statTiles.map(({ value, label, icon: Icon, accent, accentBg, trend, up }) => (
+            <div key={label} style={{ background: "#FFFFFF", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex" }}>
+              <div style={{ width: 4, background: accent, flexShrink: 0 }} />
+              <div style={{ flex: 1, padding: "18px 18px 18px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Icon style={{ width: 15, height: 15, color: accent }} />
+                  </div>
+                  <span style={{ fontSize: 9, color: up ? "#059669" : "#D97706", fontFamily: "var(--font-mono)", fontWeight: 600, background: up ? "#ECFDF5" : "#FFFBEB", padding: "2px 7px", borderRadius: 20 }}>{trend}</span>
+                </div>
+                <p style={{ fontSize: 34, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.04em", lineHeight: 1 }}>{value}</p>
+                <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1 }}>{label}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, marginBottom: 16 }}>
         <div style={{ background: "#FFFFFF", borderRadius: 14, padding: "20px 24px", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}>
@@ -80,17 +162,23 @@ export function Dashboard() {
               ))}
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 8, top: 0, bottom: 0 }}>
-              <XAxis type="number" tick={{ fontSize: 9, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} axisLine={false} tickLine={false} />
-              <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: "#6B6458" }} axisLine={false} tickLine={false} width={80} />
-              <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
-                labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
-              <Bar dataKey="完了" stackId="a" fill="#059669" />
-              <Bar dataKey="進行中" stackId="a" fill="#D97706" />
-              <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          {loading ? (
+            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "#C9C4BB", fontSize: 12 }}>読み込み中...</div>
+          ) : chartData.length === 0 ? (
+            <div style={{ height: 180, display: "flex", alignItems: "center", justifyContent: "center", color: "#C9C4BB", fontSize: 12 }}>データがありません</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 8, top: 0, bottom: 0 }}>
+                <XAxis type="number" tick={{ fontSize: 9, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} axisLine={false} tickLine={false} />
+                <YAxis dataKey="name" type="category" tick={{ fontSize: 11, fill: "#6B6458" }} axisLine={false} tickLine={false} width={80} />
+                <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
+                  labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
+                <Bar dataKey="完了" stackId="a" fill="#059669" />
+                <Bar dataKey="進行中" stackId="a" fill="#D97706" />
+                <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         <div style={{ background: "#FFFFFF", borderRadius: 14, padding: "20px 20px", display: "flex", flexDirection: "column", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}>
@@ -99,8 +187,18 @@ export function Dashboard() {
             <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#B0A9A4", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20 }}>{inProgressCount + todoCount}件</span>
           </div>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
-            {TICKETS.filter(t => t.status !== "done").slice(0, 5).map(ticket => {
-              const pr = getPriorityMeta(ticket.priority);
+            {loading ? (
+              [0,1,2,3,4].map(i => (
+                <div key={i} style={{ padding: "9px 8px", display: "flex", gap: 10, alignItems: "center" }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#F4F5F6", flexShrink: 0 }} />
+                  <div style={{ flex: 1, height: 32, borderRadius: 6, background: "#F4F5F6" }} />
+                </div>
+              ))
+            ) : activeTickets.length === 0 ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#C9C4BB", fontSize: 12 }}>アクティブチケットなし</div>
+            ) : activeTickets.map(ticket => {
+              const pr = getPriorityMeta(ticket.priority as "high" | "medium" | "low");
+              const isInProgress = ticket.status !== "todo";
               return (
                 <div key={ticket.id} style={{ display: "flex", gap: 10, padding: "9px 8px", borderRadius: 8, cursor: "pointer" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -109,10 +207,10 @@ export function Dashboard() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", lineHeight: 1.3, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ticket.title}</p>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 9, background: ticket.status === "in-progress" ? "#ECFDF5" : "#F4F5F6", color: ticket.status === "in-progress" ? "#059669" : "#A09790", padding: "2px 7px", borderRadius: 20, fontWeight: 600 }}>
-                        {ticket.status === "in-progress" ? "進行中" : "未着手"}
+                      <span style={{ fontSize: 9, background: isInProgress ? "#ECFDF5" : "#F4F5F6", color: isInProgress ? "#059669" : "#A09790", padding: "2px 7px", borderRadius: 20, fontWeight: 600 }}>
+                        {isInProgress ? "進行中" : "未着手"}
                       </span>
-                      <span style={{ fontSize: 9, color: "#C9C4BB", fontFamily: "var(--font-mono)", marginLeft: "auto" }}>{formatDate(ticket.dueDate)}</span>
+                      {ticket.dueDate && <span style={{ fontSize: 9, color: "#C9C4BB", fontFamily: "var(--font-mono)", marginLeft: "auto" }}>{formatDate(ticket.dueDate)}</span>}
                     </div>
                   </div>
                 </div>
@@ -128,7 +226,16 @@ export function Dashboard() {
           <ChevronRight style={{ width: 14, height: 14, color: "#C9C4BB" }} />
         </div>
         <div style={{ borderTop: "1px solid rgba(26,23,20,0.05)" }}>
-          {PROJECTS.map((p, i) => {
+          {loading ? (
+            [0,1,2].map(i => (
+              <div key={i} style={{ padding: "13px 24px", display: "grid", gridTemplateColumns: "1fr 160px 60px 90px", gap: 20, alignItems: "center" }}>
+                <div style={{ height: 36, borderRadius: 6, background: "#F4F5F6" }} />
+                <div style={{ height: 6, borderRadius: 99, background: "#F4F5F6" }} />
+                <div style={{ height: 20, borderRadius: 6, background: "#F4F5F6" }} />
+                <div style={{ height: 24, borderRadius: 20, background: "#F4F5F6" }} />
+              </div>
+            ))
+          ) : projects.map((p, i) => {
             const progress = calcProgress(p.done, p.inProgress, p.todo);
             const statusStyle: Record<ProjectStatus, { bg: string; color: string; label: string }> = {
               "in-progress": { bg: "#ECFDF5", color: "#059669", label: "進行中" },

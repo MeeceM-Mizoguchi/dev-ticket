@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import { labelCls } from "@/app/lib/helpers";
 
@@ -26,8 +27,9 @@ function parseDate(s: string): [number, number, number] | null {
 export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required }: Props) {
   const today = new Date().toISOString().split("T")[0];
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  const wrapRef    = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
+  const popupRef   = useRef<HTMLDivElement>(null);   // portal popup — NOT inside wrapRef
   const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
 
   // Calendar month navigation
@@ -55,11 +57,13 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
     setOpen(o => !o);
   }, [calcPosition]);
 
-  // Close on outside click
+  // Close on outside click — check both the trigger wrapper AND the portal popup
   useEffect(() => {
     if (!open) return;
     const h = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+      const inWrap  = wrapRef.current?.contains(e.target as Node);
+      const inPopup = popupRef.current?.contains(e.target as Node);
+      if (!inWrap && !inPopup) setOpen(false);
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
@@ -89,6 +93,65 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   const todayDisabled = isDisabled(todayParsed[2]) || calYear !== todayParsed[0] || calMonth !== todayParsed[1];
   const todayInRange = today >= (min ?? "0000-00-00") && today <= (max ?? "9999-99-99");
 
+  const calendarPopup = (
+    <div ref={popupRef} style={{ position: "fixed", top: popupPos.top, left: popupPos.left, zIndex: 9999, background: "#FFFFFF", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.07)", border: "1px solid rgba(26,23,20,0.09)", padding: "14px 14px 12px", width: 262 }}>
+      {/* Month nav */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <button onClick={e => { e.stopPropagation(); prevMonth(); }} style={{ padding: "3px 6px", borderRadius: 6, border: "none", background: "#F4F5F6", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center" }}>
+          <ChevronLeft style={{ width: 14, height: 14 }} />
+        </button>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{calYear}年 {MONTH_NAMES[calMonth]}</span>
+        <button onClick={e => { e.stopPropagation(); nextMonth(); }} style={{ padding: "3px 6px", borderRadius: 6, border: "none", background: "#F4F5F6", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center" }}>
+          <ChevronRight style={{ width: 14, height: 14 }} />
+        </button>
+      </div>
+
+      {/* Day-of-week header */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 }}>
+        {DOW.map((d, i) => (
+          <div key={d} style={{ textAlign: "center" as const, fontSize: 10, fontWeight: 700, color: i === 0 ? "#EF4444" : i === 6 ? "#3B82F6" : "#9E9690", paddingBottom: 4 }}>{d}</div>
+        ))}
+      </div>
+
+      {/* Day cells */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1 }}>
+        {cells.map((day, i) => {
+          if (!day) return <div key={i} />;
+          const dis  = isDisabled(day);
+          const tod  = isToday(day);
+          const sel  = isSelected(day);
+          const dow  = (firstDow + day - 1) % 7;
+          return (
+            <button key={i} onClick={e => { e.stopPropagation(); select(day); }}
+              style={{ padding: "5px 0", borderRadius: 7, border: sel ? "none" : tod ? "1.5px solid #059669" : "none", cursor: dis ? "not-allowed" : "pointer", fontSize: 12, fontWeight: sel || tod ? 700 : 400,
+                background: sel ? "#059669" : "transparent",
+                color: dis ? "#D5D0CB" : sel ? "#FFF" : tod ? "#059669" : dow === 0 ? "#EF4444" : dow === 6 ? "#3B82F6" : "#1A1714",
+                opacity: dis ? 0.5 : 1, transition: "background 0.1s" }}
+              onMouseEnter={e => { if (!dis && !sel) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { if (!dis && !sel) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+              {day}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Footer */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(26,23,20,0.06)" }}>
+        <button onClick={e => { e.stopPropagation(); onChange(""); setOpen(false); }}
+          style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: "2px 0" }}>削除</button>
+        {todayInRange && (
+          <button onClick={e => {
+            e.stopPropagation();
+            const tp = parseDate(today)!;
+            setCalYear(tp[0]); setCalMonth(tp[1]);
+            if (!todayDisabled) { onChange(today); setOpen(false); }
+          }}
+            style={{ fontSize: 11, color: "#059669", fontWeight: 700, background: "none", border: "none", cursor: "pointer", padding: "2px 0" }}>今日</button>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
       {label && (
@@ -102,64 +165,7 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
         <Calendar style={{ width: 14, height: 14, color: open ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
       </div>
 
-      {open && (
-        <div style={{ position: "fixed", top: popupPos.top, left: popupPos.left, zIndex: 9999, background: "#FFFFFF", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.07)", border: "1px solid rgba(26,23,20,0.09)", padding: "14px 14px 12px", width: 262 }}>
-          {/* Month nav */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-            <button onClick={e => { e.stopPropagation(); prevMonth(); }} style={{ padding: "3px 6px", borderRadius: 6, border: "none", background: "#F4F5F6", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center" }}>
-              <ChevronLeft style={{ width: 14, height: 14 }} />
-            </button>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{calYear}年 {MONTH_NAMES[calMonth]}</span>
-            <button onClick={e => { e.stopPropagation(); nextMonth(); }} style={{ padding: "3px 6px", borderRadius: 6, border: "none", background: "#F4F5F6", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center" }}>
-              <ChevronRight style={{ width: 14, height: 14 }} />
-            </button>
-          </div>
-
-          {/* Day-of-week header */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 }}>
-            {DOW.map((d, i) => (
-              <div key={d} style={{ textAlign: "center" as const, fontSize: 10, fontWeight: 700, color: i === 0 ? "#EF4444" : i === 6 ? "#3B82F6" : "#9E9690", paddingBottom: 4 }}>{d}</div>
-            ))}
-          </div>
-
-          {/* Day cells */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1 }}>
-            {cells.map((day, i) => {
-              if (!day) return <div key={i} />;
-              const dis  = isDisabled(day);
-              const tod  = isToday(day);
-              const sel  = isSelected(day);
-              const dow  = (firstDow + day - 1) % 7;
-              return (
-                <button key={i} onClick={e => { e.stopPropagation(); select(day); }}
-                  style={{ padding: "5px 0", borderRadius: 7, border: sel ? "none" : tod ? "1.5px solid #059669" : "none", cursor: dis ? "not-allowed" : "pointer", fontSize: 12, fontWeight: sel || tod ? 700 : 400,
-                    background: sel ? "#059669" : "transparent",
-                    color: dis ? "#D5D0CB" : sel ? "#FFF" : tod ? "#059669" : dow === 0 ? "#EF4444" : dow === 6 ? "#3B82F6" : "#1A1714",
-                    opacity: dis ? 0.5 : 1, transition: "background 0.1s" }}
-                  onMouseEnter={e => { if (!dis && !sel) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                  onMouseLeave={e => { if (!dis && !sel) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                  {day}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Footer */}
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(26,23,20,0.06)" }}>
-            <button onClick={e => { e.stopPropagation(); onChange(""); setOpen(false); }}
-              style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: "2px 0" }}>削除</button>
-            {todayInRange && (
-              <button onClick={e => {
-                e.stopPropagation();
-                const tp = parseDate(today)!;
-                setCalYear(tp[0]); setCalMonth(tp[1]);
-                if (!todayDisabled) { onChange(today); setOpen(false); }
-              }}
-                style={{ fontSize: 11, color: "#059669", fontWeight: 700, background: "none", border: "none", cursor: "pointer", padding: "2px 0" }}>今日</button>
-            )}
-          </div>
-        </div>
-      )}
+      {open && createPortal(calendarPopup, document.body)}
     </div>
   );
 }

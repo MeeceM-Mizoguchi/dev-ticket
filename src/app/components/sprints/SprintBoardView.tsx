@@ -53,12 +53,13 @@ function TicketCard({ ticket, sprintId, onSelect }: {
 }
 
 // ── Droppable status column ────────────────────────────────────────────────
-function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket }: {
+function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket, style: extraStyle }: {
   sprintId: string;
   col: typeof TICKET_STATUSES[number];
   tickets: SprintTicket[];
   onDrop: (item: DragItem, targetStatus: TicketStatus) => void;
   onSelectTicket?: (t: SprintTicket) => void;
+  style?: React.CSSProperties;
 }) {
   const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(() => ({
     accept: DRAG_TYPE,
@@ -72,7 +73,8 @@ function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket }: {
   return (
     <div ref={drop} style={{ borderRadius: 8, padding: 8, minHeight: 120, transition: "background 0.15s, border-color 0.15s",
       background: isActive ? col.bg : "rgba(26,23,20,0.02)",
-      border: `1.5px ${isActive ? "solid" : "dashed"} ${isActive ? col.color + "55" : "rgba(26,23,20,0.08)"}` }}>
+      border: `1.5px ${isActive ? "solid" : "dashed"} ${isActive ? col.color + "55" : "rgba(26,23,20,0.08)"}`,
+      ...extraStyle }}>
       {tickets.length === 0 && !isActive && (
         <div style={{ padding: "20px 0", textAlign: "center" as const, color: "#D5D0CB", fontSize: 11 }}>なし</div>
       )}
@@ -235,19 +237,20 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
       {/* ── Kanban board ── */}
       {currentSprint && (
-        <div style={{ overflowX: "auto" }}>
-          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", alignItems: "flex-start" }}>
+        <div style={{ overflowX: "auto", height: "calc(100vh - 320px)", minHeight: 320 }}>
+          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", height: "100%" }}>
             {TICKET_STATUSES.map(col => {
               const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
               return (
-                <div key={col.value} style={{ flex: "0 0 170px", display: "flex", flexDirection: "column", gap: 4 }}>
+                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 4, height: "100%" }}>
                   {/* Column header */}
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
+                  <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{colTickets.length}</span>
                   </div>
-                  {/* Drop zone */}
-                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket} />
+                  {/* Drop zone — fills remaining height and scrolls internally */}
+                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
+                    style={{ flex: 1, minHeight: 0, overflowY: "auto" }} />
                 </div>
               );
             })}

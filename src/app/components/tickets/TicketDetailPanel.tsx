@@ -452,7 +452,7 @@ export function TicketDetailPanel({
           {/* 詳細 + 画像 */}
           <div>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
-            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={200} />
+            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} />
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 9, cursor: "pointer", background: "#FAFAF8", marginTop: 8 }}>
               <ImageIcon style={{ width: 13, height: 13, color: "#B0A9A4" }} />

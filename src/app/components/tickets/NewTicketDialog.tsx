@@ -140,7 +140,7 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
 
           <div>
             <label className={labelCls}>詳細・概要</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={160} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} />
           </div>
 
           <div>
