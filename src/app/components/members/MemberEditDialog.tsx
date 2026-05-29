@@ -44,10 +44,21 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
   const handleSave = async () => {
     setSaving(true);
     if (isSupabaseEnabled) {
-      const { error } = await supabase!.from("profiles").update({ name, role, group_name: group, status }).eq("id", member.id);
+      const { data, error } = await supabase!
+        .from("profiles")
+        .update({ name, role, group_name: group, status })
+        .eq("id", member.id)
+        .select("id");
+
       if (error) {
         console.error("profiles update error:", error);
         toast(`更新に失敗しました: ${error.message}`, "error");
+        setSaving(false);
+        return;
+      }
+      // RLS で拒否された場合は error がなく data が空になる
+      if (!data || data.length === 0) {
+        toast("権限がないため更新できませんでした。管理者にSupabaseのRLSポリシーを確認してもらってください。", "error");
         setSaving(false);
         return;
       }
