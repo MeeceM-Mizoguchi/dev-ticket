@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
-import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ShieldCheck } from "lucide-react";
+import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
@@ -705,9 +705,10 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
         </div>
       )}
 
-      <div style={{ flex: 1, overflowY: "auto" as const, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12, alignContent: "start" }}>
+      {/* List layout — full width, each project is one row */}
+      <div style={{ flex: 1, overflowY: "auto" as const, display: "flex", flexDirection: "column" as const, gap: 8 }}>
         {projects.length === 0 && (
-          <div style={{ gridColumn: "1/-1", textAlign: "center" as const, padding: "56px 0", color: "#B0A9A4", fontSize: 12 }}>
+          <div style={{ textAlign: "center" as const, padding: "56px 0", color: "#B0A9A4", fontSize: 12 }}>
             プロジェクトが登録されていません
           </div>
         )}
@@ -717,94 +718,102 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
           const assignedGroups = groups.filter(g => assignedGroupIds.includes(g.id));
           const individualNames = getIndividualMemberNames(project);
           const individualMembers = members.filter(m => individualNames.includes(m.name));
+          const isEmpty = assignedGroups.length === 0 && individualMembers.length === 0;
+
+          // Truncation limits
+          const MAX_G = 3;
+          const MAX_M = 4;
+          const visibleGroups  = assignedGroups.slice(0, MAX_G);
+          const hiddenGroups   = assignedGroups.length - MAX_G;
+          const visibleMembers = individualMembers.slice(0, MAX_M);
+          const hiddenMembers  = individualMembers.length - MAX_M;
 
           return (
             <div key={project.id}
               onDragOver={e => onDragOver(e as DragEvent, project.id)}
               onDragLeave={onDragLeave}
               onDrop={e => onDrop(e as DragEvent, project)}
-              style={{ background: "#FFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 14, overflow: "hidden", boxShadow: isOver ? "0 0 0 4px rgba(5,150,105,0.08)" : "0 1px 4px rgba(0,0,0,0.04)", transition: "all 0.15s" }}>
+              style={{ background: "#FFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden", boxShadow: isOver ? "0 0 0 3px rgba(5,150,105,0.10)" : "0 1px 3px rgba(0,0,0,0.04)", transition: "all 0.15s" }}>
 
-              {/* Project header */}
-              <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(26,23,20,0.06)", background: "#FAFAF9" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ width: 30, height: 30, borderRadius: 9, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <FolderKanban style={{ width: 13, height: 13, color: "#059669" }} />
+              {/* Single-row layout: icon + name/client + assignments */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", minHeight: 52 }}>
+
+                {/* Project icon + name */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, width: 160 }}>
+                  <div style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <FolderKanban style={{ width: 12, height: 12, color: "#059669" }} />
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{project.name}</p>
-                    <p style={{ fontSize: 10, color: "#A09790" }}>{project.client}</p>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{project.name}</p>
+                    <p style={{ fontSize: 10, color: "#A09790", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{project.client}</p>
                   </div>
                 </div>
-              </div>
 
-              {/* Drop zone content */}
-              <div style={{ padding: "10px 14px 12px", minHeight: 80, background: isOver ? "rgba(5,150,105,0.03)" : "transparent" }}>
-                {isOver && (
-                  <p style={{ textAlign: "center" as const, fontSize: 11, color: "#059669", marginBottom: 8, fontWeight: 600 }}>ここにドロップ</p>
-                )}
+                {/* Divider */}
+                <div style={{ width: 1, height: 32, background: "rgba(26,23,20,0.07)", flexShrink: 0 }} />
 
-                {assignedGroups.length === 0 && individualMembers.length === 0 && !isOver ? (
-                  <div style={{ padding: "14px 0", textAlign: "center" as const, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>
-                    <p style={{ fontSize: 11, color: "#C9C4BB" }}>グループ・メンバーをドラッグ</p>
-                  </div>
-                ) : (
-                  <div>
-                    {/* Assigned groups */}
-                    {assignedGroups.map(g => {
-                      const gmIds = groupMemberships.filter(gm => gm.group_id === g.id).map(gm => gm.member_id);
-                      const gMembers = members.filter(m => gmIds.includes(m.id));
-                      return (
-                        <div key={g.id} style={{ background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 8, padding: "7px 9px", marginBottom: 5, display: "flex", alignItems: "center", gap: 7 }}>
-                          <Users style={{ width: 12, height: 12, color: "#059669", flexShrink: 0 }} />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <p style={{ fontSize: 11, fontWeight: 700, color: "#065F46" }}>{g.name}</p>
-                            <p style={{ fontSize: 10, color: "#059669" }}>{gMembers.length}名</p>
+                {/* Assignment chips area */}
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                  {isOver && (
+                    <span style={{ fontSize: 11, color: "#059669", fontWeight: 600, whiteSpace: "nowrap" as const }}>ここにドロップ ↓</span>
+                  )}
+                  {!isOver && isEmpty && (
+                    <span style={{ fontSize: 11, color: "#C9C4BB" }}>グループ・メンバーをドラッグしてアサイン</span>
+                  )}
+                  {!isOver && !isEmpty && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden", flexWrap: "nowrap" as const, minWidth: 0 }}>
+                      {/* Groups */}
+                      {visibleGroups.map(g => {
+                        const gmIds = groupMemberships.filter(gm => gm.group_id === g.id).map(gm => gm.member_id);
+                        const gMembers = members.filter(m => gmIds.includes(m.id));
+                        return (
+                          <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 6px 3px 5px", flexShrink: 0 }}>
+                            <Users style={{ width: 10, height: 10, color: "#059669", flexShrink: 0 }} />
+                            <span style={{ fontSize: 10, fontWeight: 700, color: "#065F46", whiteSpace: "nowrap" as const }}>{g.name}</span>
+                            <span style={{ fontSize: 9, color: "#059669" }}>{gMembers.length}名</span>
+                            <button onClick={e => { e.stopPropagation(); onRemoveGroup(g.id, project); }}
+                              style={{ padding: "1px", border: "none", background: "transparent", cursor: "pointer", color: "#A7F3D0", display: "flex", borderRadius: 3, transition: "color 0.1s", flexShrink: 0 }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#A7F3D0"; }}>
+                              <X style={{ width: 10, height: 10 }} />
+                            </button>
                           </div>
-                          <button onClick={() => onRemoveGroup(g.id, project)}
-                            style={{ padding: "2px", border: "none", background: "transparent", cursor: "pointer", color: "#A7F3D0", display: "flex", borderRadius: 4, transition: "color 0.1s" }}
+                        );
+                      })}
+                      {hiddenGroups > 0 && (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenGroups}</span>
+                      )}
+
+                      {/* Separator */}
+                      {assignedGroups.length > 0 && individualMembers.length > 0 && (
+                        <div style={{ width: 1, height: 18, background: "rgba(26,23,20,0.08)", flexShrink: 0, margin: "0 2px" }} />
+                      )}
+
+                      {/* Individual members */}
+                      {visibleMembers.map(m => (
+                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 0, background: "#F4F5F6", borderRadius: 20, border: "1px solid transparent", overflow: "hidden", transition: "all 0.12s", flexShrink: 0 }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.30)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
+                          <button title="クリックで権限設定"
+                            onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
+                            style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 5px 3px 4px", border: "none", background: "transparent", cursor: "pointer" }}>
+                            <Avatar name={m.name} size="xs" />
+                            <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732", whiteSpace: "nowrap" as const }}>{m.name}</span>
+                          </button>
+                          <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
+                            style={{ padding: "3px 6px 3px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", transition: "color 0.1s", flexShrink: 0 }}
                             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#A7F3D0"; }}>
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
                             <X style={{ width: 11, height: 11 }} />
                           </button>
                         </div>
-                      );
-                    })}
-
-                    {/* Individual members */}
-                    {individualMembers.length > 0 && (
-                      <div style={{ marginTop: assignedGroups.length > 0 ? 6 : 0 }}>
-                        {assignedGroups.length > 0 && (
-                          <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 600, marginBottom: 4, textTransform: "uppercase" as const, letterSpacing: "0.04em" }}>個別</p>
-                        )}
-                        <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4 }}>
-                          {individualMembers.map(m => (
-                            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 3, background: "#F4F5F6", borderRadius: 20, padding: "3px 4px 3px 4px", border: "1px solid transparent", transition: "border-color 0.15s" }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.25)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
-                              <Avatar name={m.name} size="xs" />
-                              <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732" }}>{m.name}</span>
-                              <button
-                                title="権限設定"
-                                onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
-                                style={{ padding: "2px 3px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", borderRadius: 3, transition: "color 0.1s" }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                                <ShieldCheck style={{ width: 9, height: 9 }} />
-                              </button>
-                              <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
-                                style={{ padding: "1px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", borderRadius: 3, transition: "color 0.1s" }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                                <X style={{ width: 9, height: 9 }} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                      ))}
+                      {hiddenMembers > 0 && (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F4F5F6", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenMembers}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           );
