@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck } from "lucide-react";
-import type { SprintTicket, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
+import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, inputCls } from "@/app/lib/helpers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
-import { mapComment, mapSourceFile, mapSprintTicket } from "@/app/lib/mappers";
+import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
@@ -41,8 +41,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, onClose, onUpdated, onDeleted, projectPermissions,
-}: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; projectPermissions?: import("@/app/types").UserPermissions }) {
+  ticket, projectId, onClose, onUpdated, onDeleted, projectPermissions,
+}: { ticket: SprintTicket | null; projectId?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; projectPermissions?: import("@/app/types").UserPermissions }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -68,6 +68,9 @@ export function TicketDetailPanel({
   const [reviewerName, setReviewerName] = useState(ticket?.reviewerName ?? "");
   const [reviewRound, setReviewRound]   = useState(ticket?.reviewRound ?? 0);
   const [reviewerOpen, setReviewerOpen] = useState(false);
+
+  const [categoryId, setCategoryId] = useState<string | null>(ticket?.categoryId ?? null);
+  const [categories, setCategories] = useState<TicketCategory[]>([]);
 
   // related data
   const [comments, setComments]       = useState<TicketComment[]>([]);
@@ -146,6 +149,7 @@ export function TicketDetailPanel({
     setEditingId(null);
     setAssigneesOpen(false);
     setGeneratedPrompt(ticket.generatedPrompt ?? "");
+    setCategoryId(ticket.categoryId ?? null);
     // fetch fresh data from DB (in case sprint cache is stale)
     if (ticket.id && isSupabaseEnabled) {
       supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
@@ -168,10 +172,17 @@ export function TicketDetailPanel({
           const freshImages = t.images ?? [];
           setTicketImages(freshImages);
           ticketImagesRef.current = freshImages;
+          setCategoryId(t.categoryId ?? null);
         });
     }
     if (ticket.id) loadRelated(ticket.id);
   }, [ticket?.id, loadRelated]);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !projectId) return;
+    supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at")
+      .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
+  }, [projectId]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -590,6 +601,18 @@ export function TicketDetailPanel({
                 </select>
               </div>
             </div>
+
+            {/* 分類 */}
+            {categories.length > 0 && (
+              <div>
+                <label className={labelCls}>分類</label>
+                <select value={categoryId ?? ""} onChange={e => { const v = e.target.value || null; setCategoryId(v); save({ category_id: v }); }}
+                  className={inputCls}>
+                  <option value="">分類なし</option>
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+            )}
 
             {/* 担当者 (全幅・複数選択) */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>

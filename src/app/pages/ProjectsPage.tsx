@@ -9,6 +9,7 @@ import { mapProject, mapClient, mapMember } from "@/app/lib/mappers";
 import type { Project, Client, Member, PermissionGroup, UserPermissions } from "@/app/types";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
+import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -40,6 +41,7 @@ export function ProjectsPage() {
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [assignTarget, setAssignTarget] = useState<Project | null>(null);
+  const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [allMembers, setAllMembers] = useState<Member[]>(isSupabaseEnabled ? [] : MEMBERS);
   const [groups, setGroups] = useState<PermissionGroup[]>([]);
   const [loading, setLoading] = useState(isSupabaseEnabled);
@@ -174,6 +176,7 @@ export function ProjectsPage() {
               onNavigate={() => navigate(`/projects/${p.id}/sprints`)}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
               onAssign={canManage ? () => setAssignTarget(p) : undefined}
+              onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
             />
           ))}
         </div>
@@ -193,6 +196,12 @@ export function ProjectsPage() {
           groups={groups}
           onClose={() => setAssignTarget(null)}
           onSave={(names, groupIds, rfg) => handleSaveAssign(assignTarget, names, groupIds, rfg)} />
+      )}
+      {categoryTarget && (
+        <CategorySettingsModal
+          projectId={categoryTarget.id}
+          projectName={categoryTarget.name}
+          onClose={() => setCategoryTarget(null)} />
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, Member, TicketComment, TicketSourceFile } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -14,7 +14,12 @@ export function mapClient(r: any): Client {
 export function mapSprintTicket(r: any): SprintTicket {
   const assignees: string[] = Array.isArray(r.assignees) && r.assignees.length > 0
     ? r.assignees : (r.assignee ? [r.assignee] : []);
-  return { id:r.id, wbs:r.wbs||"", title:r.title, status:r.status, priority:r.priority, assignee:assignees[0]||"", assignees, startDate:r.start_date||"", dueDate:r.due_date||"", estimatedHours:r.estimated_hours||0, progress:r.progress||0, description:r.description||"", reviewerName:r.reviewer_name||"", reviewRound:r.review_round||0, generatedPrompt:r.generated_prompt||"", images:Array.isArray(r.images)?r.images:[] };
+  return { id:r.id, wbs:r.wbs||"", title:r.title, status:r.status, priority:r.priority, assignee:assignees[0]||"", assignees, startDate:r.start_date||"", dueDate:r.due_date||"", estimatedHours:r.estimated_hours||0, progress:r.progress||0, description:r.description||"", reviewerName:r.reviewer_name||"", reviewRound:r.review_round||0, generatedPrompt:r.generated_prompt||"", images:Array.isArray(r.images)?r.images:[], categoryId:r.category_id??null };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapTicketCategory(r: any): TicketCategory {
+  return { id: r.id, projectId: r.project_id, name: r.name };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

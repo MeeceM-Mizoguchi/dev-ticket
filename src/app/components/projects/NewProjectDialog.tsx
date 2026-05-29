@@ -17,15 +17,26 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const [status, setStatus] = useState<ProjectStatus>("planning");
   const [saving, setSaving] = useState(false);
 
+  const DEFAULT_CATEGORIES = ["バグ", "改善", "新機能"];
+
   const handleSave = async () => {
     if (!name.trim()) return;
     if (isSupabaseEnabled) {
       setSaving(true);
+      const projectId = `P-${Date.now()}`;
       await supabase!.from("projects").insert({
-        id: `P-${Date.now()}`, name, client: clientName, description,
+        id: projectId, name, client: clientName, description,
         start_date: startDate || null, end_date: endDate || null,
         status, members: [], done: 0, in_progress: 0, todo: 0,
       });
+      const now = Date.now();
+      await supabase!.from("ticket_categories").insert(
+        DEFAULT_CATEGORIES.map((catName, i) => ({
+          id: `CAT-${now}-${i}`,
+          project_id: projectId,
+          name: catName,
+        }))
+      );
       setSaving(false);
     }
     onCreated?.();

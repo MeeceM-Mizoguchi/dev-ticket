@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
-import type { TicketStatus, Priority } from "@/app/types";
+import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MEMBERS } from "@/app/data/mock";
 import { labelCls, inputCls, TICKET_STATUSES } from "@/app/lib/helpers";
+import { mapTicketCategory } from "@/app/lib/mappers";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 
-export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate, sprintEndDate }: {
-  sprintId: string; onClose: () => void; onCreated?: () => void;
+export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprintStartDate, sprintEndDate }: {
+  sprintId: string; projectId?: string; onClose: () => void; onCreated?: () => void;
   sprintStartDate?: string; sprintEndDate?: string;
 }) {
   const [title, setTitle] = useState("");
@@ -39,6 +40,8 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
   const [images, setImages] = useState<{ name: string; url: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [titleError, setTitleError] = useState(false);
+  const [categories, setCategories] = useState<TicketCategory[]>([]);
+  const [categoryId, setCategoryId] = useState<string>("");
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -51,6 +54,12 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
       });
   }, []);
 
+  useEffect(() => {
+    if (!isSupabaseEnabled || !projectId) return;
+    supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at")
+      .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
+  }, [projectId]);
+
   const handleSave = async () => {
     if (!title.trim()) { setTitleError(true); return; }
     if (isSupabaseEnabled) {
@@ -61,6 +70,7 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
         start_date: startDate || null, due_date: dueDate || null,
         estimated_hours: estimatedHours || 0, progress: 0,
         description: description || null,
+        category_id: categoryId || null,
       });
       setSaving(false);
     }
@@ -113,6 +123,16 @@ export function NewTicketDialog({ sprintId, onClose, onCreated, sprintStartDate,
               </select>
             </div>
           </div>
+
+          {categories.length > 0 && (
+            <div>
+              <label className={labelCls}>分類</label>
+              <select className={inputCls} value={categoryId} onChange={e => setCategoryId(e.target.value)}>
+                <option value="">分類なし</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className={labelCls}>担当者</label>
