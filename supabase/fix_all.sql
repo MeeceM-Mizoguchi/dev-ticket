@@ -57,7 +57,35 @@ SET
 WHERE (name IS NULL OR name = '')
   AND email IS NOT NULL;
 
--- ④ DELETE ポリシー追加（sprints / projects / clients が不足していた）
+-- ④ INSERT ポリシー追加（欠落していた場合に追加）
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sprints' AND policyname='auth_insert_sprints') THEN
+    CREATE POLICY "auth_insert_sprints" ON sprints FOR INSERT WITH CHECK (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sprints' AND policyname='auth_update_sprints') THEN
+    CREATE POLICY "auth_update_sprints" ON sprints FOR UPDATE USING (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sprint_tickets' AND policyname='auth_insert_sprint_tickets') THEN
+    CREATE POLICY "auth_insert_sprint_tickets" ON sprint_tickets FOR INSERT WITH CHECK (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sprint_tickets' AND policyname='auth_update_sprint_tickets') THEN
+    CREATE POLICY "auth_update_sprint_tickets" ON sprint_tickets FOR UPDATE USING (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='projects' AND policyname='auth_insert_projects') THEN
+    CREATE POLICY "auth_insert_projects" ON projects FOR INSERT WITH CHECK (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='projects' AND policyname='auth_update_projects') THEN
+    CREATE POLICY "auth_update_projects" ON projects FOR UPDATE USING (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='clients' AND policyname='auth_insert_clients') THEN
+    CREATE POLICY "auth_insert_clients" ON clients FOR INSERT WITH CHECK (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='clients' AND policyname='auth_update_clients') THEN
+    CREATE POLICY "auth_update_clients" ON clients FOR UPDATE USING (auth.role()='authenticated');
+  END IF;
+END $$;
+
+-- ⑤ DELETE ポリシー追加（sprints / projects / clients が不足していた）
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sprints' AND policyname='auth_delete_sprints') THEN
     CREATE POLICY "auth_delete_sprints" ON sprints FOR DELETE USING (auth.role()='authenticated');
