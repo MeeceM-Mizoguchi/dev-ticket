@@ -163,6 +163,7 @@ export function TicketDetailPanel({
           setReviewRound(t.reviewRound ?? 0);
           setGeneratedPrompt(t.generatedPrompt ?? "");
           const freshImages = t.images ?? [];
+          console.log("[images] loaded from DB:", freshImages.length, "images for", ticket.id, freshImages);
           setTicketImages(freshImages);
           ticketImagesRef.current = freshImages;
         });
@@ -281,18 +282,28 @@ export function TicketDetailPanel({
     for (const f of Array.from(files)) {
       if (!f.type.startsWith("image/")) continue;
       const url = await uploadImageToStorage(f, `tickets/${ticket.id}/detail`);
+      console.log("[images] upload result:", url || "(empty)");
       if (!url) continue;
-      ticketImagesRef.current = [...ticketImagesRef.current, url];
-      setTicketImages(ticketImagesRef.current);
-      if (isSupabaseEnabled) supabase!.from("sprint_tickets").update({ images: ticketImagesRef.current }).eq("id", ticket.id);
+      const next = [...ticketImagesRef.current, url];
+      ticketImagesRef.current = next;
+      setTicketImages(next);
+      if (isSupabaseEnabled) {
+        const { error } = await supabase!.from("sprint_tickets").update({ images: next }).eq("id", ticket.id);
+        if (error) console.error("[images] DB save failed:", error.message, error.details);
+        else console.log("[images] DB saved:", next.length, "images for", ticket.id);
+      }
     }
   }, [ticket?.id, uploadImageToStorage]);
 
-  const removeTicketImage = useCallback((idx: number) => {
+  const removeTicketImage = useCallback(async (idx: number) => {
     if (!ticket) return;
-    ticketImagesRef.current = ticketImagesRef.current.filter((_, j) => j !== idx);
-    setTicketImages(ticketImagesRef.current);
-    if (isSupabaseEnabled) supabase!.from("sprint_tickets").update({ images: ticketImagesRef.current }).eq("id", ticket.id);
+    const next = ticketImagesRef.current.filter((_, j) => j !== idx);
+    ticketImagesRef.current = next;
+    setTicketImages(next);
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!.from("sprint_tickets").update({ images: next }).eq("id", ticket.id);
+      if (error) console.error("[images] DB delete failed:", error.message);
+    }
   }, [ticket?.id]);
 
   const setStatusAndProgress = (newStatus: TicketStatus) => {
