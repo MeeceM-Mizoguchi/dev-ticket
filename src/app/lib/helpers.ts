@@ -48,12 +48,13 @@ export function getPriorityMeta(p: Priority) {
 }
 
 export function getRoleMeta(role: Role) {
-  return {
+  const map: Record<string, { label: string; cls: string; gradient: string }> = {
     admin:             { label: "管理者",    cls: "bg-rose-50 text-rose-700",      gradient: "from-rose-500 to-rose-600" },
     "project-manager": { label: "PM",        cls: "bg-orange-50 text-orange-700",   gradient: "from-orange-500 to-orange-600" },
     developer:         { label: "開発者",    cls: "bg-sky-50 text-sky-700",         gradient: "from-sky-500 to-sky-600" },
     designer:          { label: "デザイナー", cls: "bg-violet-50 text-violet-700",   gradient: "from-violet-500 to-violet-600" },
-  }[role];
+  };
+  return map[role] ?? { label: role, cls: "bg-gray-50 text-gray-700", gradient: "from-gray-400 to-gray-500" };
 }
 
 export function getAvatarColor(name: string) {
