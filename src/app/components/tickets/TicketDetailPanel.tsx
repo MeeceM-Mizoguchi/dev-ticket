@@ -132,6 +132,7 @@ export function TicketDetailPanel({
     // reset form state on ticket change
     setCommentText("");
     setCommentImages([]);
+    setTicketImages([]);
     setReviewContent("");
     setReviewFiles([]);
     setRevisionInput("");
