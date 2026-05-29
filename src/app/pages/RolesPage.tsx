@@ -62,7 +62,7 @@ export function RolesPage() {
   const permCount = (r: RoleDefinition) => PERM_FLAGS.filter(f => r.base_permissions?.[f.key]).length;
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 960, margin: "0 auto" }}>
+    <div style={{ padding: "28px 32px" }}>
 
       {/* ── Header ── */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 28 }}>

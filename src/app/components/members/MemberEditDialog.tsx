@@ -3,6 +3,7 @@ import type { Member, RoleDefinition } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { GROUPS } from "@/app/data/mock";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -18,6 +19,7 @@ const FALLBACK_ROLES: RoleDefinition[] = [
 
 export function MemberEditDialog({ member, onClose, onSaved }: { member: Member; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
+  const { userRole } = useAuth();
   const [name, setName] = useState(member.name);
   const [role, setRole] = useState(member.role);
   const [group, setGroup] = useState(member.group);
@@ -69,6 +71,11 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
     onClose();
   };
 
+  const isEditingAdmin = member.role === "admin";
+  const canChangeRole = userRole === "admin";
+  const visibleRoles = roles.filter(r => canChangeRole || r.name !== "admin");
+  const roleDisabled = !rolesLoaded || (!canChangeRole && isEditingAdmin);
+
   const canSave = rolesLoaded && !saving;
 
   return (
@@ -81,9 +88,9 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
       </>}>
       <FieldInput label="名前" value={name} onChange={setName} required />
       <FieldSelect label="権限ロール" value={role} onChange={setRole as (v: string) => void}
-        disabled={!rolesLoaded}>
+        disabled={roleDisabled}>
         {!rolesLoaded && <option value={member.role}>読み込み中...</option>}
-        {rolesLoaded && roles.map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
+        {rolesLoaded && visibleRoles.map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
       </FieldSelect>
       <FieldSelect label="所属グループ" value={group} onChange={setGroup}>
         {GROUPS.filter(g => g !== "すべて").map(g => <option key={g} value={g}>{g}</option>)}

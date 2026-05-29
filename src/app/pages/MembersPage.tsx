@@ -26,7 +26,6 @@ export function MembersPage() {
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const canAdd = userRole === "admin" || userRole === "project-manager";
   const canEdit = userRole === "admin" || userRole === "project-manager";
-  const canDelete = userRole === "admin";
 
   const refreshMembers = () => {
     if (!isSupabaseEnabled) return;
@@ -109,7 +108,7 @@ export function MembersPage() {
             {filtered.map(m => (
               <MemberCard key={m.id} member={m}
                 canEdit={canEdit}
-                canDelete={canDelete && m.id !== userId}
+                canDelete={m.id !== userId && (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager"))}
                 onDetail={() => setDetailTarget(m)}
                 onEdit={() => setEditTarget(m)}
                 onDelete={() => setDeleteTarget(m)} />

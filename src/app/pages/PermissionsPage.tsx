@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
-import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban } from "lucide-react";
+import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ChevronDown, ChevronUp } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
@@ -334,15 +334,15 @@ export function PermissionsPage() {
     toast("グループを削除しました");
   };
 
-  const handleSaveGroupPerms = async (groupId: number, perms: UserPermissions) => {
+  const handleSaveGroup = async (groupId: number, name: string, perms: UserPermissions) => {
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("permission_groups")
-        .update({ permissions: perms }).eq("id", groupId);
-      if (error) { toast("権限の保存に失敗しました", "error"); return; }
+        .update({ name, permissions: perms }).eq("id", groupId);
+      if (error) { toast("グループ設定の保存に失敗しました", "error"); return; }
     }
-    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, permissions: perms } : g));
+    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name, permissions: perms } : g));
     setSettingsGroupId(null);
-    toast("グループ権限を保存しました");
+    toast("グループ設定を保存しました");
   };
 
   // ── Computed ──────────────────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ export function PermissionsPage() {
         <GroupSettingsModal
           group={settingsGroup}
           onClose={() => setSettingsGroupId(null)}
-          onSave={perms => handleSaveGroupPerms(settingsGroupId, perms)}
+          onSave={(name, perms) => handleSaveGroup(settingsGroupId, name, perms)}
         />
       )}
       {permTarget && (
@@ -665,6 +665,15 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
   getIndividualMemberNames: (project: Project) => string[];
   getGroupMemberIds: (groupId: number) => string[];
 }) {
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const toggleExpand = (projectId: string) => {
+    setExpandedProjects(prev => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId); else next.add(projectId);
+      return next;
+    });
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, minHeight: 0, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexShrink: 0 }}>
@@ -714,19 +723,24 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
         )}
         {projects.map(project => {
           const isOver = dragOver?.type === "project" && dragOver.id === project.id;
+          const isExpanded = expandedProjects.has(project.id);
           const assignedGroupIds = project.groupIds ?? [];
           const assignedGroups = groups.filter(g => assignedGroupIds.includes(g.id));
           const individualNames = getIndividualMemberNames(project);
           const individualMembers = members.filter(m => individualNames.includes(m.name));
           const isEmpty = assignedGroups.length === 0 && individualMembers.length === 0;
 
-          // Truncation limits
+          // Truncation limits (collapsed only)
           const MAX_G = 3;
           const MAX_M = 4;
           const visibleGroups  = assignedGroups.slice(0, MAX_G);
-          const hiddenGroups   = assignedGroups.length - MAX_G;
+          const hiddenGroups   = Math.max(0, assignedGroups.length - MAX_G);
           const visibleMembers = individualMembers.slice(0, MAX_M);
-          const hiddenMembers  = individualMembers.length - MAX_M;
+          const hiddenMembers  = Math.max(0, individualMembers.length - MAX_M);
+          const hasHidden = (hiddenGroups > 0 || hiddenMembers > 0) && !isEmpty;
+
+          const displayGroups  = isExpanded ? assignedGroups  : visibleGroups;
+          const displayMembers = isExpanded ? individualMembers : visibleMembers;
 
           return (
             <div key={project.id}
@@ -736,10 +750,10 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
               style={{ background: "#FFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden", boxShadow: isOver ? "0 0 0 3px rgba(5,150,105,0.10)" : "0 1px 3px rgba(0,0,0,0.04)", transition: "all 0.15s" }}>
 
               {/* Single-row layout: icon + name/client + assignments */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", minHeight: 52 }}>
+              <div style={{ display: "flex", alignItems: isExpanded ? "flex-start" : "center", gap: 10, padding: "9px 12px", minHeight: 52 }}>
 
                 {/* Project icon + name */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, width: 160 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, width: 160, paddingTop: isExpanded ? 3 : 0 }}>
                   <div style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <FolderKanban style={{ width: 12, height: 12, color: "#059669" }} />
                   </div>
@@ -750,10 +764,10 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                 </div>
 
                 {/* Divider */}
-                <div style={{ width: 1, height: 32, background: "rgba(26,23,20,0.07)", flexShrink: 0 }} />
+                <div style={{ width: 1, alignSelf: "stretch", background: "rgba(26,23,20,0.07)", flexShrink: 0, margin: isExpanded ? "3px 0" : 0 }} />
 
                 {/* Assignment chips area */}
-                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflow: isExpanded ? "visible" : "hidden" }}>
                   {isOver && (
                     <span style={{ fontSize: 11, color: "#059669", fontWeight: 600, whiteSpace: "nowrap" as const }}>ここにドロップ ↓</span>
                   )}
@@ -761,9 +775,9 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                     <span style={{ fontSize: 11, color: "#C9C4BB" }}>グループ・メンバーをドラッグしてアサイン</span>
                   )}
                   {!isOver && !isEmpty && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden", flexWrap: "nowrap" as const, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: isExpanded ? "visible" : "hidden", flexWrap: isExpanded ? "wrap" as const : "nowrap" as const, minWidth: 0, flex: 1, paddingTop: isExpanded ? 3 : 0, paddingBottom: isExpanded ? 3 : 0 }}>
                       {/* Groups */}
-                      {visibleGroups.map(g => {
+                      {displayGroups.map(g => {
                         const gmIds = groupMemberships.filter(gm => gm.group_id === g.id).map(gm => gm.member_id);
                         const gMembers = members.filter(m => gmIds.includes(m.id));
                         return (
@@ -780,7 +794,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                           </div>
                         );
                       })}
-                      {hiddenGroups > 0 && (
+                      {!isExpanded && hiddenGroups > 0 && (
                         <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenGroups}</span>
                       )}
 
@@ -790,7 +804,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                       )}
 
                       {/* Individual members */}
-                      {visibleMembers.map(m => (
+                      {displayMembers.map(m => (
                         <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 0, background: "#F4F5F6", borderRadius: 20, border: "1px solid transparent", overflow: "hidden", transition: "all 0.12s", flexShrink: 0 }}
                           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.30)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
@@ -808,12 +822,26 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                           </button>
                         </div>
                       ))}
-                      {hiddenMembers > 0 && (
+                      {!isExpanded && hiddenMembers > 0 && (
                         <span style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F4F5F6", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenMembers}</span>
                       )}
                     </div>
                   )}
                 </div>
+
+                {/* Accordion toggle button */}
+                {!isOver && hasHidden && (
+                  <button onClick={e => { e.stopPropagation(); toggleExpand(project.id); }}
+                    title={isExpanded ? "折りたたむ" : "全員を表示"}
+                    style={{ flexShrink: 0, padding: "4px 6px", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 6, background: "transparent", cursor: "pointer", color: "#A09790", display: "flex", alignItems: "center", transition: "all 0.15s", marginLeft: 2, alignSelf: isExpanded ? "flex-start" : "center", marginTop: isExpanded ? 3 : 0 }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#059669"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(5,150,105,0.30)"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#A09790"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.10)"; }}>
+                    {isExpanded
+                      ? <ChevronUp style={{ width: 13, height: 13 }} />
+                      : <ChevronDown style={{ width: 13, height: 13 }} />
+                    }
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -895,11 +923,12 @@ function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (
 
 // ── Group settings modal ───────────────────────────────────────────────────────
 function GroupSettingsModal({ group, onClose, onSave }: {
-  group: PermissionGroup; onClose: () => void; onSave: (perms: UserPermissions) => void;
+  group: PermissionGroup; onClose: () => void; onSave: (name: string, perms: UserPermissions) => void;
 }) {
+  const [groupName, setGroupName] = useState(group.name);
   const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS, ...(group.permissions ?? {}) });
   const [saving, setSaving] = useState(false);
-  const handleSave = async () => { setSaving(true); await onSave(local); setSaving(false); };
+  const handleSave = async () => { setSaving(true); await onSave(groupName.trim() || group.name, local); setSaving(false); };
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} />
@@ -909,7 +938,7 @@ function GroupSettingsModal({ group, onClose, onSave }: {
             <Users style={{ width: 15, height: 15, color: "#059669" }} />
           </div>
           <div style={{ flex: 1 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>グループ権限設定</h3>
+            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>グループ設定</h3>
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>{group.name}</p>
           </div>
           <button onClick={onClose} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
@@ -917,6 +946,13 @@ function GroupSettingsModal({ group, onClose, onSave }: {
           </button>
         </div>
         <div style={{ padding: "16px 24px" }}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6, letterSpacing: "0.04em" }}>グループ名</label>
+            <input value={groupName} onChange={e => setGroupName(e.target.value)}
+              style={{ width: "100%", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "10px 12px", fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const, transition: "border 0.15s" }}
+              onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; e.currentTarget.style.background = "#FFF"; }}
+              onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
+          </div>
           <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14, background: "rgba(5,150,105,0.05)", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(5,150,105,0.12)" }}>
             このグループのメンバーがプロジェクトで持つ操作権限を設定します。
           </p>

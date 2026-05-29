@@ -5,6 +5,7 @@ import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition } from "@/app/types";
 
@@ -17,6 +18,7 @@ const FALLBACK_ROLES: RoleDefinition[] = [
 
 export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited?: () => void }) {
   const { toast } = useToast();
+  const { userRole } = useAuth();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState("developer");
@@ -69,7 +71,7 @@ export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onIn
       <FieldInput label="メールアドレス" type="email" placeholder="taro@example.com" required value={email} onChange={setEmail} />
       <FieldInput label="氏名（任意）" placeholder="例: 田中太郎" value={name} onChange={setName} />
       <FieldSelect label="付与するロール" value={role} onChange={setRole}>
-        {roles.map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
+        {roles.filter(r => userRole === "admin" || r.name !== "admin").map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
       </FieldSelect>
       <FieldSelect label="所属グループ" value={group} onChange={setGroup}>
         <option value="">未割り当て</option><option value="マネジメント">マネジメント</option>
