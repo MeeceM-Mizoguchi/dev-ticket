@@ -46,10 +46,8 @@ function resolvePermissions(basePerms: UserPermissions): UserPermissions {
 }
 
 async function fetchProfile(uid: string) {
-  const { data, error } = await supabase!.from("profiles").select("name, role, permissions").eq("id", uid).single();
-  if (!error) return data;
-  const { data: d2 } = await supabase!.from("profiles").select("name, role").eq("id", uid).single();
-  return d2 ?? null;
+  const { data } = await supabase!.from("profiles").select("name, role").eq("id", uid).maybeSingle();
+  return data ?? null;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
