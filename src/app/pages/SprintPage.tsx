@@ -24,8 +24,9 @@ export function SprintPage() {
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const effectivePermissions = projectPermissions ?? userPermissions;
-  const canCreateSprint = isAdminOrPM || effectivePermissions.canCreateSprint;
-  const canCreateTicket = isAdminOrPM || effectivePermissions.canCreateTicket;
+  const canCreateSprint = effectivePermissions.canCreateSprint;
+  const canCreateTicket = effectivePermissions.canCreateTicket;
+  const canEditDeleteSprint = effectivePermissions.canEditDelete;
   const [project, setProject] = useState<Project | null>(PROJECTS.find(p => p.id === projectId) ?? null);
   const [sprints, setSprints] = useState<Sprint[]>(SPRINTS.filter(s => s.projectId === projectId));
   const [viewMode, setViewMode] = useState<SprintView>("list");
@@ -142,7 +143,7 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={isAdminOrPM ? s => setDeleteTarget(s) : undefined} onEditSprint={isAdminOrPM ? s => setEditTarget(s) : undefined} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
       {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
 

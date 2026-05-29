@@ -91,9 +91,8 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
 }) {
-  const { userName, userRole, userPermissions } = useAuth();
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-  const canCreateTicket = isAdminOrPM || userPermissions.canCreateTicket;
+  const { userName, userPermissions } = useAuth();
+  const canCreateTicket = userPermissions.canCreateTicket;
   const [selectedSprintId, setSelectedSprintId] = useState(sprints[0]?.id ?? "");
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [modalComment, setModalComment] = useState("");

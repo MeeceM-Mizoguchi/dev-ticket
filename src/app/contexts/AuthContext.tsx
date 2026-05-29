@@ -39,8 +39,10 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
   return { ...DEFAULT_PERMISSIONS };
 }
 
-function resolvePermissions(basePerms: UserPermissions, rawPerms: unknown): UserPermissions {
-  return { ...basePerms, ...(rawPerms as Partial<UserPermissions> ?? {}) };
+// roles テーブルの base_permissions のみを権限の根拠とする。
+// profiles.permissions は旧仕様のため無視。プロジェクト固有の上書きは project_member_permissions で管理。
+function resolvePermissions(basePerms: UserPermissions): UserPermissions {
+  return { ...basePerms };
 }
 
 async function fetchProfile(uid: string) {
@@ -76,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (p) {
           const role = p.role as Role;
           const basePerms = await fetchRoleBasePermissions(role);
-          const perms = resolvePermissions(basePerms, (p as { permissions?: unknown }).permissions ?? null);
+          const perms = resolvePermissions(basePerms);
           setUserName(p.name); setUserRole(role); setUserId(session.user.id);
           setUserPermissions(perms);
           sessionStorage.setItem("isLoggedIn", "true");
@@ -95,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (p) {
             const role = p.role as Role;
             const basePerms = await fetchRoleBasePermissions(role);
-            const perms = resolvePermissions(basePerms, (p as { permissions?: unknown }).permissions ?? null);
+            const perms = resolvePermissions(basePerms);
             setUserName(p.name); setUserRole(role); setUserId(session.user.id);
             setUserPermissions(perms);
             sessionStorage.setItem("userName", p.name);
@@ -123,7 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const member = MEMBERS.find(m => m.email === email);
       if (member && password === "password") {
         const role = member.role as Role;
-        const perms = resolvePermissions({ ...DEFAULT_PERMISSIONS }, null);
+        const perms = resolvePermissions({ ...DEFAULT_PERMISSIONS });
         setUserName(member.name); setUserRole(role); setUserId(member.id);
         setUserPermissions(perms);
         sessionStorage.setItem("isLoggedIn", "true");

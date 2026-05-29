@@ -33,16 +33,22 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
 
   const hasTickets = sprint.tickets.length > 0;
 
+  // Returns true on success, false on failure (sets errorMsg internally)
+  const execDelete = async (sprintId: string): Promise<boolean> => {
+    const { data: deleted, error } = await supabase!
+      .from("sprints").delete().eq("id", sprintId).select("id");
+    if (error || !deleted?.length) {
+      setErrorMsg("スプリントを削除できませんでした。Supabase の RLS ポリシーに DELETE 権限が不足している可能性があります。");
+      return false;
+    }
+    return true;
+  };
+
   const deleteWithTickets = async () => {
     setSaving(true);
     setErrorMsg(null);
     if (isSupabaseEnabled) {
-      const { error } = await supabase!.from("sprints").delete().eq("id", sprint.id);
-      if (error) {
-        setErrorMsg("削除に失敗しました。権限を確認してもう一度お試しください。");
-        setSaving(false);
-        return;
-      }
+      if (!await execDelete(sprint.id)) { setSaving(false); return; }
     }
     setSaving(false);
     onDeleted();
@@ -54,19 +60,13 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
     setErrorMsg(null);
     if (isSupabaseEnabled) {
       const { error: moveErr } = await supabase!.from("sprint_tickets")
-        .update({ sprint_id: targetSprintId })
-        .eq("sprint_id", sprint.id);
+        .update({ sprint_id: targetSprintId }).eq("sprint_id", sprint.id);
       if (moveErr) {
         setErrorMsg("チケットの移動に失敗しました。もう一度お試しください。");
         setSaving(false);
         return;
       }
-      const { error: delErr } = await supabase!.from("sprints").delete().eq("id", sprint.id);
-      if (delErr) {
-        setErrorMsg("スプリントの削除に失敗しました。もう一度お試しください。");
-        setSaving(false);
-        return;
-      }
+      if (!await execDelete(sprint.id)) { setSaving(false); return; }
     }
     setSaving(false);
     onDeleted();
@@ -89,19 +89,13 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
         return;
       }
       const { error: moveErr } = await supabase!.from("sprint_tickets")
-        .update({ sprint_id: newSprintId })
-        .eq("sprint_id", sprint.id);
+        .update({ sprint_id: newSprintId }).eq("sprint_id", sprint.id);
       if (moveErr) {
         setErrorMsg("チケットの移動に失敗しました。もう一度お試しください。");
         setSaving(false);
         return;
       }
-      const { error: delErr } = await supabase!.from("sprints").delete().eq("id", sprint.id);
-      if (delErr) {
-        setErrorMsg("スプリントの削除に失敗しました。もう一度お試しください。");
-        setSaving(false);
-        return;
-      }
+      if (!await execDelete(sprint.id)) { setSaving(false); return; }
     }
     setSaving(false);
     onDeleted();

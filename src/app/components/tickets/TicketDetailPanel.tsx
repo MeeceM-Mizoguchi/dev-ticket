@@ -46,8 +46,9 @@ export function TicketDetailPanel({
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const effectivePermissions = projectPermissions ?? userPermissions;
-  const hasReviewPermission = isAdminOrPM || effectivePermissions.canReview;
-  const hasGeneratePromptPermission = isAdminOrPM || effectivePermissions.canGeneratePrompt;
+  // isAdminOrPM によるバイパスは行わない。権限はロール設定・プロジェクト個別設定に従う。
+  const hasReviewPermission = effectivePermissions.canReview;
+  const hasGeneratePromptPermission = effectivePermissions.canGeneratePrompt;
 
   // editable state
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");

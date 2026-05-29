@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
@@ -16,8 +17,10 @@ export function SprintDetailPage() {
   const { projectId, sprintId } = useParams<{ projectId: string; sprintId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { userId } = useAuth();
   const [project, setProject] = useState<Project | null>(PROJECTS.find(p => p.id === projectId) || null);
   const [sprint, setSprint] = useState<Sprint | null>(SPRINTS.find(s => s.id === sprintId) || null);
+  const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
 
   const [sortCol, setSortCol] = useState<SortCol>("wbs");
@@ -33,12 +36,14 @@ export function SprintDetailPage() {
     Promise.all([
       supabase!.from("projects").select("*").eq("id", projectId).single(),
       supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).single(),
-    ]).then(([{ data: p }, { data: s }]) => {
+      userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", projectId).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
+    ]).then(([{ data: p }, { data: s }, { data: pmp }]) => {
       if (p) setProject(mapProject(p));
       if (s) setSprint(mapSprint(s));
+      if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [sprintId, projectId]);
+  }, [sprintId, projectId, userId]);
 
   const refreshSprint = () => {
     if (!isSupabaseEnabled || !sprintId) return;
@@ -249,7 +254,7 @@ export function SprintDetailPage() {
           onConfirm={() => handleDeleteTicket(deleteTicketTarget)}
           onClose={() => setDeleteTicketTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprint} />
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprint} projectPermissions={projectPermissions ?? undefined} />
     </div>
   );
 }
