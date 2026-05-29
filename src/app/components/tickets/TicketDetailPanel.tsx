@@ -458,10 +458,13 @@ export function TicketDetailPanel({
               </div>
               <input
                 value={title}
-                onChange={e => { setTitle(e.target.value); saveDebounced({ title: e.target.value }); }}
+                onChange={e => setTitle(e.target.value)}
+                onBlur={e => {
+                  (e.currentTarget as HTMLElement).style.borderBottomColor = "transparent";
+                  if (e.target.value.trim()) save({ title: e.target.value });
+                }}
                 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3, background: "transparent", border: "none", outline: "none", width: "100%", padding: 0, borderBottom: "1.5px solid transparent", transition: "border-color 0.15s" }}
                 onFocus={e => { (e.currentTarget as HTMLElement).style.borderBottomColor = "#059669"; }}
-                onBlur={e => { (e.currentTarget as HTMLElement).style.borderBottomColor = "transparent"; }}
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
