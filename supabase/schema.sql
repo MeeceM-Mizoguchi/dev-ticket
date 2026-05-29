@@ -126,7 +126,9 @@ create policy "auth_insert_sprint_tickets" on sprint_tickets for insert with che
 create policy "auth_update_sprint_tickets" on sprint_tickets for update using     (auth.role()='authenticated');
 create policy "auth_delete_sprint_tickets" on sprint_tickets for delete using     (auth.role()='authenticated');
 create policy "auth_delete_sprints"        on sprints        for delete using     (auth.role()='authenticated');
-create policy "auth_update_profiles"       on profiles       for update using     (auth.uid()=id);
+create policy "auth_delete_projects"       on projects        for delete using     (auth.role()='authenticated');
+create policy "auth_delete_clients"        on clients         for delete using     (auth.role()='authenticated');
+create policy "auth_update_profiles"       on profiles        for update using     (auth.uid()=id);
 
 -- ── Migrations (run manually in Supabase SQL Editor) ─────────
 -- generated_prompt カラム追加（初回のみ実行）

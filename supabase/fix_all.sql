@@ -57,5 +57,18 @@ SET
 WHERE (name IS NULL OR name = '')
   AND email IS NOT NULL;
 
--- ④ 確認（実行後にこの結果を見てください）
+-- ④ DELETE ポリシー追加（sprints / projects / clients が不足していた）
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sprints' AND policyname='auth_delete_sprints') THEN
+    CREATE POLICY "auth_delete_sprints" ON sprints FOR DELETE USING (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='projects' AND policyname='auth_delete_projects') THEN
+    CREATE POLICY "auth_delete_projects" ON projects FOR DELETE USING (auth.role()='authenticated');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='clients' AND policyname='auth_delete_clients') THEN
+    CREATE POLICY "auth_delete_clients" ON clients FOR DELETE USING (auth.role()='authenticated');
+  END IF;
+END $$;
+
+-- ⑤ 確認（実行後にこの結果を見てください）
 SELECT id, name, email, role, status FROM profiles;
