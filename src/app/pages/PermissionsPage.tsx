@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
-import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban } from "lucide-react";
+import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ShieldCheck } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
@@ -50,6 +50,7 @@ export function PermissionsPage() {
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [settingsGroupId, setSettingsGroupId]     = useState<number | null>(null);
   const [conflict, setConflict]         = useState<ConflictInfo | null>(null);
+  const [permTarget, setPermTarget]     = useState<{ member: Member; projectId: string } | null>(null);
   const [loading, setLoading]           = useState(isSupabaseEnabled);
   const [needsMigration, setNeedsMigration] = useState(false);
 
@@ -191,6 +192,12 @@ export function PermissionsPage() {
       const { error } = await supabase!.from("projects")
         .update({ members: newMembers }).eq("id", project.id);
       if (error) { toast("アサインの保存に失敗しました", "error"); return; }
+      // Create an explicit all-false permissions record so role defaults don't leak through
+      // (admin/PM keep role fallback — they always have full access)
+      if (member.role !== "admin" && member.role !== "project-manager") {
+        await supabase!.from("project_member_permissions")
+          .upsert({ project_id: project.id, member_id: member.id, permissions: { ...DEFAULT_GROUP_PERMS } });
+      }
     }
     setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: newMembers } : p));
     toast(`「${member.name}」を「${project.name}」に追加しました`);
@@ -445,6 +452,7 @@ export function PermissionsPage() {
           onRemoveMember={removeMemberFromProject}
           onResolveConflict={resolveConflict}
           onCancelConflict={() => setConflict(null)}
+          onPermClick={(member, projectId) => setPermTarget({ member, projectId })}
           getIndividualMemberNames={getIndividualMemberNames}
           getGroupMemberIds={getGroupMemberIds}
         />
@@ -458,6 +466,13 @@ export function PermissionsPage() {
           group={settingsGroup}
           onClose={() => setSettingsGroupId(null)}
           onSave={perms => handleSaveGroupPerms(settingsGroupId, perms)}
+        />
+      )}
+      {permTarget && (
+        <IndividualMemberPermModal
+          member={permTarget.member}
+          projectId={permTarget.projectId}
+          onClose={() => setPermTarget(null)}
         />
       )}
     </div>
@@ -632,7 +647,7 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
 }
 
 // ── Projects Column ───────────────────────────────────────────────────────────
-function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver, conflict, onDragOver, onDragLeave, onDrop, onRemoveGroup, onRemoveMember, onResolveConflict, onCancelConflict, getIndividualMemberNames, getGroupMemberIds }: {
+function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver, conflict, onDragOver, onDragLeave, onDrop, onRemoveGroup, onRemoveMember, onResolveConflict, onCancelConflict, onPermClick, getIndividualMemberNames, getGroupMemberIds }: {
   projects: Project[];
   groups: PermissionGroup[];
   members: Member[];
@@ -646,6 +661,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
   onRemoveMember: (name: string, project: Project) => void;
   onResolveConflict: (resolution: "remove-individual" | "exclude-from-group") => void;
   onCancelConflict: () => void;
+  onPermClick: (member: Member, projectId: string) => void;
   getIndividualMemberNames: (project: Project) => string[];
   getGroupMemberIds: (groupId: number) => string[];
 }) {
@@ -763,10 +779,20 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                         )}
                         <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4 }}>
                           {individualMembers.map(m => (
-                            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "#F4F5F6", borderRadius: 20, padding: "3px 5px 3px 4px" }}>
+                            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 3, background: "#F4F5F6", borderRadius: 20, padding: "3px 4px 3px 4px", border: "1px solid transparent", transition: "border-color 0.15s" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.25)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
                               <Avatar name={m.name} size="xs" />
                               <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732" }}>{m.name}</span>
-                              <button onClick={() => onRemoveMember(m.name, project)}
+                              <button
+                                title="権限設定"
+                                onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
+                                style={{ padding: "2px 3px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", borderRadius: 3, transition: "color 0.1s" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                                <ShieldCheck style={{ width: 9, height: 9 }} />
+                              </button>
+                              <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
                                 style={{ padding: "1px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", borderRadius: 3, transition: "color 0.1s" }}
                                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
                                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
@@ -908,6 +934,113 @@ function GroupSettingsModal({ group, onClose, onSave }: {
         <div style={{ padding: "14px 24px 22px", display: "flex", gap: 8 }}>
           <button onClick={handleSave} disabled={saving}
             style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
+            {saving ? "保存中..." : "保存する"}
+          </button>
+          <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+            キャンセル
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Individual member permission modal ───────────────────────────────────────
+function IndividualMemberPermModal({ member, projectId, onClose }: {
+  member: Member; projectId: string; onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS });
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) { setLoaded(true); return; }
+    supabase!.from("project_member_permissions")
+      .select("permissions")
+      .eq("project_id", projectId)
+      .eq("member_id", member.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.permissions) {
+          setLocal({ ...DEFAULT_GROUP_PERMS, ...(data.permissions as Partial<UserPermissions>) });
+        }
+        setLoaded(true);
+      });
+  }, [member.id, projectId]);
+
+  const toggle = (key: keyof UserPermissions) =>
+    setLocal(prev => ({ ...prev, [key]: !prev[key] }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!.from("project_member_permissions")
+        .upsert({ project_id: projectId, member_id: member.id, permissions: local });
+      if (error) { toast("権限の保存に失敗しました", "error"); setSaving(false); return; }
+    }
+    toast(`「${member.name}」のプロジェクト権限を保存しました`);
+    setSaving(false);
+    onClose();
+  };
+
+  const activeCount = PROJECT_PERM_FLAGS.filter(f => local[f.key]).length;
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 18, boxShadow: "0 24px 64px rgba(0,0,0,0.22)", width: 440 }}>
+
+        {/* Header */}
+        <div style={{ padding: "20px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
+          <Avatar name={member.name} size="sm" />
+          <div style={{ flex: 1 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{member.name}</h3>
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
+              個別プロジェクト権限
+              {activeCount > 0
+                ? <span style={{ marginLeft: 6, background: "rgba(124,58,237,0.10)", color: "#7C3AED", padding: "1px 7px", borderRadius: 10, fontWeight: 700, fontSize: 10 }}>{activeCount}件 有効</span>
+                : <span style={{ marginLeft: 6, background: "#F4F5F6", color: "#B0A9A4", padding: "1px 7px", borderRadius: 10, fontWeight: 600, fontSize: 10 }}>権限なし</span>
+              }
+            </p>
+          </div>
+          <button onClick={onClose} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
+            <X style={{ width: 15, height: 15 }} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: "14px 24px" }}>
+          <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14, background: "rgba(124,58,237,0.05)", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.12)" }}>
+            このメンバーがこのプロジェクト内で持つ操作権限を設定します。チケット閲覧・コメントは常に可能です。
+          </p>
+          {!loaded ? (
+            <p style={{ textAlign: "center" as const, color: "#B0A9A4", fontSize: 13, padding: "24px 0" }}>読み込み中...</p>
+          ) : PROJECT_PERM_FLAGS.map(f => {
+            const active = local[f.key];
+            return (
+              <label key={f.key}
+                onClick={() => toggle(f.key)}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
+                <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                  {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 1 }}>{f.label}</p>
+                  <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
+                </div>
+                <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? f.color : "rgba(26,23,20,0.12)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                  <div style={{ position: "absolute", top: 2, left: active ? 14 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.20)" }} />
+                </div>
+              </label>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "12px 24px 20px", display: "flex", gap: 8 }}>
+          <button onClick={handleSave} disabled={saving || !loaded}
+            style={{ flex: 1, padding: "10px 0", background: (saving || !loaded) ? "#F4F5F6" : "#7C3AED", color: (saving || !loaded) ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: (saving || !loaded) ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
             {saving ? "保存中..." : "保存する"}
           </button>
           <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
