@@ -9,7 +9,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "projects",    label: "PJ一覧",       icon: FolderKanban },
   { id: "clients",     label: "クライアント", icon: Building2,   roles: ["admin", "project-manager"] },
   { id: "members",     label: "メンバー",     icon: Users,        permission: "canAccessMembers" },
-  { id: "permissions", label: "グループ管理", icon: ShieldCheck,  roles: ["admin", "project-manager"] },
+  { id: "permissions", label: "グループ管理", icon: ShieldCheck,  permission: "canAccessGroups" },
   { id: "roles",       label: "ロール設定",   icon: UserCog,      permission: "canAccessRoles" },
 ];
 

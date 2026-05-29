@@ -10,7 +10,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
   canEditDelete: false, canReview: false, canGeneratePrompt: false,
-  canAccessMembers: false, canAccessRoles: false,
+  canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; color: string }[] = [
@@ -21,6 +21,7 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; col
   { key: "canGeneratePrompt", label: "プロンプト生成",     desc: "ClaudeCode プロンプトの生成が可能",     color: "#DB2777" },
   { key: "canAccessMembers",  label: "メンバー管理",       desc: "メンバー管理画面へのアクセスが可能",    color: "#0891B2" },
   { key: "canAccessRoles",    label: "ロール設定",         desc: "ロール設定画面へのアクセスが可能",      color: "#9333EA" },
+  { key: "canAccessGroups",   label: "グループ管理",       desc: "グループ管理画面へのアクセスが可能",    color: "#059669" },
 ];
 
 export function PermissionsPage() {

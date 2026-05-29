@@ -21,11 +21,12 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; color: string }[]
   { key: "canGeneratePrompt", label: "プロンプト生成", color: "#DB2777" },
   { key: "canAccessMembers",  label: "メンバー管理",   color: "#0891B2" },
   { key: "canAccessRoles",    label: "ロール設定",     color: "#9333EA" },
+  { key: "canAccessGroups",   label: "グループ管理",   color: "#059669" },
 ];
 
 const DEFAULT_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false,
-  canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false,
+  canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
 };
 
 export function ProjectsPage() {

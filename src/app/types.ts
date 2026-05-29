@@ -74,4 +74,5 @@ export interface UserPermissions {
   canGeneratePrompt: boolean;
   canAccessMembers: boolean;
   canAccessRoles: boolean;
+  canAccessGroups: boolean;
 }
