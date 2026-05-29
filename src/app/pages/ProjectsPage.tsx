@@ -14,15 +14,18 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 import { Avatar } from "@/app/components/shared/Avatar";
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; color: string }[] = [
-  { key: "canCreateTicket",    label: "チケット作成",   color: "#059669" },
-  { key: "canCreateSprint",    label: "スプリント作成", color: "#0284C7" },
-  { key: "canEditDelete",      label: "編集・削除",     color: "#D97706" },
-  { key: "canReview",          label: "レビュー権限",   color: "#7C3AED" },
-  { key: "canGeneratePrompt",  label: "プロンプト生成", color: "#DB2777" },
+  { key: "canCreateTicket",   label: "チケット作成",   color: "#059669" },
+  { key: "canCreateSprint",   label: "スプリント作成", color: "#0284C7" },
+  { key: "canEditDelete",     label: "編集・削除",     color: "#D97706" },
+  { key: "canReview",         label: "レビュー権限",   color: "#7C3AED" },
+  { key: "canGeneratePrompt", label: "プロンプト生成", color: "#DB2777" },
+  { key: "canAccessMembers",  label: "メンバー管理",   color: "#0891B2" },
+  { key: "canAccessRoles",    label: "ロール設定",     color: "#9333EA" },
 ];
 
 const DEFAULT_PERMS: UserPermissions = {
-  canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false,
+  canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false,
+  canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false,
 };
 
 export function ProjectsPage() {

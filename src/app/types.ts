@@ -72,4 +72,6 @@ export interface UserPermissions {
   canEditDelete: boolean;
   canReview: boolean;
   canGeneratePrompt: boolean;
+  canAccessMembers: boolean;
+  canAccessRoles: boolean;
 }

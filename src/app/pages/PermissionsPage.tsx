@@ -10,14 +10,17 @@ import { useToast } from "@/app/contexts/ToastContext";
 const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
   canEditDelete: false, canReview: false, canGeneratePrompt: false,
+  canAccessMembers: false, canAccessRoles: false,
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; color: string }[] = [
-  { key: "canCreateTicket",   label: "チケット作成",   desc: "チケットの新規作成が可能",             color: "#059669" },
-  { key: "canCreateSprint",   label: "スプリント作成", desc: "スプリントの新規作成が可能",           color: "#0284C7" },
-  { key: "canEditDelete",     label: "編集・削除",     desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
-  { key: "canReview",         label: "レビュー権限",   desc: "レビュアーとして承認・差し戻しが可能",  color: "#7C3AED" },
-  { key: "canGeneratePrompt", label: "プロンプト生成", desc: "ClaudeCode プロンプトの生成が可能",     color: "#DB2777" },
+  { key: "canCreateTicket",   label: "チケット作成",       desc: "チケットの新規作成が可能",             color: "#059669" },
+  { key: "canCreateSprint",   label: "スプリント作成",     desc: "スプリントの新規作成が可能",           color: "#0284C7" },
+  { key: "canEditDelete",     label: "編集・削除",         desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
+  { key: "canReview",         label: "レビュー権限",       desc: "レビュアーとして承認・差し戻しが可能",  color: "#7C3AED" },
+  { key: "canGeneratePrompt", label: "プロンプト生成",     desc: "ClaudeCode プロンプトの生成が可能",     color: "#DB2777" },
+  { key: "canAccessMembers",  label: "メンバー管理",       desc: "メンバー管理画面へのアクセスが可能",    color: "#0891B2" },
+  { key: "canAccessRoles",    label: "ロール設定",         desc: "ロール設定画面へのアクセスが可能",      color: "#9333EA" },
 ];
 
 export function PermissionsPage() {
