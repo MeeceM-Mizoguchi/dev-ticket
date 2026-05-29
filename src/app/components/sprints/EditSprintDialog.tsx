@@ -8,11 +8,11 @@ import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import type { Sprint, SprintStatus } from "@/app/types";
 
+// "delayed" is computed from deadline, not stored in DB (constraint: planning/active/completed/cancelled)
 const SPRINT_STATUSES: { value: SprintStatus; label: string }[] = [
-  { value: "planning", label: "計画中" },
-  { value: "active", label: "進行中" },
-  { value: "completed", label: "完了" },
-  { value: "delayed", label: "遅延" },
+  { value: "planning",  label: "計画中" },
+  { value: "active",    label: "進行中" },
+  { value: "completed", label: "完了"   },
 ];
 
 export function EditSprintDialog({ sprint, onClose, onUpdated }: {
@@ -31,8 +31,10 @@ export function EditSprintDialog({ sprint, onClose, onUpdated }: {
     if (!name.trim()) return;
     if (isSupabaseEnabled) {
       setSaving(true);
+      // "delayed" is computed, never store it; fall back to "planning"
+      const dbStatus = (status === "delayed" ? "planning" : status);
       await supabase!.from("sprints").update({
-        name, goal, status,
+        name, goal, status: dbStatus,
         start_date: startDate || null,
         end_date: endDate || null,
       }).eq("id", sprint.id);
