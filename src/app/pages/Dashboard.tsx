@@ -41,8 +41,8 @@ export function Dashboard() {
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
-      supabase!.from("sprint_tickets").select("id, title, status, priority, due_date"),
-      supabase!.from("sprints").select("id, project_id, sprint_tickets(status)"),
+      supabase!.from("sprint_tickets").select("id, title, status, priority, due_date, sprint_id"),
+      supabase!.from("sprints").select("id, project_id"),
       supabase!.from("projects").select("id, name, status, client"),
     ]).then(([{ data: tData }, { data: sData }, { data: pData }]) => {
       if (tData) {
@@ -50,18 +50,22 @@ export function Dashboard() {
           id: t.id, title: t.title, status: t.status, priority: t.priority, dueDate: t.due_date,
         })));
       }
-      if (pData && sData) {
+      if (pData) {
+        const sprints = sData ?? [];
+        const tickets = tData ?? [];
         const mapped = pData.map((p: { id: string; name: string; status: string; client: string }) => {
-          const sprintsForProject = sData.filter((s: { project_id: string }) => s.project_id === p.id);
-          const allTickets = sprintsForProject.flatMap((s: { sprint_tickets: { status: string }[] }) => s.sprint_tickets ?? []);
+          const sprintIds = sprints
+            .filter((s: { id: string; project_id: string }) => s.project_id === p.id)
+            .map((s: { id: string }) => s.id);
+          const projectTickets = tickets.filter((t: { sprint_id: string }) => sprintIds.includes(t.sprint_id));
           return {
             id: p.id,
             name: p.name,
             status: p.status as ProjectStatus,
             client: p.client,
-            done: allTickets.filter((t: { status: string }) => t.status === "done" || t.status === "closed").length,
-            inProgress: allTickets.filter((t: { status: string }) => t.status === "in-progress" || t.status === "in-review" || t.status === "review-done" || t.status === "stg-test" || t.status === "uat").length,
-            todo: allTickets.filter((t: { status: string }) => t.status === "todo").length,
+            done: projectTickets.filter((t: { status: string }) => t.status === "done" || t.status === "closed").length,
+            inProgress: projectTickets.filter((t: { status: string }) => ["in-progress","in-review","review-done","stg-test","uat"].includes(t.status)).length,
+            todo: projectTickets.filter((t: { status: string }) => t.status === "todo").length,
           };
         });
         setProjects(mapped);
