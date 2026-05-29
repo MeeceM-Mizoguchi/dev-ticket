@@ -49,6 +49,7 @@ export function TicketDetailPanel({
   const effectivePermissions = projectPermissions ?? userPermissions;
   // isAdminOrPM によるバイパスは行わない。権限はロール設定・プロジェクト個別設定に従う。
   const hasReviewPermission = effectivePermissions.canReview;
+  const hasSkipReviewPermission = effectivePermissions.canSkipReview;
   const hasGeneratePromptPermission = effectivePermissions.canGeneratePrompt;
 
   // editable state
@@ -442,6 +443,20 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
+  const handleSkipReview = async () => {
+    if (!ticket || !hasSkipReviewPermission) return;
+    const newStatus: TicketStatus = "review-done";
+    const p = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(p);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+    }
+    const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
+    await addComment(`<p>レビュースキップ：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus);
+    onUpdated?.();
+  };
+
   const handleDeleteTicket = async () => {
     if (!ticket || !isSupabaseEnabled) return;
     await supabase!.from("ticket_comments").delete().eq("ticket_id", ticket.id);
@@ -575,6 +590,13 @@ export function TicketDetailPanel({
             <button onClick={() => handleStatusAction(actionBtn)}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, marginTop: 10 }}>
               {actionBtn.label} →
+            </button>
+          )}
+          {/* Review skip button */}
+          {hasSkipReviewPermission && (status === "in-progress" || status === "in-review") && (
+            <button onClick={handleSkipReview}
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
+              レビュースキップ →
             </button>
           )}
         </div>

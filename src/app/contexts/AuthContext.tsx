@@ -8,6 +8,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canCreateSprint: false,
   canEditDelete: false,
   canReview: false,
+  canSkipReview: false,
   canGeneratePrompt: false,
   canAccessMembers: false,
   canAccessRoles: false,
@@ -37,7 +38,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
   if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
   // fallback: admin/PM get all permissions if roles table not yet seeded
   if (role === "admin" || role === "project-manager") {
-    return { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true, canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true };
+    return { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true, canGeneratePrompt: true, canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true };
   }
   return { ...DEFAULT_PERMISSIONS };
 }

@@ -78,6 +78,7 @@ export interface UserPermissions {
   canCreateSprint: boolean;
   canEditDelete: boolean;
   canReview: boolean;
+  canSkipReview: boolean;
   canGeneratePrompt: boolean;
   canAccessMembers: boolean;
   canAccessRoles: boolean;
