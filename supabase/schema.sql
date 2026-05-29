@@ -98,6 +98,7 @@ create table if not exists sprint_tickets (
   due_date         date,
   estimated_hours  int  not null default 0,
   progress         int  not null default 0,
+  images           jsonb not null default '[]',
   created_at       timestamptz not null default now()
 );
 

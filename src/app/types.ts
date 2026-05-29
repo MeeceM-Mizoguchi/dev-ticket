@@ -21,6 +21,7 @@ export interface SprintTicket {
   priority: Priority; assignee: string; assignees: string[]; startDate: string; dueDate: string;
   estimatedHours: number; progress: number;
   description?: string; reviewerName?: string; reviewRound?: number; generatedPrompt?: string;
+  images?: string[];
 }
 
 export type CommentType = "comment" | "review_request" | "revision_request" | "review_approved" | "status_change";

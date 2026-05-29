@@ -72,6 +72,7 @@ ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS reviewer_name   TEXT;
 ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS review_round    INTEGER DEFAULT 0;
 ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS assignees       TEXT[] DEFAULT '{}';
 ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS generated_prompt TEXT;
+ALTER TABLE sprint_tickets ADD COLUMN IF NOT EXISTS images          JSONB DEFAULT '[]';
 
 -- ticket_comments: comment_type（既存テーブルに不足の場合）
 ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS comment_type TEXT NOT NULL DEFAULT 'comment';

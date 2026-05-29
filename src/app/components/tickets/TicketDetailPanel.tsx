@@ -87,7 +87,8 @@ export function TicketDetailPanel({
   const [commentImages, setCommentImages] = useState<string[]>([]);
 
   // ticket-level images
-  const [ticketImages, setTicketImages] = useState<string[]>([]);
+  const [ticketImages, setTicketImages] = useState<string[]>(ticket?.images ?? []);
+  const ticketImagesRef = useRef<string[]>(ticket?.images ?? []);
 
   // AI prompt generation
   const [generatedPrompt, setGeneratedPrompt] = useState(ticket?.generatedPrompt ?? "");
@@ -129,10 +130,12 @@ export function TicketDetailPanel({
     setDescription(ticket.description ?? "");
     setReviewerName(ticket.reviewerName ?? "");
     setReviewRound(ticket.reviewRound ?? 0);
+    const initImages = ticket.images ?? [];
+    setTicketImages(initImages);
+    ticketImagesRef.current = initImages;
     // reset form state on ticket change
     setCommentText("");
     setCommentImages([]);
-    setTicketImages([]);
     setReviewContent("");
     setReviewFiles([]);
     setRevisionInput("");
@@ -159,6 +162,9 @@ export function TicketDetailPanel({
           setReviewerName(t.reviewerName ?? "");
           setReviewRound(t.reviewRound ?? 0);
           setGeneratedPrompt(t.generatedPrompt ?? "");
+          const freshImages = t.images ?? [];
+          setTicketImages(freshImages);
+          ticketImagesRef.current = freshImages;
         });
     }
     if (ticket.id) loadRelated(ticket.id);
@@ -242,13 +248,45 @@ export function TicketDetailPanel({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const pasteImage = useCallback((e: React.ClipboardEvent, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
+  const uploadImageToStorage = useCallback(async (file: Blob, folder: string): Promise<string> => {
+    if (!isSupabaseEnabled || !ticket) return URL.createObjectURL(file);
+    const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
+    const ext = extMap[file.type] ?? 'png';
+    const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+    const { data } = await supabase!.storage.from("ticket-files").upload(path, file, { upsert: true });
+    if (!data) return URL.createObjectURL(file);
+    return supabase!.storage.from("ticket-files").getPublicUrl(path).data.publicUrl;
+  }, [ticket?.id]);
+
+  const pasteImage = useCallback((e: React.ClipboardEvent, setter: React.Dispatch<React.SetStateAction<string[]>>, pathPrefix: string) => {
     const items = Array.from(e.clipboardData?.items ?? []);
-    const imgItems = items.filter(i => i.type.startsWith("image/"));
-    if (imgItems.length === 0) return;
+    const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+    if (imgFiles.length === 0) return;
     e.preventDefault();
-    imgItems.forEach(item => { const f = item.getAsFile(); if (f) setter(prev => [...prev, URL.createObjectURL(f)]); });
-  }, []);
+    imgFiles.forEach(async f => {
+      const url = await uploadImageToStorage(f, pathPrefix);
+      if (url) setter(prev => [...prev, url]);
+    });
+  }, [uploadImageToStorage]);
+
+  const addTicketImages = useCallback(async (files: FileList | File[]) => {
+    if (!ticket) return;
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith("image/")) continue;
+      const url = await uploadImageToStorage(f, `tickets/${ticket.id}/detail`);
+      if (!url) continue;
+      ticketImagesRef.current = [...ticketImagesRef.current, url];
+      setTicketImages(ticketImagesRef.current);
+      if (isSupabaseEnabled) supabase!.from("sprint_tickets").update({ images: ticketImagesRef.current }).eq("id", ticket.id);
+    }
+  }, [ticket?.id, uploadImageToStorage]);
+
+  const removeTicketImage = useCallback((idx: number) => {
+    if (!ticket) return;
+    ticketImagesRef.current = ticketImagesRef.current.filter((_, j) => j !== idx);
+    setTicketImages(ticketImagesRef.current);
+    if (isSupabaseEnabled) supabase!.from("sprint_tickets").update({ images: ticketImagesRef.current }).eq("id", ticket.id);
+  }, [ticket?.id]);
 
   const setStatusAndProgress = (newStatus: TicketStatus) => {
     const p = STATUS_PROGRESS[newStatus] ?? progress;
@@ -575,7 +613,13 @@ export function TicketDetailPanel({
           </div>
 
           {/* 詳細 + 画像 */}
-          <div onPaste={e => pasteImage(e, setTicketImages)}>
+          <div onPaste={e => {
+            const items = Array.from(e.clipboardData?.items ?? []);
+            const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+            if (imgFiles.length === 0) return;
+            e.preventDefault();
+            addTicketImages(imgFiles);
+          }}>
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
             <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} />
             {/* Inline image attachment */}
@@ -583,14 +627,14 @@ export function TicketDetailPanel({
               <ImageIcon style={{ width: 13, height: 13, color: "#B0A9A4" }} />
               <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を追加、または Ctrl+V で貼り付け</span>
               <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setTicketImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
+                onChange={e => { addTicketImages(e.target.files || []); e.target.value = ""; }} />
             </label>
             {ticketImages.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                 {ticketImages.map((img, i) => (
                   <div key={i} style={{ position: "relative" }}>
                     <img src={img} alt="" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)" }} />
-                    <button onClick={() => setTicketImages(prev => prev.filter((_, j) => j !== i))}
+                    <button onClick={() => removeTicketImage(i)}
                       style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <X style={{ width: 9, height: 9, color: "#FFF" }} />
                     </button>
@@ -841,7 +885,7 @@ export function TicketDetailPanel({
                         )
                       )}
                       {showReviewForm && (
-                        <div onPaste={e => pasteImage(e, setRevisionImages)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
+                        <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                           <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
                           <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} />
                           {revisionImages.length > 0 && (
@@ -927,7 +971,7 @@ export function TicketDetailPanel({
             })}
 
             {/* Add comment */}
-            <div onPaste={e => pasteImage(e, setCommentImages)} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
+            <div onPaste={e => pasteImage(e, setCommentImages, `tickets/${ticket.id}/comments`)} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <Avatar name={userName} size="xs" />
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -953,7 +997,14 @@ export function TicketDetailPanel({
                 <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
                   <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
                   <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                    onChange={e => { Array.from(e.target.files || []).forEach(f => { if (f.type.startsWith("image/")) setCommentImages(prev => [...prev, URL.createObjectURL(f)]); }); e.target.value = ""; }} />
+                    onChange={async e => {
+                      for (const f of Array.from(e.target.files || [])) {
+                        if (!f.type.startsWith("image/")) continue;
+                        const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                        if (url) setCommentImages(prev => [...prev, url]);
+                      }
+                      e.target.value = "";
+                    }} />
                 </label>
                 <button onClick={handleAddComment} disabled={!commentText.trim()}
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: !commentText.trim() ? "#F4F5F6" : "#059669", color: !commentText.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !commentText.trim() ? "not-allowed" : "pointer" }}>
