@@ -30,7 +30,7 @@ export function useAuth() { return useContext(AuthContext); }
 
 async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> {
   if (!isSupabaseEnabled) return { ...DEFAULT_PERMISSIONS };
-  const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).single();
+  const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
   if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
   // fallback: admin/PM get all permissions if roles table not yet seeded
   if (role === "admin" || role === "project-manager") {
