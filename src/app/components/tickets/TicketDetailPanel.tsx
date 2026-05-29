@@ -90,6 +90,9 @@ export function TicketDetailPanel({
   const [ticketImages, setTicketImages] = useState<string[]>(ticket?.images ?? []);
   const ticketImagesRef = useRef<string[]>(ticket?.images ?? []);
 
+  // image preview
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
   // AI prompt generation
   const [generatedPrompt, setGeneratedPrompt] = useState(ticket?.generatedPrompt ?? "");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -163,7 +166,6 @@ export function TicketDetailPanel({
           setReviewRound(t.reviewRound ?? 0);
           setGeneratedPrompt(t.generatedPrompt ?? "");
           const freshImages = t.images ?? [];
-          console.log("[images] loaded from DB:", freshImages.length, "images for", ticket.id, freshImages);
           setTicketImages(freshImages);
           ticketImagesRef.current = freshImages;
         });
@@ -282,15 +284,13 @@ export function TicketDetailPanel({
     for (const f of Array.from(files)) {
       if (!f.type.startsWith("image/")) continue;
       const url = await uploadImageToStorage(f, `tickets/${ticket.id}/detail`);
-      console.log("[images] upload result:", url || "(empty)");
       if (!url) continue;
       const next = [...ticketImagesRef.current, url];
       ticketImagesRef.current = next;
       setTicketImages(next);
       if (isSupabaseEnabled) {
         const { error } = await supabase!.from("sprint_tickets").update({ images: next }).eq("id", ticket.id);
-        if (error) console.error("[images] DB save failed:", error.message, error.details);
-        else console.log("[images] DB saved:", next.length, "images for", ticket.id);
+        if (error) console.error("[images] DB save failed:", error.message);
       }
     }
   }, [ticket?.id, uploadImageToStorage]);
@@ -499,6 +499,20 @@ export function TicketDetailPanel({
         />
       )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
+
+      {/* Image preview modal */}
+      {previewImage && (
+        <div onClick={() => setPreviewImage(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}>
+          <button onClick={() => setPreviewImage(null)}
+            style={{ position: "absolute", top: 16, right: 16, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#FFF" }}>
+            <X style={{ width: 18, height: 18 }} />
+          </button>
+          <img src={previewImage} alt="" onClick={e => e.stopPropagation()}
+            style={{ maxWidth: "90vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 8, boxShadow: "0 24px 80px rgba(0,0,0,0.6)", cursor: "default" }} />
+        </div>
+      )}
+
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
@@ -651,7 +665,8 @@ export function TicketDetailPanel({
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                 {ticketImages.map((img, i) => (
                   <div key={i} style={{ position: "relative" }}>
-                    <img src={img} alt="" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)" }} />
+                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                      style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                     <button onClick={() => removeTicketImage(i)}
                       style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <X style={{ width: 9, height: 9, color: "#FFF" }} />
@@ -910,7 +925,8 @@ export function TicketDetailPanel({
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                               {revisionImages.map((img, i) => (
                                 <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)" }} />
+                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                   <button onClick={() => setRevisionImages(prev => prev.filter((_, j) => j !== i))}
                                     style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                     <X style={{ width: 8, height: 8, color: "#FFF" }} />
@@ -978,7 +994,10 @@ export function TicketDetailPanel({
                         <RichEditor value={c.content} readOnly minHeight={20} />
                         {c.images.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                            {c.images.map((img, i) => <img key={i} src={img} alt="" style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)" }} />)}
+                            {c.images.map((img, i) => (
+                              <img key={i} src={img} alt="" onClick={() => setPreviewImage(img)}
+                                style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                            ))}
                           </div>
                         )}
                       </div>
