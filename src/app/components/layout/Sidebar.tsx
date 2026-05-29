@@ -1,5 +1,5 @@
 import { useState, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, ShieldCheck, Ticket } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, ShieldCheck, Ticket, UserCog } from "lucide-react";
 import { useNavigate, useLocation } from "react-router";
 import type { Page, Role } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -10,6 +10,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[] }[
   { id: "clients",     label: "クライアント", icon: Building2,   roles: ["admin", "project-manager"] },
   { id: "members",     label: "メンバー",     icon: Users,        roles: ["admin", "project-manager"] },
   { id: "permissions", label: "グループ管理", icon: ShieldCheck,  roles: ["admin", "project-manager"] },
+  { id: "roles",       label: "ロール設定",  icon: UserCog,      roles: ["admin"] },
 ];
 
 export function Sidebar() {
@@ -27,6 +28,7 @@ export function Sidebar() {
     if (p.startsWith("/members")) return "members";
     if (p.startsWith("/settings")) return "settings";
     if (p.startsWith("/permissions")) return "permissions";
+    if (p.startsWith("/roles")) return "roles";
     return "dashboard";
   };
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, type ElementType } from "react";
+import { useEffect, useState, useMemo, useRef, type ElementType } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -35,6 +35,8 @@ export function SprintPage() {
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
+  // Track recently deleted IDs to prevent stale polling responses from restoring them
+  const deletedIdsRef = useRef<Set<string>>(new Set());
 
   // Derive selected ticket from live sprint data so it stays fresh after polling
   const selectedTicket = useMemo(() => {
@@ -54,7 +56,11 @@ export function SprintPage() {
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" })
-      .then(({ data }) => { if (data) setSprints(data.map(mapSprint)); });
+      .then(({ data }) => {
+        if (data) setSprints(
+          data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id))
+        );
+      });
   };
 
   // Initial load
@@ -164,9 +170,14 @@ export function SprintPage() {
           onClose={() => setDeleteTarget(null)}
           onDeleted={() => {
             const deletedId = deleteTarget.id;
+            // Guard this ID so no in-flight or future polling SELECT can restore it
+            deletedIdsRef.current.add(deletedId);
             setSprints(prev => prev.filter(s => s.id !== deletedId));
-            refreshSprints();
             setDeleteTarget(null);
+            // Refresh to reflect moved-ticket state on target sprint; deleted ID is still guarded
+            refreshSprints();
+            // Release the guard after DB is definitely consistent (> 1 polling cycle)
+            setTimeout(() => deletedIdsRef.current.delete(deletedId), 15000);
           }} />
       )}
       <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} projectPermissions={projectPermissions ?? undefined} />

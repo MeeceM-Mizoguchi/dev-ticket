@@ -11,6 +11,7 @@ import { SprintDetailPage } from "@/app/pages/SprintDetailPage";
 import { ClientsPage } from "@/app/pages/ClientsPage";
 import { MembersPage } from "@/app/pages/MembersPage";
 import { PermissionsPage } from "@/app/pages/PermissionsPage";
+import { RolesPage } from "@/app/pages/RolesPage";
 import { SettingsPage } from "@/app/pages/SettingsPage";
 
 export default function App() {
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="/clients" element={<ClientsPage />} />
             <Route path="/members" element={<MembersPage />} />
             <Route path="/permissions" element={<PermissionsPage />} />
+            <Route path="/roles" element={<RolesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />

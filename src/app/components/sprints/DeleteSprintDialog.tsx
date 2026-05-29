@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, AlertCircle } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -24,6 +24,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
   const [deleteMode, setDeleteMode] = useState<DeleteMode>("delete");
   const [selectedSprintId, setSelectedSprintId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [newName, setNewName] = useState("");
   const [newGoal, setNewGoal] = useState("");
@@ -34,8 +35,14 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
 
   const deleteWithTickets = async () => {
     setSaving(true);
+    setErrorMsg(null);
     if (isSupabaseEnabled) {
-      await supabase!.from("sprints").delete().eq("id", sprint.id);
+      const { error } = await supabase!.from("sprints").delete().eq("id", sprint.id);
+      if (error) {
+        setErrorMsg("削除に失敗しました。権限を確認してもう一度お試しください。");
+        setSaving(false);
+        return;
+      }
     }
     setSaving(false);
     onDeleted();
@@ -44,9 +51,22 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
 
   const moveTicketsAndDelete = async (targetSprintId: string) => {
     setSaving(true);
+    setErrorMsg(null);
     if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ sprint_id: targetSprintId }).eq("sprint_id", sprint.id);
-      await supabase!.from("sprints").delete().eq("id", sprint.id);
+      const { error: moveErr } = await supabase!.from("sprint_tickets")
+        .update({ sprint_id: targetSprintId })
+        .eq("sprint_id", sprint.id);
+      if (moveErr) {
+        setErrorMsg("チケットの移動に失敗しました。もう一度お試しください。");
+        setSaving(false);
+        return;
+      }
+      const { error: delErr } = await supabase!.from("sprints").delete().eq("id", sprint.id);
+      if (delErr) {
+        setErrorMsg("スプリントの削除に失敗しました。もう一度お試しください。");
+        setSaving(false);
+        return;
+      }
     }
     setSaving(false);
     onDeleted();
@@ -56,19 +76,44 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
   const createSprintAndMove = async () => {
     if (!newName.trim()) return;
     setSaving(true);
+    setErrorMsg(null);
     const newSprintId = `S-${Date.now()}`;
     if (isSupabaseEnabled) {
-      await supabase!.from("sprints").insert({
+      const { error: createErr } = await supabase!.from("sprints").insert({
         id: newSprintId, project_id: projectId, name: newName, goal: newGoal,
         start_date: newStartDate || null, end_date: newEndDate || null, status: "planning",
       });
-      await supabase!.from("sprint_tickets").update({ sprint_id: newSprintId }).eq("sprint_id", sprint.id);
-      await supabase!.from("sprints").delete().eq("id", sprint.id);
+      if (createErr) {
+        setErrorMsg("スプリントの作成に失敗しました。もう一度お試しください。");
+        setSaving(false);
+        return;
+      }
+      const { error: moveErr } = await supabase!.from("sprint_tickets")
+        .update({ sprint_id: newSprintId })
+        .eq("sprint_id", sprint.id);
+      if (moveErr) {
+        setErrorMsg("チケットの移動に失敗しました。もう一度お試しください。");
+        setSaving(false);
+        return;
+      }
+      const { error: delErr } = await supabase!.from("sprints").delete().eq("id", sprint.id);
+      if (delErr) {
+        setErrorMsg("スプリントの削除に失敗しました。もう一度お試しください。");
+        setSaving(false);
+        return;
+      }
     }
     setSaving(false);
     onDeleted();
     onClose();
   };
+
+  const ErrorBanner = () => errorMsg ? (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 10, background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.25)", color: "#DC2626", fontSize: 12 }}>
+      <AlertCircle style={{ width: 14, height: 14, flexShrink: 0 }} />
+      {errorMsg}
+    </div>
+  ) : null;
 
   // ---- Step: choose ----
   if (step === "choose") {
@@ -81,6 +126,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
           </>}>
           <p style={{ fontSize: 14, color: "#1A1714", lineHeight: 1.7 }}>「<strong>{sprint.name}</strong>」を削除しますか？</p>
           <p style={{ fontSize: 12, color: "#A09790" }}>この操作は取り消せません。</p>
+          <ErrorBanner />
         </DialogShell>
       );
     }
@@ -126,6 +172,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
           })}
         </div>
         <p style={{ fontSize: 11, color: "#A09790" }}>この操作は取り消せません。</p>
+        <ErrorBanner />
       </DialogShell>
     );
   }
@@ -174,6 +221,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
             );
           })}
         </div>
+        <ErrorBanner />
       </DialogShell>
     );
   }
@@ -196,6 +244,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
         <DatePicker label="開始日" value={newStartDate} onChange={setNewStartDate} placeholder="年/月/日" />
         <DatePicker label="終了日" value={newEndDate} onChange={setNewEndDate} placeholder="年/月/日" min={newStartDate || undefined} />
       </div>
+      <ErrorBanner />
     </DialogShell>
   );
 }
