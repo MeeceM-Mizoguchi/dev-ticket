@@ -254,7 +254,7 @@ export function SprintDetailPage() {
           onConfirm={() => handleDeleteTicket(deleteTicketTarget)}
           onClose={() => setDeleteTicketTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprint} projectPermissions={projectPermissions ?? undefined} />
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprint} onDeleted={() => { setSelectedTicketId(null); refreshSprint(); }} projectPermissions={projectPermissions ?? undefined} />
     </div>
   );
 }

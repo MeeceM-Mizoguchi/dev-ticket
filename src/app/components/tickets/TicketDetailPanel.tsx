@@ -8,6 +8,7 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
@@ -40,8 +41,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, onClose, onUpdated, projectPermissions,
-}: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void; projectPermissions?: import("@/app/types").UserPermissions }) {
+  ticket, onClose, onUpdated, onDeleted, projectPermissions,
+}: { ticket: SprintTicket | null; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; projectPermissions?: import("@/app/types").UserPermissions }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -51,6 +52,8 @@ export function TicketDetailPanel({
   const hasGeneratePromptPermission = effectivePermissions.canGeneratePrompt;
 
   // editable state
+  const [title, setTitle]           = useState(ticket?.title ?? "");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
   const [priority, setPriority]     = useState<Priority>(ticket?.priority ?? "medium");
   const [assignees, setAssignees]   = useState<string[]>(
@@ -114,6 +117,7 @@ export function TicketDetailPanel({
   // sync when ticket changes — set from prop immediately, then fetch fresh from DB
   useEffect(() => {
     if (!ticket) return;
+    setTitle(ticket.title);
     setStatus(ticket.status);
     setPriority(ticket.priority);
     const a = ticket.assignees?.length ? ticket.assignees : (ticket.assignee ? [ticket.assignee] : []);
@@ -141,6 +145,7 @@ export function TicketDetailPanel({
         .then(({ data }) => {
           if (!data) return;
           const t = mapSprintTicket(data);
+          setTitle(t.title);
           setStatus(t.status);
           setPriority(t.priority);
           const fresh = t.assignees?.length ? t.assignees : (t.assignee ? [t.assignee] : []);
@@ -369,6 +374,15 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
+  const handleDeleteTicket = async () => {
+    if (!ticket || !isSupabaseEnabled) return;
+    await supabase!.from("ticket_comments").delete().eq("ticket_id", ticket.id);
+    await supabase!.from("ticket_source_files").delete().eq("ticket_id", ticket.id);
+    await supabase!.from("sprint_tickets").delete().eq("id", ticket.id);
+    onDeleted?.();
+    onClose();
+  };
+
   const handleAddComment = async () => {
     if (!commentText.trim() || !ticket) return;
     await addComment(commentText, "comment", commentImages);
@@ -420,6 +434,13 @@ export function TicketDetailPanel({
 
   return (
     <>
+      {showDeleteConfirm && (
+        <ConfirmDialog
+          message={`「${title}」を削除しますか？`}
+          onConfirm={handleDeleteTicket}
+          onClose={() => setShowDeleteConfirm(false)}
+        />
+      )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
@@ -435,13 +456,27 @@ export function TicketDetailPanel({
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
               </div>
-              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3 }}>{ticket.title}</h2>
+              <input
+                value={title}
+                onChange={e => { setTitle(e.target.value); saveDebounced({ title: e.target.value }); }}
+                style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3, background: "transparent", border: "none", outline: "none", width: "100%", padding: 0, borderBottom: "1.5px solid transparent", transition: "border-color 0.15s" }}
+                onFocus={e => { (e.currentTarget as HTMLElement).style.borderBottomColor = "#059669"; }}
+                onBlur={e => { (e.currentTarget as HTMLElement).style.borderBottomColor = "transparent"; }}
+              />
             </div>
-            <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", flexShrink: 0 }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-              <X style={{ width: 16, height: 16 }} />
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              <button onClick={() => setShowDeleteConfirm(true)} title="チケットを削除"
+                style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                <Trash2 style={{ width: 15, height: 15 }} />
+              </button>
+              <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
           </div>
           {/* Progress bar in header */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>

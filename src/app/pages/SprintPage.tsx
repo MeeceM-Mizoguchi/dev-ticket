@@ -181,7 +181,7 @@ export function SprintPage() {
             setTimeout(() => deletedIdsRef.current.delete(deletedId), 15000);
           }} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} projectPermissions={projectPermissions ?? undefined} />
+      <TicketDetailPanel ticket={selectedTicket} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} onDeleted={() => { setSelectedTicketId(null); refreshSprints(); }} projectPermissions={projectPermissions ?? undefined} />
     </div>
   );
 }

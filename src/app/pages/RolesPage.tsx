@@ -190,15 +190,18 @@ function NewRoleModal({ onClose, onCreate }: { onClose: () => void; onCreate: (n
   const [label, setLabel] = useState("");
   const [name, setName] = useState("");
 
-  const autoName = (lbl: string) => lbl.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^\w-]/g, "");
+  const toAsciiSlug = (s: string) => s.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^a-z0-9-_]/g, "");
 
   const handleLabelChange = (v: string) => {
     setLabel(v);
-    if (!name || name === autoName(label)) setName(autoName(v));
+    const slug = toAsciiSlug(v);
+    if (!name || name === toAsciiSlug(label)) setName(slug);
   };
 
+  const canCreate = label.trim().length > 0 && name.trim().length > 0;
+
   const handleCreate = () => {
-    if (!label.trim() || !name.trim()) return;
+    if (!canCreate) return;
     onCreate(name.trim(), label.trim());
     onClose();
   };
@@ -227,17 +230,22 @@ function NewRoleModal({ onClose, onCreate }: { onClose: () => void; onCreate: (n
           </div>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6, letterSpacing: "0.04em" }}>識別子（英数字・ハイフンのみ）<span style={{ color: "#DC2626" }}>*</span></label>
-            <input value={name} onChange={e => setName(e.target.value.toLowerCase().replace(/[^\w-]/g, ""))}
+            <input value={name} onChange={e => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, ""))}
               placeholder="例: qa-engineer"
-              style={{ width: "100%", padding: "10px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, fontSize: 13, outline: "none", boxSizing: "border-box" as const, fontFamily: "monospace", transition: "border 0.15s" }}
+              style={{ width: "100%", padding: "10px 12px", background: "#F9F8F6", border: `1px solid ${name.length === 0 && label.length > 0 ? "rgba(220,38,38,0.40)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, fontSize: 13, outline: "none", boxSizing: "border-box" as const, fontFamily: "monospace", transition: "border 0.15s" }}
               onFocus={e => { e.currentTarget.style.borderColor = "rgba(124,58,237,0.40)"; e.currentTarget.style.background = "#FFF"; }}
-              onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
-            <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 4 }}>権限グループ・DBで使われる内部識別子です</p>
+              onBlur={e => { e.currentTarget.style.borderColor = name.length === 0 && label.length > 0 ? "rgba(220,38,38,0.40)" : "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
+            <p style={{ fontSize: 10, color: name.length === 0 && label.length > 0 ? "#DC2626" : "#B0A9A4", marginTop: 4 }}>
+              {name.length === 0 && label.length > 0
+                ? "英数字・ハイフンで識別子を入力してください（例: qa-engineer）"
+                : "DBで使われる内部識別子。英数字・ハイフン・アンダースコアのみ使用可"
+              }
+            </p>
           </div>
         </div>
         <div style={{ padding: "0 24px 22px", display: "flex", gap: 8 }}>
-          <button onClick={handleCreate} disabled={!label.trim() || !name.trim()}
-            style={{ flex: 1, padding: "10px 0", background: !label.trim() || !name.trim() ? "#F4F5F6" : "#7C3AED", color: !label.trim() || !name.trim() ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: !label.trim() || !name.trim() ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
+          <button onClick={handleCreate} disabled={!canCreate}
+            style={{ flex: 1, padding: "10px 0", background: !canCreate ? "#F4F5F6" : "#7C3AED", color: !canCreate ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: !canCreate ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
             作成する
           </button>
           <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
