@@ -1,18 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, Calendar, CheckCircle2, Circle, MoreHorizontal, Pencil, Tags, Trash2, UserPlus, Zap } from "lucide-react";
+import { Building2, Calendar, CheckCircle2, Circle, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
 import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 
 export function ProjectCard({
-  project, onNavigate, onEdit, onDelete, onAssign, onCategorySettings,
+  project, onNavigate, onEdit, onDelete, onCategorySettings,
 }: {
   project: Project;
   onNavigate: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
-  onAssign?: () => void;
   onCategorySettings?: () => void;
 }) {
   const progress = calcProgress(project.done, project.inProgress, project.todo);
@@ -64,16 +63,13 @@ export function ProjectCard({
                 {onEdit && (
                   <MenuItem icon={<Pencil style={{ width: 12, height: 12 }} />} label="編集" onClick={() => { setMenuOpen(false); onEdit(); }} color="#1A1714" />
                 )}
-                {onAssign && (
-                  <MenuItem icon={<UserPlus style={{ width: 12, height: 12 }} />} label="メンバー割り当て" onClick={() => { setMenuOpen(false); onAssign(); }} color="#059669" />
-                )}
                 {onCategorySettings && (
                   <MenuItem icon={<Tags style={{ width: 12, height: 12 }} />} label="分類設定" onClick={() => { setMenuOpen(false); onCategorySettings(); }} color="#0284C7" />
                 )}
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
                 )}
-                {!onEdit && !onDelete && !onAssign && !onCategorySettings && (
+                {!onEdit && !onDelete && !onCategorySettings && (
                   <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
                 )}
               </div>

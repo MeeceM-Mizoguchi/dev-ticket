@@ -13,14 +13,10 @@ const DEFAULT_PERMS: UserPermissions = {
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; color: string; bg: string }[] = [
-  { key: "canCreateTicket",   label: "チケット作成",   desc: "チケットの新規作成が可能",             color: "#059669", bg: "#ECFDF5" },
-  { key: "canCreateSprint",   label: "スプリント作成", desc: "スプリントの新規作成が可能",           color: "#0284C7", bg: "#F0F9FF" },
-  { key: "canEditDelete",     label: "編集・削除",     desc: "チケット・スプリントの編集・削除が可能", color: "#D97706", bg: "#FFFBEB" },
-  { key: "canReview",         label: "レビュー権限",   desc: "レビュアーとして承認・差し戻しが可能",  color: "#7C3AED", bg: "#F5F3FF" },
   { key: "canGeneratePrompt", label: "プロンプト生成", desc: "ClaudeCode プロンプトの生成が可能",     color: "#DB2777", bg: "#FDF2F8" },
   { key: "canAccessMembers",  label: "メンバー管理",   desc: "メンバー管理画面へのアクセスが可能",    color: "#0891B2", bg: "#F0FDFE" },
   { key: "canAccessRoles",    label: "ロール設定",     desc: "ロール設定画面へのアクセスが可能",      color: "#9333EA", bg: "#FAF5FF" },
-  { key: "canAccessGroups",   label: "グループ管理",   desc: "グループ管理画面へのアクセスが可能",    color: "#059669", bg: "#ECFDF5" },
+  { key: "canAccessGroups",   label: "アサイン計画",   desc: "アサイン計画画面へのアクセスが可能",    color: "#059669", bg: "#ECFDF5" },
 ];
 
 export function RolesPage() {
@@ -77,7 +73,7 @@ export function RolesPage() {
             </div>
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>ロール設定</h1>
           </div>
-          <p style={{ fontSize: 12, color: "#A09790", marginLeft: 40 }}>ロールごとの基本権限を管理。メンバー招待・編集時のロール選択肢にも反映されます。</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginLeft: 40 }}>ロールごとの管理画面アクセス権限を設定。プロジェクト操作権限はアサイン計画で管理します。</p>
         </div>
         <button onClick={() => setShowNewModal(true)}
           style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#7C3AED", color: "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(124,58,237,0.30)", transition: "background 0.15s", whiteSpace: "nowrap" as const }}
@@ -91,7 +87,7 @@ export function RolesPage() {
       <div style={{ background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 10, padding: "10px 14px", marginBottom: 24, display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#7C3AED", flexShrink: 0 }} />
         <p style={{ fontSize: 12, color: "#6D28D9", lineHeight: 1.5 }}>
-          ここで設定した基本権限は<strong>メンバーのデフォルト権限</strong>になります。プロジェクト個別設定で上書きが可能です。
+          ここで設定した権限は<strong>管理画面へのアクセス制御</strong>に使われます。チケット・スプリント操作権限はアサイン計画のグループ設定で管理してください。
         </p>
       </div>
 
@@ -135,7 +131,7 @@ export function RolesPage() {
                 </div>
 
                 {/* Permissions grid */}
-                <div style={{ padding: "14px 20px", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 }}>
+                <div style={{ padding: "14px 20px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
                   {PERM_FLAGS.map(f => {
                     const on = role.base_permissions?.[f.key];
                     return (
@@ -291,7 +287,7 @@ function RoleEditModal({ role, onClose, onSave }: { role: RoleDefinition; onClos
 
         <div style={{ padding: "16px 24px" }}>
           <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14, background: "rgba(124,58,237,0.05)", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.12)" }}>
-            このロールを持つメンバーのデフォルト権限を設定します。プロジェクト個別設定で上書き可能です。
+            このロールを持つメンバーの管理画面アクセス権限を設定します。チケット・スプリント操作権限はアサイン計画で設定してください。
           </p>
           {PERM_FLAGS.map(f => {
             const active = local[f.key];

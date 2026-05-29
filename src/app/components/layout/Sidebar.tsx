@@ -1,5 +1,5 @@
 import { useState, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, ShieldCheck, Ticket, UserCog } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog } from "lucide-react";
 import { useNavigate, useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -9,7 +9,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "projects",    label: "PJ一覧",       icon: FolderKanban },
   { id: "clients",     label: "クライアント", icon: Building2,   roles: ["admin", "project-manager"] },
   { id: "members",     label: "メンバー",     icon: Users,        permission: "canAccessMembers" },
-  { id: "permissions", label: "グループ管理", icon: ShieldCheck,  permission: "canAccessGroups" },
+  { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
   { id: "roles",       label: "ロール設定",   icon: UserCog,      permission: "canAccessRoles" },
 ];
 
