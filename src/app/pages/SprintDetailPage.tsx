@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Trash2, Filter } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -25,8 +25,8 @@ export function SprintDetailPage() {
 
   const [sortCol, setSortCol] = useState<SortCol>("wbs");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [filterStatus, setFilterStatus] = useState<TicketStatus | "all">("all");
-  const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
+  const [filterStatuses, setFilterStatuses] = useState<Set<TicketStatus>>(new Set());
+  const [filterPriorities, setFilterPriorities] = useState<Set<Priority>>(new Set());
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
@@ -82,7 +82,7 @@ export function SprintDetailPage() {
   const priorityOrder: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 
   const displayTickets = [...sprint.tickets]
-    .filter(t => (filterStatus === "all" || t.status === filterStatus) && (filterPriority === "all" || t.priority === filterPriority))
+    .filter(t => (filterStatuses.size === 0 || filterStatuses.has(t.status)) && (filterPriorities.size === 0 || filterPriorities.has(t.priority)))
     .sort((a, b) => {
       let v = 0;
       if (sortCol === "wbs") v = a.wbs.localeCompare(b.wbs);
@@ -97,6 +97,9 @@ export function SprintDetailPage() {
       if (v === 0) v = a.id.localeCompare(b.id);
       return sortDir === "asc" ? v : -v;
     });
+
+  const toggleStatus = (v: TicketStatus) => setFilterStatuses(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
+  const togglePriority = (v: Priority) => setFilterPriorities(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
 
   const SortTh = ({ col, label }: { col: SortCol; label: string }) => {
     const active = sortCol === col;
@@ -156,33 +159,47 @@ export function SprintDetailPage() {
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em" }}>ステータス</span>
-          {([{ value: "all" as const, label: "すべて" }, ...TICKET_STATUSES] as { value: TicketStatus | "all"; label: string }[]).map(({ value: v, label: l }) => (
-            <button key={v} onClick={() => setFilterStatus(v)}
-              style={{ padding: "4px 10px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: 500, transition: "all 0.12s",
-                background: filterStatus === v ? "#059669" : "transparent",
-                color: filterStatus === v ? "#fff" : "#6B6458",
-                borderColor: filterStatus === v ? "#059669" : "rgba(26,23,20,0.10)" }}>
-              {l}
-            </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "10px 14px", background: "#F9F8F6", borderRadius: 12, border: "1px solid rgba(26,23,20,0.07)", flexWrap: "wrap" as const }}>
+        <Filter style={{ width: 13, height: 13, color: "#B0A9A4", flexShrink: 0 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" as const }}>
+          <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em", marginRight: 2 }}>ステータス</span>
+          <button onClick={() => setFilterStatuses(new Set())}
+            style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterStatuses.size === 0 ? 600 : 500, transition: "all 0.12s",
+              background: filterStatuses.size === 0 ? "#059669" : "transparent",
+              color: filterStatuses.size === 0 ? "#fff" : "#6B6458",
+              borderColor: filterStatuses.size === 0 ? "#059669" : "rgba(26,23,20,0.10)" }}>すべて</button>
+          {TICKET_STATUSES.map(({ value: v, label: l }) => (
+            <button key={v} onClick={() => toggleStatus(v)}
+              style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterStatuses.has(v) ? 600 : 500, transition: "all 0.12s",
+                background: filterStatuses.has(v) ? "#059669" : "transparent",
+                color: filterStatuses.has(v) ? "#fff" : "#6B6458",
+                borderColor: filterStatuses.has(v) ? "#059669" : "rgba(26,23,20,0.10)" }}>{l}</button>
           ))}
         </div>
+        <div style={{ width: 1, height: 20, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em" }}>優先度</span>
-          {([ ["all","すべて"], ["high","高"], ["medium","中"], ["low","低"] ] as [Priority|"all", string][]).map(([v, l]) => (
-            <button key={v} onClick={() => setFilterPriority(v)}
-              style={{ padding: "4px 10px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: 500, transition: "all 0.12s",
-                background: filterPriority === v ? "#059669" : "transparent",
-                color: filterPriority === v ? "#fff" : "#6B6458",
-                borderColor: filterPriority === v ? "#059669" : "rgba(26,23,20,0.10)" }}>
-              {l}
-            </button>
+          <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em", marginRight: 2 }}>優先度</span>
+          <button onClick={() => setFilterPriorities(new Set())}
+            style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterPriorities.size === 0 ? 600 : 500, transition: "all 0.12s",
+              background: filterPriorities.size === 0 ? "#059669" : "transparent",
+              color: filterPriorities.size === 0 ? "#fff" : "#6B6458",
+              borderColor: filterPriorities.size === 0 ? "#059669" : "rgba(26,23,20,0.10)" }}>すべて</button>
+          {([["high","高"],["medium","中"],["low","低"]] as [Priority, string][]).map(([v, l]) => (
+            <button key={v} onClick={() => togglePriority(v)}
+              style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterPriorities.has(v) ? 600 : 500, transition: "all 0.12s",
+                background: filterPriorities.has(v) ? "#059669" : "transparent",
+                color: filterPriorities.has(v) ? "#fff" : "#6B6458",
+                borderColor: filterPriorities.has(v) ? "#059669" : "rgba(26,23,20,0.10)" }}>{l}</button>
           ))}
         </div>
-        {displayTickets.length !== sprint.tickets.length && (
-          <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{displayTickets.length} / {sprint.tickets.length} 件</span>
+        {(filterStatuses.size > 0 || filterPriorities.size > 0) && (
+          <>
+            <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{displayTickets.length} / {sprint.tickets.length} 件</span>
+            <button onClick={() => { setFilterStatuses(new Set()); setFilterPriorities(new Set()); }}
+              style={{ padding: "3px 10px", borderRadius: 7, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#B0A9A4", fontSize: 11, cursor: "pointer" }}>
+              リセット
+            </button>
+          </>
         )}
       </div>
 

@@ -5,13 +5,97 @@ import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, compu
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 
-const selStyle = (active: boolean): React.CSSProperties => ({
-  fontSize: 12, padding: "5px 10px", borderRadius: 8,
-  border: `1px solid ${active ? "rgba(5,150,105,0.30)" : "rgba(26,23,20,0.12)"}`,
-  background: active ? "#ECFDF5" : "#F7F8F9",
-  color: active ? "#059669" : "#6B6458",
-  cursor: "pointer", outline: "none",
-});
+function MultiSelectPill<T extends string>({
+  id, label, options, selected, onChange, open, onToggle,
+}: {
+  id: string;
+  label: string;
+  options: Array<{ value: T; label: string }>;
+  selected: Set<T>;
+  onChange: (s: Set<T>) => void;
+  open: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const active = selected.size > 0;
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => onToggle(id)}
+        style={{
+          display: "flex", alignItems: "center", gap: 5,
+          fontSize: 12, padding: "5px 10px", borderRadius: 8,
+          border: `1px solid ${active ? "rgba(5,150,105,0.30)" : "rgba(26,23,20,0.12)"}`,
+          background: active ? "#ECFDF5" : "#F7F8F9",
+          color: active ? "#059669" : "#6B6458",
+          cursor: "pointer", outline: "none", transition: "all 0.12s",
+        }}>
+        {label}
+        {active && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, background: "#059669", color: "#fff",
+            padding: "1px 5px", borderRadius: 10, lineHeight: "1.4",
+          }}>{selected.size}</span>
+        )}
+        <ChevronDown style={{
+          width: 10, height: 10, opacity: 0.5, flexShrink: 0,
+          transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s",
+        }} />
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", left: 0,
+          background: "#fff", borderRadius: 10,
+          border: "1px solid rgba(26,23,20,0.10)",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+          padding: "6px", zIndex: 100, minWidth: 180,
+        }}>
+          {options.map(opt => {
+            const checked = selected.has(opt.value);
+            return (
+              <button key={opt.value}
+                onClick={() => {
+                  const next = new Set(selected);
+                  checked ? next.delete(opt.value) : next.add(opt.value);
+                  onChange(next);
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, width: "100%",
+                  padding: "6px 8px", borderRadius: 7, border: "none",
+                  background: checked ? "#ECFDF5" : "transparent",
+                  color: checked ? "#059669" : "#1A1714",
+                  cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+                  transition: "background 0.1s",
+                }}>
+                <div style={{
+                  width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+                  border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)",
+                  background: checked ? "#059669" : "transparent",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  {checked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+                </div>
+                {opt.label}
+              </button>
+            );
+          })}
+          {selected.size > 0 && (
+            <>
+              <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
+              <button onClick={() => onChange(new Set())}
+                style={{
+                  width: "100%", padding: "5px 8px", borderRadius: 7, border: "none",
+                  background: "transparent", color: "#B0A9A4", fontSize: 11,
+                  cursor: "pointer", textAlign: "left" as const,
+                }}>
+                クリア
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket }: {
   sprints: Sprint[];
@@ -22,11 +106,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   onCreateTicket?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
-  const [filterStatus, setFilterStatus]   = useState<TicketStatus | "all">("all");
-  const [filterPriority, setFilterPriority] = useState<Priority | "all">("all");
-  const [filterAssignee, setFilterAssignee] = useState("all");
+  const [filterStatuses, setFilterStatuses] = useState<Set<TicketStatus>>(new Set());
+  const [filterPriorities, setFilterPriorities] = useState<Set<Priority>>(new Set());
+  const [filterAssignees, setFilterAssignees] = useState<Set<string>>(new Set());
   const [sortCol, setSortCol]   = useState<SortCol | "">("");
   const [sortDir, setSortDir]   = useState<"asc" | "desc">("asc");
+  const [openMenu, setOpenMenu] = useState<string>("");
+
+  const toggleMenu = (id: string) => setOpenMenu(prev => prev === id ? "" : id);
 
   const toggle = (id: string) => setExpanded(prev => {
     const n = new Set(prev);
@@ -40,13 +127,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return Array.from(names).sort((a, b) => a.localeCompare(b, "ja"));
   }, [sprints]);
 
-  const anyFilter = filterStatus !== "all" || filterPriority !== "all" || filterAssignee !== "all" || !!sortCol;
+  const anyFilter = filterStatuses.size > 0 || filterPriorities.size > 0 || filterAssignees.size > 0 || !!sortCol;
 
   const processTickets = (tickets: SprintTicket[]) => {
     const filtered = tickets.filter(t => {
-      if (filterStatus !== "all" && t.status !== filterStatus) return false;
-      if (filterPriority !== "all" && t.priority !== filterPriority) return false;
-      if (filterAssignee !== "all" && t.assignee !== filterAssignee) return false;
+      if (filterStatuses.size > 0 && !filterStatuses.has(t.status)) return false;
+      if (filterPriorities.size > 0 && !filterPriorities.has(t.priority)) return false;
+      if (filterAssignees.size > 0 && !filterAssignees.has(t.assignee)) return false;
       return true;
     });
     if (!sortCol) return filtered;
@@ -60,43 +147,65 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   };
 
   const resetFilters = () => {
-    setFilterStatus("all"); setFilterPriority("all");
-    setFilterAssignee("all"); setSortCol(""); setSortDir("asc");
+    setFilterStatuses(new Set()); setFilterPriorities(new Set());
+    setFilterAssignees(new Set()); setSortCol(""); setSortDir("asc");
   };
 
   if (!sprints.length) return (
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
   );
 
+  const priorityOptions: Array<{ value: Priority; label: string }> = [
+    { value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" },
+  ];
+  const assigneeOptions = allAssignees.map(a => ({ value: a, label: a }));
+
   return (
     <div>
+      {openMenu && <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={() => setOpenMenu("")} />}
+
       {/* Filter / Sort toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0 14px", flexWrap: "wrap" as const }}>
         <Filter style={{ width: 13, height: 13, color: "#B0A9A4", flexShrink: 0 }} />
 
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as TicketStatus | "all")} style={selStyle(filterStatus !== "all")}>
-          <option value="all">ステータス: すべて</option>
-          {TICKET_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-        </select>
+        <MultiSelectPill<TicketStatus>
+          id="status" label="ステータス"
+          options={TICKET_STATUSES}
+          selected={filterStatuses}
+          onChange={setFilterStatuses}
+          open={openMenu === "status"}
+          onToggle={toggleMenu}
+        />
 
-        <select value={filterPriority} onChange={e => setFilterPriority(e.target.value as Priority | "all")} style={selStyle(filterPriority !== "all")}>
-          <option value="all">優先度: すべて</option>
-          <option value="high">高</option>
-          <option value="medium">中</option>
-          <option value="low">低</option>
-        </select>
+        <MultiSelectPill<Priority>
+          id="priority" label="優先度"
+          options={priorityOptions}
+          selected={filterPriorities}
+          onChange={setFilterPriorities}
+          open={openMenu === "priority"}
+          onToggle={toggleMenu}
+        />
 
-        <select value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)} style={selStyle(filterAssignee !== "all")}>
-          <option value="all">担当者: すべて</option>
-          {allAssignees.map(a => <option key={a} value={a}>{a}</option>)}
-        </select>
+        <MultiSelectPill<string>
+          id="assignee" label="担当者"
+          options={assigneeOptions}
+          selected={filterAssignees}
+          onChange={setFilterAssignees}
+          open={openMenu === "assignee"}
+          onToggle={toggleMenu}
+        />
 
         <div style={{ width: 1, height: 16, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <ArrowUpDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0 }} />
           <select value={sortCol} onChange={e => setSortCol(e.target.value as SortCol | "")}
-            style={{ ...selStyle(!!sortCol), color: sortCol ? "#D97706" : "#6B6458", background: sortCol ? "#FFFBEB" : "#F7F8F9", border: `1px solid ${sortCol ? "rgba(217,119,6,0.30)" : "rgba(26,23,20,0.12)"}` }}>
+            style={{
+              fontSize: 12, padding: "5px 10px", borderRadius: 8, outline: "none", cursor: "pointer",
+              color: sortCol ? "#D97706" : "#6B6458",
+              background: sortCol ? "#FFFBEB" : "#F7F8F9",
+              border: `1px solid ${sortCol ? "rgba(217,119,6,0.30)" : "rgba(26,23,20,0.12)"}`,
+            }}>
             <option value="">並び替え: デフォルト</option>
             <option value="wbs">WBS</option>
             <option value="title">チケット名</option>
