@@ -1,20 +1,22 @@
 import { Eye, Edit2, Mail, Trash2, Layers } from "lucide-react";
-import type { Member, Role } from "@/app/types";
+import type { Member } from "@/app/types";
 import { getRoleMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 
-const roleColors: Record<Role, { grad: string; badge: string; text: string }> = {
+const ROLE_COLORS: Record<string, { grad: string; badge: string; text: string }> = {
   admin:             { grad: "linear-gradient(135deg,#FB7185,#F43F5E)", badge: "#FFF1F2", text: "#F43F5E" },
   "project-manager": { grad: "linear-gradient(135deg,#34D399,#059669)", badge: "#ECFDF5", text: "#059669" },
   developer:         { grad: "linear-gradient(135deg,#38BDF8,#0284C7)", badge: "#F0F9FF", text: "#0284C7" },
   designer:          { grad: "linear-gradient(135deg,#A78BFA,#7C3AED)", badge: "#F5F3FF", text: "#7C3AED" },
 };
+const DEFAULT_ROLE_COLOR = { grad: "linear-gradient(135deg,#9CA3AF,#6B7280)", badge: "#F3F4F6", text: "#6B7280" };
+function getRoleColor(role: string) { return ROLE_COLORS[role] ?? DEFAULT_ROLE_COLOR; }
 
 export function MemberCard({ member, canEdit, canDelete, onEdit, onDetail, onDelete }: {
   member: Member; canEdit: boolean; canDelete: boolean;
   onEdit?: () => void; onDetail?: () => void; onDelete?: () => void;
 }) {
-  const rc = roleColors[member.role];
+  const rc = getRoleColor(member.role);
   const roleMeta = getRoleMeta(member.role);
 
   return (

@@ -1,18 +1,19 @@
-import type { Member, Role } from "@/app/types";
+import type { Member } from "@/app/types";
 import { getRoleMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 
-const roleColors: Record<Role, { grad: string; badge: string; text: string }> = {
+const ROLE_COLORS: Record<string, { grad: string; badge: string; text: string }> = {
   admin:             { grad: "linear-gradient(135deg,#FB7185,#F43F5E)", badge: "#FFF1F2", text: "#F43F5E" },
   "project-manager": { grad: "linear-gradient(135deg,#34D399,#059669)", badge: "#ECFDF5", text: "#059669" },
   developer:         { grad: "linear-gradient(135deg,#38BDF8,#0284C7)", badge: "#F0F9FF", text: "#0284C7" },
   designer:          { grad: "linear-gradient(135deg,#A78BFA,#7C3AED)", badge: "#F5F3FF", text: "#7C3AED" },
 };
+const DEFAULT_ROLE_COLOR = { grad: "linear-gradient(135deg,#9CA3AF,#6B7280)", badge: "#F3F4F6", text: "#6B7280" };
 
 export function MemberDetailDialog({ member, onClose }: { member: Member; onClose: () => void }) {
-  const rc = roleColors[member.role];
+  const rc = ROLE_COLORS[member.role] ?? DEFAULT_ROLE_COLOR;
   const statusLabel = member.status === "active" ? "アクティブ" : member.status === "invited" ? "招待中" : "非アクティブ";
   return (
     <DialogShell title="メンバー詳細" onClose={onClose} footer={<BtnSecondary onClick={onClose}>閉じる</BtnSecondary>}>
