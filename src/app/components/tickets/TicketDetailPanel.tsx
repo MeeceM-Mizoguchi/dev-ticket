@@ -253,9 +253,16 @@ export function TicketDetailPanel({
     const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
     const ext = extMap[file.type] ?? 'png';
     const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
-    const { data } = await supabase!.storage.from("ticket-files").upload(path, file, { upsert: true });
-    if (!data) return URL.createObjectURL(file);
-    return supabase!.storage.from("ticket-files").getPublicUrl(path).data.publicUrl;
+    const { data, error } = await supabase!.storage.from("ticket-images").upload(path, file, {
+      upsert: true,
+      contentType: file.type || 'image/png',
+    });
+    if (error || !data) {
+      console.error("[image upload] failed:", error?.message ?? "no data");
+      return "";
+    }
+    const { data: urlData } = supabase!.storage.from("ticket-images").getPublicUrl(path);
+    return urlData.publicUrl;
   }, [ticket?.id]);
 
   const pasteImage = useCallback((e: React.ClipboardEvent, setter: React.Dispatch<React.SetStateAction<string[]>>, pathPrefix: string) => {

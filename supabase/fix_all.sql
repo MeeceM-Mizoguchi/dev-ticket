@@ -222,7 +222,47 @@ WHERE p.id IS NULL
 ON CONFLICT (id) DO NOTHING;
 
 -- ────────────────────────────────────────────────────────────
--- 8. 確認クエリ（実行結果で全ポリシーが揃っているか確認）
+-- 8. Storage バケット設定（画像・ファイル公開アクセス）
+-- ────────────────────────────────────────────────────────────
+
+-- ticket-files バケット（ソースファイル用）を public に設定
+INSERT INTO storage.buckets (id, name, public, file_size_limit)
+VALUES ('ticket-files', 'ticket-files', true, 52428800)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- ticket-images バケット（チケット・コメント画像用）を public で作成
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'ticket-images', 'ticket-images', true, 10485760,
+  ARRAY['image/jpeg','image/png','image/gif','image/webp','image/svg+xml']
+)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- storage.objects の RLS を有効化
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- ticket-files ストレージポリシー
+DROP POLICY IF EXISTS "ticket-files public select" ON storage.objects;
+DROP POLICY IF EXISTS "ticket-files auth insert"   ON storage.objects;
+DROP POLICY IF EXISTS "ticket-files auth update"   ON storage.objects;
+DROP POLICY IF EXISTS "ticket-files auth delete"   ON storage.objects;
+CREATE POLICY "ticket-files public select" ON storage.objects FOR SELECT USING (bucket_id = 'ticket-files');
+CREATE POLICY "ticket-files auth insert"   ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'ticket-files' AND auth.role() = 'authenticated');
+CREATE POLICY "ticket-files auth update"   ON storage.objects FOR UPDATE USING   (bucket_id = 'ticket-files' AND auth.role() = 'authenticated');
+CREATE POLICY "ticket-files auth delete"   ON storage.objects FOR DELETE USING   (bucket_id = 'ticket-files' AND auth.role() = 'authenticated');
+
+-- ticket-images ストレージポリシー
+DROP POLICY IF EXISTS "ticket-images public select" ON storage.objects;
+DROP POLICY IF EXISTS "ticket-images auth insert"   ON storage.objects;
+DROP POLICY IF EXISTS "ticket-images auth update"   ON storage.objects;
+DROP POLICY IF EXISTS "ticket-images auth delete"   ON storage.objects;
+CREATE POLICY "ticket-images public select" ON storage.objects FOR SELECT USING (bucket_id = 'ticket-images');
+CREATE POLICY "ticket-images auth insert"   ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'ticket-images' AND auth.role() = 'authenticated');
+CREATE POLICY "ticket-images auth update"   ON storage.objects FOR UPDATE USING   (bucket_id = 'ticket-images' AND auth.role() = 'authenticated');
+CREATE POLICY "ticket-images auth delete"   ON storage.objects FOR DELETE USING   (bucket_id = 'ticket-images' AND auth.role() = 'authenticated');
+
+-- ────────────────────────────────────────────────────────────
+-- 9. 確認クエリ（実行結果で全ポリシーが揃っているか確認）
 -- ────────────────────────────────────────────────────────────
 
 SELECT tablename, policyname, cmd
