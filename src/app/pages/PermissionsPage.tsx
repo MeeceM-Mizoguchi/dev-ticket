@@ -51,21 +51,33 @@ export function PermissionsPage() {
   const [settingsGroupId, setSettingsGroupId]     = useState<number | null>(null);
   const [conflict, setConflict]         = useState<ConflictInfo | null>(null);
   const [loading, setLoading]           = useState(isSupabaseEnabled);
+  const [needsMigration, setNeedsMigration] = useState(false);
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
+    // Load base tables first, then group_members separately with fallback
     Promise.all([
       supabase!.from("permission_groups").select("*").order("id"),
       supabase!.from("profiles").select("*").order("name"),
       supabase!.from("projects").select("*").order("id"),
-      supabase!.from("group_members").select("*"),
-    ]).then(([{ data: gData }, { data: mData }, { data: pData }, { data: gmData }]) => {
+    ]).then(([{ data: gData }, { data: mData }, { data: pData }]) => {
       if (gData) setGroups(gData as PermissionGroup[]);
       if (mData) setMembers(mData.map(mapMember));
       if (pData) setProjects(pData.map(mapProject));
-      if (gmData) setGroupMemberships(gmData as GroupMembership[]);
+      // Load group_members separately — table may not exist yet (migration required)
+      return supabase!.from("group_members").select("*");
+    }).then(({ data: gmData, error: gmError }) => {
+      if (gmError) {
+        // 404 = table doesn't exist yet. Show migration notice but don't crash.
+        setNeedsMigration(true);
+      } else if (gmData) {
+        setGroupMemberships(gmData as GroupMembership[]);
+      }
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch(() => {
+      setNeedsMigration(true);
+      setLoading(false);
+    });
   }, []);
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -117,6 +129,10 @@ export function PermissionsPage() {
   const handleDropOnGroup = async (e: DragEvent, groupId: number) => {
     e.preventDefault();
     setDragOver(null);
+    if (needsMigration) {
+      toast("DBマイグレーションが必要です。画面上部の案内に従ってください。", "error");
+      return;
+    }
     const payload = getPayload(e);
     if (!payload || payload.type !== "member") return;
     const memberId = payload.id;
@@ -356,6 +372,22 @@ export function PermissionsPage() {
           <Plus style={{ width: 15, height: 15 }} />新規グループ作成
         </button>
       </div>
+
+      {/* Migration notice — shown when group_members table doesn't exist yet */}
+      {needsMigration && (
+        <div style={{ background: "#FFF7ED", border: "1.5px solid rgba(234,88,12,0.35)", borderRadius: 10, padding: "12px 16px", marginBottom: 16, flexShrink: 0, display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <AlertTriangle style={{ width: 16, height: 16, color: "#EA580C", flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <p style={{ fontSize: 13, fontWeight: 700, color: "#9A3412", marginBottom: 3 }}>DBマイグレーションが必要です</p>
+            <p style={{ fontSize: 12, color: "#C2410C", lineHeight: 1.6 }}>
+              <code style={{ background: "rgba(234,88,12,0.12)", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>group_members</code> テーブルがまだ作成されていません。<br />
+              Supabase Dashboard → SQL Editor で{" "}
+              <code style={{ background: "rgba(234,88,12,0.12)", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>supabase/fix_all.sql</code> を実行してください。<br />
+              実行後、ページを再読み込みすると機能が有効になります。
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* How-to banner */}
       <div style={{ background: "rgba(5,150,105,0.05)", border: "1px solid rgba(5,150,105,0.15)", borderRadius: 10, padding: "10px 16px", marginBottom: 20, flexShrink: 0, display: "flex", gap: 16, alignItems: "center" }}>

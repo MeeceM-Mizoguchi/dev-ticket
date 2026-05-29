@@ -55,6 +55,14 @@ CREATE TABLE IF NOT EXISTS ticket_source_files (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
+-- group_members: メンバーとグループの多対多 (アサイン計画機能で使用)
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id   INTEGER  NOT NULL REFERENCES permission_groups(id) ON DELETE CASCADE,
+  member_id  UUID     NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (group_id, member_id)
+);
+
 -- ────────────────────────────────────────────────────────────
 -- 2. 不足カラムの追加
 -- ────────────────────────────────────────────────────────────
@@ -95,6 +103,7 @@ ALTER TABLE roles                      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE project_member_permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ticket_comments            ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ticket_source_files        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE group_members              ENABLE ROW LEVEL SECURITY;
 
 -- ────────────────────────────────────────────────────────────
 -- 5. RLS ポリシーを DROP → CREATE で確実に適用
@@ -193,6 +202,10 @@ CREATE POLICY "roles_delete" ON roles FOR DELETE USING (auth.role() = 'authentic
 DROP POLICY IF EXISTS "pmp_all" ON project_member_permissions;
 CREATE POLICY "pmp_all" ON project_member_permissions FOR ALL USING (auth.role() = 'authenticated');
 
+-- group_members
+DROP POLICY IF EXISTS "gm_all" ON group_members;
+CREATE POLICY "gm_all" ON group_members FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+
 -- ────────────────────────────────────────────────────────────
 -- 6. デフォルトデータ
 -- ────────────────────────────────────────────────────────────
@@ -203,6 +216,16 @@ INSERT INTO roles (name, label, base_permissions) VALUES
   ('developer',       '開発者',                   '{"canCreateTicket":true,"canCreateSprint":false,"canEditDelete":false,"canReview":false,"canGeneratePrompt":true,"canAccessMembers":false,"canAccessRoles":false,"canAccessGroups":false}'),
   ('designer',        'デザイナー',               '{"canCreateTicket":true,"canCreateSprint":false,"canEditDelete":false,"canReview":false,"canGeneratePrompt":false,"canAccessMembers":false,"canAccessRoles":false,"canAccessGroups":false}')
 ON CONFLICT (name) DO NOTHING;
+
+-- group_members: profiles.permission_group_id の既存データを移行
+INSERT INTO group_members (group_id, member_id)
+SELECT permission_group_id, id FROM profiles
+WHERE permission_group_id IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+-- インデックス
+CREATE INDEX IF NOT EXISTS idx_group_members_group_id  ON group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_group_members_member_id ON group_members(member_id);
 
 -- ────────────────────────────────────────────────────────────
 -- 7. profile 修復（auth.users に存在するが profiles がないユーザー）
