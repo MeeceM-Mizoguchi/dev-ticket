@@ -64,6 +64,21 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
         setSaving(false);
         return;
       }
+
+      // 名前が変わった場合、projects.members の古い名前を新しい名前に置き換える
+      if (name !== member.name) {
+        const { data: projectsData } = await supabase!
+          .from("projects")
+          .select("id, members")
+          .contains("members", [member.name]);
+        if (projectsData) {
+          for (const proj of projectsData) {
+            const updated = (proj.members as string[]).map((m: string) => m === member.name ? name : m);
+            await supabase!.from("projects").update({ members: updated }).eq("id", proj.id);
+          }
+        }
+      }
+
       toast(`「${name}」を更新しました`);
     }
     setSaving(false);

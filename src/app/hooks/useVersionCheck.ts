@@ -1,17 +1,17 @@
 import { useEffect, useRef } from "react";
-import { useLocation } from "react-router";
 import { useToast } from "@/app/contexts/ToastContext";
 
 const CHECK_INTERVAL = 2 * 60 * 1000;
 
-async function fetchAppHash(): Promise<string | null> {
+async function fetchBuildTime(): Promise<string | null> {
   try {
-    const res = await fetch(`/?_=${Date.now()}`, { cache: "no-store" });
-    if (!res.ok) return null;
-    const html = await res.text();
-    // Vite production builds embed hashed filenames like /assets/index-XYZ.js
-    const m = html.match(/\/assets\/index-([A-Za-z0-9_-]+)\.js/);
-    return m?.[1] ?? null;
+    const res = await fetch(`/build-info.json?_=${Date.now()}`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+    });
+    if (!res.ok) return null; // 404 in dev mode — skip
+    const data = await res.json();
+    return data?.buildTime ?? null;
   } catch {
     return null;
   }
@@ -19,8 +19,7 @@ async function fetchAppHash(): Promise<string | null> {
 
 export function useVersionCheck() {
   const { toast } = useToast();
-  const location = useLocation();
-  const baseHash = useRef<string | null>(null);
+  const baseBuild = useRef<string | null>(null);
   const initialized = useRef(false);
   const reloading = useRef(false);
   const toastRef = useRef(toast);
@@ -28,14 +27,14 @@ export function useVersionCheck() {
 
   const check = useRef(async () => {
     if (reloading.current) return;
-    const hash = await fetchAppHash();
-    if (!hash) return; // dev mode or fetch failed — skip
+    const buildTime = await fetchBuildTime();
+    if (!buildTime) return; // dev mode or fetch failed — skip
     if (!initialized.current) {
-      baseHash.current = hash;
+      baseBuild.current = buildTime;
       initialized.current = true;
       return;
     }
-    if (hash !== baseHash.current) {
+    if (buildTime !== baseBuild.current) {
       reloading.current = true;
       toastRef.current("新しいバージョンに更新します...");
       setTimeout(() => window.location.reload(), 1500);
@@ -45,19 +44,21 @@ export function useVersionCheck() {
   useEffect(() => {
     check.current();
     const id = setInterval(() => check.current(), CHECK_INTERVAL);
+
     const onFocus = () => check.current();
     const onVisible = () => { if (!document.hidden) check.current(); };
+    // bfcache から復元された場合も検知
+    const onPageShow = (e: PageTransitionEvent) => { if (e.persisted) check.current(); };
+
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onPageShow);
+
     return () => {
       clearInterval(id);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onPageShow);
     };
   }, []);
-
-  // Trigger on each navigation
-  useEffect(() => {
-    if (initialized.current) check.current();
-  }, [location.pathname]);
 }

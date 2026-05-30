@@ -19,7 +19,7 @@ const PROJECT_PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: str
 
 const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
-  canEditDelete: false, canReview: false, canGeneratePrompt: false,
+  canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false,
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
 };
 
@@ -480,12 +480,18 @@ export function PermissionsPage() {
 }
 
 // ── Members Column ────────────────────────────────────────────────────────────
+const MEMBERS_INITIAL_COUNT = 8;
+
 function MembersColumn({ members, groups, groupMemberships, onDragStart }: {
   members: Member[];
   groups: PermissionGroup[];
   groupMemberships: GroupMembership[];
   onDragStart: (e: DragEvent, payload: DragPayload) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasMore = members.length > MEMBERS_INITIAL_COUNT;
+  const displayMembers = expanded ? members : members.slice(0, MEMBERS_INITIAL_COUNT);
+
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, minHeight: 0 }}>
       <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", flexDirection: "column" as const, height: "100%" }}>
@@ -502,7 +508,7 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart }: {
           {members.length === 0 && (
             <p style={{ textAlign: "center" as const, fontSize: 12, color: "#C9C4BB", padding: "24px 0" }}>メンバーなし</p>
           )}
-          {members.map(m => {
+          {displayMembers.map(m => {
             const memberGroupIds = groupMemberships.filter(gm => gm.member_id === m.id).map(gm => gm.group_id);
             const memberGroupNames = memberGroupIds.map(gid => groups.find(g => g.id === gid)?.name).filter(Boolean);
             return (
@@ -525,6 +531,20 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart }: {
               </div>
             );
           })}
+
+          {/* アコーディオン展開ボタン */}
+          {hasMore && (
+            <button
+              onClick={() => setExpanded(v => !v)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", marginTop: 2, borderRadius: 8, border: "1.5px dashed rgba(26,23,20,0.12)", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#6B6458", transition: "all 0.15s" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(5,150,105,0.30)"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}>
+              {expanded
+                ? <><ChevronUp style={{ width: 12, height: 12 }} />折りたたむ</>
+                : <><ChevronDown style={{ width: 12, height: 12 }} />全メンバーを見る（残り{members.length - MEMBERS_INITIAL_COUNT}名）</>
+              }
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -732,7 +752,8 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
 
           // Truncation limits (collapsed only)
           const MAX_G = 3;
-          const MAX_M = 4;
+          // グループがある場合はメンバーを少なく抑えて +N バッジが確実に表示されるようにする
+          const MAX_M = assignedGroups.length > 0 ? 2 : 4;
           const visibleGroups  = assignedGroups.slice(0, MAX_G);
           const hiddenGroups   = Math.max(0, assignedGroups.length - MAX_G);
           const visibleMembers = individualMembers.slice(0, MAX_M);
@@ -750,7 +771,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
               style={{ background: "#FFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden", boxShadow: isOver ? "0 0 0 3px rgba(5,150,105,0.10)" : "0 1px 3px rgba(0,0,0,0.04)", transition: "all 0.15s" }}>
 
               {/* Single-row layout: icon + name/client + assignments */}
-              <div style={{ display: "flex", alignItems: isExpanded ? "flex-start" : "center", gap: 10, padding: "9px 12px", minHeight: 52 }}>
+              <div style={{ display: "flex", alignItems: isExpanded ? "flex-start" : "center", gap: 10, padding: "12px 14px", minHeight: 72 }}>
 
                 {/* Project icon + name */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, width: 160, paddingTop: isExpanded ? 3 : 0 }}>
@@ -767,7 +788,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                 <div style={{ width: 1, alignSelf: "stretch", background: "rgba(26,23,20,0.07)", flexShrink: 0, margin: isExpanded ? "3px 0" : 0 }} />
 
                 {/* Assignment chips area */}
-                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflow: isExpanded ? "visible" : "hidden" }}>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6 }}>
                   {isOver && (
                     <span style={{ fontSize: 11, color: "#059669", fontWeight: 600, whiteSpace: "nowrap" as const }}>ここにドロップ ↓</span>
                   )}
@@ -775,55 +796,67 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                     <span style={{ fontSize: 11, color: "#C9C4BB" }}>グループ・メンバーをドラッグしてアサイン</span>
                   )}
                   {!isOver && !isEmpty && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: isExpanded ? "visible" : "hidden", flexWrap: isExpanded ? "wrap" as const : "nowrap" as const, minWidth: 0, flex: 1, paddingTop: isExpanded ? 3 : 0, paddingBottom: isExpanded ? 3 : 0 }}>
-                      {/* Groups */}
-                      {displayGroups.map(g => {
-                        const gmIds = groupMemberships.filter(gm => gm.group_id === g.id).map(gm => gm.member_id);
-                        const gMembers = members.filter(m => gmIds.includes(m.id));
-                        return (
-                          <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 6px 3px 5px", flexShrink: 0 }}>
-                            <Users style={{ width: 10, height: 10, color: "#059669", flexShrink: 0 }} />
-                            <span style={{ fontSize: 10, fontWeight: 700, color: "#065F46", whiteSpace: "nowrap" as const }}>{g.name}</span>
-                            <span style={{ fontSize: 9, color: "#059669" }}>{gMembers.length}名</span>
-                            <button onClick={e => { e.stopPropagation(); onRemoveGroup(g.id, project); }}
-                              style={{ padding: "1px", border: "none", background: "transparent", cursor: "pointer", color: "#A7F3D0", display: "flex", borderRadius: 3, transition: "color 0.1s", flexShrink: 0 }}
+                    // position:relative でメンバー +N バッジを絶対配置できるようにする
+                    <div style={{ flex: 1, minWidth: 0, position: "relative" as const }}>
+                      {/* チップ列（overflow:hidden でクリップ、+N バッジ分の右余白を確保） */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: isExpanded ? "visible" : "hidden", flexWrap: isExpanded ? "wrap" as const : "nowrap" as const, paddingRight: !isExpanded && hiddenMembers > 0 ? 40 : 0, paddingTop: isExpanded ? 3 : 0, paddingBottom: isExpanded ? 3 : 0 }}>
+                        {/* Groups */}
+                        {displayGroups.map(g => {
+                          const gmIds = groupMemberships.filter(gm => gm.group_id === g.id).map(gm => gm.member_id);
+                          const gMembers = members.filter(m => gmIds.includes(m.id));
+                          return (
+                            <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 4, background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 6px 3px 5px", flexShrink: 0 }}>
+                              <Users style={{ width: 10, height: 10, color: "#059669", flexShrink: 0 }} />
+                              <span style={{ fontSize: 10, fontWeight: 700, color: "#065F46", whiteSpace: "nowrap" as const }}>{g.name}</span>
+                              <span style={{ fontSize: 9, color: "#059669" }}>{gMembers.length}名</span>
+                              <button onClick={e => { e.stopPropagation(); onRemoveGroup(g.id, project); }}
+                                style={{ padding: "1px", border: "none", background: "transparent", cursor: "pointer", color: "#A7F3D0", display: "flex", borderRadius: 3, transition: "color 0.1s", flexShrink: 0 }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#A7F3D0"; }}>
+                                <X style={{ width: 10, height: 10 }} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                        {!isExpanded && hiddenGroups > 0 && (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenGroups}</span>
+                        )}
+
+                        {/* Separator */}
+                        {assignedGroups.length > 0 && individualMembers.length > 0 && (
+                          <div style={{ width: 1, height: 18, background: "rgba(26,23,20,0.08)", flexShrink: 0, margin: "0 2px" }} />
+                        )}
+
+                        {/* Individual members */}
+                        {displayMembers.map(m => (
+                          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 0, background: "#F4F5F6", borderRadius: 20, border: "1px solid transparent", overflow: "hidden", transition: "all 0.12s", flexShrink: 0 }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.30)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
+                            <button title="クリックで権限設定"
+                              onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
+                              style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 5px 3px 4px", border: "none", background: "transparent", cursor: "pointer" }}>
+                              <Avatar name={m.name} size="xs" />
+                              <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732", whiteSpace: "nowrap" as const, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
+                            </button>
+                            <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
+                              style={{ padding: "3px 6px 3px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", transition: "color 0.1s", flexShrink: 0 }}
                               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#A7F3D0"; }}>
-                              <X style={{ width: 10, height: 10 }} />
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                              <X style={{ width: 11, height: 11 }} />
                             </button>
                           </div>
-                        );
-                      })}
-                      {!isExpanded && hiddenGroups > 0 && (
-                        <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenGroups}</span>
-                      )}
+                        ))}
+                      </div>
 
-                      {/* Separator */}
-                      {assignedGroups.length > 0 && individualMembers.length > 0 && (
-                        <div style={{ width: 1, height: 18, background: "rgba(26,23,20,0.08)", flexShrink: 0, margin: "0 2px" }} />
-                      )}
-
-                      {/* Individual members */}
-                      {displayMembers.map(m => (
-                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 0, background: "#F4F5F6", borderRadius: 20, border: "1px solid transparent", overflow: "hidden", transition: "all 0.12s", flexShrink: 0 }}
-                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.30)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
-                          <button title="クリックで権限設定"
-                            onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
-                            style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 5px 3px 4px", border: "none", background: "transparent", cursor: "pointer" }}>
-                            <Avatar name={m.name} size="xs" />
-                            <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732", whiteSpace: "nowrap" as const }}>{m.name}</span>
-                          </button>
-                          <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
-                            style={{ padding: "3px 6px 3px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", transition: "color 0.1s", flexShrink: 0 }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                            <X style={{ width: 11, height: 11 }} />
-                          </button>
-                        </div>
-                      ))}
+                      {/* メンバー +N バッジ — 常に右端に表示（絶対配置） */}
                       {!isExpanded && hiddenMembers > 0 && (
-                        <span style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F4F5F6", borderRadius: 20, padding: "3px 7px", flexShrink: 0 }}>+{hiddenMembers}</span>
+                        <>
+                          {/* グラデーションフェード */}
+                          <div style={{ position: "absolute" as const, right: 34, top: 0, bottom: 0, width: 24, background: "linear-gradient(to right, transparent, #FFF)", pointerEvents: "none" as const }} />
+                          <span style={{ position: "absolute" as const, right: 0, top: "50%", transform: "translateY(-50%)", fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 20, padding: "3px 7px", whiteSpace: "nowrap" as const }}>
+                            +{hiddenMembers}
+                          </span>
+                        </>
                       )}
                     </div>
                   )}

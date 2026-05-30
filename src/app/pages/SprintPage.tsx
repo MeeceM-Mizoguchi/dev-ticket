@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, type ElementType } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2 } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Lock } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -20,7 +20,7 @@ export function SprintPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { toast: _toast } = useToast();
-  const { userRole, userId, userPermissions } = useAuth();
+  const { userName, userRole, userId, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const effectivePermissions = projectPermissions ?? userPermissions;
@@ -56,6 +56,8 @@ export function SprintPage() {
 
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
+    supabase!.from("projects").select("*").eq("id", projectId).single()
+      .then(({ data: p }) => { if (p) setProject(mapProject(p)); });
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" })
       .then(({ data }) => {
         if (data) setSprints(
@@ -98,6 +100,26 @@ export function SprintPage() {
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project) return <Navigate to="/projects" replace />;
+
+  // アサイン解除チェック（admin / PM は常にアクセス可）
+  const isMember = isAdminOrPM || (project.members ?? []).includes(userName);
+  if (!isMember) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
+      <div style={{ textAlign: "center" as const, maxWidth: 380 }}>
+        <div style={{ width: 56, height: 56, borderRadius: 16, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+          <Lock style={{ width: 24, height: 24, color: "#DC2626" }} />
+        </div>
+        <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", marginBottom: 10, fontFamily: "var(--font-heading)" }}>アクセスできません</h2>
+        <p style={{ fontSize: 13, color: "#9E9690", lineHeight: 1.65, marginBottom: 24 }}>
+          このプロジェクトからアサイン解除されたため、<br />アクセスできません。
+        </p>
+        <button onClick={() => navigate("/projects")}
+          style={{ padding: "10px 28px", background: "#059669", color: "#FFF", border: "none", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+          プロジェクト一覧に戻る
+        </button>
+      </div>
+    </div>
+  );
 
   const goToSprint = (sprint: Sprint) => navigate(`/projects/${projectId}/sprints/${sprint.id}`);
 

@@ -3,6 +3,7 @@ import path from 'path'
 import { exec } from 'child_process'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import type { Plugin } from 'vite'
 
 
 function figmaAssetResolver() {
@@ -15,6 +16,19 @@ function figmaAssetResolver() {
       }
     },
   }
+}
+
+function buildInfoPlugin(): Plugin {
+  return {
+    name: 'build-info',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'build-info.json',
+        source: JSON.stringify({ buildTime: Date.now().toString() }),
+      });
+    },
+  };
 }
 
 function openChromePlugin() {
@@ -33,6 +47,7 @@ function openChromePlugin() {
 export default defineConfig({
   plugins: [
     figmaAssetResolver(),
+    buildInfoPlugin(),
     openChromePlugin(),
     // The React and Tailwind plugins are both required for Make, even if
     // Tailwind is not being actively used – do not remove them
