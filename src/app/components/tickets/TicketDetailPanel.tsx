@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { TICKET_STATUSES, labelCls, inputCls } from "@/app/lib/helpers";
+import { TICKET_STATUSES, labelCls } from "@/app/lib/helpers";
+import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -27,6 +28,12 @@ const priorityMeta: Record<Priority, { label: string; color: string; bg: string 
   medium: { label: "中", color: "#D97706", bg: "#FFFBEB" },
   low:    { label: "低", color: "#0284C7", bg: "#F0F9FF" },
 };
+
+const PRIORITY_OPTIONS: SelectOption[] = [
+  { value: "high",   label: "高", color: "#DC2626", bg: "#FEF2F2" },
+  { value: "medium", label: "中", color: "#D97706", bg: "#FFFBEB" },
+  { value: "low",    label: "低", color: "#0284C7", bg: "#F0F9FF" },
+];
 
 function formatTs(ts: string) {
   if (!ts) return "";
@@ -615,24 +622,29 @@ export function TicketDetailPanel({
                   <span style={{ fontSize: 12, fontWeight: 600, color: smeta?.color }}>{smeta?.label}</span>
                 </div>
               </div>
-              <div>
-                <label className={labelCls}>優先度</label>
-                <select value={priority} onChange={e => { const v = e.target.value as Priority; setPriority(v); save({ priority: v }); }}
-                  className={inputCls} style={{ color: pm.color, fontWeight: 600 }}>
-                  <option value="high">高</option><option value="medium">中</option><option value="low">低</option>
-                </select>
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
+                <CustomSelect
+                  value={priority}
+                  options={PRIORITY_OPTIONS}
+                  onChange={v => { setPriority(v as Priority); save({ priority: v }); }}
+                />
               </div>
             </div>
 
             {/* 分類 */}
             {categories.length > 0 && (
-              <div>
-                <label className={labelCls}>分類</label>
-                <select value={categoryId ?? ""} onChange={e => { const v = e.target.value || null; setCategoryId(v); save({ category_id: v }); }}
-                  className={inputCls}>
-                  <option value="">分類なし</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>分類</p>
+                <CustomSelect
+                  value={categoryId ?? ""}
+                  options={[
+                    { value: "", label: "分類なし" },
+                    ...categories.map(c => ({ value: c.id, label: c.name })),
+                  ]}
+                  onChange={v => { const val = v || null; setCategoryId(val); save({ category_id: val }); }}
+                  placeholder="分類なし"
+                />
               </div>
             )}
 

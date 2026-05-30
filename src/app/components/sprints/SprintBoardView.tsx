@@ -1,7 +1,7 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
-import { ExternalLink, X, MessageSquare, Paperclip, User, Plus } from "lucide-react";
+import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, formatDate } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -18,8 +18,66 @@ const MODAL_LABELS: Partial<Record<TicketStatus, { title: string; placeholder: s
   "review-done":  { title: "レビュー承認", placeholder: "承認コメントを入力（任意）...", commentType: "review_approved" },
 };
 
+const STATUS_RANK: Record<TicketStatus, number> = {
+  "todo": 0, "in-progress": 1, "in-review": 2, "review-done": 3,
+  "stg-test": 4, "uat": 5, "done": 6, "closed": 7,
+};
+
 interface DragItem { id: string; sprintId: string; currentStatus: TicketStatus }
 interface PendingDrop { ticketId: string; sprintId: string; newStatus: TicketStatus }
+interface PendingError {
+  ticketId: string;
+  message: string;
+  skipLabel?: string;
+  skipStatus?: TicketStatus;
+}
+
+function validateDrop(
+  ticket: SprintTicket,
+  newStatus: TicketStatus,
+  userName: string,
+  canSkipReview: boolean
+): PendingError | null {
+  const currentRank = STATUS_RANK[ticket.status] ?? 0;
+  const newRank = STATUS_RANK[newStatus] ?? 0;
+
+  // in-review: 担当者のみ
+  if (newStatus === "in-review") {
+    const assignees = ticket.assignees?.length ? ticket.assignees : (ticket.assignee ? [ticket.assignee] : []);
+    if (assignees.length > 0 && !assignees.includes(userName)) {
+      return {
+        ticketId: ticket.id,
+        message: "このチケットの担当者のみレビュー依頼を送信できます",
+      };
+    }
+  }
+
+  // review-done へ in-review を経由せずに移動
+  if (newStatus === "review-done" && currentRank < STATUS_RANK["in-review"]) {
+    if (canSkipReview) {
+      return {
+        ticketId: ticket.id,
+        message: "レビュー依頼が完了していません。\nレビューをスキップしてレビュー完了に進みますか？",
+        skipLabel: "レビュースキップ → レビュー完了へ",
+        skipStatus: "review-done",
+      };
+    }
+    return {
+      ticketId: ticket.id,
+      message: "レビュー依頼が完了していないため移動できません",
+    };
+  }
+
+  // stg-test 以降へ review-done を経由せずに移動
+  if (newRank >= STATUS_RANK["stg-test"] && currentRank < STATUS_RANK["review-done"]) {
+    return {
+      ticketId: ticket.id,
+      message: "レビュー完了していないため移動できません",
+    };
+  }
+
+  return null;
+}
 
 // ── Draggable ticket card ──────────────────────────────────────────────────
 function TicketCard({ ticket, sprintId, onSelect }: {
@@ -93,14 +151,21 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 }) {
   const { userName, userPermissions } = useAuth();
   const canCreateTicket = userPermissions.canCreateTicket;
+  const canSkipReview = userPermissions.canSkipReview;
+
   const [selectedSprintId, setSelectedSprintId] = useState(sprints[0]?.id ?? "");
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
+  const [pendingError, setPendingError] = useState<PendingError | null>(null);
   const [modalComment, setModalComment] = useState("");
   const [reviewerName, setReviewerName] = useState("");
   const [reviewerList, setReviewerList] = useState<string[]>(MEMBERS.map(m => m.name));
   const [sourceUrl, setSourceUrl] = useState("");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const currentSprint = sprints.find(s => s.id === selectedSprintId) ?? sprints[0] ?? null;
+  const currentSprintRef = useRef(currentSprint);
+  currentSprintRef.current = currentSprint;
 
   // Keep selectedSprintId valid when sprints prop changes
   useEffect(() => {
@@ -114,8 +179,6 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
     supabase!.from("profiles").select("name").order("name")
       .then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
   }, []);
-
-  const currentSprint = sprints.find(s => s.id === selectedSprintId) ?? sprints[0] ?? null;
 
   const applyStatusUpdate = useCallback(async (
     ticketId: string, newStatus: TicketStatus, comment: string,
@@ -162,6 +225,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
     } finally {
       setSaving(false);
       setPendingDrop(null);
+      setPendingError(null);
       setModalComment("");
       setReviewerName("");
       setSourceUrl("");
@@ -170,16 +234,33 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   }, [userName, onUpdated]);
 
   const handleDrop = useCallback((item: DragItem, newStatus: TicketStatus) => {
+    const sprint = currentSprintRef.current;
+    if (!sprint) return;
+    const ticket = sprint.tickets.find(t => t.id === item.id);
+
+    if (ticket) {
+      const err = validateDrop(ticket, newStatus, userName, canSkipReview);
+      if (err) {
+        setPendingError(err);
+        return;
+      }
+    }
+
     if (MODAL_STATUSES.includes(newStatus)) {
       setPendingDrop({ ticketId: item.id, sprintId: item.sprintId, newStatus });
     } else {
       applyStatusUpdate(item.id, newStatus, "");
     }
-  }, [applyStatusUpdate]);
+  }, [applyStatusUpdate, userName, canSkipReview]);
 
   const confirmModal = () => {
     if (!pendingDrop || saving) return;
     applyStatusUpdate(pendingDrop.ticketId, pendingDrop.newStatus, modalComment, reviewerName, sourceFile, sourceUrl);
+  };
+
+  const handleSkipFromModal = () => {
+    if (!pendingDrop || saving) return;
+    applyStatusUpdate(pendingDrop.ticketId, "review-done", modalComment || "レビュースキップ");
   };
 
   const cancelModal = () => { setPendingDrop(null); setModalComment(""); setReviewerName(""); setSourceUrl(""); setSourceFile(null); };
@@ -246,12 +327,51 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{colTickets.length}</span>
                   </div>
-                  {/* Drop zone — fills remaining column height, no internal scroll */}
+                  {/* Drop zone */}
                   <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
                     style={{ flex: 1, minHeight: 0 }} />
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Validation error / skip modal ── */}
+      {pendingError && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.40)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setPendingError(null); }}>
+          <div style={{ background: "#FFF", borderRadius: 16, padding: "28px 28px 24px", width: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.20)" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 14, marginBottom: 22 }}>
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: pendingError.skipStatus ? "#FFF7ED" : "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <AlertCircle style={{ width: 20, height: 20, color: pendingError.skipStatus ? "#D97706" : "#DC2626" }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 800, color: "#1A1714", marginBottom: 8, fontFamily: "var(--font-heading)" }}>移動できません</h3>
+                <p style={{ fontSize: 13, color: "#6B6458", lineHeight: 1.65 }}>
+                  {pendingError.message.split("\n").map((line, i, arr) => (
+                    <span key={i}>{line}{i < arr.length - 1 && <br />}</span>
+                  ))}
+                </p>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {pendingError.skipStatus && (
+                <button
+                  onClick={() => { applyStatusUpdate(pendingError!.ticketId, pendingError!.skipStatus!, ""); }}
+                  disabled={saving}
+                  style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px 0", background: saving ? "#F4F5F6" : "#FFFBEB", color: saving ? "#B0A9A4" : "#F59E0B", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.35)", cursor: saving ? "not-allowed" : "pointer", transition: "background 0.15s" }}
+                  onMouseEnter={e => { if (!saving) (e.currentTarget as HTMLElement).style.background = "#FEF3C7"; }}
+                  onMouseLeave={e => { if (!saving) (e.currentTarget as HTMLElement).style.background = "#FFFBEB"; }}>
+                  <ChevronsRight style={{ width: 14, height: 14 }} />
+                  {pendingError.skipLabel}
+                </button>
+              )}
+              <button onClick={() => setPendingError(null)}
+                style={{ padding: "10px 20px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer", flexShrink: 0 }}>
+                閉じる
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -330,6 +450,19 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
                 キャンセル
               </button>
             </div>
+
+            {/* レビュースキップボタン（canSkipReview かつ in-review モーダル） */}
+            {isReviewRequest && canSkipReview && (
+              <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 16, paddingTop: 16 }}>
+                <button onClick={handleSkipFromModal} disabled={saving}
+                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 0", background: saving ? "#F4F5F6" : "#FFFBEB", color: saving ? "#B0A9A4" : "#F59E0B", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.35)", cursor: saving ? "not-allowed" : "pointer", transition: "background 0.15s" }}
+                  onMouseEnter={e => { if (!saving) (e.currentTarget as HTMLElement).style.background = "#FEF3C7"; }}
+                  onMouseLeave={e => { if (!saving) (e.currentTarget as HTMLElement).style.background = "#FFFBEB"; }}>
+                  <ChevronsRight style={{ width: 14, height: 14 }} />
+                  レビュースキップ → レビュー完了へ
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

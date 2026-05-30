@@ -1,8 +1,10 @@
 import { Navigate, Outlet } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
+import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 
 export function AppShell() {
+  useVersionCheck();
   return (
     <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#F5F6F8" }}>
       <Sidebar />
