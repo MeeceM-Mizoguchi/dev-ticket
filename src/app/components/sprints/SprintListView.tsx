@@ -1,93 +1,150 @@
-import { useState, useMemo } from "react";
-import { ChevronDown, Trash2, ExternalLink, Filter, ArrowUpDown, Plus, Pencil } from "lucide-react";
-import type { Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
+import { useState, useMemo, useEffect } from "react";
+import { ChevronDown, Trash2, ExternalLink, Plus, Pencil } from "lucide-react";
+import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 
-function MultiSelectPill<T extends string>({
-  id, label, options, selected, onChange, open, onToggle,
+function ColumnFilter({
+  col, label, sortCol, sortDir, onSort, onClearSort,
+  options, selected, onFilterChange,
+  open, onToggle, onClose, alignRight,
 }: {
-  id: string;
+  col: SortCol;
   label: string;
-  options: Array<{ value: T; label: string }>;
-  selected: Set<T>;
-  onChange: (s: Set<T>) => void;
+  sortCol: SortCol | "";
+  sortDir: "asc" | "desc";
+  onSort: (col: SortCol, dir: "asc" | "desc") => void;
+  onClearSort: () => void;
+  options: Array<{ value: string; label: string }>;
+  selected: Set<string>;
+  onFilterChange: (s: Set<string>) => void;
   open: boolean;
-  onToggle: (id: string) => void;
+  onToggle: () => void;
+  onClose: () => void;
+  alignRight?: boolean;
 }) {
-  const active = selected.size > 0;
+  const [search, setSearch] = useState("");
+  useEffect(() => { if (!open) setSearch(""); }, [open]);
+
+  const isSorted = sortCol === col;
+  const isFiltered = selected.size > 0;
+  const active = isSorted || isFiltered;
+
+  const filteredOptions = options.filter(opt =>
+    search === "" || opt.label.toLowerCase().includes(search.toLowerCase())
+  );
+  const allFilteredChecked = filteredOptions.length > 0 && filteredOptions.every(o => selected.has(o.value));
+  const someFilteredChecked = !allFilteredChecked && filteredOptions.some(o => selected.has(o.value));
+
+  const toggleAll = () => {
+    if (filteredOptions.length === 0) return;
+    if (allFilteredChecked) {
+      const next = new Set(selected); filteredOptions.forEach(o => next.delete(o.value)); onFilterChange(next);
+    } else {
+      const next = new Set(selected); filteredOptions.forEach(o => next.add(o.value)); onFilterChange(next);
+    }
+  };
+
+  const toggleOne = (value: string) => {
+    const next = new Set(selected);
+    next.has(value) ? next.delete(value) : next.add(value);
+    onFilterChange(next);
+  };
+
   return (
-    <div style={{ position: "relative" }}>
-      <button
-        onClick={() => onToggle(id)}
-        style={{
-          display: "flex", alignItems: "center", gap: 5,
-          fontSize: 12, padding: "5px 10px", borderRadius: 8,
-          border: `1px solid ${active ? "rgba(5,150,105,0.30)" : "rgba(26,23,20,0.12)"}`,
-          background: active ? "#ECFDF5" : "#F7F8F9",
-          color: active ? "#059669" : "#6B6458",
-          cursor: "pointer", outline: "none", transition: "all 0.12s",
-        }}>
+    <div style={{ position: "relative", width: "100%" }}>
+      <button onClick={onToggle} style={{
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
+        cursor: "pointer", padding: 0, fontSize: 9, fontWeight: 700, width: "100%",
+        color: active ? "#059669" : "#B0A9A4",
+        textTransform: "uppercase" as const, letterSpacing: "0.06em",
+      }}>
         {label}
-        {active && (
-          <span style={{
-            fontSize: 9, fontWeight: 700, background: "#059669", color: "#fff",
-            padding: "1px 5px", borderRadius: 10, lineHeight: "1.4",
-          }}>{selected.size}</span>
-        )}
-        <ChevronDown style={{
-          width: 10, height: 10, opacity: 0.5, flexShrink: 0,
-          transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s",
-        }} />
+        {isSorted && <span style={{ fontSize: 8, color: "#059669", fontWeight: 900 }}>{sortDir === "asc" ? "↑" : "↓"}</span>}
+        {isFiltered && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#059669", display: "inline-block", flexShrink: 0 }} />}
+        <ChevronDown style={{ width: 8, height: 8, color: active ? "#059669" : "#C9C4BB", flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
       </button>
+
       {open && (
-        <div style={{
-          position: "absolute", top: "calc(100% + 6px)", left: 0,
-          background: "#fff", borderRadius: 10,
-          border: "1px solid rgba(26,23,20,0.10)",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-          padding: "6px", zIndex: 100, minWidth: 180,
-        }}>
-          {options.map(opt => {
-            const checked = selected.has(opt.value);
-            return (
-              <button key={opt.value}
-                onClick={() => {
-                  const next = new Set(selected);
-                  checked ? next.delete(opt.value) : next.add(opt.value);
-                  onChange(next);
-                }}
-                style={{
-                  display: "flex", alignItems: "center", gap: 8, width: "100%",
-                  padding: "6px 8px", borderRadius: 7, border: "none",
+        <div
+          onWheel={e => e.stopPropagation()}
+          style={{
+            position: "absolute", top: "calc(100% + 6px)",
+            left: alignRight ? "auto" : 0, right: alignRight ? 0 : "auto",
+            background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", zIndex: 200, minWidth: 190,
+          }}>
+          {/* Sort */}
+          <button onClick={() => { onSort(col, "asc"); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+            background: isSorted && sortDir === "asc" ? "#ECFDF5" : "transparent",
+            color: isSorted && sortDir === "asc" ? "#059669" : "#1A1714", transition: "background 0.1s",
+          }}>↑ 昇順</button>
+          <button onClick={() => { onSort(col, "desc"); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+            background: isSorted && sortDir === "desc" ? "#ECFDF5" : "transparent",
+            color: isSorted && sortDir === "desc" ? "#059669" : "#1A1714", transition: "background 0.1s",
+          }}>↓ 降順</button>
+          {isSorted && (
+            <button onClick={() => { onClearSort(); onClose(); }} style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+              borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11,
+              background: "transparent", color: "#B0A9A4", textAlign: "left" as const,
+            }}>並び替えをクリア</button>
+          )}
+
+          <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
+
+          {/* Search */}
+          <div style={{ padding: "2px 4px 4px" }}>
+            <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
+              onClick={e => e.stopPropagation()} placeholder="検索..."
+              style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid rgba(26,23,20,0.15)", fontSize: 11, outline: "none", boxSizing: "border-box" as const, color: "#1A1714", background: "#FAFAF9" }} />
+          </div>
+
+          {/* Select all */}
+          <button onClick={toggleAll} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+            background: "transparent", color: "#1A1714", textAlign: "left" as const,
+          }}>
+            <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: (allFilteredChecked || someFilteredChecked) ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: allFilteredChecked ? "#059669" : someFilteredChecked ? "#9CA3AF" : "transparent" }}>
+              {allFilteredChecked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+              {someFilteredChecked && <span style={{ color: "#fff", fontSize: 10, fontWeight: 900, lineHeight: 1 }}>−</span>}
+            </div>
+            すべて
+          </button>
+
+          {/* Options */}
+          <div style={{ maxHeight: 200, overflowY: "auto", overscrollBehavior: "contain" }}>
+            {filteredOptions.length === 0 ? (
+              <div style={{ padding: 8, textAlign: "center" as const, color: "#B0A9A4", fontSize: 11 }}>一致する項目がありません</div>
+            ) : filteredOptions.map(opt => {
+              const checked = selected.has(opt.value);
+              return (
+                <button key={opt.value} onClick={() => toggleOne(opt.value)} style={{
+                  display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+                  borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
                   background: checked ? "#ECFDF5" : "transparent",
-                  color: checked ? "#059669" : "#1A1714",
-                  cursor: "pointer", fontSize: 12, textAlign: "left" as const,
-                  transition: "background 0.1s",
+                  color: checked ? "#059669" : "#1A1714", transition: "background 0.1s",
                 }}>
-                <div style={{
-                  width: 14, height: 14, borderRadius: 4, flexShrink: 0,
-                  border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)",
-                  background: checked ? "#059669" : "transparent",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
-                  {checked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
-                </div>
-                {opt.label}
-              </button>
-            );
-          })}
-          {selected.size > 0 && (
+                  <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: checked ? "#059669" : "transparent" }}>
+                    {checked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+                  </div>
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {isFiltered && (
             <>
               <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
-              <button onClick={() => onChange(new Set())}
-                style={{
-                  width: "100%", padding: "5px 8px", borderRadius: 7, border: "none",
-                  background: "transparent", color: "#B0A9A4", fontSize: 11,
-                  cursor: "pointer", textAlign: "left" as const,
-                }}>
-                クリア
+              <button onClick={() => onFilterChange(new Set())} style={{ width: "100%", padding: "5px 8px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11, background: "transparent", color: "#B0A9A4", textAlign: "left" as const }}>
+                フィルターをクリア
               </button>
             </>
           )}
@@ -106,35 +163,57 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   onCreateTicket?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
-  const [filterStatuses, setFilterStatuses] = useState<Set<TicketStatus>>(new Set());
-  const [filterPriorities, setFilterPriorities] = useState<Set<Priority>>(new Set());
-  const [filterAssignees, setFilterAssignees] = useState<Set<string>>(new Set());
-  const [sortCol, setSortCol]   = useState<SortCol | "">("");
-  const [sortDir, setSortDir]   = useState<"asc" | "desc">("asc");
-  const [openMenu, setOpenMenu] = useState<string>("");
-
-  const toggleMenu = (id: string) => setOpenMenu(prev => prev === id ? "" : id);
+  const [sortCol, setSortCol] = useState<SortCol | "">("");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [colFilters, setColFilters] = useState<Record<string, Set<string>>>({});
+  const [openCol, setOpenCol] = useState<string>("");
 
   const toggle = (id: string) => setExpanded(prev => {
-    const n = new Set(prev);
-    n.has(id) ? n.delete(id) : n.add(id);
-    return n;
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  const allAssignees = useMemo(() => {
-    const names = new Set<string>();
-    sprints.forEach(s => s.tickets.forEach(t => { if (t.assignee) names.add(t.assignee); }));
-    return Array.from(names).sort((a, b) => a.localeCompare(b, "ja"));
-  }, [sprints]);
+  // All tickets across all sprints for computing unique filter options
+  const allTickets = useMemo(() => sprints.flatMap(s => s.tickets), [sprints]);
 
-  const anyFilter = filterStatuses.size > 0 || filterPriorities.size > 0 || filterAssignees.size > 0 || !!sortCol;
+  const getColOptions = (col: string): Array<{ value: string; label: string }> => {
+    switch (col) {
+      case "wbs":
+        return [...new Set(allTickets.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
+      case "title":
+        return [...new Set(allTickets.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+      case "status":
+        return TICKET_STATUSES.map(s => ({ value: s.value, label: s.label }));
+      case "priority":
+        return [{ value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" }];
+      case "assignee":
+        return [...new Set(allTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+      case "startDate":
+        return [...new Set(allTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      case "dueDate":
+        return [...new Set(allTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      default: return [];
+    }
+  };
+
+  const getSelected = (col: string): Set<string> => colFilters[col] ?? new Set();
+  const setColFilter = (col: string) => (s: Set<string>) => setColFilters(prev => ({ ...prev, [col]: s }));
+
+  // openCol uses "sprintId:col" key to avoid multiple open dropdowns across sprint tables
+  const toggleCol = (sprintId: string, col: string) => {
+    const key = `${sprintId}:${col}`;
+    setOpenCol(prev => prev === key ? "" : key);
+  };
+  const closeCol = () => setOpenCol("");
+  const handleSort = (col: SortCol, dir: "asc" | "desc") => { setSortCol(col); setSortDir(dir); };
+  const clearSort = () => setSortCol("");
 
   const processTickets = (tickets: SprintTicket[]) => {
     const filtered = tickets.filter(t => {
-      if (filterStatuses.size > 0 && !filterStatuses.has(t.status)) return false;
-      if (filterPriorities.size > 0 && !filterPriorities.has(t.priority)) return false;
-      if (filterAssignees.size > 0 && !filterAssignees.has(t.assignee)) return false;
-      return true;
+      const checks: [string, string][] = [
+        ["wbs", t.wbs], ["title", t.title], ["status", t.status], ["priority", t.priority],
+        ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
+      ];
+      return checks.every(([col, val]) => { const f = colFilters[col]; return !f || f.size === 0 || f.has(val); });
     });
     if (!sortCol) return filtered;
     return [...filtered].sort((a, b) => {
@@ -146,93 +225,20 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     });
   };
 
-  const resetFilters = () => {
-    setFilterStatuses(new Set()); setFilterPriorities(new Set());
-    setFilterAssignees(new Set()); setSortCol(""); setSortDir("asc");
-  };
-
   if (!sprints.length) return (
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
   );
 
-  const priorityOptions: Array<{ value: Priority; label: string }> = [
-    { value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" },
-  ];
-  const assigneeOptions = allAssignees.map(a => ({ value: a, label: a }));
+  const COLS = ["wbs", "title", "status", "priority", "assignee", "startDate", "dueDate"] as const;
+  const COL_LABELS = ["WBS", "チケット名", "ステータス", "優先度", "担当者", "開始日", "期限日"];
+  const GRID = "52px 1fr 110px 56px 110px 68px 68px";
+
+  const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
   return (
     <div>
-      {openMenu && <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={() => setOpenMenu("")} />}
+      {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={closeCol} />}
 
-      {/* Filter / Sort toolbar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0 14px", flexWrap: "wrap" as const }}>
-        <Filter style={{ width: 13, height: 13, color: "#B0A9A4", flexShrink: 0 }} />
-
-        <MultiSelectPill<TicketStatus>
-          id="status" label="ステータス"
-          options={TICKET_STATUSES}
-          selected={filterStatuses}
-          onChange={setFilterStatuses}
-          open={openMenu === "status"}
-          onToggle={toggleMenu}
-        />
-
-        <MultiSelectPill<Priority>
-          id="priority" label="優先度"
-          options={priorityOptions}
-          selected={filterPriorities}
-          onChange={setFilterPriorities}
-          open={openMenu === "priority"}
-          onToggle={toggleMenu}
-        />
-
-        <MultiSelectPill<string>
-          id="assignee" label="担当者"
-          options={assigneeOptions}
-          selected={filterAssignees}
-          onChange={setFilterAssignees}
-          open={openMenu === "assignee"}
-          onToggle={toggleMenu}
-        />
-
-        <div style={{ width: 1, height: 16, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
-
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <ArrowUpDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0 }} />
-          <select value={sortCol} onChange={e => setSortCol(e.target.value as SortCol | "")}
-            style={{
-              fontSize: 12, padding: "5px 10px", borderRadius: 8, outline: "none", cursor: "pointer",
-              color: sortCol ? "#D97706" : "#6B6458",
-              background: sortCol ? "#FFFBEB" : "#F7F8F9",
-              border: `1px solid ${sortCol ? "rgba(217,119,6,0.30)" : "rgba(26,23,20,0.12)"}`,
-            }}>
-            <option value="">並び替え: デフォルト</option>
-            <option value="wbs">WBS</option>
-            <option value="title">チケット名</option>
-            <option value="status">ステータス</option>
-            <option value="priority">優先度</option>
-            <option value="startDate">開始日</option>
-            <option value="dueDate">期限日</option>
-            <option value="estimatedHours">工数</option>
-            <option value="progress">進捗</option>
-          </select>
-          {sortCol && (
-            <button onClick={() => setSortDir(d => d === "asc" ? "desc" : "asc")}
-              style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(217,119,6,0.30)", background: "#FFFBEB", color: "#D97706", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-              {sortDir === "asc" ? "↑ 昇順" : "↓ 降順"}
-            </button>
-          )}
-        </div>
-
-        {anyFilter && (
-          <button onClick={resetFilters}
-            style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#B0A9A4", fontSize: 11, cursor: "pointer" }}>
-            リセット
-          </button>
-        )}
-      </div>
-
-      {/* Sprint accordion list */}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {
           const isExp = expanded.has(sprint.id);
@@ -243,9 +249,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           const displayTickets = processTickets(sprint.tickets);
 
           return (
-            <div key={sprint.id} style={{ background: "#FFFFFF", borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+            <div key={sprint.id} style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
               {/* Sprint header */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none" }}
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none", borderRadius: isExp ? "12px 12px 0 0" : 12 }}
                 onClick={() => toggle(sprint.id)}>
                 <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -254,17 +261,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
                   </div>
                   {sprint.goal && <p style={{ fontSize: 11, color: "#A09790", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sprint.goal}</p>}
-                  <div style={{ marginTop: 6 }}>
-                    <ProgressBar value={progress} />
-                  </div>
+                  <div style={{ marginTop: 6 }}><ProgressBar value={progress} /></div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 20, flexShrink: 0, marginLeft: 16 }}>
-                  {[
-                    { label: "チケット", value: sprint.tickets.length },
-                    { label: "完了",     value: done },
-                    { label: "工数(h)",  value: totalHours },
-                    { label: "進捗",     value: `${progress}%` },
-                  ].map(({ label, value }) => (
+                  {[{ label: "チケット", value: sprint.tickets.length }, { label: "完了", value: done }, { label: "工数(h)", value: totalHours }, { label: "進捗", value: `${progress}%` }].map(({ label, value }) => (
                     <div key={label} style={{ textAlign: "center" as const }}>
                       <p style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>{value}</p>
                       <p style={{ fontSize: 10, color: "#B0A9A4" }}>{label}</p>
@@ -304,42 +304,54 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                 </div>
               </div>
 
-              {/* Ticket list */}
+              {/* Ticket table */}
               {isExp && (
                 <div>
-                  {/* Table header */}
-                  <div style={{ display: "grid", gridTemplateColumns: "52px 1fr 110px 56px 110px 68px 68px", padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center" }}>
-                    {["WBS", "チケット名", "ステータス", "優先度", "担当者", "開始日", "期限日"].map(h => (
-                      <span key={h} style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>{h}</span>
+                  {/* Column headers with filters */}
+                  <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center" }}>
+                    {COLS.map((col, idx) => (
+                      <ColumnFilter key={col} col={col}
+                        label={COL_LABELS[idx]}
+                        {...commonSort}
+                        options={getColOptions(col)}
+                        selected={getSelected(col)}
+                        onFilterChange={setColFilter(col)}
+                        open={openCol === `${sprint.id}:${col}`}
+                        onToggle={() => toggleCol(sprint.id, col)}
+                        alignRight={idx >= 5}
+                      />
                     ))}
                   </div>
-                  {displayTickets.length === 0 ? (
-                    <div style={{ padding: "24px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12 }}>
-                      {sprint.tickets.length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
-                    </div>
-                  ) : displayTickets.map((t, i) => {
-                    const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
-                    const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
-                    const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
-                    const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
-                    return (
-                      <div key={t.id} onClick={() => onSelectTicket?.(t)}
-                        style={{ display: "grid", gridTemplateColumns: "52px 1fr 110px 56px 110px 68px 68px", padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition: "background 0.1s" }}
-                        onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent"; }}>
-                        <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{t.wbs}</span>
-                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
-                        <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span>
-                        <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
-                          <Avatar name={t.assignee} size="xs" />
-                          <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.assignee || "—"}</span>
-                        </div>
-                        <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span>
-                        <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.dueDate)}</span>
+                  {/* Rows */}
+                  <div style={{ borderRadius: "0 0 12px 12px", overflow: "hidden" }}>
+                    {displayTickets.length === 0 ? (
+                      <div style={{ padding: "24px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12 }}>
+                        {sprint.tickets.length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
                       </div>
-                    );
-                  })}
+                    ) : displayTickets.map((t, i) => {
+                      const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                      const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+                      const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
+                      const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
+                      return (
+                        <div key={t.id} onClick={() => onSelectTicket?.(t)}
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: i % 2 === 1 ? "rgba(26,23,20,0.012)" : "#FFFFFF", transition: "background 0.1s" }}
+                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "#FFFFFF"; }}>
+                          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{t.wbs}</span>
+                          <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
+                          <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span>
+                          <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
+                            <Avatar name={t.assignee} size="xs" />
+                            <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.assignee || "—"}</span>
+                          </div>
+                          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span>
+                          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.dueDate)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

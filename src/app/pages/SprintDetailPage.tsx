@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Trash2, Filter } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -13,6 +13,155 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
+function ColumnFilter({
+  col, label, sortCol, sortDir, onSort, onClearSort,
+  options, selected, onFilterChange,
+  open, onToggle, onClose, alignRight,
+}: {
+  col: SortCol;
+  label: string;
+  sortCol: SortCol | "";
+  sortDir: "asc" | "desc";
+  onSort: (col: SortCol, dir: "asc" | "desc") => void;
+  onClearSort: () => void;
+  options: Array<{ value: string; label: string }>;
+  selected: Set<string>;
+  onFilterChange: (s: Set<string>) => void;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  alignRight?: boolean;
+}) {
+  const [search, setSearch] = useState("");
+  useEffect(() => { if (!open) setSearch(""); }, [open]);
+
+  const isSorted = sortCol === col;
+  const isFiltered = selected.size > 0;
+  const active = isSorted || isFiltered;
+
+  const filteredOptions = options.filter(opt =>
+    search === "" || opt.label.toLowerCase().includes(search.toLowerCase())
+  );
+  const allFilteredChecked = filteredOptions.length > 0 && filteredOptions.every(o => selected.has(o.value));
+  const someFilteredChecked = !allFilteredChecked && filteredOptions.some(o => selected.has(o.value));
+
+  const toggleAll = () => {
+    if (filteredOptions.length === 0) return;
+    if (allFilteredChecked) {
+      const next = new Set(selected); filteredOptions.forEach(o => next.delete(o.value)); onFilterChange(next);
+    } else {
+      const next = new Set(selected); filteredOptions.forEach(o => next.add(o.value)); onFilterChange(next);
+    }
+  };
+
+  const toggleOne = (value: string) => {
+    const next = new Set(selected);
+    next.has(value) ? next.delete(value) : next.add(value);
+    onFilterChange(next);
+  };
+
+  return (
+    <div style={{ position: "relative", width: "100%" }}>
+      <button onClick={onToggle} style={{
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
+        cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700, width: "100%",
+        color: active ? "#059669" : "#B0A9A4",
+        textTransform: "uppercase" as const, letterSpacing: "0.06em",
+      }}>
+        {label}
+        {isSorted && <span style={{ fontSize: 9, color: "#059669", fontWeight: 900 }}>{sortDir === "asc" ? "↑" : "↓"}</span>}
+        {isFiltered && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#059669", display: "inline-block", flexShrink: 0 }} />}
+        <ChevronDown style={{ width: 9, height: 9, color: active ? "#059669" : "#C9C4BB", flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+      </button>
+
+      {open && (
+        <div
+          onWheel={e => e.stopPropagation()}
+          style={{
+            position: "absolute", top: "calc(100% + 8px)",
+            left: alignRight ? "auto" : 0, right: alignRight ? 0 : "auto",
+            background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", zIndex: 200, minWidth: 200,
+          }}>
+          {/* Sort */}
+          <button onClick={() => { onSort(col, "asc"); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+            background: isSorted && sortDir === "asc" ? "#ECFDF5" : "transparent",
+            color: isSorted && sortDir === "asc" ? "#059669" : "#1A1714", transition: "background 0.1s",
+          }}>↑ 昇順</button>
+          <button onClick={() => { onSort(col, "desc"); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+            background: isSorted && sortDir === "desc" ? "#ECFDF5" : "transparent",
+            color: isSorted && sortDir === "desc" ? "#059669" : "#1A1714", transition: "background 0.1s",
+          }}>↓ 降順</button>
+          {isSorted && (
+            <button onClick={() => { onClearSort(); onClose(); }} style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+              borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11,
+              background: "transparent", color: "#B0A9A4", textAlign: "left" as const,
+            }}>並び替えをクリア</button>
+          )}
+
+          <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
+
+          {/* Search */}
+          <div style={{ padding: "2px 4px 4px" }}>
+            <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
+              onClick={e => e.stopPropagation()} placeholder="検索..."
+              style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid rgba(26,23,20,0.15)", fontSize: 11, outline: "none", boxSizing: "border-box" as const, color: "#1A1714", background: "#FAFAF9" }} />
+          </div>
+
+          {/* Select all */}
+          <button onClick={toggleAll} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+            background: "transparent", color: "#1A1714", textAlign: "left" as const,
+          }}>
+            <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: (allFilteredChecked || someFilteredChecked) ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: allFilteredChecked ? "#059669" : someFilteredChecked ? "#9CA3AF" : "transparent" }}>
+              {allFilteredChecked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+              {someFilteredChecked && <span style={{ color: "#fff", fontSize: 10, fontWeight: 900, lineHeight: 1 }}>−</span>}
+            </div>
+            すべて
+          </button>
+
+          {/* Options */}
+          <div style={{ maxHeight: 200, overflowY: "auto", overscrollBehavior: "contain" }}>
+            {filteredOptions.length === 0 ? (
+              <div style={{ padding: 8, textAlign: "center" as const, color: "#B0A9A4", fontSize: 11 }}>一致する項目がありません</div>
+            ) : filteredOptions.map(opt => {
+              const checked = selected.has(opt.value);
+              return (
+                <button key={opt.value} onClick={() => toggleOne(opt.value)} style={{
+                  display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+                  borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+                  background: checked ? "#ECFDF5" : "transparent",
+                  color: checked ? "#059669" : "#1A1714", transition: "background 0.1s",
+                }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: checked ? "#059669" : "transparent" }}>
+                    {checked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+                  </div>
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {isFiltered && (
+            <>
+              <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
+              <button onClick={() => onFilterChange(new Set())} style={{ width: "100%", padding: "5px 8px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11, background: "transparent", color: "#B0A9A4", textAlign: "left" as const }}>
+                フィルターをクリア
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SprintDetailPage() {
   const { projectId, sprintId } = useParams<{ projectId: string; sprintId: string }>();
   const navigate = useNavigate();
@@ -24,10 +173,10 @@ export function SprintDetailPage() {
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
 
-  const [sortCol, setSortCol] = useState<SortCol>("wbs");
+  const [sortCol, setSortCol] = useState<SortCol | "">("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [filterStatuses, setFilterStatuses] = useState<Set<TicketStatus>>(new Set());
-  const [filterPriorities, setFilterPriorities] = useState<Set<Priority>>(new Set());
+  const [colFilters, setColFilters] = useState<Record<string, Set<string>>>({});
+  const [openCol, setOpenCol] = useState<string>("");
   const [showCreate, setShowCreate] = useState(false);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(searchParams.get("ticket"));
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
@@ -64,12 +213,17 @@ export function SprintDetailPage() {
     }
   };
 
+  const allAssignees = useMemo(() => {
+    if (!sprint) return [] as string[];
+    const names = new Set<string>();
+    sprint.tickets.forEach(t => { if (t.assignee) names.add(t.assignee); });
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "ja"));
+  }, [sprint]);
+
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
 
-  // 常にsprintの最新データから導出 → stale closure バグ回避
   const selectedTicket = sprint.tickets.find(t => t.id === selectedTicketId) ?? null;
-
   const done = sprint.tickets.filter(t => t.status === "done").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
@@ -77,41 +231,69 @@ export function SprintDetailPage() {
   const sm = getSprintStatusMeta(sprint.status);
 
   const statusOrder: Record<TicketStatus, number> = {
-    todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
-    "stg-test": 4, uat: 5, done: 6, closed: 7,
+    todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3, "stg-test": 4, uat: 5, done: 6, closed: 7,
   };
   const priorityOrder: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 
+  // Compute unique options per column from current sprint tickets
+  const getColOptions = (col: string): Array<{ value: string; label: string }> => {
+    const ts = sprint.tickets;
+    switch (col) {
+      case "wbs":
+        return [...new Set(ts.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
+      case "title":
+        return [...new Set(ts.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+      case "status":
+        return TICKET_STATUSES.map(s => ({ value: s.value, label: s.label }));
+      case "priority":
+        return [{ value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" }];
+      case "assignee":
+        return allAssignees.map(v => ({ value: v, label: v }));
+      case "startDate":
+        return [...new Set(ts.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      case "dueDate":
+        return [...new Set(ts.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      case "estimatedHours":
+        return [...new Set(ts.map(t => String(t.estimatedHours)))].sort((a, b) => Number(a) - Number(b)).map(v => ({ value: v, label: `${v}h` }));
+      case "progress":
+        return [...new Set(ts.map(t => String(t.progress)))].sort((a, b) => Number(a) - Number(b)).map(v => ({ value: v, label: `${v}%` }));
+      default: return [];
+    }
+  };
+
+  const getSelected = (col: string): Set<string> => colFilters[col] ?? new Set();
+  const setColFilter = (col: string) => (s: Set<string>) => setColFilters(prev => ({ ...prev, [col]: s }));
+  const toggleCol = (col: string) => setOpenCol(prev => prev === col ? "" : col);
+  const closeCol = () => setOpenCol("");
+  const handleSort = (col: SortCol, dir: "asc" | "desc") => { setSortCol(col); setSortDir(dir); };
+  const clearSort = () => setSortCol("");
+
   const displayTickets = [...sprint.tickets]
-    .filter(t => (filterStatuses.size === 0 || filterStatuses.has(t.status)) && (filterPriorities.size === 0 || filterPriorities.has(t.priority)))
+    .filter(t => {
+      const checks: [string, string][] = [
+        ["wbs", t.wbs], ["title", t.title], ["status", t.status], ["priority", t.priority],
+        ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
+        ["estimatedHours", String(t.estimatedHours)], ["progress", String(t.progress)],
+      ];
+      return checks.every(([col, val]) => { const f = colFilters[col]; return !f || f.size === 0 || f.has(val); });
+    })
     .sort((a, b) => {
       let v = 0;
       if (sortCol === "wbs") v = a.wbs.localeCompare(b.wbs);
       else if (sortCol === "title") v = a.title.localeCompare(b.title);
       else if (sortCol === "status") v = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
       else if (sortCol === "priority") v = priorityOrder[a.priority] - priorityOrder[b.priority];
+      else if (sortCol === "assignee") v = (a.assignee || "").localeCompare(b.assignee || "", "ja");
       else if (sortCol === "startDate") v = (a.startDate || "").localeCompare(b.startDate || "");
       else if (sortCol === "dueDate") v = (a.dueDate || "").localeCompare(b.dueDate || "");
       else if (sortCol === "estimatedHours") v = a.estimatedHours - b.estimatedHours;
       else if (sortCol === "progress") v = a.progress - b.progress;
-      // stable tiebreaker: ID ensures same-value rows always sort identically
       if (v === 0) v = a.id.localeCompare(b.id);
       return sortDir === "asc" ? v : -v;
     });
 
-  const toggleStatus = (v: TicketStatus) => setFilterStatuses(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
-  const togglePriority = (v: Priority) => setFilterPriorities(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
-
-  const SortTh = ({ col, label }: { col: SortCol; label: string }) => {
-    const active = sortCol === col;
-    return (
-      <button
-        onClick={() => { if (active) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } }}
-        style={{ display: "flex", alignItems: "center", gap: 3, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700, color: active ? "#059669" : "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>
-        {label}{active && <span style={{ fontSize: 9 }}>{sortDir === "asc" ? " ↑" : " ↓"}</span>}
-      </button>
-    );
-  };
+  const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
+  const GRID = "56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px";
 
   return (
     <div style={{ padding: "24px" }}>
@@ -120,9 +302,7 @@ export function SprintDetailPage() {
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
         </button>
         <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <button onClick={() => navigate(`/projects/${projectId}/sprints`)} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>
-          スプリント一覧
-        </button>
+        <button onClick={() => navigate(`/projects/${projectId}/sprints`)} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>スプリント一覧</button>
         <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
         <span style={{ color: "#1A1714", fontWeight: 600 }}>{sprint.name}</span>
       </div>
@@ -138,13 +318,7 @@ export function SprintDetailPage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 10 }}>
-            {[
-              { label: "チケット数", value: sprint.tickets.length },
-              { label: "完了", value: done },
-              { label: "進行中", value: inProg },
-              { label: "総工数(h)", value: totalHours },
-              { label: "進捗", value: `${progress}%` },
-            ].map(({ label, value }) => (
+            {[{ label: "チケット数", value: sprint.tickets.length }, { label: "完了", value: done }, { label: "進行中", value: inProg }, { label: "総工数(h)", value: totalHours }, { label: "進捗", value: `${progress}%` }].map(({ label, value }) => (
               <div key={label} style={{ background: "#FFFFFF", borderRadius: 10, padding: "10px 14px", border: "1px solid rgba(26,23,20,0.08)", textAlign: "center" as const }}>
                 <p style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.03em" }}>{value}</p>
                 <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 2 }}>{label}</p>
@@ -160,117 +334,78 @@ export function SprintDetailPage() {
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "10px 14px", background: "#F9F8F6", borderRadius: 12, border: "1px solid rgba(26,23,20,0.07)", flexWrap: "wrap" as const }}>
-        <Filter style={{ width: 13, height: 13, color: "#B0A9A4", flexShrink: 0 }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" as const }}>
-          <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em", marginRight: 2 }}>ステータス</span>
-          <button onClick={() => setFilterStatuses(new Set())}
-            style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterStatuses.size === 0 ? 600 : 500, transition: "all 0.12s",
-              background: filterStatuses.size === 0 ? "#059669" : "transparent",
-              color: filterStatuses.size === 0 ? "#fff" : "#6B6458",
-              borderColor: filterStatuses.size === 0 ? "#059669" : "rgba(26,23,20,0.10)" }}>すべて</button>
-          {TICKET_STATUSES.map(({ value: v, label: l }) => (
-            <button key={v} onClick={() => toggleStatus(v)}
-              style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterStatuses.has(v) ? 600 : 500, transition: "all 0.12s",
-                background: filterStatuses.has(v) ? "#059669" : "transparent",
-                color: filterStatuses.has(v) ? "#fff" : "#6B6458",
-                borderColor: filterStatuses.has(v) ? "#059669" : "rgba(26,23,20,0.10)" }}>{l}</button>
-          ))}
-        </div>
-        <div style={{ width: 1, height: 20, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em", marginRight: 2 }}>優先度</span>
-          <button onClick={() => setFilterPriorities(new Set())}
-            style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterPriorities.size === 0 ? 600 : 500, transition: "all 0.12s",
-              background: filterPriorities.size === 0 ? "#059669" : "transparent",
-              color: filterPriorities.size === 0 ? "#fff" : "#6B6458",
-              borderColor: filterPriorities.size === 0 ? "#059669" : "rgba(26,23,20,0.10)" }}>すべて</button>
-          {([["high","高"],["medium","中"],["low","低"]] as [Priority, string][]).map(([v, l]) => (
-            <button key={v} onClick={() => togglePriority(v)}
-              style={{ padding: "3px 9px", fontSize: 11, borderRadius: 7, border: "1px solid", cursor: "pointer", fontWeight: filterPriorities.has(v) ? 600 : 500, transition: "all 0.12s",
-                background: filterPriorities.has(v) ? "#059669" : "transparent",
-                color: filterPriorities.has(v) ? "#fff" : "#6B6458",
-                borderColor: filterPriorities.has(v) ? "#059669" : "rgba(26,23,20,0.10)" }}>{l}</button>
-          ))}
-        </div>
-        {(filterStatuses.size > 0 || filterPriorities.size > 0) && (
-          <>
-            <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{displayTickets.length} / {sprint.tickets.length} 件</span>
-            <button onClick={() => { setFilterStatuses(new Set()); setFilterPriorities(new Set()); }}
-              style={{ padding: "3px 10px", borderRadius: 7, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#B0A9A4", fontSize: 11, cursor: "pointer" }}>
-              リセット
-            </button>
-          </>
-        )}
-      </div>
+      {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={closeCol} />}
 
-      <div style={{ background: "#FFFFFF", borderRadius: 14, overflow: "hidden", border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px", padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center" }}>
-          <SortTh col="wbs" label="WBS" />
-          <SortTh col="title" label="チケット名" />
-          <SortTh col="status" label="ステータス" />
-          <SortTh col="priority" label="優先度" />
-          <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>担当者</span>
-          <SortTh col="startDate" label="開始日" />
-          <SortTh col="dueDate" label="終了日" />
-          <SortTh col="estimatedHours" label="工数" />
-          <SortTh col="progress" label="進捗" />
+      <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+        {/* Column headers */}
+        <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0" }}>
+          {(["wbs","title","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
+            <ColumnFilter key={col} col={col}
+              label={["WBS","チケット名","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
+              {...commonProps}
+              options={getColOptions(col)}
+              selected={getSelected(col)}
+              onFilterChange={setColFilter(col)}
+              open={openCol === col}
+              onToggle={() => toggleCol(col)}
+              alignRight={idx >= 7}
+            />
+          ))}
           <span />
         </div>
 
-        {displayTickets.length === 0 ? (
-          <div style={{ padding: "40px 0", textAlign: "center" as const, color: "#B0A9A4", fontSize: 13 }}>条件に一致するチケットがありません</div>
-        ) : displayTickets.map((ticket, i) => {
-          const sm = TICKET_STATUSES.find(s => s.value === ticket.status) ?? TICKET_STATUSES[0];
-          const statusBg = sm.bg;
-          const statusColor = sm.color;
-          const statusLabel = sm.label;
-          const priBg = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
-          const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
-          const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
-          const barColor = ticket.progress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
-          return (
-            <div key={ticket.id} onClick={() => setSelectedTicketId(ticket.id)}
-              style={{ display: "grid", gridTemplateColumns: "56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px", padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition: "background 0.1s", cursor: "pointer" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent"; }}>
-              <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#B0A9A4", fontWeight: 600 }}>{ticket.wbs}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
-                <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.title}</span>
-              </div>
-              <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: statusBg, color: statusColor, display: "inline-block" }}>{statusLabel}</span>
-              <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, display: "inline-block" }}>{priLabel}</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
-                <Avatar name={ticket.assignee} size="xs" />
-                <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.assignee.split(/[\s　]/)[0]}</span>
-              </div>
-              <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(ticket.startDate)}</span>
-              <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(ticket.dueDate)}</span>
-              <span style={{ fontSize: 11, color: "#6B6458", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{ticket.estimatedHours}h</span>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <div style={{ flex: 1, height: 5, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${ticket.progress}%`, background: barColor, borderRadius: 99 }} />
-                </div>
-                <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#6B6458", fontWeight: 600, minWidth: 28 }}>{ticket.progress}%</span>
-              </div>
-              <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(ticket); }}
-                style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                <Trash2 style={{ width: 12, height: 12 }} />
-              </button>
+        {/* Data rows */}
+        <div style={{ background: "#FFFFFF", borderRadius: "0 0 14px 14px", overflow: "hidden" }}>
+          {displayTickets.length === 0 ? (
+            <div style={{ padding: "40px 0", textAlign: "center" as const, color: "#B0A9A4", fontSize: 13 }}>
+              {sprint.tickets.length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
             </div>
-          );
-        })}
+          ) : displayTickets.map((ticket, i) => {
+            const tsm = TICKET_STATUSES.find(s => s.value === ticket.status) ?? TICKET_STATUSES[0];
+            const priBg = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+            const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
+            const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
+            const barColor = ticket.progress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
+            return (
+              <div key={ticket.id} onClick={() => setSelectedTicketId(ticket.id)}
+                style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition: "background 0.1s", cursor: "pointer" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent"; }}>
+                <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#B0A9A4", fontWeight: 600 }}>{ticket.wbs}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.title}</span>
+                </div>
+                <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, display: "inline-block" }}>{tsm.label}</span>
+                <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, display: "inline-block" }}>{priLabel}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
+                  <Avatar name={ticket.assignee} size="xs" />
+                  <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.assignee.split(/[\s　]/)[0]}</span>
+                </div>
+                <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(ticket.startDate)}</span>
+                <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(ticket.dueDate)}</span>
+                <span style={{ fontSize: 11, color: "#6B6458", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{ticket.estimatedHours}h</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ flex: 1, height: 5, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${ticket.progress}%`, background: barColor, borderRadius: 99 }} />
+                  </div>
+                  <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#6B6458", fontWeight: 600, minWidth: 28 }}>{ticket.progress}%</span>
+                </div>
+                <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(ticket); }}
+                  style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                  <Trash2 style={{ width: 12, height: 12 }} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {showCreate && <NewTicketDialog sprintId={sprintId!} projectId={projectId} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} />}
       {deleteTicketTarget && (
-        <ConfirmDialog
-          message={`「${deleteTicketTarget.title}」を削除しますか？`}
-          onConfirm={() => handleDeleteTicket(deleteTicketTarget)}
-          onClose={() => setDeleteTicketTarget(null)} />
+        <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />
       )}
       <TicketDetailPanel ticket={selectedTicket} projectId={projectId} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprint} onDeleted={() => { setSelectedTicketId(null); refreshSprint(); }} projectPermissions={projectPermissions ?? undefined} />
     </div>

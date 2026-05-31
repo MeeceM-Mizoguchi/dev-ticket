@@ -125,6 +125,7 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
         estimated_hours: estimatedHours || 0, progress: 0,
         description: description || null,
         category_id: categoryId || null,
+        created_by: userName || null,
       });
       setSaving(false);
     }

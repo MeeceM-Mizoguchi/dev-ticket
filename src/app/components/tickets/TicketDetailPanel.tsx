@@ -76,6 +76,8 @@ export function TicketDetailPanel({
   const [reviewerName, setReviewerName] = useState(ticket?.reviewerName ?? "");
   const [reviewRound, setReviewRound]   = useState(ticket?.reviewRound ?? 0);
   const [reviewerOpen, setReviewerOpen] = useState(false);
+  const [createdBy, setCreatedBy] = useState(ticket?.createdBy ?? "");
+  const [createdAt, setCreatedAt] = useState(ticket?.createdAt ?? "");
 
   const [categoryId, setCategoryId] = useState<string | null>(ticket?.categoryId ?? null);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
@@ -181,6 +183,8 @@ export function TicketDetailPanel({
           setTicketImages(freshImages);
           ticketImagesRef.current = freshImages;
           setCategoryId(t.categoryId ?? null);
+          setCreatedBy(t.createdBy ?? "");
+          setCreatedAt(t.createdAt ?? "");
         });
     }
     if (ticket.id) loadRelated(ticket.id);
@@ -697,6 +701,18 @@ export function TicketDetailPanel({
                 <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}</span>
                 <span style={{ marginLeft: 2 }}> h</span>
                 {estimatedH === 0 && <span style={{ fontSize: 11, color: "#C9C4BB", marginLeft: 8 }}>（開始日・終了日を入力すると自動計算されます）</span>}
+              </div>
+            </div>
+
+            {/* 起票者 | 起票日 */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 12px" }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 4 }}>起票者</p>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{createdBy || "—"}</p>
+              </div>
+              <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 12px" }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 4 }}>起票日</p>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{formatTs(createdAt) || "—"}</p>
               </div>
             </div>
           </div>
