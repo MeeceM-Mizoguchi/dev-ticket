@@ -50,8 +50,14 @@ function resolvePermissions(basePerms: UserPermissions): UserPermissions {
 }
 
 async function fetchProfile(uid: string) {
-  const { data } = await supabase!.from("profiles").select("name, role").eq("id", uid).maybeSingle();
+  const { data } = await supabase!.from("profiles").select("name, role, status").eq("id", uid).maybeSingle();
   return data ?? null;
+}
+
+async function activateIfInvited(uid: string, status: string) {
+  if (status === "invited") {
+    await supabase!.from("profiles").update({ status: "active" }).eq("id", uid);
+  }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -78,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session) {
         const p = await fetchProfile(session.user.id);
         if (p) {
+          await activateIfInvited(session.user.id, p.status);
           const role = p.role as Role;
           const basePerms = await fetchRoleBasePermissions(role);
           const perms = resolvePermissions(basePerms);
@@ -97,6 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session) {
         fetchProfile(session.user.id).then(async p => {
           if (p) {
+            await activateIfInvited(session.user.id, p.status);
             const role = p.role as Role;
             const basePerms = await fetchRoleBasePermissions(role);
             const perms = resolvePermissions(basePerms);

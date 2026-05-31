@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Trash2, Filter } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -16,6 +16,7 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 export function SprintDetailPage() {
   const { projectId, sprintId } = useParams<{ projectId: string; sprintId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
   const { userId } = useAuth();
   const [project, setProject] = useState<Project | null>(PROJECTS.find(p => p.id === projectId) || null);
@@ -28,7 +29,7 @@ export function SprintDetailPage() {
   const [filterStatuses, setFilterStatuses] = useState<Set<TicketStatus>>(new Set());
   const [filterPriorities, setFilterPriorities] = useState<Set<Priority>>(new Set());
   const [showCreate, setShowCreate] = useState(false);
-  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(searchParams.get("ticket"));
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
 
   useEffect(() => {

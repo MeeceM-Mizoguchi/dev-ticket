@@ -316,12 +316,12 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
       {/* ── Kanban board ── */}
       {currentSprint && (
-        <div style={{ overflowX: "auto", height: "calc(100vh - 390px)", minHeight: 220 }}>
-          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", height: "100%" }}>
+        <div style={{ overflowX: "auto" }}>
+          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
             {TICKET_STATUSES.map(col => {
               const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
               return (
-                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 4, height: "100%" }}>
+                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 4 }}>
                   {/* Column header */}
                   <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
@@ -329,7 +329,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
                   </div>
                   {/* Drop zone */}
                   <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                    style={{ flex: 1, minHeight: 0 }} />
+                    style={{ flex: 1 }} />
                 </div>
               );
             })}

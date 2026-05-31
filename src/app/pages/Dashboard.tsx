@@ -1,5 +1,6 @@
 import { useEffect, useState, type ElementType } from "react";
-import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, CheckCircle2, Circle } from "lucide-react";
+import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight } from "lucide-react";
+import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -37,6 +38,7 @@ export function Dashboard() {
     isSupabaseEnabled ? [] : PROJECTS.map(p => ({ id: p.id, name: p.name, status: p.status, client: p.client, done: p.done, inProgress: p.inProgress, todo: p.todo }))
   );
   const [loading, setLoading] = useState(isSupabaseEnabled);
+  const [showNewTicket, setShowNewTicket] = useState(false);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -111,7 +113,9 @@ export function Dashboard() {
           </h1>
           <p style={{ fontSize: 13, color: "#A09790", marginTop: 8, lineHeight: 1 }}>今日のチーム状況 — {new Date().toLocaleDateString("ja-JP", { month: "short", day: "numeric" })} 時点</p>
         </div>
-        <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 10px rgba(5,150,105,0.30)", letterSpacing: "0.01em" }}
+        <button
+          onClick={() => setShowNewTicket(true)}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 10px rgba(5,150,105,0.30)", letterSpacing: "0.01em" }}
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
           <Plus style={{ width: 14, height: 14 }} />新規チケット
@@ -274,6 +278,9 @@ export function Dashboard() {
           })}
         </div>
       </div>
+      {showNewTicket && (
+        <NewTicketDialog onClose={() => setShowNewTicket(false)} />
+      )}
     </div>
   );
 }

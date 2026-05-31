@@ -28,9 +28,14 @@ export function AcceptInvitePage() {
     if (password !== confirm) { setError("パスワードが一致しません"); return; }
     setLoading(true); setError("");
     if (!isSupabaseEnabled) { navigate("/dashboard"); return; }
-    const { error } = await supabase!.auth.updateUser({ password });
+    const { data, error } = await supabase!.auth.updateUser({ password });
     if (error) { setError(error.message); setLoading(false); }
-    else { sessionStorage.setItem("isLoggedIn", "true"); navigate("/dashboard"); }
+    else {
+      if (data.user) {
+        await supabase!.from("profiles").update({ status: "active" }).eq("id", data.user.id);
+      }
+      sessionStorage.setItem("isLoggedIn", "true"); navigate("/dashboard");
+    }
   };
 
   if (!sessionReady) return (

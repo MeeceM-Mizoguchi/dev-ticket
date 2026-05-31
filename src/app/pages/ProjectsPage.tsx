@@ -54,8 +54,7 @@ export function ProjectsPage() {
     toast(`「${project.name}」を削除しました`);
   };
 
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-  const visibleProjects = isAdminOrPM
+  const visibleProjects = userRole === "admin"
     ? projects
     : projects.filter(p => p.members.includes(userName));
 

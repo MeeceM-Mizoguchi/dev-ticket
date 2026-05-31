@@ -2,18 +2,72 @@ import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
 import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { MEMBERS } from "@/app/data/mock";
+import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { labelCls, inputCls, TICKET_STATUSES } from "@/app/lib/helpers";
 import { mapTicketCategory } from "@/app/lib/mappers";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 
 export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprintStartDate, sprintEndDate }: {
-  sprintId: string; projectId?: string; onClose: () => void; onCreated?: () => void;
+  sprintId?: string; projectId?: string; onClose: () => void; onCreated?: () => void;
   sprintStartDate?: string; sprintEndDate?: string;
 }) {
+  const { userName, userRole } = useAuth();
+  const isAdmin = userRole === "admin" || userRole === "project-manager";
+  const needsSelection = !sprintId;
+
+  // --- プロジェクト・スプリント選択（ダッシュボードから開く場合） ---
+  const [availableProjects, setAvailableProjects] = useState<{ id: string; name: string }[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; startDate?: string; endDate?: string }[]>([]);
+  const [selectedSprintId, setSelectedSprintId] = useState("");
+  const [projectError, setProjectError] = useState(false);
+  const [sprintError, setSprintError] = useState(false);
+
+  const effectiveSprintId = sprintId || selectedSprintId;
+  const effectiveProjectId = projectId || selectedProjectId;
+  const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
+  const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
+  const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
+
+  useEffect(() => {
+    if (!needsSelection) return;
+    if (!isSupabaseEnabled) {
+      const accessible = isAdmin ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
+      setAvailableProjects(accessible.map(p => ({ id: p.id, name: p.name })));
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    supabase!.from("projects").select("id, name, members").order("name").then(({ data }) => {
+      if (data) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const accessible = isAdmin ? data : data.filter((p: any) => Array.isArray(p.members) && p.members.includes(userName));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setAvailableProjects(accessible.map((p: any) => ({ id: p.id, name: p.name })));
+      }
+    });
+  }, [needsSelection, isAdmin, userName]);
+
+  useEffect(() => {
+    if (!needsSelection || !selectedProjectId) { setAvailableSprints([]); setSelectedSprintId(""); return; }
+    if (!isSupabaseEnabled) {
+      setAvailableSprints(SPRINTS.filter(s => s.projectId === selectedProjectId).map(s => ({ id: s.id, name: s.name, startDate: s.startDate, endDate: s.endDate })));
+      setSelectedSprintId("");
+      return;
+    }
+    supabase!.from("sprints").select("id, name, start_date, end_date").eq("project_id", selectedProjectId).order("created_at")
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .then(({ data }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (data) setAvailableSprints(data.map((s: any) => ({ id: s.id, name: s.name, startDate: s.start_date, endDate: s.end_date })));
+        setSelectedSprintId("");
+      });
+  }, [needsSelection, selectedProjectId]);
+
+  // --- チケット入力フィールド ---
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<TicketStatus>("todo");
   const [priority, setPriority] = useState<Priority>("medium");
@@ -24,18 +78,6 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [estimatedHours, setEstimatedHours] = useState(0);
-
-  const calcHours = (start: string, due: string) => {
-    if (!start || !due) return 0;
-    const days = Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000);
-    return Math.max(0, days) * 8;
-  };
-  const handleDateChange = (field: "start" | "due", v: string) => {
-    const s = field === "start" ? v : startDate;
-    const d = field === "due"   ? v : dueDate;
-    if (field === "start") setStartDate(v); else setDueDate(v);
-    setEstimatedHours(calcHours(s, d));
-  };
   const [description, setDescription] = useState("");
   const [images, setImages] = useState<{ name: string; url: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -43,29 +85,41 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
 
+  const calcHours = (start: string, due: string) => {
+    if (!start || !due) return 0;
+    return Math.max(0, Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000)) * 8;
+  };
+  const handleDateChange = (field: "start" | "due", v: string) => {
+    const s = field === "start" ? v : startDate;
+    const d = field === "due" ? v : dueDate;
+    if (field === "start") setStartDate(v); else setDueDate(v);
+    setEstimatedHours(calcHours(s, d));
+  };
+
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("profiles").select("id, name").order("name")
-      .then(({ data }) => {
-        if (data?.length) {
-          setAssigneeList(data);
-          setAssignee(data[0]?.name || "");
-        }
-      });
+    supabase!.from("profiles").select("id, name").order("name").then(({ data }) => {
+      if (data?.length) { setAssigneeList(data); setAssignee(data[0]?.name || ""); }
+    });
   }, []);
 
   useEffect(() => {
-    if (!isSupabaseEnabled || !projectId) return;
-    supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at")
+    if (!isSupabaseEnabled || !effectiveProjectId) return;
+    supabase!.from("ticket_categories").select("*").eq("project_id", effectiveProjectId).order("created_at")
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
-  }, [projectId]);
+  }, [effectiveProjectId]);
 
   const handleSave = async () => {
-    if (!title.trim()) { setTitleError(true); return; }
+    let valid = true;
+    if (needsSelection && !selectedProjectId) { setProjectError(true); valid = false; }
+    if (needsSelection && !selectedSprintId) { setSprintError(true); valid = false; }
+    if (!title.trim()) { setTitleError(true); valid = false; }
+    if (!valid) return;
+
     if (isSupabaseEnabled) {
       setSaving(true);
       await supabase!.from("sprint_tickets").insert({
-        id: `T-${Date.now()}`, sprint_id: sprintId, wbs: "",
+        id: `T-${Date.now()}`, sprint_id: effectiveSprintId, wbs: "",
         title, status, priority, assignee,
         start_date: startDate || null, due_date: dueDate || null,
         estimated_hours: estimatedHours || 0, progress: 0,
@@ -99,6 +153,47 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* プロジェクト・スプリント選択（ダッシュボードから開く場合のみ表示） */}
+          {needsSelection && (
+            <div style={{ background: "#F0FDF8", borderRadius: 12, border: "1px solid rgba(5,150,105,0.18)", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#059669", letterSpacing: "0.04em", textTransform: "uppercase" as const }}>追加先を選択</p>
+              <div>
+                <label className={labelCls}>プロジェクト <span style={{ color: "#DC2626" }}>*</span></label>
+                <select
+                  className={inputCls}
+                  value={selectedProjectId}
+                  onChange={e => { setSelectedProjectId(e.target.value); setProjectError(false); setSelectedSprintId(""); setSprintError(false); }}
+                  style={projectError ? { outline: "2px solid #DC2626", outlineOffset: 1 } : undefined}
+                >
+                  <option value="">プロジェクトを選択してください</option>
+                  {availableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                {projectError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 5 }}>プロジェクトを選択してください</p>}
+              </div>
+              <div>
+                <label className={labelCls}>スプリント <span style={{ color: "#DC2626" }}>*</span></label>
+                <select
+                  className={inputCls}
+                  value={selectedSprintId}
+                  onChange={e => { setSelectedSprintId(e.target.value); setSprintError(false); }}
+                  disabled={!selectedProjectId}
+                  style={sprintError ? { outline: "2px solid #DC2626", outlineOffset: 1 } : undefined}
+                >
+                  <option value="">
+                    {!selectedProjectId
+                      ? "先にプロジェクトを選択してください"
+                      : availableSprints.length === 0
+                        ? "スプリントがありません"
+                        : "スプリントを選択してください"}
+                  </option>
+                  {availableSprints.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                {sprintError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 5 }}>スプリントを選択してください</p>}
+              </div>
+            </div>
+          )}
+
           <div>
             <label className={labelCls}>チケット名 <span style={{ color: "#DC2626" }}>*</span></label>
             <input className={inputCls} placeholder="例: ログイン機能の修正" value={title}
@@ -144,10 +239,10 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <DatePicker label="開始日" value={startDate}
               onChange={v => handleDateChange("start", v)}
-              min={sprintStartDate} max={sprintEndDate} />
+              min={effectiveSprintStart} max={effectiveSprintEnd} />
             <DatePicker label="終了日" value={dueDate}
               onChange={v => handleDateChange("due", v)}
-              min={startDate || sprintStartDate} max={sprintEndDate} />
+              min={startDate || effectiveSprintStart} max={effectiveSprintEnd} />
           </div>
 
           <div>
