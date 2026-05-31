@@ -106,6 +106,10 @@ export function TicketDetailPanel({
   // image preview
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
+  // drag over states
+  const [imageDragOver, setImageDragOver] = useState(false);
+  const [fileDragOver, setFileDragOver] = useState(false);
+
   // AI prompt generation
   const [generatedPrompt, setGeneratedPrompt] = useState(ticket?.generatedPrompt ?? "");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -718,19 +722,26 @@ export function TicketDetailPanel({
           </div>
 
           {/* 詳細 + 画像 */}
-          <div onPaste={e => {
-            const items = Array.from(e.clipboardData?.items ?? []);
-            const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
-            if (imgFiles.length === 0) return;
-            e.preventDefault();
-            addTicketImages(imgFiles);
-          }}>
+          <div
+            onPaste={e => {
+              const items = Array.from(e.clipboardData?.items ?? []);
+              const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+              if (imgFiles.length === 0) return;
+              e.preventDefault();
+              addTicketImages(imgFiles);
+            }}
+            onDragOver={e => { e.preventDefault(); setImageDragOver(true); }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
+            onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
+          >
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
             <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} />
             {/* Inline image attachment */}
-            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 9, cursor: "pointer", background: "#FAFAF8", marginTop: 8 }}>
-              <ImageIcon style={{ width: 13, height: 13, color: "#B0A9A4" }} />
-              <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を追加、または Ctrl+V で貼り付け</span>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
+              <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
+              <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
+                {imageDragOver ? "ドロップして追加" : "クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ"}
+              </span>
               <input type="file" accept="image/*" multiple style={{ display: "none" }}
                 onChange={e => { addTicketImages(e.target.files || []); e.target.value = ""; }} />
             </label>
@@ -776,7 +787,23 @@ export function TicketDetailPanel({
           </div>}
 
           {/* Source files */}
-          <div>
+          <div
+            onDragOver={e => { e.preventDefault(); setFileDragOver(true); }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileDragOver(false); }}
+            onDrop={async e => {
+              e.preventDefault();
+              setFileDragOver(false);
+              if (!e.dataTransfer.files.length) return;
+              const round = reviewRound || 1;
+              for (const f of Array.from(e.dataTransfer.files)) await uploadSourceFile(f, round);
+              if (isSupabaseEnabled && ticket) loadRelated(ticket.id);
+              else {
+                const newFiles: TicketSourceFile[] = Array.from(e.dataTransfer.files).map(f => ({ id: `SF-${Date.now()}`, ticketId: ticket!.id, fileName: f.name, fileSize: f.size, fileType: f.type, uploadedBy: userName, reviewRound: round, fileUrl: "", createdAt: new Date().toISOString() }));
+                setSourceFiles(prev => [...prev, ...newFiles]);
+              }
+              setExpandedRounds(prev => new Set([...prev, round]));
+            }}
+          >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
               <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>
                 <FileCode2 style={{ width: 10, height: 10, display: "inline", marginRight: 4 }} />ソースファイル
@@ -798,8 +825,13 @@ export function TicketDetailPanel({
                   }} />
               </label>
             </div>
+            {fileDragOver && (
+              <div style={{ border: "2px dashed rgba(5,150,105,0.5)", borderRadius: 10, padding: "14px", textAlign: "center", color: "#059669", fontSize: 12, fontWeight: 600, background: "rgba(5,150,105,0.04)", marginBottom: 8 }}>
+                ドロップしてアップロード
+              </div>
+            )}
             {rounds.length === 0 ? (
-              <div style={{ border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, padding: "20px", textAlign: "center", color: "#C9C4BB", fontSize: 12 }}>ファイルがありません</div>
+              <div style={{ border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, padding: "20px", textAlign: "center", color: "#C9C4BB", fontSize: 12 }}>ファイルがありません（ドラッグ&ドロップでも追加できます）</div>
             ) : rounds.map(round => {
               const isOpen = expandedRounds.has(round);
               const files = filesByRound[round];

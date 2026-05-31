@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Plus, X } from "lucide-react";
 import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -79,7 +79,9 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
   const [dueDate, setDueDate] = useState("");
   const [estimatedHours, setEstimatedHours] = useState(0);
   const [description, setDescription] = useState("");
-  const [images, setImages] = useState<{ name: string; url: string }[]>([]);
+  const ticketId = useRef<string>(`T-${Date.now()}`);
+  const [images, setImages] = useState<string[]>([]);
+  const [imageDragOver, setImageDragOver] = useState(false);
   const [saving, setSaving] = useState(false);
   const [titleError, setTitleError] = useState(false);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
@@ -109,6 +111,25 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
   }, [effectiveProjectId]);
 
+  const uploadImageToStorage = useCallback(async (file: Blob): Promise<string> => {
+    if (!isSupabaseEnabled) return URL.createObjectURL(file);
+    const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
+    const ext = extMap[file.type] ?? 'png';
+    const path = `tickets/${ticketId.current}/detail/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+    const { data, error } = await supabase!.storage.from("ticket-images").upload(path, file, { upsert: true, contentType: file.type || 'image/png' });
+    if (error || !data) return "";
+    const { data: urlData } = supabase!.storage.from("ticket-images").getPublicUrl(path);
+    return urlData.publicUrl;
+  }, []);
+
+  const addImages = useCallback(async (files: FileList | File[]) => {
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/")) continue;
+      const url = await uploadImageToStorage(file);
+      if (url) setImages(prev => [...prev, url]);
+    }
+  }, [uploadImageToStorage]);
+
   const handleSave = async () => {
     let valid = true;
     if (needsSelection && !selectedProjectId) { setProjectError(true); valid = false; }
@@ -119,13 +140,14 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
     if (isSupabaseEnabled) {
       setSaving(true);
       await supabase!.from("sprint_tickets").insert({
-        id: `T-${Date.now()}`, sprint_id: effectiveSprintId, wbs: "",
+        id: ticketId.current, sprint_id: effectiveSprintId, wbs: "",
         title, status, priority, assignee,
         start_date: startDate || null, due_date: dueDate || null,
         estimated_hours: estimatedHours || 0, progress: 0,
         description: description || null,
         category_id: categoryId || null,
         created_by: userName || null,
+        images: images.length ? images : [],
       });
       setSaving(false);
     }
@@ -153,7 +175,13 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
           </div>
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div onPaste={e => {
+          const items = Array.from(e.clipboardData?.items ?? []);
+          const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+          if (imgFiles.length === 0) return;
+          e.preventDefault();
+          addImages(imgFiles);
+        }} style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
 
           {/* プロジェクト・スプリント選択（ダッシュボードから開く場合のみ表示） */}
           {needsSelection && (
@@ -261,27 +289,27 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
 
           <div>
             <label className={labelCls}>添付画像</label>
-            <div style={{ border: "2px dashed rgba(26,23,20,0.12)", borderRadius: 10, padding: "14px", background: "#FAFAF8" }}>
+            <div
+              onDragOver={e => { e.preventDefault(); setImageDragOver(true); }}
+              onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
+              onDrop={e => { e.preventDefault(); setImageDragOver(false); addImages(e.dataTransfer.files); }}
+              style={{ border: `2px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "14px", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
               <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 5, cursor: "pointer" }}>
-                <div style={{ width: 36, height: 36, background: "#F4F5F6", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Plus style={{ width: 16, height: 16, color: "#B0A9A4" }} />
+                <div style={{ width: 36, height: 36, background: imageDragOver ? "rgba(5,150,105,0.10)" : "#F4F5F6", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.15s" }}>
+                  <Plus style={{ width: 16, height: 16, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
                 </div>
-                <span style={{ fontSize: 12, color: "#B0A9A4" }}>クリックして画像を選択</span>
+                <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
+                  {imageDragOver ? "ドロップして追加" : "クリックして選択、Ctrl+V で貼り付け、またはドラッグ&ドロップ"}
+                </span>
                 <span style={{ fontSize: 10, color: "#C9C4BB" }}>PNG, JPG, GIF, WebP 対応</span>
                 <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                  onChange={e => {
-                    Array.from(e.target.files || []).forEach(file => {
-                      if (!file.type.startsWith("image/")) return;
-                      setImages(prev => [...prev, { name: file.name, url: URL.createObjectURL(file) }]);
-                    });
-                    e.target.value = "";
-                  }} />
+                  onChange={e => { addImages(e.target.files || []); e.target.value = ""; }} />
               </label>
               {images.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8, marginTop: 10 }}>
-                  {images.map((img, i) => (
+                  {images.map((url, i) => (
                     <div key={i} style={{ position: "relative", width: 68, height: 68 }}>
-                      <img src={img.url} alt={img.name} style={{ width: 68, height: 68, objectFit: "cover" as const, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)" }} />
+                      <img src={url} alt="" style={{ width: 68, height: 68, objectFit: "cover" as const, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)" }} />
                       <button onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
                         style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <X style={{ width: 10, height: 10, color: "#fff" }} />

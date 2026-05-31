@@ -368,9 +368,9 @@ export function SprintDetailPage() {
             const barColor = ticket.progress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
             return (
               <div key={ticket.id} onClick={() => setSelectedTicketId(ticket.id)}
-                style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent", transition: "background 0.1s", cursor: "pointer" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.012)" : "transparent"; }}>
+                style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.status === "closed" ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: ticket.status === "closed" ? 0.65 : 1 }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#ECECEB" : "#FFF7F3"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#F5F5F4" : "transparent"; }}>
                 <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#B0A9A4", fontWeight: 600 }}>{ticket.wbs}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                   <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
