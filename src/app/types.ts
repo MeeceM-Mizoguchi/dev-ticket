@@ -14,7 +14,7 @@ export type MemberStatus = "active" | "inactive" | "invited";
 export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
 export type SprintStatus = "planning" | "active" | "completed" | "delayed";
 export type SprintView = "list" | "board" | "gantt";
-export type SortCol = "wbs" | "title" | "status" | "priority" | "assignee" | "startDate" | "dueDate" | "estimatedHours" | "progress";
+export type SortCol = "wbs" | "title" | "description" | "status" | "priority" | "assignee" | "startDate" | "dueDate" | "estimatedHours" | "progress";
 
 export interface TicketCategory {
   id: string;

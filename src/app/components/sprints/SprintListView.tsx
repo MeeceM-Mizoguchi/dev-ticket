@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { ChevronDown, Trash2, ExternalLink, Plus, Pencil } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 
@@ -53,21 +53,22 @@ function ColumnFilter({
   };
 
   return (
-    <div style={{ position: "relative", width: "100%" }}>
-      <button onClick={onToggle} style={{
+    <div style={{ position: "relative", width: "100%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onToggle}>
+      <button onClick={e => { e.stopPropagation(); onToggle(); }} style={{
         display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
-        cursor: "pointer", padding: 0, fontSize: 9, fontWeight: 700, width: "100%",
+        cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700, width: "100%",
         color: active ? "#059669" : "#B0A9A4",
         textTransform: "uppercase" as const, letterSpacing: "0.06em",
       }}>
         {label}
-        {isSorted && <span style={{ fontSize: 8, color: "#059669", fontWeight: 900 }}>{sortDir === "asc" ? "↑" : "↓"}</span>}
-        {isFiltered && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#059669", display: "inline-block", flexShrink: 0 }} />}
-        <ChevronDown style={{ width: 8, height: 8, color: active ? "#059669" : "#C9C4BB", flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+        {isSorted && <span style={{ fontSize: 9, color: "#059669", fontWeight: 900 }}>{sortDir === "asc" ? "↑" : "↓"}</span>}
+        {isFiltered && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#059669", display: "inline-block", flexShrink: 0 }} />}
+        <ChevronDown style={{ width: 9, height: 9, color: active ? "#059669" : "#C9C4BB", flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
       </button>
 
       {open && (
         <div
+          onClick={e => e.stopPropagation()}
           onWheel={e => e.stopPropagation()}
           style={{
             position: "absolute", top: "calc(100% + 6px)",
@@ -181,6 +182,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
         return [...new Set(allTickets.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
       case "title":
         return [...new Set(allTickets.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+      case "description":
+        return [...new Set(allTickets.map(t => htmlToText(t.description)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "status":
         return TICKET_STATUSES.map(s => ({ value: s.value, label: s.label }));
       case "priority":
@@ -210,7 +213,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   const processTickets = (tickets: SprintTicket[]) => {
     const filtered = tickets.filter(t => {
       const checks: [string, string][] = [
-        ["wbs", t.wbs], ["title", t.title], ["status", t.status], ["priority", t.priority],
+        ["wbs", t.wbs], ["title", t.title], ["description", htmlToText(t.description)], ["status", t.status], ["priority", t.priority],
         ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
       ];
       return checks.every(([col, val]) => { const f = colFilters[col]; return !f || f.size === 0 || f.has(val); });
@@ -229,9 +232,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
   );
 
-  const COLS = ["wbs", "title", "status", "priority", "assignee", "startDate", "dueDate"] as const;
-  const COL_LABELS = ["WBS", "チケット名", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-  const GRID = "52px max-content 1fr 110px 56px 110px 68px 68px";
+  const COLS = ["wbs", "title", "description", "status", "priority", "assignee", "startDate", "dueDate"] as const;
+  const COL_LABELS = ["WBS", "チケット名", "チケット詳細", "ステータス", "優先度", "担当者", "開始日", "期限日"];
+  const GRID = "52px 1fr 1fr 110px 56px 110px 68px 68px";
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
@@ -309,7 +312,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                 <div>
                   {/* Column headers with filters */}
                   <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center" }}>
-                    {COLS.slice(0, 2).map((col, idx) => (
+                    {COLS.map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
                         {...commonSort}
@@ -318,20 +321,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         onFilterChange={setColFilter(col)}
                         open={openCol === `${sprint.id}:${col}`}
                         onToggle={() => toggleCol(sprint.id, col)}
-                        alignRight={false}
-                      />
-                    ))}
-                    <div style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em", textAlign: "center" as const }}>チケット詳細</div>
-                    {COLS.slice(2).map((col, idx) => (
-                      <ColumnFilter key={col} col={col}
-                        label={COL_LABELS[idx + 2]}
-                        {...commonSort}
-                        options={getColOptions(col)}
-                        selected={getSelected(col)}
-                        onFilterChange={setColFilter(col)}
-                        open={openCol === `${sprint.id}:${col}`}
-                        onToggle={() => toggleCol(sprint.id, col)}
-                        alignRight={idx + 2 >= 5}
+                        alignRight={idx >= 6}
                       />
                     ))}
                   </div>
@@ -352,8 +342,11 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#ECECEB" : "#F0F9F5"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#F5F5F4" : "#FFFFFF"; }}>
                           <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{t.wbs}</span>
-                          <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", whiteSpace: "nowrap" as const }}>{t.title}</span>
-                          <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.description || "—"}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                            <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
+                            <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
+                          </div>
+                          <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
                           <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span>
                           <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span>
                           <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>

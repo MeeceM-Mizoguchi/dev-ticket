@@ -7,7 +7,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { Project, Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -243,6 +243,8 @@ export function SprintDetailPage() {
         return [...new Set(ts.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
       case "title":
         return [...new Set(ts.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+      case "description":
+        return [...new Set(ts.map(t => htmlToText(t.description)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "status":
         return TICKET_STATUSES.map(s => ({ value: s.value, label: s.label }));
       case "priority":
@@ -271,7 +273,7 @@ export function SprintDetailPage() {
   const displayTickets = [...sprint.tickets]
     .filter(t => {
       const checks: [string, string][] = [
-        ["wbs", t.wbs], ["title", t.title], ["status", t.status], ["priority", t.priority],
+        ["wbs", t.wbs], ["title", t.title], ["description", htmlToText(t.description)], ["status", t.status], ["priority", t.priority],
         ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
         ["estimatedHours", String(t.estimatedHours)], ["progress", String(t.progress)],
       ];
@@ -281,6 +283,7 @@ export function SprintDetailPage() {
       let v = 0;
       if (sortCol === "wbs") v = a.wbs.localeCompare(b.wbs);
       else if (sortCol === "title") v = a.title.localeCompare(b.title);
+      else if (sortCol === "description") v = htmlToText(a.description).localeCompare(htmlToText(b.description), "ja");
       else if (sortCol === "status") v = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99);
       else if (sortCol === "priority") v = priorityOrder[a.priority] - priorityOrder[b.priority];
       else if (sortCol === "assignee") v = (a.assignee || "").localeCompare(b.assignee || "", "ja");
@@ -293,7 +296,7 @@ export function SprintDetailPage() {
     });
 
   const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
-  const GRID = "56px 1fr 90px 60px 100px 72px 72px 52px 130px 36px";
+  const GRID = "56px 1fr 1fr 90px 60px 100px 72px 72px 52px 130px 36px";
 
   return (
     <div style={{ padding: "24px" }}>
@@ -339,16 +342,16 @@ export function SprintDetailPage() {
       <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0" }}>
-          {(["wbs","title","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
+          {(["wbs","title","description","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
-              label={["WBS","チケット名","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
+              label={["WBS","チケット名","チケット詳細","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
               {...commonProps}
               options={getColOptions(col)}
               selected={getSelected(col)}
               onFilterChange={setColFilter(col)}
               open={openCol === col}
               onToggle={() => toggleCol(col)}
-              alignRight={idx >= 7}
+              alignRight={idx >= 8}
             />
           ))}
           <span />
@@ -376,6 +379,7 @@ export function SprintDetailPage() {
                   <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
                   <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.title}</span>
                 </div>
+                <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(ticket.description) || "—"}</span>
                 <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, display: "inline-block" }}>{tsm.label}</span>
                 <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, display: "inline-block" }}>{priLabel}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>

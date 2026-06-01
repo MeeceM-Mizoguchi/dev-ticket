@@ -68,6 +68,12 @@ export function calcProgress(done: number, ip: number, todo: number) {
 
 export function getInitials(n: string) { return (n || "?").replace(/\s/g, "").slice(0, 2); }
 export function formatDate(d: string | null | undefined) { if (!d) return "—"; return d.slice(5).replace("-", "/"); }
+export function htmlToText(html: string | undefined | null): string {
+  if (!html) return "";
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return div.textContent || div.innerText || "";
+}
 export function daysBetween(a: string, b: string) {
   return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
 }
