@@ -116,7 +116,7 @@ export function Sidebar() {
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   キャンセル
                 </button>
-                <button onClick={() => { logout(); window.location.href = "/login"; }}
+                <button onClick={async () => { await logout(); window.location.href = "/login"; }}
                   style={{ flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", background: "#DC2626", color: "#fff", cursor: "pointer", transition: "background 0.15s" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#B91C1C"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#DC2626"; }}>

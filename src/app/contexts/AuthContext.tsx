@@ -21,13 +21,13 @@ interface AuthCtxType {
   userId: string;
   userPermissions: UserPermissions;
   login: (email: string, password: string) => Promise<string | null>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthCtxType>({
   userName: "", userRole: "developer", userId: "",
   userPermissions: { ...DEFAULT_PERMISSIONS },
-  login: async () => null, logout: () => {},
+  login: async () => null, logout: async () => {},
 });
 
 export function useAuth() { return useContext(AuthContext); }
@@ -153,8 +153,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   };
 
-  const logout = () => {
-    if (isSupabaseEnabled) supabase!.auth.signOut();
+  const logout = async () => {
+    if (isSupabaseEnabled) await supabase!.auth.signOut();
     setUserName(""); setUserRole("developer"); setUserId("");
     setUserPermissions({ ...DEFAULT_PERMISSIONS });
     sessionStorage.removeItem("isLoggedIn");
