@@ -231,7 +231,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
   const COLS = ["wbs", "title", "status", "priority", "assignee", "startDate", "dueDate"] as const;
   const COL_LABELS = ["WBS", "チケット名", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-  const GRID = "52px 1fr 110px 56px 110px 68px 68px";
+  const GRID = "52px max-content 1fr 110px 56px 110px 68px 68px";
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
@@ -309,7 +309,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                 <div>
                   {/* Column headers with filters */}
                   <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center" }}>
-                    {COLS.map((col, idx) => (
+                    {COLS.slice(0, 2).map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
                         {...commonSort}
@@ -318,7 +318,20 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         onFilterChange={setColFilter(col)}
                         open={openCol === `${sprint.id}:${col}`}
                         onToggle={() => toggleCol(sprint.id, col)}
-                        alignRight={idx >= 5}
+                        alignRight={false}
+                      />
+                    ))}
+                    <div style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em", textAlign: "center" as const }}>チケット詳細</div>
+                    {COLS.slice(2).map((col, idx) => (
+                      <ColumnFilter key={col} col={col}
+                        label={COL_LABELS[idx + 2]}
+                        {...commonSort}
+                        options={getColOptions(col)}
+                        selected={getSelected(col)}
+                        onFilterChange={setColFilter(col)}
+                        open={openCol === `${sprint.id}:${col}`}
+                        onToggle={() => toggleCol(sprint.id, col)}
+                        alignRight={idx + 2 >= 5}
                       />
                     ))}
                   </div>
@@ -339,7 +352,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#ECECEB" : "#F0F9F5"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#F5F5F4" : "#FFFFFF"; }}>
                           <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{t.wbs}</span>
-                          <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
+                          <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", whiteSpace: "nowrap" as const }}>{t.title}</span>
+                          <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.description || "—"}</span>
                           <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span>
                           <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span>
                           <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
