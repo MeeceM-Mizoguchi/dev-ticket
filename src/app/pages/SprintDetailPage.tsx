@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -76,6 +76,7 @@ function ColumnFilter({
 
       {open && (
         <div
+          onClick={e => e.stopPropagation()}
           onWheel={e => e.stopPropagation()}
           style={{
             position: "absolute", top: "calc(100% + 8px)",
@@ -363,11 +364,11 @@ export function SprintDetailPage() {
         </div>
       </div>
 
-      {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={closeCol} />}
+      {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 9 }} onClick={closeCol} />}
 
       <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
         {/* Column headers */}
-        <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: openCol ? 100 : 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
           {(["wbs","title","description","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
               label={["WBS","チケット名","チケット詳細","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
@@ -380,11 +381,17 @@ export function SprintDetailPage() {
               alignRight={idx >= 8}
             />
           ))}
-          <span />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {Object.values(colFilters).some(s => s.size > 0) && (
+              <button onClick={() => setColFilters({})} title="フィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                <X style={{ width: 12, height: 12 }} />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Data rows */}
-        <div style={{ background: "#FFFFFF", borderRadius: "0 0 14px 14px", overflow: "hidden" }}>
+        <div style={{ background: "#FFFFFF", borderRadius: "0 0 14px 14px", overflow: "hidden", position: "relative", zIndex: 0 }}>
           {displayTickets.length === 0 ? (
             <div style={{ padding: "40px 0", textAlign: "center" as const, color: "#B0A9A4", fontSize: 13 }}>
               {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -238,13 +238,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
   const COLS = ["wbs", "title", "description", "status", "priority", "assignee", "startDate", "dueDate"] as const;
   const COL_LABELS = ["WBS", "チケット名", "チケット詳細", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-  const GRID = "72px 1fr 1fr 110px 56px 110px 68px 68px";
+  const GRID = "72px 1fr 1fr 110px 56px 110px 68px 68px 32px";
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
   return (
     <div>
-      {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={closeCol} />}
+      {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 9 }} onClick={closeCol} />}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {
@@ -258,7 +258,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           return (
             <div key={sprint.id} style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
               {/* Sticky: sprint header + column headers */}
-              <div style={{ position: "sticky", top: 0, zIndex: 10 }}>
+              <div style={{ position: "sticky", top: 0, zIndex: openCol.startsWith(`${sprint.id}:`) ? 100 : 10 }}>
                 {/* Sprint header */}
                 <div
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none", borderRadius: isExp ? "12px 12px 0 0" : 12 }}
@@ -327,13 +327,20 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         alignRight={idx >= 6}
                       />
                     ))}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {Object.values(colFilters).some(s => s.size > 0) && (
+                        <button onClick={() => setColFilters({})} title="フィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                          <X style={{ width: 11, height: 11 }} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
 
               {/* Ticket rows */}
               {isExp && (
-                <div style={{ borderRadius: "0 0 12px 12px", overflow: "hidden" }}>
+                <div style={{ borderRadius: "0 0 12px 12px", overflow: "hidden", position: "relative", zIndex: 0 }}>
                   {displayTickets.length === 0 ? (
                     <div style={{ padding: "24px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12 }}>
                       {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}

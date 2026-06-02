@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { TICKET_STATUSES, labelCls, validateParentStatusChange } from "@/app/lib/helpers";
+import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -122,6 +122,7 @@ export function TicketDetailPanel({
   const [generatedPrompt, setGeneratedPrompt] = useState(ticket?.generatedPrompt ?? "");
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedMd, setCopiedMd] = useState(false);
 
   // comment editing
   const [editingId, setEditingId]     = useState<string | null>(null);
@@ -905,7 +906,16 @@ export function TicketDetailPanel({
             onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
             onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
           >
-            <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
+              <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
+              <button
+                onClick={() => { navigator.clipboard.writeText(htmlToMarkdown(description)); setCopiedMd(true); setTimeout(() => setCopiedMd(false), 2000); }}
+                title="Markdownとしてコピー"
+                style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 8px", fontSize: 10, fontWeight: 600, borderRadius: 5, border: "1px solid rgba(26,23,20,0.12)", background: copiedMd ? "#ECFDF5" : "transparent", color: copiedMd ? "#059669" : "#B0A9A4", cursor: "pointer" }}>
+                {copiedMd ? <CheckCheck style={{ width: 10, height: 10 }} /> : <Copy style={{ width: 10, height: 10 }} />}
+                MDコピー
+              </button>
+            </div>
             <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} />
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>

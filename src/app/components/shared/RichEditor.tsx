@@ -34,49 +34,80 @@ export function RichEditor({
     onUpdate: ({ editor }) => { onChange?.(editor.getHTML()); },
     editorProps: {
       clipboardTextSerializer: (slice) => {
-        function serializeInline(node: any): string {
-          if (node.isText) return node.text ?? '';
+        function inline(node: any): string {
+          if (node.isText) {
+            let t: string = node.text ?? '';
+            const marks: string[] = (node.marks ?? []).map((m: any) => m.type.name as string);
+            if (marks.includes('code')) return `\`${t}\``;
+            if (marks.includes('bold')) t = `**${t}**`;
+            if (marks.includes('italic')) t = `*${t}*`;
+            if (marks.includes('strike')) t = `~~${t}~~`;
+            return t;
+          }
           let out = '';
-          node.forEach((c: any) => { out += serializeInline(c); });
+          node.forEach((c: any) => { out += inline(c); });
           return out;
         }
 
-        function serializeItem(node: any, depth: number): string {
-          const bullet = '  '.repeat(depth) + '• ';
-          const lines: string[] = [];
-          let firstPara = true;
-          node.forEach((child: any) => {
-            const t: string = child.type.name;
-            if (t === 'paragraph') {
-              lines.push((firstPara ? bullet : '  '.repeat(depth) + '  ') + serializeInline(child) + '\n');
-              firstPara = false;
-            } else if (t === 'bulletList' || t === 'orderedList') {
-              child.forEach((li: any) => { lines.push(serializeItem(li, depth + 1)); });
-            } else {
-              lines.push(serializeBlock(child));
-            }
+        function listBlock(node: any, depth: number): string {
+          const t: string = node.type.name;
+          const items: string[] = [];
+          let idx = 0;
+          node.forEach((li: any) => {
+            const bullet = t === 'bulletList' ? '- ' : `${idx + 1}. `;
+            const indent = '  '.repeat(depth);
+            let text = '';
+            let nested = '';
+            li.forEach((child: any) => {
+              const ct: string = child.type.name;
+              if (ct === 'bulletList' || ct === 'orderedList') {
+                nested += listBlock(child, depth + 1);
+              } else {
+                text += inline(child);
+              }
+            });
+            const line = `${indent}${bullet}${text.replace(/\n+/g, ' ').trim()}`;
+            items.push(nested.trim() ? `${line}\n${nested.trimEnd()}` : line);
+            idx++;
           });
-          return lines.join('');
+          return items.join('\n') + '\n\n';
         }
 
-        function serializeBlock(node: any): string {
+        function block(node: any): string {
           if (node.isText) return node.text ?? '';
           const t: string = node.type.name;
-          if (t === 'paragraph' || t === 'heading') return serializeInline(node) + '\n\n';
-          if (t === 'bulletList' || t === 'orderedList') {
-            const lines: string[] = [];
-            node.forEach((li: any) => { lines.push(serializeItem(li, 0)); });
-            return lines.join('') + '\n';
-          }
+          if (t === 'paragraph') return inline(node).trim() + '\n\n';
           if (t === 'hardBreak') return '\n';
-          if (t === 'codeBlock') return '```\n' + serializeInline(node) + '\n```\n\n';
+          if (t === 'heading') {
+            const level: number = node.attrs?.level ?? 1;
+            return '#'.repeat(level) + ' ' + inline(node).trim() + '\n';
+          }
+          if (t === 'codeBlock') return '```\n' + (node.textContent ?? '') + '\n```\n\n';
+          if (t === 'blockquote') {
+            let inner = '';
+            node.forEach((c: any) => { inner += block(c); });
+            return inner.trim().split('\n').map((l: string) => `> ${l}`).join('\n') + '\n\n';
+          }
+          if (t === 'bulletList' || t === 'orderedList') return listBlock(node, 0);
+          if (t === 'table') {
+            const rows: string[][] = [];
+            node.forEach((row: any) => {
+              const cells: string[] = [];
+              row.forEach((cell: any) => { cells.push(inline(cell).trim()); });
+              rows.push(cells);
+            });
+            if (!rows.length) return '';
+            const header = '| ' + rows[0].join(' | ') + ' |';
+            const sep = '| ' + rows[0].map(() => '---').join(' | ') + ' |';
+            return [header, sep, ...rows.slice(1).map(r => '| ' + r.join(' | ') + ' |')].join('\n') + '\n';
+          }
           let out = '';
-          node.forEach((c: any) => { out += serializeBlock(c); });
+          node.forEach((c: any) => { out += block(c); });
           return out;
         }
 
         const parts: string[] = [];
-        slice.content.forEach((node: any) => { parts.push(serializeBlock(node)); });
+        slice.content.forEach((node: any) => { parts.push(block(node)); });
         return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
       },
     },

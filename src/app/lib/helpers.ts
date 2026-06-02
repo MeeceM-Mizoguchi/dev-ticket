@@ -87,6 +87,77 @@ export function htmlToText(html: string | undefined | null): string {
   div.innerHTML = html;
   return div.textContent || div.innerText || "";
 }
+export function htmlToMarkdown(html: string | undefined | null): string {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+
+  function walk(node: Node, listDepth = 0): string {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node as Element;
+    const tag = el.tagName.toLowerCase();
+    const ch = () => Array.from(el.childNodes).map(c => walk(c, listDepth)).join("");
+
+    if (tag === "p") return ch().trim() + "\n\n";
+    if (tag === "br") return "\n";
+    if (tag === "strong" || tag === "b") return `**${ch()}**`;
+    if (tag === "em" || tag === "i") return `*${ch()}*`;
+    if (tag === "s" || tag === "del" || tag === "strike") return `~~${ch()}~~`;
+    if (tag === "code") {
+      if (el.parentElement?.tagName.toLowerCase() === "pre") return el.textContent ?? "";
+      return `\`${el.textContent ?? ""}\``;
+    }
+    if (tag === "pre") {
+      const code = el.querySelector("code")?.textContent ?? el.textContent ?? "";
+      return `\`\`\`\n${code.trim()}\n\`\`\`\n\n`;
+    }
+    if (tag === "blockquote") {
+      return ch().trim().split("\n").map(l => `> ${l}`).join("\n") + "\n\n";
+    }
+    if (tag === "h1") return `# ${ch().trim()}\n`;
+    if (tag === "h2") return `## ${ch().trim()}\n`;
+    if (tag === "h3") return `### ${ch().trim()}\n`;
+    if (tag === "ul" || tag === "ol") {
+      const indent = "  ".repeat(listDepth);
+      const lines: string[] = [];
+      let idx = 0;
+      el.querySelectorAll(":scope > li").forEach(li => {
+        idx++;
+        const bullet = tag === "ul" ? `${indent}- ` : `${indent}${idx}. `;
+        let text = "";
+        let nestedMd = "";
+        Array.from(li.childNodes).forEach(c => {
+          const cTag = (c as Element).tagName?.toLowerCase();
+          if (cTag === "ul" || cTag === "ol") {
+            nestedMd += walk(c, listDepth + 1);
+          } else {
+            text += walk(c, listDepth);
+          }
+        });
+        lines.push(bullet + text.replace(/\n+/g, " ").trim());
+        if (nestedMd.trim()) lines.push(nestedMd.trimEnd());
+      });
+      return lines.join("\n") + "\n\n";
+    }
+    if (tag === "table") {
+      const rows = Array.from(el.querySelectorAll("tr"));
+      if (!rows.length) return "";
+      const getRow = (r: Element) =>
+        "| " + Array.from(r.querySelectorAll("th,td")).map(c => c.textContent?.trim() ?? "").join(" | ") + " |";
+      const header = getRow(rows[0]);
+      const sep = "| " + Array.from(rows[0].querySelectorAll("th,td")).map(() => "---").join(" | ") + " |";
+      return [header, sep, ...rows.slice(1).map(getRow)].join("\n") + "\n";
+    }
+    return ch();
+  }
+
+  return Array.from(doc.body.childNodes)
+    .map(n => walk(n))
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function daysBetween(a: string, b: string) {
   return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
 }
