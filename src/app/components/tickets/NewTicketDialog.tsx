@@ -186,9 +186,11 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
         }
       } else {
         // プロジェクト内の全スプリントIDを取得し、プロジェクトスコープでwbs連番を生成
-        const { data: sprintRows } = await supabase!.from("sprints").select("id").eq("project_id", effectiveProjectId!);
+        // identifier も一緒に取得することで、state の非同期タイミング問題を回避する
+        const { data: sprintRows } = await supabase!.from("sprints").select("id, identifier").eq("project_id", effectiveProjectId!);
         const sprintIds = sprintRows?.map(s => s.id) ?? [];
-        const prefix = wbsPrefix || "T";
+        const currentSprintIdentifier = sprintRows?.find(s => s.id === effectiveSprintId)?.identifier;
+        const prefix = currentSprintIdentifier || wbsPrefix || "T";
         let nextNum = 1;
         if (sprintIds.length > 0) {
           const { data: maxRow } = await supabase!

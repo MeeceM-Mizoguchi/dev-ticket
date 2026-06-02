@@ -32,6 +32,54 @@ export function RichEditor({
     content: value || "",
     editable: !readOnly,
     onUpdate: ({ editor }) => { onChange?.(editor.getHTML()); },
+    editorProps: {
+      clipboardTextSerializer: (slice) => {
+        function serializeInline(node: any): string {
+          if (node.isText) return node.text ?? '';
+          let out = '';
+          node.forEach((c: any) => { out += serializeInline(c); });
+          return out;
+        }
+
+        function serializeItem(node: any, depth: number): string {
+          const bullet = '  '.repeat(depth) + '• ';
+          const lines: string[] = [];
+          let firstPara = true;
+          node.forEach((child: any) => {
+            const t: string = child.type.name;
+            if (t === 'paragraph') {
+              lines.push((firstPara ? bullet : '  '.repeat(depth) + '  ') + serializeInline(child) + '\n');
+              firstPara = false;
+            } else if (t === 'bulletList' || t === 'orderedList') {
+              child.forEach((li: any) => { lines.push(serializeItem(li, depth + 1)); });
+            } else {
+              lines.push(serializeBlock(child));
+            }
+          });
+          return lines.join('');
+        }
+
+        function serializeBlock(node: any): string {
+          if (node.isText) return node.text ?? '';
+          const t: string = node.type.name;
+          if (t === 'paragraph' || t === 'heading') return serializeInline(node) + '\n\n';
+          if (t === 'bulletList' || t === 'orderedList') {
+            const lines: string[] = [];
+            node.forEach((li: any) => { lines.push(serializeItem(li, 0)); });
+            return lines.join('') + '\n';
+          }
+          if (t === 'hardBreak') return '\n';
+          if (t === 'codeBlock') return '```\n' + serializeInline(node) + '\n```\n\n';
+          let out = '';
+          node.forEach((c: any) => { out += serializeBlock(c); });
+          return out;
+        }
+
+        const parts: string[] = [];
+        slice.content.forEach((node: any) => { parts.push(serializeBlock(node)); });
+        return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+      },
+    },
   });
 
   useEffect(() => {

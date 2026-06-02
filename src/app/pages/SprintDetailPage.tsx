@@ -248,7 +248,7 @@ export function SprintDetailPage() {
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
 
-  const selectedTicket = ticketWbs ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null) : null;
+  const selectedTicket = ticketWbs ? (sprint.tickets.find(t => t.wbs === ticketWbs || t.id === ticketWbs) ?? null) : null;
   const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
@@ -402,7 +402,7 @@ export function SprintDetailPage() {
             const toggleTicketExpand = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTicketIds(prev => { const n = new Set(prev); n.has(ticket.id) ? n.delete(ticket.id) : n.add(ticket.id); return n; }); };
             return (
               <div key={ticket.id}>
-                <div onClick={() => selectTicket(ticket.wbs)}
+                <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
                   style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.status === "closed" ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: ticket.status === "closed" ? 0.65 : 1 }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#ECECEB" : "#FFF7F3"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#F5F5F4" : "transparent"; }}>
@@ -451,7 +451,7 @@ export function SprintDetailPage() {
                   const cProgress = (child.status === "done" || child.status === "closed") ? 100 : child.progress;
                   const cBarColor = cProgress === 100 ? "#059669" : child.status === "in-progress" ? "#D97706" : "#C9C4BB";
                   return (
-                    <div key={child.id} onClick={() => selectTicket(child.wbs)}
+                    <div key={child.id} onClick={() => selectTicket(child.wbs || child.id)}
                       style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: "#F9F8F6", transition: "background 0.1s", cursor: "pointer", opacity: child.status === "closed" ? 0.65 : 1 }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}>
@@ -497,7 +497,7 @@ export function SprintDetailPage() {
       {deleteTicketTarget && (
         <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} projectId={project?.id} sprintId={sprintId} onClose={() => selectTicket(null)} onUpdated={refreshSprint} onDeleted={() => { selectTicket(null); refreshSprint(); }} onSelectTicket={t => selectTicket(t.wbs)} projectPermissions={projectPermissions ?? undefined} />
+      <TicketDetailPanel ticket={selectedTicket} projectId={project?.id} sprintId={sprintId} onClose={() => selectTicket(null)} onUpdated={refreshSprint} onDeleted={() => { selectTicket(null); refreshSprint(); }} onSelectTicket={t => selectTicket(t.wbs || t.id)} projectPermissions={projectPermissions ?? undefined} />
     </div>
   );
 }

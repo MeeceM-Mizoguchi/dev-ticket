@@ -56,8 +56,10 @@ create table if not exists clients (
 -- ── Projects ─────────────────────────────────────────────────
 create table if not exists projects (
   id          text primary key,
+  slug        text not null default '',
   name        text not null,
   client      text not null default '',
+  wbs_prefix  text not null default 'T',
   status      text not null default 'planning'
                 check (status in ('planning','in-progress','completed','on-hold')),
   start_date  date,
@@ -76,6 +78,7 @@ create table if not exists sprints (
   project_id text not null references projects(id) on delete cascade,
   name       text not null,
   goal       text not null default '',
+  identifier text not null default '',
   status     text not null default 'planning'
                check (status in ('planning','active','completed','cancelled')),
   start_date date,
