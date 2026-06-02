@@ -3,7 +3,7 @@ import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
-import { TICKET_STATUSES, formatDate } from "@/app/lib/helpers";
+import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -43,8 +43,7 @@ function validateDrop(
 
   // in-review: 担当者のみ
   if (newStatus === "in-review") {
-    const assignees = ticket.assignees?.length ? ticket.assignees : (ticket.assignee ? [ticket.assignee] : []);
-    if (assignees.length > 0 && !assignees.includes(userName)) {
+    if (ticket.assignee && ticket.assignee !== userName) {
       return {
         ticketId: ticket.id,
         message: "このチケットの担当者のみレビュー依頼を送信できます",
@@ -80,8 +79,9 @@ function validateDrop(
 }
 
 // ── Draggable ticket card ──────────────────────────────────────────────────
-function TicketCard({ ticket, sprintId, onSelect }: {
+function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
   ticket: SprintTicket; sprintId: string; onSelect?: (t: SprintTicket) => void;
+  parentTicket?: SprintTicket; // 子チケットの場合に親チケット情報を渡す（ホバー表示用）
 }) {
   const [{ isDragging }, drag] = useDrag<DragItem, void, { isDragging: boolean }>(() => ({
     type: DRAG_TYPE,
@@ -89,32 +89,54 @@ function TicketCard({ ticket, sprintId, onSelect }: {
     collect: m => ({ isDragging: m.isDragging() }),
   }), [ticket.id, sprintId, ticket.status]);
 
+  const [showParentTooltip, setShowParentTooltip] = useState(false);
+
   const priBg    = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
   const priColor = ticket.priority === "high" ? "#DC2626"  : ticket.priority === "medium" ? "#D97706"  : "#0284C7";
   const priLabel = ticket.priority === "high" ? "高"       : ticket.priority === "medium" ? "中"       : "低";
+  const isChild = !!ticket.parentId;
 
   return (
-    <div ref={drag} onClick={() => onSelect?.(ticket)}
-      style={{ background: "#FFF", borderRadius: 9, padding: "10px 12px", border: "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.04)" }}
-      onMouseEnter={e => { if (!isDragging) (e.currentTarget as HTMLElement).style.boxShadow = "0 3px 10px rgba(0,0,0,0.10)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.04)"; }}>
-      <p style={{ fontSize: 11, fontWeight: 600, color: "#1A1714", marginBottom: 6, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }}>{ticket.title}</p>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
-          <Avatar name={ticket.assignee} size="xs" />
-          <span style={{ fontSize: 10, color: "#9E9690", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.assignee || "未割当"}</span>
+    <div style={{ position: "relative" }}>
+      {/* 親チケット情報ツールチップ（子チケットのホバー時） */}
+      {isChild && showParentTooltip && parentTicket && (
+        <div style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, background: "#1A1714", color: "#FFF", borderRadius: 8, padding: "8px 10px", fontSize: 10, lineHeight: 1.5, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", pointerEvents: "none" }}>
+          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", marginBottom: 2 }}>親チケット</div>
+          <div style={{ fontWeight: 700, fontSize: 10, color: "#059669" }}>{parentTicket.wbs}</div>
+          <div style={{ fontSize: 10, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{parentTicket.title}</div>
+          {/* tooltip arrow */}
+          <div style={{ position: "absolute", bottom: -5, left: 12, width: 10, height: 10, background: "#1A1714", transform: "rotate(45deg)", borderRadius: 2 }} />
         </div>
-        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: priBg, color: priColor, flexShrink: 0 }}>{priLabel}</span>
+      )}
+      <div ref={drag} onClick={() => onSelect?.(ticket)}
+        onMouseEnter={e => { if (!isDragging) { (e.currentTarget as HTMLElement).style.boxShadow = "0 3px 10px rgba(0,0,0,0.10)"; if (isChild) setShowParentTooltip(true); } }}
+        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.04)"; setShowParentTooltip(false); }}
+        style={{ background: "#FFF", borderRadius: 9, padding: "10px 12px", border: isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.04)" }}>
+        {isChild && (
+          <div style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", marginBottom: 4, display: "flex", alignItems: "center", gap: 3 }}>
+            <span style={{ width: 8, height: 8, border: "1px solid rgba(5,150,105,0.4)", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 6 }}>↳</span>
+            {ticket.wbs}
+          </div>
+        )}
+        <p style={{ fontSize: 11, fontWeight: 600, color: "#1A1714", marginBottom: 6, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }}>{ticket.title}</p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <Avatar name={ticket.assignee} size="xs" />
+            <span style={{ fontSize: 10, color: "#9E9690" }}>{truncateName(ticket.assignee) || "未割当"}</span>
+          </div>
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: priBg, color: priColor, flexShrink: 0 }}>{priLabel}</span>
+        </div>
       </div>
     </div>
   );
 }
 
 // ── Droppable status column ────────────────────────────────────────────────
-function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket, style: extraStyle }: {
+function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket, style: extraStyle }: {
   sprintId: string;
   col: typeof TICKET_STATUSES[number];
   tickets: SprintTicket[];
+  allTickets: SprintTicket[]; // 親チケット解決用の全チケットリスト
   onDrop: (item: DragItem, targetStatus: TicketStatus) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   style?: React.CSSProperties;
@@ -136,7 +158,10 @@ function DropColumn({ sprintId, col, tickets, onDrop, onSelectTicket, style: ext
       {tickets.length === 0 && !isActive && (
         <div style={{ padding: "20px 0", textAlign: "center" as const, color: "#D5D0CB", fontSize: 11 }}>なし</div>
       )}
-      {tickets.map(t => <TicketCard key={t.id} ticket={t} sprintId={sprintId} onSelect={onSelectTicket} />)}
+      {tickets.map(t => {
+        const parent = t.parentId ? allTickets.find(p => p.id === t.parentId) : undefined;
+        return <TicketCard key={t.id} ticket={t} sprintId={sprintId} onSelect={onSelectTicket} parentTicket={parent} />;
+      })}
     </div>
   );
 }
@@ -166,6 +191,8 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   const currentSprint = sprints.find(s => s.id === selectedSprintId) ?? sprints[0] ?? null;
   const currentSprintRef = useRef(currentSprint);
   currentSprintRef.current = currentSprint;
+  const headerRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   // Keep selectedSprintId valid when sprints prop changes
   useEffect(() => {
@@ -316,23 +343,47 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
       {/* ── Kanban board ── */}
       {currentSprint && (
-        <div style={{ overflowX: "auto" }}>
-          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
-            {TICKET_STATUSES.map(col => {
-              const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
-              return (
-                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column", gap: 4 }}>
-                  {/* Column header */}
-                  <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{colTickets.length}</span>
+        <div>
+          {/* Sticky status header row */}
+          <div
+            ref={headerRef}
+            style={{ position: "sticky", top: 0, overflow: "hidden", zIndex: 10, background: "#F5F6F8", marginBottom: 4 }}
+          >
+            <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
+              {TICKET_STATUSES.map(col => {
+                const count = currentSprint.tickets.filter(t => t.status === col.value).length;
+                return (
+                  <div key={col.value} style={{ flex: "0 0 180px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{count}</span>
+                    </div>
                   </div>
-                  {/* Drop zone */}
-                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                    style={{ flex: 1 }} />
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+          </div>
+          {/* Board body */}
+          <div
+            ref={bodyRef}
+            style={{ overflowX: "auto" }}
+            onScroll={() => {
+              if (headerRef.current && bodyRef.current) {
+                headerRef.current.scrollLeft = bodyRef.current.scrollLeft;
+              }
+            }}
+          >
+            <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
+              {TICKET_STATUSES.map(col => {
+                const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
+                return (
+                  <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
+                    <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
+                      style={{ flex: 1 }} />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

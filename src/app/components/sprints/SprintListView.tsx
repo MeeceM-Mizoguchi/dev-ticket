@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, Trash2, ExternalLink, Plus, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -56,7 +56,7 @@ function ColumnFilter({
     <div style={{ position: "relative", width: "100%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onToggle}>
       <button onClick={e => { e.stopPropagation(); onToggle(); }} style={{
         display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
-        cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700, width: "100%",
+        cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700,
         color: active ? "#059669" : "#B0A9A4",
         textTransform: "uppercase" as const, letterSpacing: "0.06em",
       }}>
@@ -164,6 +164,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   onCreateTicket?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
+  // 子チケット展開状態（チケットIDのSet）
+  const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const [sortCol, setSortCol] = useState<SortCol | "">("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, Set<string>>>({});
@@ -211,7 +213,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   const clearSort = () => setSortCol("");
 
   const processTickets = (tickets: SprintTicket[]) => {
-    const filtered = tickets.filter(t => {
+    // 親チケットのみをフィルタリング対象とする（子チケットはアコーディオンで表示）
+    const parents = tickets.filter(t => !t.parentId);
+    const filtered = parents.filter(t => {
       const checks: [string, string][] = [
         ["wbs", t.wbs], ["title", t.title], ["description", htmlToText(t.description)], ["status", t.status], ["priority", t.priority],
         ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
@@ -234,7 +238,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
   const COLS = ["wbs", "title", "description", "status", "priority", "assignee", "startDate", "dueDate"] as const;
   const COL_LABELS = ["WBS", "チケット名", "チケット詳細", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-  const GRID = "52px 1fr 1fr 110px 56px 110px 68px 68px";
+  const GRID = "72px 1fr 1fr 110px 56px 110px 68px 68px";
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
@@ -253,65 +257,64 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
           return (
             <div key={sprint.id} style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-              {/* Sprint header */}
-              <div
-                style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none", borderRadius: isExp ? "12px 12px 0 0" : 12 }}
-                onClick={() => toggle(sprint.id)}>
-                <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{sprint.name}</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
-                  </div>
-                  {sprint.goal && <p style={{ fontSize: 11, color: "#A09790", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sprint.goal}</p>}
-                  <div style={{ marginTop: 6 }}><ProgressBar value={progress} /></div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 20, flexShrink: 0, marginLeft: 16 }}>
-                  {[{ label: "チケット", value: sprint.tickets.length }, { label: "完了", value: done }, { label: "工数(h)", value: totalHours }, { label: "進捗", value: `${progress}%` }].map(({ label, value }) => (
-                    <div key={label} style={{ textAlign: "center" as const }}>
-                      <p style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>{value}</p>
-                      <p style={{ fontSize: 10, color: "#B0A9A4" }}>{label}</p>
+              {/* Sticky: sprint header + column headers */}
+              <div style={{ position: "sticky", top: 0, zIndex: 10 }}>
+                {/* Sprint header */}
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none", borderRadius: isExp ? "12px 12px 0 0" : 12 }}
+                  onClick={() => toggle(sprint.id)}>
+                  <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{sprint.name}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
                     </div>
-                  ))}
-                  <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
-                  <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
-                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                    <ExternalLink style={{ width: 11, height: 11 }} />詳細
-                  </button>
-                  {onCreateTicket && (
-                    <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
-                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-                      <Plus style={{ width: 11, height: 11 }} />新規チケット
+                    {sprint.goal && <p style={{ fontSize: 11, color: "#A09790", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sprint.goal}</p>}
+                    <div style={{ marginTop: 6 }}><ProgressBar value={progress} /></div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 20, flexShrink: 0, marginLeft: 16 }}>
+                    {[{ label: "チケット", value: sprint.tickets.length }, { label: "完了", value: done }, { label: "工数(h)", value: totalHours }, { label: "進捗", value: `${progress}%` }].map(({ label, value }) => (
+                      <div key={label} style={{ textAlign: "center" as const }}>
+                        <p style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>{value}</p>
+                        <p style={{ fontSize: 10, color: "#B0A9A4" }}>{label}</p>
+                      </div>
+                    ))}
+                    <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
+                    <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <ExternalLink style={{ width: 11, height: 11 }} />詳細
                     </button>
-                  )}
-                  {onEditSprint && (
-                    <button onClick={e => { e.stopPropagation(); onEditSprint(sprint); }}
-                      style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EFF6FF"; (e.currentTarget as HTMLElement).style.color = "#2563EB"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                      <Pencil style={{ width: 14, height: 14 }} />
-                    </button>
-                  )}
-                  {onDeleteSprint && (
-                    <button onClick={e => { e.stopPropagation(); onDeleteSprint(sprint); }}
-                      style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                      <Trash2 style={{ width: 14, height: 14 }} />
-                    </button>
-                  )}
+                    {onCreateTicket && (
+                      <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
+                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                        <Plus style={{ width: 11, height: 11 }} />新規チケット
+                      </button>
+                    )}
+                    {onEditSprint && (
+                      <button onClick={e => { e.stopPropagation(); onEditSprint(sprint); }}
+                        style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EFF6FF"; (e.currentTarget as HTMLElement).style.color = "#2563EB"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                        <Pencil style={{ width: 14, height: 14 }} />
+                      </button>
+                    )}
+                    {onDeleteSprint && (
+                      <button onClick={e => { e.stopPropagation(); onDeleteSprint(sprint); }}
+                        style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                        <Trash2 style={{ width: 14, height: 14 }} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-
-              {/* Ticket table */}
-              {isExp && (
-                <div>
-                  {/* Column headers with filters */}
-                  <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center" }}>
+                {/* Column headers with filters */}
+                {isExp && (
+                  <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
                     {COLS.map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
@@ -325,40 +328,87 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       />
                     ))}
                   </div>
-                  {/* Rows */}
-                  <div style={{ borderRadius: "0 0 12px 12px", overflow: "hidden" }}>
-                    {displayTickets.length === 0 ? (
-                      <div style={{ padding: "24px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12 }}>
-                        {sprint.tickets.length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
-                      </div>
-                    ) : displayTickets.map((t, i) => {
-                      const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
-                      const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
-                      const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
-                      const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
-                      return (
-                        <div key={t.id} onClick={() => onSelectTicket?.(t)}
+                )}
+              </div>
+
+              {/* Ticket rows */}
+              {isExp && (
+                <div style={{ borderRadius: "0 0 12px 12px", overflow: "hidden" }}>
+                  {displayTickets.length === 0 ? (
+                    <div style={{ padding: "24px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12 }}>
+                      {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
+                    </div>
+                  ) : displayTickets.map((t) => {
+                    const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                    const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+                    const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
+                    const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
+                    const children = sprint.tickets.filter(c => c.parentId === t.id);
+                    const hasChildren = children.length > 0;
+                    const isTicketExpanded = expandedTickets.has(t.id);
+                    const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
+                    return (
+                      <div key={t.id}>
+                        <div onClick={() => onSelectTicket?.(t)}
                           style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: t.status === "closed" ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: t.status === "closed" ? 0.65 : 1 }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#ECECEB" : "#F0F9F5"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#F5F5F4" : "#FFFFFF"; }}>
-                          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{t.wbs}</span>
+                          <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
+                            {hasChildren ? (
+                              <button onClick={toggleTicket} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center" }}>
+                                {isTicketExpanded ? <ChevronDown style={{ width: 10, height: 10 }} /> : <ChevronRight style={{ width: 10, height: 10 }} />}
+                              </button>
+                            ) : <span style={{ width: 14 }} />}
+                            <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.wbs}</span>
+                          </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                             <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
                             <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
+                            {hasChildren && <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9, display: "inline" }} /> {children.length}</span>}
                           </div>
                           <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
-                          <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span>
-                          <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span>
+                          <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span></div>
+                          <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span></div>
                           <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
                             <Avatar name={t.assignee} size="xs" />
                             <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.assignee || "—"}</span>
                           </div>
-                          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span>
-                          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.dueDate)}</span>
+                          <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span></div>
+                          <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.dueDate)}</span></div>
                         </div>
-                      );
-                    })}
-                  </div>
+                        {/* 子チケット行（アコーディオン展開時） */}
+                        {hasChildren && isTicketExpanded && children.map(child => {
+                          const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                          const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+                          const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
+                          const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                          return (
+                            <div key={child.id} onClick={() => onSelectTicket?.(child)}
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: "#F9F8F6", transition: "background 0.1s", opacity: child.status === "closed" ? 0.65 : 1 }}
+                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}>
+                              <div style={{ display: "flex", justifyContent: "center" }}>
+                                <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, paddingLeft: 4 }}>
+                                <div style={{ width: 1, height: 12, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
+                                <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                              </div>
+                              <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
+                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{ctsm.label}</span></div>
+                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, width: "fit-content" }}>{cPriLabel}</span></div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
+                                <Avatar name={child.assignee} size="xs" />
+                                <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.assignee || "—"}</span>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(child.startDate)}</span></div>
+                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(child.dueDate)}</span></div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

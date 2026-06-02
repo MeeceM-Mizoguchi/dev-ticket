@@ -24,11 +24,13 @@ export interface TicketCategory {
 
 export interface SprintTicket {
   id: string; wbs: string; title: string; status: TicketStatus;
-  priority: Priority; assignee: string; assignees: string[]; startDate: string; dueDate: string;
+  priority: Priority; assignee: string; startDate: string; dueDate: string;
   estimatedHours: number; progress: number;
   description?: string; reviewerName?: string; reviewRound?: number; generatedPrompt?: string;
   images?: string[]; categoryId?: string | null;
   createdBy?: string; createdAt?: string;
+  // 子チケットの親ID。null = 親チケット、文字列 = 子チケット。現在は1階層のみ。将来的に孫チケット対応を実装予定。
+  parentId?: string | null;
 }
 
 export type CommentType = "comment" | "review_request" | "revision_request" | "review_approved" | "status_change";
@@ -47,10 +49,11 @@ export interface TicketSourceFile {
 export interface Sprint {
   id: string; projectId: string; name: string; goal: string;
   status: SprintStatus; startDate: string; endDate: string;
-  tickets: SprintTicket[];
+  tickets: SprintTicket[]; identifier: string;
 }
 export interface Project {
-  id: string; name: string; client: string; status: ProjectStatus;
+  id: string; slug: string; wbsPrefix: string;
+  name: string; client: string; status: ProjectStatus;
   startDate: string; endDate: string; members: string[]; groupIds: number[];
   done: number; inProgress: number; todo: number; description: string;
 }

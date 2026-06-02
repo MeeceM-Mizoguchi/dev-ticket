@@ -13,6 +13,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated }: { onClose: ()
   const [goal, setGoal] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -24,6 +25,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated }: { onClose: ()
       const { data: inserted, error } = await supabase!.from("sprints").insert({
         id: `S-${Date.now()}`, project_id: projectId, name, goal,
         start_date: startDate || null, end_date: endDate || null, status: "planning",
+        identifier: identifier.trim() || null,
       }).select("id");
       setSaving(false);
       if (error || !inserted?.length) {
@@ -39,6 +41,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated }: { onClose: ()
     <DialogShell title="新規スプリント作成" onClose={onClose}
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
       <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
+      <FieldInput label="スプリント識別子" placeholder="例: SP5, Q1-2026（省略可）" value={identifier} onChange={setIdentifier} />
       <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
       <div className="grid grid-cols-2 gap-3">
         <DatePicker label="開始日 *" value={startDate} onChange={setStartDate} placeholder="年/月/日" />

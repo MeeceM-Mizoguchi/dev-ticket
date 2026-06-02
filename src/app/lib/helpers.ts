@@ -67,6 +67,19 @@ export function calcProgress(done: number, ip: number, todo: number) {
 }
 
 export function getInitials(n: string) { return (n || "?").replace(/\s/g, "").slice(0, 2); }
+
+export function truncateName(name: string | null | undefined, maxWidth = 14): string {
+  if (!name) return "";
+  let w = 0;
+  let out = "";
+  for (const ch of name) {
+    const cw = /[　-鿿＀-￯]/.test(ch) ? 2 : 1;
+    if (w + cw > maxWidth) return out + "...";
+    w += cw;
+    out += ch;
+  }
+  return out;
+}
 export function formatDate(d: string | null | undefined) { if (!d) return "—"; return d.slice(5).replace("-", "/"); }
 export function htmlToText(html: string | undefined | null): string {
   if (!html) return "";
@@ -90,8 +103,38 @@ export function getSprintStatusMeta(status: SprintStatus) {
 
 export function sprintProgress(s: Sprint) {
   if (!s.tickets.length) return 0;
-  return Math.round(s.tickets.filter(t => t.status === "done").length / s.tickets.length * 100);
+  return Math.round(s.tickets.filter(t => t.status === "done" || t.status === "closed").length / s.tickets.length * 100);
 }
 
 export const inputCls = "w-full bg-[#F7F8F9] border border-stone-200/70 rounded-xl px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 focus:bg-white transition-all";
 export const labelCls = "block text-[10px] font-bold text-stone-400 uppercase tracking-widest mb-1.5";
+
+// 親チケットのステータス変更時に子チケットの状態を検証する。
+// 将来的に孫チケット対応を実装予定（現在は1階層のみ）。
+const PARENT_STATUS_MIN_CHILD_RANK: Partial<Record<TicketStatus, number>> = {
+  "in-review": 3, // review-done
+  "stg-test":  4, // stg-test
+  "uat":       5, // uat
+  "done":      6, // done
+  "closed":    6, // done or closed
+};
+const STATUS_VALIDATION_LABEL: Partial<Record<TicketStatus, string>> = {
+  "in-review": "レビュー完了",
+  "stg-test":  "STG完了",
+  "uat":       "UAT完了",
+  "done":      "完了",
+  "closed":    "完了",
+};
+const STATUS_RANK: Record<TicketStatus, number> = {
+  todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
+  "stg-test": 4, uat: 5, done: 6, closed: 7,
+};
+export function validateParentStatusChange(targetStatus: TicketStatus, childTickets: SprintTicket[]): string | null {
+  if (childTickets.length === 0) return null;
+  const minRank = PARENT_STATUS_MIN_CHILD_RANK[targetStatus];
+  if (minRank === undefined) return null;
+  const blocking = childTickets.filter(c => (STATUS_RANK[c.status] ?? 0) < minRank);
+  if (blocking.length === 0) return null;
+  const reqLabel = STATUS_VALIDATION_LABEL[targetStatus] ?? targetStatus;
+  return `子チケット ${blocking.length}件が「${reqLabel}」に達していないため変更できません。`;
+}

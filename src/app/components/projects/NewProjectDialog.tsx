@@ -8,6 +8,13 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 
+const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
+
+function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
+function sanitizePrefix(v: string) { return v.replace(/[^A-Z]/g, ""); }
+function autoSlug(name: string) { return sanitizeSlug(name.toUpperCase()).slice(0, 6) || "PROJ"; }
+function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).slice(0, 3) || "TKT"; }
+
 export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () => void; clients: Client[]; onCreated?: () => void }) {
   const [name, setName] = useState("");
   const [clientName, setClientName] = useState("");
@@ -15,20 +22,39 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [status, setStatus] = useState<ProjectStatus>("planning");
+  const [slug, setSlug] = useState("");
+  const [wbsPrefix, setWbsPrefix] = useState("");
+  const [slugError, setSlugError] = useState("");
   const [saving, setSaving] = useState(false);
 
   const DEFAULT_CATEGORIES = ["バグ", "改善", "新機能"];
 
   const handleSave = async () => {
     if (!name.trim()) return;
+
+    const finalSlug = sanitizeSlug((slug.trim() || autoSlug(name)).toUpperCase());
+    const finalPrefix = sanitizePrefix((wbsPrefix.trim() || autoPrefix(name)).toUpperCase());
+
+    if (RESERVED_SLUGS.has(finalSlug.toLowerCase())) {
+      setSlugError("その識別子は予約済みです。別の名前を使用してください。");
+      return;
+    }
+    setSlugError("");
+
     if (isSupabaseEnabled) {
       setSaving(true);
       const projectId = `P-${Date.now()}`;
-      await supabase!.from("projects").insert({
+      const { error } = await supabase!.from("projects").insert({
         id: projectId, name, client: clientName, description,
         start_date: startDate || null, end_date: endDate || null,
         status, members: [], done: 0, in_progress: 0, todo: 0,
+        slug: finalSlug, wbs_prefix: finalPrefix,
       });
+      if (error?.code === "23505") {
+        setSlugError("その識別子はすでに使用されています。別の名前を使用してください。");
+        setSaving(false);
+        return;
+      }
       const now = Date.now();
       await supabase!.from("ticket_categories").insert(
         DEFAULT_CATEGORIES.map((catName, i) => ({
@@ -47,6 +73,27 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
     <DialogShell title="新規プロジェクト作成" onClose={onClose}
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
       <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required value={name} onChange={setName} />
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldInput
+            label="プロジェクト識別子"
+            placeholder={name ? autoSlug(name) : "例: PROJ"}
+            value={slug}
+            onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
+          />
+          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合は自動生成</p>
+          {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 3 }}>{slugError}</p>}
+        </div>
+        <div>
+          <FieldInput
+            label="チケット番号プレフィックス"
+            placeholder={name ? autoPrefix(name) : "例: TS"}
+            value={wbsPrefix}
+            onChange={v => setWbsPrefix(sanitizePrefix(v.toUpperCase()))}
+          />
+          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>チケット番号の接頭辞（例: TS-00001）</p>
+        </div>
+      </div>
       <FieldSelect label="クライアント" required value={clientName} onChange={setClientName}>
         <option value="">クライアントを選択</option>
         {clients.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}

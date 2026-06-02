@@ -113,7 +113,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
   if (step === "choose") {
     if (!hasTickets) {
       return (
-        <DialogShell title="スプリントの削除" onClose={saving ? () => {} : onClose}
+        <DialogShell title="スプリントの削除" size="sm" onClose={saving ? () => {} : onClose}
           footer={<>
             <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
             <DeleteBtn onClick={deleteWithTickets} saving={saving} />

@@ -24,13 +24,17 @@ export default function App() {
           <Route element={<ProtectedShell />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/projects" element={<ProjectsPage />} />
-            <Route path="/projects/:projectId/sprints" element={<SprintPage />} />
-            <Route path="/projects/:projectId/sprints/:sprintId" element={<SprintDetailPage />} />
+            {/* Sprint detail (individual sprint view) */}
+            <Route path="/:projectSlug/sprint/:sprintId" element={<SprintDetailPage />} />
+            <Route path="/:projectSlug/sprint/:sprintId/:ticketWbs" element={<SprintDetailPage />} />
             <Route path="/clients" element={<ClientsPage />} />
             <Route path="/members" element={<MembersPage />} />
             <Route path="/permissions" element={<PermissionsPage />} />
             <Route path="/roles" element={<RolesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            {/* Slug-based sprint list + ticket panel */}
+            <Route path="/:projectSlug" element={<SprintPage />} />
+            <Route path="/:projectSlug/:ticketWbs" element={<SprintPage />} />
           </Route>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

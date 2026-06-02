@@ -23,7 +23,7 @@ export function ConfirmDialog({
   };
 
   return (
-    <DialogShell title="削除の確認" onClose={loading ? () => {} : onClose}
+    <DialogShell title="削除の確認" size="sm" onClose={loading ? () => {} : onClose}
       footer={<>
         <BtnSecondary onClick={onClose} disabled={loading}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleConfirm} disabled={loading}

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, ExternalLink, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Plus, GitBranch } from "lucide-react";
 import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
 
@@ -7,6 +7,8 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
   sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
+  // 子チケット展開状態（チケットIDのSet）
+  const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const DAY_W = 20;
@@ -110,16 +112,43 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     </button>
                   )}
                 </div>
-                {isExp && sprint.tickets.map(t => {
+                {isExp && sprint.tickets.filter(t => !t.parentId).map(t => {
                   const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                  const children = sprint.tickets.filter(c => c.parentId === t.id);
+                  const hasChildren = children.length > 0;
+                  const isTicketExpanded = expandedTickets.has(t.id);
                   return (
-                    <div key={t.id} onClick={() => onSelectTicket?.(t)}
-                      style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 28px", display: "flex", alignItems: "center", gap: 5, background: "rgba(26,23,20,0.012)", cursor: "pointer" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(26,23,20,0.012)"; }}>
-                      <div style={{ width: 5, height: 5, borderRadius: "50%", background: tsm.color, flexShrink: 0 }} />
-                      <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1 }}>{t.title}</span>
-                      <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: tsm.bg, color: tsm.color, flexShrink: 0 }}>{tsm.label}</span>
+                    <div key={t.id}>
+                      <div onClick={() => onSelectTicket?.(t)}
+                        style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 14px", display: "flex", alignItems: "center", gap: 5, background: "rgba(26,23,20,0.012)", cursor: "pointer" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(26,23,20,0.012)"; }}>
+                        {hasChildren ? (
+                          <button onClick={e => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); }}
+                            style={{ padding: 1, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", flexShrink: 0 }}>
+                            {isTicketExpanded ? <ChevronDown style={{ width: 9, height: 9 }} /> : <ChevronRight style={{ width: 9, height: 9 }} />}
+                          </button>
+                        ) : <span style={{ width: 11 }} />}
+                        <div style={{ width: 5, height: 5, borderRadius: "50%", background: tsm.color, flexShrink: 0 }} />
+                        <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1 }}>{t.title}</span>
+                        {hasChildren && <GitBranch style={{ width: 8, height: 8, color: "#B0A9A4", flexShrink: 0 }} />}
+                        <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: tsm.bg, color: tsm.color, flexShrink: 0 }}>{tsm.label}</span>
+                      </div>
+                      {/* 子チケット行（アコーディオン展開時） */}
+                      {hasChildren && isTicketExpanded && children.map(child => {
+                        const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                        return (
+                          <div key={child.id} onClick={() => onSelectTicket?.(child)}
+                            style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 30px", display: "flex", alignItems: "center", gap: 5, background: "rgba(5,150,105,0.02)", cursor: "pointer" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(5,150,105,0.02)"; }}>
+                            <div style={{ width: 1, height: 10, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
+                            <div style={{ width: 4, height: 4, borderRadius: "50%", background: ctsm.color, flexShrink: 0 }} />
+                            <span style={{ fontSize: 9, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1 }}>{child.title}</span>
+                            <span style={{ fontSize: 7, fontWeight: 700, padding: "1px 4px", borderRadius: 8, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })}
@@ -184,26 +213,53 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                       </div>
                     )}
                   </div>
-                  {isExp && sprint.tickets.map(t => {
+                  {isExp && sprint.tickets.filter(t => !t.parentId).map(t => {
                     const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
                     const hasBar = !!(t.startDate && t.dueDate);
                     const tL = t.startDate ? getLeft(t.startDate) : 0;
                     const tW = hasBar ? getWidth(t.startDate, t.dueDate) : 0;
+                    const children = sprint.tickets.filter(c => c.parentId === t.id);
+                    const isTicketExpanded = expandedTickets.has(t.id);
                     return (
-                      <div key={t.id} style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(26,23,20,0.012)" }}>
-                        <GridLines />
-                        {hasBar && (
-                          <div style={{ position: "absolute", left: tL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
-                            <div style={{ width: tW, height: 12, borderRadius: 3, background: tsm.color + "25", border: `1px solid ${tsm.color}50`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
-                              <div style={{ height: "100%", width: `${t.progress}%`, background: tsm.color + "55", borderRadius: 2 }} />
+                      <div key={t.id}>
+                        <div style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(26,23,20,0.012)" }}>
+                          <GridLines />
+                          {hasBar && (
+                            <div style={{ position: "absolute", left: tL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
+                              <div style={{ width: tW, height: 12, borderRadius: 3, background: tsm.color + "25", border: `1px solid ${tsm.color}50`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
+                                <div style={{ height: "100%", width: `${t.progress}%`, background: tsm.color + "55", borderRadius: 2 }} />
+                              </div>
+                              <span style={{ fontSize: 8, fontFamily: "var(--font-mono)", color: "#9E9690", whiteSpace: "nowrap" as const }}>{formatDate(t.dueDate)}</span>
+                              <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 8, background: tsm.bg, color: tsm.color, whiteSpace: "nowrap" as const }}>{tsm.label}</span>
                             </div>
-                            <span style={{ fontSize: 8, fontFamily: "var(--font-mono)", color: "#9E9690", whiteSpace: "nowrap" as const }}>{formatDate(t.dueDate)}</span>
-                            <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 8, background: tsm.bg, color: tsm.color, whiteSpace: "nowrap" as const }}>{tsm.label}</span>
-                          </div>
-                        )}
-                        {!hasBar && (
-                          <div style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontSize: 8, color: "#D5D0CB", fontStyle: "italic" }}>日程未設定</div>
-                        )}
+                          )}
+                          {!hasBar && (
+                            <div style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontSize: 8, color: "#D5D0CB", fontStyle: "italic" }}>日程未設定</div>
+                          )}
+                        </div>
+                        {/* 子チケットバー（アコーディオン展開時） */}
+                        {children.length > 0 && isTicketExpanded && children.map(child => {
+                          const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                          const cHasBar = !!(child.startDate && child.dueDate);
+                          const cL = child.startDate ? getLeft(child.startDate) : 0;
+                          const cW = cHasBar ? getWidth(child.startDate, child.dueDate) : 0;
+                          return (
+                            <div key={child.id} style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(5,150,105,0.02)" }}>
+                              <GridLines />
+                              {cHasBar && (
+                                <div style={{ position: "absolute", left: cL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
+                                  <div style={{ width: cW, height: 9, borderRadius: 3, background: ctsm.color + "20", border: `1px solid ${ctsm.color}40`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
+                                    <div style={{ height: "100%", width: `${child.progress}%`, background: ctsm.color + "50", borderRadius: 2 }} />
+                                  </div>
+                                  <span style={{ fontSize: 7, fontFamily: "var(--font-mono)", color: "#B0A9A4", whiteSpace: "nowrap" as const }}>{formatDate(child.dueDate)}</span>
+                                </div>
+                              )}
+                              {!cHasBar && (
+                                <div style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 7, color: "#D5D0CB", fontStyle: "italic" }}>日程未設定</div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   })}

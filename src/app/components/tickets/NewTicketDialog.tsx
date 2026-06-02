@@ -11,13 +11,17 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 
-export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprintStartDate, sprintEndDate }: {
+export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
   sprintId?: string; projectId?: string; onClose: () => void; onCreated?: () => void;
   sprintStartDate?: string; sprintEndDate?: string;
+  // 子チケット作成モード用。parentTicketId が指定された場合は子チケットとして作成される。将来の孫チケット対応も同プロパティを再利用予定。
+  parentTicketId?: string; parentWbs?: string;
+  zIndexBase?: number; // TicketDetailPanel 内から呼ぶ際は 310 を指定してz-index競合を回避
 }) {
   const { userName, userRole } = useAuth();
   const isAdmin = userRole === "admin" || userRole === "project-manager";
-  const needsSelection = !sprintId;
+  const isChildMode = !!parentTicketId;
+  const needsSelection = !sprintId && !isChildMode;
 
   // --- プロジェクト・スプリント選択（ダッシュボードから開く場合） ---
   const [availableProjects, setAvailableProjects] = useState<{ id: string; name: string }[]>([]);
@@ -105,11 +109,23 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
     });
   }, []);
 
+  const [wbsPrefix, setWbsPrefix] = useState("T");
+
   useEffect(() => {
     if (!isSupabaseEnabled || !effectiveProjectId) return;
     supabase!.from("ticket_categories").select("*").eq("project_id", effectiveProjectId).order("created_at")
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
+    // Project prefix is fallback when sprint has no identifier
+    supabase!.from("projects").select("wbs_prefix").eq("id", effectiveProjectId).single()
+      .then(({ data }) => { if (data?.wbs_prefix) setWbsPrefix(data.wbs_prefix); });
   }, [effectiveProjectId]);
+
+  // Sprint identifier takes priority over project prefix
+  useEffect(() => {
+    if (!isSupabaseEnabled || !effectiveSprintId) return;
+    supabase!.from("sprints").select("identifier").eq("id", effectiveSprintId).single()
+      .then(({ data }) => { if (data?.identifier) setWbsPrefix(data.identifier); });
+  }, [effectiveSprintId]);
 
   const uploadImageToStorage = useCallback(async (file: Blob): Promise<string> => {
     if (!isSupabaseEnabled) return URL.createObjectURL(file);
@@ -139,8 +155,57 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
 
     if (isSupabaseEnabled) {
       setSaving(true);
+      let wbs: string;
+      if (isChildMode && parentTicketId && parentWbs) {
+        // 子チケットのWBS: 親WBS + "-" + 連番 (例: PRJ-001-1, PRJ-001-2)
+        const { data: existingChildren } = await supabase!
+          .from("sprint_tickets").select("id").eq("parent_id", parentTicketId);
+        const nextNum = (existingChildren?.length ?? 0) + 1;
+        wbs = `${parentWbs}-${nextNum}`;
+        // sprintId が未指定の場合は親チケットから取得
+        if (!effectiveSprintId) {
+          const { data: parentRow } = await supabase!
+            .from("sprint_tickets").select("sprint_id").eq("id", parentTicketId).single();
+          if (parentRow?.sprint_id) {
+            await supabase!.from("sprint_tickets").insert({
+              id: ticketId.current, sprint_id: parentRow.sprint_id, wbs,
+              title, status, priority, assignee,
+              start_date: startDate || null, due_date: dueDate || null,
+              estimated_hours: estimatedHours || 0, progress: 0,
+              description: description || null,
+              category_id: categoryId || null,
+              created_by: userName || null,
+              images: images.length ? images : [],
+              parent_id: parentTicketId,
+            });
+            setSaving(false);
+            onCreated?.();
+            onClose();
+            return;
+          }
+        }
+      } else {
+        // プロジェクト内の全スプリントIDを取得し、プロジェクトスコープでwbs連番を生成
+        const { data: sprintRows } = await supabase!.from("sprints").select("id").eq("project_id", effectiveProjectId!);
+        const sprintIds = sprintRows?.map(s => s.id) ?? [];
+        const prefix = wbsPrefix || "T";
+        let nextNum = 1;
+        if (sprintIds.length > 0) {
+          const { data: maxRow } = await supabase!
+            .from("sprint_tickets")
+            .select("wbs")
+            .in("sprint_id", sprintIds)
+            .like("wbs", `${prefix}-%`)
+            .not("wbs", "like", `${prefix}-%-_%`)
+            .order("wbs", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          nextNum = (parseInt(maxRow?.wbs?.slice(prefix.length + 1) ?? "0", 10) || 0) + 1;
+        }
+        wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
+      }
       await supabase!.from("sprint_tickets").insert({
-        id: ticketId.current, sprint_id: effectiveSprintId, wbs: "",
+        id: ticketId.current, sprint_id: effectiveSprintId, wbs,
         title, status, priority, assignee,
         start_date: startDate || null, due_date: dueDate || null,
         estimated_hours: estimatedHours || 0, progress: 0,
@@ -148,6 +213,7 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
         category_id: categoryId || null,
         created_by: userName || null,
         images: images.length ? images : [],
+        parent_id: parentTicketId || null,
       });
       setSaving(false);
     }
@@ -158,14 +224,14 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
   return (
     <>
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
-      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "48%", minWidth: 440, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "48%", minWidth: 440, background: "#FAFAF8", zIndex: zIndexBase + 1, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
         <div style={{ padding: "22px 24px 18px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
-              <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>新規チケット</p>
-              <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>チケット作成</h2>
+              <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>{isChildMode ? "子チケット作成" : "新規チケット"}</p>
+              <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>{isChildMode ? `子チケット作成 (${parentWbs})` : "チケット作成"}</h2>
             </div>
             <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -283,8 +349,8 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
           </div>
 
           <div>
-            <label className={labelCls}>詳細・概要</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} />
+            <label className={labelCls}>詳細</label>
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} />
           </div>
 
           <div>
@@ -322,9 +388,25 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
           </div>
         </div>
 
-        <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", gap: 8 }}>
-          <BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "作成する"}</BtnPrimary>
-          <BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>
+        <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", gap: 8, alignItems: "center" }}>
+          {(() => {
+            const errs: string[] = [];
+            if (needsSelection && !selectedProjectId) errs.push("プロジェクト");
+            if (needsSelection && !selectedSprintId) errs.push("スプリント");
+            if (!title.trim()) errs.push("チケット名");
+            const isValid = errs.length === 0;
+            return (
+              <>
+                <BtnPrimary onClick={handleSave} disabled={!isValid || saving}>{saving ? "保存中..." : "作成する"}</BtnPrimary>
+                <BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>
+                {!isValid && (
+                  <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
+                    {errs.join("・")}を入力してください
+                  </span>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
     </>

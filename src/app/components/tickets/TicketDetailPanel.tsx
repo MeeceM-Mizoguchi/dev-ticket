@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck } from "lucide-react";
+import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { TICKET_STATUSES, labelCls } from "@/app/lib/helpers";
+import { TICKET_STATUSES, labelCls, validateParentStatusChange } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -10,6 +10,10 @@ import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { DialogShell } from "@/app/components/shared/DialogShell";
+import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { BtnSpinner } from "@/app/components/shared/PageLoader";
+import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
@@ -48,8 +52,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, onClose, onUpdated, onDeleted, projectPermissions,
-}: { ticket: SprintTicket | null; projectId?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; projectPermissions?: import("@/app/types").UserPermissions }) {
+  ticket, projectId, sprintId, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions,
+}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -62,12 +66,16 @@ export function TicketDetailPanel({
   // editable state
   const [title, setTitle]           = useState(ticket?.title ?? "");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showMoveModal, setShowMoveModal] = useState(false);
+  const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
+  const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string }[]>([]);
+  const [isMoveLoading, setIsMoveLoading] = useState(false);
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
   const [priority, setPriority]     = useState<Priority>(ticket?.priority ?? "medium");
-  const [assignees, setAssignees]   = useState<string[]>(
-    ticket?.assignees?.length ? ticket.assignees : (ticket?.assignee ? [ticket.assignee] : [])
+  const [assignee, setAssignee]     = useState<string>(
+    ticket?.assignee ?? ""
   );
-  const [assigneesOpen, setAssigneesOpen] = useState(false);
+  const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [startDate, setStartDate]   = useState(ticket?.startDate ?? "");
   const [dueDate, setDueDate]       = useState(ticket?.dueDate ?? "");
   const [estimatedH, setEstimatedH] = useState(ticket?.estimatedHours ?? 0);
@@ -122,17 +130,23 @@ export function TicketDetailPanel({
   // accordion
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set([1]));
 
+  // 子チケット
+  const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
+  const [showCreateChild, setShowCreateChild] = useState(false);
+
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const reviewerDropRef = useRef<HTMLDivElement>(null);
 
   const loadRelated = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
-    const [{ data: cData }, { data: fData }] = await Promise.all([
+    const [{ data: cData }, { data: fData }, { data: childData }] = await Promise.all([
       supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at"),
       supabase!.from("ticket_source_files").select("*").eq("ticket_id", ticketId).order("created_at"),
+      supabase!.from("sprint_tickets").select("*").eq("parent_id", ticketId).order("wbs"),
     ]);
     if (cData) setComments(cData.map(mapComment));
     if (fData) setSourceFiles(fData.map(mapSourceFile));
+    if (childData) setChildTickets(childData.map(mapSprintTicket));
   }, []);
 
   // sync when ticket changes — set from prop immediately, then fetch fresh from DB
@@ -141,8 +155,7 @@ export function TicketDetailPanel({
     setTitle(ticket.title);
     setStatus(ticket.status);
     setPriority(ticket.priority);
-    const a = ticket.assignees?.length ? ticket.assignees : (ticket.assignee ? [ticket.assignee] : []);
-    setAssignees(a);
+    setAssignee(ticket.assignee ?? "");
     setStartDate(ticket.startDate ?? "");
     setDueDate(ticket.dueDate ?? "");
     setEstimatedH(ticket.estimatedHours);
@@ -161,7 +174,7 @@ export function TicketDetailPanel({
     setRevisionInput("");
     setRevisionImages([]);
     setEditingId(null);
-    setAssigneesOpen(false);
+    setAssigneeOpen(false);
     setGeneratedPrompt(ticket.generatedPrompt ?? "");
     setCategoryId(ticket.categoryId ?? null);
     // fetch fresh data from DB (in case sprint cache is stale)
@@ -173,8 +186,7 @@ export function TicketDetailPanel({
           setTitle(t.title);
           setStatus(t.status);
           setPriority(t.priority);
-          const fresh = t.assignees?.length ? t.assignees : (t.assignee ? [t.assignee] : []);
-          setAssignees(fresh);
+          setAssignee(t.assignee ?? "");
           setStartDate(t.startDate ?? "");
           setDueDate(t.dueDate ?? "");
           setEstimatedH(t.estimatedHours);
@@ -254,7 +266,7 @@ export function TicketDetailPanel({
           description,
           priority,
           status,
-          assignees,
+          assignee,
           startDate,
           dueDate,
           estimatedHours: estimatedH,
@@ -342,6 +354,8 @@ export function TicketDetailPanel({
 
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
+    const validErr = validateParentStatusChange(btn.next, childTickets);
+    if (validErr) { alert(validErr); return; }
     const newStatus = btn.next;
     const p = STATUS_PROGRESS[newStatus];
     setStatus(newStatus);
@@ -354,9 +368,9 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
-  const saveAssignees = (newList: string[]) => {
-    setAssignees(newList);
-    save({ assignees: newList, assignee: newList[0] || "" });
+  const saveAssignee = (name: string) => {
+    setAssignee(name);
+    save({ assignees: name ? [name] : [], assignee: name });
   };
 
   const addComment = async (content: string, type: CommentType = "comment", images: string[] = [], explicitStatus?: TicketStatus) => {
@@ -395,6 +409,8 @@ export function TicketDetailPanel({
 
   const handleReviewRequest = async () => {
     if (!reviewerName || status !== "in-progress" || !ticket) return;
+    const validErr = validateParentStatusChange("in-review", childTickets);
+    if (validErr) { alert(validErr); return; }
     const round = reviewRound + 1;
     const newStatus: TicketStatus = "in-review";
     const newProgress = STATUS_PROGRESS[newStatus];
@@ -433,7 +449,7 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
     }
-    const mentions = assignees.length > 0 ? assignees.map(a => `<strong>@${a}</strong>`).join(" ") : "";
+    const mentions = assignee ? `<strong>@${assignee}</strong>` : "";
     const content = revisionText.trim()
       ? revisionText
       : `<p>${mentions} に修正依頼を送信しました</p>`;
@@ -474,11 +490,45 @@ export function TicketDetailPanel({
 
   const handleDeleteTicket = async () => {
     if (!ticket || !isSupabaseEnabled) return;
+    // 子チケットのコメント・ファイルを先に削除（DBカスケードでticket本体は自動削除される）
+    for (const child of childTickets) {
+      await supabase!.from("ticket_comments").delete().eq("ticket_id", child.id);
+      await supabase!.from("ticket_source_files").delete().eq("ticket_id", child.id);
+    }
     await supabase!.from("ticket_comments").delete().eq("ticket_id", ticket.id);
     await supabase!.from("ticket_source_files").delete().eq("ticket_id", ticket.id);
     await supabase!.from("sprint_tickets").delete().eq("id", ticket.id);
     onDeleted?.();
     onClose();
+  };
+
+  const openMoveModal = async () => {
+    if (!ticket || !isSupabaseEnabled || !projectId) return;
+    const [{ data: ticketRow }, { data: sprintsData }] = await Promise.all([
+      supabase!.from("sprint_tickets").select("sprint_id").eq("id", ticket.id).single(),
+      supabase!.from("sprints").select("id, name, status, start_date, end_date").eq("project_id", projectId).order("start_date"),
+    ]);
+    const currentSprintId = ticketRow?.sprint_id ?? null;
+    setAvailableSprints(
+      (sprintsData ?? [])
+        .filter(s => s.id !== currentSprintId)
+        .map(s => ({ id: s.id, name: s.name, status: s.status, startDate: s.start_date ?? "", endDate: s.end_date ?? "" }))
+    );
+    setMoveTargetSprintId(null);
+    setShowMoveModal(true);
+  };
+
+  const handleMoveTicket = async () => {
+    if (!ticket || !isSupabaseEnabled || !moveTargetSprintId) return;
+    setIsMoveLoading(true);
+    try {
+      await supabase!.from("sprint_tickets").update({ sprint_id: moveTargetSprintId }).eq("id", ticket.id);
+      onUpdated?.();
+      setShowMoveModal(false);
+      onClose();
+    } finally {
+      setIsMoveLoading(false);
+    }
   };
 
   const handleAddComment = async () => {
@@ -520,23 +570,81 @@ export function TicketDetailPanel({
   const actionBtn = ACTION_BUTTONS[status];
 
   // 担当者チェック: 自分が担当者かどうか
-  const isAssignee = assignees.length === 0 || assignees.includes(userName);
+  const isAssignee = !assignee || assignee === userName;
   const canSendReview = status === "in-progress" && !!reviewerName && isAssignee;
   // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつ担当者ではない、かつレビュー権限あり
   const canReview = (userName === reviewerName || isAdminOrPM) && !isAssignee && hasReviewPermission;
   const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
 
-  const assigneeLabel = assignees.length === 0 ? "未割り当て"
-    : assignees.length === 1 ? assignees[0]
-    : `${assignees[0]} 他${assignees.length - 1}名`;
+  const assigneeLabel = assignee || "未割り当て";
 
   return (
     <>
       {showDeleteConfirm && (
         <ConfirmDialog
-          message={`「${title}」を削除しますか？`}
+          message={childTickets.length > 0
+            ? `「${title}」を削除しますか？\n子チケットが${childTickets.length}件あります。子チケットも全て削除されます。`
+            : `「${title}」を削除しますか？`}
           onConfirm={handleDeleteTicket}
           onClose={() => setShowDeleteConfirm(false)}
+        />
+      )}
+      {showMoveModal && (
+        <DialogShell
+          title="スプリントへ移動"
+          onClose={isMoveLoading ? () => {} : () => setShowMoveModal(false)}
+          footer={<>
+            <BtnSecondary onClick={() => setShowMoveModal(false)} disabled={isMoveLoading}>キャンセル</BtnSecondary>
+            <button type="button" onClick={handleMoveTicket} disabled={isMoveLoading || !moveTargetSprintId}
+              style={{ padding: "9px 20px", background: isMoveLoading || !moveTargetSprintId ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: isMoveLoading || !moveTargetSprintId ? "not-allowed" : "pointer", boxShadow: isMoveLoading || !moveTargetSprintId ? "none" : "0 2px 8px rgba(5,150,105,0.30)", display: "flex", alignItems: "center", gap: 6 }}>
+              {isMoveLoading && <BtnSpinner />}
+              {isMoveLoading ? "移動中..." : "移動する"}
+            </button>
+          </>}>
+          <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>移動先のスプリントを選択してください</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {availableSprints.length === 0 ? (
+              <p style={{ fontSize: 13, color: "#A09790", textAlign: "center", padding: "24px 0" }}>移動先のスプリントがありません</p>
+            ) : availableSprints.map(s => {
+              const statusMeta: Record<string, { label: string; color: string; bg: string }> = {
+                planning:  { label: "計画中", color: "#4F46E5", bg: "#EEF2FF" },
+                active:    { label: "進行中", color: "#059669", bg: "#ECFDF5" },
+                completed: { label: "完了",   color: "#6B7280", bg: "#F3F4F6" },
+                delayed:   { label: "遅延",   color: "#DC2626", bg: "#FEF2F2" },
+              };
+              const sm = statusMeta[s.status] ?? { label: s.status, color: "#6B7280", bg: "#F3F4F6" };
+              const isSelected = moveTargetSprintId === s.id;
+              return (
+                <label key={s.id}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 12, border: `2px solid ${isSelected ? "#059669" : "rgba(26,23,20,0.10)"}`, background: isSelected ? "#ECFDF5" : "#FAFAF8", cursor: "pointer", transition: "all 0.15s" }}>
+                  <input type="radio" name="targetSprint" value={s.id} checked={isSelected} onChange={() => setMoveTargetSprintId(s.id)}
+                    style={{ accentColor: "#059669", width: 16, height: 16, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{s.name}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
+                    </div>
+                    {(s.startDate || s.endDate) && (
+                      <span style={{ fontSize: 11, color: "#A09790", marginTop: 2, display: "block" }}>
+                        {s.startDate || "—"} 〜 {s.endDate || "—"}
+                      </span>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </DialogShell>
+      )}
+      {showCreateChild && ticket && !ticket.parentId && (
+        <NewTicketDialog
+          sprintId={sprintId}
+          projectId={projectId}
+          parentTicketId={ticket.id}
+          parentWbs={ticket.wbs}
+          zIndexBase={310}
+          onClose={() => setShowCreateChild(false)}
+          onCreated={() => { setShowCreateChild(false); loadRelated(ticket.id); onUpdated?.(); }}
         />
       )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
@@ -562,8 +670,7 @@ export function TicketDetailPanel({
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.id}</span>
-                {ticket.wbs && <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>WBS {ticket.wbs}</span>}
+                <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.wbs || ticket.id}</span>
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: smeta?.bg ?? "#F4F5F6", color: smeta?.color ?? "#9E9690" }}>{smeta?.label}</span>
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
@@ -580,6 +687,24 @@ export function TicketDetailPanel({
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              {/* 子チケット作成ボタン（親チケットのみ表示） */}
+              {!ticket.parentId && (
+                <button onClick={() => setShowCreateChild(true)} title="子チケットを作成"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <GitBranch style={{ width: 15, height: 15 }} />
+                </button>
+              )}
+              {/* スプリント移動ボタン（子チケットには表示しない） */}
+              {!ticket.parentId && (
+                <button onClick={openMoveModal} title="別のスプリントへ移動"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <ArrowRightLeft style={{ width: 15, height: 15 }} />
+                </button>
+              )}
               <button onClick={() => setShowDeleteConfirm(true)} title="チケットを削除"
                 style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
@@ -594,12 +719,17 @@ export function TicketDetailPanel({
             </div>
           </div>
           {/* Progress bar in header */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
-            <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${progress}%`, background: "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", flexShrink: 0 }}>{progress}%</span>
-          </div>
+          {(() => {
+            const displayProgress = (status === "done" || status === "closed") ? 100 : progress;
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+                <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${displayProgress}%`, background: "#059669", borderRadius: 99, transition: "width 0.6s ease" }} />
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", flexShrink: 0 }}>{displayProgress}%</span>
+              </div>
+            );
+          })()}
           {/* Action button in header */}
           {actionBtn && isAssignee && (
             <button onClick={() => handleStatusAction(actionBtn)}
@@ -617,7 +747,7 @@ export function TicketDetailPanel({
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }} onClick={() => assigneesOpen && setAssigneesOpen(false)}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }} onClick={() => assigneeOpen && setAssigneeOpen(false)}>
 
           {/* Metadata */}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -656,34 +786,30 @@ export function TicketDetailPanel({
               </div>
             )}
 
-            {/* 担当者 (全幅・複数選択) */}
+            {/* 担当者 (全幅・1名のみ) */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
-              <button onClick={e => { e.stopPropagation(); setAssigneesOpen(o => !o); }}
-                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: assignees.length === 0 ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
+              <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
+                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
-                <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneesOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneeOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
               </button>
-              {assigneesOpen && (
+              {assigneeOpen && (
                 <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", marginTop: 4 }}>
                   {memberNames.length === 0
                     ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
                     : memberNames.map(n => (
-                      <label key={n} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignees.includes(n) ? "#ECFDF5" : "transparent", transition: "background 0.1s" }}
-                        onMouseEnter={e => { if (!assignees.includes(n)) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = assignees.includes(n) ? "#ECFDF5" : "transparent"; }}>
-                        <input type="checkbox" checked={assignees.includes(n)} style={{ accentColor: "#059669", width: 14, height: 14 }}
-                          onChange={e => {
-                            const next = e.target.checked ? [...assignees, n] : assignees.filter(a => a !== n);
-                            saveAssignees(next);
-                          }} />
+                      <button key={n} onClick={() => { saveAssignee(n); setAssigneeOpen(false); }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.1s", textAlign: "left" }}
+                        onMouseEnter={e => { if (assignee !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
                         <Avatar name={n} size="xs" />
-                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714" }}>{n}</span>
-                        {assignees.includes(n) && <Check style={{ width: 12, height: 12, color: "#059669", marginLeft: "auto" }} />}
-                      </label>
+                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1 }}>{n}</span>
+                        {assignee === n && <Check style={{ width: 12, height: 12, color: "#059669", marginLeft: "auto" }} />}
+                      </button>
                     ))}
                   <div style={{ padding: "6px 12px", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
-                    <button onClick={() => { saveAssignees([]); setAssigneesOpen(false); }}
+                    <button onClick={() => { saveAssignee(""); setAssigneeOpen(false); }}
                       style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                       割り当て解除
                     </button>
@@ -721,6 +847,51 @@ export function TicketDetailPanel({
             </div>
           </div>
 
+          {/* 子チケット一覧（親チケットのみ表示。将来の孫チケット対応時はこのセクションを再帰化予定） */}
+          {!ticket.parentId && (
+            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 12, padding: "14px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
+                  <GitBranch style={{ width: 12, height: 12, color: "#059669" }} />
+                  子チケット
+                  <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({childTickets.length}件)</span>
+                </p>
+                <button onClick={() => setShowCreateChild(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                  <Plus style={{ width: 11, height: 11 }} />子チケット作成
+                </button>
+              </div>
+              {childTickets.length === 0 ? (
+                <div style={{ padding: "12px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>
+                  子チケットはありません
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {childTickets.map(child => {
+                    const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                    const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+                    const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
+                    const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                    return (
+                      <div key={child.id}
+                        onClick={() => onSelectTicket?.(child)}
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: "#FAFAF8", cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
+                        onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FAFAF8"; }}>
+                        <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
+                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, flexShrink: 0 }}>{cPriLabel}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 詳細 + 画像 */}
           <div
             onPaste={e => {
@@ -735,7 +906,7 @@ export function TicketDetailPanel({
             onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
           >
             <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}>詳細</p>
-            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} />
+            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} />
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
               <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
@@ -899,7 +1070,7 @@ export function TicketDetailPanel({
                             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
                             レビュアーを選択...
                           </button>
-                          {reviewerEligibleNames.filter(n => !assignees.includes(n)).map(n => (
+                          {reviewerEligibleNames.filter(n => n !== assignee).map(n => (
                             <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
                               style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
                               onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}

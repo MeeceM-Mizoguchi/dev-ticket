@@ -25,19 +25,40 @@ export function EditSprintDialog({ sprint, onClose, onUpdated }: {
   const [startDate, setStartDate] = useState(sprint.startDate || "");
   const [endDate, setEndDate] = useState(sprint.endDate || "");
   const [status, setStatus] = useState<SprintStatus>(sprint.status);
+  const [identifier, setIdentifier] = useState(sprint.identifier || "");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     if (!name.trim()) return;
     if (isSupabaseEnabled) {
       setSaving(true);
-      // "delayed" is computed, never store it; fall back to "planning"
+      const newIdentifier = identifier.trim();
       const dbStatus = (status === "delayed" ? "planning" : status);
       await supabase!.from("sprints").update({
         name, goal, status: dbStatus,
         start_date: startDate || null,
         end_date: endDate || null,
+        identifier: newIdentifier || null,
       }).eq("id", sprint.id);
+
+      // 識別子が変わった場合、このスプリントの全チケットのWBSを更新
+      if (newIdentifier && newIdentifier !== (sprint.identifier || "")) {
+        const { data: tickets } = await supabase!
+          .from("sprint_tickets")
+          .select("id")
+          .eq("sprint_id", sprint.id)
+          .order("created_at");
+
+        if (tickets?.length) {
+          await Promise.all(
+            tickets.map((t, i) =>
+              supabase!.from("sprint_tickets")
+                .update({ wbs: `${newIdentifier}-${String(i + 1).padStart(3, "0")}` })
+                .eq("id", t.id)
+            )
+          );
+        }
+      }
       setSaving(false);
     }
     onUpdated?.();
@@ -48,6 +69,7 @@ export function EditSprintDialog({ sprint, onClose, onUpdated }: {
     <DialogShell title="スプリント編集" onClose={onClose}
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
       <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
+      <FieldInput label="スプリント識別子" placeholder="例: SP5, Q1-2026（省略可）" value={identifier} onChange={setIdentifier} />
       <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
       <div className="grid grid-cols-2 gap-3">
         <DatePicker label="開始日" value={startDate} onChange={setStartDate} placeholder="年/月/日" />

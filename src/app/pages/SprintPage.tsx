@@ -1,12 +1,12 @@
 import { useEffect, useState, useMemo, useRef, type ElementType } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Lock } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Lock, Settings2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
-import type { Project, Sprint, SprintView } from "@/app/types";
+import type { Project, Sprint, SprintTicket, SprintView } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
 import { SprintBoardView } from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
@@ -15,9 +15,10 @@ import { EditSprintDialog } from "@/app/components/sprints/EditSprintDialog";
 import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
+import { EditProjectIdentifiersDialog } from "@/app/components/projects/EditProjectIdentifiersDialog";
 
 export function SprintPage() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectSlug, ticketWbs } = useParams<{ projectSlug: string; ticketWbs?: string }>();
   const navigate = useNavigate();
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userPermissions } = useAuth();
@@ -27,32 +28,20 @@ export function SprintPage() {
   const canCreateSprint = effectivePermissions.canCreateSprint;
   const canCreateTicket = effectivePermissions.canCreateTicket;
   const canEditDeleteSprint = effectivePermissions.canEditDelete;
-  const [project, setProject] = useState<Project | null>(PROJECTS.find(p => p.id === projectId) ?? null);
-  const [sprints, setSprints] = useState<Sprint[]>(SPRINTS.filter(s => s.projectId === projectId));
+
+  const [project, setProject] = useState<Project | null>(null);
+  const [sprints, setSprints] = useState<Sprint[]>([]);
   const [viewMode, setViewMode] = useState<SprintView>("list");
   const [showCreate, setShowCreate] = useState(false);
-  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [createForSprintId, setCreateForSprintId] = useState<string | null>(null);
+  const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
-  // Track recently deleted IDs to prevent stale polling responses from restoring them
+  const [notFound, setNotFound] = useState(false);
   const deletedIdsRef = useRef<Set<string>>(new Set());
 
-  // Derive selected ticket from live sprint data so it stays fresh after polling
-  const selectedTicket = useMemo(() => {
-    if (!selectedTicketId) return null;
-    for (const sprint of sprints) {
-      const t = sprint.tickets.find(t => t.id === selectedTicketId);
-      if (t) return t;
-    }
-    return null;
-  }, [selectedTicketId, sprints]);
-
-  const createForSprint = useMemo(
-    () => sprints.find(s => s.id === createForSprintId) ?? null,
-    [createForSprintId, sprints]
-  );
+  const projectId = project?.id ?? null;
 
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -60,33 +49,57 @@ export function SprintPage() {
       .then(({ data: p }) => { if (p) setProject(mapProject(p)); });
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" })
       .then(({ data }) => {
-        if (data) setSprints(
-          data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id))
-        );
+        if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
       });
   };
 
-  // Initial load
   useEffect(() => {
-    if (!isSupabaseEnabled || !projectId) return;
-    Promise.all([
-      supabase!.from("projects").select("*").eq("id", projectId).single(),
-      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }),
-      userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", projectId).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
-    ]).then(([{ data: p }, { data: s }, { data: pmp }]) => {
-      if (p) setProject(mapProject(p));
+    if (!isSupabaseEnabled) {
+      // mock mode: find by slug or fall back
+      const mock = PROJECTS.find(p => p.slug === projectSlug?.toUpperCase());
+      if (mock) { setProject(mock); setSprints(SPRINTS.filter(s => s.projectId === mock.id)); }
+      setLoading(false);
+      return;
+    }
+    if (!projectSlug) { setLoading(false); return; }
+
+    const lookupProject = async () => {
+      // Try slug lookup first (new projects), then fall back to ID (old projects without slug)
+      const { data: bySlugRows } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
+      const p = bySlugRows?.[0]
+        ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
+      if (!p) { setNotFound(true); setLoading(false); return; }
+      setProject(mapProject(p));
+      const [{ data: s }, { data: pmp }] = await Promise.all([
+        supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", p.id).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }),
+        userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
+      ]);
       if (s?.length) setSprints(s.map(mapSprint));
       if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
       setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [projectId, userId]);
+    };
+    lookupProject().catch(() => { setNotFound(true); setLoading(false); });
+  }, [projectSlug, userId]);
 
-  // 10-second polling
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
     const id = setInterval(refreshSprints, 10000);
     return () => clearInterval(id);
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selectedTicket = useMemo<SprintTicket | null>(() => {
+    if (!ticketWbs) return null;
+    for (const sprint of sprints) {
+      const t = sprint.tickets.find(t => t.wbs === ticketWbs);
+      if (t) return t;
+    }
+    return null;
+  }, [ticketWbs, sprints]);
+
+  const createForSprint = useMemo(
+    () => sprints.find(s => s.id === createForSprintId) ?? null,
+    [createForSprintId, sprints]
+  );
 
   const handleDeleteSprint = async (sprint: Sprint) => {
     if (isSupabaseEnabled) await supabase!.from("sprints").delete().eq("id", sprint.id);
@@ -98,10 +111,16 @@ export function SprintPage() {
     [deleteTarget, sprints]
   );
 
+  const handleSelectTicket = (ticket: SprintTicket) => {
+    if (ticket.wbs) navigate(`/${projectSlug}/${ticket.wbs}`);
+  };
+
+  const goToSprint = (sprint: Sprint) => navigate(`/${projectSlug}/sprint/${sprint.id}`);
+
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
+  if (notFound) return <Navigate to="/projects" replace />;
   if (!project) return <Navigate to="/projects" replace />;
 
-  // アサイン解除チェック（admin / PM は常にアクセス可）
   const isMember = isAdminOrPM || (project.members ?? []).includes(userName);
   if (!isMember) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
@@ -121,8 +140,6 @@ export function SprintPage() {
     </div>
   );
 
-  const goToSprint = (sprint: Sprint) => navigate(`/projects/${projectId}/sprints/${sprint.id}`);
-
   const viewBtns: { mode: SprintView; label: string; Icon: ElementType }[] = [
     { mode: "list",  label: "リスト",        Icon: Layers },
     { mode: "board", label: "ボード",        Icon: LayoutDashboard },
@@ -136,14 +153,21 @@ export function SprintPage() {
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
         </button>
         <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#B0A9A4" }}>{project.name}</span>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>スプリント</span>
+        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project.name}</span>
       </div>
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
         <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>スプリント管理</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>スプリント管理</h1>
+            {project.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
+            <button onClick={() => setShowEditIdentifiers(true)} title="識別子を編集"
+              style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+              <Settings2 style={{ width: 13, height: 13 }} />
+            </button>
+          </div>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project.name} · {sprints.length} スプリント</p>
         </div>
         {canCreateSprint && (
@@ -165,15 +189,15 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={t => setSelectedTicketId(t.id)} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
       {createForSprintId && createForSprint && (
         <NewTicketDialog
           sprintId={createForSprintId}
-          projectId={projectId}
+          projectId={projectId ?? undefined}
           onClose={() => setCreateForSprintId(null)}
           onCreated={() => { refreshSprints(); setCreateForSprintId(null); }}
           sprintStartDate={createForSprint.startDate || undefined}
@@ -186,6 +210,16 @@ export function SprintPage() {
           onClose={() => setEditTarget(null)}
           onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
       )}
+      {showEditIdentifiers && project && (
+        <EditProjectIdentifiersDialog
+          project={project}
+          onClose={() => setShowEditIdentifiers(false)}
+          onUpdated={() => {
+            setShowEditIdentifiers(false);
+            if (projectId) supabase!.from("projects").select("*").eq("id", projectId).single()
+              .then(({ data }) => { if (data) setProject(mapProject(data)); });
+          }} />
+      )}
       {deleteTarget && (
         <DeleteSprintDialog
           sprint={deleteTarget}
@@ -194,17 +228,24 @@ export function SprintPage() {
           onClose={() => setDeleteTarget(null)}
           onDeleted={() => {
             const deletedId = deleteTarget.id;
-            // Guard this ID so no in-flight or future polling SELECT can restore it
             deletedIdsRef.current.add(deletedId);
             setSprints(prev => prev.filter(s => s.id !== deletedId));
             setDeleteTarget(null);
-            // Refresh to reflect moved-ticket state on target sprint; deleted ID is still guarded
             refreshSprints();
-            // Release the guard after DB is definitely consistent (> 1 polling cycle)
             setTimeout(() => deletedIdsRef.current.delete(deletedId), 15000);
           }} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} projectId={projectId} onClose={() => setSelectedTicketId(null)} onUpdated={refreshSprints} onDeleted={() => { setSelectedTicketId(null); refreshSprints(); }} projectPermissions={projectPermissions ?? undefined} />
+
+      <TicketDetailPanel
+        ticket={selectedTicket}
+        projectId={projectId ?? undefined}
+        sprintId={selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id))?.id : undefined}
+        onClose={() => navigate(`/${projectSlug}`)}
+        onUpdated={refreshSprints}
+        onDeleted={() => { navigate(`/${projectSlug}`); refreshSprints(); }}
+        onSelectTicket={t => t.wbs ? navigate(`/${projectSlug}/${t.wbs}`) : undefined}
+        projectPermissions={projectPermissions ?? undefined}
+      />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { mapProject, mapClient } from "@/app/lib/mappers";
 import type { Project, Client } from "@/app/types";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
+import { EditProjectDialog } from "@/app/components/projects/EditProjectDialog";
 import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
@@ -23,14 +24,44 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>(isSupabaseEnabled ? [] : PROJECTS);
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const canManage = userRole === "admin" || userRole === "project-manager";
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const computeTicketCounts = (sprints: any[]) => {
+    const map = new Map<string, { done: number; inProgress: number; todo: number }>();
+    for (const sprint of sprints) {
+      const pid = sprint.project_id;
+      if (!map.has(pid)) map.set(pid, { done: 0, inProgress: 0, todo: 0 });
+      const counts = map.get(pid)!;
+      for (const t of (sprint.sprint_tickets ?? [])) {
+        if (t.status === "done" || t.status === "closed") counts.done++;
+        else if (t.status === "todo") counts.todo++;
+        else counts.inProgress++;
+      }
+    }
+    return map;
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mergeTicketCounts = (projectRows: any[], counts: Map<string, { done: number; inProgress: number; todo: number }>) =>
+    projectRows.map(r => {
+      const mapped = mapProject(r);
+      const c = counts.get(r.id);
+      if (c) { mapped.done = c.done; mapped.inProgress = c.inProgress; mapped.todo = c.todo; }
+      return mapped;
+    });
+
   const refreshProjects = () => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("projects").select("*").order("id")
-      .then(({ data }) => setProjects((data ?? []).map(mapProject)));
+    Promise.all([
+      supabase!.from("projects").select("*").order("id"),
+      supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
+    ]).then(([{ data: p }, { data: s }]) => {
+      if (p) setProjects(mergeTicketCounts(p, computeTicketCounts(s ?? [])));
+    });
   };
 
   useEffect(() => {
@@ -38,8 +69,9 @@ export function ProjectsPage() {
     Promise.all([
       supabase!.from("projects").select("*").order("id"),
       supabase!.from("clients").select("*").order("id"),
-    ]).then(([{ data: p }, { data: c }]) => {
-      if (p) setProjects(p.map(mapProject));
+      supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
+    ]).then(([{ data: p }, { data: c }, { data: s }]) => {
+      if (p) setProjects(mergeTicketCounts(p, computeTicketCounts(s ?? [])));
       if (c) setClients(c.map(mapClient));
       setLoading(false);
     }).catch(() => setLoading(false));
@@ -121,7 +153,8 @@ export function ProjectsPage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
           {filtered.map(p => (
             <ProjectCard key={p.id} project={p}
-              onNavigate={() => navigate(`/projects/${p.id}/sprints`)}
+              onNavigate={() => navigate(p.slug ? `/${p.slug}` : `/${p.id}`)}
+              onEdit={canManage ? () => setEditTarget(p) : undefined}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
             />
@@ -130,6 +163,7 @@ export function ProjectsPage() {
       )}
 
       {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients} onCreated={refreshProjects} />}
+      {editTarget && <EditProjectDialog project={editTarget} onClose={() => setEditTarget(null)} onUpdated={() => { refreshProjects(); setEditTarget(null); }} />}
       {deleteTarget && (
         <ConfirmDialog
           message={`「${deleteTarget.name}」を削除しますか？関連するスプリントとチケットもすべて削除されます。`}
