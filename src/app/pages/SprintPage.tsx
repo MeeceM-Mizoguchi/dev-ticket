@@ -207,6 +207,7 @@ export function SprintPage() {
       {editTarget && (
         <EditSprintDialog
           sprint={editTarget}
+          otherSprints={sprints.filter(s => s.id !== editTarget.id)}
           onClose={() => setEditTarget(null)}
           onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
       )}
@@ -214,10 +215,9 @@ export function SprintPage() {
         <EditProjectIdentifiersDialog
           project={project}
           onClose={() => setShowEditIdentifiers(false)}
-          onUpdated={() => {
+          onUpdated={(newSlug) => {
             setShowEditIdentifiers(false);
-            if (projectId) supabase!.from("projects").select("*").eq("id", projectId).single()
-              .then(({ data }) => { if (data) setProject(mapProject(data)); });
+            navigate(`/${newSlug}`);
           }} />
       )}
       {deleteTarget && (

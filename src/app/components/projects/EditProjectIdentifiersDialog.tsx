@@ -9,21 +9,18 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
-function sanitizePrefix(v: string) { return v.replace(/[^A-Z]/g, ""); }
 
 export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
   project: Project;
   onClose: () => void;
-  onUpdated?: () => void;
+  onUpdated?: (newSlug: string) => void;
 }) {
   const [slug, setSlug] = useState(project.slug);
-  const [wbsPrefix, setWbsPrefix] = useState(project.wbsPrefix);
   const [slugError, setSlugError] = useState("");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     const finalSlug = sanitizeSlug(slug.trim().toUpperCase());
-    const finalPrefix = sanitizePrefix(wbsPrefix.trim().toUpperCase());
 
     if (!finalSlug) { setSlugError("識別子を入力してください。"); return; }
     if (RESERVED_SLUGS.has(finalSlug.toLowerCase())) {
@@ -36,7 +33,6 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
       setSaving(true);
       const { error } = await supabase!.from("projects").update({
         slug: finalSlug,
-        wbs_prefix: finalPrefix || "T",
       }).eq("id", project.id);
       setSaving(false);
       if (error?.code === "23505") {
@@ -44,7 +40,7 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
         return;
       }
     }
-    onUpdated?.();
+    onUpdated?.(finalSlug);
     onClose();
   };
 
@@ -62,20 +58,6 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
           URLに使用されます: <code style={{ background: "#F3F4F6", padding: "1px 6px", borderRadius: 4, fontSize: 11 }}>{slug || "TEST"}/TS-00001</code>
         </p>
         {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 4 }}>{slugError}</p>}
-      </div>
-      <div>
-        <FieldInput
-          label="チケット番号プレフィックス"
-          placeholder="例: TS"
-          value={wbsPrefix}
-          onChange={v => setWbsPrefix(sanitizePrefix(v.toUpperCase()))}
-        />
-        <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 4 }}>
-          チケット番号の接頭辞: <code style={{ background: "#F3F4F6", padding: "1px 6px", borderRadius: 4, fontSize: 11 }}>{wbsPrefix || "T"}-00001</code>
-        </p>
-        <p style={{ fontSize: 11, color: "#D97706", marginTop: 6, lineHeight: 1.5 }}>
-          ⚠ プレフィックスを変更しても既存チケットの番号は変わりません。新規チケットから適用されます。
-        </p>
       </div>
     </DialogShell>
   );

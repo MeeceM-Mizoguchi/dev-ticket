@@ -15,8 +15,9 @@ const SPRINT_STATUSES: { value: SprintStatus; label: string }[] = [
   { value: "completed", label: "完了"   },
 ];
 
-export function EditSprintDialog({ sprint, onClose, onUpdated }: {
+export function EditSprintDialog({ sprint, otherSprints = [], onClose, onUpdated }: {
   sprint: Sprint;
+  otherSprints?: Sprint[];
   onClose: () => void;
   onUpdated?: () => void;
 }) {
@@ -28,8 +29,13 @@ export function EditSprintDialog({ sprint, onClose, onUpdated }: {
   const [identifier, setIdentifier] = useState(sprint.identifier || "");
   const [saving, setSaving] = useState(false);
 
+  const trimmedIdentifier = identifier.trim();
+  const isDuplicateIdentifier = trimmedIdentifier !== "" &&
+    otherSprints.some(s => s.identifier === trimmedIdentifier);
+  const canSave = !!name.trim() && !isDuplicateIdentifier;
+
   const handleSave = async () => {
-    if (!name.trim()) return;
+    if (!canSave) return;
     if (isSupabaseEnabled) {
       setSaving(true);
       const newIdentifier = identifier.trim();
@@ -67,9 +73,16 @@ export function EditSprintDialog({ sprint, onClose, onUpdated }: {
 
   return (
     <DialogShell title="スプリント編集" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={!canSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
       <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
-      <FieldInput label="スプリント識別子" placeholder="例: SP5, Q1-2026（省略可）" value={identifier} onChange={setIdentifier} />
+      <div>
+        <FieldInput label="スプリント識別子" placeholder="例: SP5, Q1-2026（省略可）" value={identifier} onChange={setIdentifier} />
+        {isDuplicateIdentifier && (
+          <p style={{ fontSize: 11, color: "#DC2626", marginTop: 4 }}>
+            その識別子はすでに別のスプリントで使用されています。
+          </p>
+        )}
+      </div>
       <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
       <div className="grid grid-cols-2 gap-3">
         <DatePicker label="開始日" value={startDate} onChange={setStartDate} placeholder="年/月/日" />
