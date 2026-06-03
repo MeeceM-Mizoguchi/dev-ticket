@@ -7,7 +7,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { Project, Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText, calcTicketActualHours, formatActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -167,10 +167,20 @@ export function SprintDetailPage() {
   const { projectSlug, sprintId, ticketWbs } = useParams<{ projectSlug: string; sprintId: string; ticketWbs?: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { userId } = useAuth();
+  const { userId, userPermissions, userRole } = useAuth();
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const [project, setProject] = useState<Project | null>(null);
   const [sprint, setSprint] = useState<Sprint | null>(SPRINTS.find(s => s.id === sprintId) || null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
+  const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
+  // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）
+  // レコードなし → admin/PM はロール権限、それ以外は権限なし(all false)
+  const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
+  const effectivePermissions = projectPermissionsLoaded
+    ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
+    : NO_PERMS;
+  const canCreateTicket = effectivePermissions.canCreateTicket;
+  const canEditDelete = effectivePermissions.canEditDelete;
   const [loading, setLoading] = useState(isSupabaseEnabled);
 
   const [sortCol, setSortCol] = useState<SortCol | "">("");
@@ -202,9 +212,10 @@ export function SprintDetailPage() {
         ]);
         if (p) setProject(mapProject(p));
         if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
+        setProjectPermissionsLoaded(true);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => { setProjectPermissionsLoaded(true); setLoading(false); });
   }, [sprintId, userId]);
 
   const refreshSprint = () => {
@@ -254,6 +265,7 @@ export function SprintDetailPage() {
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
   const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
+  const actualHours = Math.round(sprint.tickets.reduce((s, t) => s + calcTicketActualHours(t), 0) * 10) / 10;
   const sm = getSprintStatusMeta(sprint.status);
 
   const statusOrder: Record<TicketStatus, number> = {
@@ -348,19 +360,21 @@ export function SprintDetailPage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 10 }}>
-            {[{ label: "チケット数", value: sprint.tickets.length }, { label: "完了", value: done }, { label: "進行中", value: inProg }, { label: "総工数(h)", value: totalHours }, { label: "進捗", value: `${progress}%` }].map(({ label, value }) => (
+            {[{ label: "チケット数", value: sprint.tickets.length, accent: false }, { label: "完了", value: done, accent: false }, { label: "進行中", value: inProg, accent: false }, { label: "総工数(h)", value: totalHours, accent: false }, { label: "実績(h)", value: formatActualHours(actualHours), accent: actualHours > 0 }, { label: "進捗", value: `${progress}%`, accent: false }].map(({ label, value, accent }) => (
               <div key={label} style={{ background: "#FFFFFF", borderRadius: 10, padding: "10px 14px", border: "1px solid rgba(26,23,20,0.08)", textAlign: "center" as const, minWidth: 80 }}>
-                <p style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.03em" }}>{value}</p>
+                <p style={{ fontSize: 20, fontWeight: 800, color: accent ? "#059669" : "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.03em" }}>{value}</p>
                 <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 2 }}>{label}</p>
               </div>
             ))}
           </div>
-          <button onClick={() => setShowCreate(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-            <Plus style={{ width: 15, height: 15 }} />チケット作成
-          </button>
+          {canCreateTicket && (
+            <button onClick={() => setShowCreate(true)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+              <Plus style={{ width: 15, height: 15 }} />チケット作成
+            </button>
+          )}
         </div>
       </div>
 
@@ -442,12 +456,14 @@ export function SprintDetailPage() {
                     </div>
                     <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#6B6458", fontWeight: 600, minWidth: 28 }}>{ticketProgress}%</span>
                   </div>
-                  <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(ticket); }}
-                    style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                    <Trash2 style={{ width: 12, height: 12 }} />
-                  </button>
+                  {canEditDelete ? (
+                    <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(ticket); }}
+                      style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                      <Trash2 style={{ width: 12, height: 12 }} />
+                    </button>
+                  ) : <span />}
                 </div>
                 {/* 子チケット行（アコーディオン展開時） */}
                 {hasChildren && isTicketExpanded && children.map(child => {
@@ -485,12 +501,14 @@ export function SprintDetailPage() {
                         </div>
                         <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#6B6458", fontWeight: 600, minWidth: 28 }}>{cProgress}%</span>
                       </div>
-                      <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(child); }}
-                        style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                        <Trash2 style={{ width: 12, height: 12 }} />
-                      </button>
+                      {canEditDelete ? (
+                        <button onClick={e => { e.stopPropagation(); setDeleteTicketTarget(child); }}
+                          style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                          <Trash2 style={{ width: 12, height: 12 }} />
+                        </button>
+                      ) : <span />}
                     </div>
                   );
                 })}

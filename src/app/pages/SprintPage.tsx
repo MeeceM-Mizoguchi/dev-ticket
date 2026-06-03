@@ -26,7 +26,13 @@ export function SprintPage() {
   const { userName, userRole, userId, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
-  const effectivePermissions = projectPermissions ?? userPermissions;
+  const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
+  // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）
+  // レコードなし → admin/PM はロール権限、それ以外は権限なし(all false)
+  const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
+  const effectivePermissions = projectPermissionsLoaded
+    ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
+    : NO_PERMS;
   const canCreateSprint = effectivePermissions.canCreateSprint;
   const canCreateTicket = effectivePermissions.canCreateTicket;
   const canEditDeleteSprint = effectivePermissions.canEditDelete;
@@ -78,9 +84,10 @@ export function SprintPage() {
       ]);
       if (s?.length) setSprints(s.map(mapSprint));
       if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
+      setProjectPermissionsLoaded(true);
       setLoading(false);
     };
-    lookupProject().catch(() => { setNotFound(true); setLoading(false); });
+    lookupProject().catch(() => { setNotFound(true); setProjectPermissionsLoaded(true); setLoading(false); });
   }, [projectSlug, userId]);
 
   useEffect(() => {

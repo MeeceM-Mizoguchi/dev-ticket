@@ -1089,8 +1089,17 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const isAdminOrPM = member.role === "admin" || member.role === "project-manager";
+
   useEffect(() => {
-    if (!isSupabaseEnabled) { setLoaded(true); return; }
+    if (!isSupabaseEnabled) {
+      // admin/PM はロール権限（全ON）をデフォルト表示
+      if (isAdminOrPM) {
+        setLocal(prev => ({ ...prev, canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true }));
+      }
+      setLoaded(true);
+      return;
+    }
     supabase!.from("project_member_permissions")
       .select("permissions")
       .eq("project_id", projectId)
@@ -1098,11 +1107,15 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
       .maybeSingle()
       .then(({ data }) => {
         if (data?.permissions) {
+          // DB レコードがある場合はそれを使用（admin/PM でも個別設定を優先）
           setLocal({ ...DEFAULT_GROUP_PERMS, ...(data.permissions as Partial<UserPermissions>) });
+        } else if (isAdminOrPM) {
+          // admin/PM にレコードなし → ロール権限（全ON）をデフォルト表示
+          setLocal(prev => ({ ...prev, canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true }));
         }
         setLoaded(true);
       });
-  }, [member.id, projectId]);
+  }, [member.id, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (key: keyof UserPermissions) =>
     setLocal(prev => ({ ...prev, [key]: !prev[key] }));
@@ -1111,7 +1124,8 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
     setSaving(true);
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("project_member_permissions")
-        .upsert({ project_id: projectId, member_id: member.id, permissions: local });
+        .upsert({ project_id: projectId, member_id: member.id, permissions: local },
+                 { onConflict: "project_id,member_id" });
       if (error) { toast("権限の保存に失敗しました", "error"); setSaving(false); return; }
     }
     toast(`「${member.name}」のプロジェクト権限を保存しました`);

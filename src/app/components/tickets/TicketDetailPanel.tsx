@@ -47,6 +47,11 @@ function formatTs(ts: string) {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+function extractReviewerName(content: string): string {
+  const match = content.match(/<strong>@([^<]+)<\/strong>/);
+  return match ? match[1] : "";
+}
+
 function StatusBadge({ status }: { status: string }) {
   const s = TICKET_STATUSES.find(x => x.value === status);
   if (!s) return null;
@@ -1255,7 +1260,7 @@ export function TicketDetailPanel({
           </div>}
 
           {/* ── Review flow + Source files ── */}
-          {(isAssignee || userName === reviewerName) && (
+          {(reviewRequestComments.length > 0 || isAssignee || userName === reviewerName) && (
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
                 レビューフロー
@@ -1301,6 +1306,9 @@ export function TicketDetailPanel({
                           style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", background: bg, border: "none", cursor: "pointer", textAlign: "left" as const }}
                         >
                           <span style={{ fontSize: 11, fontWeight: 700, color }}>第{round}回</span>
+                          {reviewerName && (
+                            <span style={{ fontSize: 10, color: color, opacity: 0.7 }}>→ {reviewerName}</span>
+                          )}
                           <span style={{ fontSize: 10, color }}>{label}</span>
                           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
                             {(fileCount > 0 || imgCount > 0) && (
@@ -1564,7 +1572,7 @@ export function TicketDetailPanel({
               const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : "#6B7280";
               const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : "#F4F5F6";
               const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : "rgba(26,23,20,0.08)";
-              const sysLabel = isReviewReq ? "レビュー依頼" : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : "";
+              const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : "";
 
               if (isStatusChange) {
                 return (
