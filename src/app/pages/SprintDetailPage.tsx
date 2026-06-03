@@ -371,7 +371,7 @@ export function SprintDetailPage() {
         <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: openCol ? 100 : 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
           {(["wbs","title","description","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
-              label={["スプリントNo","チケット名","チケット詳細","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
+              label={["No","チケット名","チケット詳細","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
               {...commonProps}
               options={getColOptions(col)}
               selected={getSelected(col)}
