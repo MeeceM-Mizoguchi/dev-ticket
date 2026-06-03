@@ -62,6 +62,40 @@ export function getAvatarColor(name: string) {
   return colors[name.charCodeAt(0) % colors.length];
 }
 
+export function calcTicketActualHours(ticket: {
+  startedAt?: string | null;
+  reviewRequestedAt?: string | null;
+  reviewApprovedAt?: string | null;
+  stgCompletedAt?: string | null;
+  uatCompletedAt?: string | null;
+  releasedAt?: string | null;
+}): number {
+  const ts = [
+    ticket.startedAt,
+    ticket.reviewRequestedAt,
+    ticket.reviewApprovedAt,
+    ticket.stgCompletedAt,
+    ticket.uatCompletedAt,
+    ticket.releasedAt,
+  ];
+  let total = 0;
+  for (let i = 1; i < ts.length; i++) {
+    const prev = ts[i - 1];
+    const cur = ts[i];
+    if (!prev || !cur) continue;
+    // レビュー依頼→承認が同一タイムスタンプ = カスケード記録（スキップ）
+    if (i === 2 && prev === cur) continue;
+    total += (new Date(cur).getTime() - new Date(prev).getTime()) / (1000 * 60 * 60);
+  }
+  return total;
+}
+
+export function formatActualHours(hours: number): string {
+  if (hours === 0) return "0h";
+  const h = Math.round(hours * 10) / 10;
+  return `${h}h`;
+}
+
 export function calcProgress(done: number, ip: number, todo: number) {
   const t = done + ip + todo; return t === 0 ? 0 : Math.round((done / t) * 100);
 }

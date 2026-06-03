@@ -47,6 +47,13 @@ export interface SprintTicket {
   createdBy?: string; createdAt?: string;
   // 子チケットの親ID。null = 親チケット、文字列 = 子チケット。現在は1階層のみ。将来的に孫チケット対応を実装予定。
   parentId?: string | null;
+  // 実績モニタ用マイルストーンタイムスタンプ
+  startedAt?: string | null;
+  reviewRequestedAt?: string | null;
+  reviewApprovedAt?: string | null;
+  stgCompletedAt?: string | null;
+  uatCompletedAt?: string | null;
+  releasedAt?: string | null;
 }
 
 export type CommentType = "comment" | "review_request" | "revision_request" | "review_approved" | "status_change";

@@ -4,6 +4,7 @@ import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
+import { ProjectActualHours } from "@/app/components/projects/ProjectActualHours";
 
 export function ProjectCard({
   project, onNavigate, onEdit, onDelete, onCategorySettings,
@@ -92,6 +93,9 @@ export function ProjectCard({
             <span style={{ fontSize: 10, color: "#D97706", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 4 }}><Zap style={{ width: 10, height: 10 }} />{project.inProgress}</span>
             <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 4 }}><Circle style={{ width: 10, height: 10 }} />{project.todo}</span>
             <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)", marginLeft: "auto" }}>{total}件</span>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <ProjectActualHours projectId={project.id} />
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12, borderTop: "1px solid rgba(26,23,20,0.05)" }}>

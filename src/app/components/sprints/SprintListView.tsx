@@ -1,9 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
+import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 
 function ColumnFilter({
   col, label, sortCol, sortDir, onSort, onClearSort,
@@ -264,6 +265,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           const progress = sprintProgress(sprint);
           const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
           const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
+          const actualHours = Math.round(sprint.tickets.reduce((s, t) => s + calcTicketActualHours(t), 0) * 10) / 10;
           const displayTickets = processTickets(sprint.tickets);
 
           return (
@@ -290,6 +292,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         <p style={{ fontSize: 10, color: "#B0A9A4" }}>{label}</p>
                       </div>
                     ))}
+                    <SprintActualHours actualHours={actualHours} />
                     <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
                     <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
                       style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
