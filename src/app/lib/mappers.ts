@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -40,4 +40,9 @@ export function mapSourceFile(r: any): TicketSourceFile {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMember(r: any): Member {
   return { id:r.id, name:r.name, email:r.email, role:r.role, group:r.group_name||"", status:r.status||"active", projects:r.project_count||0, tickets:r.ticket_count||0, permission_group_id:r.permission_group_id||null };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapNotification(r: any): AppNotification {
+  return { id:r.id, userName:r.user_name, type:r.type, title:r.title, body:r.body||"", ticketId:r.ticket_id??null, ticketWbs:r.ticket_wbs||"", ticketTitle:r.ticket_title||"", projectSlug:r.project_slug||"", isRead:r.is_read??false, createdAt:r.created_at||"" };
 }

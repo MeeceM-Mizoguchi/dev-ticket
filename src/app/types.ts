@@ -12,6 +12,21 @@ export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" 
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
 export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
+export type NotificationType = "mention" | "assign" | "review_request" | "revision_request" | "review_approved" | "status" | "comment";
+
+export interface AppNotification {
+  id: string;
+  userName: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  ticketId: string | null;
+  ticketWbs: string;
+  ticketTitle: string;
+  projectSlug: string;
+  isRead: boolean;
+  createdAt: string;
+}
 export type SprintStatus = "planning" | "active" | "completed" | "delayed";
 export type SprintView = "list" | "board" | "gantt";
 export type SortCol = "wbs" | "title" | "description" | "status" | "priority" | "assignee" | "startDate" | "dueDate" | "estimatedHours" | "progress";

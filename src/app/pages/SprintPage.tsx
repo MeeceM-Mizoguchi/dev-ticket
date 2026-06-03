@@ -240,6 +240,7 @@ export function SprintPage() {
         ticket={selectedTicket}
         projectId={projectId ?? undefined}
         sprintId={selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id))?.id : undefined}
+        projectSlug={projectSlug}
         onClose={() => navigate(`/${projectSlug}`)}
         onUpdated={refreshSprints}
         onDeleted={() => { navigate(`/${projectSlug}`); refreshSprints(); }}

@@ -1,4 +1,4 @@
-import type { Project, Client, Member, Sprint, TicketItem } from "@/app/types";
+import type { Project, Client, Member, Sprint, TicketItem, AppNotification } from "@/app/types";
 
 export const PROJECTS: Project[] = [
   { id: "P-001", name: "ECサイトリニューアル", client: "株式会社サンプル商事", status: "in-progress", startDate: "2026-01-15", endDate: "2026-06-30", members: ["田中太郎", "佐藤花子", "山田次郎"], groupIds: [], done: 24, inProgress: 8, todo: 12, description: "既存ECサイトのUI/UX全面刷新。パフォーマンス改善とモバイル対応を含む大規模プロジェクト。" },
@@ -104,8 +104,8 @@ export const SPRINTS: Sprint[] = [
     ]},
 ];
 
-export const NOTIFICATIONS = [
-  { id: 1, title: "新しいチケットが割り当てられました", body: "T-007: ログイン機能のバグ修正が担当になりました", time: "5分前", read: false },
-  { id: 2, title: "ステータスが変更されました", body: "T-003: ユーザー認証フロー → 完了に更新されました", time: "1時間前", read: false },
-  { id: 3, title: "コメントが追加されました", body: "ECサイトリニューアル: 田中太郎さんがコメントしました", time: "3時間前", read: true },
+export const NOTIFICATIONS: AppNotification[] = [
+  { id: "1", userName: "田中太郎", type: "assign", title: "新しいチケットが割り当てられました", body: "T-007: ログイン機能のバグ修正が担当になりました", ticketId: "T-007", ticketWbs: "T-007", ticketTitle: "ログイン機能のバグ修正", projectSlug: "", isRead: false, createdAt: new Date(Date.now() - 5 * 60000).toISOString() },
+  { id: "2", userName: "田中太郎", type: "status", title: "ステータスが変更されました", body: "T-003: ユーザー認証フロー → 完了に更新されました", ticketId: "T-003", ticketWbs: "T-003", ticketTitle: "ユーザー認証フロー", projectSlug: "", isRead: false, createdAt: new Date(Date.now() - 60 * 60000).toISOString() },
+  { id: "3", userName: "田中太郎", type: "comment", title: "コメントが追加されました", body: "ECサイトリニューアル: 田中太郎さんがコメントしました", ticketId: null, ticketWbs: "", ticketTitle: "", projectSlug: "", isRead: true, createdAt: new Date(Date.now() - 3 * 60 * 60000).toISOString() },
 ];

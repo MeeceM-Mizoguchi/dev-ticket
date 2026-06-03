@@ -52,8 +52,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, sprintId, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions }) {
+  ticket, projectId, sprintId, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions,
+}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -412,8 +412,42 @@ export function TicketDetailPanel({
   };
 
   const saveAssignee = (name: string) => {
+    const prevAssignee = assignee;
     setAssignee(name);
     save({ assignees: name ? [name] : [], assignee: name });
+    if (name && name !== prevAssignee && name !== userName && isSupabaseEnabled && projectSlug && ticket) {
+      supabase!.from("notifications").insert({
+        user_name: name,
+        type: "assign",
+        title: "新しいチケットが割り当てられました",
+        body: `${ticket.wbs}: ${ticket.title}`,
+        ticket_id: ticket.id,
+        ticket_wbs: ticket.wbs,
+        ticket_title: ticket.title,
+        project_slug: projectSlug,
+        is_read: false,
+      });
+    }
+  };
+
+  const notifyMentions = async (content: string, currentTicket: SprintTicket) => {
+    if (!isSupabaseEnabled || !projectSlug) return;
+    const stripped = content.replace(/<[^>]*>/g, " ");
+    for (const name of memberNames) {
+      if (name !== userName && stripped.includes(`@${name}`)) {
+        await supabase!.from("notifications").insert({
+          user_name: name,
+          type: "mention",
+          title: `${userName}さんにメンションされました`,
+          body: `${currentTicket.wbs}: ${currentTicket.title}`,
+          ticket_id: currentTicket.id,
+          ticket_wbs: currentTicket.wbs,
+          ticket_title: currentTicket.title,
+          project_slug: projectSlug,
+          is_read: false,
+        });
+      }
+    }
   };
 
   const addComment = async (content: string, type: CommentType = "comment", images: string[] = [], explicitStatus?: TicketStatus) => {
@@ -424,6 +458,7 @@ export function TicketDetailPanel({
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("comment insert failed:", error); return; }
       await loadRelated(ticket.id);
+      await notifyMentions(content, ticket);
     } else {
       setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
     }
@@ -509,7 +544,10 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
     }
-    const content = approvalText.trim() ? approvalText : "<p>✅ レビューを承認しました</p>";
+    const defaultApproval = assignee
+      ? `<p>✅ レビューを承認しました <strong>@${assignee}</strong></p>`
+      : "<p>✅ レビューを承認しました</p>";
+    const content = approvalText.trim() ? approvalText : defaultApproval;
     await addComment(content, "review_approved", revisionImages, newStatus);
     setRevisionInput("");
     setRevisionImages([]);
@@ -1122,7 +1160,7 @@ export function TicketDetailPanel({
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
                               レビュアーを選択...
                             </button>
-                            {reviewerEligibleNames
+                            {[...new Set([...(isAssignee && userName ? [userName] : []), ...reviewerEligibleNames])]
                               .filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n))
                               .map(n => (
                               <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}

@@ -134,6 +134,29 @@ create policy "auth_delete_projects"       on projects        for delete using  
 create policy "auth_delete_clients"        on clients         for delete using     (auth.role()='authenticated');
 create policy "auth_update_profiles"       on profiles        for update using     (auth.uid()=id);
 
+-- ── Notifications ────────────────────────────────────────────
+create table if not exists notifications (
+  id           uuid        primary key default gen_random_uuid(),
+  user_name    text        not null,
+  type         text        not null default 'mention'
+                 check (type in ('mention','assign','review_request','revision_request','review_approved','status','comment')),
+  title        text        not null,
+  body         text        not null default '',
+  ticket_id    text,
+  ticket_wbs   text        not null default '',
+  ticket_title text        not null default '',
+  project_slug text        not null default '',
+  is_read      boolean     not null default false,
+  created_at   timestamptz not null default now()
+);
+alter table notifications enable row level security;
+create policy "auth_select_notifications" on notifications for select using (auth.role()='authenticated');
+create policy "auth_insert_notifications" on notifications for insert with check (auth.role()='authenticated');
+create policy "auth_update_notifications" on notifications for update using (auth.role()='authenticated');
+create policy "auth_delete_notifications" on notifications for delete using (auth.role()='authenticated');
+
 -- ── Migrations (run manually in Supabase SQL Editor) ─────────
 -- generated_prompt カラム追加（初回のみ実行）
 -- alter table sprint_tickets add column if not exists generated_prompt text;
+-- notifications テーブル追加（初回のみ実行）
+-- 上記 notifications テーブルの create table 文をそのまま実行する
