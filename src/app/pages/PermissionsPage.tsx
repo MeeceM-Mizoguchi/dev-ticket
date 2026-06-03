@@ -388,7 +388,10 @@ export function PermissionsPage() {
   // ── Computed ──────────────────────────────────────────────────────────────────
 
   const nonAdminMembers = useMemo(() => members.filter(m => m.role !== "admin"), [members]);
-  const allMembersForList = members;
+  const allMembersForList = useMemo(
+    () => userRole === "admin" ? members : nonAdminMembers,
+    [members, nonAdminMembers, userRole]
+  );
   const settingsGroup = groups.find(g => g.id === settingsGroupId);
 
   if (loading) {
