@@ -136,6 +136,9 @@ export function TicketDetailPanel({
   const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
   const [showCreateChild, setShowCreateChild] = useState(false);
 
+  // レビューフロー アコーディオン
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
+
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const reviewerDropRef = useRef<HTMLDivElement>(null);
 
@@ -177,6 +180,7 @@ export function TicketDetailPanel({
     setRevisionImages([]);
     setEditingId(null);
     setAssigneeOpen(false);
+    setExpandedRounds(new Set());
     setGeneratedPrompt(ticket.generatedPrompt ?? "");
     setCategoryId(ticket.categoryId ?? null);
     // fetch fresh data from DB (in case sprint cache is stale)
@@ -1083,10 +1087,10 @@ export function TicketDetailPanel({
                 {hasBeenApproved && status !== "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", marginLeft: 8 }}>承認済み</span>}
               </p>
 
-              {/* ラウンド別履歴 + ソースファイル */}
+              {/* ラウンド別履歴 + ソースファイル（アコーディオン） */}
               {reviewRequestComments.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
-                  {reviewRequestComments.map((_, idx) => {
+                  {reviewRequestComments.map((reqComment, idx) => {
                     const round = idx + 1;
                     const outcome = roundOutcomes[idx];
                     const roundFiles = filesByRound[round] ?? [];
@@ -1094,29 +1098,141 @@ export function TicketDetailPanel({
                     const bg = outcome === "approved" ? "#ECFDF5" : outcome === "revision" ? "#FFF7ED" : "#F5F3FF";
                     const border = outcome === "approved" ? "rgba(5,150,105,0.15)" : outcome === "revision" ? "rgba(217,119,6,0.15)" : "rgba(124,58,237,0.15)";
                     const label = outcome === "approved" ? "✅ レビュー承認" : outcome === "revision" ? "⚠️ 修正依頼" : "🔄 審査中";
+
+                    const isExpanded = expandedRounds.has(idx);
+                    const reqIdx = comments.findIndex(c => c.id === reqComment.id);
+                    const nextReqIdx = idx + 1 < reviewRequestComments.length
+                      ? comments.findIndex(c => c.id === reviewRequestComments[idx + 1].id)
+                      : comments.length;
+                    const roundReviewComments = comments.slice(reqIdx + 1, nextReqIdx).filter(
+                      c => c.commentType === "revision_request" || c.commentType === "review_approved"
+                    );
+                    const roundImages = [
+                      ...(reqComment.images ?? []),
+                      ...roundReviewComments.flatMap(c => c.images ?? []),
+                    ];
+                    const fileCount = roundFiles.length;
+                    const imgCount = roundImages.length;
+
                     return (
-                      <div key={idx} style={{ padding: "8px 10px", background: bg, borderRadius: 8, border: `1px solid ${border}` }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: roundFiles.length > 0 ? 7 : 0 }}>
+                      <div key={idx} style={{ borderRadius: 8, border: `1px solid ${border}`, overflow: "hidden" }}>
+                        <button
+                          onClick={() => setExpandedRounds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(idx)) next.delete(idx); else next.add(idx);
+                            return next;
+                          })}
+                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", background: bg, border: "none", cursor: "pointer", textAlign: "left" as const }}
+                        >
                           <span style={{ fontSize: 11, fontWeight: 700, color }}>第{round}回</span>
                           <span style={{ fontSize: 10, color }}>{label}</span>
-                        </div>
-                        {roundFiles.length > 0 && (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                            {roundFiles.map(f => (
-                              <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                <FileCode2 style={{ width: 11, height: 11, color: "#059669", flexShrink: 0 }} />
-                                {f.fileUrl
-                                  ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ flex: 1, fontSize: 11, color: "#059669", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</a>
-                                  : <span style={{ flex: 1, fontSize: 11, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</span>}
-                                {isAssignee && (
-                                  <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB", flexShrink: 0 }}
-                                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                                    <Trash2 style={{ width: 11, height: 11 }} />
-                                  </button>
-                                )}
+                          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+                            {(fileCount > 0 || imgCount > 0) && (
+                              <span style={{ fontSize: 9, color, opacity: 0.75 }}>
+                                {[fileCount > 0 && `${fileCount}ファイル`, imgCount > 0 && `${imgCount}画像`].filter(Boolean).join(" · ")}
+                              </span>
+                            )}
+                            <ChevronDown style={{ width: 13, height: 13, color, transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                          </div>
+                        </button>
+
+                        {isExpanded && (
+                          <div style={{ padding: "10px 12px", background: "#FAFAF8", borderTop: `1px solid ${border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+                            {/* ソースファイル */}
+                            {roundFiles.length > 0 && (
+                              <div>
+                                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>ソースファイル</p>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                  {roundFiles.map(f => (
+                                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                      <FileCode2 style={{ width: 11, height: 11, color: "#059669", flexShrink: 0 }} />
+                                      {f.fileUrl
+                                        ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ flex: 1, fontSize: 11, color: "#059669", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</a>
+                                        : <span style={{ flex: 1, fontSize: 11, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</span>}
+                                      {isAssignee && (
+                                        <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB", flexShrink: 0 }}
+                                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                          <Trash2 style={{ width: 11, height: 11 }} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
-                            ))}
+                            )}
+
+                            {/* 添付画像 */}
+                            {roundImages.length > 0 && (
+                              <div>
+                                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>添付画像</p>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  {roundImages.map((img, i) => (
+                                    <div key={i} style={{ position: "relative" }}>
+                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                        style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                      <button onClick={() => copyImageToClipboard(img)}
+                                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                        title="画像をコピー">
+                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* レビューコメント（修正依頼・承認） */}
+                            {roundReviewComments.length > 0 && (
+                              <div>
+                                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>レビューコメント</p>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                  {roundReviewComments.map(c => {
+                                    const isRevision = c.commentType === "revision_request";
+                                    const cColor = isRevision ? "#D97706" : "#059669";
+                                    const cBg = isRevision ? "#FFF7ED" : "#ECFDF5";
+                                    const cBorder = isRevision ? "rgba(217,119,6,0.15)" : "rgba(5,150,105,0.15)";
+                                    const cLabel = isRevision ? "⚠️ 修正依頼" : "✅ 承認";
+                                    return (
+                                      <div key={c.id} style={{ display: "flex", gap: 7 }}>
+                                        <Avatar name={c.userName} size="xs" />
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, flexWrap: "wrap" as const }}>
+                                            <span style={{ fontSize: 11, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                                            <span style={{ fontSize: 9, fontWeight: 700, color: cColor, background: cBg, padding: "1px 6px", borderRadius: 20, border: `1px solid ${cBorder}` }}>{cLabel}</span>
+                                            <span style={{ fontSize: 9, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                                          </div>
+                                          {(c.content || (c.images?.length ?? 0) > 0) && (
+                                            <div style={{ background: cBg, border: `1px solid ${cBorder}`, borderRadius: 7, padding: "8px 10px" }}>
+                                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} />}
+                                              {(c.images?.length ?? 0) > 0 && (
+                                                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
+                                                  {(c.images ?? []).map((img, i) => (
+                                                    <div key={i} style={{ position: "relative" }}>
+                                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                                        style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                                      <button onClick={() => copyImageToClipboard(img)}
+                                                        style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                                        title="画像をコピー">
+                                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                                      </button>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {roundFiles.length === 0 && roundImages.length === 0 && roundReviewComments.length === 0 && (
+                              <p style={{ fontSize: 11, color: "#C9C4BB", textAlign: "center" as const }}>添付ファイル・コメントなし</p>
+                            )}
                           </div>
                         )}
                       </div>

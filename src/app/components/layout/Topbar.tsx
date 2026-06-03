@@ -27,10 +27,14 @@ export function Topbar() {
   const [notifications, setNotifications] = useState<AppNotification[]>(
     !isSupabaseEnabled ? MOCK_NOTIFICATIONS : []
   );
+  // パネルを開いた時点で存在していた通知IDセット。これ以降に届いた未読のみグローを点灯する。
+  const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
+  // 開いて確認済みの通知IDに含まれない未読がある場合のみグロー表示
+  const hasNewSinceLastView = !showNotif && notifications.some(n => !n.isRead && !seenIds.has(n.id));
 
-  const loadNotifications = async () => {
+  const loadNotifications = async (markAsSeen = false) => {
     if (!isSupabaseEnabled || !userName) return;
     const { data, error } = await supabase!
       .from("notifications")
@@ -39,7 +43,13 @@ export function Topbar() {
       .order("created_at", { ascending: false })
       .limit(20);
     if (error) { console.error("[notifications] load failed:", error.message); return; }
-    if (data) setNotifications(data.map(mapNotification));
+    if (data) {
+      const mapped = data.map(mapNotification);
+      setNotifications(mapped);
+      if (markAsSeen) {
+        setSeenIds(new Set(mapped.map(n => n.id)));
+      }
+    }
   };
 
   useEffect(() => {
@@ -51,7 +61,7 @@ export function Topbar() {
 
   const handleOpen = async () => {
     setShowNotif(true);
-    await loadNotifications();
+    await loadNotifications(true); // 開いた瞬間に見えた通知を全てseenとして記録
   };
 
   const handleNotifClick = async (notif: AppNotification) => {
@@ -65,8 +75,6 @@ export function Topbar() {
     }
   };
 
-  const hasUnread = unreadCount > 0 && !showNotif;
-
   return (
     <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, flexShrink: 0 }}>
       <style>{`@keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }`}</style>
@@ -75,10 +83,10 @@ export function Topbar() {
         <div style={{ position: "relative" }}>
           <button
             onClick={() => { if (showNotif) setShowNotif(false); else handleOpen(); }}
-            style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: showNotif ? "#F4F5F6" : hasUnread ? "rgba(5,150,105,0.06)" : "transparent", animation: hasUnread ? "bellGlow 1.8s ease-in-out infinite" : "none", transition: "background 0.15s" }}
+            style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: showNotif ? "#F4F5F6" : hasNewSinceLastView ? "rgba(5,150,105,0.06)" : "transparent", animation: hasNewSinceLastView ? "bellGlow 1.8s ease-in-out infinite" : "none", transition: "background 0.15s" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-            onMouseLeave={e => { if (!showNotif) (e.currentTarget as HTMLElement).style.background = hasUnread ? "rgba(5,150,105,0.06)" : "transparent"; }}>
-            <Bell style={{ width: 15, height: 15, color: hasUnread ? "#059669" : "#9E9690", transition: "color 0.15s" }} />
+            onMouseLeave={e => { if (!showNotif) (e.currentTarget as HTMLElement).style.background = hasNewSinceLastView ? "rgba(5,150,105,0.06)" : "transparent"; }}>
+            <Bell style={{ width: 15, height: 15, color: hasNewSinceLastView ? "#059669" : "#9E9690", transition: "color 0.15s" }} />
             {unreadCount > 0 && (
               <span style={{ position: "absolute", top: 4, right: 4, minWidth: 14, height: 14, borderRadius: 7, background: "#059669", border: "1.5px solid #FFFFFF", fontSize: 8, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, padding: "0 2px" }}>
                 {unreadCount}
