@@ -264,6 +264,7 @@ export function TicketDetailPanel({
     if (!ticket || isGenerating) return;
     setIsGenerating(true);
     try {
+      const categoryName = categories.find(c => c.id === categoryId)?.name ?? null;
       const res = await fetch("/api/generate-prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -276,6 +277,19 @@ export function TicketDetailPanel({
           startDate,
           dueDate,
           estimatedHours: estimatedH,
+          categoryName,
+          comments: comments.map(c => ({
+            userName: c.userName,
+            content: c.content,
+            commentType: c.commentType,
+          })),
+          childTickets: childTickets.map(c => ({
+            title: c.title,
+            status: c.status,
+          })),
+          sourceFiles: sourceFiles.map(f => ({
+            name: f.fileName,
+          })),
         }),
       });
       const data = await res.json();
