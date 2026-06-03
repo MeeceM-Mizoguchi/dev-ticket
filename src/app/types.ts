@@ -24,6 +24,7 @@ export interface AppNotification {
   ticketWbs: string;
   ticketTitle: string;
   projectSlug: string;
+  mentionContext: string;
   isRead: boolean;
   createdAt: string;
 }

@@ -52,8 +52,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, sprintId, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions }) {
+  ticket, projectId, sprintId, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor,
+}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -141,7 +141,14 @@ export function TicketDetailPanel({
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const descTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const reviewerDropRef = useRef<HTMLDivElement>(null);
+
+  // mention tracking
+  const prevDescRef = useRef<string>(ticket?.description ?? "");
+  const notifiedMentionsRef = useRef(new Map<string, Set<string>>());
+  const memberNamesRef = useRef<string[]>([]);
+  const anchorScrolledRef = useRef<string | null>(null);
 
   const loadRelated = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
@@ -182,6 +189,10 @@ export function TicketDetailPanel({
     setEditingId(null);
     setAssigneeOpen(false);
     setExpandedRounds(new Set());
+    // reset mention tracking
+    prevDescRef.current = ticket.description ?? "";
+    notifiedMentionsRef.current.clear();
+    anchorScrolledRef.current = null;
     setGeneratedPrompt(ticket.generatedPrompt ?? "");
     setCategoryId(ticket.categoryId ?? null);
     // fetch fresh data from DB (in case sprint cache is stale)
@@ -236,6 +247,8 @@ export function TicketDetailPanel({
       });
   }, []);
 
+  useEffect(() => { memberNamesRef.current = memberNames; }, [memberNames]);
+
   // Poll for fresh comments/source files every 10s while panel is open
   useEffect(() => {
     if (!ticket?.id || !isSupabaseEnabled) return;
@@ -262,6 +275,46 @@ export function TicketDetailPanel({
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => save(fields), 1200);
   }, [save]);
+
+  const saveDescriptionDebounced = useCallback((v: string) => {
+    clearTimeout(descTimerRef.current);
+    descTimerRef.current = setTimeout(async () => {
+      if (!ticket || !isSupabaseEnabled) return;
+      await supabase!.from("sprint_tickets").update({ description: v }).eq("id", ticket.id);
+      onUpdated?.();
+      // notify new mentions in description
+      const stripped = v.replace(/<[^>]*>/g, " ");
+      const prevStripped = prevDescRef.current.replace(/<[^>]*>/g, " ");
+      const ctx = "description";
+      if (!notifiedMentionsRef.current.has(ctx)) notifiedMentionsRef.current.set(ctx, new Set());
+      const alreadyNotified = notifiedMentionsRef.current.get(ctx)!;
+      for (const name of memberNamesRef.current) {
+        if (name === userName || !stripped.includes(`@${name}`) || prevStripped.includes(`@${name}`) || alreadyNotified.has(name)) continue;
+        if (!projectSlug) continue;
+        alreadyNotified.add(name);
+        supabase!.from("notifications").insert({
+          user_name: name, type: "mention", title: `${userName}さんにメンションされました`,
+          body: `${ticket.wbs}: ${ticket.title}（チケット詳細）`,
+          ticket_id: ticket.id, ticket_wbs: ticket.wbs, ticket_title: ticket.title,
+          project_slug: projectSlug, mention_context: "description", is_read: false,
+        }).then(({ error }) => { if (error) console.error("[mention] description:", error.message); });
+      }
+      prevDescRef.current = v;
+    }, 1200);
+  }, [save, ticket?.id, projectSlug, userName]); // eslint-disable-line
+
+  // scroll to anchor after panel + comments are ready
+  useEffect(() => {
+    if (!anchor || anchor === anchorScrolledRef.current) return;
+    const targetId = anchor.startsWith("comment:")
+      ? `panel-comment-${anchor.slice(8)}`
+      : "panel-description-section";
+    const el = document.getElementById(targetId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      anchorScrolledRef.current = anchor;
+    }
+  }, [anchor, comments.length, ticket?.id]); // eslint-disable-line
 
   const handleGeneratePrompt = async () => {
     if (!ticket || isGenerating) return;
@@ -453,24 +506,27 @@ export function TicketDetailPanel({
     if (error) console.error("[notifications] insert failed:", error.message);
   };
 
-  const notifyMentions = async (content: string, currentTicket: SprintTicket) => {
+  const notifyMentions = async (content: string, currentTicket: SprintTicket, context: string) => {
     if (!isSupabaseEnabled || !projectSlug) return;
     const stripped = content.replace(/<[^>]*>/g, " ");
-    for (const name of memberNames) {
-      if (name !== userName && stripped.includes(`@${name}`)) {
-        const { error } = await supabase!.from("notifications").insert({
-          user_name: name,
-          type: "mention",
-          title: `${userName}さんにメンションされました`,
-          body: `${currentTicket.wbs}: ${currentTicket.title}`,
-          ticket_id: currentTicket.id,
-          ticket_wbs: currentTicket.wbs,
-          ticket_title: currentTicket.title,
-          project_slug: projectSlug,
-          is_read: false,
-        });
-        if (error) console.error("[notifications] mention insert failed:", error.message, error);
-      }
+    if (!notifiedMentionsRef.current.has(context)) notifiedMentionsRef.current.set(context, new Set());
+    const alreadyNotified = notifiedMentionsRef.current.get(context)!;
+    for (const name of memberNamesRef.current) {
+      if (name === userName || !stripped.includes(`@${name}`) || alreadyNotified.has(name)) continue;
+      alreadyNotified.add(name);
+      const { error } = await supabase!.from("notifications").insert({
+        user_name: name,
+        type: "mention",
+        title: `${userName}さんにメンションされました`,
+        body: `${currentTicket.wbs}: ${currentTicket.title}`,
+        ticket_id: currentTicket.id,
+        ticket_wbs: currentTicket.wbs,
+        ticket_title: currentTicket.title,
+        project_slug: projectSlug,
+        mention_context: context,
+        is_read: false,
+      });
+      if (error) console.error("[notifications] mention insert failed:", error.message);
     }
   };
 
@@ -482,7 +538,7 @@ export function TicketDetailPanel({
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("comment insert failed:", error); return; }
       await loadRelated(ticket.id);
-      await notifyMentions(content, ticket);
+      await notifyMentions(content, ticket, `comment:${row.id}`);
     } else {
       setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
     }
@@ -1058,7 +1114,9 @@ export function TicketDetailPanel({
                 MDコピー
               </button>
             </div>
-            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={memberNames} />
+            <div id="panel-description-section">
+              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+            </div>
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
               <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
@@ -1343,7 +1401,7 @@ export function TicketDetailPanel({
                     <div style={{ marginBottom: 10 }}>
                       <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                       <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={memberNames} />
+                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
                       </div>
                     </div>
                     {fileDragOver && (
@@ -1445,7 +1503,7 @@ export function TicketDetailPanel({
                 const isLatestReviewReq = isReviewReq && c.id === latestReviewReqId;
                 const showReviewForm = isLatestReviewReq && canReview && status === "in-review" && editingId !== c.id;
                 return (
-                  <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                  <div key={c.id} id={`panel-comment-${c.id}`} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                     <Avatar name={c.userName} size="xs" />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" as const }}>
@@ -1471,7 +1529,7 @@ export function TicketDetailPanel({
                       </div>
                       {editingId === c.id ? (
                         <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={memberNames} />
+                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
                           {editImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {editImages.map((img, i) => (
@@ -1537,7 +1595,7 @@ export function TicketDetailPanel({
                       {showReviewForm && (
                         <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                           <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={memberNames} />
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
                           {revisionImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                               {revisionImages.map((img, i) => (
@@ -1588,7 +1646,7 @@ export function TicketDetailPanel({
 
               // normal comment
               return (
-                <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                <div key={c.id} id={`panel-comment-${c.id}`} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                   <Avatar name={c.userName} size="xs" />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
@@ -1615,7 +1673,7 @@ export function TicketDetailPanel({
 
                     {editingId === c.id ? (
                       <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={memberNames} />
+                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
                         {editImages.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                             {editImages.map((img, i) => (
@@ -1690,7 +1748,7 @@ export function TicketDetailPanel({
                   <StatusBadge status={status} />
                 </div>
               </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={memberNames} />
+              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
               {commentImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                   {commentImages.map((img, i) => (

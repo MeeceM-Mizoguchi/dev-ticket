@@ -44,5 +44,5 @@ export function mapMember(r: any): Member {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapNotification(r: any): AppNotification {
-  return { id:r.id, userName:r.user_name, type:r.type, title:r.title, body:r.body||"", ticketId:r.ticket_id??null, ticketWbs:r.ticket_wbs||"", ticketTitle:r.ticket_title||"", projectSlug:r.project_slug||"", isRead:r.is_read??false, createdAt:r.created_at||"" };
+  return { id:r.id, userName:r.user_name, type:r.type, title:r.title, body:r.body||"", ticketId:r.ticket_id??null, ticketWbs:r.ticket_wbs||"", ticketTitle:r.ticket_title||"", projectSlug:r.project_slug||"", mentionContext:r.mention_context||"", isRead:r.is_read??false, createdAt:r.created_at||"" };
 }

@@ -74,7 +74,8 @@ export function Topbar() {
       setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
     }
     if (notif.projectSlug && notif.ticketWbs) {
-      navigate(`/${notif.projectSlug}/${notif.ticketWbs}`);
+      const anchor = notif.mentionContext ? `?anchor=${encodeURIComponent(notif.mentionContext)}` : "";
+      navigate(`/${notif.projectSlug}/${notif.ticketWbs}${anchor}`);
     } else if (notif.projectSlug) {
       navigate(`/${notif.projectSlug}`);
     }

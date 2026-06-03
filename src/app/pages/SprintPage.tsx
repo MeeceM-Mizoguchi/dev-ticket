@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef, type ElementType } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Lock, Settings2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -19,6 +19,8 @@ import { EditProjectIdentifiersDialog } from "@/app/components/projects/EditProj
 
 export function SprintPage() {
   const { projectSlug, ticketWbs } = useParams<{ projectSlug: string; ticketWbs?: string }>();
+  const [searchParams] = useSearchParams();
+  const anchor = searchParams.get("anchor") ?? undefined;
   const navigate = useNavigate();
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userPermissions } = useAuth();
@@ -242,6 +244,7 @@ export function SprintPage() {
         projectId={projectId ?? undefined}
         sprintId={selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id))?.id : undefined}
         projectSlug={projectSlug}
+        anchor={anchor}
         onClose={() => navigate(`/${projectSlug}`)}
         onUpdated={refreshSprints}
         onDeleted={() => { navigate(`/${projectSlug}`); refreshSprints(); }}
