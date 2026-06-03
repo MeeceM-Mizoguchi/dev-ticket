@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, ChevronUp, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -131,8 +131,6 @@ export function TicketDetailPanel({
   const [editContent, setEditContent] = useState("");
   const [editImages, setEditImages]   = useState<string[]>([]);
 
-  // accordion
-  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set([1]));
 
   // 子チケット
   const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
@@ -482,7 +480,6 @@ export function TicketDetailPanel({
       : `<p><strong>@${reviewerName}</strong> にレビュー依頼を送信しました（第${round}回）</p>`;
     await addComment(content, "review_request", [], newStatus);
     setReviewContent("");
-    setExpandedRounds(prev => new Set([...prev, round]));
     onUpdated?.();
   };
 
@@ -611,17 +608,29 @@ export function TicketDetailPanel({
   const filesByRound = sourceFiles.reduce<Record<number, TicketSourceFile[]>>((acc, f) => {
     (acc[f.reviewRound] = acc[f.reviewRound] || []).push(f); return acc;
   }, {});
-  const rounds = Object.keys(filesByRound).map(Number).sort((a, b) => a - b);
-
   const actionBtn = ACTION_BUTTONS[status];
 
   // 担当者チェック: 自分が担当者かどうか
   const isAssignee = !assignee || assignee === userName;
-  const canSendReview = status === "in-progress" && !!reviewerName && isAssignee;
-  // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつレビュー権限あり
-  // 自分がレビュアーに指定されている場合は担当者でも可（自己レビュー）
-  const canReview = (userName === reviewerName || isAdminOrPM) && (!isAssignee || (!!reviewerName && userName === reviewerName)) && hasReviewPermission;
+  const reviewRequestComments = comments.filter(c => c.commentType === "review_request");
+  const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
+  // 自己レビュー: 担当者自身がレビュアーに指定されているケース
+  const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
+  const canSendReview = status === "in-progress" && !!reviewerName && isAssignee && !hasBeenApproved;
+  // レビュアーボタン: 指定されたレビュアー or 管理者/PM、かつレビュー権限あり
+  // 自己レビューの場合は isAssignee と hasReviewPermission をバイパス
+  const canReview = (userName === reviewerName || isAdminOrPM) && (!isAssignee || isSelfReview) && (hasReviewPermission || isSelfReview);
   const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
+  const roundOutcomes = reviewRequestComments.map((reqComment, idx) => {
+    const reqIdx = comments.findIndex(c => c.id === reqComment.id);
+    const nextReqIdx = idx + 1 < reviewRequestComments.length
+      ? comments.findIndex(c => c.id === reviewRequestComments[idx + 1].id)
+      : comments.length;
+    const between = comments.slice(reqIdx + 1, nextReqIdx);
+    if (between.some(c => c.commentType === "review_approved")) return "approved" as const;
+    if (between.some(c => c.commentType === "revision_request")) return "revision" as const;
+    return "pending" as const;
+  });
 
   const assigneeLabel = assignee || "未割り当て";
 
@@ -1023,163 +1032,146 @@ export function TicketDetailPanel({
             )}
           </div>}
 
-          {/* Source files */}
-          <div
-            onDragOver={e => { e.preventDefault(); setFileDragOver(true); }}
-            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileDragOver(false); }}
-            onDrop={async e => {
-              e.preventDefault();
-              setFileDragOver(false);
-              if (!e.dataTransfer.files.length) return;
-              const round = reviewRound || 1;
-              for (const f of Array.from(e.dataTransfer.files)) await uploadSourceFile(f, round);
-              if (isSupabaseEnabled && ticket) loadRelated(ticket.id);
-              else {
-                const newFiles: TicketSourceFile[] = Array.from(e.dataTransfer.files).map(f => ({ id: `SF-${Date.now()}`, ticketId: ticket!.id, fileName: f.name, fileSize: f.size, fileType: f.type, uploadedBy: userName, reviewRound: round, fileUrl: "", createdAt: new Date().toISOString() }));
-                setSourceFiles(prev => [...prev, ...newFiles]);
-              }
-              setExpandedRounds(prev => new Set([...prev, round]));
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
-              <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                <FileCode2 style={{ width: 10, height: 10, display: "inline", marginRight: 4 }} />ソースファイル
-              </p>
-              <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, cursor: "pointer", border: "1px solid rgba(5,150,105,0.20)" }}>
-                <Paperclip style={{ width: 11, height: 11 }} />アップロード
-                <input type="file" multiple style={{ display: "none" }}
-                  onChange={async e => {
-                    if (!e.target.files) return;
-                    const round = reviewRound || 1;
-                    for (const f of Array.from(e.target.files)) await uploadSourceFile(f, round);
-                    if (isSupabaseEnabled && ticket) loadRelated(ticket.id);
-                    else {
-                      const newFiles: TicketSourceFile[] = Array.from(e.target.files).map(f => ({ id: `SF-${Date.now()}`, ticketId: ticket!.id, fileName: f.name, fileSize: f.size, fileType: f.type, uploadedBy: userName, reviewRound: round, fileUrl: "", createdAt: new Date().toISOString() }));
-                      setSourceFiles(prev => [...prev, ...newFiles]);
-                    }
-                    setExpandedRounds(prev => new Set([...prev, round]));
-                    e.target.value = "";
-                  }} />
-              </label>
-            </div>
-            {fileDragOver && (
-              <div style={{ border: "2px dashed rgba(5,150,105,0.5)", borderRadius: 10, padding: "14px", textAlign: "center", color: "#059669", fontSize: 12, fontWeight: 600, background: "rgba(5,150,105,0.04)", marginBottom: 8 }}>
-                ドロップしてアップロード
-              </div>
-            )}
-            {rounds.length === 0 ? (
-              <div style={{ border: "2px dashed rgba(26,23,20,0.10)", borderRadius: 10, padding: "20px", textAlign: "center", color: "#C9C4BB", fontSize: 12 }}>ファイルがありません（ドラッグ&ドロップでも追加できます）</div>
-            ) : rounds.map(round => {
-              const isOpen = expandedRounds.has(round);
-              const files = filesByRound[round];
-              return (
-                <div key={round} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, marginBottom: 6, overflow: "hidden" }}>
-                  <button onClick={() => setExpandedRounds(prev => { const s = new Set(prev); isOpen ? s.delete(round) : s.add(round); return s; })}
-                    style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#1A1714" }}>
-                    <span>第{round}回レビュー <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({files.length}ファイル)</span></span>
-                    {isOpen ? <ChevronUp style={{ width: 13, height: 13, color: "#B0A9A4" }} /> : <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4" }} />}
-                  </button>
-                  {isOpen && (
-                    <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", padding: "6px 14px" }}>
-                      {files.map(f => (
-                        <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid rgba(26,23,20,0.04)" }}>
-                          <FileCode2 style={{ width: 13, height: 13, color: "#059669", flexShrink: 0 }} />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            {f.fileUrl
-                              ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 500, color: "#059669", textDecoration: "none", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.fileName}</a>
-                              : <span style={{ fontSize: 12, color: "#1A1714", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.fileName}</span>}
-                            <span style={{ fontSize: 10, color: "#B0A9A4" }}>{f.uploadedBy} · {formatTs(f.createdAt)}</span>
-                          </div>
-                          <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                            <Trash2 style={{ width: 12, height: 12 }} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* ── Review flow ── */}
-          {isAssignee && (
+          {/* ── Review flow + Source files ── */}
+          {(isAssignee || userName === reviewerName) && (
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
                 レビューフロー
-                {reviewRound > 0 && <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400, marginLeft: 6 }}>第{reviewRound}回</span>}
                 {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
+                {hasBeenApproved && status !== "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", marginLeft: 8 }}>承認済み</span>}
               </p>
 
-              {status === "todo" ? (
-                <div style={{ padding: "16px", background: "#FFF7ED", borderRadius: 9, border: "1px solid rgba(217,119,6,0.20)", textAlign: "center" as const }}>
-                  <p style={{ fontSize: 13, fontWeight: 700, color: "#D97706", marginBottom: 4 }}>まず着手を開始してください</p>
-                  <p style={{ fontSize: 12, color: "#9E9690" }}>「着手開始」ボタンを押してから<br />レビュー依頼を送信できます</p>
+              {/* ラウンド別履歴 + ソースファイル */}
+              {reviewRequestComments.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+                  {reviewRequestComments.map((_, idx) => {
+                    const round = idx + 1;
+                    const outcome = roundOutcomes[idx];
+                    const roundFiles = filesByRound[round] ?? [];
+                    const color = outcome === "approved" ? "#059669" : outcome === "revision" ? "#D97706" : "#7C3AED";
+                    const bg = outcome === "approved" ? "#ECFDF5" : outcome === "revision" ? "#FFF7ED" : "#F5F3FF";
+                    const border = outcome === "approved" ? "rgba(5,150,105,0.15)" : outcome === "revision" ? "rgba(217,119,6,0.15)" : "rgba(124,58,237,0.15)";
+                    const label = outcome === "approved" ? "✅ レビュー承認" : outcome === "revision" ? "⚠️ 修正依頼" : "🔄 審査中";
+                    return (
+                      <div key={idx} style={{ padding: "8px 10px", background: bg, borderRadius: 8, border: `1px solid ${border}` }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: roundFiles.length > 0 ? 7 : 0 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color }}>第{round}回</span>
+                          <span style={{ fontSize: 10, color }}>{label}</span>
+                        </div>
+                        {roundFiles.length > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            {roundFiles.map(f => (
+                              <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <FileCode2 style={{ width: 11, height: 11, color: "#059669", flexShrink: 0 }} />
+                                {f.fileUrl
+                                  ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ flex: 1, fontSize: 11, color: "#059669", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</a>
+                                  : <span style={{ flex: 1, fontSize: 11, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</span>}
+                                {isAssignee && (
+                                  <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB", flexShrink: 0 }}
+                                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                    <Trash2 style={{ width: 11, height: 11 }} />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ) : (
-                <>
-                  <div style={{ marginBottom: 10 }}>
-                    <label className={labelCls}>レビュアー</label>
-                    <div ref={reviewerDropRef} style={{ position: "relative" }}>
-                      <button onClick={() => { if (status !== "in-review") setReviewerOpen(o => !o); }}
-                        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: status === "in-review" ? "#F4F5F6" : reviewerOpen ? "#FFF" : "#F7F8F9", border: `1px solid ${reviewerOpen ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, color: reviewerName ? "#1A1714" : "#B0A9A4", cursor: status === "in-review" ? "default" : "pointer", outline: "none", opacity: status === "in-review" ? 0.7 : 1, boxShadow: reviewerOpen ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", transition: "all 0.15s", textAlign: "left" as const }}>
-                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{reviewerName || "レビュアーを選択..."}</span>
-                        <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: reviewerOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-                      </button>
-                      {reviewerOpen && (
-                        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden" }}>
-                          <button onClick={() => { setReviewerName(""); setReviewerOpen(false); }}
-                            style={{ width: "100%", padding: "8px 12px", textAlign: "left" as const, background: !reviewerName ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "#B0A9A4" }}
-                            onMouseEnter={e => { if (reviewerName) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
-                            レビュアーを選択...
-                          </button>
-                          {reviewerEligibleNames
-                            .filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n))
-                            .map(n => (
-                            <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
-                              style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
-                              onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = reviewerName === n ? "#ECFDF5" : "transparent"; }}>
-                              <Avatar name={n} size="xs" />
-                              <span style={{ flex: 1 }}>{n}</span>
-                              {reviewerName === n && <Check style={{ width: 11, height: 11, color: "#059669", marginLeft: "auto" }} />}
+              )}
+
+              {/* レビュー依頼フォーム（担当者のみ） */}
+              {isAssignee && (
+                status === "todo" ? (
+                  <div style={{ padding: "16px", background: "#FFF7ED", borderRadius: 9, border: "1px solid rgba(217,119,6,0.20)", textAlign: "center" as const }}>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: "#D97706", marginBottom: 4 }}>まず着手を開始してください</p>
+                    <p style={{ fontSize: 12, color: "#9E9690" }}>「着手開始」ボタンを押してから<br />レビュー依頼を送信できます</p>
+                  </div>
+                ) : hasBeenApproved ? (
+                  <div style={{ padding: "12px 14px", background: "#ECFDF5", borderRadius: 9, border: "1px solid rgba(5,150,105,0.20)", textAlign: "center" as const }}>
+                    <p style={{ fontSize: 12, fontWeight: 700, color: "#059669" }}>✅ レビューが承認されています</p>
+                    <p style={{ fontSize: 11, color: "#9E9690", marginTop: 3 }}>新規レビュー依頼は送信できません</p>
+                  </div>
+                ) : (
+                  <div
+                    onDragOver={e => { e.preventDefault(); setFileDragOver(true); }}
+                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileDragOver(false); }}
+                    onDrop={async e => {
+                      e.preventDefault();
+                      setFileDragOver(false);
+                      if (!e.dataTransfer.files.length) return;
+                      Array.from(e.dataTransfer.files).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }]));
+                    }}
+                  >
+                    <div style={{ marginBottom: 10 }}>
+                      <label className={labelCls}>レビュアー</label>
+                      <div ref={reviewerDropRef} style={{ position: "relative" }}>
+                        <button onClick={() => { if (status !== "in-review") setReviewerOpen(o => !o); }}
+                          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: status === "in-review" ? "#F4F5F6" : reviewerOpen ? "#FFF" : "#F7F8F9", border: `1px solid ${reviewerOpen ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, color: reviewerName ? "#1A1714" : "#B0A9A4", cursor: status === "in-review" ? "default" : "pointer", outline: "none", opacity: status === "in-review" ? 0.7 : 1, boxShadow: reviewerOpen ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", transition: "all 0.15s", textAlign: "left" as const }}>
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{reviewerName || "レビュアーを選択..."}</span>
+                          <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: reviewerOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                        </button>
+                        {reviewerOpen && (
+                          <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden" }}>
+                            <button onClick={() => { setReviewerName(""); setReviewerOpen(false); }}
+                              style={{ width: "100%", padding: "8px 12px", textAlign: "left" as const, background: !reviewerName ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "#B0A9A4" }}
+                              onMouseEnter={e => { if (reviewerName) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
+                              レビュアーを選択...
                             </button>
-                          ))}
-                        </div>
-                      )}
+                            {reviewerEligibleNames
+                              .filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n))
+                              .map(n => (
+                              <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
+                                style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
+                                onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = reviewerName === n ? "#ECFDF5" : "transparent"; }}>
+                                <Avatar name={n} size="xs" />
+                                <span style={{ flex: 1 }}>{n}</span>
+                                {reviewerName === n && <Check style={{ width: 11, height: 11, color: "#059669", marginLeft: "auto" }} />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <div style={{ marginBottom: 10 }}>
-                    <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
-                    <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                      <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+                    <div style={{ marginBottom: 10 }}>
+                      <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
+                      <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+                      </div>
                     </div>
-                  </div>
-                  {reviewFiles.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
-                      {reviewFiles.map((rf, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
-                          <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
-                          <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
-                        </div>
-                      ))}
+                    {fileDragOver && (
+                      <div style={{ border: "2px dashed rgba(5,150,105,0.5)", borderRadius: 8, padding: "10px", textAlign: "center", color: "#059669", fontSize: 11, fontWeight: 600, background: "rgba(5,150,105,0.04)", marginBottom: 8 }}>
+                        ドロップしてファイルを追加
+                      </div>
+                    )}
+                    {reviewFiles.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                        {reviewFiles.map((rf, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
+                            <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
+                            <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                        <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
+                        <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
+                      </label>
+                      <button onClick={handleReviewRequest} disabled={!canSendReview}
+                        style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
+                        {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
+                      </button>
                     </div>
-                  )}
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                      <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
-                      <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
-                    </label>
-                    <button onClick={handleReviewRequest} disabled={!canSendReview}
-                      style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
-                      {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
-                    </button>
+                    {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
                   </div>
-                  {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
-                </>
+                )
               )}
             </div>
           )}
