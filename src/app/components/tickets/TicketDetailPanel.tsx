@@ -1160,9 +1160,10 @@ export function TicketDetailPanel({
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
                               レビュアーを選択...
                             </button>
-                            {[...new Set([...(isAssignee && userName ? [userName] : []), ...reviewerEligibleNames])]
-                              .filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n))
-                              .map(n => (
+                            {[...new Set([
+                              ...(isAssignee && userName ? [userName] : []),
+                              ...reviewerEligibleNames.filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n)),
+                            ])].map(n => (
                               <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
                                 style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
                                 onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
