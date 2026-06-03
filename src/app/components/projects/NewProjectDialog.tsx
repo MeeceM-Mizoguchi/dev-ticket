@@ -86,12 +86,12 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
         </div>
         <div>
           <FieldInput
-            label="スプリントNoのプレフィックス"
+            label="チケットNoのプレフィックス"
             placeholder={name ? autoPrefix(name) : "例: TS"}
             value={wbsPrefix}
             onChange={v => setWbsPrefix(sanitizePrefix(v.toUpperCase()))}
           />
-          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>スプリントNoの接頭辞（例: TS-00001）</p>
+          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>チケットNoの接頭辞（例: TS-00001）</p>
         </div>
       </div>
       <FieldSelect label="クライアント" required value={clientName} onChange={setClientName}>
