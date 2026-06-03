@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Bell } from "lucide-react";
+import { Bell, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -26,16 +26,15 @@ export function Topbar() {
   const { userName } = useAuth();
   const navigate = useNavigate();
   const [showNotif, setShowNotif] = useState(false);
+  const [hoveredNotifId, setHoveredNotifId] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>(
     !isSupabaseEnabled ? MOCK_NOTIFICATIONS : []
   );
-  // パネルを最後に開いた日時。localStorageに永続化してリロード後も維持する。
   const [lastViewedAt, setLastViewedAt] = useState<string>(
     () => localStorage.getItem(NOTIF_VIEWED_KEY) ?? ""
   );
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
-  // 最後に開いた日時より後に届いた未読がある場合のみグロー表示
   const hasNewSinceLastView = !showNotif && notifications.some(
     n => !n.isRead && (!lastViewedAt || n.createdAt > lastViewedAt)
   );
@@ -46,6 +45,7 @@ export function Topbar() {
       .from("notifications")
       .select("*")
       .eq("user_name", userName)
+      .is("hidden_at", null)           // hidden_at が null のもの（非削除）のみ取得
       .order("created_at", { ascending: false })
       .limit(20);
     if (error) { console.error("[notifications] load failed:", error.message); return; }
@@ -59,12 +59,26 @@ export function Topbar() {
     return () => clearInterval(id);
   }, [userName]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleOpen = async () => {
+  const handleOpen = () => {
     const now = new Date().toISOString();
     setShowNotif(true);
     setLastViewedAt(now);
     localStorage.setItem(NOTIF_VIEWED_KEY, now);
-    await loadNotifications();
+  };
+
+  const handleDeleteNotif = async (e: React.MouseEvent, notifId: string) => {
+    e.stopPropagation();
+    // UIから即時削除
+    setNotifications(prev => prev.filter(n => n.id !== notifId));
+    if (isSupabaseEnabled) {
+      // UPDATEでhidden_atをセット（DELETEではなくUPDATE — UPDATEポリシーは動作確認済み）
+      // hidden_atがセットされた通知はloadNotificationsの .is("hidden_at", null) フィルタで除外される
+      const { error } = await supabase!
+        .from("notifications")
+        .update({ hidden_at: new Date().toISOString() })
+        .eq("id", notifId);
+      if (error) console.error("[notifications] hide failed:", error.message);
+    }
   };
 
   const handleNotifClick = async (notif: AppNotification) => {
@@ -88,7 +102,7 @@ export function Topbar() {
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
         <div style={{ position: "relative" }}>
           <button
-            onClick={() => { if (showNotif) setShowNotif(false); else handleOpen(); }}
+            onClick={() => { if (showNotif) { setShowNotif(false); setHoveredNotifId(null); } else handleOpen(); }}
             style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: showNotif ? "#F4F5F6" : hasNewSinceLastView ? "rgba(5,150,105,0.06)" : "transparent", animation: hasNewSinceLastView ? "bellGlow 1.8s ease-in-out infinite" : "none", transition: "background 0.15s" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
             onMouseLeave={e => { if (!showNotif) (e.currentTarget as HTMLElement).style.background = hasNewSinceLastView ? "rgba(5,150,105,0.06)" : "transparent"; }}>
@@ -101,7 +115,7 @@ export function Topbar() {
           </button>
           {showNotif && (
             <>
-              <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setShowNotif(false)} />
+              <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => { setShowNotif(false); setHoveredNotifId(null); }} />
               <div style={{ position: "absolute", top: 40, right: 0, width: 320, background: "#fff", borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.08)", zIndex: 50, overflow: "hidden" }}>
                 <div style={{ padding: "14px 16px 12px", borderBottom: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>お知らせ</span>
@@ -113,9 +127,9 @@ export function Topbar() {
                   ) : notifications.map(notif => (
                     <div key={notif.id}
                       onClick={() => handleNotifClick(notif)}
-                      style={{ padding: "12px 16px", borderBottom: "1px solid rgba(26,23,20,0.04)", background: notif.isRead ? "transparent" : "#F0FDF8", cursor: "pointer", transition: "background 0.12s" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = notif.isRead ? "transparent" : "#F0FDF8"; }}>
+                      style={{ padding: "12px 16px", borderBottom: "1px solid rgba(26,23,20,0.04)", background: hoveredNotifId === notif.id ? "#F4F5F6" : notif.isRead ? "transparent" : "#F0FDF8", cursor: "pointer", transition: "background 0.12s" }}
+                      onMouseEnter={() => setHoveredNotifId(notif.id)}
+                      onMouseLeave={() => setHoveredNotifId(null)}>
                       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                         <div style={{ width: 6, height: 6, borderRadius: "50%", background: notif.isRead ? "transparent" : "#059669", marginTop: 5, flexShrink: 0 }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -123,6 +137,13 @@ export function Topbar() {
                           <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.4, marginBottom: 4 }}>{notif.body}</p>
                           <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>{formatRelative(notif.createdAt)}</span>
                         </div>
+                        <button
+                          onClick={e => handleDeleteNotif(e, notif.id)}
+                          style={{ opacity: hoveredNotifId === notif.id ? 1 : 0, transition: "opacity 0.15s", background: "none", border: "none", cursor: "pointer", padding: 4, borderRadius: 6, color: "#C9C4BB", flexShrink: 0, marginTop: 1 }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#EF4444"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                          <Trash2 style={{ width: 13, height: 13 }} />
+                        </button>
                       </div>
                     </div>
                   ))}
