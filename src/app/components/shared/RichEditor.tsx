@@ -20,7 +20,14 @@ interface MentionListHandle {
 
 const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, command }, ref) => {
   const [sel, setSel] = useState(0);
-  useEffect(() => setSel(0), [items]);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  useEffect(() => { setSel(0); }, [items]);
+
+  // キーボード移動時に選択項目を表示領域内にスクロール
+  useEffect(() => {
+    itemRefs.current[sel]?.scrollIntoView({ block: "nearest" });
+  }, [sel]);
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
@@ -37,11 +44,14 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 
   if (!items.length) return null;
 
+  // ラッパー div がスクロールコンテナ兼ビジュアルコンテナなので、ここは素の断片で返す
   return (
-    <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", overflow: "hidden", minWidth: 160, maxWidth: 260 }}>
+    <>
       {items.map((item, i) => (
-        <button key={item} onMouseDown={e => { e.preventDefault(); command({ id: item, label: item }); }}
-          style={{ width: "100%", padding: "7px 12px", textAlign: "left" as const, background: i === sel ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: i === sel ? "#059669" : "#1A1714", display: "flex", alignItems: "center", gap: 8, transition: "background 0.1s" }}
+        <button key={item}
+          ref={el => { itemRefs.current[i] = el; }}
+          onMouseDown={e => { e.preventDefault(); command({ id: item, label: item }); }}
+          style={{ width: "100%", padding: "7px 12px", textAlign: "left" as const, background: i === sel ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: i === sel ? "#059669" : "#1A1714", display: "flex", alignItems: "center", gap: 8, transition: "background 0.1s", boxSizing: "border-box" as const }}
           onMouseEnter={() => setSel(i)}>
           <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#E8F5F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#059669", flexShrink: 0 }}>
             {item.charAt(0)}
@@ -49,7 +59,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
           {item}
         </button>
       ))}
-    </div>
+    </>
   );
 });
 MentionList.displayName = "MentionList";
@@ -105,16 +115,36 @@ export function RichEditor({
               if (!wrapper || !clientRect) return;
               const rect = clientRect();
               if (!rect) return;
-              const top = rect.bottom + window.scrollY + 4;
-              const left = rect.left + window.scrollX;
+              const GAP = 4;
+              const MAX_H = 240;
+              const spaceBelow = window.innerHeight - rect.bottom - GAP;
+              const spaceAbove = rect.top - GAP;
+              let top: number;
+              let maxH: number;
+              if (spaceBelow >= 100 || spaceBelow >= spaceAbove) {
+                top = rect.bottom + window.scrollY + GAP;
+                maxH = Math.min(MAX_H, Math.max(80, spaceBelow));
+              } else {
+                maxH = Math.min(MAX_H, Math.max(80, spaceAbove));
+                top = rect.top + window.scrollY - maxH - GAP;
+              }
+              let left = rect.left + window.scrollX;
+              if (left + 260 > window.innerWidth) left = Math.max(8, window.innerWidth - 268);
               wrapper.style.top = `${top}px`;
               wrapper.style.left = `${left}px`;
+              wrapper.style.maxHeight = `${maxH}px`;
             };
 
             return {
               onStart: (props) => {
                 wrapper = document.createElement("div");
-                wrapper.style.cssText = "position:absolute;z-index:9999;";
+                // ラッパー自体をスクロールコンテナ兼ビジュアルコンテナにする
+                wrapper.style.cssText = [
+                  "position:absolute", "z-index:9999",
+                  "background:#FFF", "border:1px solid rgba(26,23,20,0.12)",
+                  "border-radius:10px", "box-shadow:0 8px 24px rgba(0,0,0,0.14)",
+                  "overflow-y:auto", "min-width:160px", "max-width:260px",
+                ].join(";");
                 document.body.appendChild(wrapper);
 
                 renderer = new ReactRenderer<MentionListHandle, MentionListProps>(MentionList, {
