@@ -148,7 +148,7 @@ export function Topbar() {
                     </div>
                   ))}
                 </div>
-                <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(26,23,20,0.06)", textAlign: "center" as const }}>
+                <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <button
                     onClick={async () => {
                       if (!isSupabaseEnabled || !userName) return;
@@ -157,6 +157,16 @@ export function Topbar() {
                     }}
                     style={{ fontSize: 12, color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer" }}>
                     すべて既読にする
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setNotifications([]);
+                      if (isSupabaseEnabled && userName) {
+                        await supabase!.from("notifications").update({ hidden_at: new Date().toISOString() }).eq("user_name", userName).is("hidden_at", null);
+                      }
+                    }}
+                    style={{ fontSize: 12, color: "#EF4444", fontWeight: 600, background: "none", border: "none", cursor: "pointer" }}>
+                    すべて削除
                   </button>
                 </div>
               </div>
