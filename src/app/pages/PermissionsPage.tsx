@@ -37,7 +37,7 @@ interface ConflictInfo {
 }
 
 export function PermissionsPage() {
-  const { userPermissions } = useAuth();
+  const { userPermissions, userName } = useAuth();
   const { toast } = useToast();
 
   if (!userPermissions.canAccessGroups) return <Navigate to="/dashboard" replace />;
@@ -201,6 +201,21 @@ export function PermissionsPage() {
     }
     setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: newMembers } : p));
     toast(`「${member.name}」を「${project.name}」に追加しました`);
+    if (isSupabaseEnabled && member.name !== userName) {
+      supabase!.from("notifications").insert({
+        user_name: member.name,
+        type: "assign",
+        title: `「${project.name}」にアサインされました`,
+        body: `${userName}さんがプロジェクトに追加しました`,
+        ticket_id: null,
+        ticket_wbs: "",
+        ticket_title: "",
+        project_slug: project.slug ?? "",
+        is_read: false,
+      }).then(({ error }) => {
+        if (error) console.error("[notifications] project assign failed:", error.message);
+      });
+    }
   };
 
   const handleAddGroupToProject = async (groupId: number, project: Project) => {
@@ -247,6 +262,26 @@ export function PermissionsPage() {
     ));
     const g = groups.find(g => g.id === groupId);
     toast(`グループ「${g?.name}」を「${project.name}」にアサインしました`);
+    if (isSupabaseEnabled) {
+      const groupMemberNames = getGroupMemberIds(groupId)
+        .map(mid => members.find(m => m.id === mid)?.name)
+        .filter((name): name is string => !!name && name !== userName);
+      for (const name of groupMemberNames) {
+        supabase!.from("notifications").insert({
+          user_name: name,
+          type: "assign",
+          title: `「${project.name}」にアサインされました`,
+          body: `${userName}さんがグループ経由でアサインしました`,
+          ticket_id: null,
+          ticket_wbs: "",
+          ticket_title: "",
+          project_slug: project.slug ?? "",
+          is_read: false,
+        }).then(({ error }) => {
+          if (error) console.error("[notifications] group project assign failed:", error.message);
+        });
+      }
+    }
   };
 
   const resolveConflict = async (resolution: "remove-individual" | "exclude-from-group") => {

@@ -100,6 +100,7 @@ export function TicketDetailPanel({
   // review request form
   const [reviewContent, setReviewContent] = useState("");
   const [reviewFiles, setReviewFiles]     = useState<{ name: string; file: File }[]>([]);
+  const [reviewImages, setReviewImages]   = useState<string[]>([]);
   // reviewer's input for revision/approval comment
   const [revisionInput, setRevisionInput] = useState("");
   const [revisionImages, setRevisionImages] = useState<string[]>([]);
@@ -536,7 +537,8 @@ export function TicketDetailPanel({
     const content = reviewContent.trim()
       ? reviewContent
       : `<p><strong>@${reviewerName}</strong> にレビュー依頼を送信しました（第${round}回）</p>`;
-    await addComment(content, "review_request", [], newStatus);
+    await addComment(content, "review_request", reviewImages, newStatus);
+    setReviewImages([]);
     await insertNotification(
       reviewerName,
       "review_request",
@@ -1289,13 +1291,20 @@ export function TicketDetailPanel({
                   </div>
                 ) : (
                   <div
+                    onPaste={e => pasteImage(e, setReviewImages, `tickets/${ticket.id}/comments`)}
                     onDragOver={e => { e.preventDefault(); setFileDragOver(true); }}
                     onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileDragOver(false); }}
                     onDrop={async e => {
                       e.preventDefault();
                       setFileDragOver(false);
                       if (!e.dataTransfer.files.length) return;
-                      Array.from(e.dataTransfer.files).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }]));
+                      Array.from(e.dataTransfer.files).forEach(f => {
+                        if (f.type.startsWith("image/")) {
+                          uploadImageToStorage(f, `tickets/${ticket.id}/comments`).then(url => { if (url) setReviewImages(prev => [...prev, url]); });
+                        } else {
+                          setReviewFiles(prev => [...prev, { name: f.name, file: f }]);
+                        }
+                      });
                     }}
                   >
                     <div style={{ marginBottom: 10 }}>
@@ -1352,7 +1361,38 @@ export function TicketDetailPanel({
                         ))}
                       </div>
                     )}
+                    {reviewImages.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {reviewImages.map((img, i) => (
+                          <div key={i} style={{ position: "relative" }}>
+                            <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                              style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                            <button onClick={() => copyImageToClipboard(img)}
+                              style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                              title="画像をコピー">
+                              {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                            </button>
+                            <button onClick={() => setReviewImages(prev => prev.filter((_, j) => j !== i))}
+                              style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 8 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                        <ImageIcon style={{ width: 12, height: 12 }} />画像添付（Ctrl+V 可）
+                        <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                          onChange={async e => {
+                            for (const f of Array.from(e.target.files || [])) {
+                              if (!f.type.startsWith("image/")) continue;
+                              const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                              if (url) setReviewImages(prev => [...prev, url]);
+                            }
+                            e.target.value = "";
+                          }} />
+                      </label>
                       <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
                         <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
                         <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
