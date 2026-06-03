@@ -68,7 +68,7 @@ export function TicketDetailPanel({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
-  const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string }[]>([]);
+  const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
   const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
   const [priority, setPriority]     = useState<Priority>(ticket?.priority ?? "medium");
@@ -690,23 +690,76 @@ export function TicketDetailPanel({
     if (!ticket || !isSupabaseEnabled || !projectId) return;
     const [{ data: ticketRow }, { data: sprintsData }] = await Promise.all([
       supabase!.from("sprint_tickets").select("sprint_id").eq("id", ticket.id).single(),
-      supabase!.from("sprints").select("id, name, status, start_date, end_date").eq("project_id", projectId).order("start_date"),
+      supabase!.from("sprints").select("id, name, status, start_date, end_date, identifier").eq("project_id", projectId).order("start_date"),
     ]);
     const currentSprintId = ticketRow?.sprint_id ?? null;
     setAvailableSprints(
       (sprintsData ?? [])
         .filter(s => s.id !== currentSprintId)
-        .map(s => ({ id: s.id, name: s.name, status: s.status, startDate: s.start_date ?? "", endDate: s.end_date ?? "" }))
+        .map(s => ({ id: s.id, name: s.name, status: s.status, startDate: s.start_date ?? "", endDate: s.end_date ?? "", identifier: s.identifier ?? null }))
     );
     setMoveTargetSprintId(null);
     setShowMoveModal(true);
   };
 
   const handleMoveTicket = async () => {
-    if (!ticket || !isSupabaseEnabled || !moveTargetSprintId) return;
+    if (!ticket || !isSupabaseEnabled || !moveTargetSprintId || !projectId) return;
     setIsMoveLoading(true);
     try {
-      await supabase!.from("sprint_tickets").update({ sprint_id: moveTargetSprintId }).eq("id", ticket.id);
+      const targetSprint = availableSprints.find(s => s.id === moveTargetSprintId);
+
+      // プロジェクト内の全スプリントIDと、プロジェクトのWBSプレフィックスを並列取得
+      const [{ data: sprintRows }, { data: projectRow }] = await Promise.all([
+        supabase!.from("sprints").select("id").eq("project_id", projectId),
+        supabase!.from("projects").select("wbs_prefix").eq("id", projectId).single(),
+      ]);
+
+      const sprintIds = sprintRows?.map(s => s.id) ?? [];
+      const wbsProjectPrefix = projectRow?.wbs_prefix ?? "T";
+      const prefix = targetSprint?.identifier || wbsProjectPrefix;
+
+      // 移動先スプリントのプレフィックスで既存の最大連番を取得（子チケット除く）
+      let nextNum = 1;
+      if (sprintIds.length > 0) {
+        const { data: maxRow } = await supabase!
+          .from("sprint_tickets")
+          .select("wbs")
+          .in("sprint_id", sprintIds)
+          .like("wbs", `${prefix}-%`)
+          .not("wbs", "like", `${prefix}-%-_%`)
+          .order("wbs", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        nextNum = (parseInt(maxRow?.wbs?.slice(prefix.length + 1) ?? "0", 10) || 0) + 1;
+      }
+      const newWbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
+      const oldWbs = ticket.wbs;
+
+      // 親チケットのスプリントとWBSを更新
+      await supabase!
+        .from("sprint_tickets")
+        .update({ sprint_id: moveTargetSprintId, wbs: newWbs })
+        .eq("id", ticket.id);
+
+      // 子チケットがあれば、スプリントとWBSを連動して更新
+      if (!ticket.parentId) {
+        const { data: children } = await supabase!
+          .from("sprint_tickets")
+          .select("id, wbs")
+          .eq("parent_id", ticket.id);
+        if (children && children.length > 0) {
+          await Promise.all(
+            children.map(child => {
+              const childSuffix = child.wbs.slice(oldWbs.length); // e.g., "-1"
+              return supabase!
+                .from("sprint_tickets")
+                .update({ sprint_id: moveTargetSprintId, wbs: `${newWbs}${childSuffix}` })
+                .eq("id", child.id);
+            })
+          );
+        }
+      }
+
       onUpdated?.();
       setShowMoveModal(false);
       onClose();
