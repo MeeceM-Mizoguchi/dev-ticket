@@ -198,6 +198,7 @@ export function SprintPage() {
         <NewTicketDialog
           sprintId={createForSprintId}
           projectId={projectId ?? undefined}
+          projectSlug={projectSlug}
           onClose={() => setCreateForSprintId(null)}
           onCreated={() => { refreshSprints(); setCreateForSprintId(null); }}
           sprintStartDate={createForSprint.startDate || undefined}

@@ -11,8 +11,8 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 
-export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
-  sprintId?: string; projectId?: string; onClose: () => void; onCreated?: () => void;
+export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
+  sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
   sprintStartDate?: string; sprintEndDate?: string;
   // 子チケット作成モード用。parentTicketId が指定された場合は子チケットとして作成される。将来の孫チケット対応も同プロパティを再利用予定。
   parentTicketId?: string; parentWbs?: string;
@@ -167,7 +167,7 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
           const { data: parentRow } = await supabase!
             .from("sprint_tickets").select("sprint_id").eq("id", parentTicketId).single();
           if (parentRow?.sprint_id) {
-            await supabase!.from("sprint_tickets").insert({
+            const { error: insErr } = await supabase!.from("sprint_tickets").insert({
               id: ticketId.current, sprint_id: parentRow.sprint_id, wbs,
               title, status, priority, assignee,
               start_date: startDate || null, due_date: dueDate || null,
@@ -178,6 +178,16 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
               images: images.length ? images : [],
               parent_id: parentTicketId,
             });
+            if (!insErr && assignee && projectSlug) {
+              const { error: nErr } = await supabase!.from("notifications").insert({
+                user_name: assignee, type: "assign",
+                title: "チケットが割り当てられました",
+                body: `${wbs}: ${title}`,
+                ticket_id: ticketId.current, ticket_wbs: wbs, ticket_title: title,
+                project_slug: projectSlug, is_read: false,
+              });
+              if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
+            }
             setSaving(false);
             onCreated?.();
             onClose();
@@ -206,7 +216,7 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
         }
         wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
       }
-      await supabase!.from("sprint_tickets").insert({
+      const { error: insErr2 } = await supabase!.from("sprint_tickets").insert({
         id: ticketId.current, sprint_id: effectiveSprintId, wbs,
         title, status, priority, assignee,
         start_date: startDate || null, due_date: dueDate || null,
@@ -217,6 +227,16 @@ export function NewTicketDialog({ sprintId, projectId, onClose, onCreated, sprin
         images: images.length ? images : [],
         parent_id: parentTicketId || null,
       });
+      if (!insErr2 && assignee && projectSlug) {
+        const { error: nErr2 } = await supabase!.from("notifications").insert({
+          user_name: assignee, type: "assign",
+          title: "チケットが割り当てられました",
+          body: `${wbs}: ${title}`,
+          ticket_id: ticketId.current, ticket_wbs: wbs, ticket_title: title,
+          project_slug: projectSlug, is_read: false,
+        });
+        if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
+      }
       setSaving(false);
     }
     onCreated?.();

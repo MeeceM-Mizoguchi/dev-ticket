@@ -426,6 +426,8 @@ export function TicketDetailPanel({
         ticket_title: ticket.title,
         project_slug: projectSlug,
         is_read: false,
+      }).then(({ error }) => {
+        if (error) console.error("[notifications] assign insert failed:", error.message, error);
       });
     }
   };
@@ -435,7 +437,7 @@ export function TicketDetailPanel({
     const stripped = content.replace(/<[^>]*>/g, " ");
     for (const name of memberNames) {
       if (name !== userName && stripped.includes(`@${name}`)) {
-        await supabase!.from("notifications").insert({
+        const { error } = await supabase!.from("notifications").insert({
           user_name: name,
           type: "mention",
           title: `${userName}さんにメンションされました`,
@@ -446,6 +448,7 @@ export function TicketDetailPanel({
           project_slug: projectSlug,
           is_read: false,
         });
+        if (error) console.error("[notifications] mention insert failed:", error.message, error);
       }
     }
   };
@@ -734,6 +737,7 @@ export function TicketDetailPanel({
         <NewTicketDialog
           sprintId={sprintId}
           projectId={projectId}
+          projectSlug={projectSlug}
           parentTicketId={ticket.id}
           parentWbs={ticket.wbs}
           zIndexBase={310}

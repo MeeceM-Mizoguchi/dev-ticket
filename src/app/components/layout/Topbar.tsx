@@ -32,12 +32,13 @@ export function Topbar() {
 
   const loadNotifications = async () => {
     if (!isSupabaseEnabled || !userName) return;
-    const { data } = await supabase!
+    const { data, error } = await supabase!
       .from("notifications")
       .select("*")
       .eq("user_name", userName)
       .order("created_at", { ascending: false })
       .limit(20);
+    if (error) { console.error("[notifications] load failed:", error.message); return; }
     if (data) setNotifications(data.map(mapNotification));
   };
 
