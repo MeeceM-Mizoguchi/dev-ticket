@@ -415,12 +415,12 @@ export function TicketDetailPanel({
     const prevAssignee = assignee;
     setAssignee(name);
     save({ assignees: name ? [name] : [], assignee: name });
-    if (name && name !== prevAssignee && name !== userName && isSupabaseEnabled && projectSlug && ticket) {
+    if (name && name !== prevAssignee && isSupabaseEnabled && projectSlug && ticket) {
       supabase!.from("notifications").insert({
         user_name: name,
         type: "assign",
-        title: "新しいチケットが割り当てられました",
-        body: `${ticket.wbs}: ${ticket.title}`,
+        title: "チケットが割り当てられました",
+        body: `${ticket.wbs}: ${ticket.title}（担当: ${prevAssignee || "未割り当て"} → ${name}）`,
         ticket_id: ticket.id,
         ticket_wbs: ticket.wbs,
         ticket_title: ticket.title,
@@ -1315,7 +1315,19 @@ export function TicketDetailPanel({
                               ))}
                             </div>
                           )}
-                          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4", marginTop: 8 }}>
+                            <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                            <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                              onChange={async e => {
+                                for (const f of Array.from(e.target.files || [])) {
+                                  if (!f.type.startsWith("image/")) continue;
+                                  const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                  if (url) setRevisionImages(prev => [...prev, url]);
+                                }
+                                e.target.value = "";
+                              }} />
+                          </label>
+                          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                             <button onClick={() => handleRevisionRequest(revisionInput)}
                               style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
                               修正依頼（差戻し）

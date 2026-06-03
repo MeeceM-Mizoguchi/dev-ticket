@@ -50,9 +50,7 @@ export function Topbar() {
 
   const handleOpen = async () => {
     setShowNotif(true);
-    if (!isSupabaseEnabled || !userName) return;
-    await supabase!.from("notifications").update({ is_read: true }).eq("user_name", userName).eq("is_read", false);
-    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+    await loadNotifications();
   };
 
   const handleNotifClick = async (notif: AppNotification) => {
