@@ -248,7 +248,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   );
 
   const COLS = ["wbs", "title", "description", "status", "priority", "assignee", "startDate", "dueDate"] as const;
-  const COL_LABELS = ["WBS", "チケット名", "チケット詳細", "ステータス", "優先度", "担当者", "開始日", "期限日"];
+  const COL_LABELS = ["スプリントNo", "チケット名", "チケット詳細", "ステータス", "優先度", "担当者", "開始日", "期限日"];
   const GRID = "72px 1fr 1fr 110px 56px 110px 68px 68px 32px";
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
