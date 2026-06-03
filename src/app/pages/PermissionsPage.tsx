@@ -500,6 +500,7 @@ export function PermissionsPage() {
           onPermClick={(member, projectId) => setPermTarget({ member, projectId })}
           getIndividualMemberNames={getIndividualMemberNames}
           getGroupMemberIds={getGroupMemberIds}
+          currentUserRole={userRole}
         />
       </div>
 
@@ -721,7 +722,7 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
 }
 
 // ── Projects Column ───────────────────────────────────────────────────────────
-function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver, conflict, onDragOver, onDragLeave, onDrop, onRemoveGroup, onRemoveMember, onResolveConflict, onCancelConflict, onPermClick, getIndividualMemberNames, getGroupMemberIds }: {
+function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver, conflict, onDragOver, onDragLeave, onDrop, onRemoveGroup, onRemoveMember, onResolveConflict, onCancelConflict, onPermClick, getIndividualMemberNames, getGroupMemberIds, currentUserRole }: {
   projects: Project[];
   groups: PermissionGroup[];
   members: Member[];
@@ -738,7 +739,9 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
   onPermClick: (member: Member, projectId: string) => void;
   getIndividualMemberNames: (project: Project) => string[];
   getGroupMemberIds: (groupId: number) => string[];
+  currentUserRole: string;
 }) {
+  const isCurrentUserAdmin = currentUserRole === "admin";
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const toggleExpand = (projectId: string) => {
     setExpandedProjects(prev => {
@@ -801,7 +804,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
           const assignedGroupIds = project.groupIds ?? [];
           const assignedGroups = groups.filter(g => assignedGroupIds.includes(g.id));
           const individualNames = getIndividualMemberNames(project);
-          const individualMembers = members.filter(m => individualNames.includes(m.name));
+          const individualMembers = members.filter(m => individualNames.includes(m.name) && (isCurrentUserAdmin || m.role !== "admin"));
           const isEmpty = assignedGroups.length === 0 && individualMembers.length === 0;
 
           // Truncation limits (collapsed only)
