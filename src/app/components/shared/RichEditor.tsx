@@ -221,24 +221,24 @@ export function RichEditor({
             items.push(nested.trim() ? `${line}\n${nested.trimEnd()}` : line);
             idx++;
           });
-          return items.join('\n') + '\n\n';
+          return items.join('\n') + '\n';
         }
 
         function block(node: any): string {
           if (node.isText) return node.text ?? '';
           const t: string = node.type.name;
           if (t === 'mention') return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
-          if (t === 'paragraph') return inline(node).trim() + '\n\n';
+          if (t === 'paragraph') return inline(node).trim() + '\n';
           if (t === 'hardBreak') return '\n';
           if (t === 'heading') {
             const level: number = node.attrs?.level ?? 1;
             return '#'.repeat(level) + ' ' + inline(node).trim() + '\n';
           }
-          if (t === 'codeBlock') return '```\n' + (node.textContent ?? '') + '\n```\n\n';
+          if (t === 'codeBlock') return '```\n' + (node.textContent ?? '') + '\n```\n';
           if (t === 'blockquote') {
             let inner = '';
             node.forEach((c: any) => { inner += block(c); });
-            return inner.trim().split('\n').map((l: string) => `> ${l}`).join('\n') + '\n\n';
+            return inner.trim().split('\n').map((l: string) => `> ${l}`).join('\n') + '\n';
           }
           if (t === 'bulletList' || t === 'orderedList') return listBlock(node, 0);
           if (t === 'table') {
@@ -283,8 +283,7 @@ export function RichEditor({
       <style>{`
         .tiptap { outline: none; padding: 12px 14px; min-height: ${minHeight}px; font-size: 13px; line-height: 1.7; color: #1A1714; }
         #${id} .tiptap { min-height: ${minHeight}px;${maxHeight ? ` max-height: ${maxHeight}px; overflow-y: auto;` : ""} }
-        .tiptap p { margin: 0 0 6px; }
-        .tiptap p:last-child { margin-bottom: 0; }
+        .tiptap p { margin: 0; }
         .tiptap strong { font-weight: 700; }
         .tiptap ul { list-style-type: disc; padding-left: 20px; margin: 6px 0; }
         .tiptap ol { list-style-type: decimal; padding-left: 20px; margin: 6px 0; }
