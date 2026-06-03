@@ -160,3 +160,11 @@ create policy "auth_delete_notifications" on notifications for delete using (aut
 -- alter table sprint_tickets add column if not exists generated_prompt text;
 -- notifications テーブル追加（初回のみ実行）
 -- 上記 notifications テーブルの create table 文をそのまま実行する
+
+-- 実績モニタ マイルストーンカラム追加（初回のみ実行）
+-- alter table projects add column if not exists started_at timestamptz;
+-- alter table projects add column if not exists review_requested_at timestamptz;
+-- alter table projects add column if not exists review_approved_at timestamptz;
+-- alter table projects add column if not exists stg_completed_at timestamptz;
+-- alter table projects add column if not exists uat_completed_at timestamptz;
+-- alter table projects add column if not exists released_at timestamptz;

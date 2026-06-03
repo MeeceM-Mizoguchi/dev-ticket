@@ -1,10 +1,10 @@
 import type { Project, Client, Member, Sprint, TicketItem, AppNotification } from "@/app/types";
 
 export const PROJECTS: Project[] = [
-  { id: "P-001", name: "ECサイトリニューアル", client: "株式会社サンプル商事", status: "in-progress", startDate: "2026-01-15", endDate: "2026-06-30", members: ["田中太郎", "佐藤花子", "山田次郎"], groupIds: [], done: 24, inProgress: 8, todo: 12, description: "既存ECサイトのUI/UX全面刷新。パフォーマンス改善とモバイル対応を含む大規模プロジェクト。" },
-  { id: "P-002", name: "モバイルアプリ開発", client: "テクノロジー株式会社", status: "planning", startDate: "2026-03-01", endDate: "2026-09-30", members: ["田中太郎", "山田次郎"], groupIds: [], done: 5, inProgress: 3, todo: 22, description: "iOS/Android向けのネイティブアプリ開発。React Nativeを使用した最新実装。" },
-  { id: "P-003", name: "データ分析基盤構築", client: "グローバル産業", status: "completed", startDate: "2025-10-01", endDate: "2026-02-28", members: ["鈴木一郎", "田中太郎"], groupIds: [], done: 31, inProgress: 0, todo: 0, description: "BIツールの導入とデータウェアハウスの構築。BigQuery連携を含む分析基盤。" },
-  { id: "P-004", name: "社内ポータルサイト", client: "株式会社サンプル商事", status: "on-hold", startDate: "2026-02-01", endDate: "2026-07-31", members: ["佐藤花子", "鈴木一郎"], groupIds: [], done: 12, inProgress: 2, todo: 14, description: "社内情報共有のためのイントラネットポータル。SSO対応と多言語対応を実装予定。" },
+  { id: "P-001", name: "ECサイトリニューアル", client: "株式会社サンプル商事", status: "in-progress", startDate: "2026-01-15", endDate: "2026-06-30", members: ["田中太郎", "佐藤花子", "山田次郎"], groupIds: [], done: 24, inProgress: 8, todo: 12, description: "既存ECサイトのUI/UX全面刷新。パフォーマンス改善とモバイル対応を含む大規模プロジェクト。", startedAt: "2026-01-15T09:00:00Z", reviewRequestedAt: null, reviewApprovedAt: null, stgCompletedAt: null, uatCompletedAt: null, releasedAt: null },
+  { id: "P-002", name: "モバイルアプリ開発", client: "テクノロジー株式会社", status: "planning", startDate: "2026-03-01", endDate: "2026-09-30", members: ["田中太郎", "山田次郎"], groupIds: [], done: 5, inProgress: 3, todo: 22, description: "iOS/Android向けのネイティブアプリ開発。React Nativeを使用した最新実装。", startedAt: null, reviewRequestedAt: null, reviewApprovedAt: null, stgCompletedAt: null, uatCompletedAt: null, releasedAt: null },
+  { id: "P-003", name: "データ分析基盤構築", client: "グローバル産業", status: "completed", startDate: "2025-10-01", endDate: "2026-02-28", members: ["鈴木一郎", "田中太郎"], groupIds: [], done: 31, inProgress: 0, todo: 0, description: "BIツールの導入とデータウェアハウスの構築。BigQuery連携を含む分析基盤。", startedAt: "2025-10-01T09:00:00Z", reviewRequestedAt: "2025-12-10T10:00:00Z", reviewApprovedAt: "2025-12-20T14:00:00Z", stgCompletedAt: "2026-01-15T09:00:00Z", uatCompletedAt: "2026-02-10T09:00:00Z", releasedAt: "2026-02-28T17:00:00Z" },
+  { id: "P-004", name: "社内ポータルサイト", client: "株式会社サンプル商事", status: "on-hold", startDate: "2026-02-01", endDate: "2026-07-31", members: ["佐藤花子", "鈴木一郎"], groupIds: [], done: 12, inProgress: 2, todo: 14, description: "社内情報共有のためのイントラネットポータル。SSO対応と多言語対応を実装予定。", startedAt: "2026-02-01T09:00:00Z", reviewRequestedAt: null, reviewApprovedAt: null, stgCompletedAt: null, uatCompletedAt: null, releasedAt: null },
 ];
 
 export const CLIENTS: Client[] = [

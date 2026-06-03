@@ -72,6 +72,12 @@ export interface Project {
   name: string; client: string; status: ProjectStatus;
   startDate: string; endDate: string; members: string[]; groupIds: number[];
   done: number; inProgress: number; todo: number; description: string;
+  startedAt?: string | null;
+  reviewRequestedAt?: string | null;
+  reviewApprovedAt?: string | null;
+  stgCompletedAt?: string | null;
+  uatCompletedAt?: string | null;
+  releasedAt?: string | null;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;

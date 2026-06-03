@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Search, Plus, FolderKanban } from "lucide-react";
+import { Search, Plus, FolderKanban, LayoutGrid, Columns } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, CLIENTS } from "@/app/data/mock";
 import { mapProject, mapClient } from "@/app/lib/mappers";
 import type { Project, Client } from "@/app/types";
+import type { MilestoneKey } from "@/app/hooks/useProject";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
+import { ProjectBoard } from "@/app/components/projects/ProjectBoard";
+import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
 import { EditProjectDialog } from "@/app/components/projects/EditProjectDialog";
 import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
@@ -27,6 +30,8 @@ export function ProjectsPage() {
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
+  const [viewMode, setViewMode] = useState<"grid" | "board">("grid");
+  const [monitorTarget, setMonitorTarget] = useState<Project | null>(null);
   const canManage = userRole === "admin" || userRole === "project-manager";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -103,6 +108,13 @@ export function ProjectsPage() {
     { value: "completed", label: "完了", count: visibleProjects.filter(p => p.status === "completed").length },
   ];
 
+  const handleMonitorUpdated = (key: MilestoneKey, value: string | null) => {
+    if (!monitorTarget) return;
+    const updated = { ...monitorTarget, [key]: value };
+    setMonitorTarget(updated);
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+  };
+
   if (loading) return <PageLoader />;
 
   return (
@@ -112,14 +124,27 @@ export function ProjectsPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>プロジェクト管理</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>進行中のプロジェクトとスプリント</p>
         </div>
-        {canManage && (
-          <button onClick={() => setShowDialog(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-            <Plus style={{ width: 15, height: 15 }} />新規プロジェクト
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {/* View mode toggle */}
+          <div style={{ display: "flex", gap: 2, background: "#F4F5F6", borderRadius: 9, padding: 3 }}>
+            <button onClick={() => setViewMode("grid")}
+              style={{ padding: "5px 10px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5, background: viewMode === "grid" ? "#FFFFFF" : "transparent", color: viewMode === "grid" ? "#1A1714" : "#A09790", boxShadow: viewMode === "grid" ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s" }}>
+              <LayoutGrid style={{ width: 13, height: 13 }} />グリッド
+            </button>
+            <button onClick={() => setViewMode("board")}
+              style={{ padding: "5px 10px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5, background: viewMode === "board" ? "#FFFFFF" : "transparent", color: viewMode === "board" ? "#1A1714" : "#A09790", boxShadow: viewMode === "board" ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s" }}>
+              <Columns style={{ width: 13, height: 13 }} />ボード
+            </button>
+          </div>
+          {canManage && (
+            <button onClick={() => setShowDialog(true)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+              <Plus style={{ width: 15, height: 15 }} />新規プロジェクト
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
@@ -141,7 +166,7 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {filtered.length === 0 && viewMode === "grid" ? (
         <div style={{ textAlign: "center", padding: "80px 0" }}>
           <div style={{ width: 56, height: 56, background: "#F4F5F6", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
             <FolderKanban style={{ width: 24, height: 24, color: "#B0A9A4" }} />
@@ -149,7 +174,7 @@ export function ProjectsPage() {
           <p style={{ fontSize: 14, fontWeight: 600, color: "#3D3732" }}>プロジェクトが見つかりません</p>
           <p style={{ fontSize: 12, color: "#B0A9A4", marginTop: 4 }}>検索条件を変更してみてください</p>
         </div>
-      ) : (
+      ) : viewMode === "grid" ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
           {filtered.map(p => (
             <ProjectCard key={p.id} project={p}
@@ -157,9 +182,20 @@ export function ProjectsPage() {
               onEdit={canManage ? () => setEditTarget(p) : undefined}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
+              onMonitor={() => setMonitorTarget(p)}
             />
           ))}
         </div>
+      ) : (
+        <ProjectBoard
+          projects={filtered}
+          onProjectsChange={setProjects}
+          onNavigate={p => navigate(p.slug ? `/${p.slug}` : `/${p.id}`)}
+          onEdit={canManage ? p => setEditTarget(p) : undefined}
+          onDelete={canManage ? p => setDeleteTarget(p) : undefined}
+          onCategorySettings={canManage ? p => setCategoryTarget(p) : undefined}
+          onMonitor={p => setMonitorTarget(p)}
+        />
       )}
 
       {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients} onCreated={refreshProjects} />}
@@ -175,6 +211,13 @@ export function ProjectsPage() {
           projectId={categoryTarget.id}
           projectName={categoryTarget.name}
           onClose={() => setCategoryTarget(null)} />
+      )}
+      {monitorTarget && (
+        <ProjectMonitor
+          project={monitorTarget}
+          onClose={() => setMonitorTarget(null)}
+          onUpdated={handleMonitorUpdated}
+        />
       )}
     </div>
   );

@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, Calendar, CheckCircle2, Circle, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
+import { Activity, Building2, Calendar, CheckCircle2, Circle, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
 import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 
 export function ProjectCard({
-  project, onNavigate, onEdit, onDelete, onCategorySettings,
+  project, onNavigate, onEdit, onDelete, onCategorySettings, onMonitor,
 }: {
   project: Project;
   onNavigate: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
   onCategorySettings?: () => void;
+  onMonitor?: () => void;
 }) {
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
@@ -48,6 +49,17 @@ export function ProjectCard({
               <Building2 style={{ width: 10, height: 10 }} />{project.client}
             </p>
           </div>
+
+          {/* 実績モニタアイコン */}
+          {onMonitor && (
+            <button onClick={e => { e.stopPropagation(); onMonitor(); }}
+              title="実績モニタ"
+              style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+              <Activity style={{ width: 15, height: 15 }} />
+            </button>
+          )}
 
           {/* Three-dot menu */}
           <div ref={menuRef} style={{ position: "relative", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
