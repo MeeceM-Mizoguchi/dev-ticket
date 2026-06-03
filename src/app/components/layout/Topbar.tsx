@@ -45,10 +45,21 @@ export function Topbar() {
       .from("notifications")
       .select("*")
       .eq("user_name", userName)
-      .is("hidden_at", null)           // hidden_at が null のもの（非削除）のみ取得
+      .is("hidden_at", null)
       .order("created_at", { ascending: false })
       .limit(20);
-    if (error) { console.error("[notifications] load failed:", error.message); return; }
+    if (error) {
+      // hidden_at カラムが DB に未追加の場合はフィルタなしで再取得
+      const { data: d2, error: e2 } = await supabase!
+        .from("notifications")
+        .select("*")
+        .eq("user_name", userName)
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (e2) { console.error("[notifications] load failed:", e2.message); return; }
+      if (d2) setNotifications(d2.map(mapNotification));
+      return;
+    }
     if (data) setNotifications(data.map(mapNotification));
   };
 

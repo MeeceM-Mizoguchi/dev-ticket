@@ -504,7 +504,7 @@ export function SprintDetailPage() {
       {deleteTicketTarget && (
         <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} projectId={project?.id} sprintId={sprintId} onClose={() => selectTicket(null)} onUpdated={refreshSprint} onDeleted={() => { selectTicket(null); refreshSprint(); }} onSelectTicket={t => selectTicket(t.wbs || t.id)} projectPermissions={projectPermissions ?? undefined} />
+      <TicketDetailPanel ticket={selectedTicket} projectId={project?.id} sprintId={sprintId} projectSlug={projectSlug} onClose={() => selectTicket(null)} onUpdated={refreshSprint} onDeleted={() => { selectTicket(null); refreshSprint(); }} onSelectTicket={t => selectTicket(t.wbs || t.id)} projectPermissions={projectPermissions ?? undefined} />
     </div>
   );
 }
