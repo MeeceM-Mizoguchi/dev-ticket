@@ -1276,19 +1276,67 @@ export function TicketDetailPanel({
                         </div>
                       </div>
                       {editingId === c.id ? (
-                        <div>
+                        <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
                           <RichEditor value={editContent} onChange={setEditContent} minHeight={60} />
-                          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                            <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                              <Check style={{ width: 11, height: 11 }} />保存
-                            </button>
-                            <button onClick={() => setEditingId(null)} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                          {editImages.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                              {editImages.map((img, i) => (
+                                <div key={i} style={{ position: "relative" }}>
+                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                  <button onClick={() => copyImageToClipboard(img)}
+                                    style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                    title="画像をコピー">
+                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                  </button>
+                                  <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
+                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                              <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                              <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                onChange={async e => {
+                                  for (const f of Array.from(e.target.files || [])) {
+                                    if (!f.type.startsWith("image/")) continue;
+                                    const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                    if (url) setEditImages(prev => [...prev, url]);
+                                  }
+                                  e.target.value = "";
+                                }} />
+                            </label>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                                <Check style={{ width: 11, height: 11 }} />保存
+                              </button>
+                              <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                            </div>
                           </div>
                         </div>
                       ) : (
-                        c.content && (
+                        (c.content || c.images?.length > 0) && (
                           <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                            <RichEditor value={c.content} readOnly minHeight={20} />
+                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} />}
+                            {c.images?.length > 0 && (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
+                                {c.images.map((img, i) => (
+                                  <div key={i} style={{ position: "relative" }}>
+                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                      style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                    <button onClick={() => copyImageToClipboard(img)}
+                                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                      title="画像をコピー">
+                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )
                       )}
