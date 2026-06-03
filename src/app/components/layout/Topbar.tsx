@@ -20,6 +20,8 @@ function formatRelative(ts: string): string {
   return `${Math.floor(h / 24)}日前`;
 }
 
+const NOTIF_VIEWED_KEY = "notif_last_viewed_at";
+
 export function Topbar() {
   const { userName } = useAuth();
   const navigate = useNavigate();
@@ -27,14 +29,18 @@ export function Topbar() {
   const [notifications, setNotifications] = useState<AppNotification[]>(
     !isSupabaseEnabled ? MOCK_NOTIFICATIONS : []
   );
-  // パネルを開いた時点で存在していた通知IDセット。これ以降に届いた未読のみグローを点灯する。
-  const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
+  // パネルを最後に開いた日時。localStorageに永続化してリロード後も維持する。
+  const [lastViewedAt, setLastViewedAt] = useState<string>(
+    () => localStorage.getItem(NOTIF_VIEWED_KEY) ?? ""
+  );
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
-  // 開いて確認済みの通知IDに含まれない未読がある場合のみグロー表示
-  const hasNewSinceLastView = !showNotif && notifications.some(n => !n.isRead && !seenIds.has(n.id));
+  // 最後に開いた日時より後に届いた未読がある場合のみグロー表示
+  const hasNewSinceLastView = !showNotif && notifications.some(
+    n => !n.isRead && (!lastViewedAt || n.createdAt > lastViewedAt)
+  );
 
-  const loadNotifications = async (markAsSeen = false) => {
+  const loadNotifications = async () => {
     if (!isSupabaseEnabled || !userName) return;
     const { data, error } = await supabase!
       .from("notifications")
@@ -43,13 +49,7 @@ export function Topbar() {
       .order("created_at", { ascending: false })
       .limit(20);
     if (error) { console.error("[notifications] load failed:", error.message); return; }
-    if (data) {
-      const mapped = data.map(mapNotification);
-      setNotifications(mapped);
-      if (markAsSeen) {
-        setSeenIds(new Set(mapped.map(n => n.id)));
-      }
-    }
+    if (data) setNotifications(data.map(mapNotification));
   };
 
   useEffect(() => {
@@ -60,8 +60,11 @@ export function Topbar() {
   }, [userName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleOpen = async () => {
+    const now = new Date().toISOString();
     setShowNotif(true);
-    await loadNotifications(true); // 開いた瞬間に見えた通知を全てseenとして記録
+    setLastViewedAt(now);
+    localStorage.setItem(NOTIF_VIEWED_KEY, now);
+    await loadNotifications();
   };
 
   const handleNotifClick = async (notif: AppNotification) => {
