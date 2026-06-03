@@ -436,6 +436,22 @@ export function TicketDetailPanel({
     }
   };
 
+  const insertNotification = async (recipientName: string, type: string, title: string, body: string) => {
+    if (!isSupabaseEnabled || !projectSlug || !ticket || !recipientName) return;
+    const { error } = await supabase!.from("notifications").insert({
+      user_name: recipientName,
+      type,
+      title,
+      body,
+      ticket_id: ticket.id,
+      ticket_wbs: ticket.wbs,
+      ticket_title: ticket.title,
+      project_slug: projectSlug,
+      is_read: false,
+    });
+    if (error) console.error("[notifications] insert failed:", error.message);
+  };
+
   const notifyMentions = async (content: string, currentTicket: SprintTicket) => {
     if (!isSupabaseEnabled || !projectSlug) return;
     const stripped = content.replace(/<[^>]*>/g, " ");
@@ -521,6 +537,12 @@ export function TicketDetailPanel({
       ? reviewContent
       : `<p><strong>@${reviewerName}</strong> にレビュー依頼を送信しました（第${round}回）</p>`;
     await addComment(content, "review_request", [], newStatus);
+    await insertNotification(
+      reviewerName,
+      "review_request",
+      `${userName}さんからレビュー依頼が届きました`,
+      `${ticket.wbs}: ${ticket.title}（第${round}回）`
+    );
     setReviewContent("");
     onUpdated?.();
   };
@@ -538,6 +560,12 @@ export function TicketDetailPanel({
       ? revisionText
       : `<p>${mentions} に修正依頼を送信しました</p>`;
     await addComment(content, "revision_request", revisionImages, newStatus);
+    await insertNotification(
+      assignee,
+      "revision_request",
+      `${userName}さんから修正依頼が届きました`,
+      `${ticket.wbs}: ${ticket.title}`
+    );
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
@@ -556,6 +584,12 @@ export function TicketDetailPanel({
       : "<p>✅ レビューを承認しました</p>";
     const content = approvalText.trim() ? approvalText : defaultApproval;
     await addComment(content, "review_approved", revisionImages, newStatus);
+    await insertNotification(
+      assignee,
+      "review_approved",
+      `${userName}さんがレビューを承認しました`,
+      `${ticket.wbs}: ${ticket.title}`
+    );
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
