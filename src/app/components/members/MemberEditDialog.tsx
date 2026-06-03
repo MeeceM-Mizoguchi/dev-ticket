@@ -65,8 +65,9 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
         return;
       }
 
-      // 名前が変わった場合、projects.members の古い名前を新しい名前に置き換える
+      // 名前が変わった場合、関連テーブルの古い名前を新しい名前に置き換える
       if (name !== member.name) {
+        // projects.members 配列を更新
         const { data: projectsData } = await supabase!
           .from("projects")
           .select("id, members")
@@ -75,6 +76,26 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
           for (const proj of projectsData) {
             const updated = (proj.members as string[]).map((m: string) => m === member.name ? name : m);
             await supabase!.from("projects").update({ members: updated }).eq("id", proj.id);
+          }
+        }
+
+        // sprint_tickets.assignee (text) を更新
+        await supabase!
+          .from("sprint_tickets")
+          .update({ assignee: name })
+          .eq("assignee", member.name);
+
+        // sprint_tickets.assignees (text[]) を更新
+        const { data: ticketsWithOldName } = await supabase!
+          .from("sprint_tickets")
+          .select("id, assignees")
+          .contains("assignees", [member.name]);
+        if (ticketsWithOldName) {
+          for (const ticket of ticketsWithOldName) {
+            const updatedAssignees = (ticket.assignees as string[]).map(
+              (a: string) => a === member.name ? name : a
+            );
+            await supabase!.from("sprint_tickets").update({ assignees: updatedAssignees }).eq("id", ticket.id);
           }
         }
       }
