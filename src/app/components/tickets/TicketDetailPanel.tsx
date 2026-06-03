@@ -1058,7 +1058,7 @@ export function TicketDetailPanel({
                 MDコピー
               </button>
             </div>
-            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} />
+            <RichEditor value={description} onChange={v => { setDescription(v); saveDebounced({ description: v }); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={memberNames} />
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
               <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
@@ -1343,7 +1343,7 @@ export function TicketDetailPanel({
                     <div style={{ marginBottom: 10 }}>
                       <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                       <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} />
+                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={memberNames} />
                       </div>
                     </div>
                     {fileDragOver && (
@@ -1471,7 +1471,7 @@ export function TicketDetailPanel({
                       </div>
                       {editingId === c.id ? (
                         <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} />
+                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={memberNames} />
                           {editImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {editImages.map((img, i) => (
@@ -1537,7 +1537,7 @@ export function TicketDetailPanel({
                       {showReviewForm && (
                         <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                           <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} />
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={memberNames} />
                           {revisionImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                               {revisionImages.map((img, i) => (
@@ -1615,7 +1615,7 @@ export function TicketDetailPanel({
 
                     {editingId === c.id ? (
                       <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} />
+                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={memberNames} />
                         {editImages.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                             {editImages.map((img, i) => (
@@ -1690,7 +1690,7 @@ export function TicketDetailPanel({
                   <StatusBadge status={status} />
                 </div>
               </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} />
+              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={memberNames} />
               {commentImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                   {commentImages.map((img, i) => (

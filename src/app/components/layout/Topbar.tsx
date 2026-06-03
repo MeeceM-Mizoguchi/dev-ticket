@@ -75,6 +75,8 @@ export function Topbar() {
     }
     if (notif.projectSlug && notif.ticketWbs) {
       navigate(`/${notif.projectSlug}/${notif.ticketWbs}`);
+    } else if (notif.projectSlug) {
+      navigate(`/${notif.projectSlug}`);
     }
   };
 

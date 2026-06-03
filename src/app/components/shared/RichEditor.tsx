@@ -1,10 +1,60 @@
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, ReactRenderer } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-import { useEffect, useRef } from "react";
+import Mention from "@tiptap/extension-mention";
+import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+
+// ---- MentionList popup component ----------------------------------------
+
+interface MentionListProps {
+  items: string[];
+  command: (p: { id: string; label: string }) => void;
+}
+interface MentionListHandle {
+  onKeyDown: (p: SuggestionKeyDownProps) => boolean;
+}
+
+const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, command }, ref) => {
+  const [sel, setSel] = useState(0);
+  useEffect(() => setSel(0), [items]);
+
+  useImperativeHandle(ref, () => ({
+    onKeyDown: ({ event }) => {
+      if (event.key === "ArrowUp")   { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
+      if (event.key === "Enter") {
+        const item = items[sel];
+        if (item) command({ id: item, label: item });
+        return true;
+      }
+      return false;
+    },
+  }));
+
+  if (!items.length) return null;
+
+  return (
+    <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", overflow: "hidden", minWidth: 160, maxWidth: 260 }}>
+      {items.map((item, i) => (
+        <button key={item} onMouseDown={e => { e.preventDefault(); command({ id: item, label: item }); }}
+          style={{ width: "100%", padding: "7px 12px", textAlign: "left" as const, background: i === sel ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: i === sel ? "#059669" : "#1A1714", display: "flex", alignItems: "center", gap: 8, transition: "background 0.1s" }}
+          onMouseEnter={() => setSel(i)}>
+          <span style={{ width: 22, height: 22, borderRadius: "50%", background: "#E8F5F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#059669", flexShrink: 0 }}>
+            {item.charAt(0)}
+          </span>
+          {item}
+        </button>
+      ))}
+    </div>
+  );
+});
+MentionList.displayName = "MentionList";
+
+// ---- helpers ----------------------------------------------------------------
 
 const btnStyle = (active?: boolean): React.CSSProperties => ({
   padding: "3px 7px", fontSize: 11, fontWeight: 600, borderRadius: 5,
@@ -14,20 +64,90 @@ const btnStyle = (active?: boolean): React.CSSProperties => ({
   cursor: "pointer", lineHeight: 1.4,
 });
 
+// ---- RichEditor -------------------------------------------------------------
+
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, members = [],
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number; maxHeight?: number; readOnly?: boolean;
+  members?: string[];
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
+  const membersRef = useRef(members);
+  useEffect(() => { membersRef.current = members; }, [members]);
 
   const editor = useEditor({
     extensions: [
       StarterKit,
       Table.configure({ resizable: false }),
       TableRow, TableCell, TableHeader,
+      Mention.configure({
+        HTMLAttributes: { class: "mention" },
+        renderText: ({ node }) => `@${node.attrs.label ?? node.attrs.id}`,
+        renderHTML: ({ options, node }) => [
+          "span",
+          { ...options.HTMLAttributes, "data-mention": "", "data-id": node.attrs.id },
+          `@${node.attrs.label ?? node.attrs.id}`,
+        ],
+        suggestion: {
+          items: ({ query }) =>
+            membersRef.current
+              .filter(m => m.toLowerCase().includes(query.toLowerCase()))
+              .slice(0, 8),
+
+          render: () => {
+            let renderer: ReactRenderer<MentionListHandle, MentionListProps> | null = null;
+            let wrapper: HTMLDivElement | null = null;
+
+            const position = (clientRect: (() => DOMRect | null) | null) => {
+              if (!wrapper || !clientRect) return;
+              const rect = clientRect();
+              if (!rect) return;
+              const top = rect.bottom + window.scrollY + 4;
+              const left = rect.left + window.scrollX;
+              wrapper.style.top = `${top}px`;
+              wrapper.style.left = `${left}px`;
+            };
+
+            return {
+              onStart: (props) => {
+                wrapper = document.createElement("div");
+                wrapper.style.cssText = "position:absolute;z-index:9999;";
+                document.body.appendChild(wrapper);
+
+                renderer = new ReactRenderer<MentionListHandle, MentionListProps>(MentionList, {
+                  props,
+                  editor: props.editor,
+                });
+                wrapper.appendChild(renderer.element);
+                position(props.clientRect ?? null);
+              },
+              onUpdate: (props) => {
+                renderer?.updateProps(props);
+                position(props.clientRect ?? null);
+              },
+              onKeyDown: (props) => {
+                if (props.event.key === "Escape") {
+                  wrapper?.remove();
+                  renderer?.destroy();
+                  wrapper = null;
+                  renderer = null;
+                  return true;
+                }
+                return renderer?.ref?.onKeyDown(props) ?? false;
+              },
+              onExit: () => {
+                wrapper?.remove();
+                renderer?.destroy();
+                wrapper = null;
+                renderer = null;
+              },
+            };
+          },
+        },
+      }),
     ],
     content: value || "",
     editable: !readOnly,
@@ -44,6 +164,7 @@ export function RichEditor({
             if (marks.includes('strike')) t = `~~${t}~~`;
             return t;
           }
+          if (node.type?.name === 'mention') return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
           let out = '';
           node.forEach((c: any) => { out += inline(c); });
           return out;
@@ -76,6 +197,7 @@ export function RichEditor({
         function block(node: any): string {
           if (node.isText) return node.text ?? '';
           const t: string = node.type.name;
+          if (t === 'mention') return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
           if (t === 'paragraph') return inline(node).trim() + '\n\n';
           if (t === 'hardBreak') return '\n';
           if (t === 'heading') {
@@ -118,7 +240,7 @@ export function RichEditor({
     const current = editor.getHTML();
     const incoming = value || "";
     if (current !== incoming) editor.commands.setContent(incoming, false);
-  }, [value]);
+  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (editor) editor.setEditable(!readOnly);
@@ -148,6 +270,7 @@ export function RichEditor({
         .tiptap h2 { font-size: 15px; font-weight: 700; margin: 8px 0 4px; }
         .tiptap h3 { font-size: 13px; font-weight: 700; margin: 6px 0 4px; }
         .tiptap p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: #C9C4BB; pointer-events: none; float: left; height: 0; }
+        .tiptap .mention { color: #059669; font-weight: 700; background: #ECFDF5; padding: 1px 4px; border-radius: 4px; }
       `}</style>
       {!readOnly && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 10px", borderBottom: "1px solid rgba(26,23,20,0.08)", background: "#F9F8F6" }}>

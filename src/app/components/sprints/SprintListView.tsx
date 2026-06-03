@@ -155,15 +155,26 @@ function ColumnFilter({
   );
 }
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket }: {
+export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, targetTicketWbs }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
+  targetTicketWbs?: string;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
+
+  useEffect(() => {
+    setExpanded(prev => new Set([...prev, ...sprints.map(s => s.id)]));
+  }, [sprints.map(s => s.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!targetTicketWbs) return;
+    const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
+    if (sprint) setExpanded(prev => new Set([...prev, sprint.id]));
+  }, [targetTicketWbs, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
   // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const [sortCol, setSortCol] = useState<SortCol | "">("");
