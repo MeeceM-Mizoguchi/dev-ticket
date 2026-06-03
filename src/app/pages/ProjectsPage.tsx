@@ -7,10 +7,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, CLIENTS } from "@/app/data/mock";
 import { mapProject, mapClient } from "@/app/lib/mappers";
 import type { Project, Client } from "@/app/types";
-import type { MilestoneKey } from "@/app/hooks/useProject";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { ProjectBoard } from "@/app/components/projects/ProjectBoard";
-import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
 import { EditProjectDialog } from "@/app/components/projects/EditProjectDialog";
 import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
@@ -31,7 +29,6 @@ export function ProjectsPage() {
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [viewMode, setViewMode] = useState<"grid" | "board">("grid");
-  const [monitorTarget, setMonitorTarget] = useState<Project | null>(null);
   const canManage = userRole === "admin" || userRole === "project-manager";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,13 +105,6 @@ export function ProjectsPage() {
     { value: "completed", label: "完了", count: visibleProjects.filter(p => p.status === "completed").length },
   ];
 
-  const handleMonitorUpdated = (key: MilestoneKey, value: string | null) => {
-    if (!monitorTarget) return;
-    const updated = { ...monitorTarget, [key]: value };
-    setMonitorTarget(updated);
-    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
-  };
-
   if (loading) return <PageLoader />;
 
   return (
@@ -125,7 +115,6 @@ export function ProjectsPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>進行中のプロジェクトとスプリント</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          {/* View mode toggle */}
           <div style={{ display: "flex", gap: 2, background: "#F4F5F6", borderRadius: 9, padding: 3 }}>
             <button onClick={() => setViewMode("grid")}
               style={{ padding: "5px 10px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5, background: viewMode === "grid" ? "#FFFFFF" : "transparent", color: viewMode === "grid" ? "#1A1714" : "#A09790", boxShadow: viewMode === "grid" ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s" }}>
@@ -182,7 +171,6 @@ export function ProjectsPage() {
               onEdit={canManage ? () => setEditTarget(p) : undefined}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
-              onMonitor={() => setMonitorTarget(p)}
             />
           ))}
         </div>
@@ -194,7 +182,6 @@ export function ProjectsPage() {
           onEdit={canManage ? p => setEditTarget(p) : undefined}
           onDelete={canManage ? p => setDeleteTarget(p) : undefined}
           onCategorySettings={canManage ? p => setCategoryTarget(p) : undefined}
-          onMonitor={p => setMonitorTarget(p)}
         />
       )}
 
@@ -211,13 +198,6 @@ export function ProjectsPage() {
           projectId={categoryTarget.id}
           projectName={categoryTarget.name}
           onClose={() => setCategoryTarget(null)} />
-      )}
-      {monitorTarget && (
-        <ProjectMonitor
-          project={monitorTarget}
-          onClose={() => setMonitorTarget(null)}
-          onUpdated={handleMonitorUpdated}
-        />
       )}
     </div>
   );

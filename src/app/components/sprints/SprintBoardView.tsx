@@ -8,6 +8,7 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { MEMBERS } from "@/app/data/mock";
+import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 
 const DRAG_TYPE = "SPRINT_TICKET";
 
@@ -217,6 +218,8 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
         const updateData: Record<string, unknown> = { status: newStatus };
         if (newStatus === "in-review" && reviewer) updateData.reviewer_name = reviewer;
         await supabase!.from("sprint_tickets").update(updateData).eq("id", ticketId);
+
+        recordMilestoneFromTicketStatus(ticketId, newStatus);
 
         if (comment.trim()) {
           const meta = MODAL_LABELS[newStatus];

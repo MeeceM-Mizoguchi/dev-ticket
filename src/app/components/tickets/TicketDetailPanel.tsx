@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -14,6 +14,8 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
+import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
@@ -65,6 +67,7 @@ export function TicketDetailPanel({
 
   // editable state
   const [title, setTitle]           = useState(ticket?.title ?? "");
+  const [showMonitor, setShowMonitor] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
@@ -456,6 +459,7 @@ export function TicketDetailPanel({
     setStatus(newStatus);
     setProgress(p);
     save({ status: newStatus, progress: p });
+    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
   };
 
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
@@ -469,6 +473,7 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
     }
+    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
     await addComment(`<p>${btn.label}：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
@@ -592,6 +597,7 @@ export function TicketDetailPanel({
         setStatus("in-progress"); setProgress(STATUS_PROGRESS["in-progress"]); setReviewRound(round - 1);
         return;
       }
+      if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
     }
     for (const rf of reviewFiles) await uploadSourceFile(rf.file, round);
     setReviewFiles([]);
@@ -642,6 +648,7 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
     }
+    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
     const defaultApproval = assignee
       ? `<p>✅ レビューを承認しました <strong>@${assignee}</strong></p>`
       : "<p>✅ レビューを承認しました</p>";
@@ -667,6 +674,7 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
     }
+    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
     await addComment(`<p>レビュースキップ：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
@@ -831,6 +839,13 @@ export function TicketDetailPanel({
 
   return (
     <>
+      {showMonitor && ticket && (
+        <ProjectMonitor
+          ticketId={ticket.id}
+          subtitle={title}
+          onClose={() => setShowMonitor(false)}
+        />
+      )}
       {showDeleteConfirm && (
         <ConfirmDialog
           message={childTickets.length > 0
@@ -944,6 +959,15 @@ export function TicketDetailPanel({
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              {/* 実績モニタボタン */}
+              {projectId && (
+                <button onClick={() => setShowMonitor(true)} title="実績モニタ"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <Activity style={{ width: 15, height: 15 }} />
+                </button>
+              )}
               {/* 子チケット作成ボタン（親チケットのみ表示） */}
               {!ticket.parentId && (
                 <button onClick={() => setShowCreateChild(true)} title="子チケットを作成"
