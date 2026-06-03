@@ -95,6 +95,7 @@ export function TicketDetailPanel({
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
+  const [projectMemberNames, setProjectMemberNames] = useState<string[]>([]);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -213,6 +214,8 @@ export function TicketDetailPanel({
     if (!isSupabaseEnabled || !projectId) return;
     supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at")
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
+    supabase!.from("projects").select("members").eq("id", projectId).single()
+      .then(({ data }) => { if (data?.members) setProjectMemberNames(data.members as string[]); });
   }, [projectId]);
 
   useEffect(() => {
@@ -601,8 +604,9 @@ export function TicketDetailPanel({
   // 担当者チェック: 自分が担当者かどうか
   const isAssignee = !assignee || assignee === userName;
   const canSendReview = status === "in-progress" && !!reviewerName && isAssignee;
-  // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつ担当者ではない、かつレビュー権限あり
-  const canReview = (userName === reviewerName || isAdminOrPM) && !isAssignee && hasReviewPermission;
+  // レビュアーボタン: 指定されたレビュアー or 管理者/PM かつレビュー権限あり
+  // 自分がレビュアーに指定されている場合は担当者でも可（自己レビュー）
+  const canReview = (userName === reviewerName || isAdminOrPM) && (!isAssignee || (!!reviewerName && userName === reviewerName)) && hasReviewPermission;
   const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
 
   const assigneeLabel = assignee || "未割り当て";
@@ -1118,7 +1122,9 @@ export function TicketDetailPanel({
                             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
                             レビュアーを選択...
                           </button>
-                          {reviewerEligibleNames.filter(n => n !== assignee).map(n => (
+                          {reviewerEligibleNames
+                            .filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n))
+                            .map(n => (
                             <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
                               style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
                               onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}

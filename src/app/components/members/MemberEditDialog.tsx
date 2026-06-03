@@ -98,6 +98,12 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
             await supabase!.from("sprint_tickets").update({ assignees: updatedAssignees }).eq("id", ticket.id);
           }
         }
+
+        // ticket_comments.user_name を更新
+        await supabase!
+          .from("ticket_comments")
+          .update({ user_name: name })
+          .eq("user_name", member.name);
       }
 
       toast(`「${name}」を更新しました`);
