@@ -96,6 +96,7 @@ export function TicketDetailPanel({
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
   const [projectMemberNames, setProjectMemberNames] = useState<string[]>([]);
+  const [adminMemberNames, setAdminMemberNames] = useState<string[]>([]);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -244,6 +245,10 @@ export function TicketDetailPanel({
           )
           .map((r: { name: string }) => r.name);
         setReviewerEligibleNames(eligible);
+        const admins = data
+          .filter((r: { name: string; role: string }) => r.role === "admin")
+          .map((r: { name: string }) => r.name);
+        setAdminMemberNames(admins);
       });
   }, []);
 
@@ -1115,7 +1120,7 @@ export function TicketDetailPanel({
               </button>
             </div>
             <div id="panel-description-section">
-              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
             </div>
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
@@ -1401,7 +1406,7 @@ export function TicketDetailPanel({
                     <div style={{ marginBottom: 10 }}>
                       <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                       <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
                       </div>
                     </div>
                     {fileDragOver && (
@@ -1529,7 +1534,7 @@ export function TicketDetailPanel({
                       </div>
                       {editingId === c.id ? (
                         <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
                           {editImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {editImages.map((img, i) => (
@@ -1595,7 +1600,7 @@ export function TicketDetailPanel({
                       {showReviewForm && (
                         <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                           <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
                           {revisionImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                               {revisionImages.map((img, i) => (
@@ -1673,7 +1678,7 @@ export function TicketDetailPanel({
 
                     {editingId === c.id ? (
                       <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
                         {editImages.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                             {editImages.map((img, i) => (
@@ -1748,7 +1753,7 @@ export function TicketDetailPanel({
                   <StatusBadge status={status} />
                 </div>
               </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? projectMemberNames : memberNames} />
+              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
               {commentImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                   {commentImages.map((img, i) => (

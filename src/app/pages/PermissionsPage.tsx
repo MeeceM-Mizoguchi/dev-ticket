@@ -37,7 +37,7 @@ interface ConflictInfo {
 }
 
 export function PermissionsPage() {
-  const { userPermissions, userName } = useAuth();
+  const { userPermissions, userName, userRole } = useAuth();
   const { toast } = useToast();
 
   if (!userPermissions.canAccessGroups) return <Navigate to="/dashboard" replace />;
@@ -173,6 +173,11 @@ export function PermissionsPage() {
   const handleAddMemberToProject = async (memberId: string, project: Project) => {
     const member = members.find(m => m.id === memberId);
     if (!member) return;
+
+    if (member.role === "admin" && userRole !== "admin") {
+      toast("管理者メンバーをアサインする権限がありません", "error");
+      return;
+    }
 
     // Check double assignment: already via group?
     const memberGroupIds = getMemberGroupIds(memberId);
@@ -383,6 +388,7 @@ export function PermissionsPage() {
   // ── Computed ──────────────────────────────────────────────────────────────────
 
   const nonAdminMembers = useMemo(() => members.filter(m => m.role !== "admin"), [members]);
+  const allMembersForList = members;
   const settingsGroup = groups.find(g => g.id === settingsGroupId);
 
   if (loading) {
@@ -451,10 +457,11 @@ export function PermissionsPage() {
 
         {/* ── Column 1: Members ── */}
         <MembersColumn
-          members={nonAdminMembers}
+          members={allMembersForList}
           groups={groups}
           groupMemberships={groupMemberships}
           onDragStart={startDrag}
+          currentUserRole={userRole}
         />
 
         {/* ── Column 2: Groups ── */}
@@ -517,15 +524,17 @@ export function PermissionsPage() {
 // ── Members Column ────────────────────────────────────────────────────────────
 const MEMBERS_INITIAL_COUNT = 8;
 
-function MembersColumn({ members, groups, groupMemberships, onDragStart }: {
+function MembersColumn({ members, groups, groupMemberships, onDragStart, currentUserRole }: {
   members: Member[];
   groups: PermissionGroup[];
   groupMemberships: GroupMembership[];
   onDragStart: (e: DragEvent, payload: DragPayload) => void;
+  currentUserRole: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasMore = members.length > MEMBERS_INITIAL_COUNT;
   const displayMembers = expanded ? members : members.slice(0, MEMBERS_INITIAL_COUNT);
+  const isCurrentUserAdmin = currentUserRole === "admin";
 
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, minHeight: 0 }}>
@@ -546,23 +555,30 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart }: {
           {displayMembers.map(m => {
             const memberGroupIds = groupMemberships.filter(gm => gm.member_id === m.id).map(gm => gm.group_id);
             const memberGroupNames = memberGroupIds.map(gid => groups.find(g => g.id === gid)?.name).filter(Boolean);
+            const isAdmin = m.role === "admin";
+            const canDrag = isCurrentUserAdmin || !isAdmin;
             return (
-              <div key={m.id} draggable
-                onDragStart={e => onDragStart(e as DragEvent, { type: "member", id: m.id })}
-                style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 8px", borderRadius: 8, cursor: "grab", marginBottom: 3, background: "#F9F8F6", userSelect: "none" as const, transition: "background 0.1s" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+              <div key={m.id}
+                draggable={canDrag}
+                onDragStart={canDrag ? e => onDragStart(e as DragEvent, { type: "member", id: m.id }) : undefined}
+                title={!canDrag ? "管理者メンバーをアサインする権限がありません" : undefined}
+                style={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 8px", borderRadius: 8, cursor: canDrag ? "grab" : "not-allowed", marginBottom: 3, background: "#F9F8F6", userSelect: "none" as const, transition: "background 0.1s", opacity: canDrag ? 1 : 0.55 }}
+                onMouseEnter={e => { if (canDrag) (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}>
-                <GripVertical style={{ width: 11, height: 11, color: "#C9C4BB", flexShrink: 0 }} />
+                <GripVertical style={{ width: 11, height: 11, color: canDrag ? "#C9C4BB" : "#E0DDD9", flexShrink: 0 }} />
                 <Avatar name={m.name} size="xs" />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{m.name}</p>
                   <p style={{ fontSize: 10, color: "#B0A9A4" }}>{getRoleMeta(m.role).label}</p>
                 </div>
-                {memberGroupNames.length > 0
+                {isAdmin && (
+                  <span style={{ fontSize: 9, background: "#FEF2F2", color: "#DC2626", padding: "2px 5px", borderRadius: 8, fontWeight: 700, flexShrink: 0 }}>管理者</span>
+                )}
+                {!isAdmin && (memberGroupNames.length > 0
                   ? <span style={{ fontSize: 9, background: "#ECFDF5", color: "#059669", padding: "2px 5px", borderRadius: 8, fontWeight: 700, flexShrink: 0, maxWidth: 60, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}
                     title={memberGroupNames.join(", ")}>{memberGroupNames.length}G</span>
                   : <span style={{ fontSize: 9, background: "#F4F5F6", color: "#B0A9A4", padding: "2px 5px", borderRadius: 8, fontWeight: 600, flexShrink: 0 }}>未</span>
-                }
+                )}
               </div>
             );
           })}
