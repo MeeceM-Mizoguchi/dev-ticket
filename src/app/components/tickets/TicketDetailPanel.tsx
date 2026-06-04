@@ -16,6 +16,7 @@ import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
+import { fireSlackNotify } from "@/app/utils/slackNotify";
 
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
@@ -510,6 +511,12 @@ export function TicketDetailPanel({
       }).then(({ error }) => {
         if (error) console.error("[notifications] assign insert failed:", error.message, error);
       });
+      fireSlackNotify({
+        recipientUserName: name,
+        projectSlug,
+        title: "チケットが割り当てられました",
+        body: `${ticket.wbs}: ${ticket.title}`,
+      });
     }
   };
 
@@ -648,6 +655,12 @@ export function TicketDetailPanel({
       `${userName}さんからレビュー依頼が届きました`,
       `${ticket.wbs}: ${ticket.title}（第${round}回）`
     );
+    if (projectSlug) fireSlackNotify({
+      recipientUserName: reviewerName,
+      projectSlug,
+      title: `${userName}さんからレビュー依頼が届きました`,
+      body: `${ticket.wbs}: ${ticket.title}（第${round}回）`,
+    });
     setReviewContent("");
     onUpdated?.();
   };
@@ -671,6 +684,12 @@ export function TicketDetailPanel({
       `${userName}さんから修正依頼が届きました`,
       `${ticket.wbs}: ${ticket.title}`
     );
+    if (assignee && projectSlug) fireSlackNotify({
+      recipientUserName: assignee,
+      projectSlug,
+      title: `${userName}さんから修正依頼が届きました`,
+      body: `${ticket.wbs}: ${ticket.title}`,
+    });
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
@@ -696,6 +715,12 @@ export function TicketDetailPanel({
       `${userName}さんがレビューを承認しました`,
       `${ticket.wbs}: ${ticket.title}`
     );
+    if (assignee && projectSlug) fireSlackNotify({
+      recipientUserName: assignee,
+      projectSlug,
+      title: `${userName}さんがレビューを承認しました`,
+      body: `${ticket.wbs}: ${ticket.title}`,
+    });
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();

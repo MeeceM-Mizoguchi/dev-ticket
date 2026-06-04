@@ -13,6 +13,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canAccessMembers: false,
   canAccessRoles: false,
   canAccessGroups: false,
+  canAccessAdminSettings: false,
 };
 
 interface AuthCtxType {

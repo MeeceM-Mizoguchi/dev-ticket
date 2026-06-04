@@ -1,5 +1,5 @@
 import { useState, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing } from "lucide-react";
 import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -11,6 +11,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "members",     label: "メンバー",     icon: Users,        permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
   { id: "roles",       label: "ロール設定",   icon: UserCog,      permission: "canAccessRoles" },
+  { id: "admin-settings", label: "通知管理", icon: BellRing,    permission: "canAccessAdminSettings" },
 ];
 
 export function Sidebar() {
@@ -28,6 +29,7 @@ export function Sidebar() {
     if (p.startsWith("/settings")) return "settings";
     if (p.startsWith("/permissions")) return "permissions";
     if (p.startsWith("/roles")) return "roles";
+    if (p.startsWith("/admin-settings")) return "admin-settings";
     return "dashboard";
   };
 

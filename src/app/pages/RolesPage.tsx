@@ -13,11 +13,12 @@ const DEFAULT_PERMS: UserPermissions = {
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string }[] = [
-  { key: "canSkipReview",     label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
-  { key: "canGeneratePrompt", label: "プロンプト生成",   desc: "ClaudeCode プロンプトの生成が可能" },
-  { key: "canAccessMembers",  label: "メンバー管理",     desc: "メンバー管理画面へのアクセスが可能" },
-  { key: "canAccessRoles",    label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
-  { key: "canAccessGroups",   label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
+  { key: "canSkipReview",          label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
+  { key: "canGeneratePrompt",      label: "プロンプト生成",   desc: "ClaudeCode プロンプトの生成が可能" },
+  { key: "canAccessMembers",       label: "メンバー管理",     desc: "メンバー管理画面へのアクセスが可能" },
+  { key: "canAccessRoles",         label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
+  { key: "canAccessGroups",        label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
+  { key: "canAccessAdminSettings", label: "通知管理",         desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
 ];
 
 export function RolesPage() {

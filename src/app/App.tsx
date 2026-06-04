@@ -13,6 +13,7 @@ import { MembersPage } from "@/app/pages/MembersPage";
 import { PermissionsPage } from "@/app/pages/PermissionsPage";
 import { RolesPage } from "@/app/pages/RolesPage";
 import { SettingsPage } from "@/app/pages/SettingsPage";
+import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 
 export default function App() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/permissions" element={<PermissionsPage />} />
             <Route path="/roles" element={<RolesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/admin-settings" element={<AdminSettingsPage />} />
             {/* Slug-based sprint list + ticket panel */}
             <Route path="/:projectSlug" element={<SprintPage />} />
             <Route path="/:projectSlug/:ticketWbs" element={<SprintPage />} />

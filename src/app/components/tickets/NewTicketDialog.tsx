@@ -8,6 +8,7 @@ import { mapTicketCategory } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 
@@ -187,6 +188,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 project_slug: projectSlug, is_read: false,
               });
               if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
+              fireSlackNotify({ recipientUserName: assignee, projectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
             }
             setSaving(false);
             onCreated?.();
@@ -236,6 +238,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           project_slug: projectSlug, is_read: false,
         });
         if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
+        fireSlackNotify({ recipientUserName: assignee, projectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
       }
       setSaving(false);
     }

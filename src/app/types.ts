@@ -1,4 +1,4 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings";
 export type PermissionType = "none" | "view" | "edit" | "admin";
 export type Role = string;
 export interface RoleDefinition {
@@ -116,4 +116,5 @@ export interface UserPermissions {
   canAccessMembers: boolean;
   canAccessRoles: boolean;
   canAccessGroups: boolean;
+  canAccessAdminSettings: boolean;
 }

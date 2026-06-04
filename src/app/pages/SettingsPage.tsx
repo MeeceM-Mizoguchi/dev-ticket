@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { MEMBERS } from "@/app/data/mock";
 import { getRoleMeta, labelCls } from "@/app/lib/helpers";
@@ -7,29 +7,51 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { Toggle } from "@/app/components/shared/Toggle";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 export function SettingsPage() {
-  const { userName, userRole } = useAuth();
+  const { userName, userRole, userId } = useAuth();
   const [tab, setTab] = useState("general");
   const [saved, setSaved] = useState(false);
   const [notifs, setNotifs] = useState<Record<NotifKey, boolean>>({ email: true, assign: true, status: false, comment: true, reminder: false });
 
+  // Slackメンバーid（全ユーザーが自分のIDを登録できる）
+  const [slackMemberId, setSlackMemberId] = useState("");
+  const [slackIdSaved, setSlackIdSaved] = useState(false);
+
+  useEffect(() => {
+    if (!userId || !isSupabaseEnabled) return;
+    supabase!
+      .from("profiles")
+      .select("slack_member_id")
+      .eq("id", userId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if ((data as any)?.slack_member_id) setSlackMemberId((data as any).slack_member_id);
+      });
+  }, [userId]);
+
   const handleSave = () => { setSaved(true); setTimeout(() => setSaved(false), 2200); };
 
-  const tabs = [{ id: "general", label: "一般" }, { id: "notifications", label: "通知" }, { id: "team", label: "チーム" }, { id: "integrations", label: "連携" }];
+  const saveSlackMemberId = async () => {
+    if (!userId || !isSupabaseEnabled) return;
+    await supabase!.from("profiles").update({ slack_member_id: slackMemberId.trim() || null }).eq("id", userId);
+    setSlackIdSaved(true);
+    setTimeout(() => setSlackIdSaved(false), 2200);
+  };
 
-  const notifItems: { key: NotifKey; label: string; desc: string }[] = [
-    { key: "email",   label: "メール通知",          desc: "重要なアップデートをメールで受け取る" },
-    { key: "assign",  label: "担当割り当て通知",      desc: "チケットが自分に割り当てられたときに通知" },
-    { key: "status",  label: "ステータス変更通知",    desc: "チケットのステータスが変更されたときに通知" },
-    { key: "comment", label: "コメント通知",          desc: "コメントが追加されたときに通知" },
-    { key: "reminder",label: "リマインダー通知",      desc: "期限の前日にデスクトップ通知を受け取る" },
+  const tabs = [
+    { id: "general",       label: "一般" },
+    { id: "notifications", label: "通知" },
+    { id: "team",          label: "チーム" },
   ];
 
-  const integrations = [
-    { name: "Slack",           desc: "チャンネルに通知を送信",              icon: "💬" },
-    { name: "GitHub",          desc: "PRとIssueをチケットにリンク",         icon: "🐙" },
-    { name: "Google Calendar", desc: "スプリント期間をカレンダーに同期",    icon: "📅" },
+  const notifItems: { key: NotifKey; label: string; desc: string }[] = [
+    { key: "email",   label: "メール通知",       desc: "重要なアップデートをメールで受け取る" },
+    { key: "assign",  label: "担当割り当て通知", desc: "チケットが自分に割り当てられたときに通知" },
+    { key: "status",  label: "ステータス変更通知", desc: "チケットのステータスが変更されたときに通知" },
+    { key: "comment", label: "コメント通知",      desc: "コメントが追加されたときに通知" },
+    { key: "reminder", label: "リマインダー通知", desc: "期限の前日にデスクトップ通知を受け取る" },
   ];
 
   return (
@@ -98,35 +120,40 @@ export function SettingsPage() {
               <span style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", display: "inline-block", marginTop: 4 }}>{getRoleMeta(userRole).label}</span>
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
             <FieldInput label="表示名" value={userName} readOnly />
             <div>
               <label className={labelCls}>メンバーID</label>
               <p style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: "#6B6458", paddingTop: 10 }}>{MEMBERS.find(m => m.name === userName)?.id ?? "—"}</p>
             </div>
           </div>
-        </div>
-      )}
 
-      {tab === "integrations" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {integrations.map(({ name, desc, icon }) => (
-            <div key={name} style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <div style={{ width: 44, height: 44, borderRadius: 10, background: "#F4F5F6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{icon}</div>
-                <div>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{name}</p>
-                  <p style={{ fontSize: 11, color: "#A09790", marginTop: 2 }}>{desc}</p>
-                </div>
-              </div>
-              <button
-                style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", cursor: "pointer", color: "#6B6458", flexShrink: 0 }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#ECFDF5"; el.style.color = "#059669"; el.style.borderColor = "rgba(5,150,105,0.3)"; }}
-                onMouseLeave={e => { const el = e.currentTarget as HTMLElement; el.style.background = "transparent"; el.style.color = "#6B6458"; el.style.borderColor = "rgba(26,23,20,0.12)"; }}>
-                接続する
-              </button>
-            </div>
-          ))}
+          {/* SlackメンバーID登録（全ユーザー対象） */}
+          <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 20 }}>
+            <h3 style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16 }}>💬</span> Slackアカウント連携
+            </h3>
+            <p style={{ fontSize: 11, color: "#B0A9A4", marginBottom: 14 }}>
+              SlackメンバーIDを登録すると、チケット操作の通知がSlackでメンション付きで届きます
+            </p>
+            <label className={labelCls}>SlackメンバーID</label>
+            <input
+              style={{ width: "100%", padding: "8px 12px", fontSize: 13, borderRadius: 8, border: "1px solid rgba(26,23,20,0.15)", background: "#FAFAF8", outline: "none", fontFamily: "var(--font-mono)", boxSizing: "border-box" as const }}
+              placeholder="U1234ABCD"
+              value={slackMemberId}
+              onChange={e => setSlackMemberId(e.target.value)}
+              maxLength={20}
+            />
+            <p style={{ fontSize: 11, color: "#B0A9A4", marginTop: 6 }}>
+              SlackのプロフィールからメンバーID（Uから始まる英数字）をコピーして貼り付けてください。<br />
+              確認方法: Slackで自分の名前をクリック →「メンバーIDをコピー」
+            </p>
+            <button
+              onClick={saveSlackMemberId}
+              style={{ marginTop: 12, padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer", background: "#059669", color: "#fff" }}>
+              {slackIdSaved ? "✓ 保存しました" : "SlackIDを保存"}
+            </button>
+          </div>
         </div>
       )}
     </div>
