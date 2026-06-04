@@ -557,6 +557,13 @@ export function TicketDetailPanel({
         is_read: false,
       });
       if (error) console.error("[notifications] mention insert failed:", error.message);
+      // @メンションのSlack通知（メンションが発生したプロジェクトのチャンネルに送信）
+      fireSlackNotify({
+        recipientUserName: name,
+        projectSlug,
+        title: `${userName}さんにメンションされました`,
+        body: `${currentTicket.wbs}: ${currentTicket.title}`,
+      });
     }
   };
 
