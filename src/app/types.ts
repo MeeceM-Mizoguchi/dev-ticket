@@ -30,7 +30,7 @@ export interface AppNotification {
 }
 export type SprintStatus = "planning" | "active" | "completed" | "delayed";
 export type SprintView = "list" | "board" | "gantt";
-export type SortCol = "wbs" | "title" | "description" | "status" | "priority" | "assignee" | "startDate" | "dueDate" | "estimatedHours" | "progress";
+export type SortCol = "wbs" | "title" | "description" | "status" | "priority" | "assignee" | "startDate" | "dueDate" | "estimatedHours" | "progress" | "category";
 
 export interface TicketCategory {
   id: string;

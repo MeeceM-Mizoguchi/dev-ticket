@@ -13,6 +13,23 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
+// あらゆるIDパターンに安全に対応するためのフォールバック付き辞書
+const CATEGORY_MAP: Record<string, string> = {
+  "CAT-1780106163889": "バグ",
+  "CAT-1780106169442": "仕様確認",
+  "CAT-1780106176626": "要望",
+  "CAT-1780241120059": "改善",
+  "CAT-1780293371590": "新規機能開発"
+};
+
+// 安全にカテゴリ名を取得するための共通ヘルパー
+const getCategoryLabel = (ticket: SprintTicket): string => {
+  const raw: string = (ticket as any).categoryName || (ticket as any).category?.name || ticket.categoryId || "";
+  if (!raw) return "分類なし";
+  if (CATEGORY_MAP[raw]) return CATEGORY_MAP[raw];
+  return raw;
+};
+
 function ColumnFilter({
   col, label, sortCol, sortDir, onSort, onClearSort,
   options, selected, onFilterChange,
@@ -173,8 +190,7 @@ export function SprintDetailPage() {
   const [sprint, setSprint] = useState<Sprint | null>(SPRINTS.find(s => s.id === sprintId) || null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
-  // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）
-  // レコードなし → admin/PM はロール権限、それ以外は権限なし(all false)
+  
   const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
     ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
@@ -200,7 +216,6 @@ export function SprintDetailPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled || !sprintId) return;
-    // Load sprint first to get project_id, then load project + permissions in parallel
     supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).single()
       .then(async ({ data: s }) => {
         if (!s) { setLoading(false); return; }
@@ -297,6 +312,9 @@ export function SprintDetailPage() {
         return [...new Set(ts.map(t => String(t.estimatedHours)))].sort((a, b) => Number(a) - Number(b)).map(v => ({ value: v, label: `${v}h` }));
       case "progress":
         return [...new Set(ts.map(t => String(t.progress)))].sort((a, b) => Number(a) - Number(b)).map(v => ({ value: v, label: `${v}%` }));
+      case "category":
+        return [...new Set(ts.map(t => getCategoryLabel(t)))]
+          .sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       default: return [];
     }
   };
@@ -311,10 +329,12 @@ export function SprintDetailPage() {
   const displayTickets = [...sprint.tickets]
     .filter(t => !t.parentId) // 親チケットのみ表示（子チケットはアコーディオンで展開）
     .filter(t => {
+      const catName = getCategoryLabel(t);
       const checks: [string, string][] = [
         ["wbs", t.wbs], ["title", t.title], ["description", htmlToText(t.description)], ["status", t.status], ["priority", t.priority],
         ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
         ["estimatedHours", String(t.estimatedHours)], ["progress", String(t.progress)],
+        ["category", catName],
       ];
       return checks.every(([col, val]) => { const f = colFilters[col]; return !f || f.size === 0 || f.has(val); });
     })
@@ -330,12 +350,13 @@ export function SprintDetailPage() {
       else if (sortCol === "dueDate") v = (a.dueDate || "").localeCompare(b.dueDate || "");
       else if (sortCol === "estimatedHours") v = a.estimatedHours - b.estimatedHours;
       else if (sortCol === "progress") v = a.progress - b.progress;
+      else if (sortCol === "category") v = getCategoryLabel(a).localeCompare(getCategoryLabel(b), "ja");
       if (v === 0) v = a.id.localeCompare(b.id);
       return sortDir === "asc" ? v : -v;
     });
 
   const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
-  const GRID = "76px 1fr 1fr 90px 60px 100px 72px 72px 52px 130px 36px";
+  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 52px 130px 36px";
 
   return (
     <div style={{ padding: "24px" }}>
@@ -383,16 +404,16 @@ export function SprintDetailPage() {
       <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: openCol ? 100 : 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
-          {(["wbs","title","description","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
+          {(["wbs","title","description","category","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
-              label={["No","チケット名","チケット詳細","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
+              label={["No","チケット名","チケット詳細","分類","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
               {...commonProps}
               options={getColOptions(col)}
               selected={getSelected(col)}
               onFilterChange={setColFilter(col)}
               open={openCol === col}
               onToggle={() => toggleCol(col)}
-              alignRight={idx >= 8}
+              alignRight={idx >= 9}
             />
           ))}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -421,6 +442,9 @@ export function SprintDetailPage() {
             const hasChildren = children.length > 0;
             const isTicketExpanded = expandedTicketIds.has(ticket.id);
             const toggleTicketExpand = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTicketIds(prev => { const n = new Set(prev); n.has(ticket.id) ? n.delete(ticket.id) : n.add(ticket.id); return n; }); };
+            
+            const displayCategory = getCategoryLabel(ticket);
+
             return (
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
@@ -435,12 +459,17 @@ export function SprintDetailPage() {
                     ) : <span style={{ width: 14 }} />}
                     <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, whiteSpace: "nowrap" }}>{ticket.wbs}</span>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                    <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.title}</span>
-                    {hasChildren && <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9 }} />{children.length}</span>}
+                  <div style={{ display: "grid", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
+                      <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.title}</span>
+                      {hasChildren && <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9 }} />{children.length}</span>}
+                    </div>
                   </div>
                   <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(ticket.description) || "—"}</span>
+                  
+                  <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{displayCategory}</span></div>
+                  
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, display: "inline-block" }}>{tsm.label}</span></div>
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, display: "inline-block" }}>{priLabel}</span></div>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
@@ -473,6 +502,9 @@ export function SprintDetailPage() {
                   const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                   const cProgress = (child.status === "done" || child.status === "closed") ? 100 : child.progress;
                   const cBarColor = cProgress === 100 ? "#059669" : child.status === "in-progress" ? "#D97706" : "#C9C4BB";
+                  
+                  const childCategory = getCategoryLabel(child);
+
                   return (
                     <div key={child.id} onClick={() => selectTicket(child.wbs || child.id)}
                       style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: "#F9F8F6", transition: "background 0.1s", cursor: "pointer", opacity: child.status === "closed" ? 0.65 : 1 }}
@@ -486,6 +518,9 @@ export function SprintDetailPage() {
                         <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
                       </div>
                       <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
+                      
+                      <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{childCategory}</span></div>
+                      
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, display: "inline-block" }}>{ctsm.label}</span></div>
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, display: "inline-block" }}>{cPriLabel}</span></div>
                       <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>

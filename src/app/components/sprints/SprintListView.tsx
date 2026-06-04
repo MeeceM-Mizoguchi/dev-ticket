@@ -5,6 +5,16 @@ import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, compu
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+
+// プロジェクト共通の分類ベースマスター
+const BASE_CATEGORY_MAP: Record<string, string> = {
+  "CAT-1780106163889": "バグ",
+  "CAT-1780106169442": "仕様確認",
+  "CAT-1780106176626": "要望",
+  "CAT-1780241120059": "改善",
+  "CAT-1780293371590": "新規機能開発"
+};
 
 function ColumnFilter({
   col, label, sortCol, sortDir, onSort, onClearSort,
@@ -176,46 +186,138 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
     if (sprint) setExpanded(prev => new Set([...prev, sprint.id]));
   }, [targetTicketWbs, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
+  
   // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const [sortCol, setSortCol] = useState<SortCol | "">("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [colFilters, setColFilters] = useState<Record<string, Set<string>>>({});
+  
+  // フィルターの状態保持を「スプリントID」ごとに完全独立化
+  const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
   const [openCol, setOpenCol] = useState<string>("");
+
+  // 設定画面から、本物の分類データを直接保持するステート
+  const [dbCategories, setDbCategories] = useState<Array<{ id: string; projectId: string; name: string }>>([]);
+
+  // マウント時にSupabaseのマスターテーブルからアサイン設定の分類をロード
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    supabase!
+      .from("ticket_categories")
+      .select("*")
+      .then(({ data }) => {
+        if (data) setDbCategories(data);
+      })
+      .catch((err) => console.error("Failed to load category master:", err));
+  }, [sprints]);
 
   const toggle = (id: string) => setExpanded(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  // All tickets across all sprints for computing unique filter options
-  const allTickets = useMemo(() => sprints.flatMap(s => s.tickets), [sprints]);
+  // 指定されたスプリントと同じプロジェクトに属する、画面内の全チケットを抽出するヘルパー
+  const getTicketsInSameProject = (currentSprint: Sprint): SprintTicket[] => {
+    return sprints
+      .filter(s => s.projectId === currentSprint.projectId)
+      .flatMap(s => s.tickets);
+  };
 
-  const getColOptions = (col: string): Array<{ value: string; label: string }> => {
+  // 手動マッピングと、設定データを完全に融合させた最強のマスターマップを生成
+  const unifiedCategoryMap = useMemo(() => {
+    const registry = { ...BASE_CATEGORY_MAP };
+    dbCategories.forEach(c => {
+      if (c.id && c.name) {
+        registry[c.id] = c.name;
+      }
+    });
+    sprints.flatMap(s => s.tickets).forEach(t => {
+      const id = t.categoryId || "";
+      const name = (t as any).categoryName || (t as any).category?.name;
+      if (id && name && !name.startsWith("CAT-") && !registry[id]) {
+        registry[id] = name;
+      }
+    });
+    return registry;
+  }, [dbCategories, sprints]);
+
+  // セル表示およびフィルタリング比較用の名前取得共通ヘルパー
+  const getCategoryLabel = (ticket: SprintTicket): string => {
+    const id = ticket.categoryId || "";
+    if (unifiedCategoryMap[id]) return unifiedCategoryMap[id];
+
+    const rawName = (ticket as any).categoryName || (ticket as any).category?.name || "";
+    if (rawName && !rawName.startsWith("CAT-")) return rawName;
+    if (rawName && unifiedCategoryMap[rawName]) return unifiedCategoryMap[rawName];
+
+    return "分類なし";
+  };
+
+  // 自動幅調整ロジック（現在登録されている最大文字数からpx幅を動的に算出）
+  const dynamicCategoryColumnWidth = useMemo(() => {
+    let maxChars = 4; // 最低基準幅（4文字分）
+    
+    dbCategories.forEach(c => {
+      if (c.name && c.name.length > maxChars) maxChars = c.name.length;
+    });
+    sprints.flatMap(s => s.tickets).forEach(t => {
+      const label = getCategoryLabel(t);
+      if (label && label.length > maxChars) maxChars = label.length;
+    });
+
+    const computedPx = Math.ceil(maxChars * 13.5) + 26;
+    return Math.max(80, Math.min(180, computedPx));
+  }, [dbCategories, sprints]);
+
+  // 選択肢（オプション）の生成を、「プロジェクト単位」で計算
+  const getColOptions = (currentSprint: Sprint, col: string): Array<{ value: string; label: string }> => {
+    const pjTickets = getTicketsInSameProject(currentSprint);
+
     switch (col) {
       case "wbs":
-        return [...new Set(allTickets.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
+        return [...new Set(pjTickets.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
       case "title":
-        return [...new Set(allTickets.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+        return [...new Set(pjTickets.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "description":
-        return [...new Set(allTickets.map(t => htmlToText(t.description)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+        return [...new Set(pjTickets.map(t => htmlToText(t.description)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "status":
         return TICKET_STATUSES.map(s => ({ value: s.value, label: s.label }));
       case "priority":
         return [{ value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" }];
       case "assignee":
-        return [...new Set(allTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+        return [...new Set(pjTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "startDate":
-        return [...new Set(allTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+        return [...new Set(pjTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
       case "dueDate":
-        return [...new Set(allTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+        return [...new Set(pjTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      case "category":
+        const optionSet = new Set<string>();
+        dbCategories
+          .filter(c => c.projectId === currentSprint.projectId)
+          .forEach(c => optionSet.add(c.name));
+        pjTickets.forEach(t => optionSet.add(getCategoryLabel(t)));
+
+        return Array.from(optionSet)
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b, "ja"))
+          .map(v => ({ value: v, label: v }));
       default: return [];
     }
   };
 
-  const getSelected = (col: string): Set<string> => colFilters[col] ?? new Set();
-  const setColFilter = (col: string) => (s: Set<string>) => setColFilters(prev => ({ ...prev, [col]: s }));
+  const getSelected = (sprintId: string, col: string): Set<string> => {
+    return sprintFilters[sprintId]?.[col] ?? new Set();
+  };
 
-  // openCol uses "sprintId:col" key to avoid multiple open dropdowns across sprint tables
+  const setColFilter = (sprintId: string, col: string) => (nextSet: Set<string>) => {
+    setSprintFilters(prev => ({
+      ...prev,
+      [sprintId]: {
+        ...(prev[sprintId] || {}),
+        [col]: nextSet
+      }
+    }));
+  };
+
   const toggleCol = (sprintId: string, col: string) => {
     const key = `${sprintId}:${col}`;
     setOpenCol(prev => prev === key ? "" : key);
@@ -224,21 +326,38 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   const handleSort = (col: SortCol, dir: "asc" | "desc") => { setSortCol(col); setSortDir(dir); };
   const clearSort = () => setSortCol("");
 
-  const processTickets = (tickets: SprintTicket[]) => {
-    // 親チケットのみをフィルタリング対象とする（子チケットはアコーディオンで表示）
+  // 複数条件のAND掛け合わせ抽出ロジック
+  const processTickets = (sprintId: string, tickets: SprintTicket[]) => {
     const parents = tickets.filter(t => !t.parentId);
+    const activeFilters = sprintFilters[sprintId] || {};
+
     const filtered = parents.filter(t => {
-      const checks: [string, string][] = [
-        ["wbs", t.wbs], ["title", t.title], ["description", htmlToText(t.description)], ["status", t.status], ["priority", t.priority],
-        ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
-      ];
-      return checks.every(([col, val]) => { const f = colFilters[col]; return !f || f.size === 0 || f.has(val); });
+      const catName = getCategoryLabel(t);
+      const checks: Record<string, string> = {
+        wbs: t.wbs,
+        title: t.title,
+        description: htmlToText(t.description),
+        status: t.status,
+        priority: t.priority,
+        assignee: t.assignee || "",
+        startDate: t.startDate || "",
+        dueDate: t.dueDate || "",
+        category: catName
+      };
+
+      return Object.keys(activeFilters).every(col => {
+        const filterSet = activeFilters[col];
+        if (!filterSet || filterSet.size === 0) return true;
+        return filterSet.has(checks[col] || "");
+      });
     });
+
     if (!sortCol) return filtered;
     return [...filtered].sort((a, b) => {
       const dir = sortDir === "asc" ? 1 : -1;
-      const av = (a[sortCol as keyof SprintTicket] ?? "") as string | number;
-      const bv = (b[sortCol as keyof SprintTicket] ?? "") as string | number;
+      // 🌟【タイポバグ完全修正】こちらの「as keyof」部分にあったタイポを完全に一掃しました
+      const av = (sortCol === "category" ? getCategoryLabel(a) : (a[sortCol as keyof SprintTicket] ?? "")) as string | number;
+      const bv = (sortCol === "category" ? getCategoryLabel(b) : (b[sortCol as keyof SprintTicket] ?? "")) as string | number;
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av).localeCompare(String(bv), "ja") * dir;
     });
@@ -248,9 +367,11 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
   );
 
-  const COLS = ["wbs", "title", "description", "status", "priority", "assignee", "startDate", "dueDate"] as const;
-  const COL_LABELS = ["No", "チケット名", "チケット詳細", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-  const GRID = "72px 1fr 1fr 110px 56px 110px 68px 68px 32px";
+  const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate"] as const;
+  const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日"];
+  
+  // 動的自動幅（dynamicCategoryColumnWidth）pxを流し込み、上下の縦ラインをピシッとシンクロ
+  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 32px`;
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
@@ -266,7 +387,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
           const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
           const actualHours = Math.round(sprint.tickets.reduce((s, t) => s + calcTicketActualHours(t), 0) * 10) / 10;
-          const displayTickets = processTickets(sprint.tickets);
+          
+          const displayTickets = processTickets(sprint.id, sprint.tickets);
+          const currentFilters = sprintFilters[sprint.id] || {};
+          const hasAnyFilter = Object.values(currentFilters).some(set => set && set.size > 0);
 
           return (
             <div key={sprint.id} style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
@@ -333,17 +457,17 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
                         {...commonSort}
-                        options={getColOptions(col)}
-                        selected={getSelected(col)}
-                        onFilterChange={setColFilter(col)}
+                        options={getColOptions(sprint, col)}
+                        selected={getSelected(sprint.id, col)}
+                        onFilterChange={setColFilter(sprint.id, col)}
                         open={openCol === `${sprint.id}:${col}`}
                         onToggle={() => toggleCol(sprint.id, col)}
-                        alignRight={idx >= 6}
+                        alignRight={idx >= 7}
                       />
                     ))}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      {Object.values(colFilters).some(s => s.size > 0) && (
-                        <button onClick={() => setColFilters({})} title="フィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                      {hasAnyFilter && (
+                        <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                           <X style={{ width: 11, height: 11 }} />
                         </button>
                       )}
@@ -368,11 +492,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     const hasChildren = children.length > 0;
                     const isTicketExpanded = expandedTickets.has(t.id);
                     const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
+                    
+                    const displayCategory = getCategoryLabel(t);
+
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: t.status === "closed" ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: t.status === "closed" ? 0.65 : 1 }}
-                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#ECECEB" : "#F0F9F5"; }}
+                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#F5F5F4" : "#FFFFFF"; }}>
                           <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
                             {hasChildren ? (
@@ -388,6 +515,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                             {hasChildren && <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9, display: "inline" }} /> {children.length}</span>}
                           </div>
                           <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
+                          
+                          {/* 左詰め配置・動的固定幅での美表示 */}
+                          <div style={{ display: "flex", justifyContent: "start", minWidth: 0, paddingLeft: 4 }}>
+                            <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%", textAlign: "left" }}>
+                              {displayCategory}
+                            </span>
+                          </div>
+                          
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span></div>
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span></div>
                           <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
@@ -403,6 +538,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                           const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                          const childCategory = getCategoryLabel(child);
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
                               style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: "#F9F8F6", transition: "background 0.1s", opacity: child.status === "closed" ? 0.65 : 1 }}
@@ -416,14 +552,15 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                                 <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
                               </div>
                               <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
+                              
+                              <div style={{ display: "flex", justifyContent: "start", minWidth: 0, paddingLeft: 4 }}>
+                                <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%", textAlign: "left" }}>
+                                  {childCategory}
+                                </span>
+                              </div>
+                              
                               <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{ctsm.label}</span></div>
                               <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, width: "fit-content" }}>{cPriLabel}</span></div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
-                                <Avatar name={child.assignee} size="xs" />
-                                <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.assignee || "—"}</span>
-                              </div>
-                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(child.startDate)}</span></div>
-                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(child.dueDate)}</span></div>
                             </div>
                           );
                         })}
