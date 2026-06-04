@@ -35,7 +35,6 @@ export const TICKET_STATUSES: { value: import("@/app/types").TicketStatus; label
   { value: "review-done", label: "レビュー完了", color: "#0284C7", bg: "#F0F9FF" },
   { value: "stg-test",    label: "STG完了",      color: "#0D9488", bg: "#F0FDFA" },
   { value: "uat",         label: "UAT完了",      color: "#4F46E5", bg: "#EEF2FF" },
-  { value: "done",        label: "完了",         color: "#059669", bg: "#ECFDF5" },
   { value: "closed",      label: "クローズ",     color: "#6B7280", bg: "#F3F4F6" },
 ];
 
