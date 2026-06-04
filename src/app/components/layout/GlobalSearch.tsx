@@ -208,13 +208,13 @@ export function GlobalSearch() {
     setQuery("");
     switch (result.type) {
       case "ticket":
-        navigate(`/projects/${result.projectId}/sprints/${result.sprintId}?ticket=${result.id}`);
+        navigate(`/${result.projectId}/sprint/${result.sprintId}/${result.wbs}`);
         break;
       case "sprint":
-        navigate(`/projects/${result.projectId}/sprints/${result.id}`);
+        navigate(`/${result.projectId}/sprint/${result.id}`);
         break;
       case "project":
-        navigate(`/projects/${result.id}/sprints`);
+        navigate(`/${result.id}`);
         break;
       case "member":
         navigate("/members");
