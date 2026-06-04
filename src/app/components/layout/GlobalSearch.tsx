@@ -130,7 +130,7 @@ export function GlobalSearch() {
     }
 
     try {
-      // Get accessible projects with their sprints in one query
+      // Get accessible projects with their sprints in one query_
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data: projData } = await supabase!.from("projects").select("id, name, client, status, members, sprints(id, name, status, project_id)") as { data: any[] | null };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
