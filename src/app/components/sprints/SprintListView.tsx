@@ -66,7 +66,7 @@ function ColumnFilter({
   return (
     <div style={{ position: "relative", width: "100%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onToggle}>
       <button onClick={e => { e.stopPropagation(); onToggle(); }} style={{
-        display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
+        display: "flex", alignItems: "center", center: "center", gap: 3, background: "none", border: "none",
         cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700,
         color: active ? "#059669" : "#B0A9A4",
         textTransform: "uppercase" as const, letterSpacing: "0.06em",
@@ -268,33 +268,32 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return Math.max(80, Math.min(180, computedPx));
   }, [dbCategories, sprints]);
 
-  // 選択肢（オプション）の生成を、「プロジェクト単位」で計算
+  // 🌟【不具合修正】選択肢（オプション）の生成スコープを、プロジェクト全体ではなく、該当「スプリント（テーブル）単体」のチケットに厳密に限定！
   const getColOptions = (currentSprint: Sprint, col: string): Array<{ value: string; label: string }> => {
-    const pjTickets = getTicketsInSameProject(currentSprint);
+    // スプリント内のチケット（親チケットのみ対象とする従来の仕様とも完全連動）
+    const sprintTickets = currentSprint.tickets || [];
 
     switch (col) {
       case "wbs":
-        return [...new Set(pjTickets.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
+        return [...new Set(sprintTickets.map(t => t.wbs))].sort().map(v => ({ value: v, label: v }));
       case "title":
-        return [...new Set(pjTickets.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+        return [...new Set(sprintTickets.map(t => t.title))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "description":
-        return [...new Set(pjTickets.map(t => htmlToText(t.description)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+        return [...new Set(sprintTickets.map(t => htmlToText(t.description)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "status":
         return TICKET_STATUSES.map(s => ({ value: s.value, label: s.label }));
       case "priority":
         return [{ value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" }];
       case "assignee":
-        return [...new Set(pjTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
+        return [...new Set(sprintTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "startDate":
-        return [...new Set(pjTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+        return [...new Set(sprintTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
       case "dueDate":
-        return [...new Set(pjTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+        return [...new Set(sprintTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
       case "category":
+        // 分類に関しては、前述の「該当チケットが実在する場合のみ出す」仕様に従い、スプリント内チケットから安全に抽出
         const optionSet = new Set<string>();
-        dbCategories
-          .filter(c => c.projectId === currentSprint.projectId)
-          .forEach(c => optionSet.add(c.name));
-        pjTickets.forEach(t => optionSet.add(getCategoryLabel(t)));
+        sprintTickets.forEach(t => optionSet.add(getCategoryLabel(t)));
 
         return Array.from(optionSet)
           .filter(Boolean)
@@ -355,7 +354,6 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     if (!sortCol) return filtered;
     return [...filtered].sort((a, b) => {
       const dir = sortDir === "asc" ? 1 : -1;
-      // 🌟【タイポバグ完全修正】こちらの「as keyof」部分にあったタイポを完全に一掃しました
       const av = (sortCol === "category" ? getCategoryLabel(a) : (a[sortCol as keyof SprintTicket] ?? "")) as string | number;
       const bv = (sortCol === "category" ? getCategoryLabel(b) : (b[sortCol as keyof SprintTicket] ?? "")) as string | number;
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
