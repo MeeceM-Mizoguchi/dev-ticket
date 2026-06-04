@@ -61,7 +61,7 @@ export type CommentType = "comment" | "review_request" | "revision_request" | "r
 export interface TicketComment {
   id: string; ticketId: string; userName: string; content: string;
   ticketStatus: TicketStatus; images: string[]; createdAt: string;
-  commentType: CommentType;
+  commentType: CommentType; replyTo?: string | null;
 }
 
 export interface TicketSourceFile {
