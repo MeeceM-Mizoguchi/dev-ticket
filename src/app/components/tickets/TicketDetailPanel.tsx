@@ -635,7 +635,11 @@ export function TicketDetailPanel({
   };
 
   const handleReviewRequest = async () => {
-    if (!reviewerName || status !== "in-progress" || !ticket) return;
+    console.log("[debug] handleReviewRequest called", { reviewerName, status, projectSlug, ticketId: ticket?.id });
+    if (!reviewerName || status !== "in-progress" || !ticket) {
+      console.warn("[debug] handleReviewRequest early return", { reviewerName, status, hasTicket: !!ticket });
+      return;
+    }
     const validErr = validateParentStatusChange("in-review", childTickets);
     if (validErr) { alert(validErr); return; }
     const round = reviewRound + 1;
@@ -718,6 +722,7 @@ export function TicketDetailPanel({
   };
 
   const handleReviewApproval = async (approvalText: string = "") => {
+    console.log("[debug] handleReviewApproval called", { assignee, projectSlug, ticketId: ticket?.id });
     if (!ticket) return;
     const newStatus: TicketStatus = "review-done";
     const newProgress = STATUS_PROGRESS[newStatus];
