@@ -558,11 +558,13 @@ export function TicketDetailPanel({
       });
       if (error) console.error("[notifications] mention insert failed:", error.message);
       // @メンションのSlack通知（メンションが発生したプロジェクトのチャンネルに送信）
+      const mentionMessageText = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const mentionTicketUrl = `${window.location.origin}/${projectSlug}/${currentTicket.wbs}`;
       fireSlackNotify({
         recipientUserName: name,
         projectSlug,
         title: `${userName}さんにメンションされました`,
-        body: `${currentTicket.wbs}: ${currentTicket.title}`,
+        body: `<${mentionTicketUrl}|${currentTicket.wbs}: ${currentTicket.title}>\n${mentionMessageText}`,
       });
     }
   };
@@ -662,12 +664,16 @@ export function TicketDetailPanel({
       `${userName}さんからレビュー依頼が届きました`,
       `${ticket.wbs}: ${ticket.title}（第${round}回）`
     );
-    if (projectSlug) fireSlackNotify({
-      recipientUserName: reviewerName,
-      projectSlug,
-      title: `${userName}さんからレビュー依頼が届きました`,
-      body: `${ticket.wbs}: ${ticket.title}（第${round}回）`,
-    });
+    if (projectSlug) {
+      const reviewCommentText = reviewContent.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const reviewTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+      fireSlackNotify({
+        recipientUserName: reviewerName,
+        projectSlug,
+        title: `${userName}さんからレビュー依頼が届きました`,
+        body: `<${reviewTicketUrl}|${ticket.wbs}: ${ticket.title}（第${round}回）>${reviewCommentText ? `\n${reviewCommentText}` : ""}`,
+      });
+    }
     setReviewContent("");
     onUpdated?.();
   };
@@ -691,12 +697,16 @@ export function TicketDetailPanel({
       `${userName}さんから修正依頼が届きました`,
       `${ticket.wbs}: ${ticket.title}`
     );
-    if (assignee && projectSlug) fireSlackNotify({
-      recipientUserName: assignee,
-      projectSlug,
-      title: `${userName}さんから修正依頼が届きました`,
-      body: `${ticket.wbs}: ${ticket.title}`,
-    });
+    if (assignee && projectSlug) {
+      const revisionCommentText = revisionText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const revisionTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+      fireSlackNotify({
+        recipientUserName: assignee,
+        projectSlug,
+        title: `${userName}さんから修正依頼が届きました`,
+        body: `<${revisionTicketUrl}|${ticket.wbs}: ${ticket.title}>${revisionCommentText ? `\n${revisionCommentText}` : ""}`,
+      });
+    }
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
@@ -722,12 +732,16 @@ export function TicketDetailPanel({
       `${userName}さんがレビューを承認しました`,
       `${ticket.wbs}: ${ticket.title}`
     );
-    if (assignee && projectSlug) fireSlackNotify({
-      recipientUserName: assignee,
-      projectSlug,
-      title: `${userName}さんがレビューを承認しました`,
-      body: `${ticket.wbs}: ${ticket.title}`,
-    });
+    if (assignee && projectSlug) {
+      const approvalCommentText = approvalText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const approvalTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+      fireSlackNotify({
+        recipientUserName: assignee,
+        projectSlug,
+        title: `${userName}さんがレビューを承認しました`,
+        body: `<${approvalTicketUrl}|${ticket.wbs}: ${ticket.title}>${approvalCommentText ? `\n${approvalCommentText}` : ""}`,
+      });
+    }
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
