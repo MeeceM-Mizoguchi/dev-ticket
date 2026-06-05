@@ -3,10 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * POST /api/slack-notify
  *
- * プロジェクトの Slack チャンネルに通知を送信する。
- * 受信者の slack_member_id が登録済みの場合は <@U...> 形式でメンションし、
- * その人だけに Slack のプッシュ通知が届く。
- * @メンションのない通知（アサインなど）はこのエンドポイントを呼ばない設計に変更済み。
+ * プロジェクトの Slack チャンネルに通知を投稿する。
+ * 受信者の slack_member_id が登録済みの場合は <@U...> 形式でメンションする。
+ * <@U...> メンションがあると、その人だけに Slack のプッシュ通知が届く。
  */
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -34,7 +33,6 @@ export default async function handler(req: any, res: any) {
     return res.json({ skipped: true, reason: "Slack notifications not configured for this project" });
   }
 
-  // 受信者の Slack メンバー ID を取得し、存在すれば <@U...> 形式に変換
   const { data: profile } = await sb
     .from("profiles")
     .select("slack_member_id")

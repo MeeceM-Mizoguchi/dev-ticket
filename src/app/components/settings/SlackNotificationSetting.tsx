@@ -160,7 +160,7 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
             <div>
               <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>Slack通知を有効にする</p>
-              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>コメント・詳細欄で @メンションされたときのみ通知します</p>
+              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>担当割り当て・レビュー・@メンション時に、対象者を @メンションしてチャンネルに通知します</p>
             </div>
             <Toggle checked={enabled} onChange={() => setEnabled(v => !v)} />
           </div>
