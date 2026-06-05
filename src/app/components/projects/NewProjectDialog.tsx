@@ -7,6 +7,8 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
+// 🌟ログイン中のユーザー情報を取得するために useAuth をインポートします
+import { useAuth } from "@/app/contexts/AuthContext";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 
@@ -16,6 +18,9 @@ function autoSlug(name: string) { return sanitizeSlug(name.toUpperCase()).slice(
 function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).slice(0, 3) || "TKT"; }
 
 export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () => void; clients: Client[]; onCreated?: () => void }) {
+  // 🌟現在のログインユーザー名（userName）を取得
+  const { userName } = useAuth();
+
   const [name, setName] = useState("");
   const [clientName, setClientName] = useState("");
   const [description, setDescription] = useState("");
@@ -47,7 +52,8 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
       const { error } = await supabase!.from("projects").insert({
         id: projectId, name, client: clientName, description,
         start_date: startDate || null, end_date: endDate || null,
-        status, members: [], done: 0, in_progress: 0, todo: 0,
+        // 🌟 members を [] から [userName] へ変更し、作成者自身を初期メンバーとしてセット！
+        status, members: userName ? [userName] : [], done: 0, in_progress: 0, todo: 0,
         slug: finalSlug, wbs_prefix: finalPrefix,
       });
       if (error?.code === "23505") {
