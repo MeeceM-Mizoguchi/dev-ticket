@@ -24,22 +24,22 @@ const STATUS_PROGRESS: Record<TicketStatus, number> = {
 };
 
 const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
-  todo:          { label: "着手開始",   next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
-  "review-done": { label: "STG完了",    next: "stg-test",    color: "#0D9488", bg: "#F0FDFA" },
-  "stg-test":    { label: "UAT完了",    next: "uat",         color: "#4F46E5", bg: "#EEF2FF" },
-  uat:           { label: "リリース完了",next: "closed",      color: "#6B7280", bg: "#F3F4F6" },
+  todo: { label: "着手開始", next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
+  "review-done": { label: "STG完了", next: "stg-test", color: "#0D9488", bg: "#F0FDFA" },
+  "stg-test": { label: "UAT完了", next: "uat", color: "#4F46E5", bg: "#EEF2FF" },
+  uat: { label: "リリース完了", next: "closed", color: "#6B7280", bg: "#F3F4F6" },
 };
 
 const priorityMeta: Record<Priority, { label: string; color: string; bg: string }> = {
-  high:   { label: "高", color: "#DC2626", bg: "#FEF2F2" },
+  high: { label: "高", color: "#DC2626", bg: "#FEF2F2" },
   medium: { label: "中", color: "#D97706", bg: "#FFFBEB" },
-  low:    { label: "低", color: "#0284C7", bg: "#F0F9FF" },
+  low: { label: "低", color: "#0284C7", bg: "#F0F9FF" },
 };
 
 const PRIORITY_OPTIONS: SelectOption[] = [
-  { value: "high",   label: "高", color: "#DC2626", bg: "#FEF2F2" },
+  { value: "high", label: "高", color: "#DC2626", bg: "#FEF2F2" },
   { value: "medium", label: "中", color: "#D97706", bg: "#FFFBEB" },
-  { value: "low",    label: "低", color: "#0284C7", bg: "#F0F9FF" },
+  { value: "low", label: "低", color: "#0284C7", bg: "#F0F9FF" },
 ];
 
 function formatTs(ts: string) {
@@ -72,26 +72,26 @@ export function TicketDetailPanel({
   const hasGeneratePromptPermission = effectivePermissions.canGeneratePrompt;
 
   // editable state
-  const [title, setTitle]           = useState(ticket?.title ?? "");
+  const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
-  const [status, setStatus]         = useState<TicketStatus>(ticket?.status ?? "todo");
-  const [priority, setPriority]     = useState<Priority>(ticket?.priority ?? "medium");
-  const [assignee, setAssignee]     = useState<string>(
+  const [status, setStatus] = useState<TicketStatus>(ticket?.status ?? "todo");
+  const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
+  const [assignee, setAssignee] = useState<string>(
     ticket?.assignee ?? ""
   );
   const [assigneeOpen, setAssigneeOpen] = useState(false);
-  const [startDate, setStartDate]   = useState(ticket?.startDate ?? "");
-  const [dueDate, setDueDate]       = useState(ticket?.dueDate ?? "");
+  const [startDate, setStartDate] = useState(ticket?.startDate ?? "");
+  const [dueDate, setDueDate] = useState(ticket?.dueDate ?? "");
   const [estimatedH, setEstimatedH] = useState(ticket?.estimatedHours ?? 0);
-  const [progress, setProgress]     = useState(ticket?.progress ?? 0);
+  const [progress, setProgress] = useState(ticket?.progress ?? 0);
   const [description, setDescription] = useState(ticket?.description ?? "");
   const [reviewerName, setReviewerName] = useState(ticket?.reviewerName ?? "");
-  const [reviewRound, setReviewRound]   = useState(ticket?.reviewRound ?? 0);
+  const [reviewRound, setReviewRound] = useState(ticket?.reviewRound ?? 0);
   const [reviewerOpen, setReviewerOpen] = useState(false);
   const [createdBy, setCreatedBy] = useState(ticket?.createdBy ?? "");
   const [createdAt, setCreatedAt] = useState(ticket?.createdAt ?? "");
@@ -100,7 +100,7 @@ export function TicketDetailPanel({
   const [categories, setCategories] = useState<TicketCategory[]>([]);
 
   // related data
-  const [comments, setComments]       = useState<TicketComment[]>([]);
+  const [comments, setComments] = useState<TicketComment[]>([]);
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
@@ -109,14 +109,14 @@ export function TicketDetailPanel({
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
-  const [reviewFiles, setReviewFiles]     = useState<{ name: string; file: File }[]>([]);
-  const [reviewImages, setReviewImages]   = useState<string[]>([]);
+  const [reviewFiles, setReviewFiles] = useState<{ name: string; file: File }[]>([]);
+  const [reviewImages, setReviewImages] = useState<string[]>([]);
   // reviewer's input for revision/approval comment
   const [revisionInput, setRevisionInput] = useState("");
   const [revisionImages, setRevisionImages] = useState<string[]>([]);
 
   // comment form
-  const [commentText, setCommentText]     = useState("");
+  const [commentText, setCommentText] = useState("");
   const [commentImages, setCommentImages] = useState<string[]>([]);
 
   // ticket-level images
@@ -138,14 +138,14 @@ export function TicketDetailPanel({
   const [copiedImageUrl, setCopiedImageUrl] = useState<string | null>(null);
 
   // comment editing
-  const [editingId, setEditingId]     = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
-  const [editImages, setEditImages]   = useState<string[]>([]);
+  const [editImages, setEditImages] = useState<string[]>([]);
 
   // reply form
   const [replyingToId, setReplyingToId] = useState<string | null>(null);
-  const [replyText, setReplyText]       = useState("");
-  const [replyImages, setReplyImages]   = useState<string[]>([]);
+  const [replyText, setReplyText] = useState("");
+  const [replyImages, setReplyImages] = useState<string[]>([]);
 
 
   // 子チケット
@@ -626,7 +626,7 @@ export function TicketDetailPanel({
 
   const handleDate = (field: "start_date" | "due_date", v: string) => {
     const s = field === "start_date" ? v : startDate;
-    const d = field === "due_date"   ? v : dueDate;
+    const d = field === "due_date" ? v : dueDate;
     if (field === "start_date") setStartDate(v); else setDueDate(v);
     const days = s && d ? Math.max(0, Math.round((new Date(d).getTime() - new Date(s).getTime()) / 86400000)) : 0;
     const h = days * 8;
@@ -635,7 +635,11 @@ export function TicketDetailPanel({
   };
 
   const handleReviewRequest = async () => {
-    if (!reviewerName || status !== "in-progress" || !ticket) return;
+    console.log("[debug] handleReviewRequest called", { reviewerName, status, projectSlug, ticketId: ticket?.id });
+    if (!reviewerName || status !== "in-progress" || !ticket) {
+      console.warn("[debug] handleReviewRequest early return", { reviewerName, status, hasTicket: !!ticket });
+      return;
+    }
     const validErr = validateParentStatusChange("in-review", childTickets);
     if (validErr) { alert(validErr); return; }
     const round = reviewRound + 1;
@@ -718,6 +722,7 @@ export function TicketDetailPanel({
   };
 
   const handleReviewApproval = async (approvalText: string = "") => {
+    console.log("[debug] handleReviewApproval called", { assignee, projectSlug, ticketId: ticket?.id });
     if (!ticket) return;
     const newStatus: TicketStatus = "review-done";
     const newProgress = STATUS_PROGRESS[newStatus];
@@ -955,7 +960,7 @@ export function TicketDetailPanel({
       {showMoveModal && (
         <DialogShell
           title="スプリントへ移動"
-          onClose={isMoveLoading ? () => {} : () => setShowMoveModal(false)}
+          onClose={isMoveLoading ? () => { } : () => setShowMoveModal(false)}
           footer={<>
             <BtnSecondary onClick={() => setShowMoveModal(false)} disabled={isMoveLoading}>キャンセル</BtnSecondary>
             <button type="button" onClick={handleMoveTicket} disabled={isMoveLoading || !moveTargetSprintId}
@@ -970,10 +975,10 @@ export function TicketDetailPanel({
               <p style={{ fontSize: 13, color: "#A09790", textAlign: "center", padding: "24px 0" }}>移動先のスプリントがありません</p>
             ) : availableSprints.map(s => {
               const statusMeta: Record<string, { label: string; color: string; bg: string }> = {
-                planning:  { label: "計画中", color: "#4F46E5", bg: "#EEF2FF" },
-                active:    { label: "進行中", color: "#059669", bg: "#ECFDF5" },
-                completed: { label: "完了",   color: "#6B7280", bg: "#F3F4F6" },
-                delayed:   { label: "遅延",   color: "#DC2626", bg: "#FEF2F2" },
+                planning: { label: "計画中", color: "#4F46E5", bg: "#EEF2FF" },
+                active: { label: "進行中", color: "#059669", bg: "#ECFDF5" },
+                completed: { label: "完了", color: "#6B7280", bg: "#F3F4F6" },
+                delayed: { label: "遅延", color: "#DC2626", bg: "#FEF2F2" },
               };
               const sm = statusMeta[s.status] ?? { label: s.status, color: "#6B7280", bg: "#F3F4F6" };
               const isSelected = moveTargetSprintId === s.id;
@@ -1174,13 +1179,13 @@ export function TicketDetailPanel({
               </button>
               {assigneeOpen && (
                 <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", marginTop: 4 }}>
-                  {memberNames.length === 0
+                  {projectMemberNames.length === 0
                     ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
-                    : memberNames.map(n => (
+                    : projectMemberNames.map(n => (
                       <button key={n} onClick={() => { saveAssignee(n); setAssigneeOpen(false); }}
                         style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.1s", textAlign: "left" }}
-                        onMouseEnter={e => { if (assignee !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
+                        onMouseEnter={e => { const target = e.currentTarget as HTMLElement; if (assignee !== n) target.style.background = "#F4F5F6"; }}
+                        onMouseLeave={e => { const target = e.currentTarget as HTMLElement; target.style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
                         <Avatar name={n} size="xs" />
                         <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1 }}>{n}</span>
                         {assignee === n && <Check style={{ width: 12, height: 12, color: "#059669", marginLeft: "auto" }} />}

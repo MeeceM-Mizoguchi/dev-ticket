@@ -31,7 +31,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [selectedSprintId, setSelectedSprintId] = useState("");
   const [projectError, setProjectError] = useState(false);
   const [sprintError, setSprintError] = useState(false);
-
+  const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
@@ -39,47 +39,70 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
 
   useEffect(() => {
-    if (!needsSelection) return;
     if (!isSupabaseEnabled) {
       const accessible = isAdmin ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
       setAvailableProjects(accessible.map(p => ({ id: p.id, name: p.name })));
+
+      // 🌟 追加：親から固定の projectId が渡されている場合はそのメンバーを設定
+      if (projectId) {
+        const pData = PROJECTS.find(p => p.id === projectId);
+        if (pData?.members) setCurrentProjectMembers(pData.members);
+      }
       return;
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     supabase!.from("projects").select("id, name, members").order("name").then(({ data }) => {
       if (data) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const accessible = isAdmin ? data : data.filter((p: any) => Array.isArray(p.members) && p.members.includes(userName));
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         setAvailableProjects(accessible.map((p: any) => ({ id: p.id, name: p.name })));
+
+        // 🌟 追加：親から固定の projectId が渡されている場合は、そのプロジェクトの所属メンバー名配列を初期設定
+        if (projectId) {
+          const pData = data.find((p: any) => p.id === projectId);
+          if (pData?.members) setCurrentProjectMembers(pData.members);
+        }
       }
     });
-  }, [needsSelection, isAdmin, userName]);
+  }, [needsSelection, isAdmin, userName, projectId]);
 
+
+  // 2. 選択されたプロジェクトに応じたスプリント一覧、およびメンバー情報の動的更新
   useEffect(() => {
-    if (!needsSelection || !selectedProjectId) { setAvailableSprints([]); setSelectedSprintId(""); return; }
+    if (!effectiveProjectId) { setAvailableSprints([]); setSelectedSprintId(""); return; }
+
     if (!isSupabaseEnabled) {
-      setAvailableSprints(SPRINTS.filter(s => s.projectId === selectedProjectId).map(s => ({ id: s.id, name: s.name, startDate: s.startDate, endDate: s.endDate })));
-      setSelectedSprintId("");
+      setAvailableSprints(SPRINTS.filter(s => s.projectId === effectiveProjectId).map(s => ({ id: s.id, name: s.name, startDate: s.startDate, endDate: s.endDate })));
+      if (needsSelection) {
+        setSelectedSprintId("");
+        // 🌟 追加
+        const pData = PROJECTS.find(p => p.id === effectiveProjectId);
+        if (pData?.members) setCurrentProjectMembers(pData.members);
+      }
       return;
     }
-    supabase!.from("sprints").select("id, name, start_date, end_date").eq("project_id", selectedProjectId).order("created_at")
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+    // スプリント一覧を取得
+    supabase!.from("sprints").select("id, name, start_date, end_date").eq("project_id", effectiveProjectId).order("created_at")
       .then(({ data }) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if (data) setAvailableSprints(data.map((s: any) => ({ id: s.id, name: s.name, startDate: s.start_date, endDate: s.end_date })));
-        setSelectedSprintId("");
+        if (needsSelection) setSelectedSprintId("");
       });
-  }, [needsSelection, selectedProjectId]);
+
+    // 🌟 追加：動的にプロジェクトが変わった、あるいは子チケット作成時のプロジェクトメンバー情報を再取得
+    supabase!.from("projects").select("members").eq("id", effectiveProjectId).single().then(({ data }) => {
+      if (data?.members) {
+        setCurrentProjectMembers(data.members);
+      }
+    });
+  }, [needsSelection, effectiveProjectId]);
+
 
   // --- チケット入力フィールド ---
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<TicketStatus>("todo");
   const [priority, setPriority] = useState<Priority>("medium");
-  const [assigneeList, setAssigneeList] = useState<{ id: string; name: string }[]>(
-    MEMBERS.map(m => ({ id: m.id, name: m.name }))
-  );
-  const [assignee, setAssignee] = useState(MEMBERS[0]?.name || "");
+  const [assigneeList, setAssigneeList] = useState<{ id: string; name: string }[]>([]);
+  const [assignee, setAssignee] = useState("");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [estimatedHours, setEstimatedHours] = useState(0);
@@ -103,12 +126,32 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     setEstimatedHours(calcHours(s, d));
   };
 
+  // 🌟【メンバー制限ロジック】
+  // プロジェクト所属メンバー（currentProjectMembers）が更新されるたびに、担当者セレクトボックスの選択肢をフィルタリング
   useEffect(() => {
-    if (!isSupabaseEnabled) return;
+    // 未設定（分類なし用フォールバック）を常に先頭に配置できるよう準備
+    const noneOption = { id: "none", name: "担当者なし" };
+
+    if (!isSupabaseEnabled) {
+      // モックデータから該当プロジェクトのメンバーのみに制限
+      const filteredMock = MEMBERS.filter(m => currentProjectMembers.includes(m.name));
+      const list = filteredMock.map(m => ({ id: m.id, name: m.name }));
+      setAssigneeList([noneOption, ...list]);
+      setAssignee(list[0]?.name || "担当者なし");
+      return;
+    }
+
+    // Supabaseから全プロフィールを取得した上で、プロジェクトの参加メンバーのみに厳重に .filter
     supabase!.from("profiles").select("id, name").order("name").then(({ data }) => {
-      if (data?.length) { setAssigneeList(data); setAssignee(data[0]?.name || ""); }
+      if (data) {
+        const filtered = data.filter((u: any) => currentProjectMembers.includes(u.name));
+        setAssigneeList([noneOption, ...filtered]);
+        // ログイン中の自分自身がメンバーにいれば初期値に設定、いなければ先頭のメンバーにする
+        const hasMe = filtered.some((u: any) => u.name === userName);
+        setAssignee(hasMe ? userName : (filtered[0]?.name || "担当者なし"));
+      }
     });
-  }, []);
+  }, [currentProjectMembers, userName]);
 
   const [wbsPrefix, setWbsPrefix] = useState("T");
 
