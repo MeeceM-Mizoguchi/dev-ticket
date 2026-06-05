@@ -825,7 +825,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
               onDragOver={e => onDragOver(e as DragEvent, project.id)}
               onDragLeave={onDragLeave}
               onDrop={e => onDrop(e as DragEvent, project)}
-              style={{ background: "#FFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden", boxShadow: isOver ? "0 0 0 3px rgba(5,150,105,0.10)" : "0 1px 3px rgba(0,0,0,0.04)", transition: "all 0.15s" }}>
+              style={{ background: "#FFF", border: isOver ? "2px dashed #059669" : "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden", boxShadow: isOver ? "0 0 0 3px rgba(5,150,105,0.10)" : "0 1px 3px rgba(0,0,0,0.04)", transition: "all 0.15s", flexShrink: 0 }}>
 
               {/* Single-row layout: icon + name/client + assignments */}
               <div style={{ display: "flex", alignItems: isExpanded ? "flex-start" : "center", gap: 10, padding: "12px 14px", minHeight: 72 }}>
