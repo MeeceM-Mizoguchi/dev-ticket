@@ -17,8 +17,8 @@ export default async function handler(req: any, res: any) {
   const publicUrl = process.env.PUBLIC_URL || "http://localhost:5173";
   const redirectUri = `${publicUrl}/api/slack-oauth-callback`;
 
-  // im:write → ボットがユーザーとのDMを開いて送信するために必要
-  const scopes = "chat:write,im:write";
+  // chat:write.public → Bot をチャンネルに invite せず公開チャンネルに投稿可能
+  const scopes = "chat:write,chat:write.public";
 
   const authUrl =
     `https://slack.com/oauth/v2/authorize` +

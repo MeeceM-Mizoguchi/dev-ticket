@@ -518,12 +518,6 @@ export function TicketDetailPanel({
       }).then(({ error }) => {
         if (error) console.error("[notifications] assign insert failed:", error.message, error);
       });
-      fireSlackNotify({
-        recipientUserName: name,
-        projectSlug,
-        title: "チケットが割り当てられました",
-        body: `${ticket.wbs}: ${ticket.title}`,
-      });
     }
   };
 
@@ -671,16 +665,6 @@ export function TicketDetailPanel({
       `${userName}さんからレビュー依頼が届きました`,
       `${ticket.wbs}: ${ticket.title}（第${round}回）`
     );
-    if (projectSlug) {
-      const reviewCommentText = reviewContent.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-      const reviewTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-      fireSlackNotify({
-        recipientUserName: reviewerName,
-        projectSlug,
-        title: `${userName}さんからレビュー依頼が届きました`,
-        body: `<${reviewTicketUrl}|${ticket.wbs}: ${ticket.title}（第${round}回）>${reviewCommentText ? `\n${reviewCommentText}` : ""}`,
-      });
-    }
     setReviewContent("");
     onUpdated?.();
   };
@@ -704,16 +688,6 @@ export function TicketDetailPanel({
       `${userName}さんから修正依頼が届きました`,
       `${ticket.wbs}: ${ticket.title}`
     );
-    if (assignee && projectSlug) {
-      const revisionCommentText = revisionText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-      const revisionTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-      fireSlackNotify({
-        recipientUserName: assignee,
-        projectSlug,
-        title: `${userName}さんから修正依頼が届きました`,
-        body: `<${revisionTicketUrl}|${ticket.wbs}: ${ticket.title}>${revisionCommentText ? `\n${revisionCommentText}` : ""}`,
-      });
-    }
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
@@ -739,16 +713,6 @@ export function TicketDetailPanel({
       `${userName}さんがレビューを承認しました`,
       `${ticket.wbs}: ${ticket.title}`
     );
-    if (assignee && projectSlug) {
-      const approvalCommentText = approvalText.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-      const approvalTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-      fireSlackNotify({
-        recipientUserName: assignee,
-        projectSlug,
-        title: `${userName}さんがレビューを承認しました`,
-        body: `<${approvalTicketUrl}|${ticket.wbs}: ${ticket.title}>${approvalCommentText ? `\n${approvalCommentText}` : ""}`,
-      });
-    }
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();

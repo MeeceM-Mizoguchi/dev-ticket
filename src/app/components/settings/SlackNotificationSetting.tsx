@@ -142,25 +142,9 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
             </button>
           </div>
 
-          {/* DM通知の説明 */}
-          <div style={{ background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 10, padding: "12px 14px" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
-              <div style={{ width: 18, height: 18, borderRadius: 5, background: "#0284C7", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              </div>
-              <div>
-                <p style={{ fontSize: 12, fontWeight: 600, color: "#0C4A6E", marginBottom: 3 }}>DM通知モード（再接続後に有効）</p>
-                <p style={{ fontSize: 11, color: "#0369A1", lineHeight: 1.6 }}>
-                  Slackアプリに <code style={{ background: "#DBEAFE", padding: "1px 4px", borderRadius: 3 }}>im:write</code> スコープを追加して再接続すると、担当割り当て・レビュー依頼・@メンション時に対象メンバーのDMへ直接通知されます。<br />
-                  再接続前は下記チャンネルへのフォールバック通知が使われます。
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* フォールバック用チャンネル */}
+          {/* 通知先チャンネル */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <label className={labelCls}>フォールバック通知チャンネル</label>
+            <label className={labelCls}>通知先チャンネル</label>
             <input
               className={inputCls}
               placeholder="#dev-notifications または C1234ABCD"
@@ -168,7 +152,7 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
               onChange={e => setChannel(e.target.value)}
             />
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
-              DM送信できない場合（再接続前・SlackID未連携のメンバー）にこのチャンネルへ通知します
+              チャンネル名（例: #dev-notifications）またはチャンネルID（例: C1234ABCD）を入力してください
             </p>
           </div>
 
@@ -176,7 +160,7 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
             <div>
               <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>Slack通知を有効にする</p>
-              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>メンション・担当割り当て・レビュー時にDM（またはチャンネル）で通知します</p>
+              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>コメント・詳細欄で @メンションされたときのみ通知します</p>
             </div>
             <Toggle checked={enabled} onChange={() => setEnabled(v => !v)} />
           </div>
