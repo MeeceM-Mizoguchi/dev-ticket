@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Search, X, Hash, Layers, FolderKanban, Users } from "lucide-react";
+import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
+import { htmlToText } from "@/app/lib/helpers";
 
 interface TicketResult {
   type: "ticket";
@@ -38,12 +39,38 @@ interface MemberResult {
   email: string;
   role: string;
 }
-type SearchResult = TicketResult | SprintResult | ProjectResult | MemberResult;
+interface CommentResult {
+  type: "comment";
+  id: string;
+  content: string;
+  ticketId: string;
+  ticketWbs: string;
+  ticketTitle: string;
+  sprintId: string;
+  projectId: string;
+  projectName: string;
+  sprintName: string;
+}
+interface DescriptionResult {
+  type: "description";
+  id: string;
+  title: string;
+  wbs: string;
+  status: string;
+  sprintId: string;
+  sprintName: string;
+  projectId: string;
+  projectName: string;
+  snippet: string;
+}
+type SearchResult = TicketResult | SprintResult | ProjectResult | MemberResult | CommentResult | DescriptionResult;
 interface SearchResults {
   tickets: TicketResult[];
   sprints: SprintResult[];
   projects: ProjectResult[];
   members: MemberResult[];
+  comments: CommentResult[];
+  descriptions: DescriptionResult[];
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -95,10 +122,10 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
     .slice(0, 5)
     .map(m => ({ type: "member", id: m.id, name: m.name, email: m.email, role: m.role }));
 
-  return { tickets, sprints, projects, members };
+  return { tickets, sprints, projects, members, comments: [], descriptions: [] };
 }
 
-const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [] };
+const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [], comments: [], descriptions: [] };
 
 export function GlobalSearch() {
   const { userName, userRole } = useAuth();
@@ -112,7 +139,7 @@ export function GlobalSearch() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAdmin = userRole === "admin" || userRole === "project-manager";
 
-  const hasResults = results.tickets.length + results.sprints.length + results.projects.length + results.members.length > 0;
+  const hasResults = results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length > 0;
 
   const doSearch = useCallback(async (q: string) => {
     if (q.length < 2) {
@@ -157,24 +184,55 @@ export function GlobalSearch() {
         .slice(0, 5)
         .map(s => ({ type: "sprint", ...s }));
 
-      // Parallel: search tickets by title + search members
-      const [ticketResp, memberResp] = await Promise.all([
+      // Parallel: search tickets(title/wbs/description) + members + raw comments
+      const [ticketResp, memberResp, rawCommentResp] = await Promise.all([
         sprintIds.length > 0
-          ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id").ilike("title", `%${q}%`).in("sprint_id", sprintIds).limit(5)
-          : Promise.resolve({ data: [] as { id: string; title: string; wbs: string; status: string; sprint_id: string }[] }),
+          ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id, description").or(`title.ilike.%${q}%,wbs.ilike.%${q}%,description.ilike.%${q}%`).in("sprint_id", sprintIds).limit(10)
+          : Promise.resolve({ data: [] }),
         supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(5),
+        sprintIds.length > 0
+          ? supabase!.from("ticket_comments").select("id, content, ticket_id").eq("comment_type", "comment").ilike("content", `%${q}%`).limit(20)
+          : Promise.resolve({ data: [] }),
       ]);
 
+      // Split ticket results: title/WBS match → TicketResult, description-only match → DescriptionResult
+      const ticketResults: TicketResult[] = [];
+      const descriptionResults: DescriptionResult[] = [];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ticketResults: TicketResult[] = (ticketResp.data ?? []).map((t: any) => {
+      for (const t of (ticketResp.data ?? []) as any[]) {
         const sprint = sprintMap.get(t.sprint_id);
-        return { type: "ticket", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "" };
-      });
+        const titleOrWbs = t.title.toLowerCase().includes(ql) || (t.wbs ?? "").toLowerCase().includes(ql);
+        if (titleOrWbs && ticketResults.length < 5) {
+          ticketResults.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "" });
+        } else if (!titleOrWbs && descriptionResults.length < 5) {
+          const snippet = htmlToText(t.description ?? "").slice(0, 70);
+          descriptionResults.push({ type: "description", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "", snippet });
+        }
+      }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const memberResults: MemberResult[] = (memberResp.data ?? []).map((m: any) => ({ type: "member", id: m.id, name: m.name, email: m.email, role: m.role }));
 
-      setResults({ tickets: ticketResults, sprints: sprintResults, projects: projectResults, members: memberResults });
+      // Comments: resolve ticket info via a second query (no FK join needed)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawComments = (rawCommentResp.data ?? []) as any[];
+      const commentTicketIds = [...new Set(rawComments.map(c => c.ticket_id).filter(Boolean))];
+      let commentResults: CommentResult[] = [];
+      if (commentTicketIds.length > 0) {
+        const { data: ctData } = await supabase!.from("sprint_tickets").select("id, wbs, title, sprint_id").in("id", commentTicketIds).in("sprint_id", sprintIds);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ctMap = new Map<string, any>((ctData ?? []).map((t: any) => [t.id, t]));
+        commentResults = rawComments
+          .filter(c => ctMap.has(c.ticket_id))
+          .slice(0, 5)
+          .map(c => {
+            const ticket = ctMap.get(c.ticket_id);
+            const sprint = sprintMap.get(ticket.sprint_id);
+            return { type: "comment" as const, id: c.id, content: c.content, ticketId: c.ticket_id, ticketWbs: ticket.wbs ?? "", ticketTitle: ticket.title ?? "", sprintId: ticket.sprint_id, projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "", sprintName: sprint?.name ?? "" };
+          });
+      }
+
+      setResults({ tickets: ticketResults, sprints: sprintResults, projects: projectResults, members: memberResults, comments: commentResults, descriptions: descriptionResults });
     } catch {
       setResults(EMPTY);
     } finally {
@@ -208,7 +266,13 @@ export function GlobalSearch() {
     setQuery("");
     switch (result.type) {
       case "ticket":
-        navigate(`/${result.projectId}/sprint/${result.sprintId}/${result.wbs}`);
+        navigate(`/${result.projectId}/${result.wbs}`);
+        break;
+      case "description":
+        navigate(`/${result.projectId}/${result.wbs}?anchor=description`);
+        break;
+      case "comment":
+        navigate(`/${result.projectId}/${result.ticketWbs}?anchor=comment:${result.id}`);
         break;
       case "sprint":
         navigate(`/${result.projectId}/sprint/${result.id}`);
@@ -217,7 +281,7 @@ export function GlobalSearch() {
         navigate(`/${result.id}`);
         break;
       case "member":
-        navigate("/members");
+        navigate("/members", { state: { highlightMemberId: result.id } });
         break;
     }
   };
@@ -305,13 +369,54 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {results.descriptions.length > 0 && (
+                <div>
+                  <CategoryHeader
+                    icon={<AlignLeft style={{ width: 10, height: 10, color: "#6366F1" }} />}
+                    label="詳細記載"
+                    color="#6366F1"
+                    showBorder={results.tickets.length > 0}
+                  />
+                  {results.descriptions.map(d => (
+                    <ResultRow key={d.id} onClick={() => handleSelect(d)} hoverColor="#EEF2FF">
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{d.wbs}</span>
+                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.title}</span>
+                        <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{STATUS_LABELS[d.status] ?? d.status}</span>
+                      </div>
+                      <div style={{ marginLeft: 42, fontSize: 11, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.snippet}</div>
+                    </ResultRow>
+                  ))}
+                </div>
+              )}
+
+              {results.comments.length > 0 && (
+                <div>
+                  <CategoryHeader
+                    icon={<MessageSquare style={{ width: 10, height: 10, color: "#0891B2" }} />}
+                    label="コメント"
+                    color="#0891B2"
+                    showBorder={results.tickets.length + results.descriptions.length > 0}
+                  />
+                  {results.comments.map(c => (
+                    <ResultRow key={c.id} onClick={() => handleSelect(c)} hoverColor="#ECFEFF">
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{c.ticketWbs}</span>
+                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{htmlToText(c.content).slice(0, 60) || c.ticketTitle}</span>
+                      </div>
+                      <div style={{ marginLeft: 42, fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{c.ticketTitle} · {c.projectName} / {c.sprintName}</div>
+                    </ResultRow>
+                  ))}
+                </div>
+              )}
+
               {results.sprints.length > 0 && (
                 <div>
                   <CategoryHeader
                     icon={<Layers style={{ width: 10, height: 10, color: "#7C3AED" }} />}
                     label="スプリント"
                     color="#7C3AED"
-                    showBorder={results.tickets.length > 0}
+                    showBorder={results.tickets.length + results.descriptions.length + results.comments.length > 0}
                   />
                   {results.sprints.map(s => (
                     <ResultRow key={s.id} onClick={() => handleSelect(s)} hoverColor="#F5F3FF">
@@ -331,7 +436,7 @@ export function GlobalSearch() {
                     icon={<FolderKanban style={{ width: 10, height: 10, color: "#D97706" }} />}
                     label="プロジェクト"
                     color="#D97706"
-                    showBorder={results.tickets.length + results.sprints.length > 0}
+                    showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length > 0}
                   />
                   {results.projects.map(p => (
                     <ResultRow key={p.id} onClick={() => handleSelect(p)} hoverColor="#FFFBEB">
@@ -351,7 +456,7 @@ export function GlobalSearch() {
                     icon={<Users style={{ width: 10, height: 10, color: "#0891B2" }} />}
                     label="メンバー"
                     color="#0891B2"
-                    showBorder={results.tickets.length + results.sprints.length + results.projects.length > 0}
+                    showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length > 0}
                   />
                   {results.members.map(m => (
                     <ResultRow key={m.id} onClick={() => handleSelect(m)} hoverColor="#ECFEFF">

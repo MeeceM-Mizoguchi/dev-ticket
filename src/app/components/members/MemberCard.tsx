@@ -1,3 +1,4 @@
+import type React from "react";
 import { Eye, Edit2, Mail, Trash2, Layers } from "lucide-react";
 import type { Member } from "@/app/types";
 import { getRoleMeta } from "@/app/lib/helpers";
@@ -12,17 +13,19 @@ const ROLE_COLORS: Record<string, { grad: string; badge: string; text: string }>
 const DEFAULT_ROLE_COLOR = { grad: "linear-gradient(135deg,#9CA3AF,#6B7280)", badge: "#F3F4F6", text: "#6B7280" };
 function getRoleColor(role: string) { return ROLE_COLORS[role] ?? DEFAULT_ROLE_COLOR; }
 
-export function MemberCard({ member, canEdit, canDelete, onEdit, onDetail, onDelete }: {
+export function MemberCard({ member, canEdit, canDelete, highlighted, cardRef, onEdit, onDetail, onDelete }: {
   member: Member; canEdit: boolean; canDelete: boolean;
+  highlighted?: boolean; cardRef?: React.RefObject<HTMLDivElement | null>;
   onEdit?: () => void; onDetail?: () => void; onDelete?: () => void;
 }) {
   const rc = getRoleColor(member.role);
   const roleMeta = getRoleMeta(member.role);
 
   return (
-    <div style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", transition: "all 0.2s", cursor: "pointer" }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
+    <div ref={cardRef}
+      style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", boxShadow: highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.20)" : "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", transition: "all 0.2s", cursor: "pointer" }}
+      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.25)" : "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)"; }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.20)" : "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
       <div style={{ height: 60, background: rc.grad, position: "relative", borderRadius: "16px 16px 0 0", overflow: "hidden" }}>
         <div style={{ position: "absolute", inset: 0, backgroundImage: "radial-gradient(circle at 80% 50%, rgba(255,255,255,0.12) 0%, transparent 60%)" }} />
         <div style={{ position: "absolute", top: 12, right: 14 }}>

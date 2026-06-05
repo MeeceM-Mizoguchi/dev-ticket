@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Search, UserPlus } from "lucide-react";
+import { useLocation } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -16,8 +17,11 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 export function MembersPage() {
   const { userRole, userId } = useAuth();
   const { toast } = useToast();
+  const location = useLocation();
+  const highlightMemberId: string | undefined = (location.state as { highlightMemberId?: string } | null)?.highlightMemberId;
+  const [highlightId, setHighlightId] = useState<string | undefined>(highlightMemberId);
+  const highlightCardRef = useRef<HTMLDivElement | null>(null);
   const [search, setSearch] = useState("");
-  const [group, setGroup] = useState("すべて");
   const [showInvite, setShowInvite] = useState(false);
   const [members, setMembers] = useState<Member[]>(isSupabaseEnabled ? [] : MEMBERS);
   const [deleteTarget, setDeleteTarget] = useState<Member | null>(null);
@@ -46,6 +50,15 @@ export function MembersPage() {
     const id = setInterval(refreshMembers, 10000);
     return () => clearInterval(id);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!highlightId) return;
+    const timer = setTimeout(() => {
+      highlightCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 200);
+    const clear = setTimeout(() => setHighlightId(undefined), 3000);
+    return () => { clearTimeout(timer); clearTimeout(clear); };
+  }, [highlightId]);
 
   const handleDeleteMember = async (member: Member) => {
     if (isSupabaseEnabled) {
@@ -109,6 +122,8 @@ export function MembersPage() {
               <MemberCard key={m.id} member={m}
                 canEdit={canEdit}
                 canDelete={m.id !== userId && (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager"))}
+                highlighted={m.id === highlightId}
+                cardRef={m.id === highlightId ? highlightCardRef : undefined}
                 onDetail={() => setDetailTarget(m)}
                 onEdit={() => setEditTarget(m)}
                 onDelete={() => setDeleteTarget(m)} />
