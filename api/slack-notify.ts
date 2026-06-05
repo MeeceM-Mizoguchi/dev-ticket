@@ -3,9 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * POST /api/slack-notify
  *
- * プロジェクトに紐づくSlackワークスペーストークンを使って
- * 指定チャンネルに通知を送信する。
- * メインの処理をブロックしないよう、フロントエンドからはfire-and-forgetで呼び出す。
+ * 受信者のSlack DMに直接通知を送信する。
+ * チャンネル投稿ではなくDMを使うことで、指定ユーザーのみに通知が届く。
+ * 受信者がslack_member_idを未連携の場合はスキップする。
  */
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -23,29 +23,45 @@ export default async function handler(req: any, res: any) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // プロジェクトごとのSlack設定（ワークスペーストークン・チャンネル・ON/OFF）を取得
+  // プロジェクトのSlack設定を取得（チャンネルは不要になったため除外）
   const { data: project } = await sb
     .from("projects")
-    .select("slack_access_token, slack_channel, slack_notifications_enabled")
+    .select("slack_access_token, slack_notifications_enabled")
     .eq("slug", projectSlug)
     .maybeSingle();
 
-  if (!project?.slack_notifications_enabled || !project?.slack_channel || !project?.slack_access_token) {
+  if (!project?.slack_notifications_enabled || !project?.slack_access_token) {
     return res.json({ skipped: true, reason: "Slack notifications not configured for this project" });
   }
 
-  // 受信者のSlackメンバーIDを取得し、存在すればメンション形式に変換
+  // 受信者のSlackメンバーIDを取得（未連携はスキップ）
   const { data: profile } = await sb
     .from("profiles")
     .select("slack_member_id")
     .eq("name", recipientUserName)
     .maybeSingle();
 
-  const mention = profile?.slack_member_id
-    ? `<@${profile.slack_member_id}>`
-    : recipientUserName;
+  if (!profile?.slack_member_id) {
+    return res.json({ skipped: true, reason: "Recipient has no Slack member ID linked" });
+  }
 
-  const text = `*${title}*\n${mention} ${body}`;
+  // 受信者とのDMチャンネルを開く（im:write スコープが必要）
+  const openRes = await fetch("https://slack.com/api/conversations.open", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${project.slack_access_token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ users: profile.slack_member_id }),
+  });
+
+  const openData = await openRes.json() as { ok: boolean; channel?: { id: string }; error?: string };
+  if (!openData.ok || !openData.channel?.id) {
+    console.error("[slack-notify] conversations.open error:", openData.error);
+    return res.status(500).json({ error: openData.error ?? "Failed to open DM channel" });
+  }
+
+  const text = `*${title}*\n${body}`;
 
   const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
@@ -53,7 +69,7 @@ export default async function handler(req: any, res: any) {
       Authorization: `Bearer ${project.slack_access_token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ channel: project.slack_channel, text }),
+    body: JSON.stringify({ channel: openData.channel.id, text }),
   });
 
   const slackData = await slackRes.json() as { ok: boolean; error?: string };
