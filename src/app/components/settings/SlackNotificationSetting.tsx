@@ -3,6 +3,19 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { Toggle } from "@/app/components/shared/Toggle";
 import { labelCls, inputCls } from "@/app/lib/helpers";
 
+const SLACK_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="currentColor" opacity=".9"/>
+    <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="currentColor" opacity=".9"/>
+    <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="currentColor" opacity=".65"/>
+    <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="currentColor" opacity=".65"/>
+    <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="currentColor" opacity=".9"/>
+    <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="currentColor" opacity=".9"/>
+    <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="currentColor" opacity=".65"/>
+    <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="currentColor" opacity=".65"/>
+  </svg>
+);
+
 interface ProjectSlackConfig {
   id: string;
   name: string;
@@ -25,9 +38,13 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [botUsername, setBotUsername] = useState<string | null>(null);
+  const [inviteName, setInviteName] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const selected = projects.find(p => p.id === selectedId) ?? null;
   const isConnected = !!selected?.slackTeamName;
+  const inviteCommand = `/invite @${inviteName}`;
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -51,6 +68,18 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
         if (initial) { setChannel(initial.slackChannel); setEnabled(initial.slackEnabled); }
       });
   }, [connectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedId || !isConnected) { setBotUsername(null); setInviteName(""); return; }
+    setBotUsername(null);
+    setInviteName("");
+    const controller = new AbortController();
+    fetch(`/api/slack-bot-info?projectId=${encodeURIComponent(selectedId)}`, { signal: controller.signal })
+      .then(r => r.json())
+      .then(d => { if (d.botUsername) { setBotUsername(d.botUsername); setInviteName(d.botUsername); } })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [selectedId, isConnected]);
 
   const handleProjectChange = (id: string) => {
     setSelectedId(id);
@@ -91,11 +120,18 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
     setTimeout(() => setSaved(false), 2200);
   };
 
-  if (!isAdminOrPM) return <p style={{ fontSize: 12, color: "#9CA3AF" }}>管理者またはプロジェクトマネージャーのみ変更できます。</p>;
-  if (!isSupabaseEnabled) return <p style={{ fontSize: 12, color: "#9CA3AF" }}>Supabase未接続のため利用できません。</p>;
+  const handleCopyInvite = () => {
+    navigator.clipboard.writeText(inviteCommand).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  if (!isAdminOrPM) return <p style={{ fontSize: 12, color: "#A09790" }}>管理者またはプロジェクトマネージャーのみ変更できます。</p>;
+  if (!isSupabaseEnabled) return <p style={{ fontSize: 12, color: "#A09790" }}>Supabase未接続のため利用できません。</p>;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 
       {/* プロジェクト選択 */}
       <div>
@@ -107,96 +143,173 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
 
       {selected && (isConnected ? (
         /* ── 接続済み ── */
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 
           {/* 接続済みバッジ */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 14px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 1px 4px rgba(5,150,105,0.3)" }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
               <div>
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#15803D" }}>接続済み</span>
                 <span style={{ fontSize: 12, color: "#166534", marginLeft: 8 }}>{selected.slackTeamName}</span>
               </div>
             </div>
-            <button onClick={handleDisconnect} disabled={disconnecting}
-              style={{ padding: "5px 12px", fontSize: 12, fontWeight: 500, borderRadius: 6, border: "1px solid #FECACA", background: "#FEF2F2", color: "#DC2626", cursor: "pointer" }}>
+            <button
+              onClick={handleDisconnect}
+              disabled={disconnecting}
+              style={{ padding: "5px 12px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: disconnecting ? "default" : "pointer", opacity: disconnecting ? 0.6 : 1, transition: "all 0.15s" }}
+            >
               {disconnecting ? "切断中..." : "切断する"}
             </button>
           </div>
 
-          {/* チャンネル */}
-          <div>
+          {/* 通知先チャンネル */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <label className={labelCls}>通知先チャンネル</label>
-            <input className={inputCls} placeholder="#dev-notifications または C1234ABCD"
-              value={channel} onChange={e => setChannel(e.target.value)} />
-            <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 5 }}>
+            <input
+              className={inputCls}
+              placeholder="#dev-notifications または C1234ABCD"
+              value={channel}
+              onChange={e => setChannel(e.target.value)}
+            />
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
               チャンネル名（例: #dev-notifications）またはチャンネルID（例: C1234ABCD）を入力してください
             </p>
+
+            {/* プライベートチャンネル案内 */}
+            <div style={{ marginTop: 4, background: "#FAFAF8", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden" }}>
+              {/* ヘッダー */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                <div style={{ width: 18, height: 18, borderRadius: 5, background: "#F59E0B", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </div>
+                <p style={{ fontSize: 12, fontWeight: 600, color: "#1A1714" }}>プライベートチャンネルに通知する場合</p>
+              </div>
+
+              {/* 本文 */}
+              <div style={{ padding: "14px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                <p style={{ fontSize: 12, color: "#6B6458", lineHeight: 1.6 }}>
+                  プライベートチャンネルへ通知するには、そのチャンネルにボットを招待する必要があります。<br />
+                  Slackの該当チャンネルを開き、以下のコマンドを実行してください。
+                </p>
+
+                {/* ボット名入力 */}
+                <div>
+                  <label className={labelCls}>Slackアプリ名</label>
+                  <input
+                    className={inputCls}
+                    value={inviteName}
+                    onChange={e => setInviteName(e.target.value)}
+                    placeholder={botUsername === null ? "読み込み中..." : "例: Dev Ticket"}
+                  />
+                </div>
+
+                {/* コマンドプレビュー＋コピー */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, padding: "9px 12px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8 }}>
+                    <code style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: "#1A1714", letterSpacing: "-0.01em" }}>
+                      {inviteCommand}
+                    </code>
+                  </div>
+                  <button
+                    onClick={handleCopyInvite}
+                    disabled={!inviteName}
+                    style={{
+                      padding: "9px 16px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      borderRadius: 8,
+                      border: "none",
+                      cursor: inviteName ? "pointer" : "not-allowed",
+                      background: copied
+                        ? "linear-gradient(135deg,#059669,#047857)"
+                        : inviteName ? "linear-gradient(135deg,#059669,#047857)" : "#E5E7EB",
+                      color: inviteName ? "#fff" : "#9CA3AF",
+                      whiteSpace: "nowrap" as const,
+                      boxShadow: inviteName ? "0 2px 8px rgba(5,150,105,0.25)" : "none",
+                      transition: "all 0.15s",
+                      letterSpacing: "-0.01em",
+                    }}
+                  >
+                    {copied ? "✓ コピー済み" : "コピー"}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* ON/OFF */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid #F3F4F6" }}>
+          {/* 通知 ON/OFF */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
             <div>
-              <p style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>Slack通知を有効にする</p>
-              <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>チケット操作のたびに通知を送信します</p>
+              <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>Slack通知を有効にする</p>
+              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>チケット操作のたびに通知を送信します</p>
             </div>
             <Toggle checked={enabled} onChange={() => setEnabled(v => !v)} />
           </div>
 
-          {/* 保存 */}
-          <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4 }}>
-            <button onClick={handleSave} disabled={saving}
-              style={{ padding: "9px 22px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: saving ? "default" : "pointer", background: "#059669", color: "#fff", opacity: saving ? 0.7 : 1 }}>
+          {/* 保存ボタン */}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{
+                padding: "9px 22px",
+                fontSize: 13,
+                fontWeight: 700,
+                borderRadius: 10,
+                border: "none",
+                cursor: saving ? "default" : "pointer",
+                background: saving ? "#E5E7EB" : "linear-gradient(135deg,#059669,#047857)",
+                color: saving ? "#9CA3AF" : "#fff",
+                boxShadow: saving ? "none" : "0 2px 10px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.12)",
+                letterSpacing: "-0.01em",
+                transition: "all 0.15s",
+              }}
+            >
               {saved ? "✓ 保存しました" : saving ? "保存中..." : "設定を保存"}
             </button>
           </div>
         </div>
+
       ) : (
         /* ── 未接続 ── */
-        <div style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 10, padding: "28px 24px", textAlign: "center" as const }}>
-          <div style={{ width: 52, height: 52, borderRadius: 14, background: "#4A154B", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", boxShadow: "0 4px 14px rgba(74,21,75,0.25)" }}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="rgba(255,255,255,0.9)"/>
-              <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="rgba(255,255,255,0.9)"/>
-              <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="rgba(255,255,255,0.65)"/>
-              <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="rgba(255,255,255,0.65)"/>
-              <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="rgba(255,255,255,0.9)"/>
-              <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="rgba(255,255,255,0.9)"/>
-              <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="rgba(255,255,255,0.65)"/>
-              <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="rgba(255,255,255,0.65)"/>
-            </svg>
+        <div style={{ background: "#FAFAF8", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, padding: "32px 24px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+
+          {/* アイコン */}
+          <div style={{ width: 52, height: 52, borderRadius: 14, background: "#4A154B", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14, color: "#fff", boxShadow: "0 4px 16px rgba(74,21,75,0.22)" }}>
+            {SLACK_ICON}
           </div>
-          <p style={{ fontSize: 14, fontWeight: 600, color: "#111827", marginBottom: 6 }}>Slackに接続する</p>
-          <p style={{ fontSize: 12, color: "#6B7280", marginBottom: 20, lineHeight: 1.6 }}>
+
+          <p style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", marginBottom: 5, fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>
+            Slackに接続する
+          </p>
+          <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 24, lineHeight: 1.7, textAlign: "center" as const }}>
             このプロジェクトのチケット操作をSlackに通知します
           </p>
 
-          <div style={{ background: "#FFF", border: "1px solid #E5E7EB", borderRadius: 8, padding: "14px 16px", marginBottom: 20, textAlign: "left" as const }}>
-            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 10 }}>接続の流れ</p>
+          {/* 接続の流れ */}
+          <div style={{ width: "100%", background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "14px 16px", marginBottom: 24 }}>
+            <p style={{ fontSize: 10, fontWeight: 700, color: "#A09790", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 12 }}>接続の流れ</p>
             {["「Slackに接続する」をクリック", "Slackの認証画面でワークスペースを選択・許可", "このページに戻ったら通知先チャンネルを入力して保存"].map((text, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
-                <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", flexShrink: 0 }}>{i + 1}</div>
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 0", borderBottom: i < 2 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "linear-gradient(135deg,#059669,#047857)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", flexShrink: 0, boxShadow: "0 1px 4px rgba(5,150,105,0.3)" }}>
+                  {i + 1}
+                </div>
                 <p style={{ fontSize: 12, color: "#374151" }}>{text}</p>
               </div>
             ))}
           </div>
 
-          <button onClick={handleOAuthStart}
-            style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 24px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer", background: "#4A154B", color: "#fff", boxShadow: "0 2px 8px rgba(74,21,75,0.25)" }}
+          {/* 接続ボタン */}
+          <button
+            onClick={handleOAuthStart}
+            style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "11px 26px", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", background: "#4A154B", color: "#fff", boxShadow: "0 2px 10px rgba(74,21,75,0.28), inset 0 1px 0 rgba(255,255,255,0.08)", letterSpacing: "-0.01em", transition: "background 0.15s" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#611f69"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#4A154B"; }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="white"/>
-              <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="white"/>
-              <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="rgba(255,255,255,0.7)"/>
-              <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="rgba(255,255,255,0.7)"/>
-              <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="white"/>
-              <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="white"/>
-              <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="rgba(255,255,255,0.7)"/>
-              <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="rgba(255,255,255,0.7)"/>
-            </svg>
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#4A154B"; }}
+          >
+            <span style={{ color: "#fff" }}>{SLACK_ICON}</span>
             Slackに接続する
           </button>
         </div>
