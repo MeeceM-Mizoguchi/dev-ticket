@@ -39,12 +39,11 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
   const [saved, setSaved] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [botUsername, setBotUsername] = useState<string | null>(null);
-  const [inviteName, setInviteName] = useState("");
   const [copied, setCopied] = useState(false);
 
   const selected = projects.find(p => p.id === selectedId) ?? null;
   const isConnected = !!selected?.slackTeamName;
-  const inviteCommand = `/invite @${inviteName}`;
+  const inviteCommand = `/invite @${botUsername ?? ""}`;
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -70,13 +69,12 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
   }, [connectedProjectId]);
 
   useEffect(() => {
-    if (!selectedId || !isConnected) { setBotUsername(null); setInviteName(""); return; }
+    if (!selectedId || !isConnected) { setBotUsername(null); return; }
     setBotUsername(null);
-    setInviteName("");
     const controller = new AbortController();
     fetch(`/api/slack-bot-info?projectId=${encodeURIComponent(selectedId)}`, { signal: controller.signal })
       .then(r => r.json())
-      .then(d => { if (d.botUsername) { setBotUsername(d.botUsername); setInviteName(d.botUsername); } })
+      .then(d => { if (d.botUsername) setBotUsername(d.botUsername); })
       .catch(() => {});
     return () => controller.abort();
   }, [selectedId, isConnected]);
@@ -195,40 +193,27 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
                   Slackの該当チャンネルを開き、以下のコマンドを実行してください。
                 </p>
 
-                {/* ボット名入力 */}
-                <div>
-                  <label className={labelCls}>Slackアプリ名</label>
-                  <input
-                    className={inputCls}
-                    value={inviteName}
-                    onChange={e => setInviteName(e.target.value)}
-                    placeholder={botUsername === null ? "読み込み中..." : "例: Dev Ticket"}
-                  />
-                </div>
-
-                {/* コマンドプレビュー＋コピー */}
+                {/* コマンド＋コピー */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ flex: 1, padding: "9px 12px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8 }}>
-                    <code style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: "#1A1714", letterSpacing: "-0.01em" }}>
-                      {inviteCommand}
+                    <code style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: botUsername ? "#1A1714" : "#A09790", letterSpacing: "-0.01em" }}>
+                      {botUsername ? inviteCommand : "読み込み中..."}
                     </code>
                   </div>
                   <button
                     onClick={handleCopyInvite}
-                    disabled={!inviteName}
+                    disabled={!botUsername}
                     style={{
                       padding: "9px 16px",
                       fontSize: 12,
                       fontWeight: 600,
                       borderRadius: 8,
                       border: "none",
-                      cursor: inviteName ? "pointer" : "not-allowed",
-                      background: copied
-                        ? "linear-gradient(135deg,#059669,#047857)"
-                        : inviteName ? "linear-gradient(135deg,#059669,#047857)" : "#E5E7EB",
-                      color: inviteName ? "#fff" : "#9CA3AF",
+                      cursor: botUsername ? "pointer" : "not-allowed",
+                      background: botUsername ? "linear-gradient(135deg,#059669,#047857)" : "#E5E7EB",
+                      color: botUsername ? "#fff" : "#9CA3AF",
                       whiteSpace: "nowrap" as const,
-                      boxShadow: inviteName ? "0 2px 8px rgba(5,150,105,0.25)" : "none",
+                      boxShadow: botUsername ? "0 2px 8px rgba(5,150,105,0.25)" : "none",
                       transition: "all 0.15s",
                       letterSpacing: "-0.01em",
                     }}
