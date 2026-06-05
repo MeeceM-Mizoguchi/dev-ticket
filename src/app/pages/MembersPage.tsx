@@ -28,6 +28,7 @@ export function MembersPage() {
   const [detailTarget, setDetailTarget] = useState<Member | null>(null);
   const [editTarget, setEditTarget] = useState<Member | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
+  const [group, setGroup] = useState("すべて");
   const canAdd = userRole === "admin" || userRole === "project-manager";
   const canEdit = userRole === "admin" || userRole === "project-manager";
 
