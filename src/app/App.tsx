@@ -27,7 +27,6 @@ export default function App() {
             <Route path="/projects" element={<ProjectsPage />} />
             {/* Sprint detail (individual sprint view) */}
             <Route path="/:projectSlug/sprint/:sprintId" element={<SprintDetailPage />} />
-            <Route path="/:projectSlug/sprint/:sprintId/:ticketWbs" element={<SprintDetailPage />} />
             <Route path="/clients" element={<ClientsPage />} />
             <Route path="/members" element={<MembersPage />} />
             <Route path="/permissions" element={<PermissionsPage />} />

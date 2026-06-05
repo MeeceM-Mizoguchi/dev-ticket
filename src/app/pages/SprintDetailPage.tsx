@@ -208,7 +208,7 @@ export function SprintDetailPage() {
 
   const selectTicket = (wbs: string | null) => {
     if (wbs) {
-      navigate(`/${projectSlug}/sprint/${sprintId}/${wbs}`);
+      navigate(`/${projectSlug}/${wbs}`);
     } else {
       navigate(`/${projectSlug}/sprint/${sprintId}`);
     }
