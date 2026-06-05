@@ -3,9 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * POST /api/slack-notify
  *
- * 受信者のSlack DMに直接通知を送信する。
- * チャンネル投稿ではなくDMを使うことで、指定ユーザーのみに通知が届く。
- * 受信者がslack_member_idを未連携の場合はスキップする。
+ * 受信者への通知をDM優先で送信する。
+ * - slack_member_id が連携済み かつ im:write スコープあり → DM送信（本人のみ受信）
+ * - DM失敗（スコープ未付与など）→ チャンネルへフォールバック（@メンション付き）
+ * - チャンネルも未設定 → スキップ
  */
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -23,10 +24,9 @@ export default async function handler(req: any, res: any) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // プロジェクトのSlack設定を取得（チャンネルは不要になったため除外）
   const { data: project } = await sb
     .from("projects")
-    .select("slack_access_token, slack_notifications_enabled")
+    .select("slack_access_token, slack_channel, slack_notifications_enabled")
     .eq("slug", projectSlug)
     .maybeSingle();
 
@@ -34,49 +34,59 @@ export default async function handler(req: any, res: any) {
     return res.json({ skipped: true, reason: "Slack notifications not configured for this project" });
   }
 
-  // 受信者のSlackメンバーIDを取得（未連携はスキップ）
   const { data: profile } = await sb
     .from("profiles")
     .select("slack_member_id")
     .eq("name", recipientUserName)
     .maybeSingle();
 
-  if (!profile?.slack_member_id) {
-    return res.json({ skipped: true, reason: "Recipient has no Slack member ID linked" });
-  }
-
-  // 受信者とのDMチャンネルを開く（im:write スコープが必要）
-  const openRes = await fetch("https://slack.com/api/conversations.open", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${project.slack_access_token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ users: profile.slack_member_id }),
-  });
-
-  const openData = await openRes.json() as { ok: boolean; channel?: { id: string }; error?: string };
-  if (!openData.ok || !openData.channel?.id) {
-    console.error("[slack-notify] conversations.open error:", openData.error);
-    return res.status(500).json({ error: openData.error ?? "Failed to open DM channel" });
-  }
-
+  const token = project.slack_access_token;
   const text = `*${title}*\n${body}`;
 
-  const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${project.slack_access_token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ channel: openData.channel.id, text }),
-  });
+  // DM優先: slack_member_id が連携済みの場合に試みる
+  if (profile?.slack_member_id) {
+    const openRes = await fetch("https://slack.com/api/conversations.open", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ users: profile.slack_member_id }),
+    });
+    const openData = await openRes.json() as { ok: boolean; channel?: { id: string }; error?: string };
 
-  const slackData = await slackRes.json() as { ok: boolean; error?: string };
-  if (!slackData.ok) {
-    console.error("[slack-notify] Slack API error:", slackData.error);
-    return res.status(500).json({ error: slackData.error });
+    if (openData.ok && openData.channel?.id) {
+      const dmRes = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: openData.channel.id, text }),
+      });
+      const dmData = await dmRes.json() as { ok: boolean; error?: string };
+      if (dmData.ok) return res.json({ success: true, method: "dm" });
+      console.warn("[slack-notify] DM post failed, falling back to channel:", dmData.error);
+    } else {
+      // im:write 未付与の場合など: チャンネルにフォールバック
+      console.warn("[slack-notify] conversations.open failed (im:write scope may be needed), falling back to channel:", openData.error);
+    }
   }
 
-  return res.json({ success: true });
+  // フォールバック: チャンネルへ @メンション付きで送信
+  if (!project.slack_channel) {
+    return res.json({ skipped: true, reason: "No channel configured for fallback notification" });
+  }
+
+  const mention = profile?.slack_member_id
+    ? `<@${profile.slack_member_id}>`
+    : recipientUserName;
+  const channelText = `*${title}*\n${mention} ${body}`;
+
+  const chRes = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ channel: project.slack_channel, text: channelText }),
+  });
+  const chData = await chRes.json() as { ok: boolean; error?: string };
+  if (!chData.ok) {
+    console.error("[slack-notify] channel fallback error:", chData.error);
+    return res.status(500).json({ error: chData.error });
+  }
+
+  return res.json({ success: true, method: "channel_fallback" });
 }

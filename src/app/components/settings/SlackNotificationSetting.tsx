@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { Toggle } from "@/app/components/shared/Toggle";
-import { labelCls } from "@/app/lib/helpers";
+import { labelCls, inputCls } from "@/app/lib/helpers";
 
 const SLACK_ICON = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -21,6 +21,7 @@ interface ProjectSlackConfig {
   name: string;
   slug: string;
   slackTeamName: string | null;
+  slackChannel: string;
   slackEnabled: boolean;
 }
 
@@ -32,6 +33,7 @@ interface Props {
 export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Props) {
   const [projects, setProjects] = useState<ProjectSlackConfig[]>([]);
   const [selectedId, setSelectedId] = useState("");
+  const [channel, setChannel] = useState("");
   const [enabled, setEnabled] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -44,13 +46,14 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
     if (!isSupabaseEnabled) return;
     supabase!
       .from("projects")
-      .select("id, name, slug, slack_team_name, slack_notifications_enabled")
+      .select("id, name, slug, slack_team_name, slack_channel, slack_notifications_enabled")
       .order("name")
       .then(({ data }) => {
         if (!data) return;
         const mapped: ProjectSlackConfig[] = (data as any[]).map(p => ({
           id: p.id, name: p.name, slug: p.slug,
           slackTeamName: p.slack_team_name ?? null,
+          slackChannel: p.slack_channel ?? "",
           slackEnabled: p.slack_notifications_enabled ?? false,
         }));
         setProjects(mapped);
@@ -58,14 +61,14 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
           ? connectedProjectId : mapped[0]?.id ?? "";
         setSelectedId(initialId);
         const initial = mapped.find(p => p.id === initialId);
-        if (initial) { setEnabled(initial.slackEnabled); }
+        if (initial) { setChannel(initial.slackChannel); setEnabled(initial.slackEnabled); }
       });
   }, [connectedProjectId]);
 
   const handleProjectChange = (id: string) => {
     setSelectedId(id);
     const p = projects.find(pr => pr.id === id);
-    if (p) { setEnabled(p.slackEnabled); }
+    if (p) { setChannel(p.slackChannel); setEnabled(p.slackEnabled); }
   };
 
   const handleOAuthStart = () => {
@@ -81,9 +84,9 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
       slack_channel: null, slack_notifications_enabled: false,
     }).eq("id", selectedId);
     setProjects(prev => prev.map(p =>
-      p.id === selectedId ? { ...p, slackTeamName: null, slackEnabled: false } : p
+      p.id === selectedId ? { ...p, slackTeamName: null, slackChannel: "", slackEnabled: false } : p
     ));
-    setEnabled(false);
+    setChannel(""); setEnabled(false);
     setDisconnecting(false);
   };
 
@@ -91,10 +94,11 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
     if (!selectedId || !isSupabaseEnabled) return;
     setSaving(true);
     await supabase!.from("projects").update({
+      slack_channel: channel.trim() || null,
       slack_notifications_enabled: enabled,
     }).eq("id", selectedId);
     setProjects(prev => prev.map(p =>
-      p.id === selectedId ? { ...p, slackEnabled: enabled } : p
+      p.id === selectedId ? { ...p, slackChannel: channel.trim(), slackEnabled: enabled } : p
     ));
     setSaving(false); setSaved(true);
     setTimeout(() => setSaved(false), 2200);
@@ -145,35 +149,34 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </div>
               <div>
-                <p style={{ fontSize: 12, fontWeight: 600, color: "#0C4A6E", marginBottom: 3 }}>DM通知モード</p>
+                <p style={{ fontSize: 12, fontWeight: 600, color: "#0C4A6E", marginBottom: 3 }}>DM通知モード（再接続後に有効）</p>
                 <p style={{ fontSize: 11, color: "#0369A1", lineHeight: 1.6 }}>
-                  担当割り当て・レビュー依頼・@メンション時に、対象メンバーのSlack DMへ直接通知します。<br />
-                  チャンネルへの投稿はしないため、他のメンバーには通知が届きません。
+                  Slackアプリに <code style={{ background: "#DBEAFE", padding: "1px 4px", borderRadius: 3 }}>im:write</code> スコープを追加して再接続すると、担当割り当て・レビュー依頼・@メンション時に対象メンバーのDMへ直接通知されます。<br />
+                  再接続前は下記チャンネルへのフォールバック通知が使われます。
                 </p>
               </div>
             </div>
           </div>
 
-          {/* 再接続案内 */}
-          <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 10, padding: "12px 14px" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
-              <div style={{ width: 18, height: 18, borderRadius: 5, background: "#D97706", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              </div>
-              <div>
-                <p style={{ fontSize: 12, fontWeight: 600, color: "#92400E", marginBottom: 3 }}>DM送信を有効にするには再接続が必要です</p>
-                <p style={{ fontSize: 11, color: "#B45309", lineHeight: 1.6 }}>
-                  DM通知には新しい権限（im:write）が必要です。Slackアプリの設定で <code style={{ background: "#FEF3C7", padding: "1px 4px", borderRadius: 3 }}>im:write</code> スコープを追加後、「切断する」→「Slackに接続する」で再認証してください。
-                </p>
-              </div>
-            </div>
+          {/* フォールバック用チャンネル */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <label className={labelCls}>フォールバック通知チャンネル</label>
+            <input
+              className={inputCls}
+              placeholder="#dev-notifications または C1234ABCD"
+              value={channel}
+              onChange={e => setChannel(e.target.value)}
+            />
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
+              DM送信できない場合（再接続前・SlackID未連携のメンバー）にこのチャンネルへ通知します
+            </p>
           </div>
 
           {/* 通知 ON/OFF */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 0", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
             <div>
               <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>Slack通知を有効にする</p>
-              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>メンション・担当割り当て・レビュー時にDMで通知します</p>
+              <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>メンション・担当割り当て・レビュー時にDM（またはチャンネル）で通知します</p>
             </div>
             <Toggle checked={enabled} onChange={() => setEnabled(v => !v)} />
           </div>
@@ -215,13 +218,13 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
             Slackに接続する
           </p>
           <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 24, lineHeight: 1.7, textAlign: "center" as const }}>
-            担当割り当て・レビュー依頼・@メンション時に<br />対象メンバーのSlack DMへ直接通知します
+            担当割り当て・レビュー依頼・@メンション時に<br />対象メンバーへ直接通知します
           </p>
 
           {/* 接続の流れ */}
           <div style={{ width: "100%", background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "14px 16px", marginBottom: 24 }}>
             <p style={{ fontSize: 10, fontWeight: 700, color: "#A09790", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 12 }}>接続の流れ</p>
-            {["「Slackに接続する」をクリック", "Slackの認証画面でワークスペースを選択・許可", "接続完了後、対象メンバーのDMへ通知が届くようになります"].map((text, i) => (
+            {["「Slackに接続する」をクリック", "Slackの認証画面でワークスペースを選択・許可", "このページに戻ったら通知先チャンネルを入力して保存"].map((text, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 0", borderBottom: i < 2 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
                 <div style={{ width: 22, height: 22, borderRadius: "50%", background: "linear-gradient(135deg,#059669,#047857)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", flexShrink: 0, boxShadow: "0 1px 4px rgba(5,150,105,0.3)" }}>
                   {i + 1}
