@@ -320,6 +320,13 @@ export function TicketDetailPanel({
           ticket_id: ticket.id, ticket_wbs: ticket.wbs, ticket_title: ticket.title,
           project_slug: projectSlug, mention_context: "description", is_read: false,
         }).then(({ error }) => { if (error) console.error("[mention] description:", error.message); });
+        const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+        fireSlackNotify({
+          recipientUserName: name,
+          projectSlug,
+          title: `${userName}さんにメンションされました`,
+          body: `<${ticketUrl}|${ticket.wbs}: ${ticket.title}>（チケット詳細）`,
+        });
       }
       prevDescRef.current = v;
     }, 1200);
