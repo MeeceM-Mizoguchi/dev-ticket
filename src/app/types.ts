@@ -12,7 +12,7 @@ export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" 
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
 export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
-export type NotificationType = "mention" | "assign" | "review_request" | "revision_request" | "review_approved" | "status" | "comment";
+export type NotificationType = "mention" | "assign" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status" | "comment";
 
 export interface AppNotification {
   id: string;
@@ -56,7 +56,7 @@ export interface SprintTicket {
   releasedAt?: string | null;
 }
 
-export type CommentType = "comment" | "review_request" | "revision_request" | "review_approved" | "status_change";
+export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";
 
 export interface TicketComment {
   id: string; ticketId: string; userName: string; content: string;

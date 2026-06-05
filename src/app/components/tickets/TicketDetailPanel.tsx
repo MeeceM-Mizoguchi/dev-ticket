@@ -771,6 +771,39 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
+  const handleWithdrawReview = async () => {
+    if (!ticket) return;
+    const newStatus: TicketStatus = "in-progress";
+    const newProgress = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(newProgress);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: newProgress }).eq("id", ticket.id);
+    }
+    await addComment(
+      `<p>レビュー依頼（第${reviewRound}回）を取り下げました</p>`,
+      "review_withdrawn",
+      [],
+      newStatus
+    );
+    await insertNotification(
+      reviewerName,
+      "review_withdrawn",
+      `${userName}さんがレビュー依頼を取り下げました`,
+      `${ticket.wbs}: ${ticket.title}（第${reviewRound}回）`
+    );
+    if (reviewerName && projectSlug) {
+      const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+      fireSlackNotify({
+        recipientUserName: reviewerName,
+        projectSlug,
+        title: `${userName}さんがレビュー依頼を取り下げました`,
+        body: `${ticket.wbs}: ${ticket.title}（第${reviewRound}回）\n${ticketUrl}`,
+      });
+    }
+    onUpdated?.();
+  };
+
   const handleDeleteTicket = async () => {
     if (!ticket || !isSupabaseEnabled) return;
     // 子チケットのコメント・ファイルを先に削除（DBカスケードでticket本体は自動削除される）
@@ -911,6 +944,7 @@ export function TicketDetailPanel({
   // 自己レビュー: 担当者自身がレビュアーに指定されているケース
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
   const canSendReview = status === "in-progress" && !!reviewerName && isAssignee && !hasBeenApproved;
+  const canWithdrawReview = status === "in-review" && isAssignee && !hasBeenApproved;
   // レビュアーボタン: 指定されたレビュアー or 管理者/PM、かつレビュー権限あり
   // 自己レビューの場合は isAssignee と hasReviewPermission をバイパス
   const canReview = (userName === reviewerName || isAdminOrPM) && (!isAssignee || isSelfReview) && (hasReviewPermission || isSelfReview);
@@ -923,6 +957,7 @@ export function TicketDetailPanel({
     const between = comments.slice(reqIdx + 1, nextReqIdx);
     if (between.some(c => c.commentType === "review_approved")) return "approved" as const;
     if (between.some(c => c.commentType === "revision_request")) return "revision" as const;
+    if (between.some(c => c.commentType === "review_withdrawn")) return "withdrawn" as const;
     return "pending" as const;
   });
 
@@ -1372,10 +1407,10 @@ export function TicketDetailPanel({
                     const round = idx + 1;
                     const outcome = roundOutcomes[idx];
                     const roundFiles = filesByRound[round] ?? [];
-                    const color = outcome === "approved" ? "#059669" : outcome === "revision" ? "#D97706" : "#7C3AED";
-                    const bg = outcome === "approved" ? "#ECFDF5" : outcome === "revision" ? "#FFF7ED" : "#F5F3FF";
-                    const border = outcome === "approved" ? "rgba(5,150,105,0.15)" : outcome === "revision" ? "rgba(217,119,6,0.15)" : "rgba(124,58,237,0.15)";
-                    const label = outcome === "approved" ? "✅ レビュー承認" : outcome === "revision" ? "⚠️ 修正依頼" : "🔄 審査中";
+                    const color = outcome === "approved" ? "#059669" : outcome === "revision" ? "#D97706" : outcome === "withdrawn" ? "#6B7280" : "#7C3AED";
+                    const bg = outcome === "approved" ? "#ECFDF5" : outcome === "revision" ? "#FFF7ED" : outcome === "withdrawn" ? "#F4F5F6" : "#F5F3FF";
+                    const border = outcome === "approved" ? "rgba(5,150,105,0.15)" : outcome === "revision" ? "rgba(217,119,6,0.15)" : outcome === "withdrawn" ? "rgba(107,114,128,0.15)" : "rgba(124,58,237,0.15)";
+                    const label = outcome === "approved" ? "✅ レビュー承認" : outcome === "revision" ? "⚠️ 修正依頼" : outcome === "withdrawn" ? "↩ 取り下げ" : "🔄 審査中";
 
                     const isExpanded = expandedRounds.has(idx);
                     const reqIdx = comments.findIndex(c => c.id === reqComment.id);
@@ -1383,7 +1418,7 @@ export function TicketDetailPanel({
                       ? comments.findIndex(c => c.id === reviewRequestComments[idx + 1].id)
                       : comments.length;
                     const roundReviewComments = comments.slice(reqIdx + 1, nextReqIdx).filter(
-                      c => c.commentType === "revision_request" || c.commentType === "review_approved"
+                      c => c.commentType === "revision_request" || c.commentType === "review_approved" || c.commentType === "review_withdrawn"
                     );
                     const roundImages = [
                       ...(reqComment.images ?? []),
@@ -1647,7 +1682,21 @@ export function TicketDetailPanel({
                         {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
                       </button>
                     </div>
-                    {status === "in-review" && <p style={{ fontSize: 10, color: "#7C3AED", marginTop: 6, textAlign: "center" }}>修正依頼を受けてから再度送信できます</p>}
+                    {status === "in-review" && (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                        <p style={{ fontSize: 10, color: "#7C3AED" }}>修正依頼を受けてから再度送信できます</p>
+                        {canWithdrawReview && (
+                          <button
+                            onClick={handleWithdrawReview}
+                            style={{ padding: "5px 12px", background: "#F4F5F6", color: "#6B7280", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(107,114,128,0.25)", cursor: "pointer" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E9EAEB"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                          >
+                            ↩ レビュー取り下げ
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               )}
@@ -1663,13 +1712,14 @@ export function TicketDetailPanel({
               const isReviewReq = c.commentType === "review_request";
               const isRevisionReq = c.commentType === "revision_request";
               const isApproved = c.commentType === "review_approved";
+              const isWithdrawn = c.commentType === "review_withdrawn";
               const isStatusChange = c.commentType === "status_change";
-              const isSystem = isReviewReq || isRevisionReq || isApproved || isStatusChange;
+              const isSystem = isReviewReq || isRevisionReq || isApproved || isWithdrawn || isStatusChange;
 
-              const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : "#6B7280";
-              const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : "#F4F5F6";
-              const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : "rgba(26,23,20,0.08)";
-              const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : "";
+              const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : isWithdrawn ? "#6B7280" : "#6B7280";
+              const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : isWithdrawn ? "#F4F5F6" : "#F4F5F6";
+              const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : isWithdrawn ? "rgba(107,114,128,0.15)" : "rgba(26,23,20,0.08)";
+              const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : isWithdrawn ? "↩ 取り下げ" : "";
 
               if (isStatusChange) {
                 return (
