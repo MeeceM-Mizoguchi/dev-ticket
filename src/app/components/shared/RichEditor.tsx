@@ -104,7 +104,7 @@ export function RichEditor({
         suggestion: {
           items: ({ query }) =>
             membersRef.current
-              .filter(m => m.toLowerCase().includes(query.toLowerCase()))
+              .filter((m): m is string => typeof m === "string" && m.toLowerCase().includes(query.toLowerCase()))
               .slice(0, 8),
 
           render: () => {
@@ -122,13 +122,13 @@ export function RichEditor({
               let top: number;
               let maxH: number;
               if (spaceBelow >= 100 || spaceBelow >= spaceAbove) {
-                top = rect.bottom + window.scrollY + GAP;
+                top = rect.bottom + GAP;
                 maxH = Math.min(MAX_H, Math.max(80, spaceBelow));
               } else {
                 maxH = Math.min(MAX_H, Math.max(80, spaceAbove));
-                top = rect.top + window.scrollY - maxH - GAP;
+                top = rect.top - maxH - GAP;
               }
-              let left = rect.left + window.scrollX;
+              let left = rect.left;
               if (left + 260 > window.innerWidth) left = Math.max(8, window.innerWidth - 268);
               wrapper.style.top = `${top}px`;
               wrapper.style.left = `${left}px`;
@@ -138,9 +138,8 @@ export function RichEditor({
             return {
               onStart: (props) => {
                 wrapper = document.createElement("div");
-                // ラッパー自体をスクロールコンテナ兼ビジュアルコンテナにする
                 wrapper.style.cssText = [
-                  "position:absolute", "z-index:9999",
+                  "position:fixed", "z-index:9999",
                   "background:#FFF", "border:1px solid rgba(26,23,20,0.12)",
                   "border-radius:10px", "box-shadow:0 8px 24px rgba(0,0,0,0.14)",
                   "overflow-y:auto", "min-width:160px", "max-width:260px",
