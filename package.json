@@ -11,6 +11,7 @@
   "dependencies": {
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
+    "@handsontable/react": "14.6.1",
     "@mui/icons-material": "7.3.5",
     "@mui/material": "7.3.5",
     "@popperjs/core": "2.11.8",
@@ -56,6 +57,7 @@
     "cmdk": "1.1.1",
     "date-fns": "3.6.0",
     "embla-carousel-react": "8.6.0",
+    "handsontable": "14.6.1",
     "input-otp": "1.4.2",
     "lucide-react": "0.487.0",
     "motion": "12.23.24",
@@ -101,6 +103,7 @@
     },
     "onlyBuiltDependencies": [
       "@tailwindcss/oxide",
+      "core-js",
       "esbuild"
     ]
   }

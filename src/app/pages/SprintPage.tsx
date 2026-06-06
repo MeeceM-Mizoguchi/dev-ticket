@@ -14,6 +14,7 @@ import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { EditSprintDialog } from "@/app/components/sprints/EditSprintDialog";
 import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { EditProjectIdentifiersDialog } from "@/app/components/projects/EditProjectIdentifiersDialog";
 
@@ -42,6 +43,7 @@ export function SprintPage() {
   const [viewMode, setViewMode] = useState<SprintView>("list");
   const [showCreate, setShowCreate] = useState(false);
   const [createForSprintId, setCreateForSprintId] = useState<string | null>(null);
+  const [bulkCreateForSprintId, setBulkCreateForSprintId] = useState<string | null>(null);
   const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
@@ -198,11 +200,26 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} targetTicketWbs={ticketWbs} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} />}
+      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={ticketWbs} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
+      {bulkCreateForSprintId && (() => {
+        const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
+        return (
+          <BulkTicketCreateDialog
+            sprintId={bulkCreateForSprintId}
+            sprintName={bulkSprint?.name}
+            projectId={projectId ?? undefined}
+            projectSlug={projectSlug}
+            sprintStartDate={bulkSprint?.startDate || undefined}
+            sprintEndDate={bulkSprint?.endDate || undefined}
+            onClose={() => setBulkCreateForSprintId(null)}
+            onCreated={() => { refreshSprints(); setBulkCreateForSprintId(null); }}
+          />
+        );
+      })()}
       {createForSprintId && createForSprint && (
         <NewTicketDialog
           sprintId={createForSprintId}

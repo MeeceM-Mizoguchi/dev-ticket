@@ -168,12 +168,13 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
 }
 
 // ── Main component (exported) ──────────────────────────────────────────────
-function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket }: {
+function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string) => void;
 }) {
   const { userName, userPermissions } = useAuth();
   const canCreateTicket = userPermissions.canCreateTicket;
@@ -339,6 +340,14 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
               <Plus style={{ width: 11, height: 11 }} />新規チケット
+            </button>
+          )}
+          {onBulkCreate && canCreateTicket && (
+            <button onClick={() => onBulkCreate(currentSprint.id)}
+              style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
+              <Plus style={{ width: 11, height: 11 }} />一括作成
             </button>
           )}
         </div>
@@ -530,6 +539,7 @@ export function SprintBoardView(props: {
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string) => void;
 }) {
   return (
     <DndProvider backend={HTML5Backend}>

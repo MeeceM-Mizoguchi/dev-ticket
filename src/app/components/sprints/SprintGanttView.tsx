@@ -3,8 +3,8 @@ import { ChevronDown, ChevronRight, ExternalLink, Plus, GitBranch } from "lucide
 import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
 
-export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket }: {
-  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
+export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate }: {
+  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void; onBulkCreate?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
   // 子チケット展開状態（チケットIDのSet）
@@ -107,6 +107,15 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
                       style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center" }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                      <Plus style={{ width: 11, height: 11 }} />
+                    </button>
+                  )}
+                  {onBulkCreate && (
+                    <button onClick={e => { e.stopPropagation(); onBulkCreate(sprint.id); }}
+                      title="一括作成"
+                      style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
                       <Plus style={{ width: 11, height: 11 }} />
                     </button>

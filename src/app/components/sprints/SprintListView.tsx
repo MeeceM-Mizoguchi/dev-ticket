@@ -166,13 +166,14 @@ function ColumnFilter({
   );
 }
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, targetTicketWbs }: {
+export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
@@ -428,6 +429,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
                         <Plus style={{ width: 11, height: 11 }} />新規チケット
+                      </button>
+                    )}
+                    {onBulkCreate && (
+                      <button onClick={e => { e.stopPropagation(); onBulkCreate(sprint.id); }}
+                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.20)", borderRadius: 7, cursor: "pointer" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
+                        <Plus style={{ width: 11, height: 11 }} />一括作成
                       </button>
                     )}
                     {onEditSprint && (
