@@ -17,13 +17,14 @@ const BOARD_COLUMNS: { status: ProjectStatus; label: string; color: string }[] =
 interface DragItem { id: string; currentStatus: ProjectStatus }
 
 function DraggableCard({
-  project, onNavigate, onEdit, onDelete, onCategorySettings,
+  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload,
 }: {
   project: Project;
   onNavigate: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
   onCategorySettings?: () => void;
+  onDownload?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [{ isDragging }, drag] = useDrag<DragItem, void, { isDragging: boolean }>({
@@ -41,6 +42,7 @@ function DraggableCard({
         onEdit={onEdit}
         onDelete={onDelete}
         onCategorySettings={onCategorySettings}
+        onDownload={onDownload}
       />
     </div>
   );
@@ -48,7 +50,7 @@ function DraggableCard({
 
 function BoardColumn({
   status, label, color, projects,
-  onDrop, onNavigate, onEdit, onDelete, onCategorySettings,
+  onDrop, onNavigate, onEdit, onDelete, onCategorySettings, onDownload,
 }: {
   status: ProjectStatus;
   label: string;
@@ -59,6 +61,7 @@ function BoardColumn({
   onEdit?: (project: Project) => void;
   onDelete?: (project: Project) => void;
   onCategorySettings?: (project: Project) => void;
+  onDownload?: (project: Project) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [{ isOver }, drop] = useDrop<DragItem, void, { isOver: boolean }>({
@@ -86,6 +89,7 @@ function BoardColumn({
             onEdit={onEdit ? () => onEdit(p) : undefined}
             onDelete={onDelete ? () => onDelete(p) : undefined}
             onCategorySettings={onCategorySettings ? () => onCategorySettings(p) : undefined}
+            onDownload={onDownload ? () => onDownload(p) : undefined}
           />
         ))}
         {projects.length === 0 && (
@@ -105,6 +109,7 @@ export function ProjectBoard({
   onEdit,
   onDelete,
   onCategorySettings,
+  onDownload,
 }: {
   projects: Project[];
   onProjectsChange: (updater: (prev: Project[]) => Project[]) => void;
@@ -112,6 +117,7 @@ export function ProjectBoard({
   onEdit?: (project: Project) => void;
   onDelete?: (project: Project) => void;
   onCategorySettings?: (project: Project) => void;
+  onDownload?: (project: Project) => void;
 }) {
   const handleDrop = useCallback(async (projectId: string, newStatus: ProjectStatus) => {
     const project = projects.find(p => p.id === projectId);
@@ -135,6 +141,7 @@ export function ProjectBoard({
             onEdit={onEdit}
             onDelete={onDelete}
             onCategorySettings={onCategorySettings}
+            onDownload={onDownload}
           />
         ))}
       </div>

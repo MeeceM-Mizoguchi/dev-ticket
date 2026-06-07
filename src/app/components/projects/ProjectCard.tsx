@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, Calendar, CheckCircle2, Circle, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
+import { Building2, Calendar, CheckCircle2, Circle, Download, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
 import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -7,13 +7,14 @@ import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { ProjectActualHours } from "@/app/components/projects/ProjectActualHours";
 
 export function ProjectCard({
-  project, onNavigate, onEdit, onDelete, onCategorySettings,
+  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload,
 }: {
   project: Project;
   onNavigate: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
   onCategorySettings?: () => void;
+  onDownload?: () => void;
 }) {
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
@@ -68,10 +69,13 @@ export function ProjectCard({
                 {onCategorySettings && (
                   <MenuItem icon={<Tags style={{ width: 12, height: 12 }} />} label="分類設定" onClick={() => { setMenuOpen(false); onCategorySettings(); }} color="#0284C7" />
                 )}
+                {onDownload && (
+                  <MenuItem icon={<Download style={{ width: 12, height: 12 }} />} label="CSVダウンロード" onClick={() => { setMenuOpen(false); onDownload(); }} color="#059669" />
+                )}
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
                 )}
-                {!onEdit && !onDelete && !onCategorySettings && (
+                {!onEdit && !onDelete && !onCategorySettings && !onDownload && (
                   <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
                 )}
               </div>

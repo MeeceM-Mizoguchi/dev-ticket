@@ -1,10 +1,11 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderOpen, BookmarkPlus, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
 import { useAlert } from "@/app/contexts/AlertContext";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
+import { downloadSprintCsv } from "@/app/lib/csvExport";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
@@ -395,7 +396,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   ];
 
   // 動的自動幅（dynamicCategoryColumnWidth）pxを流し込み、上下の縦ラインをピシッとシンクロ
-  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 52px`;
+  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 80px`;
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
@@ -536,6 +537,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       />
                     ))}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                      <button onClick={e => { e.stopPropagation(); downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }} title="CSVダウンロード" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(2,132,199,0.25)", background: "#F0F9FF", color: "#0284C7", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                        <Download style={{ width: 11, height: 11 }} />
+                      </button>
                       {hasAnyFilter && (
                         <button onClick={async e => {
                           e.stopPropagation();

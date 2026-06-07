@@ -5,7 +5,8 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, CLIENTS } from "@/app/data/mock";
-import { mapProject, mapClient } from "@/app/lib/mappers";
+import { mapProject, mapClient, mapSprint } from "@/app/lib/mappers";
+import { downloadProjectCsv } from "@/app/lib/csvExport";
 import type { Project, Client } from "@/app/types";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { ProjectBoard } from "@/app/components/projects/ProjectBoard";
@@ -86,6 +87,17 @@ export function ProjectsPage() {
     }
     setProjects(prev => prev.filter(p => p.id !== project.id));
     toast(`「${project.name}」を削除しました`);
+  };
+
+  const handleDownloadProject = async (project: Project) => {
+    if (!isSupabaseEnabled) return;
+    const [{ data: sprintData }, { data: categoryData }] = await Promise.all([
+      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", project.id).order("id"),
+      supabase!.from("ticket_categories").select("id, name").eq("project_id", project.id),
+    ]);
+    const sprints = (sprintData ?? []).map(mapSprint);
+    const categories = (categoryData ?? []) as Array<{ id: string; name: string }>;
+    downloadProjectCsv(project.name, sprints, categories);
   };
 
   const visibleProjects = userRole === "admin"
@@ -171,6 +183,7 @@ export function ProjectsPage() {
               onEdit={canManage ? () => setEditTarget(p) : undefined}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
+              onDownload={() => handleDownloadProject(p)}
             />
           ))}
         </div>
@@ -182,6 +195,7 @@ export function ProjectsPage() {
           onEdit={canManage ? p => setEditTarget(p) : undefined}
           onDelete={canManage ? p => setDeleteTarget(p) : undefined}
           onCategorySettings={canManage ? p => setCategoryTarget(p) : undefined}
+          onDownload={p => handleDownloadProject(p)}
         />
       )}
 
