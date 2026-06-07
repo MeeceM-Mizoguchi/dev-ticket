@@ -38,9 +38,11 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const selected = projects.find(p => p.id === selectedId) ?? null;
   const isConnected = !!selected?.slackTeamName;
+  const inviteCommand = "/invite @Dev Ticket";
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -88,6 +90,13 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
     ));
     setChannel(""); setEnabled(false);
     setDisconnecting(false);
+  };
+
+  const handleCopyInvite = () => {
+    navigator.clipboard.writeText(inviteCommand).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   const handleSave = async () => {
@@ -154,6 +163,36 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
               チャンネル名（例: #dev-notifications）またはチャンネルID（例: C1234ABCD）を入力してください
             </p>
+
+            {/* プライベートチャンネル招待コマンド */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+              <p style={{ fontSize: 11, color: "#A09790", flexShrink: 0 }}>プライベートチャンネルの場合のみ</p>
+              <div style={{ flex: 1, padding: "7px 10px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 7 }}>
+                <code style={{ fontSize: 12, fontFamily: "var(--font-mono)", color: "#1A1714" }}>
+                  {inviteCommand}
+                </code>
+              </div>
+              <button
+                onClick={handleCopyInvite}
+                style={{
+                  padding: "7px 14px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 7,
+                  border: "none",
+                  cursor: "pointer",
+                  background: "linear-gradient(135deg,#059669,#047857)",
+                  color: "#fff",
+                  whiteSpace: "nowrap" as const,
+                  boxShadow: "0 2px 8px rgba(5,150,105,0.25)",
+                  transition: "all 0.15s",
+                  letterSpacing: "-0.01em",
+                  flexShrink: 0,
+                }}
+              >
+                {copied ? "✓ コピー済み" : "コピー"}
+              </button>
+            </div>
           </div>
 
           {/* 通知 ON/OFF */}
