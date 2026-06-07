@@ -42,7 +42,7 @@ export interface SprintTicket {
   id: string; wbs: string; title: string; status: TicketStatus;
   priority: Priority; assignee: string; startDate: string; dueDate: string;
   estimatedHours: number; progress: number;
-  description?: string; reviewerName?: string; reviewRound?: number; generatedPrompt?: string;
+  description?: string; reviewerName?: string; reviewRound?: number;
   images?: string[]; categoryId?: string | null;
   createdBy?: string; createdAt?: string;
   // 子チケットの親ID。null = 親チケット、文字列 = 子チケット。現在は1階層のみ。将来的に孫チケット対応を実装予定。
@@ -112,7 +112,6 @@ export interface UserPermissions {
   canEditDelete: boolean;
   canReview: boolean;
   canSkipReview: boolean;
-  canGeneratePrompt: boolean;
   canAccessMembers: boolean;
   canAccessRoles: boolean;
   canAccessGroups: boolean;

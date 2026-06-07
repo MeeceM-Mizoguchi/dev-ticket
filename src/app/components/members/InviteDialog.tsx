@@ -10,10 +10,10 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition } from "@/app/types";
 
 const FALLBACK_ROLES: RoleDefinition[] = [
-  { id: 1, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
-  { id: 2, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
-  { id: 3, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true } },
-  { id: 4, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canGeneratePrompt: true } },
+  { id: 1, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
+  { id: 2, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
+  { id: 3, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true } },
+  { id: 4, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true } },
 ];
 
 export function InviteDialog({ onClose, onInvited }: { onClose: () => void; onInvited?: () => void }) {

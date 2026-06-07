@@ -11,10 +11,10 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldSelect } from "@/app/components/shared/FieldSelect";
 
 const FALLBACK_ROLES: RoleDefinition[] = [
-  { id: 1, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true,  canCreateSprint: true,  canEditDelete: true,  canReview: true,  canGeneratePrompt: true  } },
-  { id: 2, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true,  canCreateSprint: true,  canEditDelete: true,  canReview: true,  canGeneratePrompt: true  } },
-  { id: 3, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
-  { id: 4, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canGeneratePrompt: false } },
+  { id: 1, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true,  canCreateSprint: true,  canEditDelete: true,  canReview: true  } },
+  { id: 2, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true,  canCreateSprint: true,  canEditDelete: true,  canReview: true  } },
+  { id: 3, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
+  { id: 4, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
 ];
 
 export function MemberEditDialog({ member, onClose, onSaved }: { member: Member; onClose: () => void; onSaved: () => void }) {

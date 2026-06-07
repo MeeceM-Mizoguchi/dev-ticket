@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Sparkles, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -71,8 +71,6 @@ export function TicketDetailPanel({
   // isAdminOrPM によるバイパスは行わない。権限はロール設定・プロジェクト個別設定に従う。
   const hasReviewPermission = effectivePermissions.canReview;
   const hasSkipReviewPermission = effectivePermissions.canSkipReview;
-  const hasGeneratePromptPermission = effectivePermissions.canGeneratePrompt;
-
   // editable state
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
@@ -134,10 +132,6 @@ export function TicketDetailPanel({
   const [imageDragOver, setImageDragOver] = useState(false);
   const [fileDragOver, setFileDragOver] = useState(false);
 
-  // AI prompt generation
-  const [generatedPrompt, setGeneratedPrompt] = useState(ticket?.generatedPrompt ?? "");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [copiedMd, setCopiedMd] = useState(false);
   const [copiedImageUrl, setCopiedImageUrl] = useState<string | null>(null);
 
@@ -215,7 +209,6 @@ export function TicketDetailPanel({
     prevDescRef.current = ticket.description ?? "";
     notifiedMentionsRef.current.clear();
     anchorScrolledRef.current = null;
-    setGeneratedPrompt(ticket.generatedPrompt ?? "");
     setCategoryId(ticket.categoryId ?? null);
     // fetch fresh data from DB (in case sprint cache is stale)
     if (ticket.id && isSupabaseEnabled) {
@@ -234,7 +227,6 @@ export function TicketDetailPanel({
           setDescription(t.description ?? "");
           setReviewerName(t.reviewerName ?? "");
           setReviewRound(t.reviewRound ?? 0);
-          setGeneratedPrompt(t.generatedPrompt ?? "");
           const freshImages = t.images ?? [];
           setTicketImages(freshImages);
           ticketImagesRef.current = freshImages;
@@ -348,56 +340,6 @@ export function TicketDetailPanel({
       anchorScrolledRef.current = anchor;
     }
   }, [anchor, comments.length, ticket?.id]); // eslint-disable-line
-
-  const handleGeneratePrompt = async () => {
-    if (!ticket || isGenerating) return;
-    setIsGenerating(true);
-    try {
-      const categoryName = categories.find(c => c.id === categoryId)?.name ?? null;
-      const res = await fetch("/api/generate-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: ticket.title,
-          description,
-          priority,
-          status,
-          assignee,
-          startDate,
-          dueDate,
-          estimatedHours: estimatedH,
-          categoryName,
-          comments: comments.map(c => ({
-            userName: c.userName,
-            content: c.content,
-            commentType: c.commentType,
-          })),
-          childTickets: childTickets.map(c => ({
-            title: c.title,
-            status: c.status,
-          })),
-          sourceFiles: sourceFiles.map(f => ({
-            name: f.fileName,
-          })),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "生成に失敗しました");
-      const generated: string = data.prompt;
-      setGeneratedPrompt(generated);
-      await save({ generated_prompt: generated });
-    } catch (e: unknown) {
-      showAlert((e as Error).message ?? "プロンプト生成に失敗しました", "エラー");
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const handleCopyPrompt = () => {
-    navigator.clipboard.writeText(generatedPrompt);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const uploadImageToStorage = useCallback(async (file: Blob, folder: string): Promise<string> => {
     if (!isSupabaseEnabled || !ticket) return URL.createObjectURL(file);
@@ -1381,31 +1323,6 @@ export function TicketDetailPanel({
               </div>
             )}
           </div>
-
-          {/* AI Prompt Generation */}
-          {hasGeneratePromptPermission && <div style={{ background: "#FFF", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 12, padding: "14px 16px" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: generatedPrompt ? 10 : 0 }}>
-              <p style={{ fontSize: 11, fontWeight: 700, color: "#7C3AED", display: "flex", alignItems: "center", gap: 5 }}>
-                <Sparkles style={{ width: 13, height: 13 }} />ClaudeCode プロンプト
-              </p>
-              <button onClick={handleGeneratePrompt} disabled={isGenerating}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: isGenerating ? "#F5F3FF" : "#7C3AED", color: isGenerating ? "#7C3AED" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "none", cursor: isGenerating ? "not-allowed" : "pointer", transition: "all 0.15s" }}>
-                <Sparkles style={{ width: 11, height: 11 }} />
-                {isGenerating ? "生成中..." : generatedPrompt ? "再生成" : "プロンプト生成"}
-              </button>
-            </div>
-            {generatedPrompt && (
-              <div style={{ position: "relative" }}>
-                <textarea readOnly value={generatedPrompt}
-                  style={{ width: "100%", minHeight: 160, resize: "vertical", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.15)", borderRadius: 9, padding: "10px 12px", fontSize: 12, color: "#3B0764", lineHeight: 1.7, fontFamily: "var(--font-mono)", boxSizing: "border-box", outline: "none" }} />
-                <button onClick={handleCopyPrompt}
-                  style={{ position: "absolute", bottom: 10, right: 10, display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: copied ? "#059669" : "#7C3AED", color: "#FFF", fontSize: 10, fontWeight: 700, borderRadius: 6, border: "none", cursor: "pointer", transition: "background 0.2s" }}>
-                  {copied ? <CheckCheck style={{ width: 11, height: 11 }} /> : <Copy style={{ width: 11, height: 11 }} />}
-                  {copied ? "コピーしました" : "コピー"}
-                </button>
-              </div>
-            )}
-          </div>}
 
           {/* ── Review flow + Source files ── */}
           {(reviewRequestComments.length > 0 || isAssignee || userName === reviewerName) && (

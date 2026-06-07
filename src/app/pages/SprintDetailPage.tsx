@@ -195,7 +195,7 @@ export function SprintDetailPage() {
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
   
-  const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
+  const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
     ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
     : NO_PERMS;

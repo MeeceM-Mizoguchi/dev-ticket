@@ -30,7 +30,7 @@ export function SprintPage() {
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
   // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）
   // レコードなし → admin/PM はロール権限、それ以外は権限なし(all false)
-  const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
+  const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
     ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
     : NO_PERMS;

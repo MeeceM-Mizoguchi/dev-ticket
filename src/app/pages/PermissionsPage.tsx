@@ -19,7 +19,7 @@ const PROJECT_PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: str
 
 const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
-  canEditDelete: false, canReview: false, canSkipReview: false, canGeneratePrompt: false,
+  canEditDelete: false, canReview: false, canSkipReview: false,
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
 };
 
