@@ -12,8 +12,9 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
-import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
+import { useAlert } from "@/app/contexts/AlertContext";
 
 // あらゆるIDパターンに安全に対応するためのフォールバック付き辞書
 const CATEGORY_MAP: Record<string, string> = {
@@ -186,6 +187,7 @@ export function SprintDetailPage() {
   const { projectSlug, sprintId, ticketWbs } = useParams<{ projectSlug: string; sprintId: string; ticketWbs?: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { showAlert } = useAlert();
   const { userId, userPermissions, userRole } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const [project, setProject] = useState<Project | null>(null);
@@ -275,6 +277,8 @@ export function SprintDetailPage() {
     });
     return map;
   }, [sprint]);
+
+  const serializedColFilters = useMemo(() => serializeFilters(colFilters), [colFilters]);
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
@@ -443,7 +447,12 @@ export function SprintDetailPage() {
           ))}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
             {Object.values(colFilters).some(s => s.size > 0) && (
-              <button onClick={() => setShowSaveFilterDialog(true)} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+              <button onClick={() => {
+                const key = `myfilters-${sprintId}`;
+                const dupName = checkDuplicateFilter(key, serializedColFilters);
+                if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
+                setShowSaveFilterDialog(true);
+              }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                 <BookmarkPlus style={{ width: 11, height: 11 }} />
               </button>
             )}
@@ -602,21 +611,15 @@ export function SprintDetailPage() {
           }}
         />
       )}
-      {showSaveFilterDialog && (() => {
-        const serialized: Record<string, string[]> = {};
-        Object.entries(colFilters).forEach(([col, set]) => { serialized[col] = Array.from(set); });
-        return (
-          <SaveFilterDialog
-            onClose={() => setShowSaveFilterDialog(false)}
-            storageKey={`myfilters-${sprintId}`}
-            currentFilters={serialized}
-            onSave={(title) => {
-              addMyFilter(`myfilters-${sprintId}`, title, serialized, sortCol, sortDir);
-              setShowSaveFilterDialog(false);
-            }}
-          />
-        );
-      })()}
+      {showSaveFilterDialog && (
+        <SaveFilterDialog
+          onClose={() => setShowSaveFilterDialog(false)}
+          onSave={(title) => {
+            addMyFilter(`myfilters-${sprintId}`, title, serializedColFilters, sortCol, sortDir);
+            setShowSaveFilterDialog(false);
+          }}
+        />
+      )}
     </div>
   );
 }

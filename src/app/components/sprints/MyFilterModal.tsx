@@ -14,6 +14,44 @@ export interface SavedFilter {
   createdAt: string;
 }
 
+export function serializeFilters(filters: Record<string, Set<string> | string[]>): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+  Object.entries(filters).forEach(([col, val]) => {
+    const arr = val instanceof Set ? Array.from(val) : val;
+    if (arr.length > 0) result[col] = arr;
+  });
+  return result;
+}
+
+function filtersMatch(a: Record<string, string[]>, b: Record<string, string[]>): boolean {
+  const aNorm = Object.fromEntries(Object.entries(a).filter(([, v]) => v.length > 0));
+  const bNorm = Object.fromEntries(Object.entries(b).filter(([, v]) => v.length > 0));
+  const aKeys = Object.keys(aNorm).sort();
+  const bKeys = Object.keys(bNorm).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  if (!aKeys.every((k, i) => k === bKeys[i])) return false;
+  return aKeys.every(k => {
+    const aSet = new Set(aNorm[k]);
+    const bVals = bNorm[k];
+    return bVals.length === aSet.size && bVals.every(v => aSet.has(v));
+  });
+}
+
+export function checkDuplicateFilter(
+  storageKey: string,
+  currentFilters: Record<string, string[]>
+): string | null {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const existing: SavedFilter[] = JSON.parse(raw);
+    const dup = existing.find(f => filtersMatch(f.filters, currentFilters));
+    return dup ? dup.title : null;
+  } catch {
+    return null;
+  }
+}
+
 export function addMyFilter(
   storageKey: string,
   title: string,
@@ -24,10 +62,12 @@ export function addMyFilter(
   try {
     const raw = localStorage.getItem(storageKey);
     const existing: SavedFilter[] = raw ? JSON.parse(raw) : [];
+    const cleanFilters: Record<string, string[]> = {};
+    Object.entries(filters).forEach(([col, vals]) => { if (vals.length > 0) cleanFilters[col] = vals; });
     const newFilter: SavedFilter = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       title,
-      filters,
+      filters: cleanFilters,
       sortCol,
       sortDir,
       createdAt: new Date().toISOString(),

@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
-import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
+import { useAlert } from "@/app/contexts/AlertContext";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
@@ -178,6 +179,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
+  const { showAlert } = useAlert();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
 
   useEffect(() => {
@@ -366,6 +368,11 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     });
   };
 
+  const saveFilterCurrentFilters = useMemo(() => {
+    if (!saveFilterSprintId) return {} as Record<string, string[]>;
+    return serializeFilters(sprintFilters[saveFilterSprintId] || {});
+  }, [saveFilterSprintId, sprintFilters]);
+
   if (!sprints.length) return (
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
   );
@@ -414,22 +421,15 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       })()}
 
       {/* フィルタ保存ダイアログ */}
-      {saveFilterSprintId && (() => {
-        const rawFilters = sprintFilters[saveFilterSprintId] || {};
-        const serialized: Record<string, string[]> = {};
-        Object.entries(rawFilters).forEach(([col, set]) => { serialized[col] = Array.from(set); });
-        return (
-          <SaveFilterDialog
-            onClose={() => setSaveFilterSprintId(null)}
-            storageKey={`myfilters-${saveFilterSprintId}`}
-            currentFilters={serialized}
-            onSave={(title) => {
-              addMyFilter(`myfilters-${saveFilterSprintId}`, title, serialized, sortCol, sortDir);
-              setSaveFilterSprintId(null);
-            }}
-          />
-        );
-      })()}
+      {saveFilterSprintId && (
+        <SaveFilterDialog
+          onClose={() => setSaveFilterSprintId(null)}
+          onSave={(title) => {
+            addMyFilter(`myfilters-${saveFilterSprintId}`, title, saveFilterCurrentFilters, sortCol, sortDir);
+            setSaveFilterSprintId(null);
+          }}
+        />
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {
@@ -534,7 +534,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     ))}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                       {hasAnyFilter && (
-                        <button onClick={e => { e.stopPropagation(); setSaveFilterSprintId(sprint.id); }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                        <button onClick={e => {
+                          e.stopPropagation();
+                          const key = `myfilters-${sprint.id}`;
+                          const dupName = checkDuplicateFilter(key, serializeFilters(sprintFilters[sprint.id] || {}));
+                          if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
+                          setSaveFilterSprintId(sprint.id);
+                        }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                           <BookmarkPlus style={{ width: 11, height: 11 }} />
                         </button>
                       )}
