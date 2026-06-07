@@ -3,6 +3,7 @@ import { Pencil, Trash2, Info, AlertTriangle } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { SortCol } from "@/app/types";
 
 export interface SavedFilter {
@@ -12,6 +13,17 @@ export interface SavedFilter {
   sortCol: string;
   sortDir: "asc" | "desc";
   createdAt: string;
+}
+
+function mapRow(row: Record<string, unknown>): SavedFilter {
+  return {
+    id: row.id as string,
+    title: row.title as string,
+    filters: (row.filters ?? {}) as Record<string, string[]>,
+    sortCol: (row.sort_col as string) ?? "",
+    sortDir: (row.sort_dir as "asc" | "desc") ?? "asc",
+    createdAt: row.created_at as string,
+  };
 }
 
 export function serializeFilters(filters: Record<string, Set<string> | string[]>): Record<string, string[]> {
@@ -37,56 +49,55 @@ function filtersMatch(a: Record<string, string[]>, b: Record<string, string[]>):
   });
 }
 
-export function checkDuplicateFilter(
-  storageKey: string,
+export async function checkDuplicateFilter(
+  sprintId: string,
+  userId: string,
   currentFilters: Record<string, string[]>
-): string | null {
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return null;
-    const existing: SavedFilter[] = JSON.parse(raw);
-    const dup = existing.find(f => filtersMatch(f.filters, currentFilters));
-    return dup ? dup.title : null;
-  } catch {
-    return null;
-  }
+): Promise<string | null> {
+  if (!isSupabaseEnabled || !supabase) return null;
+  const { data } = await supabase
+    .from("my_filters")
+    .select("title, filters")
+    .eq("sprint_id", sprintId)
+    .eq("member_id", userId);
+  if (!data) return null;
+  const dup = data.find(f => filtersMatch(f.filters as Record<string, string[]>, currentFilters));
+  return dup ? (dup.title as string) : null;
 }
 
-export function addMyFilter(
-  storageKey: string,
+export async function addMyFilter(
+  sprintId: string,
+  userId: string,
   title: string,
   filters: Record<string, string[]>,
   sortCol: string,
   sortDir: "asc" | "desc"
-): void {
-  try {
-    const raw = localStorage.getItem(storageKey);
-    const existing: SavedFilter[] = raw ? JSON.parse(raw) : [];
-    const cleanFilters: Record<string, string[]> = {};
-    Object.entries(filters).forEach(([col, vals]) => { if (vals.length > 0) cleanFilters[col] = vals; });
-    const newFilter: SavedFilter = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      title,
-      filters: cleanFilters,
-      sortCol,
-      sortDir,
-      createdAt: new Date().toISOString(),
-    };
-    localStorage.setItem(storageKey, JSON.stringify([...existing, newFilter]));
-  } catch (e) {
-    console.error("addMyFilter failed:", e);
-  }
+): Promise<void> {
+  if (!isSupabaseEnabled || !supabase) return;
+  const cleanFilters: Record<string, string[]> = {};
+  Object.entries(filters).forEach(([col, vals]) => { if (vals.length > 0) cleanFilters[col] = vals; });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  await supabase.from("my_filters").insert({
+    id,
+    sprint_id: sprintId,
+    member_id: userId,
+    title,
+    filters: cleanFilters,
+    sort_col: sortCol,
+    sort_dir: sortDir,
+  });
 }
 
 interface MyFilterModalProps {
   onClose: () => void;
-  storageKey: string;
+  sprintId: string;
+  userId: string;
   cols: Array<{ col: string; label: string }>;
   getColOptions: (col: string) => Array<{ value: string; label: string }>;
   onApply: (filters: Record<string, Set<string>>, sortCol: SortCol | "", sortDir: "asc" | "desc") => void;
 }
 
-export function MyFilterModal({ onClose, storageKey, cols, getColOptions, onApply }: MyFilterModalProps) {
+export function MyFilterModal({ onClose, sprintId, userId, cols, getColOptions, onApply }: MyFilterModalProps) {
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -96,18 +107,17 @@ export function MyFilterModal({ onClose, storageKey, cols, getColOptions, onAppl
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      setSavedFilters(raw ? JSON.parse(raw) : []);
-    } catch {
-      setSavedFilters([]);
-    }
-  }, [storageKey]);
-
-  const persist = (filters: SavedFilter[]) => {
-    setSavedFilters(filters);
-    localStorage.setItem(storageKey, JSON.stringify(filters));
-  };
+    if (!isSupabaseEnabled || !supabase) { setSavedFilters([]); return; }
+    supabase
+      .from("my_filters")
+      .select("*")
+      .eq("sprint_id", sprintId)
+      .eq("member_id", userId)
+      .order("created_at")
+      .then(({ data }) => {
+        setSavedFilters(data?.map(row => mapRow(row as Record<string, unknown>)) ?? []);
+      });
+  }, [sprintId, userId]);
 
   const getStaleValues = (filter: SavedFilter): Array<{ colLabel: string; value: string }> => {
     const stale: Array<{ colLabel: string; value: string }> = [];
@@ -151,16 +161,26 @@ export function MyFilterModal({ onClose, storageKey, cols, getColOptions, onAppl
     });
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingId || editTitle.trim() === "") { setEditTouched(true); return; }
-    persist(savedFilters.map(f =>
+    if (isSupabaseEnabled && supabase) {
+      await supabase
+        .from("my_filters")
+        .update({ title: editTitle.trim(), filters: editFilters })
+        .eq("id", editingId)
+        .eq("member_id", userId);
+    }
+    setSavedFilters(savedFilters.map(f =>
       f.id === editingId ? { ...f, title: editTitle.trim(), filters: editFilters } : f
     ));
     setEditingId(null);
   };
 
-  const handleDelete = (id: string) => {
-    persist(savedFilters.filter(f => f.id !== id));
+  const handleDelete = async (id: string) => {
+    if (isSupabaseEnabled && supabase) {
+      await supabase.from("my_filters").delete().eq("id", id).eq("member_id", userId);
+    }
+    setSavedFilters(savedFilters.filter(f => f.id !== id));
     if (selectedId === id) setSelectedId(null);
     setConfirmDeleteId(null);
   };

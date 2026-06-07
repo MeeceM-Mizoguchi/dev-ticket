@@ -9,6 +9,7 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { useAuth } from "@/app/contexts/AuthContext";
 
 // プロジェクト共通の分類ベースマスター
 const BASE_CATEGORY_MAP: Record<string, string> = {
@@ -180,6 +181,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   targetTicketWbs?: string;
 }) {
   const { showAlert } = useAlert();
+  const { userId } = useAuth();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
 
   useEffect(() => {
@@ -408,7 +410,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
         return (
           <MyFilterModal
             onClose={() => setMyFilterSprintId(null)}
-            storageKey={`myfilters-${myFilterSprintId}`}
+            sprintId={myFilterSprintId}
+            userId={userId}
             cols={SPRINT_COL_DEFS}
             getColOptions={(col) => getColOptions(mfSprint, col)}
             onApply={(filters, sc, sd) => {
@@ -424,8 +427,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       {saveFilterSprintId && (
         <SaveFilterDialog
           onClose={() => setSaveFilterSprintId(null)}
-          onSave={(title) => {
-            addMyFilter(`myfilters-${saveFilterSprintId}`, title, saveFilterCurrentFilters, sortCol, sortDir);
+          onSave={async (title) => {
+            await addMyFilter(saveFilterSprintId!, userId, title, saveFilterCurrentFilters, sortCol, sortDir);
             setSaveFilterSprintId(null);
           }}
         />
@@ -534,10 +537,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     ))}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                       {hasAnyFilter && (
-                        <button onClick={e => {
+                        <button onClick={async e => {
                           e.stopPropagation();
-                          const key = `myfilters-${sprint.id}`;
-                          const dupName = checkDuplicateFilter(key, serializeFilters(sprintFilters[sprint.id] || {}));
+                          const dupName = await checkDuplicateFilter(sprint.id, userId, serializeFilters(sprintFilters[sprint.id] || {}));
                           if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
                           setSaveFilterSprintId(sprint.id);
                         }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>

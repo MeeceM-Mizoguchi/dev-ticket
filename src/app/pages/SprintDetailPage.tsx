@@ -447,9 +447,8 @@ export function SprintDetailPage() {
           ))}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
             {Object.values(colFilters).some(s => s.size > 0) && (
-              <button onClick={() => {
-                const key = `myfilters-${sprintId}`;
-                const dupName = checkDuplicateFilter(key, serializedColFilters);
+              <button onClick={async () => {
+                const dupName = await checkDuplicateFilter(sprintId!, userId, serializedColFilters);
                 if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
                 setShowSaveFilterDialog(true);
               }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
@@ -601,7 +600,8 @@ export function SprintDetailPage() {
       {showMyFilterModal && (
         <MyFilterModal
           onClose={() => setShowMyFilterModal(false)}
-          storageKey={`myfilters-${sprintId}`}
+          sprintId={sprintId!}
+          userId={userId}
           cols={DETAIL_COL_DEFS}
           getColOptions={getColOptions}
           onApply={(filters, sc, sd) => {
@@ -614,8 +614,8 @@ export function SprintDetailPage() {
       {showSaveFilterDialog && (
         <SaveFilterDialog
           onClose={() => setShowSaveFilterDialog(false)}
-          onSave={(title) => {
-            addMyFilter(`myfilters-${sprintId}`, title, serializedColFilters, sortCol, sortDir);
+          onSave={async (title) => {
+            await addMyFilter(sprintId!, userId, title, serializedColFilters, sortCol, sortDir);
             setShowSaveFilterDialog(false);
           }}
         />
