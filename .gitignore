@@ -7,3 +7,6 @@ dist/
 Thumbs.db
 フォルダ構成.txt
 仕様書.txt
+env
+.gitignore
+env.example

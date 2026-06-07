@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from "react-router";
 import { ToastProvider } from "@/app/contexts/ToastContext";
+import { AlertProvider } from "@/app/contexts/AlertContext";
 import { AuthProvider } from "@/app/contexts/AuthContext";
 import { ProtectedShell } from "@/app/components/layout/AppShell";
 import { LoginPage } from "@/app/pages/LoginPage";
@@ -18,29 +19,31 @@ import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 export default function App() {
   return (
     <ToastProvider>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/accept-invite" element={<AcceptInvitePage />} />
-          <Route element={<ProtectedShell />}>
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/projects" element={<ProjectsPage />} />
-            {/* Sprint detail (individual sprint view) */}
-            <Route path="/:projectSlug/sprint/:sprintId" element={<SprintDetailPage />} />
-            <Route path="/clients" element={<ClientsPage />} />
-            <Route path="/members" element={<MembersPage />} />
-            <Route path="/permissions" element={<PermissionsPage />} />
-            <Route path="/roles" element={<RolesPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/admin-settings" element={<AdminSettingsPage />} />
-            {/* Slug-based sprint list + ticket panel */}
-            <Route path="/:projectSlug" element={<SprintPage />} />
-            <Route path="/:projectSlug/:ticketWbs" element={<SprintPage />} />
-          </Route>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
-        </Routes>
-      </AuthProvider>
+      <AlertProvider>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/accept-invite" element={<AcceptInvitePage />} />
+            <Route element={<ProtectedShell />}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/projects" element={<ProjectsPage />} />
+              {/* Sprint detail (individual sprint view) */}
+              <Route path="/:projectSlug/sprint/:sprintId" element={<SprintDetailPage />} />
+              <Route path="/clients" element={<ClientsPage />} />
+              <Route path="/members" element={<MembersPage />} />
+              <Route path="/permissions" element={<PermissionsPage />} />
+              <Route path="/roles" element={<RolesPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/admin-settings" element={<AdminSettingsPage />} />
+              {/* Slug-based sprint list + ticket panel */}
+              <Route path="/:projectSlug" element={<SprintPage />} />
+              <Route path="/:projectSlug/:ticketWbs" element={<SprintPage />} />
+            </Route>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </AuthProvider>
+      </AlertProvider>
     </ToastProvider>
   );
 }

@@ -5,6 +5,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useAlert } from "@/app/contexts/AlertContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory } from "@/app/lib/mappers";
@@ -64,6 +65,7 @@ export function TicketDetailPanel({
 }: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string }) {
 
   const { userName, userRole, userPermissions } = useAuth();
+  const { showAlert } = useAlert();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const effectivePermissions = projectPermissions ?? userPermissions;
   // isAdminOrPM によるバイパスは行わない。権限はロール設定・プロジェクト個別設定に従う。
@@ -383,7 +385,7 @@ export function TicketDetailPanel({
       setGeneratedPrompt(generated);
       await save({ generated_prompt: generated });
     } catch (e: unknown) {
-      alert((e as Error).message ?? "プロンプト生成に失敗しました");
+      showAlert((e as Error).message ?? "プロンプト生成に失敗しました", "エラー");
     } finally {
       setIsGenerating(false);
     }
@@ -486,7 +488,7 @@ export function TicketDetailPanel({
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
     const validErr = validateParentStatusChange(btn.next, childTickets);
-    if (validErr) { alert(validErr); return; }
+    if (validErr) { showAlert(validErr, "変更できません"); return; }
     const newStatus = btn.next;
     const p = STATUS_PROGRESS[newStatus];
     setStatus(newStatus);
@@ -641,7 +643,7 @@ export function TicketDetailPanel({
       return;
     }
     const validErr = validateParentStatusChange("in-review", childTickets);
-    if (validErr) { alert(validErr); return; }
+    if (validErr) { showAlert(validErr, "変更できません"); return; }
     const round = reviewRound + 1;
     const newStatus: TicketStatus = "in-review";
     const newProgress = STATUS_PROGRESS[newStatus];
