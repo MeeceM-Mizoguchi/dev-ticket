@@ -414,20 +414,22 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       })()}
 
       {/* フィルタ保存ダイアログ */}
-      {saveFilterSprintId && (
-        <SaveFilterDialog
-          onClose={() => setSaveFilterSprintId(null)}
-          onSave={(title) => {
-            const filters = sprintFilters[saveFilterSprintId] || {};
-            const serialized: Record<string, string[]> = {};
-            Object.entries(filters).forEach(([col, set]) => {
-              serialized[col] = Array.from(set);
-            });
-            addMyFilter(`myfilters-${saveFilterSprintId}`, title, serialized, sortCol, sortDir);
-            setSaveFilterSprintId(null);
-          }}
-        />
-      )}
+      {saveFilterSprintId && (() => {
+        const rawFilters = sprintFilters[saveFilterSprintId] || {};
+        const serialized: Record<string, string[]> = {};
+        Object.entries(rawFilters).forEach(([col, set]) => { serialized[col] = Array.from(set); });
+        return (
+          <SaveFilterDialog
+            onClose={() => setSaveFilterSprintId(null)}
+            storageKey={`myfilters-${saveFilterSprintId}`}
+            currentFilters={serialized}
+            onSave={(title) => {
+              addMyFilter(`myfilters-${saveFilterSprintId}`, title, serialized, sortCol, sortDir);
+              setSaveFilterSprintId(null);
+            }}
+          />
+        );
+      })()}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {

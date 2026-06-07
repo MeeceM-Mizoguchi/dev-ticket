@@ -602,19 +602,21 @@ export function SprintDetailPage() {
           }}
         />
       )}
-      {showSaveFilterDialog && (
-        <SaveFilterDialog
-          onClose={() => setShowSaveFilterDialog(false)}
-          onSave={(title) => {
-            const serialized: Record<string, string[]> = {};
-            Object.entries(colFilters).forEach(([col, set]) => {
-              serialized[col] = Array.from(set);
-            });
-            addMyFilter(`myfilters-${sprintId}`, title, serialized, sortCol, sortDir);
-            setShowSaveFilterDialog(false);
-          }}
-        />
-      )}
+      {showSaveFilterDialog && (() => {
+        const serialized: Record<string, string[]> = {};
+        Object.entries(colFilters).forEach(([col, set]) => { serialized[col] = Array.from(set); });
+        return (
+          <SaveFilterDialog
+            onClose={() => setShowSaveFilterDialog(false)}
+            storageKey={`myfilters-${sprintId}`}
+            currentFilters={serialized}
+            onSave={(title) => {
+              addMyFilter(`myfilters-${sprintId}`, title, serialized, sortCol, sortDir);
+              setShowSaveFilterDialog(false);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
