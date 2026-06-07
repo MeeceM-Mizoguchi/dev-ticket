@@ -41,7 +41,7 @@ export function SaveFilterDialog({
           value={title}
           onChange={e => setTitle(e.target.value)}
           onBlur={() => setTouched(true)}
-          onKeyDown={e => { if (e.key === "Enter") handleSave(); }}
+          onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSave(); }}
           placeholder="フィルタ名を入力"
           style={{
             width: "100%", padding: "9px 12px", fontSize: 13,

@@ -169,7 +169,7 @@ export function MyFilterModal({ onClose, storageKey, cols, getColOptions, onAppl
               value={editTitle}
               onChange={e => setEditTitle(e.target.value)}
               onBlur={() => setEditTouched(true)}
-              onKeyDown={e => { if (e.key === "Enter") handleSaveEdit(); }}
+              onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSaveEdit(); }}
               style={{
                 width: "100%", padding: "9px 12px", fontSize: 13,
                 border: `1.5px solid ${editTouched && editTitleEmpty ? "#DC2626" : "rgba(26,23,20,0.15)"}`,
