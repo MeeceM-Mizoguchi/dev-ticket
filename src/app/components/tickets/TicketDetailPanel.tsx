@@ -115,6 +115,8 @@ export function TicketDetailPanel({
   const [reviewImages, setReviewImages] = useState<string[]>([]);
   // reviewer's input for revision/approval comment
   const [revisionInput, setRevisionInput] = useState("");
+  // 再レビュー依頼フォームの表示フラグ
+  const [showReReviewForm, setShowReReviewForm] = useState(false);
   const [revisionImages, setRevisionImages] = useState<string[]>([]);
 
   // comment form
@@ -638,7 +640,7 @@ export function TicketDetailPanel({
 
   const handleReviewRequest = async () => {
     console.log("[debug] handleReviewRequest called", { reviewerName, status, projectSlug, ticketId: ticket?.id });
-    if (!reviewerName || status !== "in-progress" || !ticket) {
+    if (!reviewerName || (status !== "in-progress" && status !== "review-done" && status !== "stg-test" && status !== "uat") || !ticket) {
       console.warn("[debug] handleReviewRequest early return", { reviewerName, status, hasTicket: !!ticket });
       return;
     }
@@ -687,6 +689,7 @@ export function TicketDetailPanel({
       });
     }
     setReviewContent("");
+    setShowReReviewForm(false);
     onUpdated?.();
   };
 
@@ -945,8 +948,11 @@ export function TicketDetailPanel({
   const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
   // 自己レビュー: 担当者自身がレビュアーに指定されているケース
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
-  const canSendReview = status === "in-progress" && !!reviewerName && isAssignee && !hasBeenApproved;
-  const canWithdrawReview = status === "in-review" && isAssignee && !hasBeenApproved;
+  const canSendReview = !!reviewerName && isAssignee && (
+    status === "in-progress" ||
+    (showReReviewForm && (status === "review-done" || status === "stg-test" || status === "uat"))
+  );
+  const canWithdrawReview = status === "in-review" && isAssignee;
   // レビュアーボタン: 指定されたレビュアー or 管理者/PM、かつレビュー権限あり
   // 自己レビューの場合は isAssignee と hasReviewPermission をバイパス
   const canReview = (userName === reviewerName || isAdminOrPM) && (!isAssignee || isSelfReview) && (hasReviewPermission || isSelfReview);
@@ -1150,15 +1156,23 @@ export function TicketDetailPanel({
               </div>
             );
           })()}
+          {/* STG完了ボタン: レビュー中は非活性で表示 */}
+          {status === "in-review" && isAssignee && (
+            <button disabled
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(13,148,136,0.20)", cursor: "not-allowed", background: "#F0FDFA", color: "#94A3B8", marginTop: 10 }}>
+              STG完了 →
+            </button>
+          )}
           {/* Action button in header */}
           {actionBtn && isAssignee && (
-            <button onClick={() => handleStatusAction(actionBtn)}
-              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${actionBtn.color}33`, cursor: "pointer", background: actionBtn.bg, color: actionBtn.color, marginTop: 10 }}>
+            <button onClick={() => { if (!showReReviewForm) handleStatusAction(actionBtn); }}
+              disabled={showReReviewForm}
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${showReReviewForm ? "rgba(107,114,128,0.20)" : actionBtn.color + "33"}`, cursor: showReReviewForm ? "not-allowed" : "pointer", background: showReReviewForm ? "#F4F5F6" : actionBtn.bg, color: showReReviewForm ? "#B0A9A4" : actionBtn.color, marginTop: 10 }}>
               {actionBtn.label} →
             </button>
           )}
-          {/* Review skip button */}
-          {hasSkipReviewPermission && (status === "in-progress" || status === "in-review") && (
+          {/* Review skip button: in-progressのみ表示 */}
+          {hasSkipReviewPermission && status === "in-progress" && (
             <button onClick={handleSkipReview}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
               レビュースキップ →
@@ -1566,10 +1580,22 @@ export function TicketDetailPanel({
                     <p style={{ fontSize: 13, fontWeight: 700, color: "#D97706", marginBottom: 4 }}>まず着手を開始してください</p>
                     <p style={{ fontSize: 12, color: "#9E9690" }}>「着手開始」ボタンを押してから<br />レビュー依頼を送信できます</p>
                   </div>
-                ) : hasBeenApproved ? (
-                  <div style={{ padding: "12px 14px", background: "#ECFDF5", borderRadius: 9, border: "1px solid rgba(5,150,105,0.20)", textAlign: "center" as const }}>
-                    <p style={{ fontSize: 12, fontWeight: 700, color: "#059669" }}>✅ レビューが承認されています</p>
-                    <p style={{ fontSize: 11, color: "#9E9690", marginTop: 3 }}>新規レビュー依頼は送信できません</p>
+                ) : (hasBeenApproved && !showReReviewForm && (status === "review-done" || status === "stg-test" || status === "uat")) ? (
+                  <div style={{ padding: "12px 14px", background: "#ECFDF5", borderRadius: 9, border: "1px solid rgba(5,150,105,0.20)" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <div>
+                        <p style={{ fontSize: 12, fontWeight: 700, color: "#059669" }}>✅ レビューが承認されています</p>
+                        <p style={{ fontSize: 11, color: "#9E9690", marginTop: 3 }}>再度レビューを依頼できます</p>
+                      </div>
+                      <button
+                        onClick={() => setShowReReviewForm(true)}
+                        style={{ flexShrink: 0, padding: "6px 14px", background: "#7C3AED", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer", whiteSpace: "nowrap" as const }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#6D28D9"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#7C3AED"; }}
+                      >
+                        再レビュー依頼
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div
@@ -1679,6 +1705,16 @@ export function TicketDetailPanel({
                         <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
                         <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
                       </label>
+                      {showReReviewForm && (
+                        <button
+                          onClick={() => { setShowReReviewForm(false); setReviewContent(""); setReviewFiles([]); setReviewImages([]); }}
+                          style={{ padding: "7px 12px", background: "#F4F5F6", color: "#6B7280", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(107,114,128,0.25)", cursor: "pointer", flexShrink: 0 }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E9EAEB"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                        >
+                          キャンセル
+                        </button>
+                      )}
                       <button onClick={handleReviewRequest} disabled={!canSendReview}
                         style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
                         {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
