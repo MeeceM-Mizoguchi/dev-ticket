@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -12,6 +12,8 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
 
 // あらゆるIDパターンに安全に対応するためのフォールバック付き辞書
 const CATEGORY_MAP: Record<string, string> = {
@@ -205,6 +207,8 @@ export function SprintDetailPage() {
   const [openCol, setOpenCol] = useState<string>("");
   const [showCreate, setShowCreate] = useState(false);
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
+  const [showMyFilterModal, setShowMyFilterModal] = useState(false);
+  const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
 
   const selectTicket = (wbs: string | null) => {
     if (wbs) {
@@ -356,7 +360,21 @@ export function SprintDetailPage() {
     });
 
   const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
-  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 52px 130px 36px";
+  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 52px 130px 52px";
+
+  const DETAIL_COL_DEFS = [
+    { col: "wbs", label: "No" },
+    { col: "title", label: "チケット名" },
+    { col: "description", label: "チケット詳細" },
+    { col: "category", label: "分類" },
+    { col: "status", label: "ステータス" },
+    { col: "priority", label: "優先度" },
+    { col: "assignee", label: "担当者" },
+    { col: "startDate", label: "開始日" },
+    { col: "dueDate", label: "終了日" },
+    { col: "estimatedHours", label: "工数" },
+    { col: "progress", label: "進捗" },
+  ];
 
   return (
     <div style={{ padding: "24px" }}>
@@ -388,6 +406,13 @@ export function SprintDetailPage() {
               </div>
             ))}
           </div>
+          <button onClick={() => setShowMyFilterModal(true)}
+            title="Myフィルタ"
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", background: "#ECFDF5", color: "#059669", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer", flexShrink: 0 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+            <FolderOpen style={{ width: 14, height: 14 }} />Myフィルタ
+          </button>
           {canCreateTicket && (
             <button onClick={() => setShowCreate(true)}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
@@ -416,10 +441,15 @@ export function SprintDetailPage() {
               alignRight={idx >= 9}
             />
           ))}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
             {Object.values(colFilters).some(s => s.size > 0) && (
-              <button onClick={() => setColFilters({})} title="フィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                <X style={{ width: 12, height: 12 }} />
+              <button onClick={() => setShowSaveFilterDialog(true)} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                <BookmarkPlus style={{ width: 11, height: 11 }} />
+              </button>
+            )}
+            {Object.values(colFilters).some(s => s.size > 0) && (
+              <button onClick={() => setColFilters({})} title="フィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                <X style={{ width: 11, height: 11 }} />
               </button>
             )}
           </div>
@@ -558,6 +588,33 @@ export function SprintDetailPage() {
         <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />
       )}
       <TicketDetailPanel ticket={selectedTicket} projectId={project?.id} sprintId={sprintId} projectSlug={projectSlug} onClose={() => selectTicket(null)} onUpdated={refreshSprint} onDeleted={() => { selectTicket(null); refreshSprint(); }} onSelectTicket={t => selectTicket(t.wbs || t.id)} projectPermissions={projectPermissions ?? undefined} />
+
+      {showMyFilterModal && (
+        <MyFilterModal
+          onClose={() => setShowMyFilterModal(false)}
+          storageKey={`myfilters-${sprintId}`}
+          cols={DETAIL_COL_DEFS}
+          getColOptions={getColOptions}
+          onApply={(filters, sc, sd) => {
+            setColFilters(filters);
+            setSortCol(sc);
+            setSortDir(sd);
+          }}
+        />
+      )}
+      {showSaveFilterDialog && (
+        <SaveFilterDialog
+          onClose={() => setShowSaveFilterDialog(false)}
+          onSave={(title) => {
+            const serialized: Record<string, string[]> = {};
+            Object.entries(colFilters).forEach(([col, set]) => {
+              serialized[col] = Array.from(set);
+            });
+            addMyFilter(`myfilters-${sprintId}`, title, serialized, sortCol, sortDir);
+            setShowSaveFilterDialog(false);
+          }}
+        />
+      )}
     </div>
   );
 }

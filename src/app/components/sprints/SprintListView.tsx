@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
+import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
@@ -196,6 +198,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   // フィルターの状態保持を「スプリントID」ごとに完全独立化
   const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
   const [openCol, setOpenCol] = useState<string>("");
+  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
+  const [saveFilterSprintId, setSaveFilterSprintId] = useState<string | null>(null);
 
   // 設定画面から、本物の分類データを直接保持するステート
   const [dbCategories, setDbCategories] = useState<Array<{ id: string; projectId: string; name: string }>>([]);
@@ -369,14 +373,61 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate"] as const;
   const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日"];
   
+  const SPRINT_COL_DEFS = [
+    { col: "wbs", label: "No" },
+    { col: "title", label: "チケット名" },
+    { col: "description", label: "チケット詳細" },
+    { col: "category", label: "分類" },
+    { col: "status", label: "ステータス" },
+    { col: "priority", label: "優先度" },
+    { col: "assignee", label: "担当者" },
+    { col: "startDate", label: "開始日" },
+    { col: "dueDate", label: "期限日" },
+  ];
+
   // 動的自動幅（dynamicCategoryColumnWidth）pxを流し込み、上下の縦ラインをピシッとシンクロ
-  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 32px`;
+  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 52px`;
 
   const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
 
   return (
     <div>
       {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 9 }} onClick={closeCol} />}
+
+      {/* Myフィルタモーダル */}
+      {myFilterSprintId && (() => {
+        const mfSprint = sprints.find(s => s.id === myFilterSprintId);
+        if (!mfSprint) return null;
+        return (
+          <MyFilterModal
+            onClose={() => setMyFilterSprintId(null)}
+            storageKey={`myfilters-${myFilterSprintId}`}
+            cols={SPRINT_COL_DEFS}
+            getColOptions={(col) => getColOptions(mfSprint, col)}
+            onApply={(filters, sc, sd) => {
+              setSprintFilters(prev => ({ ...prev, [myFilterSprintId]: filters }));
+              setSortCol(sc as SortCol | "");
+              setSortDir(sd);
+            }}
+          />
+        );
+      })()}
+
+      {/* フィルタ保存ダイアログ */}
+      {saveFilterSprintId && (
+        <SaveFilterDialog
+          onClose={() => setSaveFilterSprintId(null)}
+          onSave={(title) => {
+            const filters = sprintFilters[saveFilterSprintId] || {};
+            const serialized: Record<string, string[]> = {};
+            Object.entries(filters).forEach(([col, set]) => {
+              serialized[col] = Array.from(set);
+            });
+            addMyFilter(`myfilters-${saveFilterSprintId}`, title, serialized, sortCol, sortDir);
+            setSaveFilterSprintId(null);
+          }}
+        />
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {
@@ -439,6 +490,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         <Plus style={{ width: 11, height: 11 }} />一括作成
                       </button>
                     )}
+                    <button onClick={e => { e.stopPropagation(); setMyFilterSprintId(sprint.id); }}
+                      title="Myフィルタ"
+                      style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                      <FolderOpen style={{ width: 14, height: 14 }} />
+                    </button>
                     {onEditSprint && (
                       <button onClick={e => { e.stopPropagation(); onEditSprint(sprint); }}
                         style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
@@ -472,7 +530,12 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         alignRight={idx >= 7}
                       />
                     ))}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                      {hasAnyFilter && (
+                        <button onClick={e => { e.stopPropagation(); setSaveFilterSprintId(sprint.id); }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                          <BookmarkPlus style={{ width: 11, height: 11 }} />
+                        </button>
+                      )}
                       {hasAnyFilter && (
                         <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                           <X style={{ width: 11, height: 11 }} />
