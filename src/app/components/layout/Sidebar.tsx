@@ -5,13 +5,13 @@ import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 
 const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; permission?: keyof UserPermissions }[] = [
-  { id: "dashboard",   label: "ダッシュ",     icon: LayoutDashboard },
-  { id: "projects",    label: "PJ一覧",       icon: FolderKanban },
-  { id: "clients",     label: "クライアント", icon: Building2,   roles: ["admin", "project-manager"] },
-  { id: "members",     label: "メンバー",     icon: Users,        permission: "canAccessMembers" },
+  { id: "dashboard", label: "ダッシュ", icon: LayoutDashboard },
+  { id: "projects", label: "PJ一覧", icon: FolderKanban },
+  { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager"] },
+  { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
-  { id: "roles",       label: "ロール設定",   icon: UserCog,      permission: "canAccessRoles" },
-  { id: "admin-settings", label: "通知管理", icon: BellRing,    permission: "canAccessAdminSettings" },
+  { id: "roles", label: "ロール設定", icon: UserCog, permission: "canAccessRoles" },
+  { id: "admin-settings", label: "通知管理", icon: BellRing, permission: "canAccessAdminSettings" },
 ];
 
 export function Sidebar() {
@@ -20,9 +20,14 @@ export function Sidebar() {
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
+  // 🌟【修正ポイント】動的なプロジェクトパス（/:slug や /:slug/:wbs）を正しく「プロジェクト」として検知させるロジックに変更
   const getActivePage = (): Exclude<Page, "login"> => {
     const p = location.pathname;
-    if (p.startsWith("/projects/")) return "projects";
+
+    // 完全にダッシュボード（ルート）の時
+    if (p === "/" || p === "/dashboard") return "dashboard";
+
+    // 既存の固定ルーティング設定
     if (p.startsWith("/projects")) return "projects";
     if (p.startsWith("/clients")) return "clients";
     if (p.startsWith("/members")) return "members";
@@ -30,7 +35,10 @@ export function Sidebar() {
     if (p.startsWith("/permissions")) return "permissions";
     if (p.startsWith("/roles")) return "roles";
     if (p.startsWith("/admin-settings")) return "admin-settings";
-    return "dashboard";
+
+    // 上記の固定パスに当てはまらない URL（例: /DevTicket や /DevTicket/TKT-001 など）は、
+    // プロジェクト詳細画面やスプリント管理画面を表示しているため「プロジェクト」をハイライトさせる
+    return "projects";
   };
 
   const page = getActivePage();
