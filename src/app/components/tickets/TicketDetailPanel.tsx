@@ -637,6 +637,13 @@ export function TicketDetailPanel({
 
   const handleRevisionRequest = async (revisionText: string = "") => {
     if (!ticket) return;
+
+    // 🌟 修正: APIリクエスト前の権限バリデーション（防御処理）
+    if (userName !== reviewerName) {
+      showAlert("権限エラー: 修正依頼（差戻し）は、指定されたレビュアーのみが実行できます。", "エラー");
+      return;
+    }
+
     const newStatus: TicketStatus = "in-progress";
     const newProgress = STATUS_PROGRESS[newStatus];
     setStatus(newStatus); setProgress(newProgress);
@@ -671,6 +678,13 @@ export function TicketDetailPanel({
   const handleReviewApproval = async (approvalText: string = "") => {
     console.log("[debug] handleReviewApproval called", { assignee, projectSlug, ticketId: ticket?.id });
     if (!ticket) return;
+
+    // 🌟 修正: APIリクエスト前の権限バリデーション（防御処理）
+    if (userName !== reviewerName) {
+      showAlert("権限エラー: レビューの承認は、指定されたレビュアーのみが実行できます。", "エラー");
+      return;
+    }
+
     const newStatus: TicketStatus = "review-done";
     const newProgress = STATUS_PROGRESS[newStatus];
     setStatus(newStatus); setProgress(newProgress);
@@ -895,9 +909,10 @@ export function TicketDetailPanel({
     (showReReviewForm && (status === "review-done" || status === "stg-test" || status === "uat"))
   );
   const canWithdrawReview = status === "in-review" && isAssignee;
-  // レビュアーボタン: 指定されたレビュアー or 管理者/PM、かつレビュー権限あり
-  // 自己レビューの場合は isAssignee と hasReviewPermission をバイパス
-  const canReview = (userName === reviewerName || isAdminOrPM) && (!isAssignee || isSelfReview) && (hasReviewPermission || isSelfReview);
+
+  // 🌟 修正: 管理者・PMのバイパスを排除。「ログインユーザーが指定されたレビュアーと完全に一致する場合のみ」レビュー可能
+  const canReview = !!reviewerName && userName === reviewerName;
+
   const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
   const roundOutcomes = reviewRequestComments.map((reqComment, idx) => {
     const reqIdx = comments.findIndex(c => c.id === reqComment.id);
