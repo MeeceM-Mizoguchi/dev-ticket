@@ -11,5 +11,14 @@ export function fireSlackNotify(params: SlackNotifyParams): void {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
-  }).catch(() => {});
+  })
+    .then(async res => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.error("[slack-notify] APIエラー:", res.status, data);
+      } else if (data.skipped) {
+        console.warn("[slack-notify] スキップされました:", data.reason);
+      }
+    })
+    .catch(e => console.error("[slack-notify] ネットワークエラー:", e));
 }

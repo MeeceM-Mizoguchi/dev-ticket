@@ -14,7 +14,8 @@ export default async function handler(req: any, res: any) {
   const clientId = process.env.SLACK_CLIENT_ID;
   if (!clientId) return res.status(500).json({ error: "SLACK_CLIENT_ID not configured" });
 
-  const publicUrl = process.env.PUBLIC_URL || "http://localhost:5173";
+  const publicUrl = process.env.PUBLIC_URL
+    ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:5173");
   const redirectUri = `${publicUrl}/api/slack-oauth-callback`;
 
   // chat:write.public → Bot をチャンネルに invite せず公開チャンネルに投稿可能

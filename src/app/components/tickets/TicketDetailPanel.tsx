@@ -560,7 +560,7 @@ export function TicketDetailPanel({
           title: `${userName}さんがコメントに返信しました`,
           body: `${ticket.wbs}: ${ticket.title}`,
           ticket_id: ticket.id, ticket_wbs: ticket.wbs, ticket_title: ticket.title,
-          project_slug: projectSlug, mention_context: `comment:${id}`, is_read: false,
+          project_slug: projectSlug, is_read: false,
         }).then(({ error: e }) => { if (e) console.error("[notifications] reply insert failed:", e.message); });
       }
     } else {

@@ -30,7 +30,15 @@ export default async function handler(req: any, res: any) {
     .maybeSingle();
 
   if (!project?.slack_notifications_enabled || !project?.slack_channel || !project?.slack_access_token) {
-    return res.json({ skipped: true, reason: "Slack notifications not configured for this project" });
+    const reason = !project
+      ? "プロジェクトが見つかりません (slug: " + projectSlug + ")"
+      : !project.slack_access_token
+        ? "Slack未接続（アクセストークンなし）"
+        : !project.slack_channel
+          ? "通知チャンネルが未設定"
+          : "Slack通知が無効";
+    console.warn("[slack-notify] スキップ:", reason);
+    return res.json({ skipped: true, reason });
   }
 
   const { data: profile } = await sb
