@@ -310,12 +310,22 @@ export function TicketDetailPanel({
         if (name === userName || !stripped.includes(`@${name}`) || prevStripped.includes(`@${name}`) || alreadyNotified.has(name)) continue;
         if (!projectSlug) continue;
         alreadyNotified.add(name);
-        supabase!.from("notifications").insert({
-          user_name: name, type: "mention", title: `${userName}さんにメンションされました`,
+
+        // 🌟 修正: 通知のINSERT処理を await で確実に待機させる（非同期の抜け漏れを防止）
+        // さらに、不要なカラム（mention_context）によるサイレントエラーを防ぐため、他の通知処理とフォーマットを統一
+        const { error } = await supabase!.from("notifications").insert({
+          user_name: name,
+          type: "mention",
+          title: `${userName}さんにメンションされました`,
           body: `${ticket.wbs}: ${ticket.title}（チケット詳細）`,
-          ticket_id: ticket.id, ticket_wbs: ticket.wbs, ticket_title: ticket.title,
-          project_slug: projectSlug, mention_context: "description", is_read: false,
-        }).then(({ error }) => { if (error) console.error("[mention] description:", error.message); });
+          ticket_id: ticket.id,
+          ticket_wbs: ticket.wbs,
+          ticket_title: ticket.title,
+          project_slug: projectSlug,
+          is_read: false,
+        });
+        if (error) console.error("[mention] description notification insert failed:", error.message);
+
         const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
         fireSlackNotify({
           recipientUserName: name,
@@ -506,8 +516,7 @@ export function TicketDetailPanel({
         ticket_wbs: currentTicket.wbs,
         ticket_title: currentTicket.title,
         project_slug: projectSlug,
-        mention_context: context,
-        is_read: false,
+        is_read: false, // 🌟 修正: mention_context を除去し安全化
       });
       if (error) console.error("[notifications] mention insert failed:", error.message);
       // @メンションのSlack通知（メンションが発生したプロジェクトのチャンネルに送信）

@@ -25,25 +25,31 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const needsSelection = !sprintId && !isChildMode;
 
   // --- プロジェクト・スプリント選択（ダッシュボードから開く場合） ---
-  const [availableProjects, setAvailableProjects] = useState<{ id: string; name: string }[]>([]);
+  const [availableProjects, setAvailableProjects] = useState<{ id: string; name: string; slug?: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; startDate?: string; endDate?: string }[]>([]);
   const [selectedSprintId, setSelectedSprintId] = useState("");
   const [projectError, setProjectError] = useState(false);
   const [sprintError, setSprintError] = useState(false);
+
+  // 現在選択されている（または親から渡された）プロジェクトのメンバー名の配列
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
+
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
+  // 🌟 追加: ダッシュボードから選択した場合でも、正しい projectSlug を特定して保持する
+  const effectiveProjectSlug = projectSlug || availableProjects.find(p => p.id === effectiveProjectId)?.slug || "";
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
   const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
 
+  // 1. プロジェクト一覧の取得、および固定プロジェクト時のメンバー取得
   useEffect(() => {
     if (!isSupabaseEnabled) {
       const accessible = isAdmin ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
-      setAvailableProjects(accessible.map(p => ({ id: p.id, name: p.name })));
+      setAvailableProjects(accessible.map(p => ({ id: p.id, name: p.name, slug: p.slug })));
 
-      // 🌟 追加：親から固定の projectId が渡されている場合はそのメンバーを設定
+      // 親から固定の projectId が渡されている場合はそのメンバーを設定
       if (projectId) {
         const pData = PROJECTS.find(p => p.id === projectId);
         if (pData?.members) setCurrentProjectMembers(pData.members);
@@ -51,12 +57,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       return;
     }
 
-    supabase!.from("projects").select("id, name, members").order("name").then(({ data }) => {
+    // 🌟 修正: 通知用に `slug` カラムもデータベースから同時に取得する
+    supabase!.from("projects").select("id, name, members, slug").order("name").then(({ data }) => {
       if (data) {
         const accessible = isAdmin ? data : data.filter((p: any) => Array.isArray(p.members) && p.members.includes(userName));
-        setAvailableProjects(accessible.map((p: any) => ({ id: p.id, name: p.name })));
+        setAvailableProjects(accessible.map((p: any) => ({ id: p.id, name: p.name, slug: p.slug })));
 
-        // 🌟 追加：親から固定の projectId が渡されている場合は、そのプロジェクトの所属メンバー名配列を初期設定
+        // 親から固定の projectId が渡されている場合は、そのプロジェクトの所属メンバー名配列を初期設定
         if (projectId) {
           const pData = data.find((p: any) => p.id === projectId);
           if (pData?.members) setCurrentProjectMembers(pData.members);
@@ -197,6 +204,37 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (!title.trim()) { setTitleError(true); valid = false; }
     if (!valid) return;
 
+    const finalAssignee = assignee === "担当者なし" ? null : assignee;
+
+    // 🌟 追加：新規チケット作成時に、詳細欄のメンションを解析して通知を飛ばす関数
+    const notifyMentions = async (ticketWbs: string) => {
+      if (!description || !effectiveProjectSlug) return;
+      const stripped = description.replace(/<[^>]*>/g, " ");
+      for (const name of currentProjectMembers) {
+        if (name === userName || !stripped.includes(`@${name}`)) continue;
+
+        const { error } = await supabase!.from("notifications").insert({
+          user_name: name,
+          type: "mention",
+          title: `${userName}さんにメンションされました`,
+          body: `${ticketWbs}: ${title}（チケット作成）`,
+          ticket_id: ticketId.current,
+          ticket_wbs: ticketWbs,
+          ticket_title: title,
+          project_slug: effectiveProjectSlug,
+          is_read: false,
+        });
+        if (error) console.error("[mention] new ticket insert failed:", error.message);
+
+        fireSlackNotify({
+          recipientUserName: name,
+          projectSlug: effectiveProjectSlug,
+          title: `${userName}さんにメンションされました`,
+          body: `<${window.location.origin}/${effectiveProjectSlug}/${ticketWbs}|${ticketWbs}: ${title}>（チケット作成）`,
+        });
+      }
+    };
+
     if (isSupabaseEnabled) {
       setSaving(true);
       let wbs: string;
@@ -213,7 +251,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           if (parentRow?.sprint_id) {
             const { error: insErr } = await supabase!.from("sprint_tickets").insert({
               id: ticketId.current, sprint_id: parentRow.sprint_id, wbs,
-              title, status, priority, assignee,
+              title, status, priority, assignee: finalAssignee,
               start_date: startDate || null, due_date: dueDate || null,
               estimated_hours: estimatedHours || 0, progress: 0,
               description: description || null,
@@ -222,16 +260,19 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               images: images.length ? images : [],
               parent_id: parentTicketId,
             });
-            if (!insErr && assignee && projectSlug) {
-              const { error: nErr } = await supabase!.from("notifications").insert({
-                user_name: assignee, type: "assign",
-                title: "チケットが割り当てられました",
-                body: `${wbs}: ${title}`,
-                ticket_id: ticketId.current, ticket_wbs: wbs, ticket_title: title,
-                project_slug: projectSlug, is_read: false,
-              });
-              if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
-              fireSlackNotify({ recipientUserName: assignee, projectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+            if (!insErr) {
+              if (finalAssignee && effectiveProjectSlug) {
+                const { error: nErr } = await supabase!.from("notifications").insert({
+                  user_name: finalAssignee, type: "assign",
+                  title: "チケットが割り当てられました",
+                  body: `${wbs}: ${title}`,
+                  ticket_id: ticketId.current, ticket_wbs: wbs, ticket_title: title,
+                  project_slug: effectiveProjectSlug, is_read: false,
+                });
+                if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
+                fireSlackNotify({ recipientUserName: finalAssignee, projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+              }
+              await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
             }
             setSaving(false);
             onCreated?.();
@@ -241,7 +282,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
       } else {
         // プロジェクト内の全スプリントIDを取得し、プロジェクトスコープでwbs連番を生成
-        // identifier も一緒に取得することで、state の非同期タイミング問題を回避する
         const { data: sprintRows } = await supabase!.from("sprints").select("id, identifier").eq("project_id", effectiveProjectId!);
         const sprintIds = sprintRows?.map(s => s.id) ?? [];
         const currentSprintIdentifier = sprintRows?.find(s => s.id === effectiveSprintId)?.identifier;
@@ -263,7 +303,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       }
       const { error: insErr2 } = await supabase!.from("sprint_tickets").insert({
         id: ticketId.current, sprint_id: effectiveSprintId, wbs,
-        title, status, priority, assignee,
+        title, status, priority, assignee: finalAssignee,
         start_date: startDate || null, due_date: dueDate || null,
         estimated_hours: estimatedHours || 0, progress: 0,
         description: description || null,
@@ -272,16 +312,19 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         images: images.length ? images : [],
         parent_id: parentTicketId || null,
       });
-      if (!insErr2 && assignee && projectSlug) {
-        const { error: nErr2 } = await supabase!.from("notifications").insert({
-          user_name: assignee, type: "assign",
-          title: "チケットが割り当てられました",
-          body: `${wbs}: ${title}`,
-          ticket_id: ticketId.current, ticket_wbs: wbs, ticket_title: title,
-          project_slug: projectSlug, is_read: false,
-        });
-        if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
-        fireSlackNotify({ recipientUserName: assignee, projectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+      if (!insErr2) {
+        if (finalAssignee && effectiveProjectSlug) {
+          const { error: nErr2 } = await supabase!.from("notifications").insert({
+            user_name: finalAssignee, type: "assign",
+            title: "チケットが割り当てられました",
+            body: `${wbs}: ${title}`,
+            ticket_id: ticketId.current, ticket_wbs: wbs, ticket_title: title,
+            project_slug: effectiveProjectSlug, is_read: false,
+          });
+          if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
+          fireSlackNotify({ recipientUserName: finalAssignee, projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+        }
+        await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
       }
       setSaving(false);
     }
@@ -418,7 +461,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} />
+            {/* 🌟 修正: メンション候補として currentProjectMembers を RichEditor に渡す */}
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} />
           </div>
 
           <div>
