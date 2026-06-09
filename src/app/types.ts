@@ -1,4 +1,4 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions";
 export type PermissionType = "none" | "view" | "edit" | "admin";
 export type Role = string;
 export interface RoleDefinition {
