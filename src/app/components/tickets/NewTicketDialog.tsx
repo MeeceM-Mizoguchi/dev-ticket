@@ -418,7 +418,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} />
+            {/* 🌟 修正: メンション候補として currentProjectMembers を RichEditor に渡す */}
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} />
           </div>
 
           <div>
