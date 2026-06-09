@@ -1,16 +1,11 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderOpen, BookmarkPlus, Download } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
-import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
-import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
-import { useAlert } from "@/app/contexts/AlertContext";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
-import { downloadSprintCsv } from "@/app/lib/csvExport";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { useAuth } from "@/app/contexts/AuthContext";
 
 // プロジェクト共通の分類ベースマスター
 const BASE_CATEGORY_MAP: Record<string, string> = {
@@ -90,7 +85,8 @@ function ColumnFilter({
             position: "absolute", top: "calc(100% + 6px)",
             left: alignRight ? "auto" : 0, right: alignRight ? 0 : "auto",
             background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", zIndex: 200, minWidth: 190,
+            // 🌟 修正: maxWidth: 360 を追加して横幅の広がりすぎを防止
+            boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", zIndex: 200, minWidth: 190, maxWidth: 360,
           }}>
           {/* Sort */}
           <button onClick={() => { onSort(col, "asc"); onClose(); }} style={{
@@ -143,15 +139,18 @@ function ColumnFilter({
               const checked = selected.has(opt.value);
               return (
                 <button key={opt.value} onClick={() => toggleOne(opt.value)} style={{
-                  display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+                  // 🌟 修正: alignItems を flex-start に変更し、折り返しを許可 (whiteSpace, wordBreak)
+                  display: "flex", alignItems: "flex-start", gap: 8, width: "100%", padding: "5px 8px",
                   borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
                   background: checked ? "#ECFDF5" : "transparent",
                   color: checked ? "#059669" : "#1A1714", transition: "background 0.1s",
+                  whiteSpace: "normal", wordBreak: "break-word",
                 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: checked ? "#059669" : "transparent" }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: checked ? "#059669" : "transparent", marginTop: 2 }}>
                     {checked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
                   </div>
-                  {opt.label}
+                  {/* 🌟 修正: テキストを span で囲み、lineHeight を整えて flex: 1 を付与 */}
+                  <span style={{ flex: 1, lineHeight: 1.4 }}>{opt.label}</span>
                 </button>
               );
             })}
@@ -171,18 +170,15 @@ function ColumnFilter({
   );
 }
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
+export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, targetTicketWbs }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
-  onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
-  const { showAlert } = useAlert();
-  const { userId } = useAuth();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
 
   useEffect(() => {
@@ -194,17 +190,16 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
     if (sprint) setExpanded(prev => new Set([...prev, sprint.id]));
   }, [targetTicketWbs, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
-  
+
   // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
-  const [sortCol, setSortCol] = useState<SortCol | "">("");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  
+
+  // 🌟 修正: ソートの状態保持を「スプリントID」ごとに完全独立化
+  const [sprintSorts, setSprintSorts] = useState<Record<string, { col: SortCol | ""; dir: "asc" | "desc" }>>({});
+
   // フィルターの状態保持を「スプリントID」ごとに完全独立化
   const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
   const [openCol, setOpenCol] = useState<string>("");
-  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
-  const [saveFilterSprintId, setSaveFilterSprintId] = useState<string | null>(null);
 
   // 設定画面から、本物の分類データを直接保持するステート
   const [dbCategories, setDbCategories] = useState<Array<{ id: string; projectId: string; name: string }>>([]);
@@ -265,7 +260,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   // 自動幅調整ロジック（現在登録されている最大文字数からpx幅を動的に算出）
   const dynamicCategoryColumnWidth = useMemo(() => {
     let maxChars = 4; // 最低基準幅（4文字分）
-    
+
     dbCategories.forEach(c => {
       if (c.name && c.name.length > maxChars) maxChars = c.name.length;
     });
@@ -278,7 +273,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return Math.max(80, Math.min(180, computedPx));
   }, [dbCategories, sprints]);
 
-  // 🌟【不具合修正】選択肢（オプション）の生成スコープを、プロジェクト全体ではなく、該当「スプリント（テーブル）単体」のチケットに厳密に限定！
+  // 選択肢（オプション）の生成スコープを、プロジェクト全体ではなく、該当「スプリント（テーブル）単体」のチケットに厳密に限定
   const getColOptions = (currentSprint: Sprint, col: string): Array<{ value: string; label: string }> => {
     // スプリント内のチケット（親チケットのみ対象とする従来の仕様とも完全連動）
     const sprintTickets = currentSprint.tickets || [];
@@ -332,8 +327,18 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     setOpenCol(prev => prev === key ? "" : key);
   };
   const closeCol = () => setOpenCol("");
-  const handleSort = (col: SortCol, dir: "asc" | "desc") => { setSortCol(col); setSortDir(dir); };
-  const clearSort = () => setSortCol("");
+
+  // 🌟 修正: どのスプリントのソートを変更するか、引数に sprintId を追加
+  const handleSort = (sprintId: string, col: SortCol, dir: "asc" | "desc") => {
+    setSprintSorts(prev => ({ ...prev, [sprintId]: { col, dir } }));
+  };
+  const clearSort = (sprintId: string) => {
+    setSprintSorts(prev => {
+      const next = { ...prev };
+      delete next[sprintId];
+      return next;
+    });
+  };
 
   // 複数条件のAND掛け合わせ抽出ロジック
   const processTickets = (sprintId: string, tickets: SprintTicket[]) => {
@@ -361,20 +366,18 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       });
     });
 
-    if (!sortCol) return filtered;
+    // 🌟 修正: 対象のスプリントのソート設定を抜き出して適用する
+    const currentSort = sprintSorts[sprintId];
+    if (!currentSort || !currentSort.col) return filtered;
     return [...filtered].sort((a, b) => {
-      const dir = sortDir === "asc" ? 1 : -1;
-      const av = (sortCol === "category" ? getCategoryLabel(a) : (a[sortCol as keyof SprintTicket] ?? "")) as string | number;
-      const bv = (sortCol === "category" ? getCategoryLabel(b) : (b[sortCol as keyof SprintTicket] ?? "")) as string | number;
+      const dir = currentSort.dir === "asc" ? 1 : -1;
+      const col = currentSort.col;
+      const av = (col === "category" ? getCategoryLabel(a) : (a[col as keyof SprintTicket] ?? "")) as string | number;
+      const bv = (col === "category" ? getCategoryLabel(b) : (b[col as keyof SprintTicket] ?? "")) as string | number;
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av).localeCompare(String(bv), "ja") * dir;
     });
   };
-
-  const saveFilterCurrentFilters = useMemo(() => {
-    if (!saveFilterSprintId) return {} as Record<string, string[]>;
-    return serializeFilters(sprintFilters[saveFilterSprintId] || {});
-  }, [saveFilterSprintId, sprintFilters]);
 
   if (!sprints.length) return (
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
@@ -382,58 +385,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
   const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate"] as const;
   const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-  
-  const SPRINT_COL_DEFS = [
-    { col: "wbs", label: "No" },
-    { col: "title", label: "チケット名" },
-    { col: "description", label: "チケット詳細" },
-    { col: "category", label: "分類" },
-    { col: "status", label: "ステータス" },
-    { col: "priority", label: "優先度" },
-    { col: "assignee", label: "担当者" },
-    { col: "startDate", label: "開始日" },
-    { col: "dueDate", label: "期限日" },
-  ];
 
   // 動的自動幅（dynamicCategoryColumnWidth）pxを流し込み、上下の縦ラインをピシッとシンクロ
-  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 80px`;
-
-  const commonSort = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
+  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 32px`;
 
   return (
     <div>
       {openCol && <div style={{ position: "fixed", inset: 0, zIndex: 9 }} onClick={closeCol} />}
-
-      {/* Myフィルタモーダル */}
-      {myFilterSprintId && (() => {
-        const mfSprint = sprints.find(s => s.id === myFilterSprintId);
-        if (!mfSprint) return null;
-        return (
-          <MyFilterModal
-            onClose={() => setMyFilterSprintId(null)}
-            sprintId={myFilterSprintId}
-            userId={userId}
-            cols={SPRINT_COL_DEFS}
-            getColOptions={(col) => getColOptions(mfSprint, col)}
-            onApply={(filters, sc, sd) => {
-              setSprintFilters(prev => ({ ...prev, [myFilterSprintId]: filters }));
-              setSortCol(sc as SortCol | "");
-              setSortDir(sd);
-            }}
-          />
-        );
-      })()}
-
-      {/* フィルタ保存ダイアログ */}
-      {saveFilterSprintId && (
-        <SaveFilterDialog
-          onClose={() => setSaveFilterSprintId(null)}
-          onSave={async (title) => {
-            await addMyFilter(saveFilterSprintId!, userId, title, saveFilterCurrentFilters, sortCol, sortDir);
-            setSaveFilterSprintId(null);
-          }}
-        />
-      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {
@@ -443,10 +401,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
           const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
           const actualHours = Math.round(sprint.tickets.reduce((s, t) => s + calcTicketActualHours(t), 0) * 10) / 10;
-          
+
           const displayTickets = processTickets(sprint.id, sprint.tickets);
           const currentFilters = sprintFilters[sprint.id] || {};
           const hasAnyFilter = Object.values(currentFilters).some(set => set && set.size > 0);
+
+          // 🌟 修正: このスプリント専用のソート設定を取り出す
+          const sprintSort = sprintSorts[sprint.id] || { col: "", dir: "asc" };
 
           return (
             <div key={sprint.id} style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
@@ -488,21 +449,6 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         <Plus style={{ width: 11, height: 11 }} />新規チケット
                       </button>
                     )}
-                    {onBulkCreate && (
-                      <button onClick={e => { e.stopPropagation(); onBulkCreate(sprint.id); }}
-                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.20)", borderRadius: 7, cursor: "pointer" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
-                        <Plus style={{ width: 11, height: 11 }} />一括作成
-                      </button>
-                    )}
-                    <button onClick={e => { e.stopPropagation(); setMyFilterSprintId(sprint.id); }}
-                      title="Myフィルタ"
-                      style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                      <FolderOpen style={{ width: 14, height: 14 }} />
-                    </button>
                     {onEditSprint && (
                       <button onClick={e => { e.stopPropagation(); onEditSprint(sprint); }}
                         style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
@@ -527,7 +473,12 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     {COLS.map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
-                        {...commonSort}
+                        // 🌟 修正: このスプリント固有のソート設定・関数を渡す
+                        sortCol={sprintSort.col as SortCol | ""}
+                        sortDir={sprintSort.dir}
+                        onSort={(c, d) => handleSort(sprint.id, c, d)}
+                        onClearSort={() => clearSort(sprint.id)}
+                        onClose={closeCol}
                         options={getColOptions(sprint, col)}
                         selected={getSelected(sprint.id, col)}
                         onFilterChange={setColFilter(sprint.id, col)}
@@ -536,20 +487,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         alignRight={idx >= 7}
                       />
                     ))}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                      <button onClick={e => { e.stopPropagation(); downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }} title="CSVダウンロード" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(2,132,199,0.25)", background: "#F0F9FF", color: "#0284C7", cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                        <Download style={{ width: 11, height: 11 }} />
-                      </button>
-                      {hasAnyFilter && (
-                        <button onClick={async e => {
-                          e.stopPropagation();
-                          const dupName = await checkDuplicateFilter(sprint.id, userId, serializeFilters(sprintFilters[sprint.id] || {}));
-                          if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
-                          setSaveFilterSprintId(sprint.id);
-                        }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                          <BookmarkPlus style={{ width: 11, height: 11 }} />
-                        </button>
-                      )}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {hasAnyFilter && (
                         <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                           <X style={{ width: 11, height: 11 }} />
@@ -576,7 +514,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     const hasChildren = children.length > 0;
                     const isTicketExpanded = expandedTickets.has(t.id);
                     const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
-                    
+
                     const displayCategory = getCategoryLabel(t);
 
                     return (
@@ -599,14 +537,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                             {hasChildren && <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9, display: "inline" }} /> {children.length}</span>}
                           </div>
                           <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
-                          
+
                           {/* 左詰め配置・動的固定幅での美表示 */}
                           <div style={{ display: "flex", justifyContent: "start", minWidth: 0, paddingLeft: 4 }}>
                             <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%", textAlign: "left" }}>
                               {displayCategory}
                             </span>
                           </div>
-                          
+
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span></div>
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span></div>
                           <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
@@ -636,13 +574,13 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                                 <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
                               </div>
                               <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
-                              
+
                               <div style={{ display: "flex", justifyContent: "start", minWidth: 0, paddingLeft: 4 }}>
                                 <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%", textAlign: "left" }}>
                                   {childCategory}
                                 </span>
                               </div>
-                              
+
                               <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{ctsm.label}</span></div>
                               <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, width: "fit-content" }}>{cPriLabel}</span></div>
                             </div>
