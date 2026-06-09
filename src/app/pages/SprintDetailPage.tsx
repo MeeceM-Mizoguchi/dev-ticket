@@ -222,7 +222,7 @@ export function SprintDetailPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled || !sprintId) return;
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).single()
+    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single()
       .then(async ({ data: s }) => {
         if (!s) { setLoading(false); return; }
         setSprint(mapSprint(s));
@@ -241,7 +241,7 @@ export function SprintDetailPage() {
 
   const refreshSprint = () => {
     if (!isSupabaseEnabled || !sprintId) return;
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).single()
+    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single()
       .then(({ data }) => { if (data) setSprint(mapSprint(data)); });
   };
 

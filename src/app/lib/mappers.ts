@@ -24,7 +24,12 @@ export function mapTicketCategory(r: any): TicketCategory {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapSprint(r: any): Sprint {
-  return { id:r.id, projectId:r.project_id, name:r.name, goal:r.goal||"", status:r.status, startDate:r.start_date, endDate:r.end_date, identifier:r.identifier||"", tickets:(r.sprint_tickets||[]).map(mapSprintTicket) };
+  const tickets = (r.sprint_tickets||[]).map(mapSprintTicket)
+    .sort((a: import("../types").SprintTicket, b: import("../types").SprintTicket) => {
+      const d = (a.createdAt || "").localeCompare(b.createdAt || "");
+      return d !== 0 ? d : a.id.localeCompare(b.id);
+    });
+  return { id:r.id, projectId:r.project_id, name:r.name, goal:r.goal||"", status:r.status, startDate:r.start_date, endDate:r.end_date, identifier:r.identifier||"", tickets };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
