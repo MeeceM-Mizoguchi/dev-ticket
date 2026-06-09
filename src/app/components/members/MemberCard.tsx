@@ -1,14 +1,15 @@
-import type React from "react";
+import React, { useState, useEffect } from "react";
 import { Eye, Edit2, Mail, Trash2, Layers } from "lucide-react";
 import type { Member } from "@/app/types";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { getRoleMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 
 const ROLE_COLORS: Record<string, { grad: string; badge: string; text: string }> = {
-  admin:             { grad: "linear-gradient(135deg,#FB7185,#F43F5E)", badge: "#FFF1F2", text: "#F43F5E" },
+  admin: { grad: "linear-gradient(135deg,#FB7185,#F43F5E)", badge: "#FFF1F2", text: "#F43F5E" },
   "project-manager": { grad: "linear-gradient(135deg,#34D399,#059669)", badge: "#ECFDF5", text: "#059669" },
-  developer:         { grad: "linear-gradient(135deg,#38BDF8,#0284C7)", badge: "#F0F9FF", text: "#0284C7" },
-  designer:          { grad: "linear-gradient(135deg,#A78BFA,#7C3AED)", badge: "#F5F3FF", text: "#7C3AED" },
+  developer: { grad: "linear-gradient(135deg,#38BDF8,#0284C7)", badge: "#F0F9FF", text: "#0284C7" },
+  designer: { grad: "linear-gradient(135deg,#A78BFA,#7C3AED)", badge: "#F5F3FF", text: "#7C3AED" },
 };
 const DEFAULT_ROLE_COLOR = { grad: "linear-gradient(135deg,#9CA3AF,#6B7280)", badge: "#F3F4F6", text: "#6B7280" };
 function getRoleColor(role: string) { return ROLE_COLORS[role] ?? DEFAULT_ROLE_COLOR; }
@@ -18,6 +19,35 @@ export function MemberCard({ member, canEdit, canDelete, highlighted, cardRef, o
   highlighted?: boolean; cardRef?: React.RefObject<HTMLDivElement | null>;
   onEdit?: () => void; onDetail?: () => void; onDelete?: () => void;
 }) {
+  const [projectCount, setProjectCount] = useState<number>(member.projects ?? 0);
+  const [ticketCount, setTicketCount] = useState<number>(member.tickets ?? 0);
+
+  // 🌟 追加: カードが描画された際に、DBから実際の件数を同期取得する
+  useEffect(() => {
+    if (!isSupabaseEnabled || !member.name) return;
+
+    const fetchCounts = async () => {
+      // 担当プロジェクトのカウント
+      const { data: projData } = await supabase!.from("projects").select("members");
+      if (projData) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const count = projData.filter((p: any) => Array.isArray(p.members) && p.members.includes(member.name)).length;
+        setProjectCount(count);
+      }
+
+      // 担当チケットのカウント
+      const { count: tktCount } = await supabase!
+        .from("sprint_tickets")
+        .select("id", { count: "exact", head: true })
+        .eq("assignee", member.name);
+      if (tktCount !== null) {
+        setTicketCount(tktCount);
+      }
+    };
+
+    fetchCounts();
+  }, [member.name]);
+
   const rc = getRoleColor(member.role);
   const roleMeta = getRoleMeta(member.role);
 
@@ -46,8 +76,8 @@ export function MemberCard({ member, canEdit, canDelete, highlighted, cardRef, o
             {member.status === "invited"
               ? <span style={{ fontSize: 9, background: "#FFFBEB", color: "#D97706", padding: "2px 6px", borderRadius: 20, fontWeight: 600 }}>招待中</span>
               : member.status === "inactive"
-              ? <span style={{ fontSize: 9, background: "#F3F4F6", color: "#9CA3AF", padding: "2px 6px", borderRadius: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: "#D1D5DB", display: "inline-block" }} />オフライン</span>
-              : <span style={{ fontSize: 9, background: "#ECFDF5", color: "#059669", padding: "2px 6px", borderRadius: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />アクティブ</span>
+                ? <span style={{ fontSize: 9, background: "#F3F4F6", color: "#9CA3AF", padding: "2px 6px", borderRadius: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: "#D1D5DB", display: "inline-block" }} />オフライン</span>
+                : <span style={{ fontSize: 9, background: "#ECFDF5", color: "#059669", padding: "2px 6px", borderRadius: 20, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />アクティブ</span>
             }
           </div>
           <p style={{ fontSize: 11, color: "#B0A9A4", marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
@@ -61,7 +91,8 @@ export function MemberCard({ member, canEdit, canDelete, highlighted, cardRef, o
           </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
-          {[{ value: member.projects, label: "PJ", accent: "#059669" }, { value: member.tickets, label: "チケット", accent: "#0284C7" }].map(({ value, label }) => (
+          {/* 🌟 修正: valueの参照先を取得した projectCount と ticketCount に変更 */}
+          {[{ value: projectCount, label: "PJ", accent: "#059669" }, { value: ticketCount, label: "チケット", accent: "#0284C7" }].map(({ value, label }) => (
             <div key={label} style={{ background: "#F4F5F6", borderRadius: 10, padding: "12px", textAlign: "center" as const }}>
               <p style={{ fontSize: 26, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.04em", lineHeight: 1 }}>{value}</p>
               <p style={{ fontSize: 9, color: "#B0A9A4", marginTop: 3, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em" }}>{label}</p>
