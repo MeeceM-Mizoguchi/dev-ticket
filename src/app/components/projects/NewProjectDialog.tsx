@@ -5,8 +5,9 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
-import { FieldSelect } from "@/app/components/shared/FieldSelect";
 import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
+// 🌟 追加: CustomSelect コンポーネントをインポート
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 // 🌟ログイン中のユーザー情報を取得するために useAuth をインポートします
 import { useAuth } from "@/app/contexts/AuthContext";
 
@@ -100,19 +101,46 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
           <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>チケットNoの接頭辞（例: TS-00001）</p>
         </div>
       </div>
-      <FieldSelect label="クライアント" required value={clientName} onChange={setClientName}>
-        <option value="">クライアントを選択</option>
-        {clients.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-      </FieldSelect>
+
+      {/* 🌟 修正: FieldSelect を CustomSelect に置き換え */}
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+          クライアント <span style={{ color: "#DC2626" }}>*</span>
+        </label>
+        <CustomSelect
+          value={clientName}
+          options={[
+            { value: "", label: "クライアントを選択" },
+            ...clients.map(c => ({ value: c.name, label: c.name }))
+          ]}
+          onChange={setClientName}
+          placeholder="クライアントを選択"
+        />
+      </div>
+
       <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
-      <div className="grid grid-cols-2 gap-3">
+
+      <div className="grid grid-cols-2 gap-3" style={{ marginBottom: 16 }}>
         <FieldInput label="開始日" type="date" required value={startDate} onChange={setStartDate} />
         <FieldInput label="終了日" type="date" required value={endDate} onChange={setEndDate} />
       </div>
-      <FieldSelect label="ステータス" value={status} onChange={setStatus as (v: string) => void}>
-        <option value="planning">計画中</option><option value="in-progress">進行中</option>
-        <option value="completed">完了</option><option value="on-hold">保留中</option>
-      </FieldSelect>
+
+      {/* 🌟 修正: FieldSelect を CustomSelect に置き換え */}
+      <div>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+          ステータス
+        </label>
+        <CustomSelect
+          value={status}
+          options={[
+            { value: "planning", label: "計画中" },
+            { value: "in-progress", label: "進行中" },
+            { value: "completed", label: "完了" },
+            { value: "on-hold", label: "保留中" }
+          ]}
+          onChange={v => setStatus(v as ProjectStatus)}
+        />
+      </div>
     </DialogShell>
   );
 }
