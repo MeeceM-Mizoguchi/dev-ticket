@@ -138,6 +138,7 @@ export function TicketDetailPanel({
 
   const [copiedMd, setCopiedMd] = useState(false);
   const [copiedImageUrl, setCopiedImageUrl] = useState<string | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // comment editing
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1121,23 +1122,52 @@ export function TicketDetailPanel({
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
               {/* 🌟 追加: チケットリンクコピーボタン */}
               {projectSlug && (
-                <button
-                  onClick={async () => {
-                    const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-                    try {
-                      await navigator.clipboard.writeText(ticketUrl);
-                      toast(`チケットのURLをコピーしました`);
-                    } catch (err) {
-                      console.error("Failed to copy ticket URL:", err);
-                    }
-                  }}
-                  title="チケットリンクをコピー"
-                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}
-                >
-                  <Link style={{ width: 15, height: 15 }} />
-                </button>
+                <div style={{ position: "relative" }}>
+                  {copiedLink && (
+                    <div style={{
+                      position: "absolute",
+                      bottom: "calc(100% + 6px)",
+                      left: "50%",
+                      transform: "translateX(-50%)",
+                      background: "#1E293B",
+                      color: "#fff",
+                      fontSize: 12,
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      whiteSpace: "nowrap",
+                      pointerEvents: "none",
+                      zIndex: 9999,
+                    }}>
+                      コピーしました！
+                      <div style={{
+                        position: "absolute",
+                        top: "100%",
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        border: "5px solid transparent",
+                        borderTopColor: "#1E293B",
+                      }} />
+                    </div>
+                  )}
+                  <button
+                    onClick={async () => {
+                      const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+                      try {
+                        await navigator.clipboard.writeText(ticketUrl);
+                        setCopiedLink(true);
+                        setTimeout(() => setCopiedLink(false), 2000);
+                      } catch (err) {
+                        console.error("Failed to copy ticket URL:", err);
+                      }
+                    }}
+                    title="チケットリンクをコピー"
+                    style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}
+                  >
+                    <Link style={{ width: 15, height: 15 }} />
+                  </button>
+                </div>
               )}
 
               {/* 実績モニタボタン */}
