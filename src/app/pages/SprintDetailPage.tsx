@@ -184,7 +184,7 @@ function ColumnFilter({
 }
 
 export function SprintDetailPage() {
-  const { projectSlug, sprintId, ticketWbs } = useParams<{ projectSlug: string; sprintId: string; ticketWbs?: string }>();
+  const { projectSlug, sprintId } = useParams<{ projectSlug: string; sprintId: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
   const { showAlert } = useAlert();
@@ -211,13 +211,10 @@ export function SprintDetailPage() {
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
   const [showMyFilterModal, setShowMyFilterModal] = useState(false);
   const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
+  const [selectedWbs, setSelectedWbs] = useState<string | null>(null);
 
   const selectTicket = (wbs: string | null) => {
-    if (wbs) {
-      navigate(`/${projectSlug}/${wbs}`);
-    } else {
-      navigate(`/${projectSlug}/sprint/${sprintId}`);
-    }
+    setSelectedWbs(wbs);
   };
 
   useEffect(() => {
@@ -283,7 +280,7 @@ export function SprintDetailPage() {
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
 
-  const selectedTicket = ticketWbs ? (sprint.tickets.find(t => t.wbs === ticketWbs || t.id === ticketWbs) ?? null) : null;
+  const selectedTicket = selectedWbs ? (sprint.tickets.find(t => t.wbs === selectedWbs || t.id === selectedWbs) ?? null) : null;
   const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
