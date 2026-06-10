@@ -1,13 +1,15 @@
-import { useEffect, useState, type ElementType } from "react";
-import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight } from "lucide-react";
+import { useEffect, useState, useRef, type ElementType } from "react";
+import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, X } from "lucide-react";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from "recharts";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKETS, PROJECTS } from "@/app/data/mock";
-import { mapProject } from "@/app/lib/mappers";
+import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
 import { calcProgress, formatDate, getPriorityMeta } from "@/app/lib/helpers";
-import type { ProjectStatus } from "@/app/types";
+import type { ProjectStatus, SprintTicket, TicketStatus, Priority } from "@/app/types";
 
 type ChartType = 'horizontal' | 'vertical' | 'line' | 'scatter';
 type LineChartMode = 'project-progress' | 'weekly-close';
@@ -21,6 +23,11 @@ type DashTicket = {
   priority: string;
   assignee?: string;
   dueDate?: string;
+  sprint?: string;
+  category?: string;
+  dbId?: string;       // Supabase UUID (for TicketDetailPanel queries)
+  sprintId?: string;   // Sprint ID
+  projectDbId?: string; // Project Supabase UUID
 };
 
 type DashProject = {
@@ -32,6 +39,25 @@ type DashProject = {
   done: number;
   inProgress: number;
   todo: number;
+};
+
+type MatrixTicket = DashTicket & { isBug: boolean };
+
+const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }> = {
+  'todo':        { label: '未着手',     bg: '#F4F5F6', color: '#A09790' },
+  'in-progress': { label: '進行中',     bg: '#FFFBEB', color: '#D97706' },
+  'in-review':   { label: 'レビュー中', bg: '#EFF6FF', color: '#2563EB' },
+  'review-done': { label: 'レビュー完了', bg: '#F0FDF4', color: '#16A34A' },
+  'stg-test':    { label: 'STGテスト',  bg: '#F5F3FF', color: '#7C3AED' },
+  'uat':         { label: 'UAT',        bg: '#FFF7ED', color: '#EA580C' },
+  'done':        { label: '完了',       bg: '#ECFDF5', color: '#059669' },
+  'closed':      { label: 'クローズ',  bg: '#F1F5F9', color: '#64748B' },
+};
+
+const PRIORITY_META_MODAL: Record<string, { label: string; color: string }> = {
+  'high':   { label: '高', color: '#EF4444' },
+  'medium': { label: '中', color: '#F59E0B' },
+  'low':    { label: '低', color: '#3B82F6' },
 };
 
 export function Dashboard() {
@@ -66,38 +92,55 @@ export function Dashboard() {
 
   const [selectedScatterProject, setSelectedScatterProject] = useState<string>("");
   const [hoveredExtraCellKey, setHoveredExtraCellKey] = useState<string | null>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [expandModalData, setExpandModalData] = useState<{
+    tickets: MatrixTicket[];
+    isBug: boolean;
+    priority: string;
+    priorityLabel: string;
+  } | null>(null);
+  const [selectedSprintTicket, setSelectedSprintTicket] = useState<SprintTicket | null>(null);
+  const [selectedTicketCtx, setSelectedTicketCtx] = useState<{ projectId: string; sprintId: string; projectSlug: string } | null>(null);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
       // 🛠️【最重要修正】SprintPageの参照仕様に合わせて「wbs」フィールドを明示的に取得
-      supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee"),
-      supabase!.from("sprints").select("id, project_id"),
+      supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
+      supabase!.from("sprints").select("id, project_id, name"),
       supabase!.from("projects").select("id, slug, name, status, client, members"),
-    ]).then(([{ data: tData }, { data: sData }, { data: pData }]) => {
+      supabase!.from("ticket_categories").select("id, name"),
+    ]).then(([{ data: tData }, { data: sData }, { data: pData }, { data: cData }]) => {
       if (tData) {
         const sprints = sData ?? [];
         const projectsData = pData ?? [];
-        const sprintToProject = new Map((sprints as { id: string; project_id: string }[]).map(s => [s.id, s.project_id]));
-        
+        const sprintToProject = new Map((sprints as { id: string; project_id: string; name?: string }[]).map(s => [s.id, s.project_id]));
+        const sprintNameMap = new Map((sprints as { id: string; name?: string }[]).map(s => [s.id, s.name ?? '']));
+
         // プロジェクトIDから、URLセグメントに使うべき「slug」または「id」を引っ張るマップを作成
         const projectSlugMap = new Map((projectsData as { id: string; slug?: string }[]).map(p => [p.id, p.slug || p.id]));
         const projectNameById = new Map((projectsData as { id: string; name: string }[]).map(p => [p.id, p.name]));
+        const categoryNameMap = new Map(((cData ?? []) as { id: string; name: string }[]).map(c => [c.id, c.name]));
         
         // 🛠️【データ完全同期】DB本来の「wbs」コードを最上位のidプロパティへ格納
-        setTickets(tData.map((t: { id: string; wbs?: string; title: string; status: string; priority: string; due_date?: string; sprint_id?: string; assignee?: string }) => {
+        setTickets(tData.map((t: { id: string; wbs?: string; title: string; status: string; priority: string; due_date?: string; sprint_id?: string; assignee?: string; category_id?: string }) => {
           const resolvedProjectId = sprintToProject.get(t.sprint_id ?? '');
           const projSlug = projectSlugMap.get(resolvedProjectId ?? '') || 'DEVTICKET';
-          
+
           return {
-            id: t.wbs || t.id, // 💡SprintPageと同じく、枝番対応のwbsコード（例: BRU1-007-1）を100%直接採用
+            id: t.wbs || t.id,
+            dbId: t.id,                    // Supabase UUID (TicketDetailPanel用)
+            sprintId: t.sprint_id,
+            projectDbId: resolvedProjectId, // Project Supabase UUID
             title: t.title,
             status: t.status,
             priority: t.priority,
             dueDate: t.due_date,
             assignee: t.assignee,
             project: projectNameById.get(resolvedProjectId ?? '') ?? undefined,
-            projectId: projSlug // 💡PROJ5e88 や DEVTICKET などのルーティング用スラッグ
+            projectId: projSlug,
+            sprint: sprintNameMap.get(t.sprint_id ?? '') || undefined,
+            category: t.category_id ? categoryNameMap.get(t.category_id) || undefined : undefined,
           };
         }));
       }
@@ -273,6 +316,14 @@ export function Dashboard() {
     return totalScore === 0;
   })();
 
+  const isBarChartAllZero = assignedProjects.length === 0 ||
+    chartData.every(d => d.完了 === 0 && d.進行中 === 0 && d.未着手 === 0);
+
+  const isProjectProgressAllZero = assignedProjects.length === 0 ||
+    projectProgressLineData.every(row =>
+      assignedProjects.every(p => ((row as Record<string, number>)[p.name] ?? 0) === 0)
+    );
+
   // 💡【位置固定】JSXレンダーの前に確実に配置（ReferenceErrorの完全防止）
   const activeTickets = tickets.filter(t => t.status !== "done" && t.status !== "closed").slice(0, 5);
 
@@ -294,11 +345,37 @@ export function Dashboard() {
     </text>
   );
 
-  // 【正確なURLパス構築】SprintPage仕様のアラインメントに完全対応
-  const handleTicketNavigation = (projId: string | undefined, projectName: string, ticketNo: string, event: React.MouseEvent) => {
+  const buildTicketUrl = (projId: string | undefined, projectName: string, ticketNo: string) => {
+    const urlSegment = projId ? projId.trim() : projectName.replace(/\s+/g, '').toUpperCase();
+    return `/${urlSegment}/${ticketNo.toUpperCase()}`;
+  };
+
+  const handleTicketClick = (ticket: DashTicket, event: React.MouseEvent) => {
     event.stopPropagation();
-    let urlSegment = projId ? projId.trim() : projectName.replace(/\s+/g, '').toUpperCase();
-    window.location.href = `/${urlSegment}/${ticketNo.toUpperCase()}`;
+    const st: SprintTicket = {
+      id: ticket.dbId || ticket.id,
+      wbs: ticket.id,
+      title: ticket.title,
+      status: ticket.status as TicketStatus,
+      priority: ticket.priority as Priority,
+      assignee: ticket.assignee ?? '',
+      startDate: '',
+      dueDate: ticket.dueDate ?? '',
+      estimatedHours: 0,
+      progress: 0,
+      description: '',
+      reviewerName: '',
+      reviewRound: 0,
+      images: [],
+      categoryId: null,
+      parentId: null,
+    };
+    setSelectedSprintTicket(st);
+    setSelectedTicketCtx({
+      projectId: ticket.projectDbId ?? '',
+      sprintId: ticket.sprintId ?? '',
+      projectSlug: ticket.projectId ?? '',
+    });
   };
 
   // 🛠️【完全データ参照への一本化】
@@ -317,37 +394,77 @@ export function Dashboard() {
     }).filter(t => t.isBug === isBugTarget && t.priority === priorityTarget);
   };
 
-  const renderMatrixCell = (isBug: boolean, priority: string, borderStyles: React.CSSProperties) => {
+  const cancelHideTimer = () => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  };
+
+  const startHideTimer = (delay = 200) => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = setTimeout(() => setHoveredExtraCellKey(null), delay);
+  };
+
+  const renderMatrixCell = (isBug: boolean, priority: string, hasLeftBorder: boolean) => {
     const targetTickets = getFormattedMatrixTickets(isBug, priority);
-    const displayTickets = targetTickets.slice(0, 3);
-    const hiddenTickets = targetTickets.slice(3);
+    const displayTickets = targetTickets.slice(0, 6);
+    const hiddenTickets = targetTickets.slice(6);
     const cellKey = `${isBug ? "bug" : "nobug"}_${priority}`;
+    const hasAny = targetTickets.length > 0;
 
     return (
-      <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative", minHeight: 110, ...borderStyles }}>
-        <div style={{ position: "absolute", top: 12, right: 16, fontSize: 13, color: "#6B6458", fontWeight: 600 }}>
+      <div style={{
+        padding: "8px 12px",
+        display: "flex",
+        flexDirection: "column",
+        position: "relative",
+        borderLeft: hasLeftBorder ? "1.5px solid #E6E2D9" : "none",
+        background: "#FFFFFF"
+      }}>
+        <div style={{
+          position: "absolute",
+          top: 8,
+          right: 10,
+          fontSize: 11,
+          color: hasAny ? "#374151" : "#C9C4BB",
+          fontWeight: 700,
+          fontFamily: "var(--font-mono)",
+          background: hasAny ? "#F3F4F6" : "transparent",
+          padding: "1px 7px",
+          borderRadius: 20
+        }}>
           {targetTickets.length} 件
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14, paddingRight: 45 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4, paddingRight: 42 }}>
           {displayTickets.map(ticket => (
-            <div 
-              key={ticket.id} 
-              onClick={(e) => handleTicketNavigation(ticket.projectId, selectedScatterProject, ticket.id, e)} // 本物のWBS番号で遷移
-              style={{ 
-                padding: "4px 12px", 
-                border: "1.5px solid #7c3aed", 
-                borderRadius: "6px 2px 6px 2px",
-                background: "#f5f3ff", 
-                color: "#6d28d9", 
-                fontSize: 12, 
+            <div
+              key={ticket.id}
+              onClick={(e) => handleTicketClick(ticket, e)}
+              style={{
+                padding: "3px 10px",
+                border: "1.5px solid #8B5CF6",
+                borderRadius: 20,
+                background: "#F3F0FF",
+                color: "#6D28D9",
+                fontSize: 11,
                 fontWeight: 700,
                 whiteSpace: "nowrap",
                 cursor: "pointer",
-                transition: "transform 0.1s ease"
+                transition: "all 0.15s ease",
+                letterSpacing: "0.01em"
               }}
-              onMouseEnter={e => e.currentTarget.style.transform = "scale(1.04)"}
-              onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = "#EDE9FE";
+                e.currentTarget.style.transform = "translateY(-1px)";
+                e.currentTarget.style.boxShadow = "0 2px 8px rgba(109,40,217,0.18)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = "#F3F0FF";
+                e.currentTarget.style.transform = "translateY(0)";
+                e.currentTarget.style.boxShadow = "none";
+              }}
               title={`クリックして詳細へ: ${ticket.title}`}
             >
               {ticket.id}
@@ -355,86 +472,100 @@ export function Dashboard() {
           ))}
 
           {hiddenTickets.length > 0 && (
-            <div 
-              style={{ position: "relative", display: "inline-block", alignSelf: "center", paddingBottom: "10px" }}
-              onMouseEnter={() => setHoveredExtraCellKey(cellKey)}
-              onMouseLeave={(e) => {
-                const toElement = e.relatedTarget as HTMLElement;
-                if (toElement && toElement.closest && toElement.closest(`[data-popup-id="${cellKey}"]`)) {
-                  return;
-                }
-                setHoveredExtraCellKey(null);
-              }}
+            <div
+              style={{ position: "relative", display: "inline-block", alignSelf: "center" }}
+              onMouseEnter={() => { cancelHideTimer(); setHoveredExtraCellKey(cellKey); }}
+              onMouseLeave={() => startHideTimer()}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af", fontWeight: 600, marginLeft: 2, cursor: "pointer", background: "#f3f4f6", padding: "2px 6px", borderRadius: 4 }}>
+              <div style={{
+                fontSize: 11,
+                color: "#6B7280",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: "#F3F4F6",
+                padding: "3px 10px",
+                borderRadius: 20,
+                border: "1.5px solid #E5E7EB"
+              }}>
                 +{hiddenTickets.length}
               </div>
 
               {hoveredExtraCellKey === cellKey && (
-                <div 
+                <div
                   data-popup-id={cellKey}
                   style={{
                     position: "absolute",
-                    top: "80%",
-                    left: 0,
-                    marginTop: 4,
+                    bottom: "calc(100% + 6px)",
+                    ...(isBug ? { left: 0 } : { right: 0 }),
                     background: "#ffffff",
-                    border: "1px solid #ccc5b9",
+                    border: "1px solid #E6E2D9",
                     borderRadius: 12,
-                    boxShadow: "0 10px 25px rgba(0,0,0,0.15)",
-                    padding: "12px 14px",
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+                    padding: "10px 12px",
                     zIndex: 9999,
                     minWidth: 260,
                     display: "flex",
                     flexDirection: "column",
                     gap: 6
                   }}
-                  onMouseEnter={() => setHoveredExtraCellKey(cellKey)}
-                  onMouseLeave={() => setHoveredExtraCellKey(null)}
+                  onMouseEnter={() => { cancelHideTimer(); setHoveredExtraCellKey(cellKey); }}
+                  onMouseLeave={() => startHideTimer()}
                 >
-                  <div style={{ fontSize: 11, color: "#6b7280", borderBottom: "1px solid #f3f4f6", paddingBottom: 4, fontWeight: "bold" }}>
-                    非表示のチケット一覧 ({hiddenTickets.length}件)
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #F3F4F6", paddingBottom: 6 }}>
+                    <span style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 600 }}>残り {hiddenTickets.length} 件</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const allTickets = getFormattedMatrixTickets(isBug, priority);
+                        const priorityLabel = priority === 'high' ? '優先度：高' : priority === 'medium' ? '優先度：中' : '優先度：低';
+                        setExpandModalData({ tickets: allTickets, isBug, priority, priorityLabel });
+                        setHoveredExtraCellKey(null);
+                        cancelHideTimer();
+                      }}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        width: 22, height: 22, border: "1px solid #E6E2D9", borderRadius: 4,
+                        background: "#FFFFFF", cursor: "pointer", color: "#9CA3AF", padding: 0,
+                        transition: "all 0.15s ease"
+                      }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6D28D9"; (e.currentTarget as HTMLElement).style.borderColor = "#8B5CF6"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#9CA3AF"; (e.currentTarget as HTMLElement).style.borderColor = "#E6E2D9"; }}
+                      title="一覧をモーダルで表示"
+                    >
+                      <Maximize2 style={{ width: 12, height: 12 }} />
+                    </button>
                   </div>
-                  <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
                     {hiddenTickets.map(t => (
                       <div
                         key={t.id}
-                        onClick={(e) => handleTicketNavigation(t.projectId, selectedScatterProject, t.id, e)}
+                        onClick={(e) => handleTicketClick(t, e)}
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          gap: 10,
-                          padding: "6px 8px",
+                          gap: 8,
+                          padding: "5px 6px",
                           borderRadius: 6,
                           cursor: "pointer",
-                          background: "#fdfbfa",
-                          transition: "background 0.15s ease"
+                          background: "transparent",
+                          transition: "background 0.12s ease"
                         }}
-                        onMouseEnter={e => {
-                          e.currentTarget.style.background = "#f5f3ff";
-                          if (e.currentTarget.firstElementChild) {
-                            (e.currentTarget.firstElementChild as HTMLElement).style.borderColor = "#6d28d9";
-                          }
-                        }}
-                        onMouseLeave={e => {
-                          e.currentTarget.style.background = "#fdfbfa";
-                          if (e.currentTarget.firstElementChild) {
-                            (e.currentTarget.firstElementChild as HTMLElement).style.borderColor = "#7c3aed";
-                          }
-                        }}
+                        onMouseEnter={e => { e.currentTarget.style.background = "#F5F3FF"; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
                       >
                         <span style={{
-                          fontSize: 11,
+                          fontSize: 10,
                           fontWeight: 700,
-                          color: "#6d28d9",
-                          border: "1.5px solid #7c3aed",
-                          borderRadius: 4,
+                          color: "#6D28D9",
+                          border: "1.5px solid #8B5CF6",
+                          borderRadius: 10,
                           padding: "1px 6px",
-                          background: "#f5f3ff"
+                          background: "#F3F0FF",
+                          whiteSpace: "nowrap"
                         }}>
                           {t.id}
                         </span>
-                        <span style={{ fontSize: 12, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={t.title}>
+                        <span style={{ fontSize: 11, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={t.title}>
                           {t.title}
                         </span>
                       </div>
@@ -524,83 +655,38 @@ export function Dashboard() {
                 ))}
               </div>
               {chartType === 'line' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <select
-                    value={lineChartMode}
-                    onChange={e => setLineChartMode(e.target.value as LineChartMode)}
-                    style={{
-                      padding: '1px 28px 1px 8px',
-                      fontSize: 13,
-                      color: '#1A1714',
-                      borderRadius: 8,
-                      border: '1px solid #E6E2D9',
-                      background: '#fff url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23747474\' d=\'M0 0l5 6 5-6z\'/%3E%3C/svg%3E") no-repeat right 8px center',
-                      backgroundSize: '10px 6px',
-                      width: 'auto',
-                      minWidth: 120,
-                      appearance: 'none',
-                      lineHeight: '16px',
-                      textAlign: 'center' as const,
-                      textAlignLast: 'center' as const,
-                    }}
-                  >
-                    <option value="project-progress">プロジェクト進捗</option>
-                    <option value="weekly-close">週次クローズ数</option>
-                  </select>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ minWidth: 160 }}>
+                    <CustomSelect
+                      value={lineChartMode}
+                      options={[
+                        { value: 'project-progress', label: 'プロジェクト進捗' },
+                        { value: 'weekly-close', label: '週次クローズ数' },
+                      ]}
+                      onChange={v => setLineChartMode(v as LineChartMode)}
+                    />
+                  </div>
                   {lineChartMode === 'weekly-close' && (
-                    <select
-                      value={selectedMonth}
-                      onChange={e => setSelectedMonth(parseInt(e.target.value))}
-                      style={{
-                        padding: '1px 24px 1px 8px',
-                        fontSize: 11,
-                        color: '#1A1714',
-                        borderRadius: 8,
-                        border: '1px solid #E6E2D9',
-                        background: '#fff url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23747474\' d=\'M0 0l5 6 5-6z\'/%3E%3C/svg%3E") no-repeat right 6px center',
-                        backgroundSize: '8px 5px',
-                        width: 'auto',
-                        minWidth: 65,
-                        appearance: 'none',
-                        lineHeight: '16px',
-                        textAlign: 'center' as const,
-                        textAlignLast: 'center' as const,
-                      }}
-                    >
-                      {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => (
-                        <option key={m} value={m}>{m}月</option>
-                      ))}
-                    </select>
+                    <div style={{ minWidth: 80 }}>
+                      <CustomSelect
+                        value={String(selectedMonth)}
+                        options={[1,2,3,4,5,6,7,8,9,10,11,12].map(m => ({ value: String(m), label: `${m}月` }))}
+                        onChange={v => setSelectedMonth(Number(v))}
+                      />
+                    </div>
                   )}
                 </div>
               )}
               {chartType === 'scatter' && (
-                <div style={{ display: 'flex', alignItems: 'center' }}>
-                  <select
+                <div style={{ minWidth: 160 }}>
+                  <CustomSelect
                     value={selectedScatterProject}
-                    onChange={e => setSelectedScatterProject(e.target.value)}
-                    style={{
-                      padding: '4px 28px 4px 12px',
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: '#1A1714',
-                      borderRadius: 8,
-                      border: '1px solid #E6E2D9',
-                      background: '#fff url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 10 6\'%3E%3Cpath fill=\'%23747474\' d=\'M0 0l5 6 5-6z\'/%3E%3C/svg%3E") no-repeat right 10px center',
-                      backgroundSize: '10px 6px',
-                      width: 'auto',
-                      minWidth: 150,
-                      appearance: 'none',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {assignedProjects.map(proj => (
-                      <option key={proj.id} value={proj.name}>{proj.name}</option>
-                    ))}
-                  </select>
+                    options={assignedProjects.map(p => ({ value: p.name, label: p.name }))}
+                    onChange={v => setSelectedScatterProject(v)}
+                  />
                 </div>
               )}
-              {chartType !== 'scatter' && (
+              {(chartType === 'horizontal' || chartType === 'vertical') && (
                 <div style={{ display: "flex", gap: 10 }}>
                   {[{ c: "#059669", l: "完了" }, { c: "#D97706", l: "進行中" }, { c: "#E6E2D9", l: "未着手" }].map(({ c, l }) => (
                     <div key={l} style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -613,94 +699,151 @@ export function Dashboard() {
             </div>
           </div>
 
-          <div style={{ minHeight: 340 }}>
+          <div style={{ height: 320 }}>
             {chartType === 'horizontal' && (
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 18, top: 0, bottom: 0 }} barCategoryGap="18%" barSize={20}>
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
-                  <YAxis dataKey="name" type="category" tick={renderProjectNameTick} axisLine={false} tickLine={false} width={180} />
-                  <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
-                    labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
-                  <Bar dataKey="完了" stackId="a" fill="#059669" />
-                  <Bar dataKey="進行中" stackId="a" fill="#D97706" />
-                  <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              isBarChartAllZero ? (
+                <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontSize: 13, color: "#C9C4BB" }}>実績データがありません</span>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 24, top: 8, bottom: 8 }} barCategoryGap="28%" barSize={28}>
+                    <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
+                    <YAxis dataKey="name" type="category" tick={renderProjectNameTick} axisLine={false} tickLine={false} width={180} />
+                    <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
+                      labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
+                    <Bar dataKey="完了" stackId="a" fill="#059669" />
+                    <Bar dataKey="進行中" stackId="a" fill="#D97706" />
+                    <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )
             )}
             {chartType === 'vertical' && (
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={chartData} margin={{ left: 40, right: 18, top: 20, bottom: 30 }} barCategoryGap="18%" barSize={40}>
-                  <XAxis dataKey="name" height={40} tick={{ fontSize: 14, fontFamily: "Inter,ui-sans-serif,system-ui,sans-serif", fontWeight: 500, fill: "#6B6458" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: "#B0A9A4" }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
-                    labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
-                  <Bar dataKey="完了" fill="#059669" />
-                  <Bar dataKey="進行中" fill="#D97706" />
-                  <Bar dataKey="未着手" fill="#E6E2D9" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              isBarChartAllZero ? (
+                <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontSize: 13, color: "#C9C4BB" }}>実績データがありません</span>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ left: 16, right: 16, top: 16, bottom: 24 }} barCategoryGap="30%" barSize={60}>
+                    <XAxis dataKey="name" height={36} tick={{ fontSize: 13, fontFamily: "Inter,ui-sans-serif,system-ui,sans-serif", fontWeight: 500, fill: "#6B6458" }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10, fill: "#B0A9A4" }} axisLine={false} tickLine={false} width={32} />
+                    <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
+                      labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
+                    <Bar dataKey="完了" fill="#059669" />
+                    <Bar dataKey="進行中" fill="#D97706" />
+                    <Bar dataKey="未着手" fill="#E6E2D9" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )
             )}
             {chartType === 'line' && (
-              <ResponsiveContainer width="100%" height={340}>
-                <LineChart data={lineChartMode === 'project-progress' ? projectProgressLineData : filteredWeeklyCloseData} margin={{ left: 40, right: 80, top: 20, bottom: 10 }}>
-                  <XAxis
-                    type="category"
-                    dataKey={lineChartMode === 'project-progress' ? 'status' : 'week'}
-                    ticks={lineChartMode === 'project-progress' ? lineStatusCategories.map(c => c.key) : undefined}
-                    interval={0}
-                    tick={{ fontSize: 11, fill: '#B0A9A4' }}
-                    angle={0}
-                    textAnchor="middle"
-                    height={40}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    allowDecimals={false}
-                    tick={{ fontSize: 11, fill: '#B0A9A4' }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <Tooltip contentStyle={{ background: '#fff', border: '1px solid rgba(26,23,20,0.1)', borderRadius: 10, fontSize: 12, boxShadow: '0 4px 16px rgba(0,0,0,0.10)' }}
-                    labelStyle={{ color: '#1A1714', fontWeight: 700 }} itemStyle={{ color: '#6b7280' }} />
-                  <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: 8 }} />
-                  {assignedProjects.map((project, index) => {
-                    const colors = ['#059669', '#D97706', '#2563EB', '#9333EA', '#F59E0B', '#14B8A6'];
-                    return (
-                      <Line
-                        key={project.id}
-                        type="monotone"
-                        dataKey={project.name}
-                        stroke={colors[index % colors.length]}
-                        strokeWidth={2}
-                        dot={{ fill: colors[index % colors.length], r: 4 }}
-                      />
-                    );
-                  })}
-                </LineChart>
-              </ResponsiveContainer>
+              (lineChartMode === 'project-progress' ? isProjectProgressAllZero : isWeeklyCloseAllZero) ? (
+                <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontSize: 13, color: "#C9C4BB" }}>実績データがありません</span>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={lineChartMode === 'project-progress' ? projectProgressLineData : filteredWeeklyCloseData} margin={{ left: 40, right: 80, top: 20, bottom: 10 }}>
+                    <XAxis
+                      type="category"
+                      dataKey={lineChartMode === 'project-progress' ? 'status' : 'week'}
+                      ticks={lineChartMode === 'project-progress' ? lineStatusCategories.map(c => c.key) : undefined}
+                      interval={0}
+                      tick={{ fontSize: 11, fill: '#B0A9A4' }}
+                      angle={0}
+                      textAnchor="middle"
+                      height={40}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tick={{ fontSize: 11, fill: '#B0A9A4' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip contentStyle={{ background: '#fff', border: '1px solid rgba(26,23,20,0.1)', borderRadius: 10, fontSize: 12, boxShadow: '0 4px 16px rgba(0,0,0,0.10)' }}
+                      labelStyle={{ color: '#1A1714', fontWeight: 700 }} itemStyle={{ color: '#6b7280' }} />
+                    <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: 8 }} />
+                    {assignedProjects.map((project, index) => {
+                      const colors = ['#059669', '#D97706', '#2563EB', '#9333EA', '#F59E0B', '#14B8A6'];
+                      return (
+                        <Line
+                          key={project.id}
+                          type="monotone"
+                          dataKey={project.name}
+                          stroke={colors[index % colors.length]}
+                          strokeWidth={2}
+                          dot={{ fill: colors[index % colors.length], r: 4 }}
+                        />
+                      );
+                    })}
+                  </LineChart>
+                </ResponsiveContainer>
+              )
             )}
             
             {chartType === 'scatter' && (
-              <div style={{ display: "grid", gridTemplateColumns: "150px 1fr 1fr", width: "100%", padding: "10px 0 20px" }}>
-                <div></div>
-                <div style={{ textAlign: "center", fontSize: 16, fontWeight: 700, color: "#1A1714", paddingBottom: 16 }}>バグ</div>
-                <div style={{ textAlign: "center", fontSize: 16, fontWeight: 700, color: "#1A1714", paddingBottom: 16 }}>バグ以外</div>
+              <div style={{ height: "100%" }}>
+                <div style={{ border: "1.5px solid #E6E2D9", borderRadius: 12, display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" }}>
+                  {/* ヘッダー行 */}
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "130px 1fr 1fr",
+                    background: "#F9F8F6",
+                    borderBottom: "1.5px solid #E6E2D9",
+                    flexShrink: 0
+                  }}>
+                    <div style={{ padding: "10px 14px", borderTopLeftRadius: 11 }}></div>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 7, justifyContent: "center",
+                      padding: "10px 16px",
+                      borderLeft: "1.5px solid #E6E2D9"
+                    }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#F87171", display: "inline-block", flexShrink: 0 }}></span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", letterSpacing: "-0.01em" }}>バグ</span>
+                    </div>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 7, justifyContent: "center",
+                      padding: "10px 16px",
+                      borderLeft: "1.5px solid #E6E2D9",
+                      borderTopRightRadius: 11
+                    }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#34D399", display: "inline-block", flexShrink: 0 }}></span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", letterSpacing: "-0.01em" }}>バグ以外</span>
+                    </div>
+                  </div>
 
-                {/* 1行目：優先度高 */}
-                <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：高</div>
-                {renderMatrixCell(true, "high", { borderTop: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
-                {renderMatrixCell(false, "high", { borderTop: "1px solid #000", borderRight: "1px solid #000" })}
-
-                {/* 2行目：優先度中 */}
-                <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：中</div>
-                {renderMatrixCell(true, "medium", { borderTop: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
-                {renderMatrixCell(false, "medium", { borderTop: "1px solid #000", borderRight: "1px solid #000" })}
-
-                {/* 3行目：優先度低 */}
-                <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：低</div>
-                {renderMatrixCell(true, "low", { borderTop: "1px solid #000", borderBottom: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
-                {renderMatrixCell(false, "low", { borderTop: "1px solid #000", borderBottom: "1px solid #000", borderRight: "1px solid #000" })}
+                  {/* 優先度行 */}
+                  {[
+                    { label: "優先度：高", priority: "high", dotColor: "#EF4444" },
+                    { label: "優先度：中", priority: "medium", dotColor: "#F59E0B" },
+                    { label: "優先度：低", priority: "low", dotColor: "#3B82F6" },
+                  ].map(({ label, priority, dotColor }, idx, arr) => (
+                    <div key={priority} style={{
+                      flex: 1,
+                      minHeight: 0,
+                      display: "grid",
+                      gridTemplateColumns: "130px 1fr 1fr",
+                      borderBottom: idx < arr.length - 1 ? "1.5px solid #E6E2D9" : "none"
+                    }}>
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "10px 12px",
+                        borderRight: "1.5px solid #E6E2D9",
+                        background: "#F9F8F6",
+                        borderBottomLeftRadius: idx === arr.length - 1 ? 11 : 0
+                      }}>
+                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: dotColor, flexShrink: 0 }}></div>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: "#374151", letterSpacing: "-0.01em" }}>{label}</span>
+                      </div>
+                      {renderMatrixCell(true, priority, false)}
+                      {renderMatrixCell(false, priority, true)}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -723,7 +866,7 @@ export function Dashboard() {
               return (
                 <div style={{ display: "flex", gap: 10, padding: "9px 8px", borderRadius: 8, cursor: "pointer" }}
                   key={ticket.id}
-                  onClick={(e) => handleTicketNavigation(ticket.projectId, projName, ticket.id, e)} // 本物のWBSコード(id)で遷移
+                  onClick={(e) => handleTicketClick(ticket, e)}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: pr.dot, marginTop: 5, flexShrink: 0 }} />
@@ -787,6 +930,105 @@ export function Dashboard() {
       </div>
       {showNewTicket && (
         <NewTicketDialog onClose={() => setShowNewTicket(false)} />
+      )}
+
+      {/* 拡大モーダル */}
+      {expandModalData && (
+        <div
+          onClick={() => setExpandModalData(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150, padding: 24 }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: "#FFFFFF", borderRadius: 16, width: "min(1200px, 95vw)", maxHeight: "82vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid #F3F4F6", flexShrink: 0 }}>
+              <div>
+                <h2 style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>
+                  {expandModalData.priorityLabel} / {expandModalData.isBug ? 'バグ' : 'バグ以外'}
+                </h2>
+                <p style={{ fontSize: 11, color: "#B0A9A4", marginTop: 2 }}>{expandModalData.tickets.length} 件のチケット</p>
+              </div>
+              <button
+                onClick={() => setExpandModalData(null)}
+                style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #E6E2D9", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B7280" }}
+              >
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#F9F8F6", position: "sticky", top: 0, zIndex: 1 }}>
+                    {['スプリント', 'チケット番号', 'チケット名', '分類', 'ステータス', '優先度', '担当者'].map(h => (
+                      <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em", borderBottom: "1px solid #E6E2D9", whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const sorted = [...expandModalData.tickets].sort((a, b) => (a.sprint || '').localeCompare(b.sprint || '', 'ja'));
+                    const groups: { sprintName: string; tickets: MatrixTicket[] }[] = [];
+                    for (const t of sorted) {
+                      const sn = t.sprint || '—';
+                      const last = groups[groups.length - 1];
+                      if (last && last.sprintName === sn) { last.tickets.push(t); } else { groups.push({ sprintName: sn, tickets: [t] }); }
+                    }
+                    return groups.flatMap((g) =>
+                      g.tickets.map((t, ti) => {
+                        const sm = STATUS_LABELS[t.status] ?? { label: t.status, bg: '#F4F5F6', color: '#6B7280' };
+                        const pm = PRIORITY_META_MODAL[t.priority] ?? { label: t.priority, color: '#6B7280' };
+                        return (
+                          <tr
+                            key={t.id}
+                            onClick={(e) => { handleTicketClick(t, e); }}
+                            style={{ background: "transparent", cursor: "pointer", transition: "background 0.1s" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                          >
+                            {ti === 0 && (
+                              <td rowSpan={g.tickets.length} style={{ padding: "10px 16px", fontSize: 12, color: "#9CA3AF", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap", verticalAlign: "top" }}>{g.sprintName}</td>
+                            )}
+                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: "#6D28D9", border: "1.5px solid #8B5CF6", borderRadius: 10, padding: "2px 8px", background: "#F3F0FF" }}>{t.id}</span>
+                            </td>
+                            <td style={{ padding: "10px 16px", fontSize: 13, color: "#1A1714", borderBottom: "1px solid #F3F4F6", maxWidth: 280 }}>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{t.title}</span>
+                            </td>
+                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
+                              <span style={{ fontSize: 11, color: "#6B7280" }}>
+                                {t.category || '—'}
+                              </span>
+                            </td>
+                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
+                              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, fontWeight: 600, background: sm.bg, color: sm.color }}>{sm.label}</span>
+                            </td>
+                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
+                              <span style={{ fontSize: 12, color: pm.color, fontWeight: 700 }}>● {pm.label}</span>
+                            </td>
+                            <td style={{ padding: "10px 16px", fontSize: 12, color: "#6B7280", borderBottom: "1px solid #F3F4F6" }}>{t.assignee || '—'}</td>
+                          </tr>
+                        );
+                      })
+                    );
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedSprintTicket && selectedTicketCtx && (
+        <TicketDetailPanel
+          ticket={selectedSprintTicket}
+          projectId={selectedTicketCtx.projectId}
+          sprintId={selectedTicketCtx.sprintId}
+          projectSlug={selectedTicketCtx.projectSlug}
+          onClose={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
+          onUpdated={() => {}}
+          onDeleted={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
+        />
       )}
     </div>
   );
