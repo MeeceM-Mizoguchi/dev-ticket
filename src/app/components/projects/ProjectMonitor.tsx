@@ -9,12 +9,12 @@ interface Milestone {
 }
 
 const MILESTONES: Milestone[] = [
-  { key: "startedAt",          label: "開始" },
-  { key: "reviewRequestedAt",  label: "レビュー依頼" },
-  { key: "reviewApprovedAt",   label: "レビュー承認" },
-  { key: "stgCompletedAt",     label: "STG完了" },
-  { key: "uatCompletedAt",     label: "UAT完了" },
-  { key: "releasedAt",         label: "リリース" },
+  { key: "startedAt", label: "開始" },
+  { key: "reviewRequestedAt", label: "レビュー依頼" },
+  { key: "reviewApprovedAt", label: "レビュー承認" },
+  { key: "stgCompletedAt", label: "STG完了" },
+  { key: "uatCompletedAt", label: "UAT完了" },
+  { key: "releasedAt", label: "リリース" },
 ];
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -30,7 +30,6 @@ function calcHours(a: string | null | undefined, b: string | null | undefined): 
 
 /**
  * スキップ判定：カスケード記録時は同一の `now` を使うため完全一致になる。
- * 通常のレビュー依頼→承認は2回の別操作なので最低1ms以上ズレる。
  * idx=2 (レビュー依頼→レビュー承認のコネクタ) のみ対象。
  */
 function isReviewSkipped(idx: number, a: string | null | undefined, b: string | null | undefined): boolean {
@@ -40,6 +39,7 @@ function isReviewSkipped(idx: number, a: string | null | undefined, b: string | 
 }
 
 function formatDuration(hours: number): string {
+  if (hours <= 0) return "0分";
   if (hours < 1 / 60) return "1分未満";
   if (hours < 1) return `${Math.round(hours * 60)}分`;
   const h = Math.round(hours * 10) / 10;
@@ -65,6 +65,9 @@ export function ProjectMonitor({
   });
   const [loading, setLoading] = useState(true);
 
+  // モーダルを開いた瞬間の時間を「計測中」の計算用に使用する
+  const nowIso = new Date().toISOString();
+
   useEffect(() => {
     fetchMilestones(ticketId).then(data => {
       if (data) setMilestones(data);
@@ -72,16 +75,31 @@ export function ProjectMonitor({
     }).catch(() => setLoading(false));
   }, [ticketId]);
 
-  const completedCount = MILESTONES.filter(m => !!milestones[m.key]).length;
+  // 🌟 修正: 抜け漏れや後戻りに対応するため、「記録済みの最も後ろの工程」を算出
+  let lastCompletedIdx = -1;
+  MILESTONES.forEach((m, i) => {
+    if (milestones[m.key]) lastCompletedIdx = i;
+  });
+  const completedCount = lastCompletedIdx + 1;
 
+  // 🌟 修正: 完了済みの時間だけでなく「今まさに着手中の時間」も合計に加算する
   const totalHours = MILESTONES.reduce((sum, m, idx) => {
     if (idx === 0) return sum;
     const prev = milestones[MILESTONES[idx - 1].key];
     const cur = milestones[m.key];
-    const h = calcHours(prev, cur);
-    if (h === null) return sum;
-    if (isReviewSkipped(idx, prev, cur)) return sum;
-    return sum + h;
+
+    if (prev && cur) {
+      if (!isReviewSkipped(idx, prev, cur)) {
+        return sum + (calcHours(prev, cur) || 0);
+      }
+    } else if (prev && !cur) {
+      // 後の工程がすべて未記録の場合、ここが現在進行中の工程となる
+      const noLaterDone = MILESTONES.slice(idx).every(ms => !milestones[ms.key]);
+      if (noLaterDone) {
+        return sum + (calcHours(prev, nowIso) || 0);
+      }
+    }
+    return sum;
   }, 0);
 
   return (
@@ -89,12 +107,13 @@ export function ProjectMonitor({
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={onClose}
     >
+      {/* 🌟 修正: maxHeightとflexboxを設定し、下部が潰れず内部スクロールできるように改修 */}
       <div
-        style={{ background: "#FFFFFF", borderRadius: 16, width: 460, maxHeight: "82vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 64px rgba(0,0,0,0.18)" }}
+        style={{ background: "#FFFFFF", borderRadius: 16, width: 460, maxHeight: "85vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 64px rgba(0,0,0,0.18)" }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
-        <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)" }}>
+        {/* Header (固定) */}
+        <div style={{ flexShrink: 0, padding: "20px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <h2 style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>実績モニタ</h2>
@@ -113,13 +132,13 @@ export function ProjectMonitor({
               <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{completedCount} / {MILESTONES.length}</span>
             </div>
             <div style={{ height: 5, background: "#F4F5F6", borderRadius: 99, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${(completedCount / MILESTONES.length) * 100}%`, background: "linear-gradient(90deg, #059669, #10B981)", borderRadius: 99, transition: "width 0.3s" }} />
+              <div style={{ height: "100%", width: `${(completedCount / MILESTONES.length) * 100}%`, background: "linear-gradient(90deg, #059669, #10B981)", borderRadius: 99, transition: "width 0.3s cubic-bezier(0.4, 0, 0.2, 1)" }} />
             </div>
           </div>
         </div>
 
-        {/* Milestones */}
-        <div style={{ padding: "4px 0 0", overflowY: "auto", flex: 1 }}>
+        {/* Milestones Timeline (スクロール領域) */}
+        <div style={{ flex: 1, minHeight: 0, padding: "12px 0 24px", overflowY: "auto" }}>
           {loading ? (
             <div style={{ padding: "32px 0", textAlign: "center", color: "#B0A9A4", fontSize: 12 }}>読み込み中...</div>
           ) : (
@@ -128,34 +147,54 @@ export function ProjectMonitor({
                 const dateValue = milestones[milestone.key];
                 const isDone = !!dateValue;
                 const prevDate = idx > 0 ? milestones[MILESTONES[idx - 1].key] : null;
-                const hours = calcHours(prevDate, dateValue);
+
+                // 🌟 修正: 現在進行中の工程を特定
+                const noLaterDone = MILESTONES.slice(idx).every(m => !milestones[m.key]);
+                const isOngoing = idx > 0 && !!prevDate && !dateValue && noLaterDone;
+
+                const hours = isOngoing ? calcHours(prevDate, nowIso) : calcHours(prevDate, dateValue);
                 const skipped = isReviewSkipped(idx, prevDate, dateValue);
 
                 return (
                   <div key={milestone.key}>
+                    {/* コネクターライン */}
                     {idx > 0 && (
-                      <div style={{ display: "flex", alignItems: "center", paddingLeft: 32, paddingRight: 24, height: 32 }}>
-                        <div style={{ width: 1, height: "100%", background: isDone && !!prevDate ? "#A7F3D0" : "#EDE9E0", marginLeft: 8 }} />
+                      <div style={{ display: "flex", alignItems: "center", paddingLeft: 32, paddingRight: 24, height: 36 }}>
+                        <div style={{ width: 2, height: "100%", background: (isDone || isOngoing) && !!prevDate ? "#A7F3D0" : "#EDE9E0", marginLeft: 7 }} />
                         {skipped ? (
                           <span style={{ fontSize: 10, color: "#F59E0B", fontFamily: "var(--font-mono)", marginLeft: 12, background: "#FFFBEB", padding: "2px 9px", borderRadius: 20, fontWeight: 600, border: "1px solid rgba(245,158,11,0.25)" }}>
                             スキップ
                           </span>
                         ) : hours !== null ? (
-                          <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", marginLeft: 12, background: "#ECFDF5", padding: "2px 9px", borderRadius: 20, fontWeight: 600 }}>
-                            {formatDuration(hours)}
+                          <span style={{
+                            fontSize: 10,
+                            color: isOngoing ? "#D97706" : "#059669",
+                            fontFamily: "var(--font-mono)",
+                            marginLeft: 12,
+                            background: isOngoing ? "#FFF7ED" : "#ECFDF5",
+                            padding: "2px 9px",
+                            borderRadius: 20,
+                            fontWeight: 600,
+                            border: isOngoing ? "1px solid rgba(217,119,6,0.25)" : "1px solid transparent"
+                          }}>
+                            {formatDuration(hours)} {isOngoing && "（計測中）"}
                           </span>
                         ) : null}
                       </div>
                     )}
+
+                    {/* ステータスノード */}
                     <div style={{ display: "flex", gap: 12, padding: "4px 24px", alignItems: "center" }}>
                       <div style={{ flexShrink: 0 }}>
                         {isDone
                           ? <CheckCircle2 style={{ width: 18, height: 18, color: "#059669" }} />
-                          : <Circle style={{ width: 18, height: 18, color: "#D1CBC5" }} />
+                          : isOngoing
+                            ? <Circle style={{ width: 18, height: 18, color: "#F59E0B", fill: "#FFFBEB" }} />
+                            : <Circle style={{ width: 18, height: 18, color: "#D1CBC5" }} />
                         }
                       </div>
                       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? "#1A1714" : "#A09790" }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? "#1A1714" : isOngoing ? "#D97706" : "#A09790" }}>
                           {milestone.label}
                         </span>
                         {isDone ? (
@@ -170,18 +209,19 @@ export function ProjectMonitor({
                   </div>
                 );
               })}
-
-              {completedCount >= 2 && (
-                <div style={{ margin: "12px 24px 16px", padding: "12px 16px", background: "#F0FDF4", borderRadius: 10, border: "1px solid rgba(5,150,105,0.15)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>合計工数</span>
-                  <span style={{ fontSize: 13, fontWeight: 800, color: "#059669", fontFamily: "var(--font-mono)" }}>
-                    {formatDuration(totalHours)}
-                  </span>
-                </div>
-              )}
             </>
           )}
         </div>
+
+        {/* Footer (合計時間 - 常に固定表示) */}
+        {!loading && (
+          <div style={{ flexShrink: 0, padding: "16px 24px", background: "#FAFAF9", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>現時点の合計作業時間</span>
+            <span style={{ fontSize: 15, fontWeight: 800, color: "#059669", fontFamily: "var(--font-mono)" }}>
+              {formatDuration(totalHours)}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
