@@ -22,12 +22,12 @@ interface ProjectOption {
 type Tab = "assigned" | "review";
 
 const STATUS_COLOR: Record<string, { bg: string; text: string; border: string }> = {
-  "todo":        { bg: "#F4F5F6", text: "#9E9690", border: "#E0DDD9" },
+  "todo": { bg: "#F4F5F6", text: "#9E9690", border: "#E0DDD9" },
   "in-progress": { bg: "#FFF7ED", text: "#D97706", border: "#FED7AA" },
-  "in-review":   { bg: "#F5F3FF", text: "#7C3AED", border: "#DDD6FE" },
+  "in-review": { bg: "#F5F3FF", text: "#7C3AED", border: "#DDD6FE" },
   "review-done": { bg: "#F0F9FF", text: "#0284C7", border: "#BAE6FD" },
-  "stg-test":    { bg: "#F0FDFA", text: "#0D9488", border: "#99F6E4" },
-  "uat":         { bg: "#EEF2FF", text: "#4F46E5", border: "#C7D2FE" },
+  "stg-test": { bg: "#F0FDFA", text: "#0D9488", border: "#99F6E4" },
+  "uat": { bg: "#EEF2FF", text: "#4F46E5", border: "#C7D2FE" },
 };
 
 // ─── チケットチップ ───────────────────────────────────────────
@@ -293,7 +293,9 @@ function ReviewTab({
 
 // ─── メインページ ─────────────────────────────────────────────
 export function MyActionsPage() {
-  const { userName } = useAuth();
+  // 🌟 修正: userRole も取得し、管理者判定用の変数を用意する
+  const { userName, userRole } = useAuth();
+  const isAdmin = userRole === "admin";
   const [tab, setTab] = useState<Tab>("assigned");
   const [allAssigned, setAllAssigned] = useState<ActionTicket[]>([]);
   const [allReview, setAllReview] = useState<ActionTicket[]>([]);
@@ -303,13 +305,16 @@ export function MyActionsPage() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedTicket, setSelectedTicket] = useState<ActionTicket | null>(null);
   const [loading, setLoading] = useState(true);
+  // 🌟 追加: プルダウンメニューの開閉状態を管理
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !userName) { setLoading(false); return; }
     setLoading(true);
     try {
       const [projectsRes, sprintsRes] = await Promise.all([
-        supabase!.from("projects").select("id, slug, name"),
+        // 🌟 修正: フィルタリングに使うため、"members" カラムも一緒に取得する
+        supabase!.from("projects").select("id, slug, name, members"),
         supabase!.from("sprints").select("id, project_id"),
       ]);
 
@@ -317,8 +322,16 @@ export function MyActionsPage() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (projectsRes.data ?? []).map((p: any) => [p.id, { slug: p.slug, name: p.name }])
       );
+
+      // 🌟 追加: 管理者以外は「自分が members に含まれるプロジェクト」だけを抽出する
+      const accessibleProjects = (projectsRes.data ?? []).filter((p: any) => {
+        if (isAdmin) return true;
+        return Array.isArray(p.members) && p.members.includes(userName);
+      });
+
+      // 🌟 修正: 絞り込んだあとのプロジェクトリストをセットする
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setProjects((projectsRes.data ?? []).map((p: any) => ({ id: p.id, slug: p.slug, name: p.name })));
+      setProjects(accessibleProjects.map((p: any) => ({ id: p.id, slug: p.slug, name: p.name })));
 
       const sprintMap: Record<string, string> = Object.fromEntries(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -365,22 +378,22 @@ export function MyActionsPage() {
     selectedProjectId ? tickets.filter(t => t.projectId === selectedProjectId) : tickets;
 
   const assignedTickets = filter(allAssigned);
-  const reviewTickets   = filter(allReview);
-  const closedA         = filter(closedAssigned);
-  const closedR         = filter(closedReview);
+  const reviewTickets = filter(allReview);
+  const closedA = filter(closedAssigned);
+  const closedR = filter(closedReview);
 
-  const todo       = assignedTickets.filter(t => t.status === "todo");
+  const todo = assignedTickets.filter(t => t.status === "todo");
   const inProgress = assignedTickets.filter(t => t.status === "in-progress");
-  const inReview   = assignedTickets.filter(t => t.status === "in-review");
-  const testing    = assignedTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
+  const inReview = assignedTickets.filter(t => t.status === "in-review");
+  const testing = assignedTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
 
-  const pendingReview     = reviewTickets.filter(t => t.status === "in-review");
+  const pendingReview = reviewTickets.filter(t => t.status === "in-review");
   const revisionRequested = reviewTickets.filter(t => t.status === "in-progress" && (t.reviewRound ?? 0) > 0);
-  const approved          = reviewTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
+  const approved = reviewTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
 
   const tabDefs: { id: Tab; label: string; count: number }[] = [
     { id: "assigned", label: "担当チケット", count: assignedTickets.length },
-    { id: "review",   label: "レビュー管理", count: reviewTickets.length },
+    { id: "review", label: "レビュー管理", count: reviewTickets.length },
   ];
 
   const handleSelectTicket = (t: ActionTicket) => setSelectedTicket(t);
@@ -415,29 +428,67 @@ export function MyActionsPage() {
           {/* Controls */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {/* Project filter */}
-            <div style={{ position: "relative" as const }}>
-              <select
-                value={selectedProjectId}
-                onChange={e => setSelectedProjectId(e.target.value)}
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+                onBlur={() => setTimeout(() => setProjectDropdownOpen(false), 200)}
                 style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
                   fontSize: 12, fontWeight: 600,
                   color: selectedProjectId ? "#1A1714" : "#9E9690",
                   background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.1)",
-                  borderRadius: 8, padding: "6px 28px 6px 10px",
+                  borderRadius: 8, padding: "6px 10px",
                   cursor: "pointer",
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  appearance: "none" as any,
-                  WebkitAppearance: "none",
-                  outline: "none", transition: "all 0.15s", minWidth: 120,
+                  outline: "none", transition: "all 0.15s", minWidth: 140,
                 }}
               >
-                <option value="">すべてのPJ</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-              <ChevronDown style={{
-                position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)",
-                width: 12, height: 12, color: "#9E9690", pointerEvents: "none",
-              }} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {selectedProjectId ? projects.find(p => p.id === selectedProjectId)?.name || "すべてのPJ" : "すべてのPJ"}
+                </span>
+                <ChevronDown style={{ width: 12, height: 12, color: "#9E9690", flexShrink: 0, marginLeft: 8, transform: projectDropdownOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+              </button>
+
+              {projectDropdownOpen && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 4px)", right: 0,
+                  background: "#FFF", border: "1px solid rgba(26,23,20,0.1)",
+                  borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+                  zIndex: 100, minWidth: "100%", maxHeight: 240, overflowY: "auto",
+                  padding: 4
+                }}>
+                  <button
+                    onClick={() => { setSelectedProjectId(""); setProjectDropdownOpen(false); }}
+                    style={{
+                      display: "block", width: "100%", padding: "8px 12px", textAlign: "left",
+                      background: selectedProjectId === "" ? "#ECFDF5" : "transparent",
+                      color: selectedProjectId === "" ? "#059669" : "#1A1714",
+                      border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 600,
+                      transition: "background 0.1s"
+                    }}
+                    onMouseEnter={e => { if (selectedProjectId !== "") e.currentTarget.style.background = "#F4F5F6"; }}
+                    onMouseLeave={e => { if (selectedProjectId !== "") e.currentTarget.style.background = "transparent"; }}
+                  >
+                    すべてのPJ
+                  </button>
+                  {projects.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setSelectedProjectId(p.id); setProjectDropdownOpen(false); }}
+                      style={{
+                        display: "block", width: "100%", padding: "8px 12px", textAlign: "left",
+                        background: selectedProjectId === p.id ? "#ECFDF5" : "transparent",
+                        color: selectedProjectId === p.id ? "#059669" : "#1A1714",
+                        border: "none", borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 600,
+                        transition: "background 0.1s"
+                      }}
+                      onMouseEnter={e => { if (selectedProjectId !== p.id) e.currentTarget.style.background = "#F4F5F6"; }}
+                      onMouseLeave={e => { if (selectedProjectId !== p.id) e.currentTarget.style.background = "transparent"; }}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Refresh */}

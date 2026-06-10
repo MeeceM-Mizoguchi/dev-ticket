@@ -7,7 +7,8 @@ import type { NotifKey } from "@/app/types";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { Toggle } from "@/app/components/shared/Toggle";
 import { FieldInput } from "@/app/components/shared/FieldInput";
-import { FieldSelect } from "@/app/components/shared/FieldSelect";
+// 🌟 修正: FieldSelect を CustomSelect に差し替え
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 export function SettingsPage() {
@@ -17,6 +18,10 @@ export function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [notifs, setNotifs] = useState<Record<NotifKey, boolean>>({ email: true, assign: true, status: false, comment: true, reminder: false });
 
+  // 🌟 追加: 言語とタイムゾーンの状態管理用State（初期値は現在の表示に合わせる）
+  const [lang, setLang] = useState("ja");
+  const [timezone, setTimezone] = useState("Asia/Tokyo");
+
   // Slackメンバー連携
   const [slackMemberId, setSlackMemberId] = useState("");
   const [slackIdSaved, setSlackIdSaved] = useState(false);
@@ -24,7 +29,7 @@ export function SettingsPage() {
 
   // OAuthコールバック後の結果バナー
   const slackUserResult = searchParams.get("slackuser");
-  const slackUserNewId   = searchParams.get("slackId");
+  const slackUserNewId = searchParams.get("slackId");
   const [slackBanner, setSlackBanner] = useState<{ type: "success" | "error"; message: string } | null>(
     slackUserResult === "success"
       ? { type: "success", message: `Slackアカウントと連携しました（${slackUserNewId ?? ""}）` }
@@ -69,16 +74,16 @@ export function SettingsPage() {
   };
 
   const tabs = [
-    { id: "general",       label: "一般" },
+    { id: "general", label: "一般" },
     { id: "notifications", label: "通知" },
-    { id: "team",          label: "チーム" },
+    { id: "team", label: "チーム" },
   ];
 
   const notifItems: { key: NotifKey; label: string; desc: string }[] = [
-    { key: "email",    label: "メール通知",       desc: "重要なアップデートをメールで受け取る" },
-    { key: "assign",   label: "担当割り当て通知", desc: "チケットが自分に割り当てられたときに通知" },
-    { key: "status",   label: "ステータス変更通知", desc: "チケットのステータスが変更されたときに通知" },
-    { key: "comment",  label: "コメント通知",     desc: "コメントが追加されたときに通知" },
+    { key: "email", label: "メール通知", desc: "重要なアップデートをメールで受け取る" },
+    { key: "assign", label: "担当割り当て通知", desc: "チケットが自分に割り当てられたときに通知" },
+    { key: "status", label: "ステータス変更通知", desc: "チケットのステータスが変更されたときに通知" },
+    { key: "comment", label: "コメント通知", desc: "コメントが追加されたときに通知" },
     { key: "reminder", label: "リマインダー通知", desc: "期限の前日にデスクトップ通知を受け取る" },
   ];
 
@@ -91,10 +96,12 @@ export function SettingsPage() {
 
       {/* Slack連携バナー */}
       {slackBanner && (
-        <div style={{ marginBottom: 16, padding: "11px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "space-between",
+        <div style={{
+          marginBottom: 16, padding: "11px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "space-between",
           background: slackBanner.type === "success" ? "#ECFDF5" : "#FEF2F2",
-          color:      slackBanner.type === "success" ? "#059669"  : "#DC2626",
-          border: `1px solid ${slackBanner.type === "success" ? "rgba(5,150,105,0.3)" : "rgba(220,38,38,0.3)"}` }}>
+          color: slackBanner.type === "success" ? "#059669" : "#DC2626",
+          border: `1px solid ${slackBanner.type === "success" ? "rgba(5,150,105,0.3)" : "rgba(220,38,38,0.3)"}`
+        }}>
           <span>{slackBanner.type === "success" ? "✅ " : "❌ "}{slackBanner.message}</span>
           <button onClick={() => setSlackBanner(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "inherit", lineHeight: 1, marginLeft: 12 }}>×</button>
         </div>
@@ -114,8 +121,31 @@ export function SettingsPage() {
           <div style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, padding: "20px 24px" }}>
             <h2 style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", marginBottom: 16 }}>システム設定</h2>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <FieldSelect label="言語"><option value="ja">日本語</option><option value="en">English</option></FieldSelect>
-              <FieldSelect label="タイムゾーン"><option value="Asia/Tokyo">Asia/Tokyo (UTC+9)</option><option value="UTC">UTC</option></FieldSelect>
+              {/* 🌟 修正: 言語のプルダウンを CustomSelect に置き換え */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#9E9690", marginBottom: 6 }}>言語</label>
+                <CustomSelect
+                  value={lang}
+                  options={[
+                    { value: "ja", label: "日本語" },
+                    { value: "en", label: "English" }
+                  ]}
+                  onChange={setLang}
+                />
+              </div>
+
+              {/* 🌟 修正: タイムゾーンのプルダウンを CustomSelect に置き換え */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#9E9690", marginBottom: 6 }}>タイムゾーン</label>
+                <CustomSelect
+                  value={timezone}
+                  options={[
+                    { value: "Asia/Tokyo", label: "Asia/Tokyo (UTC+9)" },
+                    { value: "UTC", label: "UTC" }
+                  ]}
+                  onChange={setTimezone}
+                />
+              </div>
             </div>
           </div>
           <button onClick={handleSave}
@@ -164,14 +194,14 @@ export function SettingsPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <div style={{ width: 20, height: 20, borderRadius: 5, background: "#4A154B", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
-                  <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="white"/>
-                  <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="white"/>
-                  <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="rgba(255,255,255,0.6)"/>
-                  <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="rgba(255,255,255,0.6)"/>
-                  <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="white"/>
-                  <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="white"/>
-                  <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="rgba(255,255,255,0.6)"/>
-                  <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="rgba(255,255,255,0.6)"/>
+                  <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="white" />
+                  <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="white" />
+                  <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="rgba(255,255,255,0.6)" />
+                  <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="rgba(255,255,255,0.6)" />
+                  <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="white" />
+                  <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="white" />
+                  <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="rgba(255,255,255,0.6)" />
+                  <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="rgba(255,255,255,0.6)" />
                 </svg>
               </div>
               <h3 style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>Slackアカウント連携</h3>
@@ -186,7 +216,7 @@ export function SettingsPage() {
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
                     </div>
                     <div>
                       <span style={{ fontSize: 13, fontWeight: 600, color: "#15803D" }}>連携済み</span>
@@ -211,14 +241,14 @@ export function SettingsPage() {
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#611f69"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#4A154B"; }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                    <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="white"/>
-                    <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="white"/>
-                    <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="rgba(255,255,255,0.6)"/>
-                    <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="rgba(255,255,255,0.6)"/>
-                    <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="white"/>
-                    <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="white"/>
-                    <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="rgba(255,255,255,0.6)"/>
-                    <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="rgba(255,255,255,0.6)"/>
+                    <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="white" />
+                    <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="white" />
+                    <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834z" fill="rgba(255,255,255,0.6)" />
+                    <path d="M8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="rgba(255,255,255,0.6)" />
+                    <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834z" fill="white" />
+                    <path d="M17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="white" />
+                    <path d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52z" fill="rgba(255,255,255,0.6)" />
+                    <path d="M15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" fill="rgba(255,255,255,0.6)" />
                   </svg>
                   Slackアカウントと連携する
                 </button>

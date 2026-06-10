@@ -23,12 +23,12 @@ const MILESTONE_COLUMN: Record<MilestoneKey, string> = {
 
 const STATUS_TO_MILESTONE: Partial<Record<TicketStatus, MilestoneKey>> = {
   "in-progress": "startedAt",
-  "in-review":   "reviewRequestedAt",
+  "in-review": "reviewRequestedAt",
   "review-done": "reviewApprovedAt",
-  "stg-test":    "stgCompletedAt",
-  "uat":         "uatCompletedAt",
-  "done":        "releasedAt",
-  "closed":      "releasedAt",
+  "stg-test": "stgCompletedAt",
+  "uat": "uatCompletedAt",
+  "done": "releasedAt",
+  "closed": "releasedAt",
 };
 
 const MILESTONE_ORDER: MilestoneKey[] = [
@@ -42,8 +42,19 @@ export async function recordMilestoneFromTicketStatus(
   ticketStatus: TicketStatus
 ): Promise<void> {
   if (!isSupabaseEnabled || !ticketId) return;
+
+  // 「未着手 (todo)」に戻された場合は、無条件ですべての実績を完全にリセットする
+  if (ticketStatus === "todo") {
+    const resetUpdates: Record<string, null> = {};
+    for (const k of MILESTONE_ORDER) {
+      resetUpdates[MILESTONE_COLUMN[k]] = null;
+    }
+    await supabase!.from("sprint_tickets").update(resetUpdates).eq("id", ticketId);
+    return;
+  }
+
   const key = STATUS_TO_MILESTONE[ticketStatus];
-  if (!key) return;
+  if (!key) return; // todo以外でマイルストーンキーがない場合はスキップ
 
   const keyIdx = MILESTONE_ORDER.indexOf(key);
   // 同一の now を使うことで、カスケード補完された複数マイルストーンが完全一致タイムスタンプになる（スキップ検出に使用）
@@ -65,10 +76,29 @@ export async function recordMilestoneFromTicketStatus(
     released_at: data.released_at,
   };
 
-  const updates: Record<string, string> = {};
-  for (let i = 0; i <= keyIdx; i++) {
-    const col = MILESTONE_COLUMN[MILESTONE_ORDER[i]];
-    if (!currentByCol[col]) updates[col] = now;
+  const updates: Record<string, string | null> = {};
+
+  // 後戻り（Backward）の判定
+  let movedBackward = false;
+  for (let i = keyIdx + 1; i < MILESTONE_ORDER.length; i++) {
+    if (currentByCol[MILESTONE_COLUMN[MILESTONE_ORDER[i]]]) {
+      movedBackward = true;
+      break;
+    }
+  }
+
+  if (movedBackward) {
+    // 🌟 修正: 戻った先の工程（ターゲット工程）のタイムスタンプは、過去の記録をそのまま保持するため上書きしない
+    // ターゲット工程より「後ろ」の工程の実績のみを未記録（null）にリセットする
+    for (let i = keyIdx + 1; i < MILESTONE_ORDER.length; i++) {
+      updates[MILESTONE_COLUMN[MILESTONE_ORDER[i]]] = null;
+    }
+  } else {
+    // 通常の順行処理（Forward）
+    for (let i = 0; i <= keyIdx; i++) {
+      const col = MILESTONE_COLUMN[MILESTONE_ORDER[i]];
+      if (!currentByCol[col]) updates[col] = now;
+    }
   }
 
   if (Object.keys(updates).length > 0) {
@@ -99,7 +129,7 @@ export async function fetchMilestones(ticketId: string): Promise<MilestoneRow | 
     }
   }
   if (Object.keys(backfill).length > 0) {
-    supabase!.from("sprint_tickets").update(backfill).eq("id", ticketId).then(() => {});
+    supabase!.from("sprint_tickets").update(backfill).eq("id", ticketId).then(() => { });
   }
 
   return {

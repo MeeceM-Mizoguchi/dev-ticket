@@ -8,13 +8,13 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
-import { FieldSelect } from "@/app/components/shared/FieldSelect";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 
 const FALLBACK_ROLES: RoleDefinition[] = [
-  { id: 1, name: "admin",           label: "管理者",                   base_permissions: { canCreateTicket: true,  canCreateSprint: true,  canEditDelete: true,  canReview: true  } },
-  { id: 2, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true,  canCreateSprint: true,  canEditDelete: true,  canReview: true  } },
-  { id: 3, name: "developer",       label: "開発者",                   base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
-  { id: 4, name: "designer",        label: "デザイナー",               base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
+  { id: 1, name: "admin", label: "管理者", base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true } },
+  { id: 2, name: "project-manager", label: "プロジェクトマネージャー", base_permissions: { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true } },
+  { id: 3, name: "developer", label: "開発者", base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
+  { id: 4, name: "designer", label: "デザイナー", base_permissions: { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false } },
 ];
 
 export function MemberEditDialog({ member, onClose, onSaved }: { member: Member; onClose: () => void; onSaved: () => void }) {
@@ -128,21 +128,55 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
           {saving ? "保存中..." : rolesLoaded ? "保存する" : "読み込み中..."}
         </BtnPrimary>
       </>}>
-      <FieldInput label="名前" value={name} onChange={setName} required />
-      <FieldSelect label="権限ロール" value={role} onChange={setRole as (v: string) => void}
-        disabled={roleDisabled}>
-        {!rolesLoaded && <option value={member.role}>読み込み中...</option>}
-        {rolesLoaded && visibleRoles.map(r => <option key={r.id} value={r.name}>{r.label}</option>)}
-      </FieldSelect>
-      <FieldSelect label="所属グループ" value={group} onChange={setGroup}>
-        {GROUPS.filter(g => g !== "すべて").map(g => <option key={g} value={g}>{g}</option>)}
-        <option value="">未割り当て</option>
-      </FieldSelect>
-      <FieldSelect label="ステータス" value={status} onChange={setStatus as (v: string) => void}>
-        <option value="active">アクティブ</option>
-        <option value="inactive">非アクティブ</option>
-        <option value="invited">招待中</option>
-      </FieldSelect>
+      <FieldInput label="名前" value={name} onChange={setName} required style={{ marginBottom: 16 }} />
+
+      {/* 🌟 修正: 権限ロールを CustomSelect に置き換え */}
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+          権限ロール
+        </label>
+        <CustomSelect
+          value={role}
+          options={
+            !rolesLoaded
+              ? [{ value: member.role, label: "読み込み中..." }]
+              : visibleRoles.map(r => ({ value: r.name, label: r.label }))
+          }
+          onChange={v => setRole(v)}
+          disabled={roleDisabled}
+        />
+      </div>
+
+      {/* 🌟 修正: 所属グループを CustomSelect に置き換え */}
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+          所属グループ
+        </label>
+        <CustomSelect
+          value={group}
+          options={[
+            ...GROUPS.filter(g => g !== "すべて").map(g => ({ value: g, label: g })),
+            { value: "", label: "未割り当て" }
+          ]}
+          onChange={v => setGroup(v)}
+        />
+      </div>
+
+      {/* 🌟 修正: ステータスを CustomSelect に置き換え */}
+      <div>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+          ステータス
+        </label>
+        <CustomSelect
+          value={status}
+          options={[
+            { value: "active", label: "アクティブ" },
+            { value: "inactive", label: "非アクティブ" },
+            { value: "invited", label: "招待中" }
+          ]}
+          onChange={v => setStatus(v as "active" | "inactive" | "invited")}
+        />
+      </div>
     </DialogShell>
   );
 }

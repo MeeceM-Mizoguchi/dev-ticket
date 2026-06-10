@@ -72,6 +72,10 @@ export function TicketDetailPanel({
   const hasReviewPermission = effectivePermissions.canReview;
   const hasSkipReviewPermission = effectivePermissions.canSkipReview;
   // editable state
+  // 🌟 追加: パンくずリストに表示するテキスト状態を管理
+  const [breadcrumbProjName, setBreadcrumbProjName] = useState("");
+  const [breadcrumbSprintName, setBreadcrumbSprintName] = useState("");
+
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -235,8 +239,27 @@ export function TicketDetailPanel({
           setCreatedAt(t.createdAt ?? "");
         });
     }
+
+    // 🌟 追加: パンくず用のプロジェクト名・スプリント名をデータベースから非同期で取得
+    if (isSupabaseEnabled) {
+      if (projectId) {
+        supabase!.from("projects").select("name").eq("id", projectId).single()
+          .then(({ data }) => { if (data?.name) setBreadcrumbProjName(data.name); });
+      }
+      if (sprintId) {
+        supabase!.from("sprints").select("name").eq("id", sprintId).single()
+          .then(({ data }) => { if (data?.name) setBreadcrumbSprintName(data.name); });
+      }
+    } else {
+      // モックデータ時のフォールバック処理
+      const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
+      const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
+      if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
+      if (fallbackSprint) setBreadcrumbSprintName(fallbackSprint.name);
+    }
+
     if (ticket.id) loadRelated(ticket.id);
-  }, [ticket?.id, loadRelated]);
+  }, [ticket?.id, projectId, sprintId, loadRelated]); // 🌟 依存配列に projectId, sprintId を追加
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -1050,6 +1073,32 @@ export function TicketDetailPanel({
 
         {/* Header */}
         <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
+
+          {/* 🌟 追加: パンくずリストナビゲーションセクション */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600, color: "#9E9690", marginBottom: 12, flexWrap: "wrap" }}>
+            {/* 🌟 修正: 遷移先を /dashboard から 2枚目の画像であるプロジェクト管理一覧（/projects）へ変更 */}
+            <a href="/projects" onClick={(e) => { e.preventDefault(); window.location.href = "/projects"; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
+              プロジェクト一覧
+            </a>
+            {breadcrumbProjName && (
+              <>
+                <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
+                {/* 🌟 修正: クリック時に該当プロジェクトのURL (/${projectSlug}) へ確実に画面遷移させる処理を追加 */}
+                <a href={`/${projectSlug}`} onClick={(e) => { e.preventDefault(); window.location.href = `/${projectSlug}`; onClose(); }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
+                  {breadcrumbProjName}
+                </a>
+              </>
+            )}
+            {breadcrumbSprintName && (
+              <>
+                <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
+                <span style={{ color: "#6B6458", fontWeight: 700 }}>
+                  {breadcrumbSprintName}
+                </span>
+              </>
+            )}
+          </div>
+
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>

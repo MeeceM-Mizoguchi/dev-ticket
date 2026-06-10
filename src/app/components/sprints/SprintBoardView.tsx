@@ -5,6 +5,12 @@ import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, Che
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
+
+// 🌟 追加: ステータスごとの進捗率（progress）を定義
+const STATUS_PROGRESS: Record<TicketStatus, number> = {
+  todo: 0, "in-progress": 10, "in-review": 30,
+  "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100,
+};
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { MEMBERS } from "@/app/data/mock";
@@ -15,8 +21,8 @@ const DRAG_TYPE = "SPRINT_TICKET";
 const MODAL_STATUSES: TicketStatus[] = ["in-review", "review-done"];
 
 const MODAL_LABELS: Partial<Record<TicketStatus, { title: string; placeholder: string; commentType: string }>> = {
-  "in-review":    { title: "レビュー依頼", placeholder: "レビュー依頼の内容・確認ポイントを入力（任意）...", commentType: "review_request" },
-  "review-done":  { title: "レビュー承認", placeholder: "承認コメントを入力（任意）...", commentType: "review_approved" },
+  "in-review": { title: "レビュー依頼", placeholder: "レビュー依頼の内容・確認ポイントを入力（任意）...", commentType: "review_request" },
+  "review-done": { title: "レビュー承認", placeholder: "承認コメントを入力（任意）...", commentType: "review_approved" },
 };
 
 const STATUS_RANK: Record<TicketStatus, number> = {
@@ -92,9 +98,9 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
 
   const [showParentTooltip, setShowParentTooltip] = useState(false);
 
-  const priBg    = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
-  const priColor = ticket.priority === "high" ? "#DC2626"  : ticket.priority === "medium" ? "#D97706"  : "#0284C7";
-  const priLabel = ticket.priority === "high" ? "高"       : ticket.priority === "medium" ? "中"       : "低";
+  const priBg = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+  const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
+  const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
   const isChild = !!ticket.parentId;
 
   return (
@@ -152,10 +158,12 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
   const isActive = isOver && canDrop;
 
   return (
-    <div ref={drop} style={{ borderRadius: 8, padding: 8, minHeight: 120, transition: "background 0.15s, border-color 0.15s",
+    <div ref={drop} style={{
+      borderRadius: 8, padding: 8, minHeight: 120, transition: "background 0.15s, border-color 0.15s",
       background: isActive ? col.bg : "rgba(26,23,20,0.02)",
       border: `1.5px ${isActive ? "solid" : "dashed"} ${isActive ? col.color + "55" : "rgba(26,23,20,0.08)"}`,
-      ...extraStyle }}>
+      ...extraStyle
+    }}>
       {tickets.length === 0 && !isActive && (
         <div style={{ padding: "20px 0", textAlign: "center" as const, color: "#D5D0CB", fontSize: 11 }}>なし</div>
       )}
@@ -216,7 +224,11 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
     setSaving(true);
     try {
       if (isSupabaseEnabled) {
-        const updateData: Record<string, unknown> = { status: newStatus };
+        // 🌟 修正: status と一緒に、そのステータスに対応する progress（進捗率）もDBに保存する
+        const updateData: Record<string, unknown> = {
+          status: newStatus,
+          progress: STATUS_PROGRESS[newStatus] // ここを追加！
+        };
         if (newStatus === "in-review" && reviewer) updateData.reviewer_name = reviewer;
         await supabase!.from("sprint_tickets").update(updateData).eq("id", ticketId);
 
@@ -387,12 +399,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
               {TICKET_STATUSES.map(col => {
-                const colTickets = currentSprint.tickets
-                  .filter(t => t.status === col.value)
-                  .sort((a, b) => {
-                    const d = (a.createdAt || "").localeCompare(b.createdAt || "");
-                    return d !== 0 ? d : a.id.localeCompare(b.id);
-                  });
+                const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
                     <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}

@@ -11,6 +11,15 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
+// 🌟 追加: CustomSelect コンポーネントをインポート
+import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
+
+// 🌟 追加: 優先度の選択肢と色を定義
+const PRIORITY_OPTIONS: SelectOption[] = [
+  { value: "high", label: "高", color: "#DC2626", bg: "#FEF2F2" },
+  { value: "medium", label: "中", color: "#D97706", bg: "#FFFBEB" },
+  { value: "low", label: "低", color: "#0284C7", bg: "#F0F9FF" },
+];
 
 export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
   sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
@@ -366,35 +375,35 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               <p style={{ fontSize: 11, fontWeight: 700, color: "#059669", letterSpacing: "0.04em", textTransform: "uppercase" as const }}>追加先を選択</p>
               <div>
                 <label className={labelCls}>プロジェクト <span style={{ color: "#DC2626" }}>*</span></label>
-                <select
-                  className={inputCls}
-                  value={selectedProjectId}
-                  onChange={e => { setSelectedProjectId(e.target.value); setProjectError(false); setSelectedSprintId(""); setSprintError(false); }}
-                  style={projectError ? { outline: "2px solid #DC2626", outlineOffset: 1 } : undefined}
-                >
-                  <option value="">プロジェクトを選択してください</option>
-                  {availableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                {/* 🌟 修正: CustomSelect に置換し、エラー時は枠線で囲う */}
+                <div style={projectError ? { outline: "2px solid #DC2626", outlineOffset: 1, borderRadius: 8 } : undefined}>
+                  <CustomSelect
+                    value={selectedProjectId}
+                    options={availableProjects.map(p => ({ value: p.id, label: p.name }))}
+                    onChange={v => { setSelectedProjectId(v); setProjectError(false); setSelectedSprintId(""); setSprintError(false); }}
+                    placeholder="プロジェクトを選択してください"
+                  />
+                </div>
                 {projectError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 5 }}>プロジェクトを選択してください</p>}
               </div>
               <div>
                 <label className={labelCls}>スプリント <span style={{ color: "#DC2626" }}>*</span></label>
-                <select
-                  className={inputCls}
-                  value={selectedSprintId}
-                  onChange={e => { setSelectedSprintId(e.target.value); setSprintError(false); }}
-                  disabled={!selectedProjectId}
-                  style={sprintError ? { outline: "2px solid #DC2626", outlineOffset: 1 } : undefined}
-                >
-                  <option value="">
-                    {!selectedProjectId
-                      ? "先にプロジェクトを選択してください"
-                      : availableSprints.length === 0
-                        ? "スプリントがありません"
-                        : "スプリントを選択してください"}
-                  </option>
-                  {availableSprints.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                {/* 🌟 修正: CustomSelect に置換 */}
+                <div style={sprintError ? { outline: "2px solid #DC2626", outlineOffset: 1, borderRadius: 8 } : undefined}>
+                  <CustomSelect
+                    value={selectedSprintId}
+                    options={availableSprints.map(s => ({ value: s.id, label: s.name }))}
+                    onChange={v => { setSelectedSprintId(v); setSprintError(false); }}
+                    disabled={!selectedProjectId}
+                    placeholder={
+                      !selectedProjectId
+                        ? "先にプロジェクトを選択してください"
+                        : availableSprints.length === 0
+                          ? "スプリントがありません"
+                          : "スプリントを選択してください"
+                    }
+                  />
+                </div>
                 {sprintError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 5 }}>スプリントを選択してください</p>}
               </div>
             </div>
@@ -411,35 +420,48 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label className={labelCls}>ステータス</label>
-              <select className={inputCls} value={status} onChange={e => setStatus(e.target.value as TicketStatus)}>
-                {TICKET_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
+              {/* 🌟 修正: CustomSelect に置換。ステータスは色付きバッジで表示 */}
+              <CustomSelect
+                value={status}
+                options={TICKET_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
+                onChange={v => setStatus(v as TicketStatus)}
+              />
             </div>
             <div>
               <label className={labelCls}>優先度</label>
-              <select className={inputCls} value={priority} onChange={e => setPriority(e.target.value as Priority)}>
-                <option value="high">高</option>
-                <option value="medium">中</option>
-                <option value="low">低</option>
-              </select>
+              {/* 🌟 修正: CustomSelect に置換 */}
+              <CustomSelect
+                value={priority}
+                options={PRIORITY_OPTIONS}
+                onChange={v => setPriority(v as Priority)}
+              />
             </div>
           </div>
 
           {categories.length > 0 && (
             <div>
               <label className={labelCls}>分類</label>
-              <select className={inputCls} value={categoryId} onChange={e => setCategoryId(e.target.value)}>
-                <option value="">分類なし</option>
-                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              {/* 🌟 修正: CustomSelect に置換 */}
+              <CustomSelect
+                value={categoryId}
+                options={[
+                  { value: "", label: "分類なし" },
+                  ...categories.map(c => ({ value: c.id, label: c.name }))
+                ]}
+                onChange={v => setCategoryId(v)}
+                placeholder="分類なし"
+              />
             </div>
           )}
 
           <div>
             <label className={labelCls}>担当者</label>
-            <select className={inputCls} value={assignee} onChange={e => setAssignee(e.target.value)}>
-              {assigneeList.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
-            </select>
+            {/* 🌟 修正: CustomSelect に置換 */}
+            <CustomSelect
+              value={assignee}
+              options={assigneeList.map(m => ({ value: m.name, label: m.name }))}
+              onChange={v => setAssignee(v)}
+            />
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
