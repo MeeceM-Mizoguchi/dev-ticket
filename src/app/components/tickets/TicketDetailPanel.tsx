@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -75,6 +75,7 @@ export function TicketDetailPanel({
   // 🌟 追加: パンくずリストに表示するテキスト状態を管理
   const [breadcrumbProjName, setBreadcrumbProjName] = useState("");
   const [breadcrumbSprintName, setBreadcrumbSprintName] = useState("");
+  const [breadcrumbParentTicket, setBreadcrumbParentTicket] = useState<SprintTicket | null>(null);
 
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
@@ -251,12 +252,24 @@ export function TicketDetailPanel({
         supabase!.from("sprints").select("name").eq("id", sprintId).single()
           .then(({ data }) => { if (data?.name) setBreadcrumbSprintName(data.name); });
       }
+      // 子チケットの場合、親チケット情報をパンくず用に取得
+      setBreadcrumbParentTicket(null);
+      if (ticket?.parentId) {
+        supabase!.from("sprint_tickets").select("*").eq("id", ticket.parentId).single()
+          .then(({ data }) => { if (data) setBreadcrumbParentTicket(mapSprintTicket(data)); });
+      }
     } else {
       // モックデータ時のフォールバック処理
       const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
       const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
       if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
       if (fallbackSprint) setBreadcrumbSprintName(fallbackSprint.name);
+      setBreadcrumbParentTicket(null);
+      if (ticket?.parentId) {
+        const allTickets = require("@/app/data/mock").SPRINTS.flatMap((s: any) => s.tickets ?? []) as SprintTicket[];
+        const parent = allTickets.find(t => t.id === ticket.parentId);
+        if (parent) setBreadcrumbParentTicket(parent);
+      }
     }
 
     if (ticket.id) loadRelated(ticket.id);
@@ -1072,6 +1085,22 @@ export function TicketDetailPanel({
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
+        {/* 親チケット peek strip: 子チケット表示時のみ、パネル左端に親の端っこを表示 */}
+        {breadcrumbParentTicket && (
+          <div
+            onClick={() => onSelectTicket?.(breadcrumbParentTicket)}
+            style={{ position: "absolute", top: 0, left: -48, bottom: 0, width: 48, background: "#EDE9E3", borderRadius: "12px 0 0 12px", borderLeft: "1px solid rgba(26,23,20,0.10)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, transition: "background 0.15s, width 0.15s", overflow: "hidden", zIndex: 0 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E2DDD6"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9E3"; }}
+            title={`${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}`}
+          >
+            <ChevronLeft size={14} color="#A09690" strokeWidth={2.5} />
+            <span style={{ writingMode: "vertical-rl", textOrientation: "mixed", transform: "rotate(180deg)", fontSize: 10, fontWeight: 700, color: "#A09690", maxHeight: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: "0.02em" }}>
+              {breadcrumbParentTicket.wbs}
+            </span>
+          </div>
+        )}
+
         {/* Header */}
         <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
 
@@ -1093,9 +1122,35 @@ export function TicketDetailPanel({
             {breadcrumbSprintName && (
               <>
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
-                <span style={{ color: "#6B6458", fontWeight: 700 }}>
-                  {breadcrumbSprintName}
-                </span>
+                {(projectSlug && sprintId) ? (
+                  <a
+                    href={`/${projectSlug}/sprint/${sprintId}`}
+                    onClick={(e) => { e.preventDefault(); window.location.href = `/${projectSlug}/sprint/${sprintId}`; onClose(); }}
+                    style={{ color: breadcrumbParentTicket ? "#9E9690" : "#6B6458", fontWeight: 700, textDecoration: "none", transition: "color 0.15s" }}
+                    onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"}
+                    onMouseLeave={ev => ev.currentTarget.style.color = breadcrumbParentTicket ? "#9E9690" : "#6B6458"}
+                  >
+                    {breadcrumbSprintName}
+                  </a>
+                ) : (
+                  <span style={{ color: breadcrumbParentTicket ? "#9E9690" : "#6B6458", fontWeight: 700 }}>
+                    {breadcrumbSprintName}
+                  </span>
+                )}
+              </>
+            )}
+            {breadcrumbParentTicket && (
+              <>
+                <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
+                <button
+                  onClick={() => onSelectTicket?.(breadcrumbParentTicket)}
+                  style={{ color: "#9E9690", background: "none", border: "none", padding: 0, cursor: onSelectTicket ? "pointer" : "default", fontWeight: 600, fontSize: 11, fontFamily: "inherit", transition: "color 0.15s", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  onMouseEnter={ev => { if (onSelectTicket) ev.currentTarget.style.color = "#1A1714"; }}
+                  onMouseLeave={ev => { ev.currentTarget.style.color = "#9E9690"; }}
+                  title={`${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}`}
+                >
+                  {breadcrumbParentTicket.wbs} {breadcrumbParentTicket.title}
+                </button>
               </>
             )}
           </div>
