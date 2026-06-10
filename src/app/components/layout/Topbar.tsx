@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Bell, Trash2 } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check } from "lucide-react";
 import { useNavigate } from "react-router";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -7,7 +7,14 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { GlobalSearch } from "@/app/components/layout/GlobalSearch";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
-import type { AppNotification } from "@/app/types";
+import type { AppNotification, ActionMemoCategory, NotificationType } from "@/app/types";
+
+function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
+  if (type === "assign") return "todo";
+  if (type === "review_request" || type === "revision_request") return "review";
+  if (type === "review_approved") return "test";
+  return "memo";
+}
 
 function formatRelative(ts: string): string {
   if (!ts) return "";
@@ -27,6 +34,10 @@ export function Topbar() {
   const navigate = useNavigate();
   const [showNotif, setShowNotif] = useState(false);
   const [hoveredNotifId, setHoveredNotifId] = useState<string | null>(null);
+  const [existingActionNotifIds, setExistingActionNotifIds] = useState<Set<string>>(new Set());
+  const [justAddedId, setJustAddedId] = useState<string | null>(null);
+  const [hoveredActionBtnId, setHoveredActionBtnId] = useState<string | null>(null);
+
   const [notifications, setNotifications] = useState<AppNotification[]>(
     !isSupabaseEnabled ? MOCK_NOTIFICATIONS : []
   );
@@ -49,7 +60,6 @@ export function Topbar() {
       .order("created_at", { ascending: false })
       .limit(20);
     if (error) {
-      // hidden_at カラムが DB に未追加の場合はフィルタなしで再取得
       const { data: d2, error: e2 } = await supabase!
         .from("notifications")
         .select("*")
@@ -61,6 +71,23 @@ export function Topbar() {
       return;
     }
     if (data) setNotifications(data.map(mapNotification));
+  };
+
+  const loadExistingActionIds = async () => {
+    if (!isSupabaseEnabled || !userName) return;
+    const { data, error } = await supabase!
+      .from("action_memos")
+      .select("source_notification_id")
+      .eq("user_name", userName)
+      .not("source_notification_id", "is", null);
+    if (error) {
+      console.error("[action_memos] load existing ids failed:", error.message);
+      return;
+    }
+    if (data) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setExistingActionNotifIds(new Set(data.map((r: any) => r.source_notification_id).filter(Boolean)));
+    }
   };
 
   useEffect(() => {
@@ -75,21 +102,45 @@ export function Topbar() {
     setShowNotif(true);
     setLastViewedAt(now);
     localStorage.setItem(NOTIF_VIEWED_KEY, now);
+    loadExistingActionIds();
   };
 
   const handleDeleteNotif = async (e: React.MouseEvent, notifId: string) => {
     e.stopPropagation();
-    // UIから即時削除
     setNotifications(prev => prev.filter(n => n.id !== notifId));
     if (isSupabaseEnabled) {
-      // UPDATEでhidden_atをセット（DELETEではなくUPDATE — UPDATEポリシーは動作確認済み）
-      // hidden_atがセットされた通知はloadNotificationsの .is("hidden_at", null) フィルタで除外される
       const { error } = await supabase!
         .from("notifications")
         .update({ hidden_at: new Date().toISOString() })
         .eq("id", notifId);
       if (error) console.error("[notifications] hide failed:", error.message);
     }
+  };
+
+  const handleAddToActionList = async (e: React.MouseEvent, notif: AppNotification) => {
+    e.stopPropagation();
+    if (existingActionNotifIds.has(notif.id)) return;
+    const category = notifTypeToCategory(notif.type);
+    if (isSupabaseEnabled && userName) {
+      const { error } = await supabase!.from("action_memos").insert({
+        user_name: userName,
+        title: notif.title,
+        content: notif.body,
+        category,
+        source_notification_id: notif.id,
+        ticket_id: notif.ticketId ?? null,
+        ticket_wbs: notif.ticketWbs ?? "",
+        ticket_title: notif.ticketTitle ?? "",
+        project_slug: notif.projectSlug ?? "",
+      });
+      if (error) {
+        console.error("[action_memos] insert failed:", error.message);
+        return;
+      }
+    }
+    setExistingActionNotifIds(prev => new Set([...prev, notif.id]));
+    setJustAddedId(notif.id);
+    setTimeout(() => setJustAddedId(null), 1800);
   };
 
   const handleNotifClick = async (notif: AppNotification) => {
@@ -124,41 +175,120 @@ export function Topbar() {
               </span>
             )}
           </button>
+
           {showNotif && (
             <>
               <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => { setShowNotif(false); setHoveredNotifId(null); }} />
-              <div style={{ position: "absolute", top: 40, right: 0, width: 320, background: "#fff", borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.08)", zIndex: 50, overflow: "hidden" }}>
+              <div style={{ position: "absolute", top: 40, right: 0, width: 340, background: "#fff", borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.08)", zIndex: 50, overflow: "hidden" }}>
                 <div style={{ padding: "14px 16px 12px", borderBottom: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>お知らせ</span>
                   {unreadCount > 0 && <span style={{ fontSize: 10, background: "#ECFDF5", color: "#059669", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{unreadCount}件 未読</span>}
                 </div>
+
                 <div style={{ maxHeight: 360, overflowY: "auto" }}>
                   {notifications.length === 0 ? (
                     <div style={{ padding: "32px 16px", textAlign: "center" as const, color: "#B0A9A4", fontSize: 12 }}>お知らせはありません</div>
-                  ) : notifications.map(notif => (
-                    <div key={notif.id}
-                      onClick={() => handleNotifClick(notif)}
-                      style={{ padding: "12px 16px", borderBottom: "1px solid rgba(26,23,20,0.04)", background: hoveredNotifId === notif.id ? "#F4F5F6" : notif.isRead ? "transparent" : "#F0FDF8", cursor: "pointer", transition: "background 0.12s" }}
-                      onMouseEnter={() => setHoveredNotifId(notif.id)}
-                      onMouseLeave={() => setHoveredNotifId(null)}>
-                      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                        <div style={{ width: 6, height: 6, borderRadius: "50%", background: notif.isRead ? "transparent" : "#059669", marginTop: 5, flexShrink: 0 }} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <p style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", lineHeight: 1.3, marginBottom: 2 }}>{notif.title}</p>
-                          <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.4, marginBottom: 4 }}>{notif.body}</p>
-                          <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>{formatRelative(notif.createdAt)}</span>
+                  ) : notifications.map(notif => {
+                    const isAlreadyAdded = existingActionNotifIds.has(notif.id);
+                    const isJustAdded = justAddedId === notif.id;
+                    const isActionBtnHovered = hoveredActionBtnId === notif.id;
+
+                    // アクションボタンの色をstate管理で決定（onMouseEnterCapture は使わない）
+                    const actionIconColor = isJustAdded
+                      ? "#059669"
+                      : isAlreadyAdded
+                        ? "#B0A9A4"
+                        : isActionBtnHovered
+                          ? "#059669"
+                          : "#C9C4BB";
+
+                    return (
+                      <div key={notif.id}
+                        onClick={() => handleNotifClick(notif)}
+                        style={{ padding: "12px 16px", borderBottom: "1px solid rgba(26,23,20,0.04)", background: hoveredNotifId === notif.id ? "#F4F5F6" : notif.isRead ? "transparent" : "#F0FDF8", cursor: "pointer", transition: "background 0.12s" }}
+                        onMouseEnter={() => setHoveredNotifId(notif.id)}
+                        onMouseLeave={() => { setHoveredNotifId(null); setHoveredActionBtnId(null); }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                          <div style={{ width: 6, height: 6, borderRadius: "50%", background: notif.isRead ? "transparent" : "#059669", marginTop: 5, flexShrink: 0 }} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <p style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", lineHeight: 1.3, marginBottom: 2 }}>{notif.title}</p>
+                            <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.4, marginBottom: 4 }}>{notif.body}</p>
+                            <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>{formatRelative(notif.createdAt)}</span>
+                          </div>
+
+                          {/* アクションボタン群 */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0, marginTop: 1, opacity: hoveredNotifId === notif.id ? 1 : 0, transition: "opacity 0.15s" }}>
+                            {/* アクションリスト追加ボタン */}
+                            <div style={{ position: "relative" }}>
+                              <button
+                                onClick={isAlreadyAdded ? e => e.stopPropagation() : e => handleAddToActionList(e, notif)}
+                                onMouseEnter={() => setHoveredActionBtnId(notif.id)}
+                                onMouseLeave={() => setHoveredActionBtnId(null)}
+                                style={{
+                                  background: isJustAdded ? "#ECFDF5" : "none",
+                                  border: "none",
+                                  cursor: isAlreadyAdded ? "default" : "pointer",
+                                  padding: 4, borderRadius: 6,
+                                  color: actionIconColor,
+                                  transition: "color 0.15s, background 0.15s",
+                                  opacity: isAlreadyAdded && !isJustAdded ? 0.45 : 1,
+                                  lineHeight: 0,
+                                  display: "block",
+                                }}
+                              >
+                                {isAlreadyAdded ? <Check style={{ width: 13, height: 13 }} /> : <ClipboardList style={{ width: 13, height: 13 }} />}
+                              </button>
+
+                              {/* 追加済みツールチップ */}
+                              {isAlreadyAdded && !isJustAdded && isActionBtnHovered && (
+                                <div style={{
+                                  position: "absolute", right: "calc(100% + 8px)", top: "50%",
+                                  transform: "translateY(-50%)",
+                                  background: "#1A1714", color: "#fff",
+                                  fontSize: 10, fontWeight: 600,
+                                  padding: "5px 9px", borderRadius: 6,
+                                  whiteSpace: "nowrap" as const,
+                                  zIndex: 200, pointerEvents: "none",
+                                  boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                                }}>
+                                  すでに追加されています
+                                  <div style={{ position: "absolute", right: -4, top: "50%", transform: "translateY(-50%)", width: 0, height: 0, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: "5px solid #1A1714" }} />
+                                </div>
+                              )}
+
+                              {/* 追加直後バルーン */}
+                              {isJustAdded && (
+                                <div style={{
+                                  position: "absolute", right: "calc(100% + 8px)", top: "50%",
+                                  transform: "translateY(-50%)",
+                                  background: "#059669", color: "#fff",
+                                  fontSize: 10, fontWeight: 600,
+                                  padding: "5px 9px", borderRadius: 6,
+                                  whiteSpace: "nowrap" as const,
+                                  zIndex: 200, pointerEvents: "none",
+                                  boxShadow: "0 2px 8px rgba(5,150,105,0.3)",
+                                }}>
+                                  アクションリストに追加しました
+                                  <div style={{ position: "absolute", right: -4, top: "50%", transform: "translateY(-50%)", width: 0, height: 0, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: "5px solid #059669" }} />
+                                </div>
+                              )}
+                            </div>
+
+                            {/* 削除ボタン */}
+                            <button
+                              onClick={e => handleDeleteNotif(e, notif.id)}
+                              style={{ background: "none", border: "none", cursor: "pointer", padding: 4, borderRadius: 6, color: "#C9C4BB", transition: "color 0.15s", lineHeight: 0, display: "block" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#EF4444"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                              <Trash2 style={{ width: 13, height: 13 }} />
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          onClick={e => handleDeleteNotif(e, notif.id)}
-                          style={{ opacity: hoveredNotifId === notif.id ? 1 : 0, transition: "opacity 0.15s", background: "none", border: "none", cursor: "pointer", padding: 4, borderRadius: 6, color: "#C9C4BB", flexShrink: 0, marginTop: 1 }}
-                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#EF4444"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                          <Trash2 style={{ width: 13, height: 13 }} />
-                        </button>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
+
                 <div style={{ padding: "10px 16px", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <button
                     onClick={async () => {

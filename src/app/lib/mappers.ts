@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -50,4 +50,9 @@ export function mapMember(r: any): Member {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapNotification(r: any): AppNotification {
   return { id:r.id, userName:r.user_name, type:r.type, title:r.title, body:r.body||"", ticketId:r.ticket_id??null, ticketWbs:r.ticket_wbs||"", ticketTitle:r.ticket_title||"", projectSlug:r.project_slug||"", mentionContext:r.mention_context||"", isRead:r.is_read??false, createdAt:r.created_at||"" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapActionMemo(r: any): ActionMemo {
+  return { id:r.id, userName:r.user_name, title:r.title||"", content:r.content||"", category:r.category||"memo", sourceNotificationId:r.source_notification_id??null, ticketId:r.ticket_id??null, ticketWbs:r.ticket_wbs||"", ticketTitle:r.ticket_title||"", projectSlug:r.project_slug||"", projectId:r.project_id||"", sprintId:r.sprint_id||"", isDone:r.is_done??false, createdAt:r.created_at||"", updatedAt:r.updated_at||"" };
 }

@@ -1,4 +1,22 @@
 export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions";
+export type ActionMemoCategory = "todo" | "review" | "test" | "memo";
+export interface ActionMemo {
+  id: string;
+  userName: string;
+  title: string;
+  content: string;
+  category: ActionMemoCategory;
+  sourceNotificationId: string | null;
+  ticketId: string | null;
+  ticketWbs: string;
+  ticketTitle: string;
+  projectSlug: string;
+  projectId: string;
+  sprintId: string;
+  isDone: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
 export type PermissionType = "none" | "view" | "edit" | "admin";
 export type Role = string;
 export interface RoleDefinition {
