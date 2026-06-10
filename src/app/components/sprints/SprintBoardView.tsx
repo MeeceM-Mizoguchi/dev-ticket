@@ -399,12 +399,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
               {TICKET_STATUSES.map(col => {
-                const colTickets = currentSprint.tickets
-                  .filter(t => t.status === col.value)
-                  .sort((a, b) => {
-                    const d = (a.createdAt || "").localeCompare(b.createdAt || "");
-                    return d !== 0 ? d : a.id.localeCompare(b.id);
-                  });
+                const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
                     <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
