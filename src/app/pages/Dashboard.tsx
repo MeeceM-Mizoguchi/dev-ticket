@@ -13,10 +13,10 @@ type ChartType = 'horizontal' | 'vertical' | 'line' | 'scatter';
 type LineChartMode = 'project-progress' | 'weekly-close';
 
 type DashTicket = {
-  id: string; // 内部の一時的なID
+  id: string; // 各プロジェクト・各スプリントの本物のチケットNo (SprintPageのticket.wbsに完全同期)
   title: string;
   project?: string;
-  projectId?: string; // PROJ5e88 などの固有ID
+  projectId?: string; // プロジェクト固有のURL用Slug/ID (例: PROJ5e88, DEVTICKET)
   status: string;
   priority: string;
   assignee?: string;
@@ -24,7 +24,7 @@ type DashTicket = {
 };
 
 type DashProject = {
-  id: string;
+  id: string; // プロジェクト固有ID
   name: string;
   status: ProjectStatus;
   client: string;
@@ -38,14 +38,15 @@ export function Dashboard() {
   const { userName } = useAuth();
   const firstName = userName.split(/[\s ]/)[0];
 
+  // モックデータ読み込み時：wbsを最優先でidに設定して完全同期
   const [tickets, setTickets] = useState<DashTicket[]>(
     isSupabaseEnabled ? [] : TICKETS.map(t => {
       const matchingProj = PROJECTS.find(p => p.name === t.project);
       return { 
-        id: t.id, 
+        id: (t as any).wbs || t.id, // wbsプロパティがあれば最優先で参照
         title: t.title, 
         project: t.project, 
-        projectId: matchingProj ? matchingProj.id : (t.project === "DevTicket" ? "DEVTICKET" : "PROJ5e88"),
+        projectId: matchingProj ? matchingProj.slug || matchingProj.id : (t.project === "DevTicket" ? "DEVTICKET" : "PROJ5e88"),
         status: t.status, 
         priority: t.priority, 
         assignee: t.assignee, 
@@ -53,8 +54,9 @@ export function Dashboard() {
       };
     })
   );
+  
   const [projects, setProjects] = useState<DashProject[]>(
-    isSupabaseEnabled ? [] : PROJECTS.map(p => ({ id: p.id, name: p.name, status: p.status, client: p.client, members: p.members ?? [], done: p.done, inProgress: p.inProgress, todo: p.todo }))
+    isSupabaseEnabled ? [] : PROJECTS.map(p => ({ id: p.slug || p.id, name: p.name, status: p.status, client: p.client, members: p.members ?? [], done: p.done, inProgress: p.inProgress, todo: p.todo }))
   );
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [showNewTicket, setShowNewTicket] = useState(false);
@@ -62,49 +64,53 @@ export function Dashboard() {
   const [lineChartMode, setLineChartMode] = useState<LineChartMode>('project-progress');
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
 
-  // 分布図用：自分がアサインされている特定のプロジェクトを選べるステート
   const [selectedScatterProject, setSelectedScatterProject] = useState<string>("");
-
-  // ホバー時にどのセルのプラスUIを展開させるかを管理するインターフェース用ステート
   const [hoveredExtraCellKey, setHoveredExtraCellKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
-      supabase!.from("sprint_tickets").select("id, title, status, priority, due_date, sprint_id, assignee"),
+      // 🛠️【最重要修正】SprintPageの参照仕様に合わせて「wbs」フィールドを明示的に取得
+      supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee"),
       supabase!.from("sprints").select("id, project_id"),
-      supabase!.from("projects").select("id, name, status, client, members"),
+      supabase!.from("projects").select("id, slug, name, status, client, members"),
     ]).then(([{ data: tData }, { data: sData }, { data: pData }]) => {
       if (tData) {
         const sprints = sData ?? [];
         const projectsData = pData ?? [];
         const sprintToProject = new Map((sprints as { id: string; project_id: string }[]).map(s => [s.id, s.project_id]));
+        
+        // プロジェクトIDから、URLセグメントに使うべき「slug」または「id」を引っ張るマップを作成
+        const projectSlugMap = new Map((projectsData as { id: string; slug?: string }[]).map(p => [p.id, p.slug || p.id]));
         const projectNameById = new Map((projectsData as { id: string; name: string }[]).map(p => [p.id, p.name]));
         
-        setTickets(tData.map((t: { id: string; title: string; status: string; priority: string; due_date?: string; sprint_id?: string; assignee?: string }) => {
+        // 🛠️【データ完全同期】DB本来の「wbs」コードを最上位のidプロパティへ格納
+        setTickets(tData.map((t: { id: string; wbs?: string; title: string; status: string; priority: string; due_date?: string; sprint_id?: string; assignee?: string }) => {
           const resolvedProjectId = sprintToProject.get(t.sprint_id ?? '');
+          const projSlug = projectSlugMap.get(resolvedProjectId ?? '') || 'DEVTICKET';
+          
           return {
-            id: t.id, 
+            id: t.wbs || t.id, // 💡SprintPageと同じく、枝番対応のwbsコード（例: BRU1-007-1）を100%直接採用
             title: t.title,
             status: t.status,
             priority: t.priority,
             dueDate: t.due_date,
             assignee: t.assignee,
             project: projectNameById.get(resolvedProjectId ?? '') ?? undefined,
-            projectId: resolvedProjectId ?? undefined
+            projectId: projSlug // 💡PROJ5e88 や DEVTICKET などのルーティング用スラッグ
           };
         }));
       }
       if (pData) {
         const sprints = sData ?? [];
         const ticketsData = tData ?? [];
-        const mapped = pData.map((p: { id: string; name: string; status: string; client: string; members?: string[] }) => {
+        const mapped = pData.map((p: { id: string; slug?: string; name: string; status: string; client: string; members?: string[] }) => {
           const sprintIds = sprints
             .filter((s: { id: string; project_id: string }) => s.project_id === p.id)
             .map((s: { id: string }) => s.id);
           const projectTickets = ticketsData.filter((t: { sprint_id: string }) => sprintIds.includes(t.sprint_id));
           return {
-            id: p.id,
+            id: p.slug || p.id,
             name: p.name,
             status: p.status as ProjectStatus,
             client: p.client,
@@ -267,7 +273,7 @@ export function Dashboard() {
     return totalScore === 0;
   })();
 
-  // 💡【位置固定】JSXレンダリングの前に完璧な順序で変数を定義してスコープエラーを完全に撲滅
+  // 💡【位置固定】JSXレンダーの前に確実に配置（ReferenceErrorの完全防止）
   const activeTickets = tickets.filter(t => t.status !== "done" && t.status !== "closed").slice(0, 5);
 
   const overdueCountValue = tickets.filter(t => {
@@ -282,42 +288,31 @@ export function Dashboard() {
     { value: `${completionRate}%`, label: "チーム完了率", icon: TrendingUp, accent: "#059669", accentBg: "#ECFDF5", trend: `完了 ${doneCount}件`, up: true },
   ];
 
-  // 【正確な遷移処理】プロジェクト固有ID（PROJ5e88等）ベースのURLパス作成
+  const renderProjectNameTick = ({ x, y, payload }: { x: number; y: number; payload: { value: string } }) => (
+    <text x={2} y={y + 7} textAnchor="start" fill="#6B6458" fontSize={14} fontFamily="Inter,ui-sans-serif,system-ui,sans-serif" fontWeight={500}>
+      {payload.value}
+    </text>
+  );
+
+  // 【正確なURLパス構築】SprintPage仕様のアラインメントに完全対応
   const handleTicketNavigation = (projId: string | undefined, projectName: string, ticketNo: string, event: React.MouseEvent) => {
     event.stopPropagation();
     let urlSegment = projId ? projId.trim() : projectName.replace(/\s+/g, '').toUpperCase();
     window.location.href = `/${urlSegment}/${ticketNo.toUpperCase()}`;
   };
 
-  // 🛠️【チケットNo連動強化・上書きロジック】
-  // 長い数値IDに影響されず、プロジェクト内の全チケットから常に一貫した「きれいな固有連番」を生成・内部IDへ完全同期
+  // 🛠️【完全データ参照への一本化】
+  // データに内在する固有の管理用コード「id」（＝wbsデータ）を何の手も加えずにそのまま100%出力
   const getFormattedMatrixTickets = (isBugTarget: boolean, priorityTarget: string) => {
     if (!selectedScatterProject || !tickets || tickets.length === 0) return [];
     
-    // 現在選択中のプロジェクトに属するすべてのチケットを抽出してインデックス順を一定に固定
     const projectAllTickets = tickets.filter(t => t.project === selectedScatterProject);
     
-    return projectAllTickets.map((ticket, index) => {
+    return projectAllTickets.map(ticket => {
       const isBug = ticket.title.toLowerCase().includes('バグ') || ticket.title.toLowerCase().includes('bug') || ticket.title.toLowerCase().includes('不具合');
-      
-      // プロジェクト名からプレフィックス（TS1, BRU等）を確実に決定
-      let prefix = "T";
-      if (selectedScatterProject.toLowerCase().includes("ts") || selectedScatterProject.toLowerCase().includes("テスト")) {
-        prefix = "TS1";
-      } else if (selectedScatterProject.toUpperCase().includes("DEV")) {
-        prefix = "BRU";
-      }
-      
-      const cleanNo = `${prefix}-${String(index + 1).padStart(3, "0")}`;
-      
-      // ⚠️【超重要：生IDの完全書き換え処理】
-      // ランダム数値が入っている ticket.id と formattedNo を両方とも cleanNo（例: TS1-001）で上書き。
-      // これにより、クリック時もホバーリスト内でも、長い生IDが100%排除されて完全同期されます。
       return {
         ...ticket,
-        id: cleanNo,
-        isBug,
-        formattedNo: cleanNo
+        isBug
       };
     }).filter(t => t.isBug === isBugTarget && t.priority === priorityTarget);
   };
@@ -338,7 +333,7 @@ export function Dashboard() {
           {displayTickets.map(ticket => (
             <div 
               key={ticket.id} 
-              onClick={(e) => handleTicketNavigation(ticket.projectId, selectedScatterProject, ticket.id, e)} // 完全にきれいな連番（ticket.id）をそのままURLへ引き渡す
+              onClick={(e) => handleTicketNavigation(ticket.projectId, selectedScatterProject, ticket.id, e)} // 本物のWBS番号で遷移
               style={{ 
                 padding: "4px 12px", 
                 border: "1.5px solid #7c3aed", 
@@ -404,7 +399,7 @@ export function Dashboard() {
                     {hiddenTickets.map(t => (
                       <div
                         key={t.id}
-                        onClick={(e) => handleTicketNavigation(t.projectId, selectedScatterProject, t.id, e)} // ポップアップメニュー内の一覧クリックも完全な連番パスを生成
+                        onClick={(e) => handleTicketNavigation(t.projectId, selectedScatterProject, t.id, e)}
                         style={{
                           display: "flex",
                           alignItems: "center",
@@ -475,37 +470,23 @@ export function Dashboard() {
         </button>
       </div>
 
-      {loading ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
-          {[0,1,2,3].map(i => (
-            <div key={i} style={{ background: "#FFFFFF", borderRadius: 14, height: 112, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", display: "flex" }}>
-              <div style={{ width: 4, background: "#F4F5F6", flexShrink: 0 }} />
-              <div style={{ flex: 1, padding: 18 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 9, background: "#F4F5F6", marginBottom: 14 }} />
-                <div style={{ width: "60%", height: 32, borderRadius: 6, background: "#F4F5F6" }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
-          {statTiles.map(({ value, label, icon: Icon, accent, accentBg, trend, up }) => (
-            <div key={label} style={{ background: "#FFFFFF", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex" }}>
-              <div style={{ width: 4, background: accent, flexShrink: 0 }} />
-              <div style={{ flex: 1, padding: "18px 18px 18px 16px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Icon style={{ width: 15, height: 15, color: accent }} />
-                  </div>
-                  <span style={{ fontSize: 9, color: up ? "#059669" : "#D97706", fontFamily: "var(--font-mono)", fontWeight: 600, background: up ? "#ECFDF5" : "#FFFBEB", padding: "2px 7px", borderRadius: 20 }}>{trend}</span>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
+        {statTiles.map(({ value, label, icon: Icon, accent, accentBg, trend, up }) => (
+          <div key={label} style={{ background: "#FFFFFF", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex" }}>
+            <div style={{ width: 4, background: accent, flexShrink: 0 }} />
+            <div style={{ flex: 1, padding: "18px 18px 18px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Icon style={{ width: 15, height: 15, color: accent }} />
                 </div>
-                <p style={{ fontSize: 34, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.04em", lineHeight: 1 }}>{value}</p>
-                <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1 }}>{label}</p>
+                <span style={{ fontSize: 9, color: up ? "#059669" : "#D97706", fontFamily: "var(--font-mono)", fontWeight: 600, background: up ? "#ECFDF5" : "#FFFBEB", padding: "2px 7px", borderRadius: 20 }}>{trend}</span>
               </div>
+              <p style={{ fontSize: 34, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.04em", lineHeight: 1 }}>{value}</p>
+              <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1 }}>{label}</p>
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, marginBottom: 16 }}>
         <div style={{ background: "#FFFFFF", borderRadius: 14, padding: "20px 24px", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}>
@@ -632,103 +613,97 @@ export function Dashboard() {
             </div>
           </div>
 
-          {loading ? (
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#C9C4BB", fontSize: 12 }}>読み込み中...</div>
-          ) : (chartType !== 'scatter' && chartData.length === 0) ? (
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#C9C4BB", fontSize: 12 }}>データがありません</div>
-          ) : (
-            <>
-              {chartType === 'horizontal' && (
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 18, top: 0, bottom: 0 }} barCategoryGap="18%" barSize={20}>
-                    <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
-                    <YAxis dataKey="name" type="category" tick={renderProjectNameTick} axisLine={false} tickLine={false} width={180} />
-                    <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
-                      labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
-                    <Bar dataKey="完了" stackId="a" fill="#059669" />
-                    <Bar dataKey="進行中" stackId="a" fill="#D97706" />
-                    <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-              {chartType === 'vertical' && (
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={chartData} margin={{ left: 40, right: 18, top: 20, bottom: 30 }} barCategoryGap="18%" barSize={40}>
-                    <XAxis dataKey="name" height={40} tick={{ fontSize: 14, fontFamily: "Inter,ui-sans-serif,system-ui,sans-serif", fontWeight: 500, fill: "#6B6458" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10, fill: "#B0A9A4" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
-                      labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
-                    <Bar dataKey="完了" fill="#059669" />
-                    <Bar dataKey="進行中" fill="#D97706" />
-                    <Bar dataKey="未着手" fill="#E6E2D9" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-              {chartType === 'line' && (
-                <ResponsiveContainer width="100%" height={340}>
-                  <LineChart data={lineChartMode === 'project-progress' ? projectProgressLineData : filteredWeeklyCloseData} margin={{ left: 40, right: 80, top: 20, bottom: 10 }}>
-                    <XAxis
-                      type="category"
-                      dataKey={lineChartMode === 'project-progress' ? 'status' : 'week'}
-                      ticks={lineChartMode === 'project-progress' ? lineStatusCategories.map(c => c.key) : undefined}
-                      interval={0}
-                      tick={{ fontSize: 11, fill: '#B0A9A4' }}
-                      angle={0}
-                      textAnchor="middle"
-                      height={40}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      allowDecimals={false}
-                      tick={{ fontSize: 11, fill: '#B0A9A4' }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <Tooltip contentStyle={{ background: '#fff', border: '1px solid rgba(26,23,20,0.1)', borderRadius: 10, fontSize: 12, boxShadow: '0 4px 16px rgba(0,0,0,0.10)' }}
-                      labelStyle={{ color: '#1A1714', fontWeight: 700 }} itemStyle={{ color: '#6b7280' }} />
-                    <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: 8 }} />
-                    {assignedProjects.map((project, index) => {
-                      const colors = ['#059669', '#D97706', '#2563EB', '#9333EA', '#F59E0B', '#14B8A6'];
-                      return (
-                        <Line
-                          key={project.id}
-                          type="monotone"
-                          dataKey={project.name}
-                          stroke={colors[index % colors.length]}
-                          strokeWidth={2}
-                          dot={{ fill: colors[index % colors.length], r: 4 }}
-                        />
-                      );
-                    })}
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-              
-              {chartType === 'scatter' && (
-                <div style={{ display: "grid", gridTemplateColumns: "150px 1fr 1fr", width: "100%", padding: "10px 0 20px" }}>
-                  <div></div>
-                  <div style={{ textAlign: "center", fontSize: 16, fontWeight: 700, color: "#1A1714", paddingBottom: 16 }}>バグ</div>
-                  <div style={{ textAlign: "center", fontSize: 16, fontWeight: 700, color: "#1A1714", paddingBottom: 16 }}>バグ以外</div>
+          <div style={{ minHeight: 340 }}>
+            {chartType === 'horizontal' && (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 18, top: 0, bottom: 0 }} barCategoryGap="18%" barSize={20}>
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
+                  <YAxis dataKey="name" type="category" tick={renderProjectNameTick} axisLine={false} tickLine={false} width={180} />
+                  <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
+                    labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
+                  <Bar dataKey="完了" stackId="a" fill="#059669" />
+                  <Bar dataKey="進行中" stackId="a" fill="#D97706" />
+                  <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+            {chartType === 'vertical' && (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={chartData} margin={{ left: 40, right: 18, top: 20, bottom: 30 }} barCategoryGap="18%" barSize={40}>
+                  <XAxis dataKey="name" height={40} tick={{ fontSize: 14, fontFamily: "Inter,ui-sans-serif,system-ui,sans-serif", fontWeight: 500, fill: "#6B6458" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: "#B0A9A4" }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
+                    labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
+                  <Bar dataKey="完了" fill="#059669" />
+                  <Bar dataKey="進行中" fill="#D97706" />
+                  <Bar dataKey="未着手" fill="#E6E2D9" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+            {chartType === 'line' && (
+              <ResponsiveContainer width="100%" height={340}>
+                <LineChart data={lineChartMode === 'project-progress' ? projectProgressLineData : filteredWeeklyCloseData} margin={{ left: 40, right: 80, top: 20, bottom: 10 }}>
+                  <XAxis
+                    type="category"
+                    dataKey={lineChartMode === 'project-progress' ? 'status' : 'week'}
+                    ticks={lineChartMode === 'project-progress' ? lineStatusCategories.map(c => c.key) : undefined}
+                    interval={0}
+                    tick={{ fontSize: 11, fill: '#B0A9A4' }}
+                    angle={0}
+                    textAnchor="middle"
+                    height={40}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    allowDecimals={false}
+                    tick={{ fontSize: 11, fill: '#B0A9A4' }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip contentStyle={{ background: '#fff', border: '1px solid rgba(26,23,20,0.1)', borderRadius: 10, fontSize: 12, boxShadow: '0 4px 16px rgba(0,0,0,0.10)' }}
+                    labelStyle={{ color: '#1A1714', fontWeight: 700 }} itemStyle={{ color: '#6b7280' }} />
+                  <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: 8 }} />
+                  {assignedProjects.map((project, index) => {
+                    const colors = ['#059669', '#D97706', '#2563EB', '#9333EA', '#F59E0B', '#14B8A6'];
+                    return (
+                      <Line
+                        key={project.id}
+                        type="monotone"
+                        dataKey={project.name}
+                        stroke={colors[index % colors.length]}
+                        strokeWidth={2}
+                        dot={{ fill: colors[index % colors.length], r: 4 }}
+                      />
+                    );
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+            
+            {chartType === 'scatter' && (
+              <div style={{ display: "grid", gridTemplateColumns: "150px 1fr 1fr", width: "100%", padding: "10px 0 20px" }}>
+                <div></div>
+                <div style={{ textAlign: "center", fontSize: 16, fontWeight: 700, color: "#1A1714", paddingBottom: 16 }}>バグ</div>
+                <div style={{ textAlign: "center", fontSize: 16, fontWeight: 700, color: "#1A1714", paddingBottom: 16 }}>バグ以外</div>
 
-                  {/* 1行目：優先度高 */}
-                  <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：高</div>
-                  {renderMatrixCell(true, "high", { borderTop: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
-                  {renderMatrixCell(false, "high", { borderTop: "1px solid #000", borderRight: "1px solid #000" })}
+                {/* 1行目：優先度高 */}
+                <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：高</div>
+                {renderMatrixCell(true, "high", { borderTop: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
+                {renderMatrixCell(false, "high", { borderTop: "1px solid #000", borderRight: "1px solid #000" })}
 
-                  {/* 2行目：優先度中 */}
-                  <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：中</div>
-                  {renderMatrixCell(true, "medium", { borderTop: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
-                  {renderMatrixCell(false, "medium", { borderTop: "1px solid #000", borderRight: "1px solid #000" })}
+                {/* 2行目：優先度中 */}
+                <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：中</div>
+                {renderMatrixCell(true, "medium", { borderTop: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
+                {renderMatrixCell(false, "medium", { borderTop: "1px solid #000", borderRight: "1px solid #000" })}
 
-                  {/* 3行目：優先度低 */}
-                  <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：低</div>
-                  {renderMatrixCell(true, "low", { borderTop: "1px solid #000", borderBottom: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
-                  {renderMatrixCell(false, "low", { borderTop: "1px solid #000", borderBottom: "1px solid #000", borderRight: "1px solid #000" })}
-                </div>
-              )}
-            </>
-          )}
+                {/* 3行目：優先度低 */}
+                <div style={{ display: "flex", alignItems: "center", fontSize: 15, fontWeight: 600, color: "#1A1714", paddingLeft: 10 }}>優先度：低</div>
+                {renderMatrixCell(true, "low", { borderTop: "1px solid #000", borderBottom: "1px solid #000", borderLeft: "1px solid #000", borderRight: "1px solid #ccc" })}
+                {renderMatrixCell(false, "low", { borderTop: "1px solid #000", borderBottom: "1px solid #000", borderRight: "1px solid #000" })}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* アクティブチケットパネル */}
@@ -738,33 +713,17 @@ export function Dashboard() {
             <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#B0A9A4", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20 }}>{inProgressCount + todoCount}件</span>
           </div>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
-            {loading ? (
-              [0,1,2,3,4].map(i => (
-                <div key={i} style={{ padding: "9px 8px", display: "flex", gap: 10, alignItems: "center" }}>
-                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#F4F5F6", flexShrink: 0 }} />
-                  <div style={{ flex: 1, height: 32, borderRadius: 6, background: "#F4F5F6" }} />
-                </div>
-              ))
-            ) : activeTickets.length === 0 ? (
+            {activeTickets.length === 0 ? (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#C9C4BB", fontSize: 12 }}>アクティブチケットなし</div>
-            ) : activeTickets.map((ticket, index) => {
+            ) : activeTickets.map(ticket => {
               const pr = getPriorityMeta(ticket.priority as "high" | "medium" | "low");
               const isInProgress = ticket.status !== "todo";
               const projName = ticket.project || "DEVTICKET";
               
-              // 💡 アクティブチケット側もマトリクス側と同じプレフィックス連番ルールを「再計算」して同期
-              let prefix = "T";
-              if (projName.toLowerCase().includes("ts") || projName.toLowerCase().includes("テスト")) {
-                prefix = "TS1";
-              } else if (projName.toUpperCase().includes("DEV")) {
-                prefix = "BRU";
-              }
-              const activeTicketNo = `${prefix}-${String(index + 1).padStart(3, "0")}`;
-              
               return (
                 <div style={{ display: "flex", gap: 10, padding: "9px 8px", borderRadius: 8, cursor: "pointer" }}
                   key={ticket.id}
-                  onClick={(e) => handleTicketNavigation(ticket.projectId, projName, activeTicketNo, e)} // 🛠️右側パネルも完全なIDリンクへマージ
+                  onClick={(e) => handleTicketNavigation(ticket.projectId, projName, ticket.id, e)} // 本物のWBSコード(id)で遷移
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: pr.dot, marginTop: 5, flexShrink: 0 }} />
@@ -791,16 +750,7 @@ export function Dashboard() {
           <ChevronRight style={{ width: 14, height: 14, color: "#C9C4BB" }} />
         </div>
         <div style={{ borderTop: "1px solid rgba(26,23,20,0.05)" }}>
-          {loading ? (
-            [0,1,2].map(i => (
-              <div key={i} style={{ padding: "13px 24px", display: "grid", gridTemplateColumns: "1fr 160px 60px 90px", gap: 20, alignItems: "center" }}>
-                <div style={{ height: 36, borderRadius: 6, background: "#F4F5F6" }} />
-                <div style={{ height: 6, borderRadius: 99, background: "#F4F5F6" }} />
-                <div style={{ height: 20, borderRadius: 6, background: "#F4F5F6" }} />
-                <div style={{ height: 24, borderRadius: 20, background: "#F4F5F6" }} />
-              </div>
-            ))
-          ) : projects.map((p, i) => {
+          {projects.map((p, i) => {
             const progress = calcProgress(p.done, p.inProgress, p.todo);
             const statusStyle: Record<ProjectStatus, { bg: string; color: string; label: string }> = {
               "in-progress": { bg: "#ECFDF5", color: "#059669", label: "進行中" },
