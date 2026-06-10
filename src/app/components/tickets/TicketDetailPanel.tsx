@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -1119,6 +1119,27 @@ export function TicketDetailPanel({
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              {/* 🌟 追加: チケットリンクコピーボタン */}
+              {projectSlug && (
+                <button
+                  onClick={async () => {
+                    const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+                    try {
+                      await navigator.clipboard.writeText(ticketUrl);
+                      toast(`チケットのURLをコピーしました`);
+                    } catch (err) {
+                      console.error("Failed to copy ticket URL:", err);
+                    }
+                  }}
+                  title="チケットリンクをコピー"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}
+                >
+                  <Link style={{ width: 15, height: 15 }} />
+                </button>
+              )}
+
               {/* 実績モニタボタン */}
               {projectId && (
                 <button onClick={() => setShowMonitor(true)} title="実績モニタ"
