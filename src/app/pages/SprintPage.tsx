@@ -57,7 +57,7 @@ export function SprintPage() {
     if (!isSupabaseEnabled || !projectId) return;
     supabase!.from("projects").select("*").eq("id", projectId).single()
       .then(({ data: p }) => { if (p) setProject(mapProject(p)); });
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" })
+    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" })
       .then(({ data }) => {
         if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
       });
@@ -81,7 +81,7 @@ export function SprintPage() {
       if (!p) { setNotFound(true); setLoading(false); return; }
       setProject(mapProject(p));
       const [{ data: s }, { data: pmp }] = await Promise.all([
-        supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", p.id).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }),
+        supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", p.id).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }),
         userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
       ]);
       if (s?.length) setSprints(s.map(mapSprint));

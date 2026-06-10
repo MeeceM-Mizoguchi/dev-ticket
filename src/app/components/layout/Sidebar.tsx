@@ -1,12 +1,13 @@
 import { useState, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList } from "lucide-react";
 import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 
 const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; permission?: keyof UserPermissions }[] = [
-  { id: "dashboard", label: "ダッシュ", icon: LayoutDashboard },
-  { id: "projects", label: "PJ一覧", icon: FolderKanban },
+  { id: "dashboard",  label: "ダッシュ",    icon: LayoutDashboard },
+  { id: "projects",   label: "PJ一覧",      icon: FolderKanban },
+  { id: "my-actions", label: "アクション",  icon: ClipboardList },
   { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager"] },
   { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
@@ -35,6 +36,7 @@ export function Sidebar() {
     if (p.startsWith("/permissions")) return "permissions";
     if (p.startsWith("/roles")) return "roles";
     if (p.startsWith("/admin-settings")) return "admin-settings";
+    if (p.startsWith("/my-actions")) return "my-actions";
 
     // 上記の固定パスに当てはまらない URL（例: /DevTicket や /DevTicket/TKT-001 など）は、
     // プロジェクト詳細画面やスプリント管理画面を表示しているため「プロジェクト」をハイライトさせる

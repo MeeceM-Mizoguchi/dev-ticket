@@ -23,14 +23,31 @@ export default async function handler(req: any, res: any) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { data: project } = await sb
+  // slug で検索し、見つからなければ id で再検索（URLがIDベースの場合に対応）
+  let { data: project } = await sb
     .from("projects")
     .select("slack_access_token, slack_channel, slack_notifications_enabled")
     .eq("slug", projectSlug)
     .maybeSingle();
+  if (!project) {
+    const { data } = await sb
+      .from("projects")
+      .select("slack_access_token, slack_channel, slack_notifications_enabled")
+      .eq("id", projectSlug)
+      .maybeSingle();
+    project = data;
+  }
 
   if (!project?.slack_notifications_enabled || !project?.slack_channel || !project?.slack_access_token) {
-    return res.json({ skipped: true, reason: "Slack notifications not configured for this project" });
+    const reason = !project
+      ? "プロジェクトが見つかりません (slug: " + projectSlug + ")"
+      : !project.slack_access_token
+        ? "Slack未接続（アクセストークンなし）"
+        : !project.slack_channel
+          ? "通知チャンネルが未設定"
+          : "Slack通知が無効";
+    console.warn("[slack-notify] スキップ:", reason);
+    return res.json({ skipped: true, reason });
   }
 
   const { data: profile } = await sb
