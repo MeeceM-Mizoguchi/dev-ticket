@@ -34,21 +34,21 @@ const TODO_AUTO_DELETE_STATUS: TicketStatus[] = ["closed"];
 const REVIEW_AUTO_DELETE_STATUS: TicketStatus[] = ["review-done", "stg-test", "uat", "done", "closed"];
 
 const STATUS_COLOR: Record<string, { bg: string; text: string; border: string }> = {
-  "todo":        { bg: "#F4F5F6", text: "#9E9690", border: "#E0DDD9" },
+  "todo": { bg: "#F4F5F6", text: "#9E9690", border: "#E0DDD9" },
   "in-progress": { bg: "#FFF7ED", text: "#D97706", border: "#FED7AA" },
-  "in-review":   { bg: "#F5F3FF", text: "#7C3AED", border: "#DDD6FE" },
+  "in-review": { bg: "#F5F3FF", text: "#7C3AED", border: "#DDD6FE" },
   "review-done": { bg: "#F0F9FF", text: "#0284C7", border: "#BAE6FD" },
-  "stg-test":    { bg: "#F0FDFA", text: "#0D9488", border: "#99F6E4" },
-  "uat":         { bg: "#EEF2FF", text: "#4F46E5", border: "#C7D2FE" },
-  "done":        { bg: "#F0FDF4", text: "#059669", border: "#A7F3D0" },
-  "closed":      { bg: "#F3F4F6", text: "#6B7280", border: "#D1D5DB" },
+  "stg-test": { bg: "#F0FDFA", text: "#0D9488", border: "#99F6E4" },
+  "uat": { bg: "#EEF2FF", text: "#4F46E5", border: "#C7D2FE" },
+  "done": { bg: "#F0FDF4", text: "#059669", border: "#A7F3D0" },
+  "closed": { bg: "#F3F4F6", text: "#6B7280", border: "#D1D5DB" },
 };
 
 const CATEGORY_META: Record<ActionMemoCategory, { label: string; dotColor: string; bg: string; color: string }> = {
-  todo:   { label: "開発TODO",      dotColor: "#D97706", bg: "#FFF7ED", color: "#D97706" },
+  todo: { label: "開発TODO", dotColor: "#D97706", bg: "#FFF7ED", color: "#D97706" },
   review: { label: "レビュータスク", dotColor: "#7C3AED", bg: "#F5F3FF", color: "#7C3AED" },
-  test:   { label: "テスト実行",    dotColor: "#0D9488", bg: "#F0FDFA", color: "#0D9488" },
-  memo:   { label: "メモ",          dotColor: "#6B7280", bg: "#F3F4F6", color: "#6B7280" },
+  test: { label: "テスト実行", dotColor: "#0D9488", bg: "#F0FDFA", color: "#0D9488" },
+  memo: { label: "メモ", dotColor: "#6B7280", bg: "#F3F4F6", color: "#6B7280" },
 };
 
 // ─── チケットステータスバッジ ─────────────────────────────────
@@ -340,7 +340,8 @@ function ActionMemoRow({
           }}>{memo.title}</span>
         </div>
         {memo.content && (
-          <p style={{ fontSize: 11, color: "#9E9690", margin: 0, lineHeight: 1.4, wordBreak: "break-word" as const,
+          <p style={{
+            fontSize: 11, color: "#9E9690", margin: 0, lineHeight: 1.4, wordBreak: "break-word" as const,
             overflow: "hidden", textOverflow: "ellipsis",
             display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const,
           }}>
@@ -618,7 +619,7 @@ function MemoDetailModal({
             <>
               {memo.content ? (
                 <p style={{ fontSize: 12, color: "#4A4540", lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const }}>
-                  <MemoContent content={memo.content} onNavigate={() => {}} />
+                  <MemoContent content={memo.content} onNavigate={() => { }} />
                 </p>
               ) : (
                 <p style={{ fontSize: 12, color: "#D4CEC8", margin: "0 0 12px", fontStyle: "italic" }}>内容なし</p>
@@ -682,10 +683,10 @@ function AddMemoModal({
   };
 
   const categories: { id: ActionMemoCategory; label: string }[] = [
-    { id: "todo",   label: "開発TODO" },
+    { id: "todo", label: "開発TODO" },
     { id: "review", label: "レビュータスク" },
-    { id: "test",   label: "テスト実行" },
-    { id: "memo",   label: "メモ" },
+    { id: "test", label: "テスト実行" },
+    { id: "memo", label: "メモ" },
   ];
 
   return (
@@ -843,9 +844,12 @@ export function MyActionsPage() {
   const [panelLoading, setPanelLoading] = useState(false);
 
   // ─── チケット一覧ロード ───────────────────────────────────
-  const load = useCallback(async () => {
-    if (!isSupabaseEnabled || !userName) { setLoading(false); return; }
-    setLoading(true);
+  const load = useCallback(async (showSpinner = true) => {
+    if (!isSupabaseEnabled || !userName) {
+      if (showSpinner) setLoading(false);
+      return;
+    }
+    if (showSpinner) setLoading(true);
     try {
       const [projectsRes, sprintsRes] = await Promise.all([
         supabase!.from("projects").select("id, slug, name, members"),
@@ -857,11 +861,11 @@ export function MyActionsPage() {
         (projectsRes.data ?? []).map((p: any) => [p.id, { slug: p.slug, name: p.name }])
       );
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accessibleProjects = (projectsRes.data ?? []).filter((p: any) => {
         if (isAdmin) return true;
         return Array.isArray(p.members) && p.members.includes(userName);
       });
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setProjects(accessibleProjects.map((p: any) => ({ id: p.id, slug: p.slug, name: p.name })));
 
@@ -869,6 +873,7 @@ export function MyActionsPage() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (sprintsRes.data ?? []).map((s: any) => [s.id, s.project_id])
       );
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const toAction = (r: any): ActionTicket => {
         const ticket = mapSprintTicket(r);
@@ -878,10 +883,18 @@ export function MyActionsPage() {
       };
 
       const [aRes, rRes, acRes, rcRes] = await Promise.all([
-        supabase!.from("sprint_tickets").select("*").or(`assignee.eq.${userName},assignees.cs.{${userName}}`).not("status", "in", '("done","closed")'),
-        supabase!.from("sprint_tickets").select("*").eq("reviewer_name", userName).not("status", "in", '("done","closed")'),
-        supabase!.from("sprint_tickets").select("*").or(`assignee.eq.${userName},assignees.cs.{${userName}}`).eq("status", "closed"),
-        supabase!.from("sprint_tickets").select("*").eq("reviewer_name", userName).eq("status", "closed"),
+        supabase!.from("sprint_tickets").select("*")
+          .or(`assignee.eq.${userName},assignees.cs.{${userName}}`)
+          .not("status", "in", '("done","closed")'),
+        supabase!.from("sprint_tickets").select("*")
+          .eq("reviewer_name", userName)
+          .not("status", "in", '("done","closed")'),
+        supabase!.from("sprint_tickets").select("*")
+          .or(`assignee.eq.${userName},assignees.cs.{${userName}}`)
+          .eq("status", "closed"),
+        supabase!.from("sprint_tickets").select("*")
+          .eq("reviewer_name", userName)
+          .eq("status", "closed"),
       ]);
 
       setAllAssigned((aRes.data ?? []).map(toAction));
@@ -891,16 +904,18 @@ export function MyActionsPage() {
     } catch (err) {
       console.error("[MyActionsPage] load failed:", err);
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
     }
-  }, [userName]);
+  }, [userName, isAdmin]);
 
   // ─── アクションメモロード（ステータス取得＋自動削除） ────
-  const loadMemos = useCallback(async () => {
-    if (!isSupabaseEnabled || !userName) return;
-    setMemosLoading(true);
+  const loadMemos = useCallback(async (showSpinner = true) => {
+    if (!isSupabaseEnabled || !userName) {
+      if (showSpinner) setMemosLoading(false);
+      return;
+    }
+    if (showSpinner) setMemosLoading(true);
     try {
-      // 全アクションメモを取得（手動追加 + 通知から追加）
       const { data, error } = await supabase!
         .from("action_memos")
         .select("*")
@@ -910,7 +925,6 @@ export function MyActionsPage() {
 
       const memos = (data ?? []).map(mapActionMemo);
 
-      // チケットIDが存在するメモのステータスを一括取得
       const ticketIds = memos.filter(m => m.ticketId).map(m => m.ticketId!);
       let newStatusMap: Record<string, string> = {};
 
@@ -923,7 +937,6 @@ export function MyActionsPage() {
       }
       setTicketStatusMap(newStatusMap);
 
-      // 自動削除チェック
       const toDeleteIds: string[] = [];
       for (const memo of memos) {
         if (!memo.ticketId) continue;
@@ -935,7 +948,6 @@ export function MyActionsPage() {
         if (memo.category === "review" && REVIEW_AUTO_DELETE_STATUS.includes(status)) {
           toDeleteIds.push(memo.id);
         }
-        // memo / test カテゴリは自動削除しない
       }
 
       if (toDeleteIds.length > 0) {
@@ -944,12 +956,24 @@ export function MyActionsPage() {
 
       setActionMemos(memos.filter(m => !toDeleteIds.includes(m.id)));
     } finally {
-      setMemosLoading(false);
+      if (showSpinner) setMemosLoading(false);
     }
   }, [userName]);
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (tab === "from_notification") loadMemos(); }, [tab, loadMemos]);
+  // 🌟 修正: 画面表示時に「すべてのタブのデータ」をロードする
+  useEffect(() => {
+    load(true);
+    loadMemos(true);
+  }, [load, loadMemos]);
+
+  // 🌟 修正: 10秒ごとにバックグラウンドで最新情報を更新する
+  useEffect(() => {
+    const timer = setInterval(() => {
+      load(false);
+      loadMemos(false);
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [load, loadMemos]);
 
   // ─── フィルター ───────────────────────────────────────────
   const filter = (tickets: ActionTicket[]) =>
@@ -972,7 +996,7 @@ export function MyActionsPage() {
   const notifTabCount = actionMemos.filter(m => !m.isDone).length;
   const tabDefs: { id: Tab; label: string; count: number }[] = [
     { id: "assigned", label: "担当チケット", count: assignedTickets.length },
-    { id: "review",   label: "レビュー管理",  count: reviewTickets.length },
+    { id: "review", label: "レビュー管理", count: reviewTickets.length },
     { id: "from_notification", label: "通知から追加", count: notifTabCount },
   ];
 
@@ -1170,13 +1194,20 @@ export function MyActionsPage() {
 
             {/* Refresh */}
             <button
-              onClick={() => { load(); if (tab === "from_notification") loadMemos(); }}
-              disabled={loading}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", fontSize: 11, fontWeight: 600, color: "#9E9690", background: "transparent", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8, cursor: loading ? "default" : "pointer", opacity: loading ? 0.5 : 1, transition: "all 0.15s" }}
-              onMouseEnter={e => { if (!loading) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onClick={() => { load(true); loadMemos(true); }}
+              disabled={loading || memosLoading}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "6px 12px", fontSize: 11, fontWeight: 600,
+                color: "#9E9690", background: "transparent",
+                border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8,
+                cursor: (loading || memosLoading) ? "default" : "pointer", opacity: (loading || memosLoading) ? 0.5 : 1,
+                transition: "all 0.15s",
+              }}
+              onMouseEnter={e => { if (!(loading || memosLoading)) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
             >
-              <RefreshCw style={{ width: 11, height: 11, ...(loading ? { animation: "spin-ma 0.8s linear infinite" } : {}) }} />
+              <RefreshCw style={{ width: 11, height: 11, ...((loading || memosLoading) ? { animation: "spin-ma 0.8s linear infinite" } : {}) }} />
               更新
             </button>
           </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Plus, X } from "lucide-react";
+import { Plus, X, Trash2 } from "lucide-react";
 import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
@@ -13,6 +13,8 @@ import { DatePicker } from "@/app/components/shared/DatePicker";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 // 🌟 追加: CustomSelect コンポーネントをインポート
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
+// 🛠️ 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
 // 🌟 追加: 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -20,6 +22,8 @@ const PRIORITY_OPTIONS: SelectOption[] = [
   { value: "medium", label: "中", color: "#D97706", bg: "#FFFBEB" },
   { value: "low", label: "低", color: "#0284C7", bg: "#F0F9FF" },
 ];
+
+const CACHE_KEY_PREFIX = "new_ticket_draft_";
 
 export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
   sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
@@ -33,6 +37,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const isChildMode = !!parentTicketId;
   const needsSelection = !sprintId && !isChildMode;
 
+  // 🛠️ 追加: コンテキスト（追加先スコープ）ごとにキャッシュが混ざらないように固有のローカルストレージキーを生成
+  const contextKey = `${CACHE_KEY_PREFIX}${projectId || "global"}_${sprintId || "global"}_${parentTicketId || "root"}`;
+
   // --- プロジェクト・スプリント選択（ダッシュボードから開く場合） ---
   const [availableProjects, setAvailableProjects] = useState<{ id: string; name: string; slug?: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -44,6 +51,28 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   // 現在選択されている（または親から渡された）プロジェクトのメンバー名の配列
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
 
+  // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  // --- チケット入力フィールド ---
+  const [title, setTitle] = useState("");
+  const [status, setStatus] = useState<TicketStatus>("todo");
+  const [priority, setPriority] = useState<Priority>("medium");
+  const [assigneeList, setAssigneeList] = useState<{ id: string; name: string }[]>([]);
+  const [assignee, setAssignee] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [estimatedHours, setEstimatedHours] = useState(0);
+  const [description, setDescription] = useState("");
+  const ticketId = useRef<string>(`T-${Date.now()}`);
+  const [images, setImages] = useState<string[]>([]);
+  const [imageDragOver, setImageDragOver] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [titleError, setTitleError] = useState(false);
+  const [categories, setCategories] = useState<TicketCategory[]>([]);
+  const [categoryId, setCategoryId] = useState<string>("");
+
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
   // 🌟 追加: ダッシュボードから選択した場合でも、正しい projectSlug を特定して保持する
@@ -51,6 +80,77 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
   const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
+
+  // 🛠️ 修正: 自動リセットを完全に防ぐため、復元対象のスプリントIDを保持するRefを追加
+  const savedSprintIdRef = useRef<string>("");
+
+  // 🛠️ 修正: コンポーネント起動時に、ストレージから下書きデータを一度だけ安全に復元
+  useEffect(() => {
+    try {
+      const savedDraft = localStorage.getItem(contextKey);
+      if (savedDraft) {
+        const draft = JSON.parse(savedDraft);
+        if (draft.title) setTitle(draft.title);
+        if (draft.status) setStatus(draft.status);
+        if (draft.priority) setPriority(draft.priority);
+        if (draft.categoryId) setCategoryId(draft.categoryId);
+        if (draft.assignee) setAssignee(draft.assignee);
+        if (draft.startDate) setStartDate(draft.startDate);
+        if (draft.dueDate) setDueDate(draft.dueDate);
+        if (draft.estimatedHours) setEstimatedHours(draft.estimatedHours);
+        if (draft.description) setDescription(draft.description);
+        if (draft.images) setImages(draft.images);
+        if (needsSelection && draft.selectedProjectId) {
+          setSelectedProjectId(draft.selectedProjectId);
+        }
+        if (needsSelection && draft.selectedSprintId) {
+          savedSprintIdRef.current = draft.selectedSprintId;
+          setSelectedSprintId(draft.selectedSprintId);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to restore form draft:", e);
+    }
+  }, [contextKey, needsSelection]);
+
+  // 🛠️ 修正: スプリントの選択肢一覧（availableSprints）のロードが完了したタイミングで確実に再セット
+  useEffect(() => {
+    if (needsSelection && availableSprints.length > 0 && savedSprintIdRef.current) {
+      const exists = availableSprints.some(s => s.id === savedSprintIdRef.current);
+      if (exists) {
+        setSelectedSprintId(savedSprintIdRef.current);
+      }
+    }
+  }, [availableSprints, needsSelection]);
+
+  // 🛠️ 修正: ユーザーの入力変更をローカルストレージへ退避（保存実行中、またはクリーンアップ中は書き込まない）
+  useEffect(() => {
+    if (saving) return;
+    const draftPayload = {
+      title,
+      status,
+      priority,
+      categoryId,
+      assignee,
+      startDate,
+      dueDate,
+      estimatedHours,
+      description,
+      images,
+      selectedProjectId,
+      selectedSprintId
+    };
+    try {
+      localStorage.setItem(contextKey, JSON.stringify(draftPayload));
+    } catch (e) {
+      console.error("Failed to update form draft:", e);
+    }
+  }, [title, status, priority, categoryId, assignee, startDate, dueDate, estimatedHours, description, images, selectedProjectId, selectedSprintId, contextKey, saving]);
+
+  // 🛠️ バツボタン、キャンセルボタン、背景マスクがクリックされた際に確認画面を呼び出すハンドラー
+  const handleInterceptClose = () => {
+    setShowCloseConfirm(true);
+  };
 
   // 1. プロジェクト一覧の取得、および固定プロジェクト時のメンバー取得
   useEffect(() => {
@@ -87,10 +187,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (!effectiveProjectId) { setAvailableSprints([]); setSelectedSprintId(""); return; }
 
     if (!isSupabaseEnabled) {
-      setAvailableSprints(SPRINTS.filter(s => s.projectId === effectiveProjectId).map(s => ({ id: s.id, name: s.name, startDate: s.startDate, endDate: s.endDate })));
+      const mockSprints = SPRINTS.filter(s => s.projectId === effectiveProjectId).map(s => ({ id: s.id, name: s.name, startDate: s.startDate, endDate: s.endDate }));
+      setAvailableSprints(mockSprints);
       if (needsSelection) {
-        setSelectedSprintId("");
-        // 🌟 追加
         const pData = PROJECTS.find(p => p.id === effectiveProjectId);
         if (pData?.members) setCurrentProjectMembers(pData.members);
       }
@@ -100,8 +199,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     // スプリント一覧を取得
     supabase!.from("sprints").select("id, name, start_date, end_date").eq("project_id", effectiveProjectId).order("created_at")
       .then(({ data }) => {
-        if (data) setAvailableSprints(data.map((s: any) => ({ id: s.id, name: s.name, startDate: s.start_date, endDate: s.end_date })));
-        if (needsSelection) setSelectedSprintId("");
+        if (data) {
+          const dbSprints = data.map((s: any) => ({ id: s.id, name: s.name, startDate: s.start_date, endDate: s.end_date }));
+          setAvailableSprints(dbSprints);
+        }
       });
 
     // 🌟 追加：動的にプロジェクトが変わった、あるいは子チケット作成時のプロジェクトメンバー情報を再取得
@@ -110,26 +211,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         setCurrentProjectMembers(data.members);
       }
     });
-  }, [needsSelection, effectiveProjectId]);
+  }, [needsSelection, effectiveProjectId, contextKey]);
 
-
-  // --- チケット入力フィールド ---
-  const [title, setTitle] = useState("");
-  const [status, setStatus] = useState<TicketStatus>("todo");
-  const [priority, setPriority] = useState<Priority>("medium");
-  const [assigneeList, setAssigneeList] = useState<{ id: string; name: string }[]>([]);
-  const [assignee, setAssignee] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [estimatedHours, setEstimatedHours] = useState(0);
-  const [description, setDescription] = useState("");
-  const ticketId = useRef<string>(`T-${Date.now()}`);
-  const [images, setImages] = useState<string[]>([]);
-  const [imageDragOver, setImageDragOver] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [titleError, setTitleError] = useState(false);
-  const [categories, setCategories] = useState<TicketCategory[]>([]);
-  const [categoryId, setCategoryId] = useState<string>("");
 
   const calcHours = (start: string, due: string) => {
     if (!start || !due) return 0;
@@ -153,7 +236,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       const filteredMock = MEMBERS.filter(m => currentProjectMembers.includes(m.name));
       const list = filteredMock.map(m => ({ id: m.id, name: m.name }));
       setAssigneeList([noneOption, ...list]);
-      setAssignee(list[0]?.name || "担当者なし");
+      
+      const cached = localStorage.getItem(contextKey);
+      if (cached && JSON.parse(cached).assignee) {
+        setAssignee(JSON.parse(cached).assignee);
+      } else {
+        setAssignee(list[0]?.name || "担当者なし");
+      }
       return;
     }
 
@@ -163,11 +252,16 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         const filtered = data.filter((u: any) => currentProjectMembers.includes(u.name));
         setAssigneeList([noneOption, ...filtered]);
         // ログイン中の自分自身がメンバーにいれば初期値に設定、いなければ先頭のメンバーにする
-        const hasMe = filtered.some((u: any) => u.name === userName);
-        setAssignee(hasMe ? userName : (filtered[0]?.name || "担当者なし"));
+        const cached = localStorage.getItem(contextKey);
+        if (cached && JSON.parse(cached).assignee) {
+          setAssignee(JSON.parse(cached).assignee);
+        } else {
+          const hasMe = filtered.some((u: any) => u.name === userName);
+          setAssignee(hasMe ? userName : (filtered[0]?.name || "担当者なし"));
+        }
       }
     });
-  }, [currentProjectMembers, userName]);
+  }, [currentProjectMembers, userName, contextKey]);
 
   const [wbsPrefix, setWbsPrefix] = useState("T");
 
@@ -187,24 +281,32 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       .then(({ data }) => { if (data?.identifier) setWbsPrefix(data.identifier); });
   }, [effectiveSprintId]);
 
-  const uploadImageToStorage = useCallback(async (file: Blob): Promise<string> => {
-    if (!isSupabaseEnabled) return URL.createObjectURL(file);
-    const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
-    const ext = extMap[file.type] ?? 'png';
-    const path = `tickets/${ticketId.current}/detail/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
-    const { data, error } = await supabase!.storage.from("ticket-images").upload(path, file, { upsert: true, contentType: file.type || 'image/png' });
-    if (error || !data) return "";
-    const { data: urlData } = supabase!.storage.from("ticket-images").getPublicUrl(path);
-    return urlData.publicUrl;
-  }, []);
-
-  const addImages = useCallback(async (files: FileList | File[]) => {
-    for (const file of Array.from(files)) {
-      if (!file.type.startsWith("image/")) continue;
-      const url = await uploadImageToStorage(file);
-      if (url) setImages(prev => [...prev, url]);
+  // 🛠️ 入力状態を初期状態へ一気にクリアする実処理関数（下書きキャッシュも明示的に除去）
+  const executeFormClear = () => {
+    savedSprintIdRef.current = "";
+    setTitle("");
+    setStatus("todo");
+    setPriority("medium");
+    setAssignee("");
+    setStartDate("");
+    setDueDate("");
+    setEstimatedHours(0);
+    setDescription("");
+    setImages([]);
+    setCategoryId("");
+    if (needsSelection) {
+      setSelectedProjectId("");
+      setSelectedSprintId("");
     }
-  }, [uploadImageToStorage]);
+    setTitleError(false);
+    setProjectError(false);
+    setSprintError(false);
+    try {
+      localStorage.removeItem(contextKey);
+    } catch (e) {
+      console.error("Failed to purge form draft cache:", e);
+    }
+  };
 
   const handleSave = async () => {
     let valid = true;
@@ -244,8 +346,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       }
     };
 
+    // 🛠️ 修正: 保存処理中にキャッシュが自動上書きされないよう、先にフラグを立ててからインサートに移行
+    setSaving(true);
+
     if (isSupabaseEnabled) {
-      setSaving(true);
       let wbs: string;
       if (isChildMode && parentTicketId && parentWbs) {
         // 子チケットのWBS: 親WBS + "-" + 連番 (例: PRJ-001-1, PRJ-001-2)
@@ -283,6 +387,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               }
               await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
             }
+            try { localStorage.removeItem(contextKey); } catch (e) {}
+            savedSprintIdRef.current = "";
             setSaving(false);
             onCreated?.();
             onClose();
@@ -335,6 +441,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
         await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
       }
+      try { localStorage.removeItem(contextKey); } catch (e) {}
+      savedSprintIdRef.current = "";
+      setSaving(false);
+    } else {
+      // モック環境などのフォールバック
+      try { localStorage.removeItem(contextKey); } catch (e) {}
+      savedSprintIdRef.current = "";
       setSaving(false);
     }
     onCreated?.();
@@ -344,7 +457,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   return (
     <>
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+      <div onClick={handleInterceptClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "48%", minWidth: 440, background: "#FAFAF8", zIndex: zIndexBase + 1, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
         <div style={{ padding: "22px 24px 18px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0 }}>
@@ -353,11 +466,23 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>{isChildMode ? "子チケット作成" : "新規チケット"}</p>
               <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>{isChildMode ? `子チケット作成 (${parentWbs})` : "チケット作成"}</h2>
             </div>
-            <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-              <X style={{ width: 16, height: 16 }} />
-            </button>
+            {/* 🛠️ ボタンコンテナを整列させ、×ボタンの左横へゴミ箱デザインのクリアボタンを精密に配置 */}
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <button 
+                type="button" 
+                onClick={() => setShowClearConfirm(true)} 
+                title="入力内容をすべてクリア" 
+                style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", justifyContent: "center" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                <Trash2 style={{ width: 16, height: 16 }} />
+              </button>
+              <button onClick={handleInterceptClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -380,7 +505,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                   <CustomSelect
                     value={selectedProjectId}
                     options={availableProjects.map(p => ({ value: p.id, label: p.name }))}
-                    onChange={v => { setSelectedProjectId(v); setProjectError(false); setSelectedSprintId(""); setSprintError(false); }}
+                    onChange={v => { setSelectedProjectId(v); setProjectError(false); setSelectedSprintId(""); setSprintError(false); if (!saving) { savedSprintIdRef.current = ""; } }}
                     placeholder="プロジェクトを選択してください"
                   />
                 </div>
@@ -393,7 +518,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                   <CustomSelect
                     value={selectedSprintId}
                     options={availableSprints.map(s => ({ value: s.id, label: s.name }))}
-                    onChange={v => { setSelectedSprintId(v); setSprintError(false); }}
+                    onChange={v => { setSelectedSprintId(v); setSprintError(false); if (!saving) { savedSprintIdRef.current = v; } }}
                     disabled={!selectedProjectId}
                     placeholder={
                       !selectedProjectId
@@ -532,7 +657,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             return (
               <>
                 <BtnPrimary onClick={handleSave} disabled={!isValid || saving}>{saving ? "保存中..." : "作成する"}</BtnPrimary>
-                <BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>
+                <BtnSecondary onClick={handleInterceptClose}>キャンセル</BtnSecondary>
                 {!isValid && (
                   <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
                     {errs.join("・")}を入力してください
@@ -543,6 +668,32 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           })()}
         </div>
       </div>
+
+      {/* 🛠️ コンポーネントを共通・統一化し、ご指定の仕様（破棄テキスト無し、右下ボタンを「閉じる」）へ完全に修正したモーダル */}
+      {showCloseConfirm && (
+        <ConfirmDialog
+          title="画面を閉じる確認"
+          message="チケットを閉じますか？"
+          confirmLabel="閉じる"
+          confirmColor="#059669"
+          hasWarningText={false}
+          onConfirm={onClose}
+          onClose={() => setShowCloseConfirm(false)}
+        />
+      )}
+
+      {/* 🛠️ 入力情報の一気クリア用確認ダイアログ */}
+      {showClearConfirm && (
+        <ConfirmDialog
+          title="入力内容のクリア"
+          message="入力内容をすべて消去しますか？"
+          confirmLabel="消去する"
+          confirmColor="#DC2626"
+          hasWarningText={false}
+          onConfirm={executeFormClear}
+          onClose={() => setShowClearConfirm(false)}
+        />
+      )}
     </>
   );
 }
