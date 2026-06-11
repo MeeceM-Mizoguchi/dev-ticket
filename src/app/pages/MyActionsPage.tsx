@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { ClipboardList, RefreshCw, ChevronDown, Plus, X, Hash, Maximize2, Minimize2, ExternalLink, Pencil, Check } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
@@ -587,14 +588,14 @@ function MemoDetailModal({
                   内容
                   <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400, marginLeft: 6 }}>
                     <Hash style={{ width: 9, height: 9, display: "inline", verticalAlign: "middle" }} />
-                    WBS でリンク（例: #PRJ-001）
+                    # でチケットサジェスト
                   </span>
                 </div>
-                <textarea
+                <MentionTextarea
                   value={editContent}
-                  onChange={e => setEditContent(e.target.value)}
+                  onChange={setEditContent}
                   rows={expanded ? 8 : 4}
-                  style={{
+                  textareaStyle={{
                     width: "100%", boxSizing: "border-box" as const,
                     padding: "7px 10px", fontSize: 12, color: "#1A1714",
                     border: "1.5px solid #059669", borderRadius: 8,
@@ -654,6 +655,238 @@ function MemoDetailModal({
         )}
       </div>
     </>
+  );
+}
+
+// ─── #メンション対応テキストエリア（プロジェクト→チケット 2ステップ） ─────────────
+function MentionTextarea({
+  value, onChange, placeholder, rows = 4, textareaStyle,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  placeholder?: string;
+  rows?: number;
+  textareaStyle?: React.CSSProperties;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [allProjects, setAllProjects] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("projects").select("id, name").order("name")
+      .then(({ data }) => { if (data) setAllProjects(data as { id: string; name: string }[]); });
+  }, []);
+
+  type MentionState = {
+    stage: "project" | "ticket";
+    mentionStart: number;
+    query: string;
+    project: { id: string; name: string } | null;
+    tickets: { wbs: string; title: string }[];
+    loading: boolean;
+  };
+
+  const [ms, setMs] = useState<MentionState | null>(null);
+  const [selIdx, setSelIdx] = useState(0);
+  const [popupCoords, setPopupCoords] = useState({ top: 0, left: 0, width: 300, maxHeight: 260 });
+
+  // ポップアップ座標をテキストエリアの BoundingRect から計算
+  useLayoutEffect(() => {
+    if (!ms || !textareaRef.current) return;
+    const rect = textareaRef.current.getBoundingClientRect();
+    const spaceAbove = rect.top - 8;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const useAbove = spaceAbove > 150 && spaceAbove > spaceBelow;
+    const maxH = Math.min(260, useAbove ? spaceAbove - 4 : Math.max(80, spaceBelow));
+    setPopupCoords({
+      top: useAbove ? rect.top - maxH - 4 : rect.bottom + 4,
+      left: rect.left,
+      width: Math.min(320, rect.width + 80),
+      maxHeight: maxH,
+    });
+  }, [ms !== null]); // ms の有無が変わったときだけ再計算
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    onChange(val);
+    const match = val.slice(0, cursor).match(/#([^\s]*)$/);
+    if (match) {
+      const mentionStart = cursor - match[0].length;
+      const query = match[1];
+      setMs(prev =>
+        prev
+          ? { ...prev, query, mentionStart }
+          : { stage: "project", mentionStart, query, project: null, tickets: [], loading: false }
+      );
+      setSelIdx(0);
+    } else {
+      setMs(null);
+    }
+  };
+
+  const selectProject = async (proj: { id: string; name: string }) => {
+    setMs(s => s ? { ...s, stage: "ticket", project: proj, loading: true, tickets: [] } : null);
+    setSelIdx(0);
+    const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", proj.id);
+    if (!sprintData?.length) {
+      setMs(s => s ? { ...s, loading: false } : null);
+      textareaRef.current?.focus();
+      return;
+    }
+    const { data } = await supabase!
+      .from("sprint_tickets")
+      .select("wbs, title")
+      .in("sprint_id", sprintData.map((r: { id: string }) => r.id))
+      .order("wbs");
+    setMs(s => s ? { ...s, tickets: (data ?? []) as { wbs: string; title: string }[], loading: false } : null);
+    setSelIdx(0);
+    textareaRef.current?.focus();
+  };
+
+  const selectTicket = useCallback((wbs: string, currentMs: MentionState) => {
+    const before = value.slice(0, currentMs.mentionStart);
+    const after = value.slice(currentMs.mentionStart + 1 + currentMs.query.length);
+    onChange(before + `#${wbs}` + after);
+    setMs(null);
+    setTimeout(() => {
+      if (textareaRef.current) {
+        const pos = currentMs.mentionStart + 1 + wbs.length;
+        textareaRef.current.setSelectionRange(pos, pos);
+        textareaRef.current.focus();
+      }
+    }, 0);
+  }, [value, onChange]);
+
+  const filteredProjects = ms
+    ? (ms.query ? allProjects.filter(p => p.name.toLowerCase().includes(ms.query.toLowerCase())) : allProjects)
+    : [];
+  const filteredTickets = ms?.tickets
+    ? (ms.query ? ms.tickets.filter(t =>
+        t.wbs.toLowerCase().includes(ms.query.toLowerCase()) ||
+        t.title.toLowerCase().includes(ms.query.toLowerCase())
+      ) : ms.tickets)
+    : [];
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!ms) return;
+    const items = ms.stage === "project" ? filteredProjects : filteredTickets;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelIdx(i => (i + 1) % Math.max(items.length, 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelIdx(i => (i - 1 + Math.max(items.length, 1)) % Math.max(items.length, 1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (ms.stage === "project") {
+        const p = filteredProjects[selIdx];
+        if (p) selectProject(p);
+      } else {
+        const t = filteredTickets[selIdx];
+        if (t) selectTicket(t.wbs, ms);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setMs(null);
+    }
+  };
+
+  const popupVisible = ms !== null;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onBlur={() => { setTimeout(() => setMs(null), 200); }}
+        placeholder={placeholder}
+        rows={rows}
+        style={textareaStyle}
+        onFocus={e => { e.currentTarget.style.borderColor = "#059669"; }}
+      />
+      {popupVisible && createPortal(
+        <div style={{
+          position: "fixed",
+          top: popupCoords.top,
+          left: popupCoords.left,
+          width: popupCoords.width,
+          maxHeight: popupCoords.maxHeight,
+          overflowY: "auto",
+          background: "#FFFFFF",
+          border: "1px solid rgba(26,23,20,0.12)",
+          borderRadius: 10,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+          zIndex: 9999,
+        }}>
+          {/* ヘッダー */}
+          <div style={{
+            padding: "5px 12px",
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
+            color: ms.stage === "ticket" ? "#2563EB" : "#9E9690",
+            borderBottom: "1px solid rgba(26,23,20,0.06)",
+            background: "#FAFAF8",
+            borderRadius: "10px 10px 0 0",
+          }}>
+            {ms.stage === "project"
+              ? "プロジェクトを選択"
+              : <>{ms.project?.name} <span style={{ color: "#B0A9A4", fontWeight: 400 }}>のチケット</span></>
+            }
+          </div>
+
+          {ms.stage === "project" ? (
+            filteredProjects.length === 0
+              ? <div style={{ padding: "10px 12px", fontSize: 11, color: "#B0A9A4" }}>プロジェクトなし</div>
+              : filteredProjects.map((p, i) => (
+                <button
+                  key={p.id}
+                  onMouseDown={e => { e.preventDefault(); selectProject(p); }}
+                  style={{
+                    width: "100%", padding: "8px 12px", textAlign: "left",
+                    background: i === selIdx ? "#ECFDF5" : "transparent",
+                    border: "none", cursor: "pointer",
+                    fontSize: 12, fontWeight: i === selIdx ? 600 : 400,
+                    color: i === selIdx ? "#059669" : "#1A1714",
+                    boxSizing: "border-box", display: "block",
+                  }}
+                >{p.name}</button>
+              ))
+          ) : ms.loading ? (
+            <div style={{ padding: "10px 12px", fontSize: 11, color: "#B0A9A4" }}>読み込み中...</div>
+          ) : filteredTickets.length === 0 ? (
+            <div style={{ padding: "10px 12px", fontSize: 11, color: "#B0A9A4" }}>チケットなし</div>
+          ) : (
+            filteredTickets.map((t, i) => (
+              <button
+                key={t.wbs}
+                onMouseDown={e => { e.preventDefault(); selectTicket(t.wbs, ms); }}
+                style={{
+                  width: "100%", padding: "7px 12px", textAlign: "left",
+                  background: i === selIdx ? "#EFF6FF" : "transparent",
+                  border: "none", cursor: "pointer",
+                  fontSize: 12, color: "#1A1714",
+                  display: "flex", alignItems: "center", gap: 8,
+                  boxSizing: "border-box",
+                }}
+              >
+                <span style={{
+                  padding: "1px 6px", borderRadius: 4,
+                  background: "#DBEAFE", fontSize: 10, fontWeight: 700,
+                  color: "#2563EB", flexShrink: 0, whiteSpace: "nowrap",
+                }}>#{t.wbs}</span>
+                <span style={{
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  flex: 1, color: "#6B6458", fontSize: 11,
+                }}>{t.title}</span>
+              </button>
+            ))
+          )}
+        </div>,
+        document.body
+      )}
+    </div>
   );
 }
 
@@ -766,23 +999,21 @@ function AddMemoModal({
           内容
           <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400, marginLeft: 6 }}>
             <Hash style={{ width: 9, height: 9, display: "inline", verticalAlign: "middle" }} />
-            WBS でチケットリンク（例: #PRJ-001）
+            # でチケットサジェスト
           </span>
         </div>
-        <textarea
+        <MentionTextarea
           value={content}
-          onChange={e => setContent(e.target.value)}
-          placeholder="内容を入力... (#WBS番号 でチケットリンク)"
+          onChange={setContent}
+          placeholder="内容を入力... (# でチケットリンク)"
           rows={4}
-          style={{
+          textareaStyle={{
             width: "100%", boxSizing: "border-box" as const,
             padding: "8px 10px", fontSize: 12, color: "#1A1714",
             border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8,
             outline: "none", fontFamily: "inherit", resize: "vertical",
             background: "#FAFAF9", lineHeight: 1.5, transition: "border-color 0.15s",
           }}
-          onFocus={e => { e.currentTarget.style.borderColor = "#059669"; }}
-          onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.12)"; }}
         />
       </div>
 
