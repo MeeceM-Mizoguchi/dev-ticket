@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, ExternalLink, Plus, GitBranch } from "lucide-react";
 import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
@@ -7,9 +7,9 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
   sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void; onBulkCreate?: (sprintId: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
-  // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
 
   const DAY_W = 20;
   const thisYear = new Date().getFullYear();
@@ -20,66 +20,113 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
   const getLeft  = (d: string) => Math.max(0, daysBetween(minDate, d)) * DAY_W;
   const getWidth = (s: string, e: string) => Math.max((daysBetween(s, e) + 1) * DAY_W, 2);
 
-  const todayStr  = new Date().toISOString().split("T")[0];
+  // ② useMemo: 毎レンダーで new Date() を呼ばない
+  const todayStr  = useMemo(() => new Date().toISOString().split("T")[0], []);
   const todayLeft = getLeft(todayStr);
 
-  // Auto-scroll to today on mount
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollLeft = todayLeft - scrollRef.current.offsetWidth / 3;
+      const targetLeft = todayLeft - scrollRef.current.offsetWidth / 3;
+      scrollRef.current.scrollLeft = targetLeft;
+      if (headerScrollRef.current) headerScrollRef.current.scrollLeft = targetLeft;
     }
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Build calendar days
-  const calDays: { date: string; day: number; month: number; year: number; isFirst: boolean }[] = [];
-  const cur = new Date(minDate);
-  for (let i = 0; i < totalDays; i++) {
-    calDays.push({ date: cur.toISOString().split("T")[0], day: cur.getDate(), month: cur.getMonth(), year: cur.getFullYear(), isFirst: cur.getDate() === 1 });
-    cur.setDate(cur.getDate() + 1);
-  }
-
-  // Month spans
-  const months: { label: string; left: number; width: number }[] = [];
-  let mStart = 0;
-  calDays.forEach((d, i) => {
-    if (d.isFirst || i === 0) mStart = i;
-    const isLast = i === calDays.length - 1 || calDays[i + 1]?.isFirst;
-    if (isLast) months.push({ label: `${d.month + 1}月`, left: mStart * DAY_W, width: (i - mStart + 1) * DAY_W });
-  });
-
-  // Year spans
-  const years: { year: number; left: number; width: number }[] = [];
-  months.forEach(m => {
-    // extract year from position
-  });
-  calDays.forEach((d, i) => {
-    if (i === 0 || calDays[i - 1].year !== d.year) {
-      years.push({ year: d.year, left: i * DAY_W, width: 0 });
+  // ヘッダーとボディの横スクロールを同期
+  const handleBodyScroll = () => {
+    if (scrollRef.current && headerScrollRef.current) {
+      headerScrollRef.current.scrollLeft = scrollRef.current.scrollLeft;
     }
-    years[years.length - 1].width = (i - calDays.findIndex(c => c.year === years[years.length - 1].year) + 1) * DAY_W;
-  });
+  };
+
+  // ② useMemo: 1825日分のループを初回のみ実行
+  const calDays = useMemo(() => {
+    const days: { date: string; day: number; month: number; year: number; isFirst: boolean }[] = [];
+    const cur = new Date(minDate);
+    for (let i = 0; i < totalDays; i++) {
+      days.push({ date: cur.toISOString().split("T")[0], day: cur.getDate(), month: cur.getMonth(), year: cur.getFullYear(), isFirst: cur.getDate() === 1 });
+      cur.setDate(cur.getDate() + 1);
+    }
+    return days;
+  }, [minDate, totalDays]);
+
+  // ② useMemo: 月スパンも初回のみ
+  const months = useMemo(() => {
+    const ms: { label: string; left: number; width: number }[] = [];
+    let mStart = 0;
+    calDays.forEach((d, i) => {
+      if (d.isFirst || i === 0) mStart = i;
+      const isLast = i === calDays.length - 1 || calDays[i + 1]?.isFirst;
+      if (isLast) ms.push({ label: `${d.month + 1}月`, left: mStart * DAY_W, width: (i - mStart + 1) * DAY_W });
+    });
+    return ms;
+  }, [calDays]);
+
+  // ② useMemo: 年スパンも初回のみ
+  const years = useMemo(() => {
+    const ys: { year: number; left: number; width: number }[] = [];
+    calDays.forEach((d, i) => {
+      if (i === 0 || calDays[i - 1].year !== d.year) {
+        ys.push({ year: d.year, left: i * DAY_W, width: 0 });
+      }
+      ys[ys.length - 1].width = (i - calDays.findIndex(c => c.year === ys[ys.length - 1].year) + 1) * DAY_W;
+    });
+    return ys;
+  }, [calDays]);
 
   const LEFT_W = 240, ROW_H = 44, TICK_ROW_H = 30;
-  const YEAR_H = 22, MON_H = 24, DAY_H = 20, HDR_H = YEAR_H + MON_H + DAY_H;
-
-  const GridLines = () => (
-    <>
-      {calDays.map((d, i) => (
-        <div key={i} style={{ position: "absolute", top: 0, bottom: 0, left: i * DAY_W, width: 1, pointerEvents: "none",
-          background: d.isFirst ? "rgba(26,23,20,0.18)" : d.day % 7 === 1 ? "rgba(26,23,20,0.07)" : "rgba(26,23,20,0.03)" }} />
-      ))}
-      <div style={{ position: "absolute", top: 0, bottom: 0, left: todayLeft, width: 2, background: "#059669", opacity: 0.6, pointerEvents: "none" }} />
-    </>
-  );
+  const YEAR_H = 22, MON_H = 24, DAY_H = 20;
 
   return (
-    <div style={{ background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", overflow: "hidden" }}>
-      <div style={{ display: "flex" }}>
-        {/* Left pane */}
-        <div style={{ width: LEFT_W, flexShrink: 0, borderRight: "1px solid rgba(26,23,20,0.07)" }}>
-          <div style={{ height: HDR_H, background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", padding: "0 14px" }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>スプリント</span>
+    // overflow: clip は borderRadius を維持しつつ position:sticky をブロックしない
+    <div style={{ background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", overflow: "clip" as React.CSSProperties["overflow"] }}>
+
+      {/* ヘッダー（sticky固定） — 縦スクロールでここまで来たら固定、上に戻ったら解除 */}
+      <div style={{ position: "sticky", top: 0, zIndex: 20, display: "flex", boxShadow: "0 1px 0 rgba(26,23,20,0.07)" }}>
+        {/* 左パネルヘッダー */}
+        <div style={{ width: LEFT_W, flexShrink: 0, borderRight: "1px solid rgba(26,23,20,0.07)", height: YEAR_H + MON_H + DAY_H, background: "#F4F5F6", display: "flex", alignItems: "center", padding: "0 14px" }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>スプリント</span>
+        </div>
+        {/* カレンダーヘッダー（横スクロールをボディと同期） */}
+        <div ref={headerScrollRef} style={{ flex: 1, overflowX: "hidden" }}>
+          <div style={{ width: totalDays * DAY_W }}>
+            {/* 年行 */}
+            <div style={{ height: YEAR_H, background: "#EDEAE5", borderBottom: "1px solid rgba(26,23,20,0.08)", position: "relative" }}>
+              {years.map((y, i) => (
+                <div key={i} style={{ position: "absolute", left: y.left, width: y.width, height: "100%", display: "flex", alignItems: "center", padding: "0 8px", borderRight: "2px solid rgba(26,23,20,0.12)", boxSizing: "border-box" as const }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: "#6B6458", letterSpacing: "0.04em" }}>{y.year}</span>
+                </div>
+              ))}
+            </div>
+            {/* 月行 */}
+            <div style={{ height: MON_H, background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.07)", position: "relative" }}>
+              {months.map((m, i) => (
+                <div key={i} style={{ position: "absolute", left: m.left, width: m.width, height: "100%", display: "flex", alignItems: "center", padding: "0 6px", borderRight: "1px solid rgba(26,23,20,0.12)", boxSizing: "border-box" as const }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#9E9690", whiteSpace: "nowrap" as const }}>{m.label}</span>
+                </div>
+              ))}
+            </div>
+            {/* 日行 */}
+            <div style={{ height: DAY_H, background: "#FAFAF8", borderBottom: "1px solid rgba(26,23,20,0.07)", position: "relative" }}>
+              {calDays.map((d, i) => (
+                <div key={i} style={{ position: "absolute", left: i * DAY_W, width: DAY_W, height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+                  borderLeft: d.isFirst ? "1px solid rgba(26,23,20,0.15)" : "1px solid rgba(26,23,20,0.04)",
+                  boxSizing: "border-box" as const,
+                  background: d.date === todayStr ? "rgba(5,150,105,0.10)" : "transparent" }}>
+                  <span style={{ fontSize: 8, color: d.date === todayStr ? "#059669" : "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: d.date === todayStr ? 700 : 400 }}>
+                    {d.day}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
+        </div>
+      </div>
+
+      {/* ボディ */}
+      <div style={{ display: "flex" }}>
+        {/* 左パネル */}
+        <div style={{ width: LEFT_W, flexShrink: 0, borderRight: "1px solid rgba(26,23,20,0.07)" }}>
           {sprints.map(sprint => {
             const isExp = expanded.has(sprint.id);
             const sm = getSprintStatusMeta(computeSprintStatus(sprint));
@@ -143,7 +190,6 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                         {hasChildren && <GitBranch style={{ width: 8, height: 8, color: "#B0A9A4", flexShrink: 0 }} />}
                         <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: tsm.bg, color: tsm.color, flexShrink: 0 }}>{tsm.label}</span>
                       </div>
-                      {/* 子チケット行（アコーディオン展開時） */}
                       {hasChildren && isTicketExpanded && children.map(child => {
                         const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
                         return (
@@ -166,40 +212,19 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
           })}
         </div>
 
-        {/* Calendar pane */}
-        <div ref={scrollRef} style={{ flex: 1, overflowX: "auto" }}>
+        {/* カレンダーボディ */}
+        <div ref={scrollRef} style={{ flex: 1, overflowX: "auto" }} onScroll={handleBodyScroll}>
           <div style={{ width: totalDays * DAY_W, position: "relative" }}>
-            {/* Year row */}
-            <div style={{ height: YEAR_H, background: "#EDEAE5", borderBottom: "1px solid rgba(26,23,20,0.08)", position: "relative" }}>
-              {years.map((y, i) => (
-                <div key={i} style={{ position: "absolute", left: y.left, width: y.width, height: "100%", display: "flex", alignItems: "center", padding: "0 8px", borderRight: "2px solid rgba(26,23,20,0.12)", boxSizing: "border-box" as const }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, color: "#6B6458", letterSpacing: "0.04em" }}>{y.year}</span>
-                </div>
-              ))}
-            </div>
-            {/* Month row */}
-            <div style={{ height: MON_H, background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.07)", position: "relative" }}>
-              {months.map((m, i) => (
-                <div key={i} style={{ position: "absolute", left: m.left, width: m.width, height: "100%", display: "flex", alignItems: "center", padding: "0 6px", borderRight: "1px solid rgba(26,23,20,0.12)", boxSizing: "border-box" as const }}>
-                  <span style={{ fontSize: 10, fontWeight: 600, color: "#9E9690", whiteSpace: "nowrap" as const }}>{m.label}</span>
-                </div>
-              ))}
-            </div>
-            {/* Day row — every single day */}
-            <div style={{ height: DAY_H, background: "#FAFAF8", borderBottom: "1px solid rgba(26,23,20,0.07)", position: "relative" }}>
+            {/* ① 共有グリッド線 */}
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none" }}>
               {calDays.map((d, i) => (
-                <div key={i} style={{ position: "absolute", left: i * DAY_W, width: DAY_W, height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-                  borderLeft: d.isFirst ? "1px solid rgba(26,23,20,0.15)" : "1px solid rgba(26,23,20,0.04)",
-                  boxSizing: "border-box" as const,
-                  background: d.date === todayStr ? "rgba(5,150,105,0.10)" : "transparent" }}>
-                  <span style={{ fontSize: 8, color: d.date === todayStr ? "#059669" : "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: d.date === todayStr ? 700 : 400 }}>
-                    {d.day}
-                  </span>
-                </div>
+                <div key={i} style={{ position: "absolute", top: 0, bottom: 0, left: i * DAY_W, width: 1,
+                  background: d.isFirst ? "rgba(26,23,20,0.18)" : d.day % 7 === 1 ? "rgba(26,23,20,0.07)" : "rgba(26,23,20,0.03)" }} />
               ))}
+              <div style={{ position: "absolute", top: 0, bottom: 0, left: todayLeft, width: 2, background: "#059669", opacity: 0.6 }} />
             </div>
 
-            {/* Sprint rows */}
+            {/* スプリント行 */}
             {sprints.map(sprint => {
               const isExp = expanded.has(sprint.id);
               const sm = getSprintStatusMeta(computeSprintStatus(sprint));
@@ -209,7 +234,6 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
               return (
                 <div key={sprint.id}>
                   <div style={{ height: ROW_H, borderBottom: "1px solid rgba(26,23,20,0.05)", position: "relative" }}>
-                    <GridLines />
                     {sprint.startDate && sprint.endDate && (
                       <div style={{ position: "absolute", left: barL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 5, zIndex: 1 }}>
                         <div style={{ width: barW, height: 22, borderRadius: 5, background: sm.barColor + "22", border: `1.5px solid ${sm.barColor}55`, overflow: "hidden", display: "flex", alignItems: "center", position: "relative", flexShrink: 0 }}>
@@ -232,7 +256,6 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     return (
                       <div key={t.id}>
                         <div style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(26,23,20,0.012)" }}>
-                          <GridLines />
                           {hasBar && (
                             <div style={{ position: "absolute", left: tL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
                               <div style={{ width: tW, height: 12, borderRadius: 3, background: tsm.color + "25", border: `1px solid ${tsm.color}50`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
@@ -246,7 +269,6 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                             <div style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", fontSize: 8, color: "#D5D0CB", fontStyle: "italic" }}>日程未設定</div>
                           )}
                         </div>
-                        {/* 子チケットバー（アコーディオン展開時） */}
                         {children.length > 0 && isTicketExpanded && children.map(child => {
                           const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
                           const cHasBar = !!(child.startDate && child.dueDate);
@@ -254,7 +276,6 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                           const cW = cHasBar ? getWidth(child.startDate, child.dueDate) : 0;
                           return (
                             <div key={child.id} style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(5,150,105,0.02)" }}>
-                              <GridLines />
                               {cHasBar && (
                                 <div style={{ position: "absolute", left: cL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
                                   <div style={{ width: cW, height: 9, borderRadius: 3, background: ctsm.color + "20", border: `1px solid ${ctsm.color}40`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
