@@ -169,17 +169,29 @@ export function TicketDetailPanel({
   const memberNamesRef = useRef<string[]>([]);
   const anchorScrolledRef = useRef<string | null>(null);
 
-  const loadRelated = useCallback(async (ticketId: string) => {
+  const loadChildTickets = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
-    const [{ data: cData }, { data: fData }, { data: childData }] = await Promise.all([
+    const { data } = await supabase!
+      .from("sprint_tickets")
+      .select("id,wbs,title,status,priority")
+      .eq("parent_id", ticketId)
+      .order("wbs");
+    if (data) setChildTickets(data.map(mapSprintTicket));
+  }, []);
+
+  const loadCommentFiles = useCallback(async (ticketId: string) => {
+    if (!isSupabaseEnabled) return;
+    const [{ data: cData }, { data: fData }] = await Promise.all([
       supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at"),
       supabase!.from("ticket_source_files").select("*").eq("ticket_id", ticketId).order("created_at"),
-      supabase!.from("sprint_tickets").select("*").eq("parent_id", ticketId).order("wbs"),
     ]);
     if (cData) setComments(cData.map(mapComment));
     if (fData) setSourceFiles(fData.map(mapSourceFile));
-    if (childData) setChildTickets(childData.map(mapSprintTicket));
   }, []);
+
+  const loadRelated = useCallback(async (ticketId: string) => {
+    await Promise.all([loadCommentFiles(ticketId), loadChildTickets(ticketId)]);
+  }, [loadCommentFiles, loadChildTickets]);
 
   // sync when ticket changes — set from prop immediately, then fetch fresh from DB
   useEffect(() => {
@@ -198,7 +210,10 @@ export function TicketDetailPanel({
     const initImages = ticket.images ?? [];
     setTicketImages(initImages);
     ticketImagesRef.current = initImages;
-    // reset form state on ticket change
+    // reset form state and async-loaded data on ticket change
+    setChildTickets([]);
+    setComments([]);
+    setSourceFiles([]);
     setCommentText("");
     setCommentImages([]);
     setReviewContent("");
@@ -305,11 +320,12 @@ export function TicketDetailPanel({
   useEffect(() => { memberNamesRef.current = memberNames; }, [memberNames]);
 
   // Poll for fresh comments/source files every 10s while panel is open
+  // 子チケットは頻繁に変わらないのでポーリング対象外（作成・削除時に個別リロード）
   useEffect(() => {
     if (!ticket?.id || !isSupabaseEnabled) return;
-    const id = setInterval(() => loadRelated(ticket.id), 10000);
+    const id = setInterval(() => loadCommentFiles(ticket.id), 10000);
     return () => clearInterval(id);
-  }, [ticket?.id, loadRelated]);
+  }, [ticket?.id, loadCommentFiles]);
 
   useEffect(() => {
     if (!reviewerOpen) return;
@@ -575,7 +591,7 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("comment insert failed:", error); return; }
-      await loadRelated(ticket.id);
+      await loadCommentFiles(ticket.id);
       await notifyMentions(content, ticket, `comment:${row.id}`);
     } else {
       setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
@@ -589,7 +605,7 @@ export function TicketDetailPanel({
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("reply insert failed:", error); return; }
-      await loadRelated(ticket.id);
+      await loadCommentFiles(ticket.id);
       await notifyMentions(content, ticket, `comment:${id}`);
       if (parentComment.userName !== userName && projectSlug) {
         supabase!.from("notifications").insert({
@@ -1059,7 +1075,7 @@ export function TicketDetailPanel({
           parentWbs={ticket.wbs}
           zIndexBase={310}
           onClose={() => setShowCreateChild(false)}
-          onCreated={() => { setShowCreateChild(false); loadRelated(ticket.id); onUpdated?.(); }}
+          onCreated={() => { setShowCreateChild(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
