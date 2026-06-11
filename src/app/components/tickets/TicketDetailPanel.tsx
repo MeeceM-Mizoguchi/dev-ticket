@@ -111,6 +111,7 @@ export function TicketDetailPanel({
   const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
   const [projectMemberNames, setProjectMemberNames] = useState<string[]>([]);
   const [adminMemberNames, setAdminMemberNames] = useState<string[]>([]);
+  const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -296,6 +297,18 @@ export function TicketDetailPanel({
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
     supabase!.from("projects").select("members").eq("id", projectId).single()
       .then(({ data }) => { if (data?.members) setProjectMemberNames(data.members as string[]); });
+    // プロジェクト内チケット一覧を取得（チケットメンション用）
+    (async () => {
+      const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", projectId);
+      if (!sprintData?.length) return;
+      const { data } = await supabase!.from("sprint_tickets")
+        .select("wbs, title")
+        .in("sprint_id", sprintData.map((s: { id: string }) => s.id))
+        .order("wbs");
+      if (data) {
+        setProjectTickets(data as { wbs: string; title: string }[]);
+      }
+    })();
   }, [projectId]);
 
   useEffect(() => {
@@ -335,6 +348,11 @@ export function TicketDetailPanel({
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [reviewerOpen]);
+
+  const handleTicketMentionClick = useCallback((wbs: string) => {
+    // SprintPage/SprintDetailPage の onSelectTicket は ticket.wbs でナビゲートする
+    onSelectTicket?.({ id: "", wbs, title: wbs, status: "todo", priority: "medium", assignee: "", startDate: "", dueDate: "", estimatedHours: 0, progress: 0 });
+  }, [onSelectTicket]);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
@@ -1487,7 +1505,7 @@ export function TicketDetailPanel({
               </button>
             </div>
             <div id="panel-description-section">
-              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
             </div>
             {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
@@ -1648,7 +1666,7 @@ export function TicketDetailPanel({
                                           </div>
                                           {(c.content || (c.images?.length ?? 0) > 0) && (
                                             <div style={{ background: cBg, border: `1px solid ${cBorder}`, borderRadius: 7, padding: "8px 10px" }}>
-                                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} />}
+                                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
                                               {(c.images?.length ?? 0) > 0 && (
                                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
                                                   {(c.images ?? []).map((img, i) => (
@@ -1763,7 +1781,7 @@ export function TicketDetailPanel({
                     <div style={{ marginBottom: 10 }}>
                       <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                       <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                       </div>
                     </div>
                     {fileDragOver && (
@@ -1922,7 +1940,7 @@ export function TicketDetailPanel({
                       </div>
                       {editingId === c.id ? (
                         <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                           {editImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {editImages.map((img, i) => (
@@ -1966,7 +1984,7 @@ export function TicketDetailPanel({
                       ) : (
                         (c.content || c.images?.length > 0) && (
                           <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} />}
+                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
                             {c.images?.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                                 {c.images.map((img, i) => (
@@ -2014,7 +2032,7 @@ export function TicketDetailPanel({
                               </div>
                               {editingId === reply.id ? (
                                 <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                                   {editImages.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                       {editImages.map((img, i) => (
@@ -2053,7 +2071,7 @@ export function TicketDetailPanel({
                                 </div>
                               ) : (
                                 <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                                  <RichEditor value={reply.content} readOnly minHeight={20} />
+                                  <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />
                                   {reply.images.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                       {reply.images.map((img, i) => (
@@ -2077,7 +2095,7 @@ export function TicketDetailPanel({
                         <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                           <Avatar name={userName} size="xs" />
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                             {replyImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {replyImages.map((img, i) => (
@@ -2117,7 +2135,7 @@ export function TicketDetailPanel({
                       {showReviewForm && (
                         <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                           <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                           {revisionImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                               {revisionImages.map((img, i) => (
@@ -2201,7 +2219,7 @@ export function TicketDetailPanel({
 
                     {editingId === c.id ? (
                       <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                         {editImages.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                             {editImages.map((img, i) => (
@@ -2244,7 +2262,7 @@ export function TicketDetailPanel({
                       </div>
                     ) : (
                       <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                        <RichEditor value={c.content} readOnly minHeight={20} />
+                        <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />
                         {c.images.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                             {c.images.map((img, i) => (
@@ -2291,7 +2309,7 @@ export function TicketDetailPanel({
                             </div>
                             {editingId === reply.id ? (
                               <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                                <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                                 {editImages.length > 0 && (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                     {editImages.map((img, i) => (
@@ -2330,7 +2348,7 @@ export function TicketDetailPanel({
                               </div>
                             ) : (
                               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                                <RichEditor value={reply.content} readOnly minHeight={20} />
+                                <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />
                                 {reply.images.length > 0 && (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                     {reply.images.map((img, i) => (
@@ -2354,7 +2372,7 @@ export function TicketDetailPanel({
                       <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                         <Avatar name={userName} size="xs" />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                          <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
                           {replyImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {replyImages.map((img, i) => (
@@ -2405,7 +2423,7 @@ export function TicketDetailPanel({
                   <StatusBadge status={status} />
                 </div>
               </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
               {commentImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                   {commentImages.map((img, i) => (

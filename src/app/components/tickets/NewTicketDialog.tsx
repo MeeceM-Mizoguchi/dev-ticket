@@ -50,6 +50,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   // 現在選択されている（または親から渡された）プロジェクトのメンバー名の配列
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
+  // チケットメンション用: プロジェクト内チケット一覧
+  const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
 
   // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -211,8 +213,22 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         setCurrentProjectMembers(data.members);
       }
     });
+
   }, [needsSelection, effectiveProjectId, contextKey]);
 
+  // チケットメンション用: プロジェクト全スプリントのチケットを取得（別スプリントのチケットも参照可能にする）
+  useEffect(() => {
+    if (!isSupabaseEnabled || !effectiveProjectId) { setProjectTickets([]); return; }
+    (async () => {
+      const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", effectiveProjectId);
+      if (!sprintData?.length) return;
+      const { data } = await supabase!.from("sprint_tickets")
+        .select("wbs, title")
+        .in("sprint_id", sprintData.map((s: { id: string }) => s.id))
+        .order("wbs");
+      if (data) setProjectTickets(data as { wbs: string; title: string }[]);
+    })();
+  }, [effectiveProjectId]);
 
   const calcHours = (start: string, due: string) => {
     if (!start || !due) return 0;
@@ -315,7 +331,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (!title.trim()) { setTitleError(true); valid = false; }
     if (!valid) return;
 
-    const finalAssignee = assignee === "担当者なし" ? null : assignee;
+    const finalAssignee = (assignee === "担当者なし" || !assignee) ? "" : assignee;
 
     // 🌟 追加：新規チケット作成時に、詳細欄のメンションを解析して通知を飛ばす関数
     const notifyMentions = async (ticketWbs: string) => {
@@ -608,8 +624,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            {/* 🌟 修正: メンション候補として currentProjectMembers を RichEditor に渡す */}
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} />
           </div>
 
           <div>

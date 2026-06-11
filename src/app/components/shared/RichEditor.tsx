@@ -5,8 +5,23 @@ import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import Mention from "@tiptap/extension-mention";
+import { Extension } from "@tiptap/core";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+
+// ---- SuggestionStore: editor.storage 経由でチケット/メンバーをプラグインに渡す ----
+// TipTap のプラグインは最初のレンダーで closure をキャプチャするため、
+// useRef の .current 更新が届かないケースがある。
+// editor.storage は items({ editor }) で受け取る生きたインスタンス経由でアクセスするので確実。
+const SuggestionStore = Extension.create({
+  name: "suggestionStore",
+  addStorage() {
+    return {
+      members: [] as string[],
+      tickets: [] as { wbs: string; title: string }[],
+    };
+  },
+});
 
 // ---- MentionList popup component ----------------------------------------
 
@@ -24,7 +39,6 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 
   useEffect(() => { setSel(0); }, [items]);
 
-  // キーボード移動時に選択項目を表示領域内にスクロール
   useEffect(() => {
     itemRefs.current[sel]?.scrollIntoView({ block: "nearest" });
   }, [sel]);
@@ -44,7 +58,6 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 
   if (!items.length) return null;
 
-  // ラッパー div がスクロールコンテナ兼ビジュアルコンテナなので、ここは素の断片で返す
   return (
     <>
       {items.map((item, i) => (
@@ -64,6 +77,76 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 });
 MentionList.displayName = "MentionList";
 
+// ---- TicketMentionList popup component --------------------------------------
+
+interface TicketItem { wbs: string; title: string }
+interface TicketMentionListProps {
+  items: TicketItem[];
+  command: (p: { id: string; label: string }) => void;
+}
+
+const TicketMentionList = forwardRef<MentionListHandle, TicketMentionListProps>(({ items, command }, ref) => {
+  const [sel, setSel] = useState(0);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  useEffect(() => { setSel(0); }, [items]);
+
+  useEffect(() => {
+    itemRefs.current[sel]?.scrollIntoView({ block: "nearest" });
+  }, [sel]);
+
+  useImperativeHandle(ref, () => ({
+    onKeyDown: ({ event }) => {
+      if (event.key === "ArrowUp")   { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
+      if (event.key === "Enter") {
+        const item = items[sel];
+        if (item) command({ id: item.wbs, label: item.title });
+        return true;
+      }
+      return false;
+    },
+  }));
+
+  if (!items.length) return (
+    <div style={{ padding: "10px 14px", fontSize: 11, color: "#B0A9A4" }}>チケットを読み込み中...</div>
+  );
+
+  return (
+    <>
+      {items.map((item, i) => (
+        <button key={item.wbs}
+          ref={el => { itemRefs.current[i] = el; }}
+          onMouseDown={e => { e.preventDefault(); command({ id: item.wbs, label: item.title }); }}
+          style={{
+            width: "100%", padding: "7px 12px", textAlign: "left" as const,
+            background: i === sel ? "#EFF6FF" : "transparent",
+            border: "none", cursor: "pointer", fontSize: 12,
+            color: i === sel ? "#1E40AF" : "#1A1714",
+            display: "flex", alignItems: "center", gap: 8,
+            transition: "background 0.1s", boxSizing: "border-box" as const,
+          }}
+          onMouseEnter={() => setSel(i)}>
+          <span style={{
+            padding: "1px 6px", borderRadius: 4, background: "#DBEAFE",
+            fontSize: 10, fontWeight: 700, color: "#2563EB",
+            flexShrink: 0, whiteSpace: "nowrap" as const,
+          }}>
+            #{item.wbs}
+          </span>
+          <span style={{
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
+            flex: 1, color: "#6B6458", fontSize: 11,
+          }}>
+            {item.title}
+          </span>
+        </button>
+      ))}
+    </>
+  );
+});
+TicketMentionList.displayName = "TicketMentionList";
+
 // ---- helpers ----------------------------------------------------------------
 
 const btnStyle = (active?: boolean): React.CSSProperties => ({
@@ -74,108 +157,132 @@ const btnStyle = (active?: boolean): React.CSSProperties => ({
   cursor: "pointer", lineHeight: 1.4,
 });
 
+function makeSuggestionPopup<T>(
+  Component: React.ComponentType<any>,
+  width = 260,
+) {
+  return () => {
+    let renderer: ReactRenderer<MentionListHandle, any> | null = null;
+    let wrapper: HTMLDivElement | null = null;
+
+    const position = (clientRect: (() => DOMRect | null) | null) => {
+      if (!wrapper || !clientRect) return;
+      const rect = clientRect();
+      if (!rect) return;
+      const GAP = 4;
+      const MAX_H = 340;
+      const spaceBelow = window.innerHeight - rect.bottom - GAP;
+      const spaceAbove = rect.top - GAP;
+      let top: number;
+      let maxH: number;
+      if (spaceBelow >= 100 || spaceBelow >= spaceAbove) {
+        top = rect.bottom + GAP;
+        maxH = Math.min(MAX_H, Math.max(80, spaceBelow));
+      } else {
+        maxH = Math.min(MAX_H, Math.max(80, spaceAbove));
+        top = rect.top - maxH - GAP;
+      }
+      let left = rect.left;
+      if (left + width + 8 > window.innerWidth) left = Math.max(8, window.innerWidth - width - 8);
+      wrapper.style.top = `${top}px`;
+      wrapper.style.left = `${left}px`;
+      wrapper.style.maxHeight = `${maxH}px`;
+    };
+
+    return {
+      onStart: (props: any) => {
+        wrapper = document.createElement("div");
+        wrapper.style.cssText = [
+          "position:fixed", "z-index:9999",
+          "background:#FFF", "border:1px solid rgba(26,23,20,0.12)",
+          "border-radius:10px", "box-shadow:0 8px 24px rgba(0,0,0,0.14)",
+          `overflow-y:auto`, `min-width:${width}px`, `max-width:${width + 60}px`,
+        ].join(";");
+        document.body.appendChild(wrapper);
+        renderer = new ReactRenderer<MentionListHandle, any>(Component, { props, editor: props.editor });
+        wrapper.appendChild(renderer.element);
+        position(props.clientRect ?? null);
+      },
+      onUpdate: (props: any) => {
+        renderer?.updateProps(props);
+        position(props.clientRect ?? null);
+      },
+      onKeyDown: (props: any) => {
+        if (props.event.key === "Escape") {
+          wrapper?.remove(); renderer?.destroy(); wrapper = null; renderer = null;
+          return true;
+        }
+        return renderer?.ref?.onKeyDown(props) ?? false;
+      },
+      onExit: () => {
+        wrapper?.remove(); renderer?.destroy(); wrapper = null; renderer = null;
+      },
+    };
+  };
+}
+
 // ---- RichEditor -------------------------------------------------------------
 
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, members = [],
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, members = [], tickets = [], onTicketClick,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number; maxHeight?: number; readOnly?: boolean;
   members?: string[];
+  tickets?: { wbs: string; title: string }[];
+  onTicketClick?: (wbs: string) => void;
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
-  const membersRef = useRef(members);
-  useEffect(() => { membersRef.current = members; }, [members]);
 
   const editor = useEditor({
     extensions: [
       StarterKit,
       Table.configure({ resizable: false }),
       TableRow, TableCell, TableHeader,
+      SuggestionStore,
+      // TipTap v3: suggestions 配列で @mention と #ticket を1つの Mention extension に統合
       Mention.configure({
-        HTMLAttributes: { class: "mention" },
-        renderText: ({ node }) => `@${node.attrs.label ?? node.attrs.id}`,
-        renderHTML: ({ options, node }) => [
-          "span",
-          { ...options.HTMLAttributes, "data-mention": "", "data-id": node.attrs.id },
-          `@${node.attrs.label ?? node.attrs.id}`,
-        ],
-        suggestion: {
-          items: ({ query }) =>
-            membersRef.current
-              .filter((m): m is string => typeof m === "string" && m.toLowerCase().includes(query.toLowerCase()))
-              .slice(0, 8),
-
-          render: () => {
-            let renderer: ReactRenderer<MentionListHandle, MentionListProps> | null = null;
-            let wrapper: HTMLDivElement | null = null;
-
-            const position = (clientRect: (() => DOMRect | null) | null) => {
-              if (!wrapper || !clientRect) return;
-              const rect = clientRect();
-              if (!rect) return;
-              const GAP = 4;
-              const MAX_H = 240;
-              const spaceBelow = window.innerHeight - rect.bottom - GAP;
-              const spaceAbove = rect.top - GAP;
-              let top: number;
-              let maxH: number;
-              if (spaceBelow >= 100 || spaceBelow >= spaceAbove) {
-                top = rect.bottom + GAP;
-                maxH = Math.min(MAX_H, Math.max(80, spaceBelow));
-              } else {
-                maxH = Math.min(MAX_H, Math.max(80, spaceAbove));
-                top = rect.top - maxH - GAP;
-              }
-              let left = rect.left;
-              if (left + 260 > window.innerWidth) left = Math.max(8, window.innerWidth - 268);
-              wrapper.style.top = `${top}px`;
-              wrapper.style.left = `${left}px`;
-              wrapper.style.maxHeight = `${maxH}px`;
-            };
-
-            return {
-              onStart: (props) => {
-                wrapper = document.createElement("div");
-                wrapper.style.cssText = [
-                  "position:fixed", "z-index:9999",
-                  "background:#FFF", "border:1px solid rgba(26,23,20,0.12)",
-                  "border-radius:10px", "box-shadow:0 8px 24px rgba(0,0,0,0.14)",
-                  "overflow-y:auto", "min-width:160px", "max-width:260px",
-                ].join(";");
-                document.body.appendChild(wrapper);
-
-                renderer = new ReactRenderer<MentionListHandle, MentionListProps>(MentionList, {
-                  props,
-                  editor: props.editor,
-                });
-                wrapper.appendChild(renderer.element);
-                position(props.clientRect ?? null);
-              },
-              onUpdate: (props) => {
-                renderer?.updateProps(props);
-                position(props.clientRect ?? null);
-              },
-              onKeyDown: (props) => {
-                if (props.event.key === "Escape") {
-                  wrapper?.remove();
-                  renderer?.destroy();
-                  wrapper = null;
-                  renderer = null;
-                  return true;
-                }
-                return renderer?.ref?.onKeyDown(props) ?? false;
-              },
-              onExit: () => {
-                wrapper?.remove();
-                renderer?.destroy();
-                wrapper = null;
-                renderer = null;
-              },
-            };
-          },
+        HTMLAttributes: {},
+        renderText({ node, suggestion }) {
+          const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
+          return char === "#"
+            ? `#${node.attrs.id ?? ""}`
+            : `@${node.attrs.label ?? node.attrs.id ?? ""}`;
         },
+        renderHTML({ options, node, suggestion }) {
+          const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
+          if (char === "#") {
+            return ["span", { ...options.HTMLAttributes, class: "ticket-mention" }, `#${node.attrs.id ?? ""}`];
+          }
+          return ["span", { ...options.HTMLAttributes, class: "mention" }, `@${node.attrs.label ?? node.attrs.id ?? ""}`];
+        },
+        suggestions: [
+          {
+            // @ユーザーメンション
+            char: "@",
+            items: ({ query, editor: ed }: { query: string; editor: any }) => {
+              const m: string[] = ed?.storage?.suggestionStore?.members ?? [];
+              return m.filter((s): s is string => typeof s === "string" && s.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+            },
+            render: makeSuggestionPopup(MentionList, 260),
+          },
+          {
+            // #チケットメンション
+            char: "#",
+            items: ({ query, editor: ed }: { query: string; editor: any }) => {
+              const t: { wbs: string; title: string }[] = ed?.storage?.suggestionStore?.tickets ?? [];
+              const q = query.toLowerCase();
+              return q
+                ? t.filter(ticket =>
+                    ticket.wbs.toLowerCase().includes(q) ||
+                    ticket.title.toLowerCase().includes(q)
+                  )
+                : t;
+            },
+            render: makeSuggestionPopup(TicketMentionList, 300),
+          },
+        ],
       }),
     ],
     content: value || "",
@@ -193,7 +300,10 @@ export function RichEditor({
             if (marks.includes('strike')) t = `~~${t}~~`;
             return t;
           }
-          if (node.type?.name === 'mention') return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
+          if (node.type?.name === 'mention') {
+            const char = node.attrs?.mentionSuggestionChar ?? '@';
+            return char === '#' ? `#${node.attrs?.id ?? ''}` : `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
+          }
           let out = '';
           node.forEach((c: any) => { out += inline(c); });
           return out;
@@ -226,7 +336,10 @@ export function RichEditor({
         function block(node: any): string {
           if (node.isText) return node.text ?? '';
           const t: string = node.type.name;
-          if (t === 'mention') return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
+          if (t === 'mention') {
+            const char = node.attrs?.mentionSuggestionChar ?? '@';
+            return char === '#' ? `#${node.attrs?.id ?? ''}` : `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
+          }
           if (t === 'paragraph') return inline(node).trim() + '\n';
           if (t === 'hardBreak') return '\n';
           if (t === 'heading') {
@@ -264,6 +377,14 @@ export function RichEditor({
     },
   });
 
+  // editor.storage に最新の members/tickets を同期
+  // useLayoutEffect でペイント前に確実に更新（ユーザーが入力する前に必ず反映される）
+  useLayoutEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.storage.suggestionStore.members = members;
+    editor.storage.suggestionStore.tickets = tickets;
+  }, [editor, members, tickets]);
+
   useEffect(() => {
     if (!editor) return;
     const current = editor.getHTML();
@@ -274,6 +395,24 @@ export function RichEditor({
   useEffect(() => {
     if (editor) editor.setEditable(!readOnly);
   }, [readOnly, editor]);
+
+  // ticket-mention クリックでナビゲーション
+  useEffect(() => {
+    if (!editor || !onTicketClick) return;
+    const dom = editor.view.dom;
+    const handler = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest(".ticket-mention[data-id]");
+      if (!target) return;
+      const wbs = target.getAttribute("data-id");
+      if (wbs) {
+        e.preventDefault();
+        e.stopPropagation();
+        onTicketClick(wbs);
+      }
+    };
+    dom.addEventListener("click", handler);
+    return () => dom.removeEventListener("click", handler);
+  }, [editor, onTicketClick]);
 
   if (!editor) return null;
 
@@ -299,6 +438,8 @@ export function RichEditor({
         .tiptap h3 { font-size: 13px; font-weight: 700; margin: 6px 0 4px; }
         .tiptap p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: #C9C4BB; pointer-events: none; float: left; height: 0; }
         .tiptap .mention { color: #059669; font-weight: 700; background: #ECFDF5; padding: 1px 4px; border-radius: 4px; }
+        .tiptap .ticket-mention { color: #2563EB; font-weight: 700; background: #DBEAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .ticket-mention:hover { background: #BFDBFE; }
       `}</style>
       {!readOnly && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 10px", borderBottom: "1px solid rgba(26,23,20,0.08)", background: "#F9F8F6" }}>
