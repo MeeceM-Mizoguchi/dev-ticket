@@ -49,9 +49,7 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
             selected.color ? (
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
-                padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700,
-                background: selected.bg ?? `${selected.color}18`,
-                color: selected.color,
+                fontSize: 13, fontWeight: 500, color: "#1A1714",
               }}>
                 <span style={{ width: 5, height: 5, borderRadius: "50%", background: selected.color, display: "inline-block", flexShrink: 0 }} />
                 {selected.label}
@@ -95,8 +93,7 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
                 {opt.color ? (
                   <span style={{
                     display: "inline-flex", alignItems: "center", gap: 5,
-                    padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700,
-                    background: opt.bg ?? `${opt.color}18`, color: opt.color, flex: 1,
+                    fontSize: 13, fontWeight: 500, color: "#1A1714", flex: 1,
                   }}>
                     <span style={{ width: 5, height: 5, borderRadius: "50%", background: opt.color, display: "inline-block", flexShrink: 0 }} />
                     {opt.label}
