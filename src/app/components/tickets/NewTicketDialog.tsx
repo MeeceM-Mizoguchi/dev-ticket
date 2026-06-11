@@ -13,6 +13,8 @@ import { DatePicker } from "@/app/components/shared/DatePicker";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 // 🌟 追加: CustomSelect コンポーネントをインポート
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
+// 🛠️ 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 
 // 🌟 追加: 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -44,6 +46,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   // 現在選択されている（または親から渡された）プロジェクトのメンバー名の配列
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
 
+  // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
   // 🌟 追加: ダッシュボードから選択した場合でも、正しい projectSlug を特定して保持する
@@ -51,6 +56,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
   const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
+
+  // 🛠️ バツボタン、キャンセルボタン、背景マスクがクリックされた際に確認画面を呼び出すハンドラー
+  const handleInterceptClose = () => {
+    setShowCloseConfirm(true);
+  };
 
   // 1. プロジェクト一覧の取得、および固定プロジェクト時のメンバー取得
   useEffect(() => {
@@ -344,7 +354,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   return (
     <>
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+      <div onClick={handleInterceptClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "48%", minWidth: 440, background: "#FAFAF8", zIndex: zIndexBase + 1, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
         <div style={{ padding: "22px 24px 18px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0 }}>
@@ -353,7 +363,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>{isChildMode ? "子チケット作成" : "新規チケット"}</p>
               <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>{isChildMode ? `子チケット作成 (${parentWbs})` : "チケット作成"}</h2>
             </div>
-            <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+            <button onClick={handleInterceptClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
               <X style={{ width: 16, height: 16 }} />
@@ -507,15 +517,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               </label>
               {images.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8, marginTop: 10 }}>
-                  {images.map((url, i) => (
-                    <div key={i} style={{ position: "relative", width: 68, height: 68 }}>
-                      <img src={url} alt="" style={{ width: 68, height: 68, objectFit: "cover" as const, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)" }} />
-                      <button onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
-                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <X style={{ width: 10, height: 10, color: "#fff" }} />
-                      </button>
-                    </div>
-                  ))}
+                  <div key={i} style={{ position: "relative", width: 68, height: 68 }}>
+                    <img src={url} alt="" style={{ width: 68, height: 68, objectFit: "cover" as const, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)" }} />
+                    <button onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
+                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <X style={{ width: 10, height: 10, color: "#fff" }} />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -532,7 +540,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             return (
               <>
                 <BtnPrimary onClick={handleSave} disabled={!isValid || saving}>{saving ? "保存中..." : "作成する"}</BtnPrimary>
-                <BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>
+                <BtnSecondary onClick={handleInterceptClose}>キャンセル</BtnSecondary>
                 {!isValid && (
                   <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
                     {errs.join("・")}を入力してください
@@ -543,6 +551,19 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           })()}
         </div>
       </div>
+
+      {/* 🛠️ 共通デザインを崩さず、文言と不要な警告サブテキストの削除を完全反映 */}
+      {showCloseConfirm && (
+        <ConfirmDialog
+          title="画面を閉じる確認"
+          message="チケットを閉じますか？"
+          confirmLabel="閉じる"
+          confirmColor="#059669"
+          hasWarningText={false}
+          onConfirm={onClose}
+          onClose={() => setShowCloseConfirm(false)}
+        />
+      )}
     </>
   );
 }
