@@ -94,7 +94,7 @@ export function SprintPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
-    const id = setInterval(refreshSprints, 10000);
+    const id = setInterval(refreshSprints, 60000);
     return () => clearInterval(id);
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
