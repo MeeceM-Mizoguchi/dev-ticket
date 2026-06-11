@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Plus, X, Trash2 } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
@@ -48,7 +48,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
@@ -217,27 +216,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     }
   }, [uploadImageToStorage]);
 
-  // 🛠️ 入力状態を初期状態へ一気にクリアする実処理関数
-  const executeFormClear = () => {
-    setTitle("");
-    setStatus("todo");
-    setPriority("medium");
-    setAssignee("");
-    setStartDate("");
-    setDueDate("");
-    setEstimatedHours(0);
-    setDescription("");
-    setImages([]);
-    setCategoryId("");
-    if (needsSelection) {
-      setSelectedProjectId("");
-      setSelectedSprintId("");
-    }
-    setTitleError(false);
-    setProjectError(false);
-    setSprintError(false);
-  };
-
   const handleSave = async () => {
     let valid = true;
     if (needsSelection && !selectedProjectId) { setProjectError(true); valid = false; }
@@ -385,23 +363,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>{isChildMode ? "子チケット作成" : "新規チケット"}</p>
               <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>{isChildMode ? `子チケット作成 (${parentWbs})` : "チケット作成"}</h2>
             </div>
-            {/* 🛠️ ボタンコンテナを整列させ、×ボタンの左横へゴミ箱デザインのクリアボタンを精密に配置 */}
-            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <button 
-                type="button" 
-                onClick={() => setShowClearConfirm(true)} 
-                title="入力内容をすべてクリア" 
-                style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", justifyContent: "center" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
-                <Trash2 style={{ width: 16, height: 16 }} />
-              </button>
-              <button onClick={handleInterceptClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-                <X style={{ width: 16, height: 16 }} />
-              </button>
-            </div>
+            <button onClick={handleInterceptClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+              <X style={{ width: 16, height: 16 }} />
+            </button>
           </div>
         </div>
 
@@ -551,15 +517,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               </label>
               {images.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 8, marginTop: 10 }}>
-                  {images.map((url, i) => (
-                    <div key={i} style={{ position: "relative", width: 68, height: 68 }}>
-                      <img src={url} alt="" style={{ width: 68, height: 68, objectFit: "cover" as const, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)" }} />
-                      <button onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
-                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <X style={{ width: 10, height: 10, color: "#fff" }} />
-                      </button>
-                    </div>
-                  ))}
+                  <div key={i} style={{ position: "relative", width: 68, height: 68 }}>
+                    <img src={url} alt="" style={{ width: 68, height: 68, objectFit: "cover" as const, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)" }} />
+                    <button onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
+                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <X style={{ width: 10, height: 10, color: "#fff" }} />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -588,7 +552,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         </div>
       </div>
 
-      {/* 🛠️ コンポーネントを共通・統一化し、ご指定の仕様（破棄テキスト無し、右下ボタンを「閉じる」）へ完全に修正したモーダル */}
+      {/* 🛠️ 共通デザインを崩さず、文言と不要な警告サブテキストの削除を完全反映 */}
       {showCloseConfirm && (
         <ConfirmDialog
           title="画面を閉じる確認"
@@ -598,19 +562,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           hasWarningText={false}
           onConfirm={onClose}
           onClose={() => setShowCloseConfirm(false)}
-        />
-      )}
-
-      {/* 🛠️ 入力情報の一気クリア用確認ダイアログ */}
-      {showClearConfirm && (
-        <ConfirmDialog
-          title="入力内容のクリア"
-          message="入力内容をすべて消去しますか？"
-          confirmLabel="消去する"
-          confirmColor="#DC2626"
-          hasWarningText={false}
-          onConfirm={executeFormClear}
-          onClose={() => setShowClearConfirm(false)}
         />
       )}
     </>
