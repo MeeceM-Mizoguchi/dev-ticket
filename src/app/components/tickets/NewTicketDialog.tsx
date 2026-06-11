@@ -252,12 +252,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       const filteredMock = MEMBERS.filter(m => currentProjectMembers.includes(m.name));
       const list = filteredMock.map(m => ({ id: m.id, name: m.name }));
       setAssigneeList([noneOption, ...list]);
-      
-      const cached = localStorage.getItem(contextKey);
-      if (cached && JSON.parse(cached).assignee) {
-        setAssignee(JSON.parse(cached).assignee);
-      } else {
-        setAssignee(list[0]?.name || "担当者なし");
+      // メンバーが未ロードの間は担当者をセットしない（"担当者なし"がキャッシュに書かれてデフォルト自分が上書きされるバグ防止）
+      if (currentProjectMembers.length > 0) {
+        const cached = localStorage.getItem(contextKey);
+        if (cached && JSON.parse(cached).assignee) {
+          setAssignee(JSON.parse(cached).assignee);
+        } else {
+          setAssignee(list[0]?.name || "担当者なし");
+        }
       }
       return;
     }
@@ -267,13 +269,15 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       if (data) {
         const filtered = data.filter((u: any) => currentProjectMembers.includes(u.name));
         setAssigneeList([noneOption, ...filtered]);
-        // ログイン中の自分自身がメンバーにいれば初期値に設定、いなければ先頭のメンバーにする
-        const cached = localStorage.getItem(contextKey);
-        if (cached && JSON.parse(cached).assignee) {
-          setAssignee(JSON.parse(cached).assignee);
-        } else {
-          const hasMe = filtered.some((u: any) => u.name === userName);
-          setAssignee(hasMe ? userName : (filtered[0]?.name || "担当者なし"));
+        // メンバーが未ロードの間は担当者をセットしない（"担当者なし"がキャッシュに書かれてデフォルト自分が上書きされるバグ防止）
+        if (currentProjectMembers.length > 0) {
+          const cached = localStorage.getItem(contextKey);
+          if (cached && JSON.parse(cached).assignee) {
+            setAssignee(JSON.parse(cached).assignee);
+          } else {
+            const hasMe = filtered.some((u: any) => u.name === userName);
+            setAssignee(hasMe ? userName : (filtered[0]?.name || "担当者なし"));
+          }
         }
       }
     });
@@ -323,6 +327,25 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       console.error("Failed to purge form draft cache:", e);
     }
   };
+
+  const addImages = useCallback(async (files: FileList | File[]) => {
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith("image/")) continue;
+      if (isSupabaseEnabled) {
+        const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
+        const ext = extMap[f.type] ?? 'png';
+        const path = `tickets/${ticketId.current}/detail/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+        const { data, error } = await supabase!.storage.from("ticket-images").upload(path, f, { upsert: false });
+        if (error || !data) { console.error("[image upload] failed:", error?.message); continue; }
+        const { data: { publicUrl } } = supabase!.storage.from("ticket-images").getPublicUrl(data.path);
+        setImages(prev => [...prev, publicUrl]);
+      } else {
+        const reader = new FileReader();
+        reader.onload = e => { if (e.target?.result) setImages(prev => [...prev, e.target!.result as string]); };
+        reader.readAsDataURL(f);
+      }
+    }
+  }, []);
 
   const handleSave = async () => {
     let valid = true;
