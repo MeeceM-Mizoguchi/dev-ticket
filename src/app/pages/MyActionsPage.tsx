@@ -843,6 +843,9 @@ export function MyActionsPage() {
   const [memoPanel, setMemoPanel] = useState<MemoTicketPanel | null>(null);
   const [panelLoading, setPanelLoading] = useState(false);
 
+  const ticketsInitializedRef = useRef(false);
+  const memosInitializedRef = useRef(false);
+
   // ─── チケット一覧ロード ───────────────────────────────────
   const load = useCallback(async (showSpinner = true) => {
     if (!isSupabaseEnabled || !userName) {
@@ -885,16 +888,20 @@ export function MyActionsPage() {
       const [aRes, rRes, acRes, rcRes] = await Promise.all([
         supabase!.from("sprint_tickets").select("*")
           .or(`assignee.eq.${userName},assignees.cs.{${userName}}`)
-          .not("status", "in", '("done","closed")'),
+          .not("status", "in", '("done","closed")')
+          .order("created_at", { ascending: true }).order("id", { ascending: true }),
         supabase!.from("sprint_tickets").select("*")
           .eq("reviewer_name", userName)
-          .not("status", "in", '("done","closed")'),
+          .not("status", "in", '("done","closed")')
+          .order("created_at", { ascending: true }).order("id", { ascending: true }),
         supabase!.from("sprint_tickets").select("*")
           .or(`assignee.eq.${userName},assignees.cs.{${userName}}`)
-          .eq("status", "closed"),
+          .eq("status", "closed")
+          .order("created_at", { ascending: true }).order("id", { ascending: true }),
         supabase!.from("sprint_tickets").select("*")
           .eq("reviewer_name", userName)
-          .eq("status", "closed"),
+          .eq("status", "closed")
+          .order("created_at", { ascending: true }).order("id", { ascending: true }),
       ]);
 
       setAllAssigned((aRes.data ?? []).map(toAction));
@@ -904,6 +911,7 @@ export function MyActionsPage() {
     } catch (err) {
       console.error("[MyActionsPage] load failed:", err);
     } finally {
+      ticketsInitializedRef.current = true;
       if (showSpinner) setLoading(false);
     }
   }, [userName, isAdmin]);
@@ -956,6 +964,7 @@ export function MyActionsPage() {
 
       setActionMemos(memos.filter(m => !toDeleteIds.includes(m.id)));
     } finally {
+      memosInitializedRef.current = true;
       if (showSpinner) setMemosLoading(false);
     }
   }, [userName]);
@@ -1240,7 +1249,7 @@ export function MyActionsPage() {
 
       {/* ─── コンテンツ ─── */}
       <div style={{ flex: 1, minHeight: 0, padding: "14px 32px 16px", display: "flex", flexDirection: "column" as const, overflow: "hidden" }}>
-        {loading && tab !== "from_notification" ? (
+        {(loading && !ticketsInitializedRef.current) && tab !== "from_notification" ? (
           <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", gap: 12 }}>
             <div style={{ width: 32, height: 32, borderRadius: "50%", border: "3px solid #E5E3E0", borderTopColor: "#059669", animation: "spin-ma 0.8s linear infinite" }} />
             <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>読み込み中...</p>
@@ -1250,7 +1259,7 @@ export function MyActionsPage() {
         ) : tab === "review" ? (
           <ReviewTab pendingReview={pendingReview} revisionRequested={revisionRequested} approved={approved} closed={closedR} onSelect={t => setSelectedTicket(t)} />
         ) : (
-          memosLoading ? (
+          (memosLoading && !memosInitializedRef.current) ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", gap: 12 }}>
               <div style={{ width: 32, height: 32, borderRadius: "50%", border: "3px solid #E5E3E0", borderTopColor: "#059669", animation: "spin-ma 0.8s linear infinite" }} />
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>読み込み中...</p>
