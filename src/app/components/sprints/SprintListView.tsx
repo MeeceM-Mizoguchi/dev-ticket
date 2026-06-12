@@ -7,6 +7,35 @@ import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
+// 🌟 復活: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
+const getClosedDateFromMonitor = (ticket: any): string => {
+  if (!ticket) return "";
+  const logs = ticket.monitorLogs || ticket.monitor_logs || ticket.ticket_monitor_logs || ticket.actualLogs || [];
+  if (Array.isArray(logs) && logs.length > 0) {
+    const closedLog = [...logs]
+      .reverse()
+      .find((log: any) => log && (
+        log.process === "リリース" || log.process === "クローズ" ||
+        log.status === "リリース" || log.status === "クローズ" ||
+        log.phase === "リリース" || log.phase === "クローズ"
+      ));
+    if (closedLog) {
+      return closedLog.completed_at || closedLog.completedAt || closedLog.created_at || closedLog.createdAt || closedLog.date || "";
+    }
+  }
+  return ticket.releasedAt || ticket.released_at || ticket.closedAt || ticket.closed_at || "";
+};
+
+// 🌟 復活: ISO形式などのタイムスタンプから mm/dd を安全に抽出する専用フォーマッター
+const formatClosedMMDD = (isoString: string) => {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString.slice(0, 5); // パース不能な場合のフォールバック
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}`;
+};
+
 // プロジェクト共通の分類ベースマスター
 const BASE_CATEGORY_MAP: Record<string, string> = {
   "CAT-1780106163889": "バグ",
@@ -351,11 +380,12 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
         wbs: t.wbs,
         title: t.title,
         description: htmlToText(t.description),
-        status: t.status,
+        status: t.progress === -1 ? "pending" : t.status, // 🌟 修正: progress === -1 なら "pending" としてフィルタリングさせる
         priority: t.priority,
         assignee: t.assignee || "",
         startDate: t.startDate || "",
         dueDate: t.dueDate || "",
+        closedDate: getClosedDateFromMonitor(t),
         category: catName
       };
 
@@ -372,8 +402,16 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return [...filtered].sort((a, b) => {
       const dir = currentSort.dir === "asc" ? 1 : -1;
       const col = currentSort.col;
-      const av = (col === "category" ? getCategoryLabel(a) : (a[col as keyof SprintTicket] ?? "")) as string | number;
-      const bv = (col === "category" ? getCategoryLabel(b) : (b[col as keyof SprintTicket] ?? "")) as string | number;
+      // 🌟 修正: 並び替え処理でも closedDate などを安全に取得できるように条件分岐を追加
+      const getVal = (tick: SprintTicket, c: string) => {
+        if (c === "category") return getCategoryLabel(tick);
+        if (c === "closedDate") return getClosedDateFromMonitor(tick);
+        return tick[c as keyof SprintTicket] ?? "";
+      };
+
+      const av = getVal(a, col) as string | number;
+      const bv = getVal(b, col) as string | number;
+
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       return String(av).localeCompare(String(bv), "ja") * dir;
     });
@@ -506,7 +544,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
                     </div>
                   ) : displayTickets.map((t) => {
-                    const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                    // 🌟 修正: progress が -1 なら強制的に「保留中」のスタイルを適用する
+                    const tsm = t.progress === -1
+                      ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
+                      : TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
                     const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                     const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
                     const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
@@ -520,9 +561,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: t.status === "closed" ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: t.status === "closed" ? 0.65 : 1 }}
+                          // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: (t.status === "closed" || t.progress === -1) ? 0.65 : 1 }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#F5F5F4" : "#FFFFFF"; }}>
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF"; }}>
                           <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
                             {hasChildren ? (
                               <button onClick={toggleTicket} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center" }}>
@@ -556,16 +598,20 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         </div>
                         {/* 子チケット行（アコーディオン展開時） */}
                         {hasChildren && isTicketExpanded && children.map(child => {
-                          const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                          // 🌟 修正: progress が -1 なら強制的に「保留中」のスタイルを適用する
+                          const ctsm = child.progress === -1
+                            ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
+                            : TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
                           const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                           const childCategory = getCategoryLabel(child);
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
-                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: "#F9F8F6", transition: "background 0.1s", opacity: child.status === "closed" ? 0.65 : 1 }}
-                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}>
+                              // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: child.progress === -1 ? "#F5F5F4" : "#F9F8F6", transition: "background 0.1s", opacity: (child.status === "closed" || child.progress === -1) ? 0.65 : 1 }}
+                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#ECECEB" : "#EEF7F3"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#F5F5F4" : "#F9F8F6"; }}>
                               <div style={{ display: "flex", justifyContent: "center" }}>
                                 <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                               </div>

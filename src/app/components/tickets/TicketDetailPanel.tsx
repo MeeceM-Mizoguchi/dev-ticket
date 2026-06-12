@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -19,9 +19,9 @@ import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 
-const STATUS_PROGRESS: Record<TicketStatus, number> = {
+const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
-  "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100,
+  "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100, pending: 0,
 };
 
 const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
@@ -49,12 +49,11 @@ function formatTs(ts: string) {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function extractReviewerName(content: string): string {
-  const match = content.match(/<strong>@([^<]+)<\/strong>/);
-  return match ? match[1] : "";
-}
-
 function StatusBadge({ status }: { status: string }) {
+  // pending の特別なバッジ対応
+  if (status === "pending") {
+    return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", flexShrink: 0, border: "1px solid rgba(220,38,38,0.2)" }}>保留中</span>;
+  }
   const s = TICKET_STATUSES.find(x => x.value === status);
   if (!s) return null;
   return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: s.bg, color: s.color, flexShrink: 0 }}>{s.label}</span>;
@@ -68,11 +67,9 @@ export function TicketDetailPanel({
   const { showAlert } = useAlert();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const effectivePermissions = projectPermissions ?? userPermissions;
-  // isAdminOrPM によるバイパスは行わない。権限はロール設定・プロジェクト個別設定に従う。
   const hasReviewPermission = effectivePermissions.canReview;
   const hasSkipReviewPermission = effectivePermissions.canSkipReview;
-  // editable state
-  // 🌟 追加: パンくずリストに表示するテキスト状態を管理
+
   const [breadcrumbProjName, setBreadcrumbProjName] = useState("");
   const [breadcrumbSprintName, setBreadcrumbSprintName] = useState("");
   const [breadcrumbParentTicket, setBreadcrumbParentTicket] = useState<SprintTicket | null>(null);
@@ -84,11 +81,11 @@ export function TicketDetailPanel({
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
-  const [status, setStatus] = useState<TicketStatus>(ticket?.status ?? "todo");
+
+  // 🌟 修正: pending も受け入れられるようにキャスト
+  const [status, setStatus] = useState<TicketStatus | "pending">((ticket?.status as any) ?? "todo");
   const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
-  const [assignee, setAssignee] = useState<string>(
-    ticket?.assignee ?? ""
-  );
+  const [assignee, setAssignee] = useState<string>(ticket?.assignee ?? "");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [startDate, setStartDate] = useState(ticket?.startDate ?? "");
   const [dueDate, setDueDate] = useState(ticket?.dueDate ?? "");
@@ -152,7 +149,6 @@ export function TicketDetailPanel({
   const [replyText, setReplyText] = useState("");
   const [replyImages, setReplyImages] = useState<string[]>([]);
 
-
   // 子チケット
   const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
   const [showCreateChild, setShowCreateChild] = useState(false);
@@ -194,11 +190,10 @@ export function TicketDetailPanel({
     await Promise.all([loadCommentFiles(ticketId), loadChildTickets(ticketId)]);
   }, [loadCommentFiles, loadChildTickets]);
 
-  // sync when ticket changes — set from prop immediately, then fetch fresh from DB
   useEffect(() => {
     if (!ticket) return;
     setTitle(ticket.title);
-    setStatus(ticket.status);
+    setStatus(ticket.status as any);
     setPriority(ticket.priority);
     setAssignee(ticket.assignee ?? "");
     setStartDate(ticket.startDate ?? "");
@@ -211,7 +206,6 @@ export function TicketDetailPanel({
     const initImages = ticket.images ?? [];
     setTicketImages(initImages);
     ticketImagesRef.current = initImages;
-    // reset form state and async-loaded data on ticket change
     setChildTickets([]);
     setComments([]);
     setSourceFiles([]);
@@ -227,19 +221,18 @@ export function TicketDetailPanel({
     setReplyingToId(null);
     setReplyText("");
     setReplyImages([]);
-    // reset mention tracking
     prevDescRef.current = ticket.description ?? "";
     notifiedMentionsRef.current.clear();
     anchorScrolledRef.current = null;
     setCategoryId(ticket.categoryId ?? null);
-    // fetch fresh data from DB (in case sprint cache is stale)
+
     if (ticket.id && isSupabaseEnabled) {
       supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
         .then(({ data }) => {
           if (!data) return;
           const t = mapSprintTicket(data);
           setTitle(t.title);
-          setStatus(t.status);
+          setStatus(t.status as any);
           setPriority(t.priority);
           setAssignee(t.assignee ?? "");
           setStartDate(t.startDate ?? "");
@@ -258,7 +251,6 @@ export function TicketDetailPanel({
         });
     }
 
-    // 🌟 追加: パンくず用のプロジェクト名・スプリント名をデータベースから非同期で取得
     if (isSupabaseEnabled) {
       if (projectId) {
         supabase!.from("projects").select("name").eq("id", projectId).single()
@@ -268,14 +260,12 @@ export function TicketDetailPanel({
         supabase!.from("sprints").select("name").eq("id", sprintId).single()
           .then(({ data }) => { if (data?.name) setBreadcrumbSprintName(data.name); });
       }
-      // 子チケットの場合、親チケット情報をパンくず用に取得
       setBreadcrumbParentTicket(null);
       if (ticket?.parentId) {
         supabase!.from("sprint_tickets").select("*").eq("id", ticket.parentId).single()
           .then(({ data }) => { if (data) setBreadcrumbParentTicket(mapSprintTicket(data)); });
       }
     } else {
-      // モックデータ時のフォールバック処理
       const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
       const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
       if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
@@ -289,7 +279,7 @@ export function TicketDetailPanel({
     }
 
     if (ticket.id) loadRelated(ticket.id);
-  }, [ticket?.id, projectId, sprintId, loadRelated]); // 🌟 依存配列に projectId, sprintId を追加
+  }, [ticket?.id, projectId, sprintId, loadRelated]);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -297,7 +287,6 @@ export function TicketDetailPanel({
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
     supabase!.from("projects").select("members").eq("id", projectId).single()
       .then(({ data }) => { if (data?.members) setProjectMemberNames(data.members as string[]); });
-    // プロジェクト内チケット一覧を取得（チケットメンション用）
     (async () => {
       const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", projectId);
       if (!sprintData?.length) return;
@@ -332,8 +321,6 @@ export function TicketDetailPanel({
 
   useEffect(() => { memberNamesRef.current = memberNames; }, [memberNames]);
 
-  // Poll for fresh comments/source files every 10s while panel is open
-  // 子チケットは頻繁に変わらないのでポーリング対象外（作成・削除時に個別リロード）
   useEffect(() => {
     if (!ticket?.id || !isSupabaseEnabled) return;
     const id = setInterval(() => loadCommentFiles(ticket.id), 10000);
@@ -350,7 +337,6 @@ export function TicketDetailPanel({
   }, [reviewerOpen]);
 
   const handleTicketMentionClick = useCallback((wbs: string) => {
-    // SprintPage/SprintDetailPage の onSelectTicket は ticket.wbs でナビゲートする
     onSelectTicket?.({ id: "", wbs, title: wbs, status: "todo", priority: "medium", assignee: "", startDate: "", dueDate: "", estimatedHours: 0, progress: 0 });
   }, [onSelectTicket]);
 
@@ -371,7 +357,6 @@ export function TicketDetailPanel({
       if (!ticket || !isSupabaseEnabled) return;
       await supabase!.from("sprint_tickets").update({ description: v }).eq("id", ticket.id);
       onUpdated?.();
-      // notify new mentions in description
       const stripped = v.replace(/<[^>]*>/g, " ");
       const prevStripped = prevDescRef.current.replace(/<[^>]*>/g, " ");
       const ctx = "description";
@@ -382,8 +367,6 @@ export function TicketDetailPanel({
         if (!projectSlug) continue;
         alreadyNotified.add(name);
 
-        // 🌟 修正: 通知のINSERT処理を await で確実に待機させる（非同期の抜け漏れを防止）
-        // さらに、不要なカラム（mention_context）によるサイレントエラーを防ぐため、他の通知処理とフォーマットを統一
         const { error } = await supabase!.from("notifications").insert({
           user_name: name,
           type: "mention",
@@ -409,7 +392,6 @@ export function TicketDetailPanel({
     }, 1200);
   }, [save, ticket?.id, projectSlug, userName]); // eslint-disable-line
 
-  // scroll to anchor after panel + comments are ready
   useEffect(() => {
     if (!anchor || anchor === anchorScrolledRef.current) return;
     const targetId = anchor.startsWith("comment:")
@@ -502,14 +484,6 @@ export function TicketDetailPanel({
     }
   }, [ticket?.id]);
 
-  const setStatusAndProgress = (newStatus: TicketStatus) => {
-    const p = STATUS_PROGRESS[newStatus] ?? progress;
-    setStatus(newStatus);
-    setProgress(p);
-    save({ status: newStatus, progress: p });
-    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
-  };
-
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
     const validErr = validateParentStatusChange(btn.next, childTickets);
@@ -523,8 +497,35 @@ export function TicketDetailPanel({
     }
     if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
-    await addComment(`<p>${btn.label}：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus);
+    await addComment(`<p>${btn.label}：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus as TicketStatus);
     onUpdated?.();
+  };
+
+  // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
+  // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
+  const handleToggleHold = async () => {
+    if (!ticket || !isSupabaseEnabled) return;
+
+    const isCurrentlyPending = progress === -1;
+
+    if (!isCurrentlyPending) {
+      // 保留にする（progressを-1としてDBに保存）
+      setProgress(-1);
+      await supabase!.from("sprint_tickets").update({ progress: -1 }).eq("id", ticket.id);
+      if (ticket) recordMilestoneFromTicketStatus(ticket.id, "保留" as any);
+      await addComment(`<p>チケットを保留にしました</p>`, "status_change", [], status as TicketStatus);
+      onUpdated?.();
+    } else {
+      // 保留を解除する（元のステータスに応じた正しいprogressを再計算してDBに保存）
+      const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
+      setProgress(restoredProgress);
+      await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
+      if (ticket) recordMilestoneFromTicketStatus(ticket.id, status as any);
+      const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
+      // 🌟 修正: ProjectMonitor側の判定ロジックと一致させるため、コメントテキストに「保留を解除しました」を確実に含める
+      await addComment(`<p>保留を解除しました（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
+      onUpdated?.();
+    }
   };
 
   const saveAssignee = (name: string) => {
@@ -587,10 +588,9 @@ export function TicketDetailPanel({
         ticket_wbs: currentTicket.wbs,
         ticket_title: currentTicket.title,
         project_slug: projectSlug,
-        is_read: false, // 🌟 修正: mention_context を除去し安全化
+        is_read: false,
       });
       if (error) console.error("[notifications] mention insert failed:", error.message);
-      // @メンションのSlack通知（メンションが発生したプロジェクトのチャンネルに送信）
       const mentionMessageText = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
       const mentionTicketUrl = `${window.location.origin}/${projectSlug}/${currentTicket.wbs}`;
       fireSlackNotify({
@@ -604,7 +604,7 @@ export function TicketDetailPanel({
 
   const addComment = async (content: string, type: CommentType = "comment", images: string[] = [], explicitStatus?: TicketStatus) => {
     if (!ticket) return;
-    const ts = explicitStatus ?? status;
+    const ts = explicitStatus ?? (status as TicketStatus);
     const row = { id: `CMT-${Date.now()}`, ticket_id: ticket.id, user_name: userName, content, ticket_status: ts, comment_type: type, images };
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("ticket_comments").insert(row);
@@ -619,7 +619,7 @@ export function TicketDetailPanel({
   const addReply = async (parentComment: TicketComment, content: string, images: string[]) => {
     if (!ticket || !content.trim()) return;
     const id = `CMT-${Date.now()}`;
-    const row = { id, ticket_id: ticket.id, user_name: userName, content, ticket_status: status, comment_type: "comment" as CommentType, images, reply_to: parentComment.id };
+    const row = { id, ticket_id: ticket.id, user_name: userName, content, ticket_status: (status as TicketStatus), comment_type: "comment" as CommentType, images, reply_to: parentComment.id };
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("reply insert failed:", error); return; }
@@ -635,7 +635,7 @@ export function TicketDetailPanel({
         }).then(({ error: e }) => { if (e) console.error("[notifications] reply insert failed:", e.message); });
       }
     } else {
-      setComments(prev => [...prev, { id, ticketId: ticket.id, userName, content, ticketStatus: status, commentType: "comment", images, createdAt: new Date().toISOString(), replyTo: parentComment.id }]);
+      setComments(prev => [...prev, { id, ticketId: ticket.id, userName, content, ticketStatus: (status as TicketStatus), commentType: "comment", images, createdAt: new Date().toISOString(), replyTo: parentComment.id }]);
     }
   };
 
@@ -661,9 +661,7 @@ export function TicketDetailPanel({
   };
 
   const handleReviewRequest = async () => {
-    console.log("[debug] handleReviewRequest called", { reviewerName, status, projectSlug, ticketId: ticket?.id });
     if (!reviewerName || (status !== "in-progress" && status !== "review-done" && status !== "stg-test" && status !== "uat") || !ticket) {
-      console.warn("[debug] handleReviewRequest early return", { reviewerName, status, hasTicket: !!ticket });
       return;
     }
     const validErr = validateParentStatusChange("in-review", childTickets);
@@ -671,11 +669,9 @@ export function TicketDetailPanel({
     const round = reviewRound + 1;
     const newStatus: TicketStatus = "in-review";
     const newProgress = STATUS_PROGRESS[newStatus];
-    // update local state immediately
     setReviewRound(round);
     setStatus(newStatus);
     setProgress(newProgress);
-    // single awaited DB save (prevents onUpdated firing mid-flow)
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("sprint_tickets").update({
         status: newStatus, progress: newProgress,
@@ -717,13 +713,10 @@ export function TicketDetailPanel({
 
   const handleRevisionRequest = async (revisionText: string = "") => {
     if (!ticket) return;
-
-    // 🌟 修正: APIリクエスト前の権限バリデーション（防御処理）
     if (userName !== reviewerName) {
       showAlert("権限エラー: 修正依頼（差戻し）は、指定されたレビュアーのみが実行できます。", "エラー");
       return;
     }
-
     const newStatus: TicketStatus = "in-progress";
     const newProgress = STATUS_PROGRESS[newStatus];
     setStatus(newStatus); setProgress(newProgress);
@@ -756,15 +749,11 @@ export function TicketDetailPanel({
   };
 
   const handleReviewApproval = async (approvalText: string = "") => {
-    console.log("[debug] handleReviewApproval called", { assignee, projectSlug, ticketId: ticket?.id });
     if (!ticket) return;
-
-    // 🌟 修正: APIリクエスト前の権限バリデーション（防御処理）
     if (userName !== reviewerName) {
       showAlert("権限エラー: レビューの承認は、指定されたレビュアーのみが実行できます。", "エラー");
       return;
     }
-
     const newStatus: TicketStatus = "review-done";
     const newProgress = STATUS_PROGRESS[newStatus];
     setStatus(newStatus); setProgress(newProgress);
@@ -847,7 +836,6 @@ export function TicketDetailPanel({
 
   const handleDeleteTicket = async () => {
     if (!ticket || !isSupabaseEnabled) return;
-    // 子チケットのコメント・ファイルを先に削除（DBカスケードでticket本体は自動削除される）
     for (const child of childTickets) {
       await supabase!.from("ticket_comments").delete().eq("ticket_id", child.id);
       await supabase!.from("ticket_source_files").delete().eq("ticket_id", child.id);
@@ -881,7 +869,6 @@ export function TicketDetailPanel({
     try {
       const targetSprint = availableSprints.find(s => s.id === moveTargetSprintId);
 
-      // プロジェクト内の全スプリントIDと、プロジェクトのWBSプレフィックスを並列取得
       const [{ data: sprintRows }, { data: projectRow }] = await Promise.all([
         supabase!.from("sprints").select("id").eq("project_id", projectId),
         supabase!.from("projects").select("wbs_prefix").eq("id", projectId).single(),
@@ -891,7 +878,6 @@ export function TicketDetailPanel({
       const wbsProjectPrefix = projectRow?.wbs_prefix ?? "T";
       const prefix = targetSprint?.identifier || wbsProjectPrefix;
 
-      // 移動先スプリントのプレフィックスで既存の最大連番を取得（子チケット除く）
       let nextNum = 1;
       if (sprintIds.length > 0) {
         const { data: maxRow } = await supabase!
@@ -908,13 +894,11 @@ export function TicketDetailPanel({
       const newWbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
       const oldWbs = ticket.wbs;
 
-      // 親チケットのスプリントとWBSを更新
       await supabase!
         .from("sprint_tickets")
         .update({ sprint_id: moveTargetSprintId, wbs: newWbs })
         .eq("id", ticket.id);
 
-      // 子チケットがあれば、スプリントとWBSを連動して更新
       if (!ticket.parentId) {
         const { data: children } = await supabase!
           .from("sprint_tickets")
@@ -923,7 +907,7 @@ export function TicketDetailPanel({
         if (children && children.length > 0) {
           await Promise.all(
             children.map(child => {
-              const childSuffix = child.wbs.slice(oldWbs.length); // e.g., "-1"
+              const childSuffix = child.wbs.slice(oldWbs.length);
               return supabase!
                 .from("sprint_tickets")
                 .update({ sprint_id: moveTargetSprintId, wbs: `${newWbs}${childSuffix}` })
@@ -971,18 +955,16 @@ export function TicketDetailPanel({
   const todayStr = new Date().toISOString().split("T")[0];
   const isOverdue = status !== "done" && status !== "closed" && !!dueDate && dueDate < todayStr;
   const pm = priorityMeta[priority];
-  const smeta = TICKET_STATUSES.find(s => s.value === status)!;
+  const smeta = TICKET_STATUSES.find(s => s.value === status);
 
   const filesByRound = sourceFiles.reduce<Record<number, TicketSourceFile[]>>((acc, f) => {
     (acc[f.reviewRound] = acc[f.reviewRound] || []).push(f); return acc;
   }, {});
-  const actionBtn = ACTION_BUTTONS[status];
+  const actionBtn = status !== "pending" ? ACTION_BUTTONS[status as TicketStatus] : null;
 
-  // 担当者チェック: 自分が担当者かどうか
   const isAssignee = !assignee || assignee === userName;
   const reviewRequestComments = comments.filter(c => c.commentType === "review_request");
   const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
-  // 自己レビュー: 担当者自身がレビュアーに指定されているケース
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
   const canSendReview = !!reviewerName && isAssignee && (
     status === "in-progress" ||
@@ -990,7 +972,6 @@ export function TicketDetailPanel({
   );
   const canWithdrawReview = status === "in-review" && isAssignee;
 
-  // 🌟 修正: 管理者・PMのバイパスを排除。「ログインユーザーが指定されたレビュアーと完全に一致する場合のみ」レビュー可能
   const canReview = !!reviewerName && userName === reviewerName;
 
   const latestReviewReqId = [...comments].reverse().find(c => c.commentType === "review_request")?.id ?? null;
@@ -1119,7 +1100,7 @@ export function TicketDetailPanel({
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
-        {/* 親チケット peek strip: 子チケット表示時のみ、パネル左端に親の端っこを表示 */}
+        {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
           <div
             onClick={() => onSelectTicket?.(breadcrumbParentTicket)}
@@ -1138,16 +1119,13 @@ export function TicketDetailPanel({
         {/* Header */}
         <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
 
-          {/* 🌟 追加: パンくずリストナビゲーションセクション */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600, color: "#9E9690", marginBottom: 12, flexWrap: "wrap" }}>
-            {/* 🌟 修正: 遷移先を /dashboard から 2枚目の画像であるプロジェクト管理一覧（/projects）へ変更 */}
             <a href="/projects" onClick={(e) => { e.preventDefault(); window.location.href = "/projects"; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
               プロジェクト一覧
             </a>
             {breadcrumbProjName && (
               <>
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
-                {/* 🌟 修正: クリック時に該当プロジェクトのURL (/${projectSlug}) へ確実に画面遷移させる処理を追加 */}
                 <a href={`/${projectSlug}`} onClick={(e) => { e.preventDefault(); window.location.href = `/${projectSlug}`; onClose(); }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
                   {breadcrumbProjName}
                 </a>
@@ -1193,9 +1171,28 @@ export function TicketDetailPanel({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.wbs || ticket.id}</span>
-                <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: smeta?.bg ?? "#F4F5F6", color: smeta?.color ?? "#9E9690" }}>{smeta?.label}</span>
+
+                {/* 🌟 修正: progress が -1 なら保留中バッジを表示 */}
+                {progress === -1 ? <StatusBadge status="pending" /> : <StatusBadge status={status} />}
+
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
+
+                {/* 🌟 修正: progress === -1 に連動した保留トグルボタン */}
+                {isAssignee && (
+                  <button onClick={handleToggleHold}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                      border: progress === -1 ? "1px solid rgba(220,38,38,0.3)" : "1px solid rgba(26,23,20,0.12)",
+                      background: progress === -1 ? "#FEF2F2" : "#FFF",
+                      color: progress === -1 ? "#DC2626" : "#6B6458",
+                      transition: "all 0.15s"
+                    }}>
+                    {progress === -1 ? <PlayCircle style={{ width: 11, height: 11 }} /> : <PauseCircle style={{ width: 11, height: 11 }} />}
+                    {progress === -1 ? "保留解除" : "保留する"}
+                  </button>
+                )}
               </div>
               <input
                 value={title}
@@ -1209,45 +1206,20 @@ export function TicketDetailPanel({
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-              {/* 🌟 追加: チケットリンクコピーボタン */}
               {projectSlug && (
                 <div style={{ position: "relative" }}>
                   {copiedLink && (
                     <div style={{
-                      position: "absolute",
-                      bottom: "calc(100% + 6px)",
-                      left: "50%",
-                      transform: "translateX(-50%)",
-                      background: "#1E293B",
-                      color: "#fff",
-                      fontSize: 12,
-                      padding: "4px 8px",
-                      borderRadius: 6,
-                      whiteSpace: "nowrap",
-                      pointerEvents: "none",
-                      zIndex: 9999,
+                      position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "#1E293B", color: "#fff", fontSize: 12, padding: "4px 8px", borderRadius: 6, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 9999,
                     }}>
                       コピーしました！
-                      <div style={{
-                        position: "absolute",
-                        top: "100%",
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        border: "5px solid transparent",
-                        borderTopColor: "#1E293B",
-                      }} />
+                      <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "#1E293B" }} />
                     </div>
                   )}
                   <button
                     onClick={async () => {
                       const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-                      try {
-                        await navigator.clipboard.writeText(ticketUrl);
-                        setCopiedLink(true);
-                        setTimeout(() => setCopiedLink(false), 2000);
-                      } catch (err) {
-                        console.error("Failed to copy ticket URL:", err);
-                      }
+                      try { await navigator.clipboard.writeText(ticketUrl); setCopiedLink(true); setTimeout(() => setCopiedLink(false), 2000); } catch (err) { console.error("Failed to copy ticket URL:", err); }
                     }}
                     title="チケットリンクをコピー"
                     style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
@@ -1258,8 +1230,6 @@ export function TicketDetailPanel({
                   </button>
                 </div>
               )}
-
-              {/* 実績モニタボタン */}
               {projectId && (
                 <button onClick={() => setShowMonitor(true)} title="実績モニタ"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
@@ -1268,7 +1238,6 @@ export function TicketDetailPanel({
                   <Activity style={{ width: 15, height: 15 }} />
                 </button>
               )}
-              {/* 子チケット作成ボタン（親チケットのみ表示） */}
               {!ticket.parentId && (
                 <button onClick={() => setShowCreateChild(true)} title="子チケットを作成"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
@@ -1277,7 +1246,6 @@ export function TicketDetailPanel({
                   <GitBranch style={{ width: 15, height: 15 }} />
                 </button>
               )}
-              {/* スプリント移動ボタン（子チケットには表示しない） */}
               {!ticket.parentId && (
                 <button onClick={openMoveModal} title="別のスプリントへ移動"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
@@ -1299,9 +1267,10 @@ export function TicketDetailPanel({
               </button>
             </div>
           </div>
-          {/* Progress bar in header */}
+
           {(() => {
-            const displayProgress = (status === "done" || status === "closed") ? 100 : progress;
+            // 🌟 修正: 保留時（progress === -1）はバーの表示上は 0% とみなす
+            const displayProgress = progress === -1 ? 0 : (status === "done" || status === "closed") ? 100 : progress;
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
                 <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
@@ -1311,22 +1280,20 @@ export function TicketDetailPanel({
               </div>
             );
           })()}
-          {/* STG完了ボタン: レビュー中は非活性で表示 */}
+
           {status === "in-review" && isAssignee && (
             <button disabled
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(13,148,136,0.20)", cursor: "not-allowed", background: "#F0FDFA", color: "#94A3B8", marginTop: 10 }}>
               STG完了 →
             </button>
           )}
-          {/* Action button in header */}
-          {actionBtn && isAssignee && (
+          {actionBtn && isAssignee && status !== "pending" && (
             <button onClick={() => { if (!showReReviewForm) handleStatusAction(actionBtn); }}
               disabled={showReReviewForm}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${showReReviewForm ? "rgba(107,114,128,0.20)" : actionBtn.color + "33"}`, cursor: showReReviewForm ? "not-allowed" : "pointer", background: showReReviewForm ? "#F4F5F6" : actionBtn.bg, color: showReReviewForm ? "#B0A9A4" : actionBtn.color, marginTop: 10 }}>
               {actionBtn.label} →
             </button>
           )}
-          {/* Review skip button: in-progressのみ表示 */}
           {hasSkipReviewPermission && status === "in-progress" && (
             <button onClick={handleSkipReview}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
@@ -1345,8 +1312,8 @@ export function TicketDetailPanel({
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
                 <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: smeta?.color }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: smeta?.color }}>{smeta?.label}</span>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : smeta?.color }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : smeta?.color }}>{progress === -1 ? "保留中" : smeta?.label}</span>
                 </div>
               </div>
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
@@ -1375,7 +1342,7 @@ export function TicketDetailPanel({
               </div>
             )}
 
-            {/* 担当者 (全幅・1名のみ) */}
+            {/* 担当者 */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
               <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
               <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
@@ -1436,7 +1403,7 @@ export function TicketDetailPanel({
             </div>
           </div>
 
-          {/* 子チケット一覧（親チケットのみ表示。将来の孫チケット対応時はこのセクションを再帰化予定） */}
+          {/* 子チケット一覧 */}
           {!ticket.parentId && (
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 12, padding: "14px 16px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
@@ -1507,7 +1474,6 @@ export function TicketDetailPanel({
             <div id="panel-description-section">
               <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
             </div>
-            {/* Inline image attachment */}
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
               <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
               <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
@@ -1546,7 +1512,6 @@ export function TicketDetailPanel({
                 {hasBeenApproved && status !== "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", marginLeft: 8 }}>承認済み</span>}
               </p>
 
-              {/* ラウンド別履歴 + ソースファイル（アコーディオン） */}
               {reviewRequestComments.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
                   {reviewRequestComments.map((reqComment, idx) => {
@@ -1600,7 +1565,6 @@ export function TicketDetailPanel({
 
                         {isExpanded && (
                           <div style={{ padding: "10px 12px", background: "#FAFAF8", borderTop: `1px solid ${border}`, display: "flex", flexDirection: "column", gap: 10 }}>
-                            {/* ソースファイル */}
                             {roundFiles.length > 0 && (
                               <div>
                                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>ソースファイル</p>
@@ -1624,7 +1588,6 @@ export function TicketDetailPanel({
                               </div>
                             )}
 
-                            {/* 添付画像 */}
                             {roundImages.length > 0 && (
                               <div>
                                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>添付画像</p>
@@ -1644,7 +1607,6 @@ export function TicketDetailPanel({
                               </div>
                             )}
 
-                            {/* レビューコメント（修正依頼・承認） */}
                             {roundReviewComments.length > 0 && (
                               <div>
                                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>レビューコメント</p>
@@ -1703,7 +1665,6 @@ export function TicketDetailPanel({
                 </div>
               )}
 
-              {/* レビュー依頼フォーム（担当者のみ） */}
               {isAssignee && (
                 status === "todo" ? (
                   <div style={{ padding: "16px", background: "#FFF7ED", borderRadius: 9, border: "1px solid rgba(217,119,6,0.20)", textAlign: "center" as const }}>
@@ -2132,53 +2093,6 @@ export function TicketDetailPanel({
                           </div>
                         </div>
                       )}
-                      {showReviewForm && (
-                        <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
-                          <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
-                          {revisionImages.length > 0 && (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                              {revisionImages.map((img, i) => (
-                                <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                  <button onClick={() => copyImageToClipboard(img)}
-                                    style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                    title="画像をコピー">
-                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                  </button>
-                                  <button onClick={() => setRevisionImages(prev => prev.filter((_, j) => j !== i))}
-                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4", marginTop: 8 }}>
-                            <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                            <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                              onChange={async e => {
-                                for (const f of Array.from(e.target.files || [])) {
-                                  if (!f.type.startsWith("image/")) continue;
-                                  const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                  if (url) setRevisionImages(prev => [...prev, url]);
-                                }
-                                e.target.value = "";
-                              }} />
-                          </label>
-                          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                            <button onClick={() => handleRevisionRequest(revisionInput)}
-                              style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
-                              修正依頼（差戻し）
-                            </button>
-                            <button onClick={() => handleReviewApproval(revisionInput)}
-                              style={{ flex: 1, padding: "8px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
-                              ✅ レビュー承認
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
@@ -2261,24 +2175,26 @@ export function TicketDetailPanel({
                         </div>
                       </div>
                     ) : (
-                      <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                        <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />
-                        {c.images.length > 0 && (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                            {c.images.map((img, i) => (
-                              <div key={i} style={{ position: "relative" }}>
-                                <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                  style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                <button onClick={() => copyImageToClipboard(img)}
-                                  style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                  title="画像をコピー">
-                                  {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      (c.content || c.images?.length > 0) && (
+                        <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                          {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
+                          {c.images?.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
+                              {c.images.map((img, i) => (
+                                <div key={i} style={{ position: "relative" }}>
+                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                    style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                  <button onClick={() => copyImageToClipboard(img)}
+                                    style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                    title="画像をコピー">
+                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
                     )}
                     {/* Replies */}
                     {(repliesByParent.get(c.id) ?? []).map(reply => {

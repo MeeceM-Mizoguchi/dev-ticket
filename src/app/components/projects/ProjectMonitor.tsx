@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { X, CheckCircle2, Circle } from "lucide-react";
 import { fetchMilestones } from "@/app/hooks/useProject";
 import type { MilestoneRow } from "@/app/hooks/useProject";
+// 🌟 追加: データベース接続チェック用の道具をインポート
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 interface Milestone {
   key: keyof MilestoneRow;
@@ -64,13 +66,24 @@ export function ProjectMonitor({
     stgCompletedAt: null, uatCompletedAt: null, releasedAt: null,
   });
   const [loading, setLoading] = useState(true);
+  // 🌟 追加: 保留中フラグを管理するためのステート
+  const [isHold, setIsHold] = useState(false);
+  // 🌟 追加: 保留時間を逆算するためにコメント履歴を保持するステート
+  const [comments, setComments] = useState<any[]>([]);
 
   // モーダルを開いた瞬間の時間を「計測中」の計算用に使用する
   const nowIso = new Date().toISOString();
 
   useEffect(() => {
-    fetchMilestones(ticketId).then(data => {
+    // 🌟 修正: milestones と ticket の進捗、さらに保留コメントを抽出するためにコメント履歴を並列取得する
+    Promise.all([
+      fetchMilestones(ticketId),
+      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress").eq("id", ticketId).single() : Promise.resolve({ data: null }),
+      isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null })
+    ]).then(([data, ticketRes, commentsRes]) => {
       if (data) setMilestones(data);
+      if (ticketRes?.data?.progress === -1) setIsHold(true);
+      if (commentsRes?.data) setComments(commentsRes.data);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [ticketId]);
@@ -82,7 +95,40 @@ export function ProjectMonitor({
   });
   const completedCount = lastCompletedIdx + 1;
 
-  // 🌟 修正: 完了済みの時間だけでなく「今まさに着手中の時間」も合計に加算する
+  // 🌟 追加: 特定の期間（工程の開始〜終了）の間に発生した保留時間をピンポイントで計算する共通ヘルパー関数
+  const getHoldHoursForRange = (startStr: string | null | undefined, endStr: string | null | undefined, checkHoldCurrent: boolean) => {
+    if (!startStr) return 0;
+    const startTime = new Date(startStr).getTime();
+    const endTime = endStr ? new Date(endStr).getTime() : new Date(nowIso).getTime();
+
+    const phaseComments = comments
+      .filter(c => {
+        const t = new Date(c.created_at || c.createdAt).getTime();
+        return t >= startTime && t <= endTime && (c.commentType === "status_change" || c.comment_type === "status_change");
+      })
+      .sort((a, b) => new Date(a.created_at || a.createdAt).getTime() - new Date(b.created_at || b.createdAt).getTime());
+
+    let totalHoldMs = 0;
+    let currentHoldStart: number | null = null;
+
+    phaseComments.forEach(c => {
+      const t = new Date(c.created_at || c.createdAt).getTime();
+      if (c.content.includes("チケットを保留にしました")) {
+        currentHoldStart = t;
+      } else if (c.content.includes("保留を解除しました") && currentHoldStart !== null) {
+        totalHoldMs += (t - currentHoldStart);
+        currentHoldStart = null;
+      }
+    });
+
+    if (checkHoldCurrent && isHold && currentHoldStart !== null) {
+      totalHoldMs += (new Date(nowIso).getTime() - currentHoldStart);
+    }
+
+    return Math.max(0, totalHoldMs / (1000 * 60 * 60));
+  };
+
+  // 🌟 修正: 過去の完了した工程も、現在進行中の工程も、それぞれの区間内で発生した保留時間をそれぞれ引いて合算する
   const totalHours = MILESTONES.reduce((sum, m, idx) => {
     if (idx === 0) return sum;
     const prev = milestones[MILESTONES[idx - 1].key];
@@ -90,13 +136,16 @@ export function ProjectMonitor({
 
     if (prev && cur) {
       if (!isReviewSkipped(idx, prev, cur)) {
-        return sum + (calcHours(prev, cur) || 0);
+        const elapsed = calcHours(prev, cur) || 0;
+        const stepHoldHours = getHoldHoursForRange(prev, cur, false);
+        return sum + Math.max(0, elapsed - stepHoldHours);
       }
     } else if (prev && !cur) {
-      // 後の工程がすべて未記録の場合、ここが現在進行中の工程となる
       const noLaterDone = MILESTONES.slice(idx).every(ms => !milestones[ms.key]);
       if (noLaterDone) {
-        return sum + (calcHours(prev, nowIso) || 0);
+        const elapsed = calcHours(prev, nowIso) || 0;
+        const stepHoldHours = getHoldHoursForRange(prev, nowIso, true);
+        return sum + Math.max(0, elapsed - stepHoldHours);
       }
     }
     return sum;
@@ -154,6 +203,8 @@ export function ProjectMonitor({
 
                 const hours = isOngoing ? calcHours(prevDate, nowIso) : calcHours(prevDate, dateValue);
                 const skipped = isReviewSkipped(idx, prevDate, dateValue);
+                // 🌟 追加: その工程区間内で発生した保留時間をピンポイントで計算する
+                const currentStepHoldHours = getHoldHoursForRange(prevDate, isOngoing ? nowIso : dateValue, isOngoing);
 
                 return (
                   <div key={milestone.key}>
@@ -166,19 +217,27 @@ export function ProjectMonitor({
                             スキップ
                           </span>
                         ) : hours !== null ? (
-                          <span style={{
-                            fontSize: 10,
-                            color: isOngoing ? "#D97706" : "#059669",
-                            fontFamily: "var(--font-mono)",
-                            marginLeft: 12,
-                            background: isOngoing ? "#FFF7ED" : "#ECFDF5",
-                            padding: "2px 9px",
-                            borderRadius: 20,
-                            fontWeight: 600,
-                            border: isOngoing ? "1px solid rgba(217,119,6,0.25)" : "1px solid transparent"
-                          }}>
-                            {formatDuration(hours)} {isOngoing && "（計測中）"}
-                          </span>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 12 }}>
+                            <span style={{
+                              fontSize: 10,
+                              color: isOngoing ? (isHold ? "#DC2626" : "#D97706") : "#059669",
+                              fontFamily: "var(--font-mono)",
+                              background: isOngoing ? (isHold ? "#FEF2F2" : "#FFF7ED") : "#ECFDF5",
+                              padding: "2px 9px",
+                              borderRadius: 20,
+                              fontWeight: 600,
+                              border: isOngoing ? (isHold ? "1px solid rgba(220,38,38,0.25)" : "1px solid rgba(217,119,6,0.25)") : "1px solid transparent",
+                              width: "fit-content"
+                            }}>
+                              {isOngoing && isHold ? formatDuration(calcHours(prevDate, nowIso) || 0) : formatDuration(hours)} {isOngoing && (isHold ? "（保留中）" : "（計測中）")}
+                            </span>
+                            {/* 🌟 修正: この工程の区間内で発生した保留時間（currentStepHoldHours > 0）が存在すれば、工程が進んだ後でも常にマイナス表示を残す */}
+                            {currentStepHoldHours > 0 && (
+                              <span style={{ fontSize: 10, color: "#EF4444", fontFamily: "var(--font-mono)", fontWeight: 600, paddingLeft: 6 }}>
+                                - 保留時間 {formatDuration(currentStepHoldHours)}
+                              </span>
+                            )}
+                          </div>
                         ) : null}
                       </div>
                     )}
