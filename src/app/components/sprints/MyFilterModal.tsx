@@ -72,12 +72,12 @@ export async function addMyFilter(
   filters: Record<string, string[]>,
   sortCol: string,
   sortDir: "asc" | "desc"
-): Promise<void> {
-  if (!isSupabaseEnabled || !supabase) return;
+): Promise<{ success: boolean; error?: string }> {
+  if (!isSupabaseEnabled || !supabase) return { success: false, error: "DB未接続" };
   const cleanFilters: Record<string, string[]> = {};
   Object.entries(filters).forEach(([col, vals]) => { if (vals.length > 0) cleanFilters[col] = vals; });
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  await supabase.from("my_filters").insert({
+  const { error } = await supabase.from("my_filters").insert({
     id,
     sprint_id: sprintId,
     member_id: userId,
@@ -86,6 +86,11 @@ export async function addMyFilter(
     sort_col: sortCol,
     sort_dir: sortDir,
   });
+  if (error) {
+    console.error("[addMyFilter] DB Error:", error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
 }
 
 interface MyFilterModalProps {
