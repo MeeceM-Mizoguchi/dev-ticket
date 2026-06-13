@@ -1,11 +1,13 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+import { useAuth } from "@/app/contexts/AuthContext";
 
 // 🌟 追加: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
 const getClosedDateFromMonitor = (ticket: any): string => {
@@ -212,6 +214,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   onCreateTicket?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
+  const { userId } = useAuth(); // 🌟 追加: userId を取得
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
 
   useEffect(() => {
@@ -231,6 +234,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
   const [openCol, setOpenCol] = useState<string>("");
 
+  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null); // 🌟 追加: MyFilter モーダル開閉用
+
+  // 設定画面から、本物の分類データを直接保持するステート
   const [dbCategories, setDbCategories] = useState<Array<{ id: string; projectId: string; name: string }>>([]);
 
   useEffect(() => {
@@ -464,6 +470,15 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     ))}
                     <SprintActualHours actualHours={actualHours} />
                     <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
+
+                    {/* 🌟 追加: Myフィルタ ボタン */}
+                    <button onClick={e => { e.stopPropagation(); setMyFilterSprintId(sprint.id); }}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <FolderKanban style={{ width: 11, height: 11 }} />Myフィルタ
+                    </button>
+
                     <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
                       style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
@@ -515,10 +530,34 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         alignRight={idx >= 7}
                       />
                     ))}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                       {hasAnyFilter && (
                         <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                           <X style={{ width: 11, height: 11 }} />
+                        </button>
+                      )}
+                      {(hasAnyFilter || sprintSort.col) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const title = window.prompt("保存するフィルタの名前を入力してください");
+                            if (!title?.trim()) return;
+                            const serialized: Record<string, string[]> = {};
+                            Object.entries(currentFilters).forEach(([k, v]) => {
+                              if (v && v.size > 0) serialized[k] = Array.from(v);
+                            });
+                            // 🌟 修正: 詳細画面と完全に一致させるため、sprint.id（本物のスプリントID）を渡す
+                            const result = await addMyFilter(sprint.id, userId ?? "", title.trim(), serialized, sprintSort.col, sprintSort.dir);
+                            if (result && !result.success) {
+                              alert("保存に失敗しました。\n\nエラー詳細: " + result.error);
+                            } else {
+                              alert("フィルタを保存しました！「Myフィルタ」から呼び出せます。");
+                            }
+                          }}
+                          title="現在の絞り込み・並び替えを保存"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}
+                        >
+                          <Save style={{ width: 11, height: 11 }} />
                         </button>
                       )}
                     </div>
@@ -594,6 +633,28 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           );
         })}
       </div>
+
+      {/* 🌟 追加: MyFilter モーダルの描画と適用処理 */}
+      {myFilterSprintId && (
+        <MyFilterModal
+          onClose={() => setMyFilterSprintId(null)}
+          // 🌟 修正: 詳細画面での参照条件と完全に一致させるため、myFilterSprintId（本物のスプリントID）をそのまま渡す
+          sprintId={myFilterSprintId}
+          userId={userId ?? ""}
+          cols={COLS.map((col, idx) => ({ col, label: COL_LABELS[idx] }))}
+          getColOptions={(col) => getColOptions(sprints.find(s => s.id === myFilterSprintId)!, col)}
+          onApply={(filters, sortCol, sortDir) => {
+            // 選択したフィルタ・ソートを、一覧の状態管理 (State) に上書き適用する
+            setSprintFilters(prev => ({ ...prev, [myFilterSprintId]: filters }));
+            if (sortCol) {
+              setSprintSorts(prev => ({ ...prev, [myFilterSprintId]: { col: sortCol, dir: sortDir } }));
+            } else {
+              clearSort(myFilterSprintId);
+            }
+            setExpanded(prev => new Set(prev).add(myFilterSprintId)); // 適用対象のスプリントを展開状態にする
+          }}
+        />
+      )}
     </div>
   );
 }

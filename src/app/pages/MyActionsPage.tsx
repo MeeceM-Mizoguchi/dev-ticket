@@ -763,9 +763,9 @@ function MentionTextarea({
     : [];
   const filteredTickets = ms?.tickets
     ? (ms.query ? ms.tickets.filter(t =>
-        t.wbs.toLowerCase().includes(ms.query.toLowerCase()) ||
-        t.title.toLowerCase().includes(ms.query.toLowerCase())
-      ) : ms.tickets)
+      t.wbs.toLowerCase().includes(ms.query.toLowerCase()) ||
+      t.title.toLowerCase().includes(ms.query.toLowerCase())
+    ) : ms.tickets)
     : [];
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1374,23 +1374,25 @@ export function MyActionsPage() {
 
           {/* Controls */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {/* アクションメモ追加ボタン */}
-            <button
-              onClick={() => setShowAddMemo(v => !v)}
-              style={{
-                display: "flex", alignItems: "center", gap: 5,
-                padding: "6px 14px", fontSize: 12, fontWeight: 600,
-                color: showAddMemo ? "#fff" : "#059669",
-                background: showAddMemo ? "#059669" : "#ECFDF5",
-                border: `1.5px solid ${showAddMemo ? "#059669" : "#A7F3D0"}`,
-                borderRadius: 8, cursor: "pointer", transition: "all 0.15s",
-              }}
-              onMouseEnter={e => { if (!showAddMemo) (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-              onMouseLeave={e => { if (!showAddMemo) (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
-            >
-              <Plus style={{ width: 13, height: 13 }} />
-              アクションメモ追加
-            </button>
+            {/* アクションメモ追加ボタン: 通知から追加タブでのみ表示 */}
+            {tab === "from_notification" && (
+              <button
+                onClick={() => setShowAddMemo(v => !v)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "6px 14px", fontSize: 12, fontWeight: 600,
+                  color: showAddMemo ? "#fff" : "#059669",
+                  background: showAddMemo ? "#059669" : "#ECFDF5",
+                  border: `1.5px solid ${showAddMemo ? "#059669" : "#A7F3D0"}`,
+                  borderRadius: 8, cursor: "pointer", transition: "all 0.15s",
+                }}
+                onMouseEnter={e => { if (!showAddMemo) (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                onMouseLeave={e => { if (!showAddMemo) (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+              >
+                <Plus style={{ width: 13, height: 13 }} />
+                アクションメモ追加
+              </button>
+            )}
 
             {/* Project filter: 通知から追加タブでは非表示 */}
             {tab !== "from_notification" && <div style={{ position: "relative" }}>

@@ -11,6 +11,7 @@ import { SprintListView } from "@/app/components/sprints/SprintListView";
 import { SprintBoardView } from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { MyFilterModal } from "@/app/components/sprints/MyFilterModal";
 import { EditSprintDialog } from "@/app/components/sprints/EditSprintDialog";
 import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
@@ -47,6 +48,7 @@ export function SprintPage() {
   const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
+  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [notFound, setNotFound] = useState(false);
   const deletedIdsRef = useRef<Set<string>>(new Set());
@@ -152,8 +154,8 @@ export function SprintPage() {
   );
 
   const viewBtns: { mode: SprintView; label: string; Icon: ElementType }[] = [
-    { mode: "list",  label: "リスト",        Icon: Layers },
-    { mode: "board", label: "ボード",        Icon: LayoutDashboard },
+    { mode: "list", label: "リスト", Icon: Layers },
+    { mode: "board", label: "ボード", Icon: LayoutDashboard },
     { mode: "gantt", label: "ガントチャート", Icon: BarChart2 },
   ];
 
@@ -200,7 +202,7 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list"  && <SprintListView  sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={ticketWbs} />}
+      {viewMode === "list" && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={ticketWbs} onOpenMyFilter={setMyFilterSprintId} />}
       {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
@@ -261,6 +263,17 @@ export function SprintPage() {
             refreshSprints();
             setTimeout(() => deletedIdsRef.current.delete(deletedId), 15000);
           }} />
+      )}
+
+      {myFilterSprintId && (
+        <MyFilterModal
+          onClose={() => setMyFilterSprintId(null)}
+          onApply={(filters) => {
+            // TODO: 将来的にここで MyFilterModal から受け取ったフィルタを SprintListView に適用する処理を実装
+            console.log("Apply filter for sprint:", myFilterSprintId, filters);
+            setMyFilterSprintId(null);
+          }}
+        />
       )}
 
       <TicketDetailPanel
