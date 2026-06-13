@@ -381,12 +381,12 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
         wbs: t.wbs,
         title: t.title,
         description: htmlToText(t.description),
-        status: t.status,
+        status: t.progress === -1 ? "pending" : t.status, // 🌟 修正: progress === -1 なら "pending" としてフィルタリングさせる
         priority: t.priority,
         assignee: t.assignee || "",
         startDate: t.startDate || "",
         dueDate: t.dueDate || "",
-        closedDate: getClosedDateFromMonitor(t), // 🌟 修正: フィルタ内部の判定対象に追加
+        closedDate: getClosedDateFromMonitor(t),
         category: catName
       };
 
@@ -402,7 +402,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return [...filtered].sort((a, b) => {
       const dir = currentSort.dir === "asc" ? 1 : -1;
       const col = currentSort.col;
-      // 🌟 修正: 並び替え処理でも closedDate を安全に取得できるように条件分岐を追加
+      // 🌟 修正: 並び替え処理でも closedDate などを安全に取得できるように条件分岐を追加
       const getVal = (tick: SprintTicket, c: string) => {
         if (c === "category") return getCategoryLabel(tick);
         if (c === "closedDate") return getClosedDateFromMonitor(tick);
@@ -573,7 +573,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
                     </div>
                   ) : displayTickets.map((t) => {
-                    const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                    // 🌟 修正: progress が -1 なら強制的に「保留中」のスタイルを適用する
+                    const tsm = t.progress === -1
+                      ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
+                      : TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
                     const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                     const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
                     const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
@@ -587,9 +590,10 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: t.status === "closed" ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: t.status === "closed" ? 0.65 : 1 }}
+                          // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: (t.status === "closed" || t.progress === -1) ? 0.65 : 1 }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = t.status === "closed" ? "#F5F5F4" : "#FFFFFF"; }}>
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF"; }}>
                           <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
                             {hasChildren ? (
                               <button onClick={toggleTicket} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center" }}>
@@ -624,6 +628,42 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                           {/* 🌟 修正: 実績モニターから動的に取得したクローズ日を専用フォーマッタ(formatClosedMMDD)で表示 */}
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(t)) || "—"}</span></div>
                         </div>
+                        {/* 子チケット行（アコーディオン展開時） */}
+                        {hasChildren && isTicketExpanded && children.map(child => {
+                          // 🌟 修正: progress が -1 なら強制的に「保留中」のスタイルを適用する
+                          const ctsm = child.progress === -1
+                            ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
+                            : TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                          const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+                          const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
+                          const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                          const childCategory = getCategoryLabel(child);
+                          return (
+                            <div key={child.id} onClick={() => onSelectTicket?.(child)}
+                              // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: child.progress === -1 ? "#F5F5F4" : "#F9F8F6", transition: "background 0.1s", opacity: (child.status === "closed" || child.progress === -1) ? 0.65 : 1 }}
+                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#ECECEB" : "#EEF7F3"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#F5F5F4" : "#F9F8F6"; }}>
+                              <div style={{ display: "flex", justifyContent: "center" }}>
+                                <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, paddingLeft: 4 }}>
+                                <div style={{ width: 1, height: 12, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
+                                <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                              </div>
+                              <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
+
+                              <div style={{ display: "flex", justifyContent: "start", minWidth: 0, paddingLeft: 4 }}>
+                                <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%", textAlign: "left" }}>
+                                  {childCategory}
+                                </span>
+                              </div>
+
+                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{ctsm.label}</span></div>
+                              <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, width: "fit-content" }}>{cPriLabel}</span></div>
+                            </div>
+                          );
+                        })}
                       </div>
                     );
                   })}

@@ -13,51 +13,53 @@ export function computeSprintStatus(sprint: Sprint): SprintStatus {
 
 export function getStatusMeta(status: ProjectStatus | TicketStatus) {
   const map: Record<string, { label: string; cls: string; dot: string; bar: string }> = {
-    planning:      { label: "計画中",      cls: "bg-slate-100 text-slate-600",    dot: "bg-slate-400",  bar: "bg-slate-300" },
-    "in-progress": { label: "進行中",      cls: "bg-orange-50 text-orange-700",   dot: "bg-orange-400", bar: "bg-orange-400" },
-    completed:     { label: "完了",        cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500",bar: "bg-emerald-500" },
-    "on-hold":     { label: "保留中",      cls: "bg-amber-50 text-amber-700",     dot: "bg-amber-400",  bar: "bg-amber-400" },
-    todo:          { label: "未着手",      cls: "bg-stone-100 text-stone-500",    dot: "bg-stone-400",  bar: "bg-stone-300" },
-    done:          { label: "完了",        cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500",bar: "bg-emerald-500" },
-    "in-review":   { label: "レビュー中",  cls: "bg-violet-50 text-violet-700",   dot: "bg-violet-500", bar: "bg-violet-500" },
-    "review-done": { label: "レビュー完了",cls: "bg-sky-50 text-sky-700",         dot: "bg-sky-500",    bar: "bg-sky-500" },
-    "stg-test":    { label: "STG完了",     cls: "bg-teal-50 text-teal-700",       dot: "bg-teal-500",   bar: "bg-teal-500" },
-    uat:           { label: "UAT完了",     cls: "bg-indigo-50 text-indigo-700",   dot: "bg-indigo-500", bar: "bg-indigo-500" },
-    closed:        { label: "クローズ",    cls: "bg-stone-200 text-stone-500",    dot: "bg-stone-500",  bar: "bg-stone-400" },
+    planning: { label: "計画中", cls: "bg-slate-100 text-slate-600", dot: "bg-slate-400", bar: "bg-slate-300" },
+    "in-progress": { label: "進行中", cls: "bg-orange-50 text-orange-700", dot: "bg-orange-400", bar: "bg-orange-400" },
+    completed: { label: "完了", cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500", bar: "bg-emerald-500" },
+    "on-hold": { label: "保留中", cls: "bg-amber-50 text-amber-700", dot: "bg-amber-400", bar: "bg-amber-400" },
+    todo: { label: "未着手", cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" },
+    done: { label: "完了", cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500", bar: "bg-emerald-500" },
+    "in-review": { label: "レビュー中", cls: "bg-violet-50 text-violet-700", dot: "bg-violet-500", bar: "bg-violet-500" },
+    "review-done": { label: "レビュー完了", cls: "bg-sky-50 text-sky-700", dot: "bg-sky-500", bar: "bg-sky-500" },
+    "stg-test": { label: "STG完了", cls: "bg-teal-50 text-teal-700", dot: "bg-teal-500", bar: "bg-teal-500" },
+    uat: { label: "UAT完了", cls: "bg-indigo-50 text-indigo-700", dot: "bg-indigo-500", bar: "bg-indigo-500" },
+    closed: { label: "クローズ", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-500", bar: "bg-stone-400" },
   };
   return map[status] ?? { label: status, cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" };
 }
 
-export const TICKET_STATUSES: { value: import("@/app/types").TicketStatus; label: string; color: string; bg: string }[] = [
-  { value: "todo",        label: "未着手",       color: "#9E9690", bg: "#F4F5F6" },
-  { value: "in-progress", label: "進行中",       color: "#D97706", bg: "#FFF7ED" },
-  { value: "in-review",   label: "レビュー中",   color: "#7C3AED", bg: "#F5F3FF" },
+export const TICKET_STATUSES = [
+  { value: "todo", label: "未着手", color: "#6B7280", bg: "#F3F4F6" },
+  { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
+  { value: "in-review", label: "レビュー中", color: "#7C3AED", bg: "#F5F3FF" },
+  { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }, // 🌟 これを追加！
+  // ...  { value: "in-review",   label: "レビュー中",   color: "#7C3AED", bg: "#F5F3FF" },
   { value: "review-done", label: "レビュー完了", color: "#0284C7", bg: "#F0F9FF" },
-  { value: "stg-test",    label: "STG完了",      color: "#0D9488", bg: "#F0FDFA" },
-  { value: "uat",         label: "UAT完了",      color: "#4F46E5", bg: "#EEF2FF" },
-  { value: "closed",      label: "クローズ",     color: "#6B7280", bg: "#F3F4F6" },
+  { value: "stg-test", label: "STG完了", color: "#0D9488", bg: "#F0FDFA" },
+  { value: "uat", label: "UAT完了", color: "#4F46E5", bg: "#EEF2FF" },
+  { value: "closed", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
 ];
 
 export function getPriorityMeta(p: Priority) {
   return {
-    high:   { label: "高", cls: "bg-red-50 text-red-600",    dot: "bg-red-500" },
-    medium: { label: "中", cls: "bg-amber-50 text-amber-700",dot: "bg-amber-400" },
-    low:    { label: "低", cls: "bg-sky-50 text-sky-600",    dot: "bg-sky-400" },
+    high: { label: "高", cls: "bg-red-50 text-red-600", dot: "bg-red-500" },
+    medium: { label: "中", cls: "bg-amber-50 text-amber-700", dot: "bg-amber-400" },
+    low: { label: "低", cls: "bg-sky-50 text-sky-600", dot: "bg-sky-400" },
   }[p];
 }
 
 export function getRoleMeta(role: Role) {
   const map: Record<string, { label: string; cls: string; gradient: string }> = {
-    admin:             { label: "管理者",    cls: "bg-rose-50 text-rose-700",      gradient: "from-rose-500 to-rose-600" },
-    "project-manager": { label: "PM",        cls: "bg-orange-50 text-orange-700",   gradient: "from-orange-500 to-orange-600" },
-    developer:         { label: "開発者",    cls: "bg-sky-50 text-sky-700",         gradient: "from-sky-500 to-sky-600" },
-    designer:          { label: "デザイナー", cls: "bg-violet-50 text-violet-700",   gradient: "from-violet-500 to-violet-600" },
+    admin: { label: "管理者", cls: "bg-rose-50 text-rose-700", gradient: "from-rose-500 to-rose-600" },
+    "project-manager": { label: "PM", cls: "bg-orange-50 text-orange-700", gradient: "from-orange-500 to-orange-600" },
+    developer: { label: "開発者", cls: "bg-sky-50 text-sky-700", gradient: "from-sky-500 to-sky-600" },
+    designer: { label: "デザイナー", cls: "bg-violet-50 text-violet-700", gradient: "from-violet-500 to-violet-600" },
   };
   return map[role] ?? { label: role, cls: "bg-gray-50 text-gray-700", gradient: "from-gray-400 to-gray-500" };
 }
 
 export function getAvatarColor(name: string) {
-  const colors = ["#059669","#D97706","#059669","#0284C7","#7C3AED","#DB2777"];
+  const colors = ["#059669", "#D97706", "#059669", "#0284C7", "#7C3AED", "#DB2777"];
   return colors[name.charCodeAt(0) % colors.length];
 }
 
@@ -197,11 +199,11 @@ export function daysBetween(a: string, b: string) {
 
 export function getSprintStatusMeta(status: SprintStatus) {
   return ({
-    planning:  { label:"計画中", bg:"#F4F5F6", color:"#6B6458", dot:"#B0A9A4", barColor:"#B0A9A4" },
-    active:    { label:"進行中", bg:"#ECFDF5", color:"#059669", dot:"#059669", barColor:"#059669" },
-    completed: { label:"完了",   bg:"#F0F9FF", color:"#0284C7", dot:"#0284C7", barColor:"#0284C7" },
-    delayed:   { label:"遅延",   bg:"#FEF2F2", color:"#DC2626", dot:"#DC2626", barColor:"#DC2626" },
-  } as Record<string, { label:string; bg:string; color:string; dot:string; barColor:string }>)[status]
+    planning: { label: "計画中", bg: "#F4F5F6", color: "#6B6458", dot: "#B0A9A4", barColor: "#B0A9A4" },
+    active: { label: "進行中", bg: "#ECFDF5", color: "#059669", dot: "#059669", barColor: "#059669" },
+    completed: { label: "完了", bg: "#F0F9FF", color: "#0284C7", dot: "#0284C7", barColor: "#0284C7" },
+    delayed: { label: "遅延", bg: "#FEF2F2", color: "#DC2626", dot: "#DC2626", barColor: "#DC2626" },
+  } as Record<string, { label: string; bg: string; color: string; dot: string; barColor: string }>)[status]
     ?? { label: status, bg: "#F4F5F6", color: "#6B6458", dot: "#B0A9A4", barColor: "#B0A9A4" };
 }
 
@@ -217,17 +219,17 @@ export const labelCls = "block text-[10px] font-bold text-stone-400 uppercase tr
 // 将来的に孫チケット対応を実装予定（現在は1階層のみ）。
 const PARENT_STATUS_MIN_CHILD_RANK: Partial<Record<TicketStatus, number>> = {
   "in-review": 3, // review-done
-  "stg-test":  4, // stg-test
-  "uat":       5, // uat
-  "done":      6, // done
-  "closed":    6, // done or closed
+  "stg-test": 4, // stg-test
+  "uat": 5, // uat
+  "done": 6, // done
+  "closed": 6, // done or closed
 };
 const STATUS_VALIDATION_LABEL: Partial<Record<TicketStatus, string>> = {
   "in-review": "レビュー完了",
-  "stg-test":  "STG完了",
-  "uat":       "UAT完了",
-  "done":      "完了",
-  "closed":    "完了",
+  "stg-test": "STG完了",
+  "uat": "UAT完了",
+  "done": "完了",
+  "closed": "完了",
 };
 const STATUS_RANK: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
