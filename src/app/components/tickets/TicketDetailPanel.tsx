@@ -2176,7 +2176,7 @@ export function TicketDetailPanel({
                       </div>
                     ) : (
                       (c.content || c.images?.length > 0) && (
-                        <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                        <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
                           {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
                           {c.images?.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
