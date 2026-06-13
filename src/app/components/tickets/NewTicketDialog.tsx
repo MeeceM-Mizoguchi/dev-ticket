@@ -157,7 +157,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   // 1. プロジェクト一覧の取得、および固定プロジェクト時のメンバー取得
   useEffect(() => {
     if (!isSupabaseEnabled) {
-      const accessible = isAdmin ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
+      const accessible = userRole === "admin" ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
       setAvailableProjects(accessible.map(p => ({ id: p.id, name: p.name, slug: p.slug })));
 
       // 親から固定の projectId が渡されている場合はそのメンバーを設定
@@ -168,20 +168,33 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       return;
     }
 
-    // 🌟 修正: 通知用に `slug` カラムもデータベースから同時に取得する
+    // 🌟 修正: 最上位の admin 特権以外は、PMであってもアサイン計画（members）に名前が入っているプロジェクトのみに厳重に絞り込む
     supabase!.from("projects").select("id, name, members, slug").order("name").then(({ data }) => {
       if (data) {
-        const accessible = isAdmin ? data : data.filter((p: any) => Array.isArray(p.members) && p.members.includes(userName));
+        const accessible = userRole === "admin"
+          ? data
+          : data.filter((p: any) => {
+            if (!Array.isArray(p.members)) return false;
+            // members 配列の中に、name が userName と一致するオブジェクトがあるか調べる
+            return p.members.some((m: any) => m && (m.name === userName || m === userName));
+          });
+
         setAvailableProjects(accessible.map((p: any) => ({ id: p.id, name: p.name, slug: p.slug })));
 
         // 親から固定の projectId が渡されている場合は、そのプロジェクトの所属メンバー名配列を初期設定
         if (projectId) {
           const pData = data.find((p: any) => p.id === projectId);
-          if (pData?.members) setCurrentProjectMembers(pData.members);
+          if (pData?.members) {
+            // 担当者候補リスト用にも、オブジェクト配列から名前の文字列配列 [ "名前", ... ] に変換してセットする
+            const memberNames = Array.isArray(pData.members)
+              ? pData.members.map((m: any) => typeof m === 'object' ? m?.name : m).filter(Boolean)
+              : [];
+            setCurrentProjectMembers(memberNames);
+          }
         }
       }
     });
-  }, [needsSelection, isAdmin, userName, projectId]);
+  }, [needsSelection, isAdmin, userName, userRole, projectId]);
 
 
   // 2. 選択されたプロジェクトに応じたスプリント一覧、およびメンバー情報の動的更新
@@ -426,7 +439,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               }
               await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
             }
-            try { localStorage.removeItem(contextKey); } catch (e) {}
+            try { localStorage.removeItem(contextKey); } catch (e) { }
             savedSprintIdRef.current = "";
             setSaving(false);
             onCreated?.();
@@ -480,12 +493,12 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
         await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
       }
-      try { localStorage.removeItem(contextKey); } catch (e) {}
+      try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
     } else {
       // モック環境などのフォールバック
-      try { localStorage.removeItem(contextKey); } catch (e) {}
+      try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
     }
@@ -507,10 +520,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             </div>
             {/* 🛠️ ボタンコンテナを整列させ、×ボタンの左横へゴミ箱デザインのクリアボタンを精密に配置 */}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <button 
-                type="button" 
-                onClick={() => setShowClearConfirm(true)} 
-                title="入力内容をすべてクリア" 
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(true)}
+                title="入力内容をすべてクリア"
                 style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", justifyContent: "center" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
