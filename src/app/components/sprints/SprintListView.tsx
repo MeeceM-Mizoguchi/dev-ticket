@@ -1,17 +1,23 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+import { useAuth } from "@/app/contexts/AuthContext";
 
-// 🌟 復活: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
+// 🌟 追加: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
 const getClosedDateFromMonitor = (ticket: any): string => {
   if (!ticket) return "";
+
+  // 実績ログ配列として想定されるプロパティ名を広く網羅
   const logs = ticket.monitorLogs || ticket.monitor_logs || ticket.ticket_monitor_logs || ticket.actualLogs || [];
+
   if (Array.isArray(logs) && logs.length > 0) {
+    // 配列を末尾（直近）から検索し、最終工程が「リリース」か「クローズ」の記録を探す
     const closedLog = [...logs]
       .reverse()
       .find((log: any) => log && (
@@ -19,14 +25,17 @@ const getClosedDateFromMonitor = (ticket: any): string => {
         log.status === "リリース" || log.status === "クローズ" ||
         log.phase === "リリース" || log.phase === "クローズ"
       ));
+
     if (closedLog) {
       return closedLog.completed_at || closedLog.completedAt || closedLog.created_at || closedLog.createdAt || closedLog.date || "";
     }
   }
+
+  // 💡 フォールバック: 実績ログがない場合、チケット自体が既に持っているリリース完了日（mappersのreleasedAtなど）を流用
   return ticket.releasedAt || ticket.released_at || ticket.closedAt || ticket.closed_at || "";
 };
 
-// 🌟 復活: ISO形式などのタイムスタンプから mm/dd を安全に抽出する専用フォーマッター
+// 🌟 追加: ISO形式などのタイムスタンプから mm/dd を安全に抽出する専用フォーマッター
 const formatClosedMMDD = (isoString: string) => {
   if (!isoString) return "";
   const d = new Date(isoString);
@@ -50,11 +59,11 @@ function ColumnFilter({
   options, selected, onFilterChange,
   open, onToggle, onClose, alignRight,
 }: {
-  col: SortCol;
+  col: SortCol | "closedDate"; // 🌟 修正: closedDateを追加
   label: string;
-  sortCol: SortCol | "";
+  sortCol: SortCol | "closedDate" | "";
   sortDir: "asc" | "desc";
-  onSort: (col: SortCol, dir: "asc" | "desc") => void;
+  onSort: (col: SortCol | "closedDate", dir: "asc" | "desc") => void;
   onClearSort: () => void;
   options: Array<{ value: string; label: string }>;
   selected: Set<string>;
@@ -95,7 +104,7 @@ function ColumnFilter({
   return (
     <div style={{ position: "relative", width: "100%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onToggle}>
       <button onClick={e => { e.stopPropagation(); onToggle(); }} style={{
-        display: "flex", alignItems: "center", center: "center", gap: 3, background: "none", border: "none",
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
         cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700,
         color: active ? "#059669" : "#B0A9A4",
         textTransform: "uppercase" as const, letterSpacing: "0.06em",
@@ -114,7 +123,6 @@ function ColumnFilter({
             position: "absolute", top: "calc(100% + 6px)",
             left: alignRight ? "auto" : 0, right: alignRight ? 0 : "auto",
             background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
-            // 🌟 修正: maxWidth: 360 を追加して横幅の広がりすぎを防止
             boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", zIndex: 200, minWidth: 190, maxWidth: 360,
           }}>
           {/* Sort */}
@@ -168,7 +176,6 @@ function ColumnFilter({
               const checked = selected.has(opt.value);
               return (
                 <button key={opt.value} onClick={() => toggleOne(opt.value)} style={{
-                  // 🌟 修正: alignItems を flex-start に変更し、折り返しを許可 (whiteSpace, wordBreak)
                   display: "flex", alignItems: "flex-start", gap: 8, width: "100%", padding: "5px 8px",
                   borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
                   background: checked ? "#ECFDF5" : "transparent",
@@ -178,7 +185,6 @@ function ColumnFilter({
                   <div style={{ width: 14, height: 14, borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", border: checked ? "none" : "1.5px solid rgba(26,23,20,0.20)", background: checked ? "#059669" : "transparent", marginTop: 2 }}>
                     {checked && <span style={{ color: "#fff", fontSize: 9, fontWeight: 700, lineHeight: 1 }}>✓</span>}
                   </div>
-                  {/* 🌟 修正: テキストを span で囲み、lineHeight を整えて flex: 1 を付与 */}
                   <span style={{ flex: 1, lineHeight: 1.4 }}>{opt.label}</span>
                 </button>
               );
@@ -208,6 +214,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   onCreateTicket?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
+  const { userId } = useAuth(); // 🌟 追加: userId を取得
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
 
   useEffect(() => {
@@ -223,17 +230,15 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
 
-  // 🌟 修正: ソートの状態保持を「スプリントID」ごとに完全独立化
-  const [sprintSorts, setSprintSorts] = useState<Record<string, { col: SortCol | ""; dir: "asc" | "desc" }>>({});
-
-  // フィルターの状態保持を「スプリントID」ごとに完全独立化
+  const [sprintSorts, setSprintSorts] = useState<Record<string, { col: SortCol | "closedDate" | ""; dir: "asc" | "desc" }>>({});
   const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
   const [openCol, setOpenCol] = useState<string>("");
+
+  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null); // 🌟 追加: MyFilter モーダル開閉用
 
   // 設定画面から、本物の分類データを直接保持するステート
   const [dbCategories, setDbCategories] = useState<Array<{ id: string; projectId: string; name: string }>>([]);
 
-  // マウント時にSupabaseのマスターテーブルからアサイン設定の分類をロード
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     supabase!
@@ -249,14 +254,12 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
 
-  // 指定されたスプリントと同じプロジェクトに属する、画面内の全チケットを抽出するヘルパー
   const getTicketsInSameProject = (currentSprint: Sprint): SprintTicket[] => {
     return sprints
       .filter(s => s.projectId === currentSprint.projectId)
       .flatMap(s => s.tickets);
   };
 
-  // 手動マッピングと、設定データを完全に融合させた最強のマスターマップを生成
   const unifiedCategoryMap = useMemo(() => {
     const registry = { ...BASE_CATEGORY_MAP };
     dbCategories.forEach(c => {
@@ -274,7 +277,6 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return registry;
   }, [dbCategories, sprints]);
 
-  // セル表示およびフィルタリング比較用の名前取得共通ヘルパー
   const getCategoryLabel = (ticket: SprintTicket): string => {
     const id = ticket.categoryId || "";
     if (unifiedCategoryMap[id]) return unifiedCategoryMap[id];
@@ -286,9 +288,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return "分類なし";
   };
 
-  // 自動幅調整ロジック（現在登録されている最大文字数からpx幅を動的に算出）
   const dynamicCategoryColumnWidth = useMemo(() => {
-    let maxChars = 4; // 最低基準幅（4文字分）
+    let maxChars = 4;
 
     dbCategories.forEach(c => {
       if (c.name && c.name.length > maxChars) maxChars = c.name.length;
@@ -302,9 +303,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     return Math.max(80, Math.min(180, computedPx));
   }, [dbCategories, sprints]);
 
-  // 選択肢（オプション）の生成スコープを、プロジェクト全体ではなく、該当「スプリント（テーブル）単体」のチケットに厳密に限定
   const getColOptions = (currentSprint: Sprint, col: string): Array<{ value: string; label: string }> => {
-    // スプリント内のチケット（親チケットのみ対象とする従来の仕様とも完全連動）
     const sprintTickets = currentSprint.tickets || [];
 
     switch (col) {
@@ -324,11 +323,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
         return [...new Set(sprintTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
       case "dueDate":
         return [...new Set(sprintTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      // 🌟 追加: クローズ日のフィルタ選択肢を生成（内部ではタイムスタンプ、表示はmm/dd）
+      case "closedDate":
+        return [...new Set(sprintTickets.map(t => getClosedDateFromMonitor(t)).filter(Boolean))]
+          .sort()
+          .map(v => ({ value: v, label: formatClosedMMDD(v) }));
       case "category":
-        // 分類に関しては、前述の「該当チケットが実在する場合のみ出す」仕様に従い、スプリント内チケットから安全に抽出
         const optionSet = new Set<string>();
         sprintTickets.forEach(t => optionSet.add(getCategoryLabel(t)));
-
         return Array.from(optionSet)
           .filter(Boolean)
           .sort((a, b) => a.localeCompare(b, "ja"))
@@ -357,8 +359,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   };
   const closeCol = () => setOpenCol("");
 
-  // 🌟 修正: どのスプリントのソートを変更するか、引数に sprintId を追加
-  const handleSort = (sprintId: string, col: SortCol, dir: "asc" | "desc") => {
+  const handleSort = (sprintId: string, col: SortCol | "closedDate", dir: "asc" | "desc") => {
     setSprintSorts(prev => ({ ...prev, [sprintId]: { col, dir } }));
   };
   const clearSort = (sprintId: string) => {
@@ -396,7 +397,6 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       });
     });
 
-    // 🌟 修正: 対象のスプリントのソート設定を抜き出して適用する
     const currentSort = sprintSorts[sprintId];
     if (!currentSort || !currentSort.col) return filtered;
     return [...filtered].sort((a, b) => {
@@ -421,11 +421,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
   );
 
-  const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate"] as const;
-  const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日"];
-
-  // 動的自動幅（dynamicCategoryColumnWidth）pxを流し込み、上下の縦ラインをピシッとシンクロ
-  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 32px`;
+  const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const;
+  const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日", "クローズ日"];
+  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 32px`;
 
   return (
     <div>
@@ -444,7 +442,6 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           const currentFilters = sprintFilters[sprint.id] || {};
           const hasAnyFilter = Object.values(currentFilters).some(set => set && set.size > 0);
 
-          // 🌟 修正: このスプリント専用のソート設定を取り出す
           const sprintSort = sprintSorts[sprint.id] || { col: "", dir: "asc" };
 
           return (
@@ -473,6 +470,15 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     ))}
                     <SprintActualHours actualHours={actualHours} />
                     <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
+
+                    {/* 🌟 追加: Myフィルタ ボタン */}
+                    <button onClick={e => { e.stopPropagation(); setMyFilterSprintId(sprint.id); }}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <FolderKanban style={{ width: 11, height: 11 }} />Myフィルタ
+                    </button>
+
                     <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
                       style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
@@ -511,8 +517,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     {COLS.map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
-                        // 🌟 修正: このスプリント固有のソート設定・関数を渡す
-                        sortCol={sprintSort.col as SortCol | ""}
+                        sortCol={sprintSort.col as SortCol | "closedDate" | ""}
                         sortDir={sprintSort.dir}
                         onSort={(c, d) => handleSort(sprint.id, c, d)}
                         onClearSort={() => clearSort(sprint.id)}
@@ -525,10 +530,34 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         alignRight={idx >= 7}
                       />
                     ))}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                       {hasAnyFilter && (
                         <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                           <X style={{ width: 11, height: 11 }} />
+                        </button>
+                      )}
+                      {(hasAnyFilter || sprintSort.col) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const title = window.prompt("保存するフィルタの名前を入力してください");
+                            if (!title?.trim()) return;
+                            const serialized: Record<string, string[]> = {};
+                            Object.entries(currentFilters).forEach(([k, v]) => {
+                              if (v && v.size > 0) serialized[k] = Array.from(v);
+                            });
+                            // 🌟 修正: 詳細画面と完全に一致させるため、sprint.id（本物のスプリントID）を渡す
+                            const result = await addMyFilter(sprint.id, userId ?? "", title.trim(), serialized, sprintSort.col, sprintSort.dir);
+                            if (result && !result.success) {
+                              alert("保存に失敗しました。\n\nエラー詳細: " + result.error);
+                            } else {
+                              alert("フィルタを保存しました！「Myフィルタ」から呼び出せます。");
+                            }
+                          }}
+                          title="現在の絞り込み・並び替えを保存"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}
+                        >
+                          <Save style={{ width: 11, height: 11 }} />
                         </button>
                       )}
                     </div>
@@ -595,6 +624,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                           </div>
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span></div>
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.dueDate)}</span></div>
+
+                          {/* 🌟 修正: 実績モニターから動的に取得したクローズ日を専用フォーマッタ(formatClosedMMDD)で表示 */}
+                          <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(t)) || "—"}</span></div>
                         </div>
                         {/* 子チケット行（アコーディオン展開時） */}
                         {hasChildren && isTicketExpanded && children.map(child => {
@@ -641,6 +673,28 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
           );
         })}
       </div>
+
+      {/* 🌟 追加: MyFilter モーダルの描画と適用処理 */}
+      {myFilterSprintId && (
+        <MyFilterModal
+          onClose={() => setMyFilterSprintId(null)}
+          // 🌟 修正: 詳細画面での参照条件と完全に一致させるため、myFilterSprintId（本物のスプリントID）をそのまま渡す
+          sprintId={myFilterSprintId}
+          userId={userId ?? ""}
+          cols={COLS.map((col, idx) => ({ col, label: COL_LABELS[idx] }))}
+          getColOptions={(col) => getColOptions(sprints.find(s => s.id === myFilterSprintId)!, col)}
+          onApply={(filters, sortCol, sortDir) => {
+            // 選択したフィルタ・ソートを、一覧の状態管理 (State) に上書き適用する
+            setSprintFilters(prev => ({ ...prev, [myFilterSprintId]: filters }));
+            if (sortCol) {
+              setSprintSorts(prev => ({ ...prev, [myFilterSprintId]: { col: sortCol, dir: sortDir } }));
+            } else {
+              clearSort(myFilterSprintId);
+            }
+            setExpanded(prev => new Set(prev).add(myFilterSprintId)); // 適用対象のスプリントを展開状態にする
+          }}
+        />
+      )}
     </div>
   );
 }

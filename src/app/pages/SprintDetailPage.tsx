@@ -33,16 +33,45 @@ const getCategoryLabel = (ticket: SprintTicket): string => {
   return raw;
 };
 
+// 🌟 追加: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
+const getClosedDateFromMonitor = (ticket: any): string => {
+  if (!ticket) return "";
+  const logs = ticket.monitorLogs || ticket.monitor_logs || ticket.ticket_monitor_logs || ticket.actualLogs || [];
+  if (Array.isArray(logs) && logs.length > 0) {
+    const closedLog = [...logs]
+      .reverse()
+      .find((log: any) => log && (
+        log.process === "リリース" || log.process === "クローズ" ||
+        log.status === "リリース" || log.status === "クローズ" ||
+        log.phase === "リリース" || log.phase === "クローズ"
+      ));
+    if (closedLog) {
+      return closedLog.completed_at || closedLog.completedAt || closedLog.created_at || closedLog.createdAt || closedLog.date || "";
+    }
+  }
+  return ticket.releasedAt || ticket.released_at || ticket.closedAt || ticket.closed_at || "";
+};
+
+// 🌟 追加: ISO形式などのタイムスタンプから mm/dd を安全に抽出する専用フォーマッター
+const formatClosedMMDD = (isoString: string) => {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString.slice(0, 5); // パース不能な場合のフォールバック
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}`;
+};
+
 function ColumnFilter({
   col, label, sortCol, sortDir, onSort, onClearSort,
   options, selected, onFilterChange,
   open, onToggle, onClose, alignRight,
 }: {
-  col: SortCol;
+  col: SortCol | "closedDate";
   label: string;
-  sortCol: SortCol | "";
+  sortCol: SortCol | "closedDate" | "";
   sortDir: "asc" | "desc";
-  onSort: (col: SortCol, dir: "asc" | "desc") => void;
+  onSort: (col: SortCol | "closedDate", dir: "asc" | "desc") => void;
   onClearSort: () => void;
   options: Array<{ value: string; label: string }>;
   selected: Set<string>;
@@ -194,7 +223,7 @@ export function SprintDetailPage() {
   const [sprint, setSprint] = useState<Sprint | null>(SPRINTS.find(s => s.id === sprintId) || null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
-  
+
   const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
     ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
@@ -203,7 +232,7 @@ export function SprintDetailPage() {
   const canEditDelete = effectivePermissions.canEditDelete;
   const [loading, setLoading] = useState(isSupabaseEnabled);
 
-  const [sortCol, setSortCol] = useState<SortCol | "">("");
+  const [sortCol, setSortCol] = useState<SortCol | "closedDate" | "">("");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [colFilters, setColFilters] = useState<Record<string, Set<string>>>({});
   const [openCol, setOpenCol] = useState<string>("");
@@ -313,6 +342,13 @@ export function SprintDetailPage() {
         return [...new Set(ts.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
       case "dueDate":
         return [...new Set(ts.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+
+      // 🌟 修正: 実績モニター解析関数と連動し、formatClosedMMDD で mm/dd に整形して選択肢を生成
+      case "closedDate":
+        return [...new Set(ts.map(t => getClosedDateFromMonitor(t)).filter(Boolean))]
+          .sort()
+          .map(v => ({ value: v, label: formatClosedMMDD(v) }));
+
       case "estimatedHours":
         return [...new Set(ts.map(t => String(t.estimatedHours)))].sort((a, b) => Number(a) - Number(b)).map(v => ({ value: v, label: `${v}h` }));
       case "progress":
@@ -328,7 +364,7 @@ export function SprintDetailPage() {
   const setColFilter = (col: string) => (s: Set<string>) => setColFilters(prev => ({ ...prev, [col]: s }));
   const toggleCol = (col: string) => setOpenCol(prev => prev === col ? "" : col);
   const closeCol = () => setOpenCol("");
-  const handleSort = (col: SortCol, dir: "asc" | "desc") => { setSortCol(col); setSortDir(dir); };
+  const handleSort = (col: SortCol | "closedDate", dir: "asc" | "desc") => { setSortCol(col); setSortDir(dir); };
   const clearSort = () => setSortCol("");
 
   const displayTickets = [...sprint.tickets]
@@ -337,7 +373,7 @@ export function SprintDetailPage() {
       const catName = getCategoryLabel(t);
       const checks: [string, string][] = [
         ["wbs", t.wbs], ["title", t.title], ["description", htmlToText(t.description)], ["status", t.status], ["priority", t.priority],
-        ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""],
+        ["assignee", t.assignee || ""], ["startDate", t.startDate || ""], ["dueDate", t.dueDate || ""], ["closedDate", getClosedDateFromMonitor(t)],
         ["estimatedHours", String(t.estimatedHours)], ["progress", String(t.progress)],
         ["category", catName],
       ];
@@ -353,6 +389,7 @@ export function SprintDetailPage() {
       else if (sortCol === "assignee") v = (a.assignee || "").localeCompare(b.assignee || "", "ja");
       else if (sortCol === "startDate") v = (a.startDate || "").localeCompare(b.startDate || "");
       else if (sortCol === "dueDate") v = (a.dueDate || "").localeCompare(b.dueDate || "");
+      else if (sortCol === "closedDate") v = getClosedDateFromMonitor(a).localeCompare(getClosedDateFromMonitor(b));
       else if (sortCol === "estimatedHours") v = a.estimatedHours - b.estimatedHours;
       else if (sortCol === "progress") v = a.progress - b.progress;
       else if (sortCol === "category") v = getCategoryLabel(a).localeCompare(getCategoryLabel(b), "ja");
@@ -361,7 +398,7 @@ export function SprintDetailPage() {
     });
 
   const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
-  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 52px 130px 52px";
+  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 72px 52px 130px 52px";
 
   const DETAIL_COL_DEFS = [
     { col: "wbs", label: "No" },
@@ -373,6 +410,7 @@ export function SprintDetailPage() {
     { col: "assignee", label: "担当者" },
     { col: "startDate", label: "開始日" },
     { col: "dueDate", label: "終了日" },
+    { col: "closedDate", label: "クローズ日" },
     { col: "estimatedHours", label: "工数" },
     { col: "progress", label: "進捗" },
   ];
@@ -430,16 +468,16 @@ export function SprintDetailPage() {
       <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: openCol ? 100 : 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
-          {(["wbs","title","description","category","status","priority","assignee","startDate","dueDate","estimatedHours","progress"] as const).map((col, idx) => (
+          {(["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate", "estimatedHours", "progress"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
-              label={["No","チケット名","チケット詳細","分類","ステータス","優先度","担当者","開始日","終了日","工数","進捗"][idx]}
+              label={["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "終了日", "クローズ日", "工数", "進捗"][idx]}
               {...commonProps}
               options={getColOptions(col)}
               selected={getSelected(col)}
               onFilterChange={setColFilter(col)}
               open={openCol === col}
               onToggle={() => toggleCol(col)}
-              alignRight={idx >= 9}
+              alignRight={idx >= 10}
             />
           ))}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
@@ -477,7 +515,7 @@ export function SprintDetailPage() {
             const hasChildren = children.length > 0;
             const isTicketExpanded = expandedTicketIds.has(ticket.id);
             const toggleTicketExpand = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTicketIds(prev => { const n = new Set(prev); n.has(ticket.id) ? n.delete(ticket.id) : n.add(ticket.id); return n; }); };
-            
+
             const displayCategory = getCategoryLabel(ticket);
 
             return (
@@ -502,17 +540,21 @@ export function SprintDetailPage() {
                     </div>
                   </div>
                   <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(ticket.description) || "—"}</span>
-                  
+
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{displayCategory}</span></div>
-                  
+
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, display: "inline-block" }}>{tsm.label}</span></div>
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, display: "inline-block" }}>{priLabel}</span></div>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
                     <Avatar name={ticket.assignee} size="xs" />
-                    <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.assignee.split(/[\s　]/)[0]}</span>
+                    <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.assignee.split(/[\s ]/)[0]}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(ticket.startDate)}</span></div>
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(ticket.dueDate)}</span></div>
+
+                  {/* 🌟 修正: 親チケットのクローズ日表示を専用フォーマッタ(formatClosedMMDD)に切り替え */}
+                  <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(ticket)) || "—"}</span></div>
+
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#6B6458", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{ticket.estimatedHours}h</span></div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                     <div style={{ flex: 1, height: 5, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
@@ -537,7 +579,7 @@ export function SprintDetailPage() {
                   const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                   const cProgress = (child.status === "done" || child.status === "closed") ? 100 : child.progress;
                   const cBarColor = cProgress === 100 ? "#059669" : child.status === "in-progress" ? "#D97706" : "#C9C4BB";
-                  
+
                   const childCategory = getCategoryLabel(child);
 
                   return (
@@ -553,17 +595,21 @@ export function SprintDetailPage() {
                         <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
                       </div>
                       <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
-                      
+
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{childCategory}</span></div>
-                      
+
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, display: "inline-block" }}>{ctsm.label}</span></div>
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, display: "inline-block" }}>{cPriLabel}</span></div>
                       <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
                         <Avatar name={child.assignee} size="xs" />
-                        <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.assignee.split(/[\s　]/)[0]}</span>
+                        <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.assignee.split(/[\s ]/)[0]}</span>
                       </div>
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(child.startDate)}</span></div>
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(child.dueDate)}</span></div>
+
+                      {/* 🌟 修正: 子チケットのクローズ日表示を専用フォーマッタ(formatClosedMMDD)に切り替え */}
+                      <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(child)) || "—"}</span></div>
+
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#6B6458", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{child.estimatedHours}h</span></div>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                         <div style={{ flex: 1, height: 5, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
