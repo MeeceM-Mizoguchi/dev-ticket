@@ -60,8 +60,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, sprintId, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string }) {
+  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor,
+}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const { showAlert } = useAlert();
@@ -72,7 +72,9 @@ export function TicketDetailPanel({
 
   const [breadcrumbProjName, setBreadcrumbProjName] = useState("");
   const [breadcrumbSprintName, setBreadcrumbSprintName] = useState("");
+  const [breadcrumbSprintIdentifier, setBreadcrumbSprintIdentifier] = useState<string | null>(null);
   const [breadcrumbParentTicket, setBreadcrumbParentTicket] = useState<SprintTicket | null>(null);
+  const [isClosing, setIsClosing] = useState(false);
 
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
@@ -158,6 +160,7 @@ export function TicketDetailPanel({
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const descTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const reviewerDropRef = useRef<HTMLDivElement>(null);
 
   // mention tracking
@@ -190,8 +193,22 @@ export function TicketDetailPanel({
     await Promise.all([loadCommentFiles(ticketId), loadChildTickets(ticketId)]);
   }, [loadCommentFiles, loadChildTickets]);
 
+  const handleClose = useCallback(() => {
+    setIsClosing(true);
+    closeTimerRef.current = setTimeout(() => {
+      onClose();
+    }, 260);
+  }, [onClose]);
+
+  useEffect(() => {
+    return () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current); };
+  }, []);
+
   useEffect(() => {
     if (!ticket) return;
+    if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = undefined; }
+    setIsClosing(false);
+    setBreadcrumbSprintIdentifier(null);
     setTitle(ticket.title);
     setStatus(ticket.status as any);
     setPriority(ticket.priority);
@@ -257,8 +274,11 @@ export function TicketDetailPanel({
           .then(({ data }) => { if (data?.name) setBreadcrumbProjName(data.name); });
       }
       if (sprintId) {
-        supabase!.from("sprints").select("name").eq("id", sprintId).single()
-          .then(({ data }) => { if (data?.name) setBreadcrumbSprintName(data.name); });
+        supabase!.from("sprints").select("name, identifier").eq("id", sprintId).single()
+          .then(({ data }) => {
+            if (data?.name) setBreadcrumbSprintName(data.name);
+            if (data?.identifier) setBreadcrumbSprintIdentifier(data.identifier);
+          });
       }
       setBreadcrumbParentTicket(null);
       if (ticket?.parentId) {
@@ -1077,7 +1097,7 @@ export function TicketDetailPanel({
           onCreated={() => { setShowCreateChild(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
-      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}`}</style>
+      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}`}</style>
 
       {/* Image preview modal */}
       {previewImage && (
@@ -1097,8 +1117,8 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
-      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
+      <div onClick={handleClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
 
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
@@ -1126,7 +1146,7 @@ export function TicketDetailPanel({
             {breadcrumbProjName && (
               <>
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
-                <a href={`/${projectSlug}`} onClick={(e) => { e.preventDefault(); window.location.href = `/${projectSlug}`; onClose(); }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
+                <a href={`/${projectSlug}`} onClick={(e) => { e.preventDefault(); if (ticket?.wbs) sessionStorage.setItem('hl_wbs', ticket.wbs); window.location.href = `/${projectSlug}`; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
                   {breadcrumbProjName}
                 </a>
               </>
@@ -1134,10 +1154,14 @@ export function TicketDetailPanel({
             {breadcrumbSprintName && (
               <>
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
-                {(projectSlug && sprintId) ? (
+                {(projectSlug && (sprintSlug || breadcrumbSprintIdentifier)) ? (
                   <a
-                    href={`/${projectSlug}/sprint/${sprintId}`}
-                    onClick={(e) => { e.preventDefault(); window.location.href = `/${projectSlug}/sprint/${sprintId}`; onClose(); }}
+                    href={`/${projectSlug}/${sprintSlug || breadcrumbSprintIdentifier}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (ticket?.wbs) sessionStorage.setItem('hl_wbs', ticket.wbs);
+                      window.location.href = `/${projectSlug}/${sprintSlug || breadcrumbSprintIdentifier}`;
+                    }}
                     style={{ color: breadcrumbParentTicket ? "#9E9690" : "#6B6458", fontWeight: 700, textDecoration: "none", transition: "color 0.15s" }}
                     onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"}
                     onMouseLeave={ev => ev.currentTarget.style.color = breadcrumbParentTicket ? "#9E9690" : "#6B6458"}
@@ -1260,7 +1284,7 @@ export function TicketDetailPanel({
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
                 <Trash2 style={{ width: 15, height: 15 }} />
               </button>
-              <button onClick={onClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+              <button onClick={handleClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                 <X style={{ width: 16, height: 16 }} />

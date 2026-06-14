@@ -28,8 +28,6 @@ export default function App() {
             <Route element={<ProtectedShell />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/projects" element={<ProjectsPage />} />
-              {/* Sprint detail (individual sprint view) */}
-              <Route path="/:projectSlug/sprint/:sprintId" element={<SprintDetailPage />} />
               <Route path="/clients" element={<ClientsPage />} />
               <Route path="/members" element={<MembersPage />} />
               <Route path="/permissions" element={<PermissionsPage />} />
@@ -37,9 +35,10 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/admin-settings" element={<AdminSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
-              {/* Slug-based sprint list + ticket panel */}
+              {/* Sprint list */}
               <Route path="/:projectSlug" element={<SprintPage />} />
-              <Route path="/:projectSlug/:ticketWbs" element={<SprintPage />} />
+              {/* Sprint detail (チケット一覧) with optional ticket open */}
+              <Route path="/:projectSlug/:segment" element={<SprintDetailPage />} />
             </Route>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />

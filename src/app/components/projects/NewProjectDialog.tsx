@@ -38,7 +38,7 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const handleSave = async () => {
     if (!name.trim()) return;
 
-    const finalSlug = sanitizeSlug((slug.trim() || autoSlug(name)).toUpperCase());
+    const finalSlug = sanitizeSlug((slug.trim() || autoSlug(name.trim())).toUpperCase());
     const finalPrefix = sanitizePrefix((wbsPrefix.trim() || autoPrefix(name)).toUpperCase());
 
     if (RESERVED_SLUGS.has(finalSlug.toLowerCase())) {
@@ -85,10 +85,11 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
           <FieldInput
             label="プロジェクト識別子"
             placeholder={name ? autoSlug(name) : "例: PROJ"}
+            required
             value={slug}
             onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
           />
-          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合は自動生成</p>
+          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合はプロジェクト名から自動生成</p>
           {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 3 }}>{slugError}</p>}
         </div>
         <div>

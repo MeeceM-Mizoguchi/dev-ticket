@@ -32,7 +32,7 @@ export function EditSprintDialog({ sprint, otherSprints = [], onClose, onUpdated
   const trimmedIdentifier = identifier.trim();
   const isDuplicateIdentifier = trimmedIdentifier !== "" &&
     otherSprints.some(s => s.identifier === trimmedIdentifier);
-  const canSave = !!name.trim() && !isDuplicateIdentifier;
+  const canSave = !!name.trim() && !!trimmedIdentifier && !isDuplicateIdentifier;
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -76,7 +76,7 @@ export function EditSprintDialog({ sprint, otherSprints = [], onClose, onUpdated
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={!canSave}>{saving ? "保存中..." : "保存する"}</BtnPrimary></>}>
       <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
       <div>
-        <FieldInput label="スプリント識別子" placeholder="例: SP5, Q1-2026（省略可）" value={identifier} onChange={setIdentifier} />
+        <FieldInput label="スプリント識別子" placeholder="例: SP5, S1（URLに使用）" required value={identifier} onChange={setIdentifier} />
         {isDuplicateIdentifier && (
           <p style={{ fontSize: 11, color: "#DC2626", marginTop: 4 }}>
             その識別子はすでに別のスプリントで使用されています。

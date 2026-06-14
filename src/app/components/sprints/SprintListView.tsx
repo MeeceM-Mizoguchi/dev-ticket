@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
@@ -223,11 +223,25 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
     setExpanded(prev => new Set([...prev, ...sprints.map(s => s.id)]));
   }, [sprints.map(s => s.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Effect 1: アコーディオン展開
   useEffect(() => {
     if (!targetTicketWbs) return;
     const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
     if (sprint) setExpanded(prev => new Set([...prev, sprint.id]));
   }, [targetTicketWbs, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Effect 2: 展開後にスクロール（expanded が更新されてDOMに要素が現れてから実行）
+  const scrolledForWbs = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetTicketWbs) { scrolledForWbs.current = null; return; }
+    if (scrolledForWbs.current === targetTicketWbs) return;
+    const el = document.querySelector(`[data-wbs="${targetTicketWbs}"]`);
+    if (!el) return; // まだDOMにない（展開待ち）
+    scrolledForWbs.current = targetTicketWbs;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, [targetTicketWbs, expanded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
@@ -605,14 +619,17 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
 
                     const displayCategory = getCategoryLabel(t);
+                    const isHighlighted = t.wbs === targetTicketWbs;
+                    const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF";
 
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
+                          data-wbs={t.wbs}
                           // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF", transition: "background 0.1s", opacity: (t.status === "closed" || t.progress === -1) ? 0.65 : 1 }}
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.progress === -1) ? 0.65 : 1 }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = (t.status === "closed" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF"; }}>
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = baseBg; }}>
                           <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
                             {hasChildren ? (
                               <button onClick={toggleTicket} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center" }}>
@@ -658,12 +675,15 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                           const childCategory = getCategoryLabel(child);
+                          const isChildHighlighted = child.wbs === targetTicketWbs;
+                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : child.progress === -1 ? "#F5F5F4" : "#F9F8F6";
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
+                              data-wbs={child.wbs}
                               // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
-                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: child.progress === -1 ? "#F5F5F4" : "#F9F8F6", transition: "background 0.1s", opacity: (child.status === "closed" || child.progress === -1) ? 0.65 : 1 }}
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.progress === -1) ? 0.65 : 1 }}
                               onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#ECECEB" : "#EEF7F3"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#F5F5F4" : "#F9F8F6"; }}>
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
                               <div style={{ display: "flex", justifyContent: "center" }}>
                                 <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                               </div>

@@ -20,10 +20,16 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { EditProjectIdentifiersDialog } from "@/app/components/projects/EditProjectIdentifiersDialog";
 
 export function SprintPage() {
-  const { projectSlug, ticketWbs } = useParams<{ projectSlug: string; ticketWbs?: string }>();
+  const { projectSlug } = useParams<{ projectSlug: string }>();
   const [searchParams] = useSearchParams();
   const anchor = searchParams.get("anchor") ?? undefined;
   const navigate = useNavigate();
+  const [highlightWbs] = useState<string | undefined>(() => {
+    const v = sessionStorage.getItem('hl_wbs') ?? undefined;
+    if (v) sessionStorage.removeItem('hl_wbs');
+    return v;
+  });
+  const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -51,6 +57,7 @@ export function SprintPage() {
   const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [notFound, setNotFound] = useState(false);
+  const [selectedTicketWbs, setSelectedTicketWbs] = useState<string | null>(null);
   const deletedIdsRef = useRef<Set<string>>(new Set());
 
   const projectId = project?.id ?? null;
@@ -100,14 +107,24 @@ export function SprintPage() {
     return () => clearInterval(id);
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const onPop = () => {
+      const path = window.location.pathname;
+      const match = path.match(new RegExp(`^/${projectSlug}/(.+)$`));
+      setSelectedTicketWbs(match ? match[1] : null);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [projectSlug]);
+
   const selectedTicket = useMemo<SprintTicket | null>(() => {
-    if (!ticketWbs) return null;
+    if (!selectedTicketWbs) return null;
     for (const sprint of sprints) {
-      const t = sprint.tickets.find(t => t.wbs === ticketWbs);
+      const t = sprint.tickets.find(t => t.wbs === selectedTicketWbs);
       if (t) return t;
     }
     return null;
-  }, [ticketWbs, sprints]);
+  }, [selectedTicketWbs, sprints]);
 
   const createForSprint = useMemo(
     () => sprints.find(s => s.id === createForSprintId) ?? null,
@@ -125,10 +142,14 @@ export function SprintPage() {
   );
 
   const handleSelectTicket = (ticket: SprintTicket) => {
-    if (ticket.wbs) navigate(`/${projectSlug}/${ticket.wbs}`);
+    if (ticket.wbs) {
+      setClosedHighlightWbs(null);
+      window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${ticket.wbs}`);
+      setSelectedTicketWbs(ticket.wbs);
+    }
   };
 
-  const goToSprint = (sprint: Sprint) => navigate(`/${projectSlug}/sprint/${sprint.id}`);
+  const goToSprint = (sprint: Sprint) => navigate(`/${projectSlug}/${sprint.identifier || sprint.id}`);
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (notFound) return <Navigate to="/projects" replace />;
@@ -202,7 +223,7 @@ export function SprintPage() {
         ))}
       </div>
 
-      {viewMode === "list" && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={ticketWbs} onOpenMyFilter={setMyFilterSprintId} />}
+      {viewMode === "list" && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
       {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
@@ -276,18 +297,45 @@ export function SprintPage() {
         />
       )}
 
-      <TicketDetailPanel
-        ticket={selectedTicket}
-        projectId={projectId ?? undefined}
-        sprintId={selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id))?.id : undefined}
-        projectSlug={projectSlug}
-        anchor={anchor}
-        onClose={() => navigate(`/${projectSlug}`)}
-        onUpdated={refreshSprints}
-        onDeleted={() => { navigate(`/${projectSlug}`); refreshSprints(); }}
-        onSelectTicket={t => t.wbs ? navigate(`/${projectSlug}/${t.wbs}`) : undefined}
-        projectPermissions={projectPermissions ?? undefined}
-      />
+      {(() => {
+        const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
+        return (
+          <TicketDetailPanel
+            ticket={selectedTicket}
+            projectId={projectId ?? undefined}
+            sprintId={ticketSprint?.id}
+            sprintSlug={ticketSprint?.identifier || undefined}
+            projectSlug={projectSlug}
+            anchor={anchor}
+            onClose={() => {
+              const wbs = selectedTicketWbs;
+              setClosedHighlightWbs(wbs);
+              window.history.pushState(null, '', `/${projectSlug}`);
+              setSelectedTicketWbs(null);
+              if (wbs) {
+                requestAnimationFrame(() => {
+                  document.querySelector(`[data-wbs="${wbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                });
+              }
+            }}
+            onUpdated={refreshSprints}
+            onDeleted={() => {
+              setClosedHighlightWbs(null);
+              window.history.pushState(null, '', `/${projectSlug}`);
+              setSelectedTicketWbs(null);
+              refreshSprints();
+            }}
+            onSelectTicket={t => {
+              if (t.wbs) {
+                setClosedHighlightWbs(null);
+                window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
+                setSelectedTicketWbs(t.wbs);
+              }
+            }}
+            projectPermissions={projectPermissions ?? undefined}
+          />
+        );
+      })()}
     </div>
   );
 }
