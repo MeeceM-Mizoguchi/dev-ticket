@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -8,6 +8,7 @@ import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { downloadSprintCsv } from "@/app/lib/csvExport";
 
 // 🌟 追加: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
 const getClosedDateFromMonitor = (ticket: any): string => {
@@ -205,13 +206,14 @@ function ColumnFilter({
   );
 }
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, targetTicketWbs }: {
+export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
   const { userId } = useAuth(); // 🌟 追加: userId を取得
@@ -485,6 +487,20 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
                       <ExternalLink style={{ width: 11, height: 11 }} />詳細
                     </button>
+                    <button onClick={e => { e.stopPropagation(); downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <Download style={{ width: 11, height: 11 }} />CSVダウンロード
+                    </button>
+                    {onBulkCreate && (
+                      <button onClick={e => { e.stopPropagation(); onBulkCreate(sprint.id); }}
+                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                        <Plus style={{ width: 11, height: 11 }} />一括作成
+                      </button>
+                    )}
                     {onCreateTicket && (
                       <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
                         style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
