@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
@@ -425,7 +425,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
   const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const;
   const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日", "クローズ日"];
-  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 32px`;
+  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 60px 32px`;
 
   return (
     <div>
@@ -546,6 +546,9 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         alignRight={idx >= 7}
                       />
                     ))}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>実績</span>
+                    </div>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                       {hasAnyFilter && (
                         <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
@@ -643,6 +646,7 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
                           {/* 🌟 修正: 実績モニターから動的に取得したクローズ日を専用フォーマッタ(formatClosedMMDD)で表示 */}
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(t)) || "—"}</span></div>
+                          {(() => { const ah = calcTicketActualHours(t); return <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontFamily: "var(--font-mono)", fontWeight: 600, color: ah > 0 ? "#059669" : "#B0A9A4" }}>{ah > 0 ? formatPersonDays(ah) : "—"}</span></div>; })()}
                         </div>
                         {/* 子チケット行（アコーディオン展開時） */}
                         {hasChildren && isTicketExpanded && children.map(child => {

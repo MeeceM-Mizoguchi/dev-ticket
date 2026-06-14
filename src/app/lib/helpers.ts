@@ -63,6 +63,30 @@ export function getAvatarColor(name: string) {
   return colors[name.charCodeAt(0) % colors.length];
 }
 
+// 案1+案2: 日次8h上限＋夜間(23時〜翌8時)除外で実働時間を計算
+// 初日はactual開始時刻から、翌日以降は9時スタート、各日最大8h
+export function calcWorkingHours(startMs: number, endMs: number): number {
+  if (endMs <= startMs) return 0;
+  const NIGHT_END = 8, NEXT_DAY = 9, NIGHT_START = 23, MAX_PER_DAY = 8;
+  let total = 0;
+  const s = new Date(startMs);
+  let cur = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+  const last = new Date(endMs);
+  const lastDay = new Date(last.getFullYear(), last.getMonth(), last.getDate());
+  let isFirst = true;
+  while (cur.getTime() <= lastDay.getTime()) {
+    const y = cur.getFullYear(), mo = cur.getMonth(), d = cur.getDate();
+    const eff0 = isFirst
+      ? Math.max(startMs, new Date(y, mo, d, NIGHT_END).getTime())
+      : new Date(y, mo, d, NEXT_DAY).getTime();
+    const eff1 = Math.min(endMs, new Date(y, mo, d, NIGHT_START).getTime());
+    if (eff1 > eff0) total += Math.min((eff1 - eff0) / 3600000, MAX_PER_DAY);
+    cur = new Date(y, mo, d + 1);
+    isFirst = false;
+  }
+  return total;
+}
+
 export function calcTicketActualHours(ticket: {
   startedAt?: string | null;
   reviewRequestedAt?: string | null;
@@ -86,15 +110,20 @@ export function calcTicketActualHours(ticket: {
     if (!prev || !cur) continue;
     // レビュー依頼→承認が同一タイムスタンプ = カスケード記録（スキップ）
     if (i === 2 && prev === cur) continue;
-    total += (new Date(cur).getTime() - new Date(prev).getTime()) / (1000 * 60 * 60);
+    total += calcWorkingHours(new Date(prev).getTime(), new Date(cur).getTime());
   }
   return total;
 }
 
+export function formatPersonDays(hours: number): string {
+  if (hours <= 0) return "0人日";
+  const pd = Math.round((hours / 8) * 10) / 10;
+  if (pd < 0.1) return "0.1人日未満";
+  return `${pd}人日`;
+}
+
 export function formatActualHours(hours: number): string {
-  if (hours === 0) return "0h";
-  const h = Math.round(hours * 10) / 10;
-  return `${h}h`;
+  return formatPersonDays(hours);
 }
 
 export function calcProgress(done: number, ip: number, todo: number) {
