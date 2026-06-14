@@ -2093,6 +2093,53 @@ export function TicketDetailPanel({
                           </div>
                         </div>
                       )}
+                      {showReviewForm && (
+                        <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
+                          <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
+                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                          {revisionImages.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                              {revisionImages.map((img, i) => (
+                                <div key={i} style={{ position: "relative" }}>
+                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                  <button onClick={() => copyImageToClipboard(img)}
+                                    style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                    title="画像をコピー">
+                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                  </button>
+                                  <button onClick={() => setRevisionImages(prev => prev.filter((_, j) => j !== i))}
+                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4", marginTop: 8 }}>
+                            <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                            <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                              onChange={async e => {
+                                for (const f of Array.from(e.target.files || [])) {
+                                  if (!f.type.startsWith("image/")) continue;
+                                  const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                  if (url) setRevisionImages(prev => [...prev, url]);
+                                }
+                                e.target.value = "";
+                              }} />
+                          </label>
+                          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                            <button onClick={() => handleRevisionRequest(revisionInput)}
+                              style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
+                              修正依頼（差戻し）
+                            </button>
+                            <button onClick={() => handleReviewApproval(revisionInput)}
+                              style={{ flex: 1, padding: "8px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
+                              ✅ レビュー承認
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
