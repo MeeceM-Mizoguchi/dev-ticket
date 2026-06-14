@@ -5,6 +5,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
+import { RichEditor } from "@/app/components/shared/RichEditor";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
 import type { SprintTicket, ActionMemo, ActionMemoCategory, TicketStatus } from "@/app/types";
 
@@ -64,6 +65,12 @@ function StatusBadge({ status }: { status: string }) {
       flexShrink: 0, lineHeight: 1.4,
     }}>{s.label}</span>
   );
+}
+
+function contentToPlainText(content: string): string {
+  if (!content.startsWith("<")) return content;
+  const doc = new DOMParser().parseFromString(content, "text/html");
+  return doc.body.textContent ?? "";
 }
 
 // ─── #チケットNo テキスト レンダラー ─────────────────────────
@@ -346,7 +353,7 @@ function ActionMemoRow({
             overflow: "hidden", textOverflow: "ellipsis",
             display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const,
           }}>
-            {memo.content}
+            {contentToPlainText(memo.content)}
           </p>
         )}
       </div>
@@ -443,12 +450,14 @@ function MemoDetailModal({
   onOpenTicket,
   onToggleDone,
   onSave,
+  onNavigateTicket,
 }: {
   memo: ActionMemo;
   ticketStatus: string | null;
   anchorPos?: { left: number; top: number };
   onClose: () => void;
   onOpenTicket?: () => void;
+  onNavigateTicket?: (wbs: string) => void;
   onToggleDone: (memo: ActionMemo) => void;
   onSave: (id: string, title: string, content: string) => Promise<void>;
 }) {
@@ -457,7 +466,14 @@ function MemoDetailModal({
   const [editTitle, setEditTitle] = useState(memo.title);
   const [editContent, setEditContent] = useState(memo.content);
   const [saving, setSaving] = useState(false);
+  const [tickets, setTickets] = useState<{ wbs: string; title: string }[]>([]);
   const meta = CATEGORY_META[memo.category];
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !editing) return;
+    supabase!.from("sprint_tickets").select("wbs, title").order("wbs")
+      .then(({ data }) => { if (data) setTickets(data as { wbs: string; title: string }[]); });
+  }, [editing]);
 
   const handleSaveEdit = async () => {
     if (!editTitle.trim()) return;
@@ -591,18 +607,7 @@ function MemoDetailModal({
                     # でチケットサジェスト
                   </span>
                 </div>
-                <MentionTextarea
-                  value={editContent}
-                  onChange={setEditContent}
-                  rows={expanded ? 8 : 4}
-                  textareaStyle={{
-                    width: "100%", boxSizing: "border-box" as const,
-                    padding: "7px 10px", fontSize: 12, color: "#1A1714",
-                    border: "1.5px solid #059669", borderRadius: 8,
-                    outline: "none", fontFamily: "inherit", resize: "vertical",
-                    background: "#FAFAF9", lineHeight: 1.5,
-                  }}
-                />
+                <RichEditor value={editContent} onChange={setEditContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={expanded ? 160 : 80} maxHeight={expanded ? 280 : 120} tickets={tickets} toolbar={false} />
               </div>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button
@@ -619,9 +624,15 @@ function MemoDetailModal({
           ) : (
             <>
               {memo.content ? (
-                <p style={{ fontSize: 12, color: "#4A4540", lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const }}>
-                  <MemoContent content={memo.content} onNavigate={() => { }} />
-                </p>
+                memo.content.startsWith("<") ? (
+                  <div style={{ marginBottom: 12 }}>
+                    <RichEditor value={memo.content} readOnly minHeight={20} onTicketClick={onNavigateTicket} />
+                  </div>
+                ) : (
+                  <p style={{ fontSize: 12, color: "#4A4540", lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const }}>
+                    <MemoContent content={memo.content} onNavigate={onNavigateTicket ?? (() => {})} />
+                  </p>
+                )
               ) : (
                 <p style={{ fontSize: 12, color: "#D4CEC8", margin: "0 0 12px", fontStyle: "italic" }}>内容なし</p>
               )}
@@ -902,9 +913,16 @@ function AddMemoModal({
   const [category, setCategory] = useState<ActionMemoCategory>("memo");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [tickets, setTickets] = useState<{ wbs: string; title: string }[]>([]);
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { titleRef.current?.focus(); }, []);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("sprint_tickets").select("wbs, title").order("wbs")
+      .then(({ data }) => { if (data) setTickets(data as { wbs: string; title: string }[]); });
+  }, []);
 
   const handleSave = async () => {
     if (!title.trim()) return;
@@ -1002,19 +1020,7 @@ function AddMemoModal({
             # でチケットサジェスト
           </span>
         </div>
-        <MentionTextarea
-          value={content}
-          onChange={setContent}
-          placeholder="内容を入力... (# でチケットリンク)"
-          rows={4}
-          textareaStyle={{
-            width: "100%", boxSizing: "border-box" as const,
-            padding: "8px 10px", fontSize: 12, color: "#1A1714",
-            border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8,
-            outline: "none", fontFamily: "inherit", resize: "vertical",
-            background: "#FAFAF9", lineHeight: 1.5, transition: "border-color 0.15s",
-          }}
-        />
+        <RichEditor value={content} onChange={setContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={100} maxHeight={200} tickets={tickets} toolbar={false} />
       </div>
 
       {/* エラー表示 */}
@@ -1558,6 +1564,7 @@ export function MyActionsPage() {
           anchorPos={memoAnchorPos}
           onClose={() => { setSelectedMemo(null); setMemoAnchorPos(undefined); }}
           onOpenTicket={selectedMemo.ticketId ? () => { handleMemoOpen(selectedMemo); setSelectedMemo(null); setMemoAnchorPos(undefined); } : undefined}
+          onNavigateTicket={(wbs) => { handleNavigateWbs(wbs, selectedMemo!); setSelectedMemo(null); setMemoAnchorPos(undefined); }}
           onToggleDone={handleToggleDone}
           onSave={handleMemoEdit}
         />
