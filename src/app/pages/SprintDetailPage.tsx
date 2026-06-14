@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -212,15 +212,22 @@ function ColumnFilter({
   );
 }
 
+function parseSprintSegment(segment: string): { sprintIdentifier: string; ticketNum: string | null } {
+  const match = segment.match(/^(.+)-(\d+)$/);
+  if (match) return { sprintIdentifier: match[1], ticketNum: match[2] };
+  return { sprintIdentifier: segment, ticketNum: null };
+}
+
 export function SprintDetailPage() {
-  const { projectSlug, sprintId } = useParams<{ projectSlug: string; sprintId: string }>();
+  const { projectSlug, segment = "" } = useParams<{ projectSlug: string; segment?: string }>();
+  const { sprintIdentifier, ticketNum } = parseSprintSegment(segment);
   const navigate = useNavigate();
   const { toast } = useToast();
   const { showAlert } = useAlert();
   const { userId, userPermissions, userRole } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const [project, setProject] = useState<Project | null>(null);
-  const [sprint, setSprint] = useState<Sprint | null>(SPRINTS.find(s => s.id === sprintId) || null);
+  const [sprint, setSprint] = useState<Sprint | null>(null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
 
@@ -240,34 +247,60 @@ export function SprintDetailPage() {
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
   const [showMyFilterModal, setShowMyFilterModal] = useState(false);
   const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
-  const [selectedWbs, setSelectedWbs] = useState<string | null>(null);
+  const [lastOpenedWbs, setLastOpenedWbs] = useState<string | null>(() => {
+    const v = sessionStorage.getItem('hl_wbs');
+    if (v) sessionStorage.removeItem('hl_wbs');
+    return v;
+  });
+  const [scrollTick, setScrollTick] = useState(0);
+  const scrollWbsRef = useRef<string | null>(null);
+
+  // データ読み込み完了後、sessionStorage由来のハイライト行へスクロール
+  useEffect(() => {
+    if (loading || !lastOpenedWbs) return;
+    scrollWbsRef.current = lastOpenedWbs;
+    setScrollTick(t => t + 1);
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // scrollTick が変わるたびに（React DOM確定後）スクロール実行
+  useEffect(() => {
+    if (!scrollTick || !scrollWbsRef.current) return;
+    document.querySelector(`[data-wbs="${scrollWbsRef.current}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [scrollTick]);
 
   const selectTicket = (wbs: string | null) => {
-    setSelectedWbs(wbs);
+    if (wbs) {
+      navigate(`/${projectSlug}/${sprintIdentifier}-${wbs.split("-").pop()}`, { replace: false });
+    } else {
+      navigate(`/${projectSlug}/${sprintIdentifier}`);
+    }
   };
 
   useEffect(() => {
-    if (!isSupabaseEnabled || !sprintId) return;
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single()
-      .then(async ({ data: s }) => {
-        if (!s) { setLoading(false); return; }
-        setSprint(mapSprint(s));
-        const pid = s.project_id;
-        const [{ data: p }, { data: pmp }] = await Promise.all([
-          supabase!.from("projects").select("*").eq("id", pid).single(),
-          userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", pid).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
-        ]);
-        if (p) setProject(mapProject(p));
-        if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
-        setProjectPermissionsLoaded(true);
-        setLoading(false);
-      })
-      .catch(() => { setProjectPermissionsLoaded(true); setLoading(false); });
-  }, [sprintId, userId]);
+    if (!isSupabaseEnabled || !sprintIdentifier) return;
+    const base = supabase!.from("sprints").select("*, sprint_tickets(*)").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" });
+    (async () => {
+      // Try by identifier first, then by ID for backward compat
+      const { data: byId } = await base.eq("identifier", sprintIdentifier).maybeSingle();
+      const { data: byRawId } = byId ? { data: null } : await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintIdentifier).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).maybeSingle();
+      const s = byId ?? byRawId;
+      if (!s) { setProjectPermissionsLoaded(true); setLoading(false); return; }
+      setSprint(mapSprint(s));
+      const pid = s.project_id;
+      const [{ data: p }, { data: pmp }] = await Promise.all([
+        supabase!.from("projects").select("*").eq("id", pid).single(),
+        userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", pid).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
+      ]);
+      if (p) setProject(mapProject(p));
+      if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
+      setProjectPermissionsLoaded(true);
+      setLoading(false);
+    })().catch(() => { setProjectPermissionsLoaded(true); setLoading(false); });
+  }, [sprintIdentifier, userId]);
 
   const refreshSprint = () => {
-    if (!isSupabaseEnabled || !sprintId) return;
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintId).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single()
+    if (!isSupabaseEnabled || !sprint) return;
+    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprint.id).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single()
       .then(({ data }) => { if (data) setSprint(mapSprint(data)); });
   };
 
@@ -309,7 +342,9 @@ export function SprintDetailPage() {
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
 
-  const selectedTicket = selectedWbs ? (sprint.tickets.find(t => t.wbs === selectedWbs || t.id === selectedWbs) ?? null) : null;
+  const selectedTicket = ticketNum
+    ? (sprint.tickets.find(t => t.wbs === `${sprintIdentifier}-${ticketNum}` || t.wbs.split("-").pop() === ticketNum) ?? null)
+    : null;
   const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
@@ -422,7 +457,7 @@ export function SprintDetailPage() {
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
         </button>
         <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <button onClick={() => navigate(`/${projectSlug}`)} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>スプリント一覧</button>
+        <button onClick={() => { if (selectedTicket?.wbs) sessionStorage.setItem('hl_wbs', selectedTicket.wbs); navigate(`/${projectSlug}`); }} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>スプリント一覧</button>
         <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
         <span style={{ color: "#1A1714", fontWeight: 600 }}>{sprint.name}</span>
       </div>
@@ -498,7 +533,7 @@ export function SprintDetailPage() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
             {Object.values(colFilters).some(s => s.size > 0) && (
               <button onClick={async () => {
-                const dupName = await checkDuplicateFilter(sprintId!, userId, serializedColFilters);
+                const dupName = await checkDuplicateFilter(sprint?.id!, userId, serializedColFilters);
                 if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
                 setShowSaveFilterDialog(true);
               }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
@@ -536,9 +571,10 @@ export function SprintDetailPage() {
             return (
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
-                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.status === "closed" ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: ticket.status === "closed" ? 0.65 : 1 }}
+                  data-wbs={ticket.wbs}
+                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.wbs === lastOpenedWbs ? "#FFFBEB" : ticket.status === "closed" ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: ticket.status === "closed" ? 0.65 : 1 }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#ECECEB" : "#FFF7F3"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#F5F5F4" : "transparent"; }}>
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.wbs === lastOpenedWbs ? "#FFFBEB" : ticket.status === "closed" ? "#F5F5F4" : "transparent"; }}>
                   <div style={{ display: "flex", justifyContent: "center", gap: 3, alignItems: "center" }}>
                     {hasChildren ? (
                       <button onClick={toggleTicketExpand} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
@@ -653,16 +689,35 @@ export function SprintDetailPage() {
         </div>
       </div>
 
-      {showCreate && <NewTicketDialog sprintId={sprintId!} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} />}
+      {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} />}
       {deleteTicketTarget && (
         <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />
       )}
-      <TicketDetailPanel ticket={selectedTicket} projectId={project?.id} sprintId={sprintId} projectSlug={projectSlug} onClose={() => selectTicket(null)} onUpdated={refreshSprint} onDeleted={() => { selectTicket(null); refreshSprint(); }} onSelectTicket={t => selectTicket(t.wbs || t.id)} projectPermissions={projectPermissions ?? undefined} />
+      <TicketDetailPanel
+        ticket={selectedTicket}
+        projectId={project?.id}
+        sprintId={sprint?.id}
+        sprintSlug={sprint?.identifier || undefined}
+        projectSlug={projectSlug}
+        onClose={() => {
+          const wbs = selectedTicket?.wbs ?? null;
+          if (wbs) {
+            setLastOpenedWbs(wbs);
+            scrollWbsRef.current = wbs;
+            setScrollTick(t => t + 1);
+          }
+          navigate(`/${projectSlug}/${sprintIdentifier}`);
+        }}
+        onUpdated={refreshSprint}
+        onDeleted={() => { selectTicket(null); refreshSprint(); }}
+        onSelectTicket={t => selectTicket(t.wbs || t.id)}
+        projectPermissions={projectPermissions ?? undefined}
+      />
 
       {showMyFilterModal && (
         <MyFilterModal
           onClose={() => setShowMyFilterModal(false)}
-          sprintId={sprintId!}
+          sprintId={sprint?.id!}
           userId={userId}
           cols={DETAIL_COL_DEFS}
           getColOptions={getColOptions}
@@ -677,7 +732,7 @@ export function SprintDetailPage() {
         <SaveFilterDialog
           onClose={() => setShowSaveFilterDialog(false)}
           onSave={async (title) => {
-            await addMyFilter(sprintId!, userId, title, serializedColFilters, sortCol, sortDir);
+            await addMyFilter(sprint?.id!, userId, title, serializedColFilters, sortCol, sortDir);
             setShowSaveFilterDialog(false);
           }}
         />
