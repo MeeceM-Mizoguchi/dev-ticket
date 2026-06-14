@@ -7,7 +7,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { Project, Sprint, SprintTicket, TicketStatus, Priority, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText, calcTicketActualHours, formatActualHours } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText, calcTicketActualHours, formatActualHours, formatPersonDays } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -398,7 +398,7 @@ export function SprintDetailPage() {
     });
 
   const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
-  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 72px 52px 130px 52px";
+  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 72px 60px 52px 130px 52px";
 
   const DETAIL_COL_DEFS = [
     { col: "wbs", label: "No" },
@@ -438,7 +438,7 @@ export function SprintDetailPage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 10 }}>
-            {[{ label: "チケット数", value: sprint.tickets.length, accent: false }, { label: "完了", value: done, accent: false }, { label: "進行中", value: inProg, accent: false }, { label: "総工数(h)", value: totalHours, accent: false }, { label: "実績(h)", value: formatActualHours(actualHours), accent: actualHours > 0 }, { label: "進捗", value: `${progress}%`, accent: false }].map(({ label, value, accent }) => (
+            {[{ label: "チケット数", value: sprint.tickets.length, accent: false }, { label: "完了", value: done, accent: false }, { label: "進行中", value: inProg, accent: false }, { label: "総工数(h)", value: totalHours, accent: false }, { label: "実績(人日)", value: formatActualHours(actualHours), accent: actualHours > 0 }, { label: "進捗", value: `${progress}%`, accent: false }].map(({ label, value, accent }) => (
               <div key={label} style={{ background: "#FFFFFF", borderRadius: 10, padding: "10px 14px", border: "1px solid rgba(26,23,20,0.08)", textAlign: "center" as const, minWidth: 80 }}>
                 <p style={{ fontSize: 20, fontWeight: 800, color: accent ? "#059669" : "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.03em" }}>{value}</p>
                 <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 2 }}>{label}</p>
@@ -468,16 +468,31 @@ export function SprintDetailPage() {
       <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: openCol ? 100 : 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
-          {(["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate", "estimatedHours", "progress"] as const).map((col, idx) => (
+          {(["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
-              label={["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "終了日", "クローズ日", "工数", "進捗"][idx]}
+              label={["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "終了日", "クローズ日"][idx]}
               {...commonProps}
               options={getColOptions(col)}
               selected={getSelected(col)}
               onFilterChange={setColFilter(col)}
               open={openCol === col}
               onToggle={() => toggleCol(col)}
-              alignRight={idx >= 10}
+              alignRight={false}
+            />
+          ))}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>実績</span>
+          </div>
+          {(["estimatedHours", "progress"] as const).map((col, idx) => (
+            <ColumnFilter key={col} col={col}
+              label={["工数", "進捗"][idx]}
+              {...commonProps}
+              options={getColOptions(col)}
+              selected={getSelected(col)}
+              onFilterChange={setColFilter(col)}
+              open={openCol === col}
+              onToggle={() => toggleCol(col)}
+              alignRight={true}
             />
           ))}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
@@ -555,6 +570,8 @@ export function SprintDetailPage() {
                   {/* 🌟 修正: 親チケットのクローズ日表示を専用フォーマッタ(formatClosedMMDD)に切り替え */}
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(ticket)) || "—"}</span></div>
 
+                  {(() => { const ah = calcTicketActualHours(ticket); return <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, fontFamily: "var(--font-mono)", fontWeight: 600, color: ah > 0 ? "#059669" : "#B0A9A4" }}>{ah > 0 ? formatPersonDays(ah) : "—"}</span></div>; })()}
+
                   <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 11, color: "#6B6458", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{ticket.estimatedHours}h</span></div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                     <div style={{ flex: 1, height: 5, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
@@ -609,6 +626,8 @@ export function SprintDetailPage() {
 
                       {/* 🌟 修正: 子チケットのクローズ日表示を専用フォーマッタ(formatClosedMMDD)に切り替え */}
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(child)) || "—"}</span></div>
+
+                      {(() => { const ah = calcTicketActualHours(child); return <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontFamily: "var(--font-mono)", fontWeight: 600, color: ah > 0 ? "#059669" : "#B0A9A4" }}>{ah > 0 ? formatPersonDays(ah) : "—"}</span></div>; })()}
 
                       <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#6B6458", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{child.estimatedHours}h</span></div>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>

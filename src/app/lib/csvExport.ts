@@ -1,5 +1,5 @@
 import type { Sprint, SprintTicket } from "@/app/types";
-import { htmlToText, calcTicketActualHours, TICKET_STATUSES } from "@/app/lib/helpers";
+import { htmlToText, calcTicketActualHours, formatPersonDays, TICKET_STATUSES } from "@/app/lib/helpers";
 
 const PRIORITY_LABELS: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
@@ -45,7 +45,7 @@ function escapeCell(value: string): string {
 const CSV_HEADERS = [
   "No", "スプリント名", "チケットNo", "チケット名", "チケット詳細",
   "分類", "ステータス", "レビュー状況", "優先度", "担当者",
-  "開始日", "期限日", "実績工数(h)",
+  "開始日", "期限日", "実績工数(人日)",
 ];
 
 function buildRow(
@@ -55,7 +55,7 @@ function buildRow(
   getCategoryLabel: (t: SprintTicket) => string
 ): string {
   const statusLabel = TICKET_STATUSES.find(s => s.value === ticket.status)?.label ?? ticket.status;
-  const actualHours = Math.round(calcTicketActualHours(ticket) * 10) / 10;
+  const actualHours = calcTicketActualHours(ticket);
   const cells = [
     String(no),
     sprintName,
@@ -69,7 +69,7 @@ function buildRow(
     ticket.assignee || "",
     ticket.startDate || "",
     ticket.dueDate || "",
-    actualHours > 0 ? String(actualHours) : "",
+    actualHours > 0 ? formatPersonDays(actualHours) : "",
   ];
   return cells.map(escapeCell).join(",");
 }

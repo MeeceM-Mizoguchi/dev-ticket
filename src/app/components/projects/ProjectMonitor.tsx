@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { X, CheckCircle2, Circle } from "lucide-react";
 import { fetchMilestones } from "@/app/hooks/useProject";
 import type { MilestoneRow } from "@/app/hooks/useProject";
+import { calcWorkingHours } from "@/app/lib/helpers";
 // 🌟 追加: データベース接続チェック用の道具をインポート
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
@@ -27,7 +28,7 @@ function formatDateTime(iso: string | null | undefined): string {
 
 function calcHours(a: string | null | undefined, b: string | null | undefined): number | null {
   if (!a || !b) return null;
-  return (new Date(b).getTime() - new Date(a).getTime()) / (1000 * 60 * 60);
+  return calcWorkingHours(new Date(a).getTime(), new Date(b).getTime());
 }
 
 /**
@@ -41,15 +42,10 @@ function isReviewSkipped(idx: number, a: string | null | undefined, b: string | 
 }
 
 function formatDuration(hours: number): string {
-  if (hours <= 0) return "0分";
-  if (hours < 1 / 60) return "1分未満";
-  if (hours < 1) return `${Math.round(hours * 60)}分`;
-  const h = Math.round(hours * 10) / 10;
-  const pd = hours / 8;
-  const pdStr = pd >= 0.1
-    ? (Number.isInteger(Math.round(pd * 10) / 10) ? `${Math.round(pd)}人日` : `${(Math.round(pd * 10) / 10).toFixed(1)}人日`)
-    : "0.1人日未満";
-  return `${h}時間（${pdStr}）`;
+  if (hours <= 0) return "0人日";
+  const pd = Math.round(hours / 8 * 10) / 10;
+  if (pd < 0.1) return "0.1人日未満";
+  return `${pd}人日`;
 }
 
 export function ProjectMonitor({
@@ -108,7 +104,7 @@ export function ProjectMonitor({
       })
       .sort((a, b) => new Date(a.created_at || a.createdAt).getTime() - new Date(b.created_at || b.createdAt).getTime());
 
-    let totalHoldMs = 0;
+    let totalHoldHours = 0;
     let currentHoldStart: number | null = null;
 
     phaseComments.forEach(c => {
@@ -116,16 +112,16 @@ export function ProjectMonitor({
       if (c.content.includes("チケットを保留にしました")) {
         currentHoldStart = t;
       } else if (c.content.includes("保留を解除しました") && currentHoldStart !== null) {
-        totalHoldMs += (t - currentHoldStart);
+        totalHoldHours += calcWorkingHours(currentHoldStart, t);
         currentHoldStart = null;
       }
     });
 
     if (checkHoldCurrent && isHold && currentHoldStart !== null) {
-      totalHoldMs += (new Date(nowIso).getTime() - currentHoldStart);
+      totalHoldHours += calcWorkingHours(currentHoldStart, new Date(nowIso).getTime());
     }
 
-    return Math.max(0, totalHoldMs / (1000 * 60 * 60));
+    return Math.max(0, totalHoldHours);
   };
 
   // 🌟 修正: 過去の完了した工程も、現在進行中の工程も、それぞれの区間内で発生した保留時間をそれぞれ引いて合算する

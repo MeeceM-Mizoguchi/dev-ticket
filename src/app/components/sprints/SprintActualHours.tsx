@@ -16,7 +16,7 @@ export function SprintActualHours({
       }}>
         {loading ? "—" : actualHours !== null ? formatActualHours(actualHours) : "—"}
       </p>
-      <p style={{ fontSize: 10, color: "#B0A9A4" }}>実績(h)</p>
+      <p style={{ fontSize: 10, color: "#B0A9A4" }}>実績(人日)</p>
     </div>
   );
 }
