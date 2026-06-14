@@ -224,10 +224,10 @@ function makeSuggestionPopup<T>(
 // ---- RichEditor -------------------------------------------------------------
 
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, members = [], tickets = [], onTicketClick,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], onTicketClick,
 }: {
   value?: string; onChange?: (html: string) => void;
-  placeholder?: string; minHeight?: number; maxHeight?: number; readOnly?: boolean;
+  placeholder?: string; minHeight?: number; maxHeight?: number; readOnly?: boolean; toolbar?: boolean;
   members?: string[];
   tickets?: { wbs: string; title: string }[];
   onTicketClick?: (wbs: string) => void;
@@ -441,7 +441,7 @@ export function RichEditor({
         .tiptap .ticket-mention { color: #2563EB; font-weight: 700; background: #DBEAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .ticket-mention:hover { background: #BFDBFE; }
       `}</style>
-      {!readOnly && (
+      {!readOnly && toolbar && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 10px", borderBottom: "1px solid rgba(26,23,20,0.08)", background: "#F9F8F6" }}>
           <button type="button" style={btnStyle(editor.isActive("bold"))} onClick={() => editor.chain().focus().toggleBold().run()}>B</button>
           <button type="button" style={{ ...btnStyle(editor.isActive("italic")), fontStyle: "italic" }} onClick={() => editor.chain().focus().toggleItalic().run()}>I</button>
