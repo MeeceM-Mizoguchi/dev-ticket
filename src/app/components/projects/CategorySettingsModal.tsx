@@ -3,6 +3,7 @@ import { X, Plus, Pencil, Trash2, Check } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { TicketCategory } from "@/app/types";
 import { mapTicketCategory } from "@/app/lib/mappers";
+import { escStack } from "@/app/lib/escStack";
 
 export function CategorySettingsModal({
   projectId, projectName, onClose,
@@ -25,6 +26,10 @@ export function CategorySettingsModal({
   };
 
   useEffect(() => { loadCategories(); }, [projectId]);
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
 
   const handleAdd = async () => {
     if (!newName.trim() || saving) return;

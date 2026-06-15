@@ -555,11 +555,12 @@ export function SprintDetailPage() {
               {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
             </div>
           ) : displayTickets.map((ticket, i) => {
+            const isTerminal = ticket.status === "closed" || ticket.status === "released";
             const tsm = TICKET_STATUSES.find(s => s.value === ticket.status) ?? TICKET_STATUSES[0];
             const priBg = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
             const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
             const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
-            const ticketProgress = (ticket.status === "done" || ticket.status === "closed") ? 100 : ticket.progress;
+            const ticketProgress = (ticket.status === "done" || ticket.status === "closed" || ticket.status === "released" || ticket.status === "waiting-release") ? 100 : ticket.progress;
             const barColor = ticketProgress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
             const children = childrenByParent[ticket.id] ?? [];
             const hasChildren = children.length > 0;
@@ -572,9 +573,9 @@ export function SprintDetailPage() {
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
                   data-wbs={ticket.wbs}
-                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.wbs === lastOpenedWbs ? "#FFFBEB" : ticket.status === "closed" ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: ticket.status === "closed" ? 0.65 : 1 }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = ticket.status === "closed" ? "#ECECEB" : "#FFF7F3"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.wbs === lastOpenedWbs ? "#FFFBEB" : ticket.status === "closed" ? "#F5F5F4" : "transparent"; }}>
+                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1 }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isTerminal ? "#ECECEB" : "#FFF7F3"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent"; }}>
                   <div style={{ display: "flex", justifyContent: "center", gap: 3, alignItems: "center" }}>
                     {hasChildren ? (
                       <button onClick={toggleTicketExpand} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
@@ -626,18 +627,19 @@ export function SprintDetailPage() {
                 </div>
                 {/* 子チケット行（アコーディオン展開時） */}
                 {hasChildren && isTicketExpanded && children.map(child => {
+                  const cIsTerminal = child.status === "closed" || child.status === "released";
                   const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
                   const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                   const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                   const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
-                  const cProgress = (child.status === "done" || child.status === "closed") ? 100 : child.progress;
+                  const cProgress = (child.status === "done" || child.status === "closed" || child.status === "released" || child.status === "waiting-release") ? 100 : child.progress;
                   const cBarColor = cProgress === 100 ? "#059669" : child.status === "in-progress" ? "#D97706" : "#C9C4BB";
 
                   const childCategory = getCategoryLabel(child);
 
                   return (
                     <div key={child.id} onClick={() => selectTicket(child.wbs || child.id)}
-                      style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: "#F9F8F6", transition: "background 0.1s", cursor: "pointer", opacity: child.status === "closed" ? 0.65 : 1 }}
+                      style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: "#F9F8F6", transition: "background 0.1s", cursor: "pointer", opacity: cIsTerminal ? 0.65 : 1 }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}>
                       <div style={{ display: "flex", justifyContent: "center" }}>

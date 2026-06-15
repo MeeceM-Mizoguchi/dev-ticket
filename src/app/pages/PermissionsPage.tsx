@@ -3,6 +3,7 @@ import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarR
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
+import { escStack } from "@/app/lib/escStack";
 import type { Member, PermissionGroup, UserPermissions, Project } from "@/app/types";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -946,6 +947,11 @@ function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (
   const [name, setName] = useState("");
   const [perms, setPerms] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS });
 
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
+
   const toggle = (key: keyof UserPermissions) => setPerms(prev => ({ ...prev, [key]: !prev[key] }));
 
   const handleCreate = () => {
@@ -1018,6 +1024,12 @@ function GroupSettingsModal({ group, onClose, onSave }: {
   const [groupName, setGroupName] = useState(group.name);
   const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS, ...(group.permissions ?? {}) });
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
+
   const handleSave = async () => { setSaving(true); await onSave(groupName.trim() || group.name, local); setSaving(false); };
   return (
     <>
@@ -1088,6 +1100,11 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
   const [local, setLocal] = useState<UserPermissions>({ ...DEFAULT_GROUP_PERMS });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
 
   const isAdminOrPM = member.role === "admin" || member.role === "project-manager";
 

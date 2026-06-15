@@ -6,6 +6,7 @@ import { X, Plus, TableProperties, AlertCircle, Check } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, MEMBERS } from "@/app/data/mock";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { escStack } from "@/app/lib/escStack";
 
 registerAllModules();
 
@@ -341,6 +342,15 @@ export function BulkTicketCreateDialog({
   const suppressOverlayCloseRef = useRef(false);
 
   useEffect(() => { cellOverlayRef.current = cellOverlay; }, [cellOverlay]);
+
+  useEffect(() => {
+    const fn = () => {
+      setCellOverlay(null);
+      if (!editorActiveRef.current && cellOverlayRef.current === null) onClose();
+    };
+    escStack.push(fn);
+    return () => escStack.pop(fn);
+  }, [onClose]);
 
   // Capturing listener: ← → in date cells → stop Pikaday/HOT, let browser move the text cursor
   useEffect(() => {

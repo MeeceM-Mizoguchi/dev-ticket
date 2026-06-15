@@ -15,6 +15,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { MEMBERS } from "@/app/data/mock";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
+import { escStack } from "@/app/lib/escStack";
 
 const DRAG_TYPE = "SPRINT_TICKET";
 
@@ -306,7 +307,20 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
     applyStatusUpdate(pendingDrop.ticketId, "review-done", modalComment || "レビュースキップ");
   };
 
-  const cancelModal = () => { setPendingDrop(null); setModalComment(""); setReviewerName(""); setSourceUrl(""); setSourceFile(null); };
+  const cancelModal = useCallback(() => { setPendingDrop(null); setModalComment(""); setReviewerName(""); setSourceUrl(""); setSourceFile(null); }, []);
+
+  useEffect(() => {
+    if (!pendingError) return;
+    const fn = () => setPendingError(null);
+    escStack.push(fn);
+    return () => escStack.pop(fn);
+  }, [pendingError]);
+
+  useEffect(() => {
+    if (!pendingDrop) return;
+    escStack.push(cancelModal);
+    return () => escStack.pop(cancelModal);
+  }, [pendingDrop, cancelModal]);
 
   const modalMeta = pendingDrop ? MODAL_LABELS[pendingDrop.newStatus] : null;
   const isReviewRequest = pendingDrop?.newStatus === "in-review";

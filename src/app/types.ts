@@ -1,4 +1,4 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes";
 export type ActionMemoCategory = "todo" | "review" | "test" | "memo";
 export interface ActionMemo {
   id: string;
@@ -26,7 +26,7 @@ export interface RoleDefinition {
   base_permissions: UserPermissions;
 }
 export type ProjectStatus = "planning" | "in-progress" | "completed" | "on-hold";
-export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed";
+export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed" | "waiting-release" | "released";
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
 export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
@@ -72,6 +72,9 @@ export interface SprintTicket {
   stgCompletedAt?: string | null;
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
+  // リリースノート用フィールド
+  releaseDate?: string | null;
+  isReleaseDateUndecided?: boolean;
 }
 
 export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";

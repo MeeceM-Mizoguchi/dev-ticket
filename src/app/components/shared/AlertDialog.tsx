@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { AlertTriangle } from "lucide-react";
+import { escStack } from "@/app/lib/escStack";
 
 export function AlertDialog({
   title = "確認",
@@ -9,6 +11,11 @@ export function AlertDialog({
   message: string;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
+
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ position: "absolute", inset: 0, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} onClick={onClose} />

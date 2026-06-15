@@ -168,3 +168,12 @@ create policy "auth_delete_notifications" on notifications for delete using (aut
 -- alter table sprint_tickets add column if not exists stg_completed_at timestamptz;
 -- alter table sprint_tickets add column if not exists uat_completed_at timestamptz;
 -- alter table sprint_tickets add column if not exists released_at timestamptz;
+
+-- リリースノート機能追加（初回のみ実行）
+-- ステータス CHECK 制約を新ステータスに対応させる
+-- alter table sprint_tickets drop constraint if exists sprint_tickets_status_check;
+-- alter table sprint_tickets add constraint sprint_tickets_status_check
+--   check (status in ('todo','in-progress','in-review','review-done','stg-test','uat','done','closed','waiting-release','released'));
+-- リリース日カラム追加
+-- alter table sprint_tickets add column if not exists release_date date;
+-- alter table sprint_tickets add column if not exists is_release_date_undecided boolean not null default false;

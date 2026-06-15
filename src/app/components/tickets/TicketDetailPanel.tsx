@@ -18,17 +18,19 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
+import { escStack } from "@/app/lib/escStack";
 
 const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100, pending: 0,
+  "waiting-release": 100, released: 100,
 };
 
 const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
   todo: { label: "着手開始", next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
   "review-done": { label: "STG完了", next: "stg-test", color: "#0D9488", bg: "#F0FDFA" },
   "stg-test": { label: "UAT完了", next: "uat", color: "#4F46E5", bg: "#EEF2FF" },
-  uat: { label: "リリース完了", next: "closed", color: "#6B7280", bg: "#F3F4F6" },
+  // uat は「リリースノートに追加」UIで個別処理するため削除
 };
 
 const priorityMeta: Record<Priority, { label: string; color: string; bg: string }> = {
@@ -50,7 +52,6 @@ function formatTs(ts: string) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  // pending の特別なバッジ対応
   if (status === "pending") {
     return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", flexShrink: 0, border: "1px solid rgba(220,38,38,0.2)" }}>保留中</span>;
   }
@@ -155,6 +156,12 @@ export function TicketDetailPanel({
   const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
   const [showCreateChild, setShowCreateChild] = useState(false);
 
+  // リリースノート用
+  const [releaseDate, setReleaseDate] = useState(ticket?.releaseDate ?? "");
+  const [isReleaseDateUndecided, setIsReleaseDateUndecided] = useState(ticket?.isReleaseDateUndecided ?? false);
+  const [showChangeDatePicker, setShowChangeDatePicker] = useState(false);
+  const [pendingReleaseDate, setPendingReleaseDate] = useState<string | null>(null);
+
   // レビューフロー アコーディオン
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
@@ -205,6 +212,11 @@ export function TicketDetailPanel({
   }, []);
 
   useEffect(() => {
+    escStack.push(handleClose);
+    return () => escStack.pop(handleClose);
+  }, [handleClose]);
+
+  useEffect(() => {
     if (!ticket) return;
     if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = undefined; }
     setIsClosing(false);
@@ -242,6 +254,10 @@ export function TicketDetailPanel({
     notifiedMentionsRef.current.clear();
     anchorScrolledRef.current = null;
     setCategoryId(ticket.categoryId ?? null);
+    setReleaseDate(ticket.releaseDate ?? "");
+    setIsReleaseDateUndecided(ticket.isReleaseDateUndecided ?? false);
+    setShowChangeDatePicker(false);
+    setPendingReleaseDate(null);
 
     if (ticket.id && isSupabaseEnabled) {
       supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
@@ -265,6 +281,8 @@ export function TicketDetailPanel({
           setCategoryId(t.categoryId ?? null);
           setCreatedBy(t.createdBy ?? "");
           setCreatedAt(t.createdAt ?? "");
+          setReleaseDate(t.releaseDate ?? "");
+          setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
         });
     }
 
@@ -546,6 +564,39 @@ export function TicketDetailPanel({
       await addComment(`<p>保留を解除しました（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
     }
+  };
+
+  const handleAddToReleaseNotes = async () => {
+    if (!ticket) return;
+    const newStatus: TicketStatus = "waiting-release";
+    const p = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(p);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({
+        status: newStatus,
+        progress: p,
+        release_date: isReleaseDateUndecided ? null : (releaseDate || null),
+        is_release_date_undecided: isReleaseDateUndecided,
+      }).eq("id", ticket.id);
+    }
+    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
+    const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
+    await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
+    onUpdated?.();
+  };
+
+  const handleSaveReleaseDate = async (newDate: string) => {
+    if (!ticket) return;
+    setReleaseDate(newDate);
+    setIsReleaseDateUndecided(false);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({
+        release_date: newDate || null,
+        is_release_date_undecided: false,
+      }).eq("id", ticket.id);
+    }
+    onUpdated?.();
   };
 
   const saveAssignee = (name: string) => {
@@ -973,7 +1024,7 @@ export function TicketDetailPanel({
   if (!ticket) return null;
 
   const todayStr = new Date().toISOString().split("T")[0];
-  const isOverdue = status !== "done" && status !== "closed" && !!dueDate && dueDate < todayStr;
+  const isOverdue = status !== "done" && status !== "closed" && status !== "waiting-release" && status !== "released" && !!dueDate && dueDate < todayStr;
   const pm = priorityMeta[priority];
   const smeta = TICKET_STATUSES.find(s => s.value === status);
 
@@ -1036,6 +1087,17 @@ export function TicketDetailPanel({
             : `「${title}」を削除しますか？`}
           onConfirm={handleDeleteTicket}
           onClose={() => setShowDeleteConfirm(false)}
+        />
+      )}
+      {pendingReleaseDate !== null && (
+        <ConfirmDialog
+          title="リリース日変更の確認"
+          message={`${pendingReleaseDate.replace(/-/g, "/")} にリリース日を変更しますか？`}
+          confirmLabel="変更する"
+          confirmColor="#7C3AED"
+          hasWarningText={false}
+          onConfirm={async () => { await handleSaveReleaseDate(pendingReleaseDate); setPendingReleaseDate(null); }}
+          onClose={() => setPendingReleaseDate(null)}
         />
       )}
       {showMoveModal && (
@@ -1318,6 +1380,46 @@ export function TicketDetailPanel({
               {actionBtn.label} →
             </button>
           )}
+          {status === "uat" && isAssignee && progress !== -1 && !showReReviewForm && (
+            <div style={{ marginTop: 10 }}>
+              {/* 日付入力 + ボタン 横並び */}
+              <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <DatePicker
+                    value={isReleaseDateUndecided ? "" : releaseDate}
+                    onChange={v => { if (!isReleaseDateUndecided) setReleaseDate(v); }}
+                    placeholder="リリース日を選択"
+                  />
+                </div>
+                <button
+                  onClick={handleAddToReleaseNotes}
+                  disabled={!isReleaseDateUndecided && !releaseDate}
+                  style={{
+                    flexShrink: 0, padding: "0 14px", fontSize: 12, fontWeight: 700, borderRadius: 9,
+                    border: `1.5px solid ${(!isReleaseDateUndecided && !releaseDate) ? "rgba(107,114,128,0.20)" : "rgba(124,58,237,0.33)"}`,
+                    cursor: (!isReleaseDateUndecided && !releaseDate) ? "not-allowed" : "pointer",
+                    background: (!isReleaseDateUndecided && !releaseDate) ? "#F4F5F6" : "#F5F3FF",
+                    color: (!isReleaseDateUndecided && !releaseDate) ? "#B0A9A4" : "#7C3AED",
+                    whiteSpace: "nowrap" as const,
+                  }}>
+                  対応完了してリリースノートに追加 →
+                </button>
+              </div>
+              {/* リリース日未定チェックボックス（日付テキストボックスの下） */}
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 6, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={isReleaseDateUndecided}
+                  onChange={e => {
+                    setIsReleaseDateUndecided(e.target.checked);
+                    if (e.target.checked) setReleaseDate("");
+                  }}
+                  style={{ accentColor: "#7C3AED", width: 13, height: 13, cursor: "pointer" }}
+                />
+                <span style={{ fontSize: 11, color: "#6B7280" }}>リリース日未定</span>
+              </label>
+            </div>
+          )}
           {hasSkipReviewPermission && status === "in-progress" && (
             <button onClick={handleSkipReview}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
@@ -1339,6 +1441,32 @@ export function TicketDetailPanel({
                   <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : smeta?.color }} />
                   <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : smeta?.color }}>{progress === -1 ? "保留中" : smeta?.label}</span>
                 </div>
+                {status === "released" && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み</span>
+                )}
+                {status === "waiting-release" && (
+                  <div style={{ marginTop: 6 }}>
+                    {isReleaseDateUndecided ? (
+                      <span style={{ fontSize: 11, color: "#9E9690" }}>リリース日未定</span>
+                    ) : releaseDate ? (
+                      <span style={{ fontSize: 11, color: "#6B7280" }}>予定: {releaseDate.replace(/-/g, "/")}</span>
+                    ) : null}
+                    <button
+                      onClick={() => setShowChangeDatePicker(v => !v)}
+                      style={{ display: "block", marginTop: 4, fontSize: 10, color: "#7C3AED", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
+                      リリース日変更
+                    </button>
+                    {showChangeDatePicker && (
+                      <div style={{ marginTop: 8 }}>
+                        <DatePicker
+                          value={releaseDate}
+                          onChange={v => { if (v) { setPendingReleaseDate(v); setShowChangeDatePicker(false); } }}
+                          placeholder="新しいリリース日"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>

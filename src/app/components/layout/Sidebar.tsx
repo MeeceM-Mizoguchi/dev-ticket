@@ -1,13 +1,15 @@
-import { useState, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList } from "lucide-react";
+import { useState, useEffect, type ElementType } from "react";
+import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText } from "lucide-react";
 import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { escStack } from "@/app/lib/escStack";
 
 const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; permission?: keyof UserPermissions }[] = [
   { id: "dashboard",  label: "ダッシュ",    icon: LayoutDashboard },
   { id: "projects",   label: "PJ一覧",      icon: FolderKanban },
   { id: "my-actions", label: "アクション",  icon: ClipboardList },
+  { id: "release-notes", label: "リリースノート", icon: FileText },
   { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager"] },
   { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
@@ -20,6 +22,13 @@ export function Sidebar() {
   const location = useLocation();
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+  useEffect(() => {
+    if (!showLogoutConfirm) return;
+    const fn = () => setShowLogoutConfirm(false);
+    escStack.push(fn);
+    return () => escStack.pop(fn);
+  }, [showLogoutConfirm]);
 
   // 🌟【修正ポイント】動的なプロジェクトパス（/:slug や /:slug/:wbs）を正しく「プロジェクト」として検知させるロジックに変更
   const getActivePage = (): Exclude<Page, "login"> => {
@@ -37,6 +46,7 @@ export function Sidebar() {
     if (p.startsWith("/roles")) return "roles";
     if (p.startsWith("/admin-settings")) return "admin-settings";
     if (p.startsWith("/my-actions")) return "my-actions";
+    if (p.startsWith("/release-notes")) return "release-notes";
 
     // 上記の固定パスに当てはまらない URL（例: /DevTicket や /DevTicket/TKT-001 など）は、
     // プロジェクト詳細画面やスプリント管理画面を表示しているため「プロジェクト」をハイライトさせる
