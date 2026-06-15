@@ -397,7 +397,8 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
         wbs: t.wbs,
         title: t.title,
         description: htmlToText(t.description),
-        status: t.progress === -1 ? "pending" : t.status, // 🌟 修正: progress === -1 なら "pending" としてフィルタリングさせる
+        // 🌟 修正: -1 なら pending(保留), -2 なら withdrawn(取下) としてフィルタリングさせる
+        status: t.progress === -1 ? "pending" : t.progress === -2 ? "withdrawn" : t.status,
         priority: t.priority,
         assignee: t.assignee || "",
         startDate: t.startDate || "",
@@ -606,10 +607,12 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                       {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
                     </div>
                   ) : displayTickets.map((t) => {
-                    // 🌟 修正: progress が -1 なら強制的に「保留中」のスタイルを適用する
+                    // 🌟 修正: progress が -1 なら「保留中」、-2 なら「取下」のスタイルを強制適用する
                     const tsm = t.progress === -1
                       ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
-                      : TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                      : t.progress === -2
+                        ? { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }
+                        : TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
                     const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                     const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
                     const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
@@ -620,14 +623,14 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
 
                     const displayCategory = getCategoryLabel(t);
                     const isHighlighted = t.wbs === targetTicketWbs;
-                    const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1) ? "#F5F5F4" : "#FFFFFF";
+                    const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? "#F5F5F4" : "#FFFFFF";
 
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           data-wbs={t.wbs}
-                          // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1) ? 0.65 : 1 }}
+                          // 🌟 修正: progress === -2 (取下) の時もグレーアウト＆半透明にする
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1 }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = baseBg; }}>
                           <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
@@ -667,22 +670,24 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         </div>
                         {/* 子チケット行（アコーディオン展開時） */}
                         {hasChildren && isTicketExpanded && children.map(child => {
-                          // 🌟 修正: progress が -1 なら強制的に「保留中」のスタイルを適用する
+                          // 🌟 修正: progress が -1 なら「保留中」、-2 なら「取下」のスタイルを強制適用する
                           const ctsm = child.progress === -1
                             ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
-                            : TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                            : child.progress === -2
+                              ? { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }
+                              : TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
                           const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                           const childCategory = getCategoryLabel(child);
                           const isChildHighlighted = child.wbs === targetTicketWbs;
-                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : (child.status === "released" || child.progress === -1) ? "#F5F5F4" : "#F9F8F6";
+                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
                               data-wbs={child.wbs}
-                              // 🌟 修正: closed だけでなく progress === -1 の時もグレーアウト＆半透明にする
-                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.progress === -1) ? 0.65 : 1 }}
-                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = child.progress === -1 ? "#ECECEB" : "#EEF7F3"; }}
+                              // 🌟 修正: progress === -2 (取下) の時もグレーアウト＆半透明にする
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.progress === -1 || child.progress === -2) ? 0.65 : 1 }}
+                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.progress === -1 || child.progress === -2) ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
                               <div style={{ display: "flex", justifyContent: "center" }}>
                                 <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
