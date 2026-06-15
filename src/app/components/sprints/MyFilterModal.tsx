@@ -404,3 +404,82 @@ export function MyFilterModal({ onClose, sprintId, userId, cols, getColOptions, 
     </DialogShell>
   );
 }
+// 🌟 修正: 重複チェック処理を実行するためにPropsの型定義を拡張
+interface SaveFilterDialogProps {
+  onClose: () => void;
+  onSave: (title: string) => void;
+  sprintId: string;
+  userId: string;
+  filters: Record<string, string[]>;
+}
+
+export function SaveFilterDialog({ onClose, onSave, sprintId, userId, filters }: SaveFilterDialogProps) {
+  const [title, setTitle] = useState("");
+  const [touched, setTouched] = useState(false);
+  // 🌟 追加: 同一条件の重複フィルター名を保持するステート
+  const [duplicateTitle, setDuplicateTitle] = useState<string | null>(null);
+  const isEmpty = title.trim() === "";
+
+  // 🌟 追加: ダイアログが開いた瞬間に既存の同一条件フィルターが存在するか非同期で検証する
+  useEffect(() => {
+    checkDuplicateFilter(sprintId, userId, filters).then(dupTitle => {
+      if (dupTitle) setDuplicateTitle(dupTitle);
+    });
+  }, [sprintId, userId, filters]);
+
+  const handleSave = () => {
+    if (isEmpty) {
+      setTouched(true);
+      return;
+    }
+    onSave(title.trim());
+  };
+
+  return (
+    <DialogShell
+      title="フィルタを保存"
+      onClose={onClose}
+      size="sm"
+      footer={
+        <>
+          <BtnSecondary onClick={onClose}>キャンセル</BtnSecondary>
+          <BtnPrimary onClick={handleSave} disabled={isEmpty}>保存</BtnPrimary>
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {/* 🌟 追加: 重複が検知された場合、ご指定の「茶色のUI（警告バナー）」を表示する */}
+        {duplicateTitle && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", borderRadius: 8, background: "#FEF3C7", border: "1px solid rgba(146,64,14,0.40)", marginBottom: 6 }}>
+            <AlertTriangle style={{ width: 14, height: 14, color: "#92400E", flexShrink: 0 }} />
+            <p style={{ fontSize: 11, color: "#78350F", fontWeight: 600, margin: 0, lineHeight: 1.4 }}>
+              同じ条件のフィルタ「{duplicateTitle}」がすでに保存されています。
+            </p>
+          </div>
+        )}
+
+        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#6B6458" }}>
+          保存するフィルタの名前を入力してください <span style={{ color: "#DC2626" }}>*</span>
+        </label>
+        <input
+          autoFocus
+          type="text"
+          placeholder="例: 未着手、自分担当など"
+          value={title}
+          onChange={e => setTitle(e.target.value)}
+          onBlur={() => setTouched(true)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSave(); }}
+          style={{
+            width: "100%", padding: "9px 12px", fontSize: 13,
+            border: `1.5px solid ${touched && isEmpty ? "#DC2626" : "rgba(26,23,20,0.15)"}`,
+            borderRadius: 8, outline: "none", boxSizing: "border-box" as const,
+            background: "#FAFAF9", color: "#1A1714",
+          }}
+        />
+        {touched && isEmpty && (
+          <p style={{ fontSize: 11, color: "#DC2626", marginTop: 2 }}>名前を入力してください</p>
+        )}
+      </div>
+    </DialogShell>
+  );
+}

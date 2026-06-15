@@ -6,9 +6,15 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { MyFilterModal, addMyFilter } from "@/app/components/sprints/MyFilterModal";
+// 🌟 追加: 緑色の完了ダイアログをこのファイル内で描画するために必要な共通コンポーネントをインポート
+import { DialogShell } from "@/app/components/shared/DialogShell";
+import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
+// 🌟 修正: 重複を事前に検知するため、checkDuplicateFilter も一緒にインポートへ追加する
+import { MyFilterModal, addMyFilter, SaveFilterDialog, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
+// 🌟 追加: 自前の美しいアラートダイアログを呼び出すためのインポート
+import { useAlert } from "@/app/contexts/AlertContext";
 
 // 🌟 追加: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
 const getClosedDateFromMonitor = (ticket: any): string => {
@@ -217,6 +223,18 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   targetTicketWbs?: string;
 }) {
   const { userId } = useAuth(); // 🌟 追加: userId を取得
+  const { showAlert } = useAlert(); // 🌟 追加: 自前のアラート関数を取得
+
+  // 🌟 追加: window.promptの代わりにオリジナル入力ダイアロップを立ち上げるための制御用ステート
+  const [saveFilterTarget, setSaveFilterTarget] = useState<{
+    sprintId: string;
+    serializedFilters: Record<string, string[]>;
+    sortCol: string;
+    sortDir: "asc" | "desc";
+  } | null>(null);
+  // 🌟 追加: アラート（茶色）ではなく、通常の美しい緑ヘッダーUIで完了通知を出すためのステート
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
 
   useEffect(() => {
@@ -573,19 +591,26 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
-                            const title = window.prompt("保存するフィルタの名前を入力してください");
-                            if (!title?.trim()) return;
                             const serialized: Record<string, string[]> = {};
                             Object.entries(currentFilters).forEach(([k, v]) => {
                               if (v && v.size > 0) serialized[k] = Array.from(v);
                             });
-                            // 🌟 修正: 詳細画面と完全に一致させるため、sprint.id（本物のスプリントID）を渡す
-                            const result = await addMyFilter(sprint.id, userId ?? "", title.trim(), serialized, sprintSort.col, sprintSort.dir);
-                            if (result && !result.success) {
-                              alert("保存に失敗しました。\n\nエラー詳細: " + result.error);
-                            } else {
-                              alert("フィルタを保存しました！「Myフィルタ」から呼び出せます。");
+
+                            // 🌟 修正: クリックした瞬間に既存の保存フィルタと条件が被っているか検証する
+                            const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
+                            if (dupTitle) {
+                              // 被りがある場合は、入力画面に進まず、2枚目の写真の独立したアラートUI (showAlert) を直接呼び出す
+                              showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
+                              return;
                             }
+
+                            // 🌟 修正: 被りがない場合のみ、通常通り名前入力のカスタムモーダルを開く
+                            setSaveFilterTarget({
+                              sprintId: sprint.id,
+                              serializedFilters: serialized,
+                              sortCol: sprintSort.col,
+                              sortDir: sprintSort.dir as "asc" | "desc",
+                            });
                           }}
                           title="現在の絞り込み・並び替えを保存"
                           style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}
@@ -734,6 +759,51 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
             setExpanded(prev => new Set(prev).add(myFilterSprintId)); // 適用対象のスプリントを展開状態にする
           }}
         />
+      )}
+
+      {/* 🌟 追加: window.promptを置き換えたオリジナルUIのフィルタ名入力ダイアログ */}
+      {saveFilterTarget && (
+        <SaveFilterDialog
+          onClose={() => setSaveFilterTarget(null)}
+          // 🌟 修正: 重複検知機能に適合させるため、スプリントID、ユーザーID、シリアライズ済フィルター条件の3つをPropsへ確実に追加
+          sprintId={saveFilterTarget.sprintId}
+          userId={userId ?? ""}
+          filters={saveFilterTarget.serializedFilters}
+          onSave={async (title) => {
+            const result = await addMyFilter(
+              saveFilterTarget.sprintId,
+              userId ?? "",
+              title,
+              saveFilterTarget.serializedFilters,
+              saveFilterTarget.sortCol,
+              saveFilterTarget.sortDir
+            );
+            setSaveFilterTarget(null);
+            if (result && !result.success) {
+              // 🌟 修正: ブラウザ標準の alert を自前のきれいなダイアログに置き換え
+              showAlert("保存に失敗しました。\n\nエラー詳細: " + result.error, "エラー");
+            } else {
+              // 🌟 修正: アラート（茶色）は使わず、入力時と同じ自前の美しい緑ヘッダーダイアログを起動するためにステートへ格納
+              setSuccessMessage("フィルタを保存しました。「Myフィルタ」から呼び出せます。");
+            }
+          }}
+        />
+      )}
+
+      {/* 🌟 追加: 保存完了通知用の緑ヘッダーカスタムダイアログ */}
+      {successMessage && (
+        <DialogShell
+          title="保存完了"
+          onClose={() => setSuccessMessage(null)}
+          size="sm"
+          footer={
+            <BtnPrimary onClick={() => setSuccessMessage(null)}>OK</BtnPrimary>
+          }
+        >
+          <p style={{ fontSize: 13, color: "#1A1714", margin: 0, lineHeight: 1.5 }}>
+            {successMessage}
+          </p>
+        </DialogShell>
       )}
     </div>
   );
