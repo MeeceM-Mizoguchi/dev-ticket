@@ -5,6 +5,8 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { mapSprintTicket } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
+import { useAuth } from "@/app/contexts/AuthContext";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import type { SprintTicket } from "@/app/types";
 
 interface ReleaseItem {
@@ -30,6 +32,10 @@ export function ReleaseNotesPage() {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
+
+  const { userId, userRole } = useAuth();
+  const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
 
   const [items, setItems] = useState<ReleaseItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +65,24 @@ export function ReleaseNotesPage() {
   // Confirm release (calendar cell リリース完了)
   const [pendingReleaseDateForAll, setPendingReleaseDateForAll] = useState<string | null>(null);
 
+  // Month/Year picker
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerYear, setPickerYear] = useState(today.getFullYear());
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showPicker) return;
+    const h = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setShowPicker(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [showPicker]);
+
+  const openPicker = () => { setPickerYear(year); setShowPicker(s => !s); };
+  const selectPickerMonth = (y: number, m: number) => { setYear(y); setMonth(m); setShowPicker(false); };
+  const goToday = () => { setYear(today.getFullYear()); setMonth(today.getMonth()); };
+
   const load = useCallback(async () => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
     setLoading(true);
@@ -87,6 +111,21 @@ export function ReleaseNotesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Load projects the current user is assigned to
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+    const base = (supabase as NonNullable<typeof supabase>)
+      .from("projects").select("id, name").order("name");
+    const q = isAdminOrPM ? base : base.contains("members", [userId]);
+    q.then(({ data }) => {
+      if (data && data.length > 0) {
+        setMyProjects(data as { id: string; name: string }[]);
+        setSelectedProjectId(prev => prev || (data[0] as any).id);
+      }
+    });
+  }, [userId, userRole]);
+
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {
     if (!listPanelOpen) return;
@@ -114,10 +153,15 @@ export function ReleaseNotesPage() {
   for (let d = 1; d <= daysInMonth; d++) calCells.push(d);
   while (calCells.length % 7 !== 0) calCells.push(null);
 
+  // Filter by selected project
+  const filteredItems = selectedProjectId
+    ? items.filter(i => i.projectId === selectedProjectId)
+    : items;
+
   // Group items by release_date
   const byDate = new Map<string, ReleaseItem[]>();
   const undecidedItems: ReleaseItem[] = [];
-  for (const item of items) {
+  for (const item of filteredItems) {
     if (item.ticket.isReleaseDateUndecided || !item.ticket.releaseDate) {
       undecidedItems.push(item);
     } else {
@@ -341,24 +385,137 @@ export function ReleaseNotesPage() {
       )}
 
       {/* Header */}
-      <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
+      <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+          <div style={{ flexShrink: 0 }}>
             <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 4 }}>Release Notes</p>
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>リリースノート</h1>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button onClick={prevMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
-              <ChevronLeft style={{ width: 16, height: 16 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+            {/* Project selector */}
+            {myProjects.length > 0 && (
+              <div style={{ width: 220 }}>
+                <CustomSelect
+                  value={selectedProjectId}
+                  options={myProjects.map(p => ({ value: p.id, label: p.name }))}
+                  onChange={setSelectedProjectId}
+                  placeholder="プロジェクト選択"
+                />
+              </div>
+            )}
+            {/* Divider */}
+            {myProjects.length > 0 && (
+              <div style={{ width: 1, height: 24, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
+            )}
+            {/* 今日ボタン */}
+            <button
+              onClick={goToday}
+              style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#059669", whiteSpace: "nowrap" as const }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
+            >
+              今日
             </button>
-            <span style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", minWidth: 100, textAlign: "center" }}>{year}年 {MONTH_NAMES[month]}</span>
-            <button onClick={nextMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
-              <ChevronRight style={{ width: 16, height: 16 }} />
-            </button>
+            {/* Month navigation */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={prevMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
+                <ChevronLeft style={{ width: 16, height: 16 }} />
+              </button>
+
+              {/* Year/Month picker trigger */}
+              <div ref={pickerRef} style={{ position: "relative" }}>
+                <button
+                  onClick={openPicker}
+                  style={{
+                    fontSize: 15, fontWeight: 700, color: "#1A1714", minWidth: 108, textAlign: "center" as const,
+                    background: showPicker ? "#F4F5F6" : "transparent",
+                    border: "1px solid transparent", borderRadius: 8, cursor: "pointer", padding: "5px 10px",
+                    transition: "background 0.15s",
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = showPicker ? "#F4F5F6" : "transparent"; }}
+                >
+                  {year}年 {MONTH_NAMES[month]}
+                </button>
+
+                {/* Picker popup */}
+                {showPicker && (
+                  <div style={{
+                    position: "absolute", top: "calc(100% + 8px)", left: "50%",
+                    transform: "translateX(-50%)", zIndex: 100,
+                    background: "#FFF", borderRadius: 14,
+                    border: "1px solid rgba(26,23,20,0.10)",
+                    boxShadow: "0 8px 32px rgba(0,0,0,0.13)", padding: "14px 14px 10px",
+                    width: 252,
+                  }}>
+                    {/* Year row */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                      <button
+                        onClick={() => setPickerYear(y => y - 1)}
+                        style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E8E4DF"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                      >
+                        <ChevronLeft style={{ width: 14, height: 14 }} />
+                      </button>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: "#1A1714" }}>{pickerYear}年</span>
+                      <button
+                        onClick={() => setPickerYear(y => y + 1)}
+                        style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E8E4DF"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                      >
+                        <ChevronRight style={{ width: 14, height: 14 }} />
+                      </button>
+                    </div>
+                    {/* Month grid: 3 cols × 4 rows */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+                      {MONTH_NAMES.map((name, i) => {
+                        const isSel = pickerYear === year && i === month;
+                        const isNow = pickerYear === today.getFullYear() && i === today.getMonth();
+                        return (
+                          <button
+                            key={i}
+                            onClick={() => selectPickerMonth(pickerYear, i)}
+                            style={{
+                              padding: "8px 0", borderRadius: 8, border: "none",
+                              background: isSel ? "#059669" : isNow ? "#F0FDF4" : "transparent",
+                              color: isSel ? "#FFF" : isNow ? "#059669" : "#1A1714",
+                              fontWeight: isSel || isNow ? 700 : 500,
+                              fontSize: 13, cursor: "pointer",
+                              transition: "background 0.12s",
+                            }}
+                            onMouseEnter={e => { if (!isSel) (e.currentTarget as HTMLElement).style.background = isNow ? "#DCFCE7" : "#F4F5F6"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isSel ? "#059669" : isNow ? "#F0FDF4" : "transparent"; }}
+                          >
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* 今日へジャンプ */}
+                    <div style={{ marginTop: 10, borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 8 }}>
+                      <button
+                        onClick={() => selectPickerMonth(today.getFullYear(), today.getMonth())}
+                        style={{ width: "100%", padding: "7px 0", background: "#F0FDF4", color: "#059669", fontWeight: 700, fontSize: 12, border: "none", borderRadius: 8, cursor: "pointer", transition: "background 0.12s" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
+                      >
+                        今月にジャンプ
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button onClick={nextMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
+                <ChevronRight style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -396,13 +553,16 @@ export function ReleaseNotesPage() {
                 onDragOver={e => { e.preventDefault(); if (!isDraggingReleasedRef.current) setDragOverTarget(dateStr); }}
                 onDragLeave={() => { if (dragOverTarget === dateStr) setDragOverTarget(null); }}
                 onDrop={e => { if (!isDraggingReleasedRef.current) handleDrop(e, dateStr, false); }}
+                onClick={dayItems.length > 0 ? () => openList(dateStr) : undefined}
                 style={{
                   borderRadius: 10, padding: "5px 7px",
-                  border: isDragOver ? "2px solid #7C3AED" : isToday ? "2px solid #059669" : "1px solid rgba(26,23,20,0.08)",
-                  background: isDragOver ? "#F5F3FF" : allReleased ? "#F0FDF4" : "#FFF",
+                  border: isDragOver ? "2px solid #7C3AED" : isToday ? "2px solid #16A34A" : "1px solid rgba(26,23,20,0.08)",
+                  background: isDragOver ? "#F5F3FF" : isToday ? "#F0FDF4" : allReleased ? "#ECFDF5" : "#FFF",
+                  boxShadow: isToday ? "0 0 0 3px rgba(22,163,74,0.12)" : "none",
                   transition: "border-color 0.15s, background 0.15s",
                   display: "flex", flexDirection: "column", gap: 2,
                   overflow: "hidden",
+                  cursor: dayItems.length > 0 ? "pointer" : "default",
                 }}>
                 {/* Top row: date + buttons */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
@@ -410,7 +570,7 @@ export function ReleaseNotesPage() {
                   {dayItems.length > 0 && (
                     <div style={{ display: "flex", gap: 3 }}>
                       <button
-                        onClick={() => openList(dateStr)}
+                        onClick={e => { e.stopPropagation(); openList(dateStr); }}
                         title="詳細"
                         style={{ width: 22, height: 22, borderRadius: 6, border: "none", background: "#EEF2FF", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#C7D2FE"; }}
@@ -419,7 +579,7 @@ export function ReleaseNotesPage() {
                       </button>
                       {!allReleased && (
                         <button
-                          onClick={() => setPendingReleaseDateForAll(dateStr)}
+                          onClick={e => { e.stopPropagation(); setPendingReleaseDateForAll(dateStr); }}
                           title="リリース完了"
                           style={{ width: 22, height: 22, borderRadius: 6, border: "none", background: "#ECFDF5", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
                           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#A7F3D0"; }}
@@ -460,7 +620,8 @@ export function ReleaseNotesPage() {
                           setDragOverTarget(null);
                         }
                       }}
-                      onClick={() => {
+                      onClick={e => {
+                        e.stopPropagation();
                         setSelectedTicketMeta({ sprintId: item.sprintId, projectId: item.projectId, projectSlug: item.projectSlug });
                         setSelectedTicket(item.ticket);
                         setListPanelOpen(false);
