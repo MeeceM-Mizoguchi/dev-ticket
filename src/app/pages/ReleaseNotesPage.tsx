@@ -35,7 +35,13 @@ export function ReleaseNotesPage() {
 
   const { userId, userRole } = useAuth();
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(
+    () => localStorage.getItem("releaseNotes:selectedProjectId") ?? ""
+  );
+
+  useEffect(() => {
+    if (selectedProjectId) localStorage.setItem("releaseNotes:selectedProjectId", selectedProjectId);
+  }, [selectedProjectId]);
 
   const [items, setItems] = useState<ReleaseItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,8 +126,12 @@ export function ReleaseNotesPage() {
     const q = isAdminOrPM ? base : base.contains("members", [userId]);
     q.then(({ data }) => {
       if (data && data.length > 0) {
-        setMyProjects(data as { id: string; name: string }[]);
-        setSelectedProjectId(prev => prev || (data[0] as any).id);
+        const projects = data as { id: string; name: string }[];
+        setMyProjects(projects);
+        setSelectedProjectId(prev => {
+          const exists = projects.some(p => p.id === prev);
+          return exists ? prev : projects[0].id;
+        });
       }
     });
   }, [userId, userRole]);
@@ -594,8 +604,8 @@ export function ReleaseNotesPage() {
                   )}
                 </div>
 
-                {/* Ticket items */}
-                {dayItems.map(item => {
+                {/* Ticket items — max 4 visible, remainder shown as "..." */}
+                {dayItems.slice(0, 4).map(item => {
                   const isReleased = item.ticket.status === "released";
                   const label = `${item.ticket.wbs} ${item.ticket.title}`;
                   return (
@@ -643,6 +653,19 @@ export function ReleaseNotesPage() {
                     </div>
                   );
                 })}
+                {dayItems.length > 4 && (
+                  <div
+                    onClick={e => { e.stopPropagation(); openList(dateStr); }}
+                    style={{
+                      fontSize: 10, fontWeight: 600, color: "#9E9690",
+                      background: "#F4F5F6", borderRadius: 5, padding: "3px 5px",
+                      cursor: "pointer", textAlign: "center",
+                      border: "1px solid transparent",
+                    }}
+                  >
+                    他 {dayItems.length - 4} 件...
+                  </div>
+                )}
               </div>
             );
           })}
