@@ -19,7 +19,7 @@ const MILESTONES: Milestone[] = [
   { key: "reviewApprovedAt", label: "レビュー承認" },
   { key: "stgCompletedAt", label: "STG完了" },
   { key: "uatCompletedAt", label: "UAT完了" },
-  { key: "releasedAt", label: "リリース" },
+  { key: "releasedAt", label: "対応完了" },
 ];
 
 function formatDateTime(iso: string | null | undefined): string {
@@ -157,7 +157,8 @@ export function ProjectMonitor({
       }
     } else if (prev && !cur) {
       const noLaterDone = MILESTONES.slice(idx).every(ms => !milestones[ms.key]);
-      if (noLaterDone) {
+      // 最終工程（対応完了）はリリース待ちの間は集計しない
+      if (noLaterDone && idx < MILESTONES.length - 1) {
         const elapsed = calcHours(prev, effectiveNow) || 0;
         const stepHoldHours = getHoldHoursForRange(prev, effectiveNow, true);
         return sum + Math.max(0, elapsed - stepHoldHours);
@@ -212,9 +213,9 @@ export function ProjectMonitor({
                 const isDone = !!dateValue;
                 const prevDate = idx > 0 ? milestones[MILESTONES[idx - 1].key] : null;
 
-                // 🌟 修正: 現在進行中の工程を特定
+                // 🌟 修正: 現在進行中の工程を特定（最終工程 = 対応完了 はongoing扱いしない）
                 const noLaterDone = MILESTONES.slice(idx).every(m => !milestones[m.key]);
-                const isOngoing = idx > 0 && !!prevDate && !dateValue && noLaterDone;
+                const isOngoing = idx > 0 && idx < MILESTONES.length - 1 && !!prevDate && !dateValue && noLaterDone;
 
                 const hours = isOngoing ? calcHours(prevDate, effectiveNow) : calcHours(prevDate, dateValue);
                 const skipped = isReviewSkipped(idx, prevDate, dateValue);
