@@ -526,10 +526,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             </div>
             {/* 🛠️ ボタンコンテナを整列させ、×ボタンの左横へゴミ箱デザインのクリアボタンを精密に配置 */}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <button
-                type="button"
-                onClick={() => setShowClearConfirm(true)}
-                title="入力内容をすべてクリア"
+              <button 
+                type="button" 
+                onClick={() => setShowClearConfirm(true)} 
+                title="入力内容をすべてクリア" 
                 style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", justifyContent: "center" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
@@ -726,7 +726,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         </div>
       </div>
 
-      {/* 🛠️ コンポーネントを共通・統一化し、ご指定の仕様（破棄テキスト無し、右下ボタンを「閉じる」）へ完全に修正したモーダル */}
+      {/* 🛠️ 修正: z-index 競合によるデッドロックを防ぐため、呼び出し先モーダルに現在の zIndexBase + 10 を引き渡す */}
       {showCloseConfirm && (
         <ConfirmDialog
           title="画面を閉じる確認"
@@ -734,12 +734,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           confirmLabel="閉じる"
           confirmColor="#059669"
           hasWarningText={false}
+          zIndex={zIndexBase + 10}
           onConfirm={onClose}
           onClose={() => setShowCloseConfirm(false)}
         />
       )}
 
-      {/* 🛠️ 入力情報の一気クリア用確認ダイアログ */}
+      {/* 🛠️ 修正: クリア確認用モーダルにも同様の zIndexBase + 10 を注入 */}
       {showClearConfirm && (
         <ConfirmDialog
           title="入力内容のクリア"
@@ -747,6 +748,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           confirmLabel="消去する"
           confirmColor="#DC2626"
           hasWarningText={false}
+          zIndex={zIndexBase + 10}
           onConfirm={executeFormClear}
           onClose={() => setShowClearConfirm(false)}
         />
