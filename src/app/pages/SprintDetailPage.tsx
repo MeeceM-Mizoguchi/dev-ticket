@@ -259,6 +259,14 @@ export function SprintDetailPage() {
   });
   const [scrollTick, setScrollTick] = useState(0);
   const scrollWbsRef = useRef<string | null>(null);
+  const [backgroundParentWbs, setBackgroundParentWbs] = useState<string | null>(null);
+  const [isParentNav, setIsParentNav] = useState(false);
+
+  useEffect(() => {
+    if (isParentNav) {
+      setIsParentNav(false);
+    }
+  }, [ticketWbs]);
 
   // データ読み込み完了後、sessionStorage由来のハイライト行へスクロール
   useEffect(() => {
@@ -350,6 +358,7 @@ export function SprintDetailPage() {
   const selectedTicket = ticketWbs
     ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null)
     : null;
+  const showParentBackground = !!backgroundParentWbs;
   const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
@@ -713,12 +722,30 @@ export function SprintDetailPage() {
             scrollWbsRef.current = wbs;
             setScrollTick(t => t + 1);
           }
+          setBackgroundParentWbs(null);
           navigate(`/${projectSlug}/${sprintIdentifier}`);
         }}
         onUpdated={refreshSprint}
-        onDeleted={() => { selectTicket(null); refreshSprint(); }}
-        onSelectTicket={t => selectTicket(t.wbs || t.id)}
+        onDeleted={() => { setBackgroundParentWbs(null); selectTicket(null); refreshSprint(); }}
+        onSelectTicket={t => {
+          const wbs = t.wbs || t.id;
+          if (wbs === backgroundParentWbs) {
+            // strip/Esc: 背景の親に戻る → 背景解除
+            setBackgroundParentWbs(null);
+            setIsParentNav(true);
+          } else if (selectedTicket && t.parentId === selectedTicket.id) {
+            // 親から子を開く → 現在チケットを背景に
+            setBackgroundParentWbs(ticketWbs ?? null);
+            setIsParentNav(false);
+          } else {
+            setBackgroundParentWbs(null);
+            setIsParentNav(false);
+          }
+          selectTicket(wbs);
+        }}
+        showParentBackground={showParentBackground}
         projectPermissions={projectPermissions ?? undefined}
+        forceNoAnim={isParentNav}
       />
 
       {showMyFilterModal && (

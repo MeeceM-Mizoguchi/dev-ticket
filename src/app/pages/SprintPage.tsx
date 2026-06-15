@@ -58,9 +58,17 @@ export function SprintPage() {
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [notFound, setNotFound] = useState(false);
   const [selectedTicketWbs, setSelectedTicketWbs] = useState<string | null>(null);
+  const [backgroundParentWbs, setBackgroundParentWbs] = useState<string | null>(null);
+  const [isParentNav, setIsParentNav] = useState(false);
   const deletedIdsRef = useRef<Set<string>>(new Set());
 
   const projectId = project?.id ?? null;
+
+  useEffect(() => {
+    if (isParentNav) {
+      setIsParentNav(false);
+      }
+  }, [selectedTicketWbs]);
 
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -308,31 +316,66 @@ export function SprintPage() {
             projectSlug={projectSlug}
             anchor={anchor}
             onClose={() => {
-              const wbs = selectedTicketWbs;
-              setClosedHighlightWbs(wbs);
-              window.history.pushState(null, '', `/${projectSlug}`);
-              setSelectedTicketWbs(null);
-              if (wbs) {
+              const currentTicketWbs = selectedTicketWbs; // This is the ticket being closed (child or initial)
+              const parentWbsToRestore = backgroundParentWbs; // This is the parent's WBS if a child was opened from it
+
+              setClosedHighlightWbs(currentTicketWbs); // Highlight the ticket that was just closed
+              setBackgroundParentWbs(null); // Clear the background parent WBS
+
+              if (parentWbsToRestore) {
+                // If there was a parent ticket in the background, navigate back to it without animation
+                window.history.pushState(null, '', `/${projectSlug}/${parentWbsToRestore}`);
+                setSelectedTicketWbs(parentWbsToRestore);
+                setIsParentNav(true); // Signal to force no animation for the parent panel
+              } else {
+                // No parent in background, so close the panel entirely
+                window.history.pushState(null, '', `/${projectSlug}`);
+                setSelectedTicketWbs(null);
+              }
+              if (currentTicketWbs) {
                 requestAnimationFrame(() => {
-                  document.querySelector(`[data-wbs="${wbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  document.querySelector(`[data-wbs="${currentTicketWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 });
               }
             }}
             onUpdated={refreshSprints}
             onDeleted={() => {
               setClosedHighlightWbs(null);
+              setBackgroundParentWbs(null);
               window.history.pushState(null, '', `/${projectSlug}`);
               setSelectedTicketWbs(null);
               refreshSprints();
             }}
             onSelectTicket={t => {
               if (t.wbs) {
-                setClosedHighlightWbs(null);
+                const prevWbs = selectedTicketWbs;
                 window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
+                if (t.wbs === backgroundParentWbs) {
+                  // strip/Esc: 背景の親に戻る → 背景解除
+                  setBackgroundParentWbs(null);
+                  setIsParentNav(true);
+                  setClosedHighlightWbs(prevWbs);
+                  if (prevWbs) {
+                    requestAnimationFrame(() => {
+                      document.querySelector(`[data-wbs="${prevWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    });
+                  }
+                } else if (selectedTicket && t.parentId === selectedTicket.id) {
+                  // 親から子を開く → 現在チケットを背景に
+                  setBackgroundParentWbs(selectedTicketWbs);
+                  setIsParentNav(false);
+                  setClosedHighlightWbs(null);
+                } else {
+                  setBackgroundParentWbs(null);
+                  setIsParentNav(false);
+                  setClosedHighlightWbs(null);
+                }
                 setSelectedTicketWbs(t.wbs);
               }
             }}
+            showParentBackground={!!backgroundParentWbs}
             projectPermissions={projectPermissions ?? undefined}
+            forceNoAnim={isParentNav}
           />
         );
       })()}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
@@ -46,6 +46,8 @@ const PRIORITY_OPTIONS: SelectOption[] = [
   { value: "low", label: "低", color: "#0284C7", bg: "#F0F9FF" },
 ];
 
+let isParentNavigationActive = false;
+
 function formatTs(ts: string) {
   if (!ts) return "";
   const d = new Date(ts);
@@ -62,8 +64,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string }) {
+  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
+}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
 
   const { userName, userRole, userPermissions } = useAuth();
   const { showAlert } = useAlert();
@@ -77,6 +79,10 @@ export function TicketDetailPanel({
   const [breadcrumbSprintIdentifier, setBreadcrumbSprintIdentifier] = useState<string | null>(null);
   const [breadcrumbParentTicket, setBreadcrumbParentTicket] = useState<SprintTicket | null>(null);
   const [isClosing, setIsClosing] = useState(false);
+  // Tracks whether the next ticket change is a parent back-nav (so we suppress slideIn).
+  const isParentNavRef = useRef(false);
+  // Animation name for the main panel div — alternates between pair names to re-trigger browser animation.
+  const [panelAnim, setPanelAnim] = useState("slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)");
 
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
@@ -216,14 +222,86 @@ export function TicketDetailPanel({
     return () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current); };
   }, []);
 
+  // Refs allow the stable escStack handler to always read latest values without re-registering.
+  // Re-registering on every render breaks the stack order when dialogs are also registered.
+  const breadcrumbParentRef = useRef<SprintTicket | null>(null);
+  const onSelectTicketRef = useRef(onSelectTicket);
+  const handleCloseRef = useRef(handleClose);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { breadcrumbParentRef.current = breadcrumbParentTicket; }, [breadcrumbParentTicket]);
+  useEffect(() => { onSelectTicketRef.current = onSelectTicket; }, [onSelectTicket]);
+  useEffect(() => { handleCloseRef.current = handleClose; }, [handleClose]);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  // Animate the child panel out (260ms) then navigate to the parent ticket.
+  // Falls back to handleCloseRef (close) if no onSelectTicket handler is provided (e.g. Dashboard, ReleaseNotes).
+  // All deps accessed via stable setters or refs so this callback is stable across re-renders.
+  const handleNavigateToParent = useCallback((parent: SprintTicket) => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    if (onSelectTicketRef.current) {
+      setIsClosing(false);
+      isParentNavRef.current = true;
+      isParentNavigationActive = true;
+      onSelectTicketRef.current(parent);
+    } else {
+      onCloseRef.current();
+    }
+    setIsClosing(true);
+    closeTimerRef.current = setTimeout(() => {
+      if (onSelectTicketRef.current) {
+        setIsClosing(false);
+        isParentNavRef.current = true;
+        isParentNavigationActive = true;
+        onSelectTicketRef.current(parent);
+      } else {
+        onCloseRef.current();
+      }
+    }, 260);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stable handler registered once on mount: navigates to parent on Esc if child ticket, else closes.
+  const stableEscHandler = useCallback(() => {
+    const parent = breadcrumbParentRef.current;
+    if (parent) {
+      handleNavigateToParent(parent);
+    } else {
+      handleCloseRef.current();
+    }
+  }, [handleNavigateToParent]);
+
   useEffect(() => {
-    escStack.push(handleClose);
-    return () => escStack.pop(handleClose);
-  }, [handleClose]);
+    escStack.push(stableEscHandler);
+    return () => escStack.pop(stableEscHandler);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Runs synchronously before paint — sets the panel animation value without any visible flash.
+  // useLayoutEffect + setState causes a sync re-render before the browser draws, so the first
+  // paint always shows the correct animation (slideIn, suppressed, etc.).
+  useLayoutEffect(() => {
+    if (!ticket?.id) return;
+    if (forceNoAnim || isParentNavigationActive) {
+      isParentNavigationActive = false;
+      isParentNavRef.current = false;
+      setPanelAnim("none");
+    } else if (isParentNavRef.current) {
+      isParentNavRef.current = false;
+      setPanelAnim("none");
+    } else if (ticket?.parentId) {
+      // Alternate between two identical keyframe names so the browser always re-triggers.
+      setPanelAnim(prev => prev.startsWith("slideInPanelChild2")
+        ? "slideInPanelChild 0.28s cubic-bezier(0.16,1,0.3,1)"
+        : "slideInPanelChild2 0.28s cubic-bezier(0.16,1,0.3,1)");
+    } else {
+      // Fresh parent open — alternate names to re-trigger.
+      setPanelAnim(prev => prev.startsWith("slideInPanel2")
+        ? "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)"
+        : "slideInPanel2 0.28s cubic-bezier(0.16,1,0.3,1)");
+    }
+  }, [ticket?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!ticket) return;
-    if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = undefined; }
+    if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); }
     setIsClosing(false);
     setBreadcrumbSprintIdentifier(null);
     setTitle(ticket.title);
@@ -1223,7 +1301,7 @@ export function TicketDetailPanel({
           onCreated={() => { setShowCreateChild(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
-      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}`}</style>
+      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}`}</style>
 
       {/* Image preview modal */}
       {previewImage && (
@@ -1243,13 +1321,26 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div onClick={handleClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
-      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
+      <div onClick={stableEscHandler} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+
+      {/* 背景親チケットパネル — 子チケット表示中に親を裏に見せる */}
+      {showParentBackground && breadcrumbParentTicket && (
+        <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#A09690", letterSpacing: "0.05em", marginBottom: 10 }}>{breadcrumbParentTicket.wbs}</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", lineHeight: 1.2 }}>{breadcrumbParentTicket.title}</div>
+          </div>
+          <div style={{ flex: 1, background: "#FAFAF8" }} />
+        </div>
+      )}
+
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 202 : 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim }}>
+
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
           <div
-            onClick={() => onSelectTicket?.(breadcrumbParentTicket)}
-            style={{ position: "absolute", top: 0, left: -48, bottom: 0, width: 48, background: "#EDE9E3", borderRadius: "12px 0 0 12px", borderLeft: "1px solid rgba(26,23,20,0.10)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, transition: "background 0.15s, width 0.15s", overflow: "hidden", zIndex: 0 }}
+            onClick={e => { e.stopPropagation(); if (breadcrumbParentTicket) handleNavigateToParent(breadcrumbParentTicket); }}
+            style={{ position: "absolute", top: 0, left: -48, bottom: 0, width: 48, background: "#EDE9E3", borderRadius: "12px 0 0 12px", borderLeft: "1px solid rgba(26,23,20,0.10)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, transition: "background 0.15s, width 0.15s", overflow: "hidden", zIndex: 202 }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E2DDD6"; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9E3"; }}
             title={`${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}`}
@@ -1304,7 +1395,7 @@ export function TicketDetailPanel({
               <>
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
                 <button
-                  onClick={() => onSelectTicket?.(breadcrumbParentTicket)}
+                  onClick={() => { if (breadcrumbParentTicket) handleNavigateToParent(breadcrumbParentTicket); }}
                   style={{ color: "#9E9690", background: "none", border: "none", padding: 0, cursor: onSelectTicket ? "pointer" : "default", fontWeight: 600, fontSize: 11, fontFamily: "inherit", transition: "color 0.15s", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                   onMouseEnter={ev => { if (onSelectTicket) ev.currentTarget.style.color = "#1A1714"; }}
                   onMouseLeave={ev => { ev.currentTarget.style.color = "#9E9690"; }}
@@ -1424,7 +1515,7 @@ export function TicketDetailPanel({
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
                 <Trash2 style={{ width: 15, height: 15 }} />
               </button>
-              <button onClick={handleClose} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+              <button onClick={stableEscHandler} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                 <X style={{ width: 16, height: 16 }} />
