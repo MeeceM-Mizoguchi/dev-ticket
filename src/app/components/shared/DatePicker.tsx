@@ -11,6 +11,7 @@ interface Props {
   min?: string;           // YYYY-MM-DD
   max?: string;           // YYYY-MM-DD
   required?: boolean;
+  disabled?: boolean;
 }
 
 const MONTH_NAMES = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
@@ -24,7 +25,7 @@ function parseDate(s: string): [number, number, number] | null {
   return [y, m - 1, d];
 }
 
-export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required }: Props) {
+export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required, disabled }: Props) {
   const today = new Date().toISOString().split("T")[0];
   const [open, setOpen] = useState(false);
   const wrapRef    = useRef<HTMLDivElement>(null);
@@ -53,9 +54,10 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   }, []);
 
   const handleToggle = useCallback(() => {
+    if (disabled) return;
     calcPosition();
     setOpen(o => !o);
-  }, [calcPosition]);
+  }, [calcPosition, disabled]);
 
   // Close on outside click — check both the trigger wrapper AND the portal popup
   useEffect(() => {
@@ -160,7 +162,7 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
         </label>
       )}
       <div ref={triggerRef} onClick={handleToggle}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: open ? "#FFF" : "#F7F8F9", border: `1px solid ${open ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontSize: 13, color: displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.08)" : "none" }}>
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: disabled ? "#F4F5F6" : open ? "#FFF" : "#F7F8F9", border: `1px solid ${disabled ? "rgba(26,23,20,0.07)" : open ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, color: disabled ? "#C9C4BB" : displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", opacity: disabled ? 0.6 : 1 }}>
         <span>{displayValue || placeholder}</span>
         <Calendar style={{ width: 14, height: 14, color: open ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
       </div>
