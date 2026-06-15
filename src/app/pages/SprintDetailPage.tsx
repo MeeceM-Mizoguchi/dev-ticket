@@ -212,15 +212,20 @@ function ColumnFilter({
   );
 }
 
-function parseSprintSegment(segment: string): { sprintIdentifier: string; ticketNum: string | null } {
-  const match = segment.match(/^(.+)-(\d+)$/);
-  if (match) return { sprintIdentifier: match[1], ticketNum: match[2] };
-  return { sprintIdentifier: segment, ticketNum: null };
+function parseSprintSegment(segment: string): { sprintIdentifier: string; ticketWbs: string | null } {
+  // 子チケット: {sprintId}-{3桁以上の親番号}-{子番号}  例: BRU2-016-1
+  const childMatch = segment.match(/^(.+)-\d{3,}-\d+$/);
+  if (childMatch) return { sprintIdentifier: childMatch[1], ticketWbs: segment };
+  // 親チケット: {sprintId}-{番号}  例: BRU2-016
+  const parentMatch = segment.match(/^(.+)-\d+$/);
+  if (parentMatch) return { sprintIdentifier: parentMatch[1], ticketWbs: segment };
+  // スプリントのみ
+  return { sprintIdentifier: segment, ticketWbs: null };
 }
 
 export function SprintDetailPage() {
   const { projectSlug, segment = "" } = useParams<{ projectSlug: string; segment?: string }>();
-  const { sprintIdentifier, ticketNum } = parseSprintSegment(segment);
+  const { sprintIdentifier, ticketWbs } = parseSprintSegment(segment);
   const navigate = useNavigate();
   const { toast } = useToast();
   const { showAlert } = useAlert();
@@ -270,7 +275,7 @@ export function SprintDetailPage() {
 
   const selectTicket = (wbs: string | null) => {
     if (wbs) {
-      navigate(`/${projectSlug}/${sprintIdentifier}-${wbs.split("-").pop()}`, { replace: false });
+      navigate(`/${projectSlug}/${wbs}`, { replace: false });
     } else {
       navigate(`/${projectSlug}/${sprintIdentifier}`);
     }
@@ -342,8 +347,8 @@ export function SprintDetailPage() {
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
 
-  const selectedTicket = ticketNum
-    ? (sprint.tickets.find(t => t.wbs === `${sprintIdentifier}-${ticketNum}` || t.wbs.split("-").pop() === ticketNum) ?? null)
+  const selectedTicket = ticketWbs
+    ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null)
     : null;
   const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
