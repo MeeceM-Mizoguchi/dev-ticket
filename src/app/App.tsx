@@ -16,6 +16,7 @@ import { RolesPage } from "@/app/pages/RolesPage";
 import { SettingsPage } from "@/app/pages/SettingsPage";
 import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 import { MyActionsPage } from "@/app/pages/MyActionsPage";
+import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/admin-settings" element={<AdminSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
+              <Route path="/release-notes" element={<ReleaseNotesPage />} />
               {/* Sprint list */}
               <Route path="/:projectSlug" element={<SprintPage />} />
               {/* Sprint detail (チケット一覧) with optional ticket open */}

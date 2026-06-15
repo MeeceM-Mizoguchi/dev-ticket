@@ -4,8 +4,9 @@ import type { ProjectStatus, TicketStatus, Priority, Role, Sprint, SprintStatus,
 export function computeSprintStatus(sprint: Sprint): SprintStatus {
   const today = new Date().toISOString().split("T")[0];
   const { tickets, endDate } = sprint;
-  const active: TicketStatus[] = ["in-progress", "in-review", "review-done", "stg-test", "uat", "done"];
-  if (tickets.length > 0 && tickets.every((t: SprintTicket) => t.status === "done" || t.status === "closed")) return "completed";
+  const active: TicketStatus[] = ["in-progress", "in-review", "review-done", "stg-test", "uat", "done", "waiting-release", "released"];
+  const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released"];
+  if (tickets.length > 0 && tickets.every((t: SprintTicket) => terminal.includes(t.status))) return "completed";
   if (endDate && endDate < today) return "delayed";
   if (tickets.some((t: SprintTicket) => active.includes(t.status))) return "active";
   return "planning";
@@ -24,6 +25,8 @@ export function getStatusMeta(status: ProjectStatus | TicketStatus) {
     "stg-test": { label: "STG完了", cls: "bg-teal-50 text-teal-700", dot: "bg-teal-500", bar: "bg-teal-500" },
     uat: { label: "UAT完了", cls: "bg-indigo-50 text-indigo-700", dot: "bg-indigo-500", bar: "bg-indigo-500" },
     closed: { label: "クローズ", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-500", bar: "bg-stone-400" },
+    "waiting-release": { label: "リリース待ち", cls: "bg-purple-50 text-purple-700", dot: "bg-purple-500", bar: "bg-purple-500" },
+    released: { label: "リリース済み", cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500", bar: "bg-emerald-500" },
   };
   return map[status] ?? { label: status, cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" };
 }
@@ -38,6 +41,8 @@ export const TICKET_STATUSES = [
   { value: "stg-test", label: "STG完了", color: "#0D9488", bg: "#F0FDFA" },
   { value: "uat", label: "UAT完了", color: "#4F46E5", bg: "#EEF2FF" },
   { value: "closed", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
+  { value: "waiting-release", label: "リリース待ち", color: "#7C3AED", bg: "#F5F3FF" },
+  { value: "released", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
 ];
 
 export function getPriorityMeta(p: Priority) {
@@ -238,7 +243,8 @@ export function getSprintStatusMeta(status: SprintStatus) {
 
 export function sprintProgress(s: Sprint) {
   if (!s.tickets.length) return 0;
-  return Math.round(s.tickets.filter(t => t.status === "done" || t.status === "closed").length / s.tickets.length * 100);
+  const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released"];
+  return Math.round(s.tickets.filter(t => terminal.includes(t.status)).length / s.tickets.length * 100);
 }
 
 export const inputCls = "w-full bg-[#F7F8F9] border border-stone-200/70 rounded-xl px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 focus:bg-white transition-all";
@@ -262,7 +268,7 @@ const STATUS_VALIDATION_LABEL: Partial<Record<TicketStatus, string>> = {
 };
 const STATUS_RANK: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
-  "stg-test": 4, uat: 5, done: 6, closed: 7,
+  "stg-test": 4, uat: 5, done: 6, closed: 7, "waiting-release": 8, released: 9,
 };
 export function validateParentStatusChange(targetStatus: TicketStatus, childTickets: SprintTicket[]): string | null {
   if (childTickets.length === 0) return null;

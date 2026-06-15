@@ -5,6 +5,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { escStack } from "@/app/lib/escStack";
 
 const DEFAULT_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
@@ -207,6 +208,11 @@ function RoleModal({
   const [saving, setSaving] = useState(false);
   const [nameTouched, setNameTouched] = useState(isEdit);
 
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
+
   const toSlug = (s: string) =>
     s.toLowerCase().trim().replace(/\s+/g, "-").replace(/[^a-z0-9-_]/g, "");
 
@@ -333,6 +339,11 @@ function DeleteConfirmModal({ role, onClose, onConfirm }: {
   onConfirm: () => Promise<void>;
 }) {
   const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
 
   const handleConfirm = async () => {
     setDeleting(true);

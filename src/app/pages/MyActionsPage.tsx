@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react
 import { createPortal } from "react-dom";
 import { ClipboardList, RefreshCw, ChevronDown, Plus, X, Hash, Maximize2, Minimize2, ExternalLink, Pencil, Check } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { escStack } from "@/app/lib/escStack";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -468,6 +469,11 @@ function MemoDetailModal({
   const [saving, setSaving] = useState(false);
   const [tickets, setTickets] = useState<{ wbs: string; title: string }[]>([]);
   const meta = CATEGORY_META[memo.category];
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !editing) return;

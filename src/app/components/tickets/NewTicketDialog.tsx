@@ -15,6 +15,7 @@ import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 // 🛠️ 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { escStack } from "@/app/lib/escStack";
 
 // 🌟 追加: 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -150,9 +151,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   }, [title, status, priority, categoryId, assignee, startDate, dueDate, estimatedHours, description, images, selectedProjectId, selectedSprintId, contextKey, saving]);
 
   // 🛠️ バツボタン、キャンセルボタン、背景マスクがクリックされた際に確認画面を呼び出すハンドラー
-  const handleInterceptClose = () => {
+  const handleInterceptClose = useCallback(() => {
     setShowCloseConfirm(true);
-  };
+  }, []);
+
+  useEffect(() => {
+    escStack.push(handleInterceptClose);
+    return () => escStack.pop(handleInterceptClose);
+  }, [handleInterceptClose]);
 
   // 1. プロジェクト一覧の取得、および固定プロジェクト時のメンバー取得
   useEffect(() => {

@@ -5,6 +5,7 @@ import type { MilestoneRow } from "@/app/hooks/useProject";
 import { calcWorkingHours } from "@/app/lib/helpers";
 // 🌟 追加: データベース接続チェック用の道具をインポート
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { escStack } from "@/app/lib/escStack";
 
 interface Milestone {
   key: keyof MilestoneRow;
@@ -83,6 +84,11 @@ export function ProjectMonitor({
       setLoading(false);
     }).catch(() => setLoading(false));
   }, [ticketId]);
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
 
   // 🌟 修正: 抜け漏れや後戻りに対応するため、「記録済みの最も後ろの工程」を算出
   let lastCompletedIdx = -1;

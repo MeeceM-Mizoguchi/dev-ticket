@@ -1,5 +1,6 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { X } from "lucide-react";
+import { escStack } from "@/app/lib/escStack";
 
 type DialogSize = "sm" | "md" | "lg";
 
@@ -11,6 +12,12 @@ const sizeConfig: Record<DialogSize, { maxWidth: number; minHeight?: number }> =
 
 export function DialogShell({ title, onClose, children, footer, size = "md" }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode; size?: DialogSize }) {
   const { maxWidth, minHeight } = sizeConfig[size];
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
+
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ position: "absolute", inset: 0, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} onClick={onClose} />

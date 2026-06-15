@@ -10,6 +10,7 @@ import { TICKETS, PROJECTS } from "@/app/data/mock";
 import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
 import { calcProgress, formatDate, getPriorityMeta } from "@/app/lib/helpers";
 import type { ProjectStatus, SprintTicket, TicketStatus, Priority } from "@/app/types";
+import { escStack } from "@/app/lib/escStack";
 
 type ChartType = 'horizontal' | 'vertical' | 'line' | 'scatter';
 type LineChartMode = 'project-progress' | 'weekly-close';
@@ -101,6 +102,13 @@ export function Dashboard() {
   } | null>(null);
   const [selectedSprintTicket, setSelectedSprintTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketCtx, setSelectedTicketCtx] = useState<{ projectId: string; sprintId: string; projectSlug: string } | null>(null);
+
+  useEffect(() => {
+    if (!expandModalData) return;
+    const fn = () => setExpandModalData(null);
+    escStack.push(fn);
+    return () => escStack.pop(fn);
+  }, [expandModalData]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
