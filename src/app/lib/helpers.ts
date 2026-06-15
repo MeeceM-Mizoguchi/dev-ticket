@@ -36,6 +36,7 @@ export const TICKET_STATUSES = [
   { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
   { value: "in-review", label: "レビュー中", color: "#7C3AED", bg: "#F5F3FF" },
   { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }, // 🌟 これを追加！
+  { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }, // 🌟 取下（progress === -2 で対応）を追加
   // ...  { value: "in-review",   label: "レビュー中",   color: "#7C3AED", bg: "#F5F3FF" },
   { value: "review-done", label: "レビュー完了", color: "#0284C7", bg: "#F0F9FF" },
   { value: "stg-test", label: "STG完了", color: "#0D9488", bg: "#F0FDFA" },

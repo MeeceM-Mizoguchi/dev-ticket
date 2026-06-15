@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle } from "lucide-react";
+// 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -80,7 +81,11 @@ export function TicketDetailPanel({
   const [title, setTitle] = useState(ticket?.title ?? "");
   const [showMonitor, setShowMonitor] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // 🌟 追加: 取下の確認モーダル表示用ステート
+  const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  // 🌟 修正: isUpdating だと名前が被る可能性があるため、専用の名前に変更
+  const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
@@ -563,6 +568,47 @@ export function TicketDetailPanel({
       // 🌟 修正: ProjectMonitor側の判定ロジックと一致させるため、コメントテキストに「保留を解除しました」を確実に含める
       await addComment(`<p>保留を解除しました（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+    }
+  };
+
+  // 🌟 追加: モーダルで「OK（取下する）」が押されたときの実処理
+  const executeWithdraw = async () => {
+    if (!ticket || !isSupabaseEnabled) return;
+    setIsWithdrawLoading(true);
+    try {
+      setProgress(-2);
+      await supabase!.from("sprint_tickets").update({ progress: -2 }).eq("id", ticket.id);
+      if (ticket) recordMilestoneFromTicketStatus(ticket.id, "取下" as any);
+      await addComment(`<p>チケットを取下げました</p>`, "status_change", [], status as TicketStatus);
+      onUpdated?.();
+      setShowWithdrawConfirm(false);
+    } finally {
+      setIsWithdrawLoading(false);
+    }
+  };
+
+  // 🌟 追加: データベースのステータス制約を回避しつつ、取下（progress: -2）を実装する裏ワザ
+  const handleToggleWithdraw = async () => {
+    if (!ticket || !isSupabaseEnabled) return;
+
+    const isCurrentlyWithdrawn = progress === -2;
+
+    if (!isCurrentlyWithdrawn) {
+      // 🌟 修正: window.confirm をやめて、専用のきれいなモーダルを表示するステートをON
+      setShowWithdrawConfirm(true);
+    } else {
+      setIsWithdrawLoading(true);
+      try {
+        const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
+        setProgress(restoredProgress);
+        await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
+        if (ticket) recordMilestoneFromTicketStatus(ticket.id, status as any);
+        const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
+        await addComment(`<p>取下げを解除し、ステータスを「${newLabel}」に戻しました</p>`, "status_change", [], status as TicketStatus);
+        onUpdated?.();
+      } finally {
+        setIsWithdrawLoading(false);
+      }
     }
   };
 
@@ -1089,6 +1135,18 @@ export function TicketDetailPanel({
           onClose={() => setShowDeleteConfirm(false)}
         />
       )}
+      {/* 🌟 追加: 取下確認用のオリジナルUIモーダル */}
+      {showWithdrawConfirm && (
+        <ConfirmDialog
+          title="取下の確認"
+          message={`このチケットを取下げますか？\nこれまでの実績は維持されたまま、以降の集計はストップします`}
+          confirmLabel="取下する"
+          confirmColor="#059669"
+          hasWarningText={false}
+          onConfirm={executeWithdraw}
+          onClose={() => setShowWithdrawConfirm(false)}
+        />
+      )}
       {pendingReleaseDate !== null && (
         <ConfirmDialog
           title="リリース日変更の確認"
@@ -1181,7 +1239,6 @@ export function TicketDetailPanel({
 
       <div onClick={handleClose} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : "slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)" }}>
-
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
           <div
@@ -1258,8 +1315,8 @@ export function TicketDetailPanel({
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.wbs || ticket.id}</span>
 
-                {/* 🌟 修正: progress が -1 なら保留中バッジを表示 */}
-                {progress === -1 ? <StatusBadge status="pending" /> : <StatusBadge status={status} />}
+                {/* 🌟 修正: progress が -1 なら保留中、-2 なら取下バッジを表示 */}
+                {progress === -1 ? <StatusBadge status="pending" /> : progress === -2 ? <StatusBadge status="withdrawn" /> : <StatusBadge status={status} />}
 
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
@@ -1277,6 +1334,21 @@ export function TicketDetailPanel({
                     }}>
                     {progress === -1 ? <PlayCircle style={{ width: 11, height: 11 }} /> : <PauseCircle style={{ width: 11, height: 11 }} />}
                     {progress === -1 ? "保留解除" : "保留する"}
+                  </button>
+                )}
+                {/* 🌟 追加: 取下トグルボタン */}
+                {isAssignee && (
+                  <button onClick={handleToggleWithdraw}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                      border: progress === -2 ? "1px solid rgba(107,114,128,0.3)" : "1px solid rgba(26,23,20,0.12)",
+                      background: progress === -2 ? "#F3F4F6" : "#FFF",
+                      color: progress === -2 ? "#4B5563" : "#6B6458",
+                      transition: "all 0.15s"
+                    }}>
+                    <Ban style={{ width: 11, height: 11 }} />
+                    {progress === -2 ? "取下解除" : "取下する"}
                   </button>
                 )}
               </div>
@@ -1355,8 +1427,8 @@ export function TicketDetailPanel({
           </div>
 
           {(() => {
-            // 🌟 修正: 保留時（progress === -1）はバーの表示上は 0% とみなす
-            const displayProgress = progress === -1 ? 0 : (status === "done" || status === "closed") ? 100 : progress;
+            // 🌟 修正: 保留時（-1）や取下時（-2）はバーの表示上は 0% とみなす
+            const displayProgress = progress < 0 ? 0 : (status === "done" || status === "closed") ? 100 : progress;
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
                 <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
@@ -1367,20 +1439,20 @@ export function TicketDetailPanel({
             );
           })()}
 
-          {status === "in-review" && isAssignee && (
+          {status === "in-review" && isAssignee && progress >= 0 && (
             <button disabled
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(13,148,136,0.20)", cursor: "not-allowed", background: "#F0FDFA", color: "#94A3B8", marginTop: 10 }}>
               STG完了 →
             </button>
           )}
-          {actionBtn && isAssignee && status !== "pending" && (
+          {actionBtn && isAssignee && status !== "pending" && progress >= 0 && (
             <button onClick={() => { if (!showReReviewForm) handleStatusAction(actionBtn); }}
               disabled={showReReviewForm}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${showReReviewForm ? "rgba(107,114,128,0.20)" : actionBtn.color + "33"}`, cursor: showReReviewForm ? "not-allowed" : "pointer", background: showReReviewForm ? "#F4F5F6" : actionBtn.bg, color: showReReviewForm ? "#B0A9A4" : actionBtn.color, marginTop: 10 }}>
               {actionBtn.label} →
             </button>
           )}
-          {status === "uat" && isAssignee && progress !== -1 && !showReReviewForm && (
+          {status === "uat" && isAssignee && progress >= 0 && !showReReviewForm && (
             <div style={{ marginTop: 10 }}>
               {/* 日付入力 + ボタン 横並び */}
               <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
@@ -1420,7 +1492,7 @@ export function TicketDetailPanel({
               </label>
             </div>
           )}
-          {hasSkipReviewPermission && status === "in-progress" && (
+          {hasSkipReviewPermission && status === "in-progress" && progress >= 0 && (
             <button onClick={handleSkipReview}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
               レビュースキップ →
@@ -1438,10 +1510,10 @@ export function TicketDetailPanel({
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
                 <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : smeta?.color }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : smeta?.color }}>{progress === -1 ? "保留中" : smeta?.label}</span>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }}>{progress === -1 ? "保留中" : progress === -2 ? "取下" : smeta?.label}</span>
                 </div>
-                {status === "released" && (
+                {status === "released" && progress !== -2 && (
                   <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み</span>
                 )}
                 {status === "waiting-release" && (
