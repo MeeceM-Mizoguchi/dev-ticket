@@ -4,15 +4,15 @@ import { createClient } from "@supabase/supabase-js";
  * POST /api/slack-notify
  *
  * プロジェクトの Slack チャンネルに通知を投稿する。
- * 受信者の slack_member_id が登録済みの場合は <@U...> 形式でメンションする。
- * <@U...> メンションがあると、その人だけに Slack のプッシュ通知が届く。
+ * recipientUserNames: 受信者名の配列。slack_member_id が登録済みなら <@U...> 形式でまとめてメンション。
+ * 複数名まとめて1投稿にすることで、メンション数分の重複投稿を防ぐ。
  */
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  const { recipientUserName, projectSlug, title, body } = req.body ?? {};
-  if (!recipientUserName || !projectSlug) {
-    return res.status(400).json({ error: "recipientUserName and projectSlug are required" });
+  const { recipientUserNames, projectSlug, title, body } = req.body ?? {};
+  if (!recipientUserNames?.length || !projectSlug) {
+    return res.status(400).json({ error: "recipientUserNames and projectSlug are required" });
   }
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -50,17 +50,19 @@ export default async function handler(req: any, res: any) {
     return res.json({ skipped: true, reason });
   }
 
-  const { data: profile } = await sb
+  const { data: profiles } = await sb
     .from("profiles")
-    .select("slack_member_id")
-    .eq("name", recipientUserName)
-    .maybeSingle();
+    .select("name, slack_member_id")
+    .in("name", recipientUserNames);
 
-  const mention = profile?.slack_member_id
-    ? `<@${profile.slack_member_id}>`
-    : recipientUserName;
+  const mentions = recipientUserNames
+    .map((name: string) => {
+      const p = profiles?.find((r: { name: string; slack_member_id: string | null }) => r.name === name);
+      return p?.slack_member_id ? `<@${p.slack_member_id}>` : name;
+    })
+    .join(" ");
 
-  const text = `*${title}*\n${mention} ${body}`;
+  const text = `*${title}*\n${mentions} ${body}`;
 
   const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",

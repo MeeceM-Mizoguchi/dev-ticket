@@ -379,9 +379,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     const notifyMentions = async (ticketWbs: string) => {
       if (!description || !effectiveProjectSlug) return;
       const stripped = description.replace(/<[^>]*>/g, " ");
-      for (const name of currentProjectMembers) {
-        if (name === userName || !stripped.includes(`@${name}`)) continue;
-
+      const mentionedNames = currentProjectMembers.filter(name => name !== userName && stripped.includes(`@${name}`));
+      for (const name of mentionedNames) {
         const { error } = await supabase!.from("notifications").insert({
           user_name: name,
           type: "mention",
@@ -394,9 +393,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           is_read: false,
         });
         if (error) console.error("[mention] new ticket insert failed:", error.message);
-
+      }
+      if (mentionedNames.length > 0) {
         fireSlackNotify({
-          recipientUserName: name,
+          recipientUserNames: mentionedNames,
           projectSlug: effectiveProjectSlug,
           title: `${userName}さんにメンションされました`,
           body: `<${window.location.origin}/${effectiveProjectSlug}/${ticketWbs}|${ticketWbs}: ${title}>（チケット作成）`,
@@ -441,7 +441,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                   project_slug: effectiveProjectSlug, is_read: false,
                 });
                 if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
-                fireSlackNotify({ recipientUserName: finalAssignee, projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+                fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
               }
               await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
             }
@@ -495,7 +495,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             project_slug: effectiveProjectSlug, is_read: false,
           });
           if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
-          fireSlackNotify({ recipientUserName: finalAssignee, projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+          fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
         }
         await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
       }

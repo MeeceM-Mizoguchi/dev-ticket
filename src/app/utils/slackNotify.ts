@@ -1,5 +1,5 @@
 export interface SlackNotifyParams {
-  recipientUserName: string;
+  recipientUserNames: string[];
   projectSlug: string;
   title: string;
   body: string;

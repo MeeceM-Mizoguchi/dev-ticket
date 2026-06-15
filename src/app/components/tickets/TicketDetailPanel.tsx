@@ -405,11 +405,12 @@ export function TicketDetailPanel({
       const ctx = "description";
       if (!notifiedMentionsRef.current.has(ctx)) notifiedMentionsRef.current.set(ctx, new Set());
       const alreadyNotified = notifiedMentionsRef.current.get(ctx)!;
-      for (const name of memberNamesRef.current) {
-        if (name === userName || !stripped.includes(`@${name}`) || prevStripped.includes(`@${name}`) || alreadyNotified.has(name)) continue;
-        if (!projectSlug) continue;
+      if (!projectSlug) { prevDescRef.current = v; return; }
+      const newlyMentioned = memberNamesRef.current.filter(name =>
+        name !== userName && stripped.includes(`@${name}`) && !prevStripped.includes(`@${name}`) && !alreadyNotified.has(name)
+      );
+      for (const name of newlyMentioned) {
         alreadyNotified.add(name);
-
         const { error } = await supabase!.from("notifications").insert({
           user_name: name,
           type: "mention",
@@ -422,10 +423,11 @@ export function TicketDetailPanel({
           is_read: false,
         });
         if (error) console.error("[mention] description notification insert failed:", error.message);
-
+      }
+      if (newlyMentioned.length > 0) {
         const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
         fireSlackNotify({
-          recipientUserName: name,
+          recipientUserNames: newlyMentioned,
           projectSlug,
           title: `${userName}さんにメンションされました`,
           body: `<${ticketUrl}|${ticket.wbs}: ${ticket.title}>（チケット詳細）`,
@@ -664,7 +666,7 @@ export function TicketDetailPanel({
         if (error) console.error("[notifications] assign insert failed:", error.message, error);
       });
       fireSlackNotify({
-        recipientUserName: name,
+        recipientUserNames: [name],
         projectSlug,
         title: "チケットが割り当てられました",
         body: `${ticket.wbs}: ${ticket.title}`,
@@ -693,8 +695,10 @@ export function TicketDetailPanel({
     const stripped = content.replace(/<[^>]*>/g, " ");
     if (!notifiedMentionsRef.current.has(context)) notifiedMentionsRef.current.set(context, new Set());
     const alreadyNotified = notifiedMentionsRef.current.get(context)!;
-    for (const name of memberNamesRef.current) {
-      if (name === userName || !stripped.includes(`@${name}`) || alreadyNotified.has(name)) continue;
+    const newlyMentioned = memberNamesRef.current.filter(name =>
+      name !== userName && stripped.includes(`@${name}`) && !alreadyNotified.has(name)
+    );
+    for (const name of newlyMentioned) {
       alreadyNotified.add(name);
       const { error } = await supabase!.from("notifications").insert({
         user_name: name,
@@ -708,10 +712,12 @@ export function TicketDetailPanel({
         is_read: false,
       });
       if (error) console.error("[notifications] mention insert failed:", error.message);
+    }
+    if (newlyMentioned.length > 0) {
       const mentionMessageText = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
       const mentionTicketUrl = `${window.location.origin}/${projectSlug}/${currentTicket.wbs}`;
       fireSlackNotify({
-        recipientUserName: name,
+        recipientUserNames: newlyMentioned,
         projectSlug,
         title: `${userName}さんにメンションされました`,
         body: `<${mentionTicketUrl}|${currentTicket.wbs}: ${currentTicket.title}>\n${mentionMessageText}`,
@@ -817,7 +823,7 @@ export function TicketDetailPanel({
     if (projectSlug) {
       const reviewTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
       fireSlackNotify({
-        recipientUserName: reviewerName,
+        recipientUserNames: [reviewerName],
         projectSlug,
         title: `${userName}さんからレビュー依頼が届きました`,
         body: `${ticket.wbs}: ${ticket.title}（第${round}回）\n${reviewTicketUrl}`,
@@ -854,7 +860,7 @@ export function TicketDetailPanel({
     if (assignee && projectSlug) {
       const revisionTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
       fireSlackNotify({
-        recipientUserName: assignee,
+        recipientUserNames: [assignee],
         projectSlug,
         title: `${userName}さんから修正依頼が届きました`,
         body: `${ticket.wbs}: ${ticket.title}\n${revisionTicketUrl}`,
@@ -892,7 +898,7 @@ export function TicketDetailPanel({
     if (assignee && projectSlug) {
       const approvalTicketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
       fireSlackNotify({
-        recipientUserName: assignee,
+        recipientUserNames: [assignee],
         projectSlug,
         title: `${userName}さんがレビューを承認しました`,
         body: `${ticket.wbs}: ${ticket.title}\n${approvalTicketUrl}`,
@@ -942,7 +948,7 @@ export function TicketDetailPanel({
     if (reviewerName && projectSlug) {
       const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
       fireSlackNotify({
-        recipientUserName: reviewerName,
+        recipientUserNames: [reviewerName],
         projectSlug,
         title: `${userName}さんがレビュー依頼を取り下げました`,
         body: `${ticket.wbs}: ${ticket.title}（第${reviewRound}回）\n${ticketUrl}`,
