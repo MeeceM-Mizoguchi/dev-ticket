@@ -27,6 +27,8 @@ const STATUS_TO_MILESTONE: Partial<Record<TicketStatus, MilestoneKey>> = {
   "review-done": "reviewApprovedAt",
   "stg-test": "stgCompletedAt",
   "uat": "uatCompletedAt",
+  "waiting-release": "releasedAt",
+  "released": "releasedAt",
   "done": "releasedAt",
   "closed": "releasedAt",
 };

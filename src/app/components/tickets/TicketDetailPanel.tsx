@@ -1467,6 +1467,7 @@ export function TicketDetailPanel({
                     value={isReleaseDateUndecided ? "" : releaseDate}
                     onChange={v => { if (!isReleaseDateUndecided) setReleaseDate(v); }}
                     placeholder="リリース日を選択"
+                    disabled={isReleaseDateUndecided}
                   />
                 </div>
                 <button
@@ -1520,7 +1521,7 @@ export function TicketDetailPanel({
                   <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }}>{progress === -1 ? "保留中" : progress === -2 ? "取下" : smeta?.label}</span>
                 </div>
                 {status === "released" && progress !== -2 && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み{releaseDate ? ` ${releaseDate.replace(/-/g, "/")}` : ""}</span>
                 )}
                 {status === "waiting-release" && (
                   <div style={{ marginTop: 6 }}>
