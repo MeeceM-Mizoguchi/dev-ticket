@@ -42,7 +42,7 @@ const PRIORITY_STYLES: Record<string, { color: string; bg: string }> = {
   "低": { color: "#0284C7", bg: "#F0F9FF" },
 };
 
-const INITIAL_ROW_COUNT = 10;
+const INITIAL_ROW_COUNT = 5;
 
 // ── Custom cell renderers ─────────────────────────────────────────────────────
 
@@ -51,7 +51,11 @@ function renderDropdownTd(
   value: string,
   badgeStyle: { color: string; bg: string } | null,
   placeholder: string,
+  className?: string,
 ) {
+  // This renderer fully replaces HOT's default rendering path (doesn't call baseRenderer),
+  // so cellProperties.className (used for validation-error highlighting) must be applied here.
+  TD.className = className || "";
   TD.innerHTML = "";
   TD.style.cursor = "pointer";
   TD.style.padding = "0";
@@ -105,16 +109,16 @@ function renderDropdownTd(
   TD.appendChild(wrap);
 }
 
-function statusCellRenderer(_hot: any, TD: HTMLElement, _row: number, _col: number, _prop: any, value: string) {
-  renderDropdownTd(TD, value, STATUS_STYLES[value] ?? null, "選択");
+function statusCellRenderer(_hot: any, TD: HTMLElement, _row: number, _col: number, _prop: any, value: string, cellProperties: any) {
+  renderDropdownTd(TD, value, STATUS_STYLES[value] ?? null, "選択", cellProperties?.className);
 }
 
-function priorityCellRenderer(_hot: any, TD: HTMLElement, _row: number, _col: number, _prop: any, value: string) {
-  renderDropdownTd(TD, value, PRIORITY_STYLES[value] ?? null, "選択");
+function priorityCellRenderer(_hot: any, TD: HTMLElement, _row: number, _col: number, _prop: any, value: string, cellProperties: any) {
+  renderDropdownTd(TD, value, PRIORITY_STYLES[value] ?? null, "選択", cellProperties?.className);
 }
 
-function assigneeCellRenderer(_hot: any, TD: HTMLElement, _row: number, _col: number, _prop: any, value: string) {
-  renderDropdownTd(TD, value, null, "担当者なし");
+function assigneeCellRenderer(_hot: any, TD: HTMLElement, _row: number, _col: number, _prop: any, value: string, cellProperties: any) {
+  renderDropdownTd(TD, value, null, "担当者なし", cellProperties?.className);
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -132,8 +136,8 @@ type OverlayState = {
 
 const FIELD_BY_COL = { 1: "status", 2: "priority", 3: "assignee" } as const;
 
-function makeEmptyRow(): RowData {
-  return { title: "", status: "", priority: "", assignee: "", startDate: "", dueDate: "", estimatedHours: null, description: "" };
+function makeEmptyRow(defaultAssignee: string = ""): RowData {
+  return { title: "", status: "未着手", priority: "中", assignee: defaultAssignee, startDate: "", dueDate: "", estimatedHours: null, description: "" };
 }
 
 // ── Columns (static — no longer depends on member source) ────────────────────
@@ -175,33 +179,59 @@ function toDbDate(d: string | null | undefined): string | null {
   return `${y}-${m.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
-function validateRows(rows: RowData[]): string[] {
+// Convert plain-text description (with \n) to TipTap-compatible HTML.
+// Double newlines → paragraph break; single newlines → <br>.
+function textToHtml(text: string): string {
+  const esc = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc.split(/\n\n+/).map(p => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
+}
+
+function validateRows(rows: RowData[]): { errors: string[]; errorCells: Set<string> } {
   const errors: string[] = [];
+  const errorCells = new Set<string>();
+  // Every row is validated, including untouched spare rows — only rows actually filled in
+  // get registered, but the grid must not silently let a blank title sit there unflagged.
   rows.forEach((row, idx) => {
     const rowNum = idx + 1;
-    const hasContent = !!(
-      row.title.trim() || row.status || row.priority || row.assignee ||
-      row.startDate || row.dueDate || row.description ||
-      (typeof row.estimatedHours === "number" && !isNaN(row.estimatedHours) && row.estimatedHours > 0)
-    );
-    if (!hasContent) return;
 
-    if (!row.title.trim()) {
+    if (!(row.title ?? "").trim()) {
       errors.push(`${rowNum}行目: タイトルが未入力です`);
+      errorCells.add(`${idx}_0`);
+    }
+    if (!row.status) {
+      errors.push(`${rowNum}行目: ステータスが未選択です`);
+      errorCells.add(`${idx}_1`);
+    }
+    if (!row.priority) {
+      errors.push(`${rowNum}行目: 優先度が未選択です`);
+      errorCells.add(`${idx}_2`);
+    }
+    if (!row.assignee) {
+      errors.push(`${rowNum}行目: 担当者が未選択です`);
+      errorCells.add(`${idx}_3`);
     }
     if (row.startDate && row.dueDate) {
       const s = toDbDate(row.startDate);
       const d = toDbDate(row.dueDate);
-      if (s && d && d < s) errors.push(`${rowNum}行目: 期限日が開始日より前です`);
+      if (s && d && d < s) {
+        errors.push(`${rowNum}行目: 期限日が開始日より前です`);
+        errorCells.add(`${idx}_4`);
+        errorCells.add(`${idx}_5`);
+      }
     }
   });
-  return errors;
+  return { errors, errorCells };
 }
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
 const HOT_CSS = `
 .bulk-hot-wrap .hot-display-license-info { display: none !important; }
+
+.bulk-hot-wrap .htCore td.cell-validation-error {
+  background-color: #FEF2F2 !important;
+  box-shadow: inset 0 0 0 1px #FCA5A5 !important;
+}
 
 .handsontableInput,
 .handsontableInputHolder textarea,
@@ -311,11 +341,10 @@ export function BulkTicketCreateDialog({
 }) {
   const { userName } = useAuth();
   const hotRef = useRef<InstanceType<typeof HotTable>>(null);
-  // Compute initial row count: modal height - dialog chrome (176px) - HOT col header (34px), floor so last row is never cut off
+  const lastSelRef = useRef<number[][] | null>(null);
+  const mouseDownCoordsRef = useRef<{ row: number; col: number } | null>(null);
   const tableData = useRef<RowData[]>(
-    Array.from({
-      length: Math.max(INITIAL_ROW_COUNT, Math.floor((Math.floor(window.innerHeight * 0.9) - 212) / 32)),
-    }, makeEmptyRow),
+    Array.from({ length: INITIAL_ROW_COUNT }, () => makeEmptyRow(userName || "")),
   );
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -330,7 +359,7 @@ export function BulkTicketCreateDialog({
 
   // Date picker guard
   const pickerActiveRef = useRef(false);
-  // Escape guard: true while a cell editor is open (delayed false via rAF in afterEndEditing)
+  // Escape guard: true while a cell editor is open (delayed false via rAF in handleEditorClosed)
   const editorActiveRef = useRef(false);
   // Cleanup fn for date-cell character restriction listener
   const dateRestrictCleanupRef = useRef<(() => void) | null>(null);
@@ -399,13 +428,43 @@ export function BulkTicketCreateDialog({
       });
   }, [projectId]);
 
+
   // ── Validation ──────────────────────────────────────────────────────────────
+
+  // Cells flagged by the last validation run, read live by `cellsFn` below.
+  // NOTE: writing the highlight via hot.setCellMeta() was tried and reverted — the
+  // @handsontable/react wrapper's componentDidUpdate calls updateSettings(...) unconditionally
+  // on *every* parent re-render (no prop diffing), and since `columns` is always part of that
+  // settings object, Handsontable's updateSettings sees `settings.columns !== undefined` and
+  // calls metaManager.clearCache() — wiping any per-cell meta set via setCellMeta moments
+  // earlier. Since setValidationErrors() (called right below) triggers exactly that parent
+  // re-render, the highlight was being cleared almost immediately after being applied.
+  // The `cells` callback below is immune to this: it's a plain function reference stored in
+  // settings, not cached per-cell state, so clearCache() just makes Handsontable call it again
+  // — which it does, via the forced full re-render updateSettings performs right after — and it
+  // reads errorCellsRef fresh each time.
+  const errorCellsRef = useRef<Set<string>>(new Set());
 
   const runValidation = useCallback(() => {
     const hot = hotRef.current?.hotInstance;
     const data: RowData[] = hot ? (hot.getSourceData() as RowData[]) : tableData.current;
-    setValidationErrors(validateRows(data));
+    const { errors, errorCells } = validateRows(data);
+    errorCellsRef.current = errorCells;
+    setValidationErrors(errors);
+    hot?.render();
   }, []);
+
+  const cellsFn = useCallback((row: number, col: number) => {
+    const cellProperties: { className?: string } = {};
+    if (col <= 5 && errorCellsRef.current.has(`${row}_${col}`)) {
+      cellProperties.className = "cell-validation-error";
+    }
+    return cellProperties;
+  }, []);
+
+  // Run once on mount so an empty/invalid grid is flagged immediately, without waiting for
+  // the user to make a change first.
+  useEffect(() => { runValidation(); }, [runValidation]);
 
   // Block only programmatic internal updates — allow all user-initiated changes
   const afterChange = useCallback((_changes: any, source: string) => {
@@ -421,6 +480,10 @@ export function BulkTicketCreateDialog({
     const cellTd = hot.getCell(row, col);
     if (!cellTd) return;
     const rect = cellTd.getBoundingClientRect();
+    // Force a single-cell selection: the mousedown->mouseup cycle that leads here can leave a
+    // stray multi-cell range selected (native drag-select tracking reacting to the layout shift
+    // when the overlay popup mounts), which then renders as a phantom drag/autofill highlight.
+    hot.selectCell(row, col);
     suppressOverlayCloseRef.current = true;
     requestAnimationFrame(() => { suppressOverlayCloseRef.current = false; });
     setCellOverlay({ col: col as 1 | 2 | 3, row, rect: { top: rect.top, left: rect.left, width: rect.width, bottom: rect.bottom } });
@@ -452,6 +515,40 @@ export function BulkTicketCreateDialog({
     if (!hot) return;
     hot.alter("insert_row_below", hot.countRows() - 1, 1);
   };
+
+  // Newly inserted rows (via "1行追加" button or context-menu row insert) default to
+  // status=未着手, priority=中, assignee=自分 — same as the initial set of rows.
+  const afterCreateRow = useCallback((index: number, amount: number) => {
+    // afterCreateRow fires mid-way through hot.alter(), while HOT is still busy inserting the
+    // row — setDataAtRowProp's own afterChange/render (and the row's initial validation/
+    // highlighting) can get swallowed by that in-progress operation, so defer the whole thing
+    // (defaulting included) until the call stack (and alter()) has fully unwound.
+    setTimeout(() => {
+      const hot = hotRef.current?.hotInstance;
+      if (!hot) return;
+      // A freshly inserted row only has the props actually written to it — Handsontable does
+      // not back-fill it with makeEmptyRow's shape — so every RowData field needs an explicit
+      // default here, not just the three "visible default" ones, otherwise validateRows'
+      // (row.title ?? "") guard aside, other code reading these fields as plain strings would break.
+      const changes: [number, string, any][] = [];
+      for (let i = 0; i < amount; i++) {
+        const r = index + i;
+        changes.push(
+          [r, "title", ""], [r, "status", "未着手"], [r, "priority", "中"], [r, "assignee", userName || ""],
+          [r, "startDate", ""], [r, "dueDate", ""], [r, "estimatedHours", null], [r, "description", ""],
+        );
+      }
+      hot.setDataAtRowProp(changes as any);
+      runValidation();
+    }, 0);
+  }, [userName, runValidation]);
+
+  // Row removal (context menu / Ctrl+D undo etc.) shifts every row index below the removed
+  // one — validationErrors/cell highlighting must be recomputed against the new layout, and
+  // (like afterCreateRow) this hook fires mid-alter(), so defer to let it finish first.
+  const afterRemoveRow = useCallback(() => {
+    setTimeout(runValidation, 0);
+  }, [runValidation]);
 
   // ── Date picker helpers ─────────────────────────────────────────────────────
 
@@ -510,7 +607,12 @@ export function BulkTicketCreateDialog({
     });
   }, [showPickerSafe]);
 
-  const afterEndEditing = useCallback(() => {
+  // Handsontable has no real "after editing ends" hook — "afterEndEditing" doesn't exist
+  // (confirmed empty match against the bundled source), so a prop with that name is silently
+  // ignored. This runs instead from afterSelectionEnd/afterDeselect (which fire once HOT has
+  // already committed the pending edit and moved/cleared selection) and from the Escape-cancel
+  // branch in beforeKeyDown (which doesn't change selection, so the other two never fire for it).
+  const handleEditorClosed = useCallback(() => {
     pickerActiveRef.current = false;
     dateRestrictCleanupRef.current?.();
     dateRestrictCleanupRef.current = null;
@@ -527,27 +629,128 @@ export function BulkTicketCreateDialog({
     }
   }, []);
 
-  // Auto-enter partial edit mode for text cells (col 0 = title, col 7 = description)
-  const afterSelectionEnd = useCallback((r: number, c: number) => {
-    if ((c === 0 || c === 7) && r >= 0) {
-      requestAnimationFrame(() => {
-        const hot = hotRef.current?.hotInstance;
-        if (!hot) return;
-        const editor = hot.getActiveEditor() as any;
-        if (!editor || editor.isOpened?.()) return;
-        editor.beginEditing("");
-        requestAnimationFrame(() => {
-          const ta: HTMLTextAreaElement | undefined = editor.TEXTAREA;
-          if (ta && ta.value === "") {
-            const existing = String(editor.originalValue ?? "");
-            if (existing) {
-              ta.value = existing;
-              ta.setSelectionRange(existing.length, existing.length);
-            }
-          }
-        });
-      });
-    }
+  const afterSelectionEnd = useCallback((r: number, c: number, r2: number, c2: number) => {
+    // Selection only changes after HOT has already committed (or cancelled) any pending edit
+    // on the previously selected cell, so this is a reliable point to run the editor-closed
+    // cleanup/re-validation regardless of which key/mouse action ended the edit.
+    handleEditorClosed();
+    // Remember the selection even after it's released (cell deselected / focus moved away),
+    // so Ctrl+V / Ctrl+X still have a target to paste/cut into.
+    lastSelRef.current = [[r, c, r2, c2]];
+  }, [handleEditorClosed]);
+
+  // Full grid blur (e.g. clicking the footer's 登録する/キャンセル buttons directly while a
+  // cell is still selected, without first selecting another HOT cell) doesn't fire
+  // afterSelectionEnd, so this catches that path too.
+  const afterDeselect = useCallback(() => {
+    handleEditorClosed();
+  }, [handleEditorClosed]);
+
+  // Copy/Cut/Paste while the editor is pre-opened (text cols 0/7): HOT's CopyPaste plugin
+  // returns early when isEditorOpened()=true, so we intercept the native clipboard events
+  // directly at document level (capture phase — required because the dialog renders via a
+  // portal, so events never pass through div#root where React's synthetic handlers listen).
+  // clipboardData.setData/getData is synchronous and needs no permission, unlike
+  // navigator.clipboard, so this works reliably without timing/permission issues.
+  useEffect(() => {
+    const buildTsv = (hot: any, sel: number[][]) => {
+      const [r1, c1, r2, c2] = sel[0];
+      const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
+      const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
+      const rows: string[] = [];
+      for (let r = minR; r <= maxR; r++) {
+        const cells: string[] = [];
+        for (let col = minC; col <= maxC; col++) {
+          cells.push(String(hot.getSourceDataAtCell(r, col) ?? ""));
+        }
+        rows.push(cells.join("\t"));
+      }
+      return rows.join("\n");
+    };
+
+    // If the user has selected a partial range of text inside the cell's textarea (cursor
+    // drag-select), let the browser's native copy/cut/paste act on just that text instead of
+    // us seizing the whole cell.
+    const hasPartialTextSelection = (editor: any) => {
+      const ta: HTMLTextAreaElement | undefined = editor?.TEXTAREA;
+      return !!ta && document.activeElement === ta && ta.selectionStart !== ta.selectionEnd;
+    };
+
+    const handleCopy = (e: ClipboardEvent) => {
+      const hot = hotRef.current?.hotInstance;
+      if (!hot) return;
+      const editor = hot.getActiveEditor() as any;
+      if (editor?.isOpened?.() && hasPartialTextSelection(editor)) return;
+      const sel = hot.getSelected() ?? lastSelRef.current;
+      if (!sel?.length) return;
+      e.clipboardData?.setData("text/plain", buildTsv(hot, sel));
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+
+    const handleCut = (e: ClipboardEvent) => {
+      const hot = hotRef.current?.hotInstance;
+      if (!hot) return;
+      const editor = hot.getActiveEditor() as any;
+      if (editor?.isOpened?.() && hasPartialTextSelection(editor)) return;
+      const sel = hot.getSelected() ?? lastSelRef.current;
+      if (!sel?.length) return;
+      e.clipboardData?.setData("text/plain", buildTsv(hot, sel));
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const [r1, c1, r2, c2] = sel[0];
+      const changes: [number, number, string][] = [];
+      for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
+        for (let col = Math.min(c1, c2); col <= Math.max(c1, c2); col++) changes.push([r, col, ""]);
+      }
+      if (editor?.isOpened?.()) { editor.finishEditing(false); }
+      hot.setDataAtCell(changes as any);
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      const hot = hotRef.current?.hotInstance;
+      if (!hot) return;
+      const editor = hot.getActiveEditor() as any;
+      if (editor?.isOpened?.() && hasPartialTextSelection(editor)) return;
+      const sel = hot.getSelected() ?? lastSelRef.current;
+      if (!sel?.length) return;
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const [r1, c1, r2, c2] = sel[0];
+      const startRow = Math.min(r1, r2);
+      const startCol = Math.min(c1, c2);
+      const destRowCount = Math.abs(r2 - r1) + 1;
+      const destColCount = Math.abs(c2 - c1) + 1;
+      // Only strip a single trailing newline (from the split), never trimEnd() — that would eat
+      // trailing tab characters too, silently dropping blank trailing columns (e.g. 開始日~詳細
+      // when only タイトル has a value) from the copied row before the fill below ever sees them.
+      const pasteRows = text.replace(/\r?\n$/, "").split(/\r?\n/).map(line => line.split("\t"));
+      const srcRowCount = pasteRows.length;
+      // Excel-like fill: if the destination selection is larger than the clipboard content,
+      // repeat the clipboard content to cover the whole selected range.
+      const fillRowCount = Math.max(destRowCount, srcRowCount);
+      const fillColCount = Math.max(destColCount, Math.max(...pasteRows.map(cols => cols.length)));
+      const changes: [number, number, any][] = [];
+      for (let ri = 0; ri < fillRowCount; ri++) {
+        const srcCols = pasteRows[ri % srcRowCount];
+        for (let ci = 0; ci < fillColCount; ci++) {
+          changes.push([startRow + ri, startCol + ci, srcCols[ci % srcCols.length]]);
+        }
+      }
+      if (editor?.isOpened?.()) { editor.finishEditing(false); }
+      if (changes.length > 0) hot.setDataAtCell(changes as any);
+    };
+
+    document.addEventListener("copy", handleCopy, true);
+    document.addEventListener("cut", handleCut, true);
+    document.addEventListener("paste", handlePaste, true);
+    return () => {
+      document.removeEventListener("copy", handleCopy, true);
+      document.removeEventListener("cut", handleCut, true);
+      document.removeEventListener("paste", handlePaste, true);
+    };
   }, []);
 
   // Keyboard: open overlay on Enter/Space for dropdown cols; restrict date cols
@@ -566,7 +769,7 @@ export function BulkTicketCreateDialog({
     if (event.key === "Delete" || (event.key === "Backspace" && isDropdownCol)) {
       event.stopImmediatePropagation();
       event.preventDefault();
-      if (editor?.isOpened?.()) editor.close();  // exit partial/full edit mode first
+      if (editor?.isOpened?.()) { editor.close(); }
       const allSelected = hot.getSelected() ?? [];
       const changes: [number, number, string][] = [];
       allSelected.forEach(([r1, c1, r2, c2]) => {
@@ -578,6 +781,33 @@ export function BulkTicketCreateDialog({
       });
       if (changes.length > 0) hot.setDataAtCell(changes as any);
       setCellOverlay(null);
+      return;
+    }
+
+    // Ctrl+D / Cmd+D: fill down (Excel-like)
+    // Single-row selection → copy from the row above; multi-row → copy top row downward.
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      const allSel = hot.getSelected() ?? [];
+      if (editor?.isOpened?.()) editor.finishEditing(false);
+      const changes: [number, number, any][] = [];
+      allSel.forEach(([r1, c1, r2, c2]: [number, number, number, number]) => {
+        const minRow = Math.min(r1, r2), maxRow = Math.max(r1, r2);
+        const minCol = Math.min(c1, c2), maxCol = Math.max(c1, c2);
+        if (minRow === maxRow) {
+          if (minRow === 0) return;
+          for (let col = minCol; col <= maxCol; col++) {
+            changes.push([minRow, col, hot.getSourceDataAtCell(minRow - 1, col)]);
+          }
+        } else {
+          for (let col = minCol; col <= maxCol; col++) {
+            const src = hot.getSourceDataAtCell(minRow, col);
+            for (let r = minRow + 1; r <= maxRow; r++) changes.push([r, col, src]);
+          }
+        }
+      });
+      if (changes.length > 0) hot.setDataAtCell(changes as any);
       return;
     }
 
@@ -606,7 +836,43 @@ export function BulkTicketCreateDialog({
     }
 
     if (!editor?.isOpened?.()) return;
+
+    // Escape: block afterSelectionEnd from re-opening the editor after HOT closes it.
+    // Escape cancels the edit without changing selection, so afterSelectionEnd/afterDeselect
+    // never fire for this case — run the editor-closed cleanup directly here instead.
+    if (event.key === "Escape" && (c === 0 || c === 7)) {
+      handleEditorClosed();
+    }
+
     if (event.ctrlKey || event.metaKey) return;
+
+    // タイトル(0)・詳細(7): 編集中は ←→ でセルを移動しない（テキストカーソル移動）
+    if (c === 0 || c === 7) {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.stopImmediatePropagation();
+        return;
+      }
+      // 詳細(7): ↑↓ もセル移動しない（複数行テキスト）。Enter で改行挿入。
+      if (c === 7) {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.stopImmediatePropagation();
+          return;
+        }
+        if (event.key === "Enter") {
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          const ta = editor.TEXTAREA as HTMLTextAreaElement;
+          if (ta) {
+            const start = ta.selectionStart ?? ta.value.length;
+            const end = ta.selectionEnd ?? ta.value.length;
+            ta.value = ta.value.slice(0, start) + "\n" + ta.value.slice(end);
+            ta.setSelectionRange(start + 1, start + 1);
+            ta.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          return;
+        }
+      }
+    }
 
     if (c === 4 || c === 5) {
       const isPickerVisible = editor?.datePickerStyle?.display === "block";
@@ -643,36 +909,29 @@ export function BulkTicketCreateDialog({
         event.preventDefault();
       }
     }
-  }, [openOverlay]);
+  }, [openOverlay, handleEditorClosed]);
 
-  // Single-click (left only) opens overlay for dropdown cols; opens date picker for date cols
-  const afterOnCellMouseDown = useCallback((event: MouseEvent, coords: { row: number; col: number }) => {
+  // Mousedown: close any open overlay and remember where the click started (so mouseup can
+  // tell a plain click apart from a drag-to-select).
+  const afterOnCellMouseDown = useCallback((_event: MouseEvent, coords: { row: number; col: number }) => {
     if (coords.row < 0) return;
-    // Right-click: close overlay and let context menu work normally
-    if (event.button !== 0) {
-      setCellOverlay(null);
-      return;
-    }
-
-    if (coords.col === 1 || coords.col === 2 || coords.col === 3) {
-      openOverlay(coords.row, coords.col);
-      return;
-    }
-
-    // Close overlay when clicking any other cell
+    mouseDownCoordsRef.current = { row: coords.row, col: coords.col };
     setCellOverlay(null);
+  }, []);
 
-    if (coords.col === 4 || coords.col === 5) {
-      setTimeout(() => {
-        const hot = hotRef.current?.hotInstance;
-        if (!hot) return;
-        const editor = hot.getActiveEditor() as any;
-        if (!editor) return;
-        if (!editor.isOpened?.() && typeof editor.beginEditing === "function") editor.beginEditing();
-        showPickerSafe(editor);
-      }, 30);
+  // Mouseup on a dropdown col (status/priority/assignee): open the overlay immediately if this
+  // was a plain click (mouseup lands on the same cell as mousedown) rather than a drag-select,
+  // so the dropdown opens on the first click instead of requiring a second click to "begin
+  // editing" an already-selected cell. Drag-selects (mouseup on a different cell) still work
+  // normally for multi-cell selection / batch context-menu operations.
+  const afterOnCellMouseUp = useCallback((event: MouseEvent, coords: { row: number; col: number }) => {
+    if (coords.row < 0) return;
+    if (event.shiftKey || event.ctrlKey || event.metaKey) return; // range-extend clicks shouldn't pop the dropdown
+    const down = mouseDownCoordsRef.current;
+    if (down && down.row === coords.row && down.col === coords.col && (coords.col === 1 || coords.col === 2 || coords.col === 3)) {
+      openOverlay(coords.row, coords.col);
     }
-  }, [openOverlay, showPickerSafe]);
+  }, [openOverlay]);
 
   // ── Context menu (memoized — stable ref prevents HotTable from calling updateSettings on every render) ──
 
@@ -692,6 +951,7 @@ export function BulkTicketCreateDialog({
           const sel = hot.getSelected?.();
           if (!sel?.length) return;
           const [r1, , r2] = sel[0];
+          (hot.getActiveEditor?.() as any)?.finishEditing?.();
           hot.alter("insert_row_above", Math.min(r1, r2), Math.abs(r2 - r1) + 1);
         },
       },
@@ -709,6 +969,7 @@ export function BulkTicketCreateDialog({
           const sel = hot.getSelected?.();
           if (!sel?.length) return;
           const [r1, , r2] = sel[0];
+          (hot.getActiveEditor?.() as any)?.finishEditing?.();
           hot.alter("insert_row_below", Math.max(r1, r2), Math.abs(r2 - r1) + 1);
         },
       },
@@ -726,12 +987,35 @@ export function BulkTicketCreateDialog({
           const sel = hot.getSelected?.();
           if (!sel?.length) return;
           const [r1, , r2] = sel[0];
+          (hot.getActiveEditor?.() as any)?.finishEditing?.();
           hot.alter("remove_row", Math.min(r1, r2), Math.abs(r2 - r1) + 1);
         },
       },
       hsep1: { name: "---------" },
       copy: { name: "コピー" },
       cut:  { name: "切り取り" },
+      custom_paste: {
+        name: "貼り付け",
+        callback() {
+          const hot = (hotRef as React.RefObject<any>).current?.hotInstance;
+          if (!hot) return;
+          navigator.clipboard.readText().then(text => {
+            if (!text) return;
+            const sel = hot.getSelected();
+            if (!sel?.length) return;
+            const startRow = Math.min(sel[0][0], sel[0][2]);
+            const startCol = Math.min(sel[0][1], sel[0][3]);
+            const pasteRows = text.trimEnd().split(/\r?\n/).map((line: string) => line.split("\t"));
+            const changes: [number, number, any][] = [];
+            pasteRows.forEach((cols: string[], ri: number) => {
+              cols.forEach((val: string, ci: number) => {
+                changes.push([startRow + ri, startCol + ci, val]);
+              });
+            });
+            if (changes.length > 0) hot.setDataAtCell(changes);
+          }).catch(() => {});
+        },
+      },
       hsep2: { name: "---------" },
       undo: { name: "元に戻す" },
       redo: { name: "やり直す" },
@@ -743,6 +1027,10 @@ export function BulkTicketCreateDialog({
   const handleSave = async () => {
     const hot = hotRef.current?.hotInstance;
     if (!hot) return;
+    // Commit any cell still being edited (e.g. user clicked 登録する directly without first
+    // moving to another cell) so its value isn't silently dropped from the saved data.
+    const activeEditor = hot.getActiveEditor() as any;
+    if (activeEditor?.isOpened?.()) activeEditor.finishEditing(false);
     const rawData = hot.getSourceData() as RowData[];
     const validRows = rawData.filter(row => typeof row.title === "string" && row.title.trim() !== "");
     if (validRows.length === 0) {
@@ -782,7 +1070,7 @@ export function BulkTicketCreateDialog({
           start_date: toDbDate(row.startDate),
           due_date: toDbDate(row.dueDate),
           estimated_hours: eh, progress: 0,
-          description: row.description || null,
+          description: row.description ? textToHtml(row.description) : null,
           created_by: userName || null,
           images: [], parent_id: null,
         };
@@ -858,9 +1146,14 @@ export function BulkTicketCreateDialog({
 
         {/* Info bar */}
         <div style={{ padding: "7px 24px", background: "#F8F9FA", borderBottom: "1px solid rgba(26,23,20,0.05)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <p style={{ fontSize: 11, color: "#9E9690", margin: 0 }}>
-            <strong style={{ color: "#6B6458" }}>タイトル</strong> を入力した行のみ登録。日付は <strong style={{ color: "#6B6458" }}>YYYY/MM/DD</strong> で入力、セルクリックでカレンダー表示。複数行選択→右クリックでまとめて操作
-          </p>
+          <div>
+            <p style={{ fontSize: 11, color: "#9E9690", margin: 0 }}>
+              <strong style={{ color: "#6B6458" }}>タイトル</strong> を入力した行のみ登録。日付はダブルクリックでカレンダー表示。<strong style={{ color: "#6B6458" }}>Ctrl+D</strong> で上のセルをコピー。複数行選択→右クリックでまとめて操作
+            </p>
+            <p style={{ fontSize: 11, color: "#9E9690", margin: 0 }}>
+              タイトル、開始日、期限日、見積工数、詳細のセルはダブルクリックで入力可能
+            </p>
+          </div>
           <button
             onClick={handleAddRow}
             style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, color: "#6B6458", background: "#ECEAE6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 6, cursor: "pointer", flexShrink: 0 }}
@@ -883,10 +1176,17 @@ export function BulkTicketCreateDialog({
             width="100%"
             height={tableHeight}
             colWidths={[210, 110, 80, 130, 120, 120, 88, 200]}
+            // Native drag-to-fill (the little square handle at a selection's corner) is what was
+            // producing the "drag-and-drop happened without dragging" artifact and the wrapped
+            // values landing in unrelated columns (開始日/期限日/見積工数/詳細) after copy-paste —
+            // its hotspot is easy to brush against on a 32px row. Ctrl+D (custom, below) already
+            // covers the fill-down use case, so the native handle is pure redundant risk here.
+            fillHandle={false}
             rowHeights={32}
             autoRowSize={false}
             licenseKey="non-commercial-and-evaluation"
             contextMenu={contextMenu}
+            cells={cellsFn as any}
             autoWrapRow={true}
             autoWrapCol={true}
             manualColumnResize={true}
@@ -894,9 +1194,12 @@ export function BulkTicketCreateDialog({
             beforeKeyDown={beforeKeyDown as any}
             beforeBeginEditing={beforeBeginEditing as any}
             afterBeginEditing={afterBeginEditing}
-            afterEndEditing={afterEndEditing}
+            afterDeselect={afterDeselect as any}
             afterChange={afterChange as any}
             afterOnCellMouseDown={afterOnCellMouseDown as any}
+            afterOnCellMouseUp={afterOnCellMouseUp as any}
+            afterCreateRow={afterCreateRow as any}
+            afterRemoveRow={afterRemoveRow as any}
             afterGetColHeader={afterGetColHeader}
           />
         </div>
