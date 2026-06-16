@@ -28,6 +28,7 @@ function parseDate(s: string): [number, number, number] | null {
 export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required, disabled }: Props) {
   const today = new Date().toISOString().split("T")[0];
   const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const wrapRef    = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const popupRef   = useRef<HTMLDivElement>(null);   // portal popup — NOT inside wrapRef
@@ -162,9 +163,11 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
         </label>
       )}
       <div ref={triggerRef} onClick={handleToggle}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: disabled ? "#F4F5F6" : open ? "#FFF" : "#F7F8F9", border: `1px solid ${disabled ? "rgba(26,23,20,0.07)" : open ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, color: disabled ? "#C9C4BB" : displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", opacity: disabled ? 0.6 : 1 }}>
+        onMouseEnter={() => !disabled && setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: disabled ? "#F4F5F6" : "#FFF", border: `1.5px solid ${disabled ? "rgba(26,23,20,0.07)" : (open || hovered) ? "#059669" : "rgba(5,150,105,0.35)"}`, borderRadius: 10, padding: "8.5px 11.5px", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, color: disabled ? "#C9C4BB" : displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.12)" : "none", opacity: disabled ? 0.6 : 1 }}>
         <span>{displayValue || placeholder}</span>
-        <Calendar style={{ width: 14, height: 14, color: open ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
+        <Calendar style={{ width: 14, height: 14, color: disabled ? "#B0A9A4" : "#059669", flexShrink: 0 }} />
       </div>
 
       {open && createPortal(calendarPopup, document.body)}
