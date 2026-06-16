@@ -10,6 +10,7 @@ import type { Project, Sprint, SprintTicket, TicketStatus, Priority, SortCol } f
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText, calcTicketActualHours, formatActualHours, formatPersonDays } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
@@ -249,6 +250,7 @@ export function SprintDetailPage() {
   const [colFilters, setColFilters] = useState<Record<string, Set<string>>>({});
   const [openCol, setOpenCol] = useState<string>("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showBulkCreate, setShowBulkCreate] = useState(false);
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
   const [showMyFilterModal, setShowMyFilterModal] = useState(false);
   const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
@@ -502,6 +504,14 @@ export function SprintDetailPage() {
             <FolderOpen style={{ width: 14, height: 14 }} />Myフィルタ
           </button>
           {canCreateTicket && (
+            <button onClick={() => setShowBulkCreate(true)}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 10, cursor: "pointer", flexShrink: 0 }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+              <Plus style={{ width: 14, height: 14 }} />一括作成
+            </button>
+          )}
+          {canCreateTicket && (
             <button onClick={() => setShowCreate(true)}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
@@ -714,6 +724,18 @@ export function SprintDetailPage() {
       </div>
 
       {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} />}
+      {showBulkCreate && (
+        <BulkTicketCreateDialog
+          sprintId={sprint.id}
+          sprintName={sprint.name}
+          projectId={project?.id}
+          projectSlug={projectSlug}
+          sprintStartDate={sprint.startDate || undefined}
+          sprintEndDate={sprint.endDate || undefined}
+          onClose={() => setShowBulkCreate(false)}
+          onCreated={() => { refreshSprint(); setShowBulkCreate(false); }}
+        />
+      )}
       {deleteTicketTarget && (
         <ConfirmDialog message={`「${deleteTicketTarget.title}」を削除しますか？`} onConfirm={() => handleDeleteTicket(deleteTicketTarget)} onClose={() => setDeleteTicketTarget(null)} />
       )}

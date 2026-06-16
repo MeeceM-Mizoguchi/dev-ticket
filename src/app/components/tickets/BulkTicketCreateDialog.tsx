@@ -229,8 +229,8 @@ const HOT_CSS = `
 .bulk-hot-wrap .hot-display-license-info { display: none !important; }
 
 .bulk-hot-wrap .htCore td.cell-validation-error {
-  background-color: #FEF2F2 !important;
-  box-shadow: inset 0 0 0 1px #FCA5A5 !important;
+  background-color: #FFF7ED !important;
+  box-shadow: inset 0 0 0 1px #F4D9B0 !important;
 }
 
 .handsontableInput,
@@ -1184,6 +1184,7 @@ export function BulkTicketCreateDialog({
             fillHandle={false}
             rowHeights={32}
             autoRowSize={false}
+            imeFastEdit={true}
             licenseKey="non-commercial-and-evaluation"
             contextMenu={contextMenu}
             cells={cellsFn as any}
