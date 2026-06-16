@@ -370,7 +370,7 @@ export function ReleaseNotesPage() {
                         {isReleased && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: "#DCFCE7", color: "#16A34A" }}>リリース済み</span>}
                       </div>
                       <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.ticket.title}</p>
-                      <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2 }}>{item.projectName}</p>
+                      <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2 }}>{item.projectName} ・ {item.ticket.assignee || "未定"}</p>
                     </div>
                     <ChevronRight style={{ width: 14, height: 14, color: "#B0A9A4", flexShrink: 0, marginTop: 2 }} />
                   </button>
