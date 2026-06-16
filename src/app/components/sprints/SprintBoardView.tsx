@@ -31,6 +31,13 @@ const STATUS_RANK: Record<TicketStatus, number> = {
   "stg-test": 4, "uat": 5, "done": 6, "closed": 7,
 };
 
+// progress === -1（保留中）/ -2（取下）はステータス列に関わらずカード表示上は専用列に振り分ける
+function effectiveStatus(ticket: SprintTicket): string {
+  if (ticket.progress === -1) return "pending";
+  if (ticket.progress === -2) return "withdrawn";
+  return ticket.status;
+}
+
 interface DragItem { id: string; sprintId: string; currentStatus: TicketStatus }
 interface PendingDrop { ticketId: string; sprintId: string; newStatus: TicketStatus }
 interface PendingError {
@@ -151,7 +158,8 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
 }) {
   const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(() => ({
     accept: DRAG_TYPE,
-    canDrop: item => item.sprintId === sprintId && item.currentStatus !== col.value,
+    // 保留中・取下はチケット詳細の専用ボタンでのみ切り替える運用のため、ドラッグ&ドロップでの移動先には含めない
+    canDrop: item => item.sprintId === sprintId && item.currentStatus !== col.value && col.value !== "pending" && col.value !== "withdrawn",
     drop: item => onDrop(item, col.value),
     collect: m => ({ isOver: m.isOver(), canDrop: m.canDrop() }),
   }), [sprintId, col.value, onDrop]);
@@ -389,7 +397,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
               {TICKET_STATUSES.map(col => {
-                const count = currentSprint.tickets.filter(t => t.status === col.value).length;
+                const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
@@ -413,7 +421,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
               {TICKET_STATUSES.map(col => {
-                const colTickets = currentSprint.tickets.filter(t => t.status === col.value);
+                const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
                     <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}

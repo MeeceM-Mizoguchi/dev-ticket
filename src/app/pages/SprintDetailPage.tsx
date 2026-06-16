@@ -569,13 +569,17 @@ export function SprintDetailPage() {
               {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
             </div>
           ) : displayTickets.map((ticket, i) => {
-            const isTerminal = ticket.status === "closed" || ticket.status === "released";
-            const tsm = TICKET_STATUSES.find(s => s.value === ticket.status) ?? TICKET_STATUSES[0];
+            const isTerminal = ticket.status === "closed" || ticket.status === "released" || ticket.progress === -1 || ticket.progress === -2;
+            const tsm = ticket.progress === -1
+              ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
+              : ticket.progress === -2
+                ? { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }
+                : TICKET_STATUSES.find(s => s.value === ticket.status) ?? TICKET_STATUSES[0];
             const priBg = ticket.priority === "high" ? "#FEF2F2" : ticket.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
             const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
             const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
-            const ticketProgress = (ticket.status === "done" || ticket.status === "closed" || ticket.status === "released" || ticket.status === "waiting-release") ? 100 : ticket.progress;
-            const barColor = ticketProgress === 100 ? "#059669" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
+            const ticketProgress = (ticket.status === "done" || ticket.status === "closed" || ticket.status === "released" || ticket.status === "waiting-release") ? 100 : Math.max(0, ticket.progress);
+            const barColor = ticketProgress === 100 ? "#059669" : ticket.progress === -1 ? "#DC2626" : ticket.progress === -2 ? "#9CA3AF" : ticket.status === "in-progress" ? "#D97706" : "#C9C4BB";
             const children = childrenByParent[ticket.id] ?? [];
             const hasChildren = children.length > 0;
             const isTicketExpanded = expandedTicketIds.has(ticket.id);
@@ -641,13 +645,17 @@ export function SprintDetailPage() {
                 </div>
                 {/* 子チケット行（アコーディオン展開時） */}
                 {hasChildren && isTicketExpanded && children.map(child => {
-                  const cIsTerminal = child.status === "closed" || child.status === "released";
-                  const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                  const cIsTerminal = child.status === "closed" || child.status === "released" || child.progress === -1 || child.progress === -2;
+                  const ctsm = child.progress === -1
+                    ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
+                    : child.progress === -2
+                      ? { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }
+                      : TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
                   const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                   const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                   const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
-                  const cProgress = (child.status === "done" || child.status === "closed" || child.status === "released" || child.status === "waiting-release") ? 100 : child.progress;
-                  const cBarColor = cProgress === 100 ? "#059669" : child.status === "in-progress" ? "#D97706" : "#C9C4BB";
+                  const cProgress = (child.status === "done" || child.status === "closed" || child.status === "released" || child.status === "waiting-release") ? 100 : Math.max(0, child.progress);
+                  const cBarColor = cProgress === 100 ? "#059669" : child.progress === -1 ? "#DC2626" : child.progress === -2 ? "#9CA3AF" : child.status === "in-progress" ? "#D97706" : "#C9C4BB";
 
                   const childCategory = getCategoryLabel(child);
 
