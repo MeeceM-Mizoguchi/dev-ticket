@@ -10,6 +10,7 @@ import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 
 function formatDate(d: string) {
   if (!d) return "";
@@ -110,6 +111,7 @@ export function MinutesPage() {
   const [meetingDate, setMeetingDate] = useState("");
   const [attendees, setAttendees] = useState<string[]>([]);
   const [content, setContent] = useState("");
+  const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<MeetingMinute | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -135,6 +137,7 @@ export function MinutesPage() {
     setMeetingDate(selected?.meetingDate ?? "");
     setAttendees(selected?.attendees ?? []);
     setContent(selected?.content ?? "");
+    setImages(selected?.images ?? []);
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleSave = useCallback((patch: Partial<{ title: string; meetingDate: string; attendees: string[]; content: string }>) => {
@@ -147,6 +150,15 @@ export function MinutesPage() {
       }).eq("id", selectedId);
       setMinutes(prev => prev.map(m => m.id === selectedId ? { ...m, ...patch } as MeetingMinute : m));
     }, 600);
+  }, [selectedId]);
+
+  const handleImagesChange = useCallback(async (next: string[]) => {
+    if (!selectedId) return;
+    setImages(next);
+    setMinutes(prev => prev.map(m => m.id === selectedId ? { ...m, images: next } : m));
+    if (isSupabaseEnabled) {
+      await supabase!.from("meeting_minutes").update({ images: next, updated_at: new Date().toISOString() }).eq("id", selectedId);
+    }
   }, [selectedId]);
 
   const handleAdd = async () => {
@@ -214,7 +226,7 @@ export function MinutesPage() {
           ))}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 20, overflowY: "auto" }}>
+        <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
           {!selected ? (
             <div style={{ padding: "60px 0", textAlign: "center" }}>
               <FileText style={{ width: 32, height: 32, color: "#D4CEC8", margin: "0 auto 10px" }} />
@@ -222,49 +234,65 @@ export function MinutesPage() {
             </div>
           ) : (
             <>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
-                <input
-                  value={title} disabled={!canEdit}
-                  onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value, meetingDate, attendees, content }); }}
-                  placeholder="議事録タイトル"
-                  style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
-                {canEdit && (
-                  <button onClick={() => setDeleteTarget(selected)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
-                    <Trash2 style={{ width: 14, height: 14 }} />
-                  </button>
-                )}
-              </div>
-              <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
-                <div>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>開催日</label>
-                  <input type="date" value={meetingDate} disabled={!canEdit}
-                    onChange={e => { setMeetingDate(e.target.value); scheduleSave({ title, meetingDate: e.target.value, attendees, content }); }}
-                    style={{ padding: "6px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", fontFamily: "inherit" }} />
+              {/* 固定ヘッダー: タイトル・削除・開催日・出席者 */}
+              <div style={{ padding: "20px 20px 12px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+                  <input
+                    value={title} disabled={!canEdit}
+                    onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value, meetingDate, attendees, content }); }}
+                    placeholder="議事録タイトル"
+                    style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                  {canEdit && (
+                    <button onClick={() => setDeleteTarget(selected)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
+                      <Trash2 style={{ width: 14, height: 14 }} />
+                    </button>
+                  )}
                 </div>
-                <div style={{ flex: 1, minWidth: 200 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "flex", alignItems: "center", gap: 4, marginBottom: 3 }}><Users style={{ width: 10, height: 10 }} />出席者</label>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {(project?.members ?? []).map(member => {
-                      const active = attendees.includes(member);
-                      return (
-                        <button key={member} disabled={!canEdit}
-                          onClick={() => {
-                            const next = active ? attendees.filter(a => a !== member) : [...attendees, member];
-                            setAttendees(next);
-                            scheduleSave({ title, meetingDate, attendees: next, content });
-                          }}
-                          style={{ padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 20, cursor: canEdit ? "pointer" : "default", border: `1.5px solid ${active ? "#059669" : "rgba(26,23,20,0.1)"}`, background: active ? "#ECFDF5" : "transparent", color: active ? "#059669" : "#9E9690" }}>
-                          {member}
-                        </button>
-                      );
-                    })}
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                  <div>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>開催日</label>
+                    <input type="date" value={meetingDate} disabled={!canEdit}
+                      onChange={e => { setMeetingDate(e.target.value); scheduleSave({ title, meetingDate: e.target.value, attendees, content }); }}
+                      style={{ padding: "6px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", fontFamily: "inherit" }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "flex", alignItems: "center", gap: 4, marginBottom: 3 }}><Users style={{ width: 10, height: 10 }} />出席者</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {(project?.members ?? []).map(member => {
+                        const active = attendees.includes(member);
+                        return (
+                          <button key={member} disabled={!canEdit}
+                            onClick={() => {
+                              const next = active ? attendees.filter(a => a !== member) : [...attendees, member];
+                              setAttendees(next);
+                              scheduleSave({ title, meetingDate, attendees: next, content });
+                            }}
+                            style={{ padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 20, cursor: canEdit ? "pointer" : "default", border: `1.5px solid ${active ? "#059669" : "rgba(26,23,20,0.1)"}`, background: active ? "#ECFDF5" : "transparent", color: active ? "#059669" : "#9E9690" }}>
+                            {member}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               </div>
-              <RichEditor value={content} readOnly={!canEdit}
-                onChange={v => { setContent(v); scheduleSave({ title, meetingDate, attendees, content: v }); }}
-                placeholder="議事内容を入力..." members={project?.members ?? []} minHeight="calc(100vh - 396px)" />
-              <ActionItemsPanel minuteId={selected.id} projectId={project.id} projectSlug={projectSlug ?? project.slug} members={project.members} canEdit={canEdit} />
+              {/* エディター + アクション項目（内部でスクロール） */}
+              <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "12px 20px 16px", display: "flex", flexDirection: "column" }}>
+                <RichEditor value={content} readOnly={!canEdit}
+                  onChange={v => { setContent(v); scheduleSave({ title, meetingDate, attendees, content: v }); }}
+                  placeholder="議事内容を入力..." members={project?.members ?? []} minHeight={120}
+                  style={{ flex: 1, minHeight: 0 }}
+                  onImageUpload={canEdit ? async (file) => {
+                    if (!isSupabaseEnabled) return URL.createObjectURL(file);
+                    const extMap: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+                    const ext = extMap[file.type] ?? "png";
+                    const path = `minutes/${selected.id}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+                    const { data, error } = await supabase!.storage.from("ticket-images").upload(path, file, { upsert: true, contentType: file.type });
+                    if (error || !data) return "";
+                    return supabase!.storage.from("ticket-images").getPublicUrl(path).data.publicUrl;
+                  } : undefined} />
+                <ActionItemsPanel minuteId={selected.id} projectId={project.id} projectSlug={projectSlug ?? project.slug} members={project.members} canEdit={canEdit} />
+              </div>
             </>
           )}
         </div>

@@ -128,17 +128,22 @@ export interface BacklogItem {
   id: string; projectId: string; title: string; description: string;
   status: BacklogStatus; priority: Priority; rank: number;
   assignee: string; estimatedHours: number; convertedTicketId: string | null;
+  convertedTicketWbs: string | null;
   categoryId: string | null;
+  images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
 export interface WikiPage {
   id: string; projectId: string; parentId: string | null; title: string;
   content: string; sortOrder: number;
+  isFolder: boolean;
+  images: string[];
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
 }
 export interface MeetingMinute {
   id: string; projectId: string; title: string; meetingDate: string;
   attendees: string[]; content: string;
+  images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
 export interface TicketItem {

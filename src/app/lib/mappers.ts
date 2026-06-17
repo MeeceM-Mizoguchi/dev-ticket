@@ -60,15 +60,15 @@ export function mapActionMemo(r: any): ActionMemo {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapBacklogItem(r: any): BacklogItem {
-  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, categoryId: r.category_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, convertedTicketWbs: r.converted_ticket_wbs ?? null, categoryId: r.category_id ?? null, images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapWikiPage(r: any): WikiPage {
-  return { id: r.id, projectId: r.project_id, parentId: r.parent_id ?? null, title: r.title || "", content: r.content || "", sortOrder: r.sort_order ?? 0, createdBy: r.created_by || "", updatedBy: r.updated_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, parentId: r.parent_id ?? null, title: r.title || "", content: r.content || "", sortOrder: r.sort_order ?? 0, isFolder: r.is_folder ?? false, images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", updatedBy: r.updated_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMeetingMinute(r: any): MeetingMinute {
-  return { id: r.id, projectId: r.project_id, title: r.title || "", meetingDate: r.meeting_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, title: r.title || "", meetingDate: r.meeting_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }

@@ -17,23 +17,48 @@ interface Props {
 
 export function CustomSelect({ value, options, onChange, placeholder = "選択してください" }: Props) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [dropPos, setDropPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const selected = options.find(o => o.value === value);
+
+  const handleToggle = () => {
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setDropPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    }
+    setOpen(o => !o);
+  };
 
   useEffect(() => {
     if (!open) return;
     const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (containerRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const h = () => setOpen(false);
+    window.addEventListener("scroll", h, true);
+    window.addEventListener("resize", h);
+    return () => {
+      window.removeEventListener("scroll", h, true);
+      window.removeEventListener("resize", h);
+    };
+  }, [open]);
+
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={containerRef} style={{ position: "relative" }}>
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={handleToggle}
         style={{
           width: "100%", display: "flex", alignItems: "center", gap: 8,
           padding: "7px 10px",
@@ -44,21 +69,21 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
           transition: "all 0.15s", textAlign: "left" as const,
         }}
       >
-        <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
           {selected ? (
             selected.color ? (
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
-                fontSize: 13, fontWeight: 500, color: "#1A1714",
+                fontSize: 13, fontWeight: 500, color: "#1A1714", whiteSpace: "nowrap",
               }}>
                 <span style={{ width: 5, height: 5, borderRadius: "50%", background: selected.color, display: "inline-block", flexShrink: 0 }} />
                 {selected.label}
               </span>
             ) : (
-              <span style={{ fontSize: 13, fontWeight: 500, color: "#1A1714" }}>{selected.label}</span>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "#1A1714", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{selected.label}</span>
             )
           ) : (
-            <span style={{ fontSize: 13, color: "#C9C4BB" }}>{placeholder}</span>
+            <span style={{ fontSize: 13, color: "#C9C4BB", whiteSpace: "nowrap" }}>{placeholder}</span>
           )}
         </span>
         <ChevronDown style={{
@@ -67,12 +92,22 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
         }} />
       </button>
 
-      {open && (
-        <div style={{
-          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 30,
-          background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden",
-        }}>
+      {open && dropPos && (
+        <div
+          ref={dropdownRef}
+          style={{
+            position: "fixed",
+            top: dropPos.top,
+            left: dropPos.left,
+            width: dropPos.width,
+            zIndex: 9999,
+            background: "#FFF",
+            border: "1px solid rgba(26,23,20,0.12)",
+            borderRadius: 10,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+            overflow: "hidden",
+          }}
+        >
           {options.map(opt => {
             const isSel = opt.value === value;
             return (

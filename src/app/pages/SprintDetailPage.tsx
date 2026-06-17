@@ -298,7 +298,16 @@ export function SprintDetailPage() {
       // Try by identifier first, then by ID for backward compat
       const { data: byId } = await base.eq("identifier", sprintIdentifier).maybeSingle();
       const { data: byRawId } = byId ? { data: null } : await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintIdentifier).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).maybeSingle();
-      const s = byId ?? byRawId;
+      // Fallback: segment looks like a ticket WBS (e.g. "T-001") — find the sprint that contains the ticket
+      let byTicketWbs = null;
+      if (!byId && !byRawId && ticketWbs) {
+        const { data: ticketRow } = await supabase!.from("sprint_tickets").select("sprint_id").eq("wbs", ticketWbs).maybeSingle();
+        if (ticketRow?.sprint_id) {
+          const { data: sprintByTicket } = await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", ticketRow.sprint_id).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).maybeSingle();
+          byTicketWbs = sprintByTicket;
+        }
+      }
+      const s = byId ?? byRawId ?? byTicketWbs;
       if (!s) { setProjectPermissionsLoaded(true); setLoading(false); return; }
       setSprint(mapSprint(s));
       const pid = s.project_id;
