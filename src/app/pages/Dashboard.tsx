@@ -113,7 +113,7 @@ export function Dashboard() {
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
-      // 🛠️【最重要修正】SprintPageの参照仕様に合わせて「wbs」フィールドを明示的に取得
+      // 🛠️【最重要修正】SprintPage of 参照仕様に合わせて「wbs」フィールドを明示的に取得
       supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
       supabase!.from("sprints").select("id, project_id, name"),
       supabase!.from("projects").select("id, slug, name, status, client, members"),
@@ -631,7 +631,7 @@ export function Dashboard() {
         <div style={{ background: "#FFFFFF", borderRadius: 14, padding: "20px 24px", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
             <div>
-              <h2 style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>プロジェクト進捗</h2>
+              <h2 style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>プロジェクト進捗</h2>
               <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 3 }}>ステータス別チケット集計</p>
             </div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -640,7 +640,7 @@ export function Dashboard() {
                   { value: 'horizontal' as ChartType, label: '横棒' },
                   { value: 'vertical' as ChartType, label: '縦棒' },
                   { value: 'line' as ChartType, label: '折れ線' },
-                  { value: 'scatter' as ChartType, label: '分布図' }
+                  { value: 'scatter' as ChartType, label: 'マトリックス図' }
                 ].map(btn => (
                   <button
                     key={btn.value}
