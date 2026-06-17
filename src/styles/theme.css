@@ -131,16 +131,30 @@
     font-size: var(--font-size);
   }
 
-  h1, h2, h3, h4 {
+  h1,
+  h2,
+  h3,
+  h4 {
     font-family: var(--font-heading);
     font-weight: 700;
     line-height: 1.25;
   }
 
-  h1 { font-size: var(--text-2xl); }
-  h2 { font-size: var(--text-xl); }
-  h3 { font-size: var(--text-lg); }
-  h4 { font-size: var(--text-base); }
+  h1 {
+    font-size: var(--text-2xl);
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+  }
+
+  h4 {
+    font-size: var(--text-base);
+  }
 
   label {
     font-size: var(--text-sm);
@@ -154,15 +168,40 @@
     line-height: 1.5;
   }
 
-  input, textarea, select {
+  input,
+  textarea,
+  select {
     font-size: var(--text-sm);
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
     font-family: var(--font-body);
   }
 
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(26,23,20,0.15); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(26,23,20,0.25); }
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(26, 23, 20, 0.15);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(26, 23, 20, 0.25);
+  }
+
+  blockquote {
+    border: 1px solid #E5E7EB !important;
+    border-radius: 8px !important;
+    padding: 10px 14px !important;
+    background-color: #F9FAFB !important;
+    margin: 0 0 10px 0 !important;
+    border-left: 1px solid #E5E7EB !important;
+    color: #4B5563 !important;
+  }
 }

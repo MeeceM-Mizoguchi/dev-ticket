@@ -2557,7 +2557,14 @@ export function TicketDetailPanel({
                             <Trash2 style={{ width: 11, height: 11 }} />
                           </button>
                         )}
-                        <button onClick={() => { setReplyingToId(replyingToId === c.id ? null : c.id); setReplyText(""); setReplyImages([]); }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                        <button onClick={() => {
+                          setReplyingToId(replyingToId === c.id ? null : c.id);
+                          // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
+                          const cleanContent = c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim();
+                          // 左線ではなく全体を囲うボーダースタイルに変更
+                          setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
+                          setReplyImages([]);
+                        }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
                           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
                           title="返信">
@@ -2642,6 +2649,7 @@ export function TicketDetailPanel({
                               <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{reply.userName}</span>
                               <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(reply.createdAt)}</span>
                               <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                                {/* 1. 編集ボタン */}
                                 {isOwnReply && editingId !== reply.id && (
                                   <button onClick={() => handleEditComment(reply)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
@@ -2649,6 +2657,7 @@ export function TicketDetailPanel({
                                     <Pencil style={{ width: 11, height: 11 }} />
                                   </button>
                                 )}
+                                {/* 2. 削除ボタン */}
                                 {isOwnReply && (
                                   <button onClick={() => handleDeleteComment(reply.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
@@ -2656,6 +2665,20 @@ export function TicketDetailPanel({
                                     <Trash2 style={{ width: 11, height: 11 }} />
                                   </button>
                                 )}
+                                {/* 3. 返信ボタン（直前のコメントのみを枠で囲って引用） */}
+                                <button onClick={() => {
+                                  setReplyingToId(replyingToId === c.id ? null : c.id);
+                                  // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
+                                  const cleanContent = reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim();
+                                  // 左線ではなく全体を囲うボーダースタイルに変更
+                                  setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
+                                  setReplyImages([]);
+                                }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
+                                  title="返信">
+                                  <CornerDownRight style={{ width: 11, height: 11 }} />
+                                </button>
                               </div>
                             </div>
                             {editingId === reply.id ? (
