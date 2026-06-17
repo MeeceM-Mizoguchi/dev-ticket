@@ -901,8 +901,12 @@ export function TicketDetailPanel({
     const s = field === "start_date" ? v : startDate;
     const d = field === "due_date" ? v : dueDate;
     if (field === "start_date") setStartDate(v); else setDueDate(v);
-    const days = s && d ? Math.max(0, Math.round((new Date(d).getTime() - new Date(s).getTime()) / 86400000)) : 0;
+
+    // ▼ ここから修正: 日付が存在する場合、差分日数に「+1」して8hを掛ける
+    const days = s && d ? Math.max(0, Math.round((new Date(d).getTime() - new Date(s).getTime()) / 86400000) + 1) : 0;
     const h = days * 8;
+    // ▲ ここまで
+
     setEstimatedH(h);
     save({ [field]: v || null, estimated_hours: h });
   };

@@ -254,7 +254,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   const calcHours = (start: string, due: string) => {
     if (!start || !due) return 0;
-    return Math.max(0, Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000)) * 8;
+    const diffDays = Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000);
+    return Math.max(0, diffDays + 1) * 8; // 🌟 修正: 当日完了の場合も1日（8h）として計算する
   };
   const handleDateChange = (field: "start" | "due", v: string) => {
     const s = field === "start" ? v : startDate;
@@ -529,10 +530,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             </div>
             {/* 🛠️ ボタンコンテナを整列させ、×ボタンの左横へゴミ箱デザインのクリアボタンを精密に配置 */}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <button 
-                type="button" 
-                onClick={() => setShowClearConfirm(true)} 
-                title="入力内容をすべてクリア" 
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(true)}
+                title="入力内容をすべてクリア"
                 style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", justifyContent: "center" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
@@ -611,10 +612,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 value={status}
                 options={isChildMode
                   ? [
-                      { value: "todo", label: "未着手", color: "#6B7280", bg: "#F3F4F6" },
-                      { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
-                      { value: "closed", label: "対応完了", color: "#059669", bg: "#ECFDF5" },
-                    ]
+                    { value: "todo", label: "未着手", color: "#6B7280", bg: "#F3F4F6" },
+                    { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
+                    { value: "closed", label: "対応完了", color: "#059669", bg: "#ECFDF5" },
+                  ]
                   : TICKET_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
                 onChange={v => setStatus(v as TicketStatus)}
               />
