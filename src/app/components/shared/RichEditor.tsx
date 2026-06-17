@@ -1,13 +1,74 @@
-import { useEditor, EditorContent, ReactRenderer } from "@tiptap/react";
+import { useEditor, EditorContent, ReactRenderer, ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import Image from "@tiptap/extension-image";
 import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import Mention from "@tiptap/extension-mention";
 import { Extension } from "@tiptap/core";
+import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
+import { Copy, X, CheckCheck } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+
+// ---- インライン画像 NodeView（ホバーでコピー/削除ボタン表示） ----
+function ImageNodeView({ node, deleteNode }: NodeViewProps) {
+  const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const src = (node.attrs as { src: string }).src;
+
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(src);
+      const blob = await res.blob();
+      let pngBlob: Blob;
+      if (blob.type === "image/png") {
+        pngBlob = blob;
+      } else {
+        const bmp = await createImageBitmap(blob);
+        const canvas = document.createElement("canvas");
+        canvas.width = bmp.width; canvas.height = bmp.height;
+        canvas.getContext("2d")!.drawImage(bmp, 0, 0);
+        pngBlob = await new Promise<Blob>((resolve, reject) =>
+          canvas.toBlob(b => b ? resolve(b) : reject(new Error("toBlob failed")), "image/png")
+        );
+      }
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) { console.error(err); }
+  };
+
+  return (
+    <NodeViewWrapper as="span" style={{ display: "inline-block", position: "relative", lineHeight: 0 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}>
+      <img src={src} style={{ maxWidth: "100%", maxHeight: 300, borderRadius: 6, margin: "4px 0", display: "block", objectFit: "contain", boxShadow: "0 1px 4px rgba(0,0,0,0.10)", cursor: "default" }} />
+      {hovered && (
+        <div contentEditable={false} style={{ position: "absolute", top: 8, right: 4, display: "flex", gap: 4 }}>
+          <button type="button" onMouseDown={handleCopy}
+            style={{ width: 22, height: 22, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+            title="コピー">
+            {copied ? <CheckCheck style={{ width: 10, height: 10, color: "#4ADE80" }} /> : <Copy style={{ width: 10, height: 10, color: "#FFF" }} />}
+          </button>
+          <button type="button" onMouseDown={(e) => { e.stopPropagation(); deleteNode(); }}
+            style={{ width: 22, height: 22, borderRadius: "50%", background: "#DC2626", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+            title="削除">
+            <X style={{ width: 10, height: 10, color: "#FFF" }} />
+          </button>
+        </div>
+      )}
+    </NodeViewWrapper>
+  );
+}
+
+const CustomImage = Image.extend({
+  addNodeView() {
+    return ReactNodeViewRenderer(ImageNodeView as any);
+  },
+}).configure({ inline: true, allowBase64: false });
 
 // ---- SuggestionStore: editor.storage 経由でチケット/メンバーをプラグインに渡す ----
 // TipTap のプラグインは最初のレンダーで closure をキャプチャするため、
@@ -295,7 +356,7 @@ function makeSuggestionPopup<T>(
 // ---- RichEditor -------------------------------------------------------------
 
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], onTicketClick, onBacklogClick,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], onTicketClick, onBacklogClick, onImageUpload, style,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
@@ -304,6 +365,8 @@ export function RichEditor({
   backlogItems?: { id: string; title: string }[];
   onTicketClick?: (wbs: string) => void;
   onBacklogClick?: (id: string) => void;
+  onImageUpload?: (file: File) => Promise<string>;
+  style?: React.CSSProperties;
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
@@ -311,6 +374,7 @@ export function RichEditor({
   const editor = useEditor({
     extensions: [
       StarterKit,
+      CustomImage,
       Table.configure({ resizable: false }),
       TableRow, TableCell, TableHeader,
       SuggestionStore,
@@ -380,6 +444,27 @@ export function RichEditor({
     editable: !readOnly,
     onUpdate: ({ editor }) => { onChange?.(editor.getHTML()); },
     editorProps: {
+      handlePaste: onImageUpload ? (_view, event) => {
+        const items = Array.from(event.clipboardData?.items ?? []);
+        const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+        if (imgFiles.length === 0) return false;
+        event.preventDefault();
+        imgFiles.forEach(async (file) => {
+          const url = await onImageUpload(file);
+          if (url) editor?.chain().focus().setImage({ src: url }).run();
+        });
+        return true;
+      } : undefined,
+      handleDrop: onImageUpload ? (_view, event) => {
+        const files = Array.from(event.dataTransfer?.files ?? []).filter(f => f.type.startsWith("image/"));
+        if (files.length === 0) return false;
+        event.preventDefault();
+        files.forEach(async (file) => {
+          const url = await onImageUpload(file);
+          if (url) editor?.chain().focus().setImage({ src: url }).run();
+        });
+        return true;
+      } : undefined,
       clipboardTextSerializer: (slice) => {
         function inline(node: any): string {
           if (node.isText) {
@@ -531,10 +616,12 @@ export function RichEditor({
   if (!editor) return null;
 
   return (
-    <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF" }}>
+    <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF", display: "flex", flexDirection: "column", ...style }}>
       <style>{`
-        .tiptap { outline: none; padding: 12px 14px; min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`}; font-size: 13px; line-height: 1.7; color: #1A1714; }
+        .tiptap { outline: none; padding: 12px 14px; min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`}; font-size: 13px; line-height: 1.7; color: #1A1714; flex: 1; }
         #${id} .tiptap { min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`};${maxHeight ? ` max-height: ${typeof maxHeight === "string" ? maxHeight : `${maxHeight}px`}; overflow-y: auto;` : ""} }
+        #${id} .ProseMirror-focused { outline: none; }
+        #${id} > .ProseMirror, #${id} > [data-radix-scroll-area-viewport] { flex: 1; display: flex; flex-direction: column; }
         .tiptap p { margin: 0; }
         .tiptap strong { font-weight: 700; }
         .tiptap ul { list-style-type: disc; padding-left: 20px; margin: 6px 0; }
@@ -556,9 +643,10 @@ export function RichEditor({
         .tiptap .ticket-mention:hover { background: #BFDBFE; }
         .tiptap .backlog-mention { color: #6D28D9; font-weight: 700; background: #EDE9FE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .backlog-mention:hover { background: #DDD6FE; }
+        .tiptap img { max-width: 100%; }
       `}</style>
       {!readOnly && toolbar && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 10px", borderBottom: "1px solid rgba(26,23,20,0.08)", background: "#F9F8F6" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 10px", borderBottom: "1px solid rgba(26,23,20,0.08)", background: "#F9F8F6", flexShrink: 0 }}>
           <button type="button" style={btnStyle(editor.isActive("bold"))} onClick={() => editor.chain().focus().toggleBold().run()}>B</button>
           <button type="button" style={{ ...btnStyle(editor.isActive("italic")), fontStyle: "italic" }} onClick={() => editor.chain().focus().toggleItalic().run()}>I</button>
           <button type="button" style={btnStyle(editor.isActive("strike"))} onClick={() => editor.chain().focus().toggleStrike().run()}>S̶</button>
@@ -576,10 +664,13 @@ export function RichEditor({
           <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>表</button>
         </div>
       )}
-      <EditorContent editor={editor} />
-      {!readOnly && !editor.getText() && placeholder && (
-        <style>{`.tiptap p.is-editor-empty:first-child::before { content: "${placeholder}"; }`}</style>
-      )}
+      {/* ツールバーは固定、EditorContentだけスクロール */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        <EditorContent editor={editor} />
+        {!readOnly && !editor.getText() && placeholder && (
+          <style>{`.tiptap p.is-editor-empty:first-child::before { content: "${placeholder}"; }`}</style>
+        )}
+      </div>
     </div>
   );
 }
