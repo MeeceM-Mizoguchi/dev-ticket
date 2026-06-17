@@ -415,9 +415,20 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       let wbs: string;
       if (isChildMode && parentTicketId && parentWbs) {
         // 子チケットのWBS: 親WBS + "-" + 連番 (例: PRJ-001-1, PRJ-001-2)
-        const { data: existingChildren } = await supabase!
-          .from("sprint_tickets").select("id").eq("parent_id", parentTicketId);
-        const nextNum = (existingChildren?.length ?? 0) + 1;
+        // 削除による巻き戻りを防ぐため、現在の子チケットの最大連番を取得して+1する
+        const { data: maxChildRow } = await supabase!
+          .from("sprint_tickets")
+          .select("wbs")
+          .eq("parent_id", parentTicketId)
+          .like("wbs", `${parentWbs}-%`)
+          .order("wbs", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const nextNum = maxChildRow?.wbs
+          ? (parseInt(maxChildRow.wbs.slice(parentWbs.length + 1), 10) || 0) + 1
+          : 1;
+
         wbs = `${parentWbs}-${nextNum}`;
         // sprintId が未指定の場合は親チケットから取得
         if (!effectiveSprintId) {
