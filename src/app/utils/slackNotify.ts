@@ -7,10 +7,20 @@ export interface SlackNotifyParams {
 
 /** Slack通知をバックグラウンドで送信する（メイン処理をブロックしない）。 */
 export function fireSlackNotify(params: SlackNotifyParams): void {
+  const MAX_LENGTH = 300;
+  const displayBody = params.body && params.body.length > MAX_LENGTH
+    ? params.body.substring(0, MAX_LENGTH) + '...'
+    : params.body;
+
+  const payload = {
+    ...params,
+    body: displayBody
+  };
+
   fetch("/api/slack-notify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify(payload),
   })
     .then(async res => {
       const data = await res.json().catch(() => ({}));
