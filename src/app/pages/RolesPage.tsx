@@ -11,6 +11,8 @@ const DEFAULT_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
   canEditDelete: false, canReview: false, canSkipReview: false,
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
+  canAccessAdminSettings: false,
+  canAccessWiki: false, canAccessBacklog: false, canAccessMinutes: false,
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string }[] = [
@@ -19,6 +21,9 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string }[] 
   { key: "canAccessRoles",         label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
   { key: "canAccessGroups",        label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
   { key: "canAccessAdminSettings", label: "通知管理",         desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
+  { key: "canAccessWiki",          label: "Wiki",             desc: "Wikiページの参照・編集が可能" },
+  { key: "canAccessBacklog",       label: "バックログ",       desc: "バックログ画面へのアクセスが可能" },
+  { key: "canAccessMinutes",       label: "議事録",           desc: "議事録の参照・作成が可能" },
 ];
 
 export function RolesPage() {

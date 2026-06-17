@@ -13,6 +13,9 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canAccessRoles: false,
   canAccessGroups: false,
   canAccessAdminSettings: false,
+  canAccessWiki: false,
+  canAccessBacklog: false,
+  canAccessMinutes: false,
 };
 
 interface AuthCtxType {
@@ -38,7 +41,12 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
   if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
   // fallback: admin/PM get all permissions if roles table not yet seeded
   if (role === "admin" || role === "project-manager") {
-    return { canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true, canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true };
+    return {
+      ...DEFAULT_PERMISSIONS,
+      canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true,
+      canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true, canAccessAdminSettings: role === "admin",
+      canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true,
+    };
   }
   return { ...DEFAULT_PERMISSIONS };
 }

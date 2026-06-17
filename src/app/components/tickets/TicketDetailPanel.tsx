@@ -123,6 +123,7 @@ export function TicketDetailPanel({
   const [projectMemberNames, setProjectMemberNames] = useState<string[]>([]);
   const [adminMemberNames, setAdminMemberNames] = useState<string[]>([]);
   const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
+  const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -419,6 +420,8 @@ export function TicketDetailPanel({
         setProjectTickets(data as { wbs: string; title: string }[]);
       }
     })();
+    supabase!.from("backlog_items").select("id, title").eq("project_id", projectId).order("id")
+      .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
   }, [projectId]);
 
   useEffect(() => {
@@ -460,6 +463,10 @@ export function TicketDetailPanel({
   const handleTicketMentionClick = useCallback((wbs: string) => {
     onSelectTicket?.({ id: "", wbs, title: wbs, status: "todo", priority: "medium", assignee: "", startDate: "", dueDate: "", estimatedHours: 0, progress: 0 });
   }, [onSelectTicket]);
+
+  const handleBacklogMentionClick = useCallback((id: string) => {
+    if (projectSlug) window.location.href = `/${projectSlug}/backlog?item=${id}`;
+  }, [projectSlug]);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
@@ -690,6 +697,45 @@ export function TicketDetailPanel({
         setIsWithdrawLoading(false);
       }
     }
+  };
+
+  const handleChildStart = async () => {
+    if (!ticket) return;
+    const newStatus: TicketStatus = "in-progress";
+    const p = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(p);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+    }
+    await addComment(`<p>着手開始しました</p>`, "status_change", [], newStatus);
+    onUpdated?.();
+  };
+
+  const handleChildComplete = async () => {
+    if (!ticket) return;
+    const newStatus: TicketStatus = "closed";
+    const p = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(p);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+    }
+    await addComment(`<p>対応完了しました</p>`, "status_change", [], newStatus);
+    onUpdated?.();
+  };
+
+  const handleChildReset = async () => {
+    if (!ticket) return;
+    const newStatus: TicketStatus = "todo";
+    const p = STATUS_PROGRESS[newStatus];
+    setStatus(newStatus);
+    setProgress(p);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+    }
+    await addComment(`<p>未着手に戻しました</p>`, "status_change", [], newStatus);
+    onUpdated?.();
   };
 
   const handleAddToReleaseNotes = async () => {
@@ -1419,7 +1465,7 @@ export function TicketDetailPanel({
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
 
                 {/* 🌟 修正: progress === -1 に連動した保留トグルボタン */}
-                {isAssignee && (
+                {isAssignee && !ticket.parentId && (
                   <button onClick={handleToggleHold}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -1434,7 +1480,7 @@ export function TicketDetailPanel({
                   </button>
                 )}
                 {/* 🌟 追加: 取下トグルボタン */}
-                {isAssignee && (
+                {isAssignee && !ticket.parentId && (
                   <button onClick={handleToggleWithdraw}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -1485,7 +1531,7 @@ export function TicketDetailPanel({
                   </button>
                 </div>
               )}
-              {projectId && (
+              {projectId && !ticket.parentId && (
                 <button onClick={() => setShowMonitor(true)} title="実績モニタ"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
@@ -1536,20 +1582,40 @@ export function TicketDetailPanel({
             );
           })()}
 
-          {status === "in-review" && isAssignee && progress >= 0 && (
+          {/* 子チケット: 着手開始 / 対応完了 / 未着手に戻す ボタン */}
+          {ticket.parentId && isAssignee && progress >= 0 && status === "todo" && (
+            <button onClick={handleChildStart}
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(217,119,6,0.33)", cursor: "pointer", background: "#FFF7ED", color: "#D97706", marginTop: 10 }}>
+              着手開始 →
+            </button>
+          )}
+          {ticket.parentId && isAssignee && progress >= 0 && status === "in-progress" && (
+            <button onClick={handleChildComplete}
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(5,150,105,0.33)", cursor: "pointer", background: "#ECFDF5", color: "#059669", marginTop: 10 }}>
+              対応完了 →
+            </button>
+          )}
+          {ticket.parentId && isAssignee && progress >= 0 && status === "closed" && (
+            <button onClick={handleChildReset}
+              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(26,23,20,0.12)", cursor: "pointer", background: "#F9F8F7", color: "#6B6458", marginTop: 10 }}>
+              未着手に戻す
+            </button>
+          )}
+          {/* 親チケット専用のアクションボタン群 */}
+          {!ticket.parentId && status === "in-review" && isAssignee && progress >= 0 && (
             <button disabled
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(13,148,136,0.20)", cursor: "not-allowed", background: "#F0FDFA", color: "#94A3B8", marginTop: 10 }}>
               STG完了 →
             </button>
           )}
-          {actionBtn && isAssignee && status !== "pending" && progress >= 0 && (
+          {!ticket.parentId && actionBtn && isAssignee && status !== "pending" && progress >= 0 && (
             <button onClick={() => { if (!showReReviewForm) handleStatusAction(actionBtn); }}
               disabled={showReReviewForm}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${showReReviewForm ? "rgba(107,114,128,0.20)" : actionBtn.color + "33"}`, cursor: showReReviewForm ? "not-allowed" : "pointer", background: showReReviewForm ? "#F4F5F6" : actionBtn.bg, color: showReReviewForm ? "#B0A9A4" : actionBtn.color, marginTop: 10 }}>
               {actionBtn.label} →
             </button>
           )}
-          {status === "uat" && isAssignee && progress >= 0 && !showReReviewForm && (
+          {!ticket.parentId && status === "uat" && isAssignee && progress >= 0 && !showReReviewForm && (
             <div style={{ marginTop: 10 }}>
               {/* 日付入力 + ボタン 横並び */}
               <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
@@ -1590,7 +1656,7 @@ export function TicketDetailPanel({
               </label>
             </div>
           )}
-          {hasSkipReviewPermission && status === "in-progress" && progress >= 0 && (
+          {!ticket.parentId && hasSkipReviewPermission && status === "in-progress" && progress >= 0 && (
             <button onClick={handleSkipReview}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
               レビュースキップ →
@@ -1794,7 +1860,7 @@ export function TicketDetailPanel({
               </button>
             </div>
             <div id="panel-description-section">
-              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
             </div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
               <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
@@ -1950,7 +2016,7 @@ export function TicketDetailPanel({
                                           </div>
                                           {(c.content || (c.images?.length ?? 0) > 0) && (
                                             <div style={{ background: cBg, border: `1px solid ${cBorder}`, borderRadius: 7, padding: "8px 10px" }}>
-                                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
+                                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />}
                                               {(c.images?.length ?? 0) > 0 && (
                                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
                                                   {(c.images ?? []).map((img, i) => (
@@ -2064,7 +2130,7 @@ export function TicketDetailPanel({
                     <div style={{ marginBottom: 10 }}>
                       <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                       <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                       </div>
                     </div>
                     {fileDragOver && (
@@ -2223,7 +2289,7 @@ export function TicketDetailPanel({
                       </div>
                       {editingId === c.id ? (
                         <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                           {editImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {editImages.map((img, i) => (
@@ -2267,7 +2333,7 @@ export function TicketDetailPanel({
                       ) : (
                         (c.content || c.images?.length > 0) && (
                           <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
+                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />}
                             {c.images?.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                                 {c.images.map((img, i) => (
@@ -2315,7 +2381,7 @@ export function TicketDetailPanel({
                               </div>
                               {editingId === reply.id ? (
                                 <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                                   {editImages.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                       {editImages.map((img, i) => (
@@ -2354,7 +2420,7 @@ export function TicketDetailPanel({
                                 </div>
                               ) : (
                                 <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                                  <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />
+                                  <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                                   {reply.images.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                       {reply.images.map((img, i) => (
@@ -2378,7 +2444,7 @@ export function TicketDetailPanel({
                         <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                           <Avatar name={userName} size="xs" />
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                             {replyImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {replyImages.map((img, i) => (
@@ -2502,7 +2568,7 @@ export function TicketDetailPanel({
 
                     {editingId === c.id ? (
                       <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                         {editImages.length > 0 && (
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                             {editImages.map((img, i) => (
@@ -2546,7 +2612,7 @@ export function TicketDetailPanel({
                     ) : (
                       (c.content || c.images?.length > 0) && (
                         <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
-                          {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />}
+                          {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />}
                           {c.images?.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                               {c.images.map((img, i) => (
@@ -2594,7 +2660,7 @@ export function TicketDetailPanel({
                             </div>
                             {editingId === reply.id ? (
                               <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                                <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                                 {editImages.length > 0 && (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                     {editImages.map((img, i) => (
@@ -2633,7 +2699,7 @@ export function TicketDetailPanel({
                               </div>
                             ) : (
                               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                                <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} />
+                                <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                                 {reply.images.length > 0 && (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                     {reply.images.map((img, i) => (
@@ -2657,7 +2723,7 @@ export function TicketDetailPanel({
                       <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                         <Avatar name={userName} size="xs" />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+                          <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
                           {replyImages.length > 0 && (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                               {replyImages.map((img, i) => (
@@ -2708,7 +2774,7 @@ export function TicketDetailPanel({
                   <StatusBadge status={status} />
                 </div>
               </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} onTicketClick={handleTicketMentionClick} />
+              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} />
               {commentImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                   {commentImages.map((img, i) => (

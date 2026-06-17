@@ -19,6 +19,7 @@ const SuggestionStore = Extension.create({
     return {
       members: [] as string[],
       tickets: [] as { wbs: string; title: string }[],
+      backlogItems: [] as { id: string; title: string }[],
     };
   },
 });
@@ -76,6 +77,76 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
   );
 });
 MentionList.displayName = "MentionList";
+
+// ---- BacklogMentionList popup component --------------------------------------
+
+interface BacklogItemOption { id: string; title: string }
+interface BacklogMentionListProps {
+  items: BacklogItemOption[];
+  command: (p: { id: string; label: string }) => void;
+}
+
+const BacklogMentionList = forwardRef<MentionListHandle, BacklogMentionListProps>(({ items, command }, ref) => {
+  const [sel, setSel] = useState(0);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  useEffect(() => { setSel(0); }, [items]);
+
+  useEffect(() => {
+    itemRefs.current[sel]?.scrollIntoView({ block: "nearest" });
+  }, [sel]);
+
+  useImperativeHandle(ref, () => ({
+    onKeyDown: ({ event }) => {
+      if (event.key === "ArrowUp")   { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
+      if (event.key === "Enter") {
+        const item = items[sel];
+        if (item) command({ id: item.id, label: item.title });
+        return true;
+      }
+      return false;
+    },
+  }));
+
+  if (!items.length) return (
+    <div style={{ padding: "10px 14px", fontSize: 11, color: "#B0A9A4" }}>バックログを読み込み中...</div>
+  );
+
+  return (
+    <>
+      {items.map((item, i) => (
+        <button key={item.id}
+          ref={el => { itemRefs.current[i] = el; }}
+          onMouseDown={e => { e.preventDefault(); command({ id: item.id, label: item.title }); }}
+          style={{
+            width: "100%", padding: "7px 12px", textAlign: "left" as const,
+            background: i === sel ? "#F5F3FF" : "transparent",
+            border: "none", cursor: "pointer", fontSize: 12,
+            color: i === sel ? "#6D28D9" : "#1A1714",
+            display: "flex", alignItems: "center", gap: 8,
+            transition: "background 0.1s", boxSizing: "border-box" as const,
+          }}
+          onMouseEnter={() => setSel(i)}>
+          <span style={{
+            padding: "1px 6px", borderRadius: 4, background: "#EDE9FE",
+            fontSize: 10, fontWeight: 700, color: "#6D28D9",
+            flexShrink: 0, whiteSpace: "nowrap" as const,
+          }}>
+            ${item.id}
+          </span>
+          <span style={{
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
+            flex: 1, color: "#6B6458", fontSize: 11,
+          }}>
+            {item.title}
+          </span>
+        </button>
+      ))}
+    </>
+  );
+});
+BacklogMentionList.displayName = "BacklogMentionList";
 
 // ---- TicketMentionList popup component --------------------------------------
 
@@ -224,13 +295,15 @@ function makeSuggestionPopup<T>(
 // ---- RichEditor -------------------------------------------------------------
 
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], onTicketClick,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], onTicketClick, onBacklogClick,
 }: {
   value?: string; onChange?: (html: string) => void;
-  placeholder?: string; minHeight?: number; maxHeight?: number; readOnly?: boolean; toolbar?: boolean;
+  placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
   members?: string[];
   tickets?: { wbs: string; title: string }[];
+  backlogItems?: { id: string; title: string }[];
   onTicketClick?: (wbs: string) => void;
+  onBacklogClick?: (id: string) => void;
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
@@ -246,14 +319,17 @@ export function RichEditor({
         HTMLAttributes: {},
         renderText({ node, suggestion }) {
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
-          return char === "#"
-            ? `#${node.attrs.id ?? ""}`
-            : `@${node.attrs.label ?? node.attrs.id ?? ""}`;
+          if (char === "#") return `#${node.attrs.id ?? ""}`;
+          if (char === "$") return `$${node.attrs.id ?? ""}`;
+          return `@${node.attrs.label ?? node.attrs.id ?? ""}`;
         },
         renderHTML({ options, node, suggestion }) {
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") {
             return ["span", { ...options.HTMLAttributes, class: "ticket-mention" }, `#${node.attrs.id ?? ""}`];
+          }
+          if (char === "$") {
+            return ["span", { ...options.HTMLAttributes, class: "backlog-mention" }, `$${node.attrs.id ?? ""}`];
           }
           return ["span", { ...options.HTMLAttributes, class: "mention" }, `@${node.attrs.label ?? node.attrs.id ?? ""}`];
         },
@@ -282,6 +358,21 @@ export function RichEditor({
             },
             render: makeSuggestionPopup(TicketMentionList, 300),
           },
+          {
+            // $バックログメンション
+            char: "$",
+            items: ({ query, editor: ed }: { query: string; editor: any }) => {
+              const b: { id: string; title: string }[] = ed?.storage?.suggestionStore?.backlogItems ?? [];
+              const q = query.toLowerCase();
+              return q
+                ? b.filter(item =>
+                    item.id.toLowerCase().includes(q) ||
+                    item.title.toLowerCase().includes(q)
+                  )
+                : b;
+            },
+            render: makeSuggestionPopup(BacklogMentionList, 300),
+          },
         ],
       }),
     ],
@@ -302,7 +393,9 @@ export function RichEditor({
           }
           if (node.type?.name === 'mention') {
             const char = node.attrs?.mentionSuggestionChar ?? '@';
-            return char === '#' ? `#${node.attrs?.id ?? ''}` : `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
+            if (char === '#') return `#${node.attrs?.id ?? ''}`;
+            if (char === '$') return `$${node.attrs?.id ?? ''}`;
+            return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
           }
           let out = '';
           node.forEach((c: any) => { out += inline(c); });
@@ -338,7 +431,9 @@ export function RichEditor({
           const t: string = node.type.name;
           if (t === 'mention') {
             const char = node.attrs?.mentionSuggestionChar ?? '@';
-            return char === '#' ? `#${node.attrs?.id ?? ''}` : `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
+            if (char === '#') return `#${node.attrs?.id ?? ''}`;
+            if (char === '$') return `$${node.attrs?.id ?? ''}`;
+            return `@${node.attrs?.label ?? node.attrs?.id ?? ''}`;
           }
           if (t === 'paragraph') return inline(node).trim() + '\n';
           if (t === 'hardBreak') return '\n';
@@ -383,7 +478,8 @@ export function RichEditor({
     if (!editor || editor.isDestroyed) return;
     editor.storage.suggestionStore.members = members;
     editor.storage.suggestionStore.tickets = tickets;
-  }, [editor, members, tickets]);
+    editor.storage.suggestionStore.backlogItems = backlogItems;
+  }, [editor, members, tickets, backlogItems]);
 
   useEffect(() => {
     if (!editor) return;
@@ -414,13 +510,31 @@ export function RichEditor({
     return () => dom.removeEventListener("click", handler);
   }, [editor, onTicketClick]);
 
+  // backlog-mention クリックでナビゲーション
+  useEffect(() => {
+    if (!editor || !onBacklogClick) return;
+    const dom = editor.view.dom;
+    const handler = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest(".backlog-mention[data-id]");
+      if (!target) return;
+      const id = target.getAttribute("data-id");
+      if (id) {
+        e.preventDefault();
+        e.stopPropagation();
+        onBacklogClick(id);
+      }
+    };
+    dom.addEventListener("click", handler);
+    return () => dom.removeEventListener("click", handler);
+  }, [editor, onBacklogClick]);
+
   if (!editor) return null;
 
   return (
     <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF" }}>
       <style>{`
-        .tiptap { outline: none; padding: 12px 14px; min-height: ${minHeight}px; font-size: 13px; line-height: 1.7; color: #1A1714; }
-        #${id} .tiptap { min-height: ${minHeight}px;${maxHeight ? ` max-height: ${maxHeight}px; overflow-y: auto;` : ""} }
+        .tiptap { outline: none; padding: 12px 14px; min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`}; font-size: 13px; line-height: 1.7; color: #1A1714; }
+        #${id} .tiptap { min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`};${maxHeight ? ` max-height: ${typeof maxHeight === "string" ? maxHeight : `${maxHeight}px`}; overflow-y: auto;` : ""} }
         .tiptap p { margin: 0; }
         .tiptap strong { font-weight: 700; }
         .tiptap ul { list-style-type: disc; padding-left: 20px; margin: 6px 0; }
@@ -440,6 +554,8 @@ export function RichEditor({
         .tiptap .mention { color: #059669; font-weight: 700; background: #ECFDF5; padding: 1px 4px; border-radius: 4px; }
         .tiptap .ticket-mention { color: #2563EB; font-weight: 700; background: #DBEAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .ticket-mention:hover { background: #BFDBFE; }
+        .tiptap .backlog-mention { color: #6D28D9; font-weight: 700; background: #EDE9FE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .backlog-mention:hover { background: #DDD6FE; }
       `}</style>
       {!readOnly && toolbar && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "8px 10px", borderBottom: "1px solid rgba(26,23,20,0.08)", background: "#F9F8F6" }}>

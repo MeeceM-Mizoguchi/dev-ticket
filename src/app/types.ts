@@ -123,6 +123,24 @@ export interface PermissionGroup {
 export interface GroupProjectPermission {
   group_id: number; project_id: string; permission_type: PermissionType;
 }
+export type BacklogStatus = "open" | "in-progress" | "converted" | "archived";
+export interface BacklogItem {
+  id: string; projectId: string; title: string; description: string;
+  status: BacklogStatus; priority: Priority; rank: number;
+  assignee: string; estimatedHours: number; convertedTicketId: string | null;
+  categoryId: string | null;
+  createdBy: string; createdAt: string; updatedAt: string;
+}
+export interface WikiPage {
+  id: string; projectId: string; parentId: string | null; title: string;
+  content: string; sortOrder: number;
+  createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
+}
+export interface MeetingMinute {
+  id: string; projectId: string; title: string; meetingDate: string;
+  attendees: string[]; content: string;
+  createdBy: string; createdAt: string; updatedAt: string;
+}
 export interface TicketItem {
   id: string; title: string; project: string; status: TicketStatus;
   priority: Priority; assignee: string; dueDate: string;
@@ -137,4 +155,7 @@ export interface UserPermissions {
   canAccessRoles: boolean;
   canAccessGroups: boolean;
   canAccessAdminSettings: boolean;
+  canAccessWiki: boolean;
+  canAccessBacklog: boolean;
+  canAccessMinutes: boolean;
 }
