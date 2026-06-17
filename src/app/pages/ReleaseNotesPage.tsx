@@ -17,8 +17,8 @@ interface ReleaseItem {
   projectName: string;
 }
 
-const MONTH_NAMES = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
-const DOW = ["日","月","火","水","木","金","土"];
+const MONTH_NAMES = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+const DOW = ["日", "月", "火", "水", "木", "金", "土"];
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toDateStr(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}`; }
@@ -33,7 +33,7 @@ export function ReleaseNotesPage() {
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
 
-  const { userId, userRole } = useAuth();
+  const { userId, userName, userRole } = useAuth();
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem("releaseNotes:selectedProjectId") ?? ""
@@ -119,29 +119,55 @@ export function ReleaseNotesPage() {
 
   // Load projects the current user is assigned to
   useEffect(() => {
-    if (!isSupabaseEnabled) return;
-    const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-    const base = (supabase as NonNullable<typeof supabase>)
-      .from("projects").select("id, name").order("name");
-    const q = isAdminOrPM ? base : base.contains("members", [userId]);
+    if (!isSupabaseEnabled || (!userId && !userName)) return;
+
+    // 一旦プロジェクトを取得し、フロントエンドで確実にアサイン判定を行う
+    const q = (supabase as NonNullable<typeof supabase>)
+      .from("projects")
+      .select("id, name, members")
+      .order("name");
+
     q.then(({ data }) => {
       if (data && data.length > 0) {
-        const projects = data as { id: string; name: string }[];
-        setMyProjects(projects);
-        setSelectedProjectId(prev => {
-          const exists = projects.some(p => p.id === prev);
-          return exists ? prev : projects[0].id;
+        // 現在のユーザーが members に含まれているプロジェクトのみを抽出
+        // （userId と userName の両方で判定します）
+        const assignedProjects = data.filter((p: any) => {
+          if (!p.members) return false;
+          if (Array.isArray(p.members)) {
+            return p.members.some((m: any) =>
+              m === userId || m === userName || m.id === userId || m.userId === userId
+            );
+          }
+          if (typeof p.members === "string") {
+            return p.members.includes(userId) || (userName && p.members.includes(userName));
+          }
+          return false;
         });
+
+        if (assignedProjects.length > 0) {
+          const projects = assignedProjects.map(p => ({ id: p.id, name: p.name }));
+          setMyProjects(projects);
+          setSelectedProjectId(prev => {
+            const exists = projects.some(p => p.id === prev);
+            return exists ? prev : projects[0].id;
+          });
+        } else {
+          setMyProjects([]);
+          setSelectedProjectId("");
+        }
+      } else {
+        setMyProjects([]);
+        setSelectedProjectId("");
       }
     });
-  }, [userId, userRole]);
+  }, [userId, userName]);
 
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {
     if (!listPanelOpen) return;
     escStack.push(closeList);
     return () => escStack.pop(closeList);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listPanelOpen]);
 
   // Month navigation
@@ -335,7 +361,7 @@ export function ReleaseNotesPage() {
             animation: listClosing
               ? "slideOutRight 0.26s cubic-bezier(0.4,0,1,1) forwards"
               : listNeedsSlideIn ? "slideInRight 0.28s cubic-bezier(0.16,1,0.3,1)"
-              : "none",
+                : "none",
           }}>
             <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div>
@@ -403,20 +429,21 @@ export function ReleaseNotesPage() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
             {/* Project selector */}
-            {myProjects.length > 0 && (
-              <div style={{ width: 220 }}>
-                <CustomSelect
-                  value={selectedProjectId}
-                  options={myProjects.map(p => ({ value: p.id, label: p.name }))}
-                  onChange={setSelectedProjectId}
-                  placeholder="プロジェクト選択"
-                />
-              </div>
-            )}
+            <div style={{ width: 220 }}>
+              <CustomSelect
+                value={selectedProjectId}
+                onChange={setSelectedProjectId}
+                options={myProjects.length > 0
+                  ? myProjects.map(p => ({ value: p.id, label: p.name }))
+                  : [{ value: "", label: "アサイン済プロジェクトなし" }]}
+                disabled={myProjects.length === 0}
+
+                placeholder="プロジェクト選択"
+              />
+            </div>
+
             {/* Divider */}
-            {myProjects.length > 0 && (
-              <div style={{ width: 1, height: 24, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
-            )}
+            <div style={{ width: 1, height: 24, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
             {/* 今日ボタン */}
             <button
               onClick={goToday}
