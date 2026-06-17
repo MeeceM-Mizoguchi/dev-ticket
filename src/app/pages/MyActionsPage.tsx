@@ -401,6 +401,7 @@ function FromNotificationTab({
     <div style={{ flex: 1, display: "flex", gap: 12, overflow: "hidden", minHeight: 0 }}>
       {categories.map(cat => {
         const catMemos = memos.filter(m => m.category === cat);
+        const activeCount = catMemos.filter(m => !m.isDone).length;
         const meta = CATEGORY_META[cat];
         return (
           <div key={cat} style={{
@@ -414,9 +415,9 @@ function FromNotificationTab({
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: meta.dotColor, flexShrink: 0 }} />
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#4A4540" }}>{meta.label}</span>
-                {catMemos.length > 0 && (
+                {activeCount > 0 && (
                   <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: meta.bg, color: meta.color }}>
-                    {catMemos.length}
+                    {activeCount}
                   </span>
                 )}
               </div>
@@ -636,7 +637,7 @@ function MemoDetailModal({
                   </div>
                 ) : (
                   <p style={{ fontSize: 12, color: "#4A4540", lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const }}>
-                    <MemoContent content={memo.content} onNavigate={onNavigateTicket ?? (() => {})} />
+                    <MemoContent content={memo.content} onNavigate={onNavigateTicket ?? (() => { })} />
                   </p>
                 )
               ) : (
@@ -1245,10 +1246,12 @@ export function MyActionsPage() {
   const revisionRequested = reviewTickets.filter(t => t.status === "in-progress" && (t.reviewRound ?? 0) > 0);
   const approved = reviewTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
 
+  const assignedActiveCount = todo.length + inProgress.length + inReview.length + testing.length;
+  const reviewActiveCount = pendingReview.length + revisionRequested.length + approved.length;
   const notifTabCount = actionMemos.filter(m => !m.isDone).length;
   const tabDefs: { id: Tab; label: string; count: number }[] = [
-    { id: "assigned", label: "担当チケット", count: assignedTickets.length },
-    { id: "review", label: "レビュー管理", count: reviewTickets.length },
+    { id: "assigned", label: "担当チケット", count: assignedActiveCount },
+    { id: "review", label: "レビュー管理", count: reviewActiveCount },
     { id: "from_notification", label: "通知から追加", count: notifTabCount },
   ];
 
