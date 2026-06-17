@@ -17,6 +17,9 @@ import { SettingsPage } from "@/app/pages/SettingsPage";
 import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 import { MyActionsPage } from "@/app/pages/MyActionsPage";
 import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
+import { BacklogPage } from "@/app/pages/BacklogPage";
+import { WikiPage } from "@/app/pages/WikiPage";
+import { MinutesPage } from "@/app/pages/MinutesPage";
 
 export default function App() {
   return (
@@ -39,6 +42,9 @@ export default function App() {
               <Route path="/release-notes" element={<ReleaseNotesPage />} />
               {/* Sprint list */}
               <Route path="/:projectSlug" element={<SprintPage />} />
+              <Route path="/:projectSlug/backlog" element={<BacklogPage />} />
+              <Route path="/:projectSlug/wiki" element={<WikiPage />} />
+              <Route path="/:projectSlug/minutes" element={<MinutesPage />} />
               {/* Sprint detail (チケット一覧) with optional ticket open */}
               <Route path="/:projectSlug/:segment" element={<SprintDetailPage />} />
             </Route>

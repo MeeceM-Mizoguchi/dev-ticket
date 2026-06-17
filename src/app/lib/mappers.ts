@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -56,4 +56,19 @@ export function mapNotification(r: any): AppNotification {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapActionMemo(r: any): ActionMemo {
   return { id: r.id, userName: r.user_name, title: r.title || "", content: r.content || "", category: r.category || "memo", sourceNotificationId: r.source_notification_id ?? null, ticketId: r.ticket_id ?? null, ticketWbs: r.ticket_wbs || "", ticketTitle: r.ticket_title || "", projectSlug: r.project_slug || "", projectId: r.project_id || "", sprintId: r.sprint_id || "", isDone: r.is_done ?? false, createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapBacklogItem(r: any): BacklogItem {
+  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, categoryId: r.category_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWikiPage(r: any): WikiPage {
+  return { id: r.id, projectId: r.project_id, parentId: r.parent_id ?? null, title: r.title || "", content: r.content || "", sortOrder: r.sort_order ?? 0, createdBy: r.created_by || "", updatedBy: r.updated_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapMeetingMinute(r: any): MeetingMinute {
+  return { id: r.id, projectId: r.project_id, title: r.title || "", meetingDate: r.meeting_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }

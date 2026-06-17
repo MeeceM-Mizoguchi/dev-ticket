@@ -53,6 +53,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
   // チケットメンション用: プロジェクト内チケット一覧
   const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
+  const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
 
   // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -247,6 +248,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         .order("wbs");
       if (data) setProjectTickets(data as { wbs: string; title: string }[]);
     })();
+    supabase!.from("backlog_items").select("id, title").eq("project_id", effectiveProjectId).order("id")
+      .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
   }, [effectiveProjectId]);
 
   const calcHours = (start: string, due: string) => {
@@ -606,7 +609,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               {/* 🌟 修正: CustomSelect に置換。ステータスは色付きバッジで表示 */}
               <CustomSelect
                 value={status}
-                options={TICKET_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
+                options={isChildMode
+                  ? [
+                      { value: "todo", label: "未着手", color: "#6B7280", bg: "#F3F4F6" },
+                      { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
+                      { value: "closed", label: "対応完了", color: "#059669", bg: "#ECFDF5" },
+                    ]
+                  : TICKET_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
                 onChange={v => setStatus(v as TicketStatus)}
               />
             </div>
@@ -666,7 +675,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} />
           </div>
 
           <div>

@@ -277,6 +277,5 @@ export function validateParentStatusChange(targetStatus: TicketStatus, childTick
   if (minRank === undefined) return null;
   const blocking = childTickets.filter(c => (STATUS_RANK[c.status] ?? 0) < minRank);
   if (blocking.length === 0) return null;
-  const reqLabel = STATUS_VALIDATION_LABEL[targetStatus] ?? targetStatus;
-  return `子チケット ${blocking.length}件が「${reqLabel}」に達していないため変更できません。`;
+  return `子チケット ${blocking.length}件が対応完了していないため変更できません。`;
 }

@@ -18,6 +18,7 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { EditProjectIdentifiersDialog } from "@/app/components/projects/EditProjectIdentifiersDialog";
+import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 
 export function SprintPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
@@ -159,12 +160,12 @@ export function SprintPage() {
 
   const goToSprint = (sprint: Sprint) => navigate(`/${projectSlug}/${sprint.identifier || sprint.id}`);
 
-  if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
-  if (notFound) return <Navigate to="/projects" replace />;
-  if (!project) return <Navigate to="/projects" replace />;
+  if (!loading && notFound) return <Navigate to="/projects" replace />;
+  if (!loading && !project) return <Navigate to="/projects" replace />;
 
-  const isMember = isAdminOrPM || (project.members ?? []).includes(userName);
-  if (!isMember) return (
+  if (project) {
+    const isMember = isAdminOrPM || (project.members ?? []).includes(userName);
+    if (!isMember) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
       <div style={{ textAlign: "center" as const, maxWidth: 380 }}>
         <div style={{ width: 56, height: 56, borderRadius: 16, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
@@ -180,7 +181,8 @@ export function SprintPage() {
         </button>
       </div>
     </div>
-  );
+    );
+  }
 
   const viewBtns: { mode: SprintView; label: string; Icon: ElementType }[] = [
     { mode: "list", label: "リスト", Icon: Layers },
@@ -190,19 +192,21 @@ export function SprintPage() {
 
   return (
     <div style={{ padding: "24px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, fontSize: 12 }}>
+      {/* ── パンくず（SprintDetailPageと同構造・同高さ） ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
         </button>
         <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project.name}</span>
+        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
       </div>
 
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
+      {/* ── タイトル行: h1左・ProjectSubNav右 ── */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>スプリント管理</h1>
-            {project.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
+            {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
             <button onClick={() => setShowEditIdentifiers(true)} title="識別子を編集"
               style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
@@ -210,7 +214,20 @@ export function SprintPage() {
               <Settings2 style={{ width: 13, height: 13 }} />
             </button>
           </div>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project.name} · {sprints.length} スプリント</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
+        </div>
+        <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="sprints" marginBottom={0} />
+      </div>
+
+      {/* ── ビュー切替・新規スプリント ── */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3 }}>
+          {viewBtns.map(({ mode, label, Icon }) => (
+            <button key={mode} onClick={() => setViewMode(mode)}
+              style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", fontSize: 11, fontWeight: 500, borderRadius: 6, border: "none", cursor: "pointer", transition: "all 0.15s", background: viewMode === mode ? "#FFFFFF" : "transparent", color: viewMode === mode ? "#1A1714" : "#9E9690", boxShadow: viewMode === mode ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>
+              <Icon style={{ width: 12, height: 12 }} />{label}
+            </button>
+          ))}
         </div>
         {canCreateSprint && (
           <button onClick={() => setShowCreate(true)}
@@ -220,15 +237,6 @@ export function SprintPage() {
             <Plus style={{ width: 15, height: 15 }} />新規スプリント
           </button>
         )}
-      </div>
-
-      <div style={{ display: "flex", gap: 4, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: 4, marginBottom: 20, width: "fit-content" }}>
-        {viewBtns.map(({ mode, label, Icon }) => (
-          <button key={mode} onClick={() => setViewMode(mode)}
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "none", cursor: "pointer", transition: "all 0.15s", background: viewMode === mode ? "#059669" : "transparent", color: viewMode === mode ? "#fff" : "#6B6458" }}>
-            <Icon style={{ width: 13, height: 13 }} />{label}
-          </button>
-        ))}
       </div>
 
       {viewMode === "list" && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
