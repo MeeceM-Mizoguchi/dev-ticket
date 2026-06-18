@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
-import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ChevronDown, ChevronUp, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
@@ -12,10 +12,10 @@ import { Navigate } from "react-router";
 
 // Project-level permission flags only (admin-level flags are in ロール設定)
 const PROJECT_PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; color: string }[] = [
-  { key: "canCreateTicket",   label: "チケット作成",   desc: "チケットの新規作成が可能",             color: "#059669" },
-  { key: "canCreateSprint",   label: "スプリント作成", desc: "スプリントの新規作成が可能",           color: "#0284C7" },
-  { key: "canEditDelete",     label: "編集・削除",     desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
-  { key: "canReview",         label: "レビュー権限",   desc: "レビュアーとして承認・差し戻しが可能",  color: "#7C3AED" },
+  { key: "canCreateTicket", label: "チケット作成", desc: "チケットの新規作成が可能", color: "#059669" },
+  { key: "canCreateSprint", label: "スプリント作成", desc: "スプリントの新規作成が可能", color: "#0284C7" },
+  { key: "canEditDelete", label: "編集・削除", desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
+  { key: "canReview", label: "レビュー権限", desc: "レビュアーとして承認・差し戻しが可能", color: "#7C3AED" },
 ];
 
 const DEFAULT_GROUP_PERMS: UserPermissions = {
@@ -43,16 +43,16 @@ export function PermissionsPage() {
 
   if (!userPermissions.canAccessGroups) return <Navigate to="/dashboard" replace />;
 
-  const [groups, setGroups]             = useState<PermissionGroup[]>([]);
-  const [members, setMembers]           = useState<Member[]>([]);
-  const [projects, setProjects]         = useState<Project[]>([]);
+  const [groups, setGroups] = useState<PermissionGroup[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [groupMemberships, setGroupMemberships] = useState<GroupMembership[]>([]);
-  const [dragOver, setDragOver]         = useState<{ type: "group" | "project"; id: number | string } | null>(null);
+  const [dragOver, setDragOver] = useState<{ type: "group" | "project"; id: number | string } | null>(null);
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
-  const [settingsGroupId, setSettingsGroupId]     = useState<number | null>(null);
-  const [conflict, setConflict]         = useState<ConflictInfo | null>(null);
-  const [permTarget, setPermTarget]     = useState<{ member: Member; projectId: string } | null>(null);
-  const [loading, setLoading]           = useState(isSupabaseEnabled);
+  const [settingsGroupId, setSettingsGroupId] = useState<number | null>(null);
+  const [conflict, setConflict] = useState<ConflictInfo | null>(null);
+  const [permTarget, setPermTarget] = useState<{ member: Member; projectId: string } | null>(null);
+  const [loading, setLoading] = useState(isSupabaseEnabled);
   const [needsMigration, setNeedsMigration] = useState(false);
 
   useEffect(() => {
@@ -537,24 +537,37 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
   currentUserRole: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const hasMore = members.length > MEMBERS_INITIAL_COUNT;
-  const displayMembers = expanded ? members : members.slice(0, MEMBERS_INITIAL_COUNT);
+  const [searchQuery, setSearchQuery] = useState("");
+  const filteredMembers = members.filter(m => m.name.toLowerCase().includes(searchQuery.toLowerCase()));
+  const hasMore = filteredMembers.length > MEMBERS_INITIAL_COUNT;
+  const displayMembers = expanded ? filteredMembers : filteredMembers.slice(0, MEMBERS_INITIAL_COUNT);
   const isCurrentUserAdmin = currentUserRole === "admin";
 
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, minHeight: 0 }}>
       <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", flexDirection: "column" as const, height: "100%" }}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(26,23,20,0.06)", background: "#FAFAF9", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>メンバー一覧</p>
-            <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{members.length}名</span>
+            <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{filteredMembers.length}名</span>
           </div>
-          <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 3, display: "flex", alignItems: "center", gap: 3 }}>
+          <div style={{ position: "relative", marginBottom: 6 }}>
+            <Search style={{ width: 12, height: 12, color: "#A09790", position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)" }} />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="メンバーを検索..."
+              style={{ width: "100%", padding: "6px 8px 6px 26px", fontSize: 11, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 6, outline: "none", color: "#1A1714", boxSizing: "border-box" }}
+              onFocus={e => e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"}
+              onBlur={e => e.currentTarget.style.borderColor = "rgba(26,23,20,0.12)"}
+            />
+          </div>
+          <p style={{ fontSize: 10, color: "#B0A9A4", display: "flex", alignItems: "center", gap: 3 }}>
             <GripVertical style={{ width: 10, height: 10 }} />グループかプロジェクトにドラッグ
           </p>
         </div>
         <div style={{ flex: 1, overflowY: "auto" as const, padding: "8px" }}>
-          {members.length === 0 && (
+          {filteredMembers.length === 0 && (
             <p style={{ textAlign: "center" as const, fontSize: 12, color: "#C9C4BB", padding: "24px 0" }}>メンバーなし</p>
           )}
           {displayMembers.map(m => {
@@ -597,7 +610,7 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}>
               {expanded
                 ? <><ChevronUp style={{ width: 12, height: 12 }} />折りたたむ</>
-                : <><ChevronDown style={{ width: 12, height: 12 }} />全メンバーを見る（残り{members.length - MEMBERS_INITIAL_COUNT}名）</>
+                : <><ChevronDown style={{ width: 12, height: 12 }} />全メンバーを見る（残り{filteredMembers.length - MEMBERS_INITIAL_COUNT}名）</>
               }
             </button>
           )}
@@ -621,23 +634,37 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
   onSettings: (groupId: number) => void;
   onDelete: (groupId: number) => void;
 }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, minHeight: 0 }}>
       <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", flexDirection: "column" as const, height: "100%" }}>
         <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(26,23,20,0.06)", background: "#FAFAF9", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>グループ一覧</p>
-            <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{groups.length}件</span>
+            <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{filteredGroups.length}件</span>
           </div>
-          <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 3, display: "flex", alignItems: "center", gap: 3 }}>
+          <div style={{ position: "relative", marginBottom: 6 }}>
+            <Search style={{ width: 12, height: 12, color: "#A09790", position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)" }} />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="グループを検索..."
+              style={{ width: "100%", padding: "6px 8px 6px 26px", fontSize: 11, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 6, outline: "none", color: "#1A1714", boxSizing: "border-box" }}
+              onFocus={e => e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"}
+              onBlur={e => e.currentTarget.style.borderColor = "rgba(26,23,20,0.12)"}
+            />
+          </div>
+          <p style={{ fontSize: 10, color: "#B0A9A4", display: "flex", alignItems: "center", gap: 3 }}>
             <GripVertical style={{ width: 10, height: 10 }} />プロジェクトにドラッグしてアサイン
           </p>
         </div>
         <div style={{ flex: 1, overflowY: "auto" as const, padding: "8px" }}>
-          {groups.length === 0 && (
+          {filteredGroups.length === 0 && (
             <p style={{ textAlign: "center" as const, fontSize: 12, color: "#C9C4BB", padding: "24px 0" }}>グループなし</p>
           )}
-          {groups.map(group => {
+          {filteredGroups.map(group => {
             const isOver = dragOver?.type === "group" && dragOver.id === group.id;
             const gmIds = groupMemberships.filter(gm => gm.group_id === group.id).map(gm => gm.member_id);
             const groupMemberList = members.filter(m => gmIds.includes(m.id));
@@ -744,6 +771,13 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
 }) {
   const isCurrentUserAdmin = currentUserRole === "admin";
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredProjects = projects.filter(p =>
+    p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (p.client && p.client.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
   const toggleExpand = (projectId: string) => {
     setExpandedProjects(prev => {
       const next = new Set(prev);
@@ -758,9 +792,22 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <FolderKanban style={{ width: 14, height: 14, color: "#6B6458" }} />
           <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>プロジェクト</p>
-          <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{projects.length}件</span>
+          <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{filteredProjects.length}件</span>
         </div>
-        <p style={{ fontSize: 10, color: "#B0A9A4" }}>グループまたはメンバーをドロップしてアサイン</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ position: "relative", width: 220 }}>
+            <Search style={{ width: 13, height: 13, color: "#A09790", position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="プロジェクト名やクライアント名で検索..."
+              style={{ width: "100%", padding: "7px 10px 7px 30px", fontSize: 12, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", color: "#1A1714", boxSizing: "border-box" }}
+              onFocus={e => e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"}
+              onBlur={e => e.currentTarget.style.borderColor = "rgba(26,23,20,0.12)"}
+            />
+          </div>
+          <p style={{ fontSize: 10, color: "#B0A9A4" }}>グループまたはメンバーをドロップしてアサイン</p>
+        </div>
       </div>
 
       {/* Conflict banner */}
@@ -794,12 +841,12 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
 
       {/* List layout — full width, each project is one row */}
       <div style={{ flex: 1, overflowY: "auto" as const, display: "flex", flexDirection: "column" as const, gap: 8 }}>
-        {projects.length === 0 && (
+        {filteredProjects.length === 0 && (
           <div style={{ textAlign: "center" as const, padding: "56px 0", color: "#B0A9A4", fontSize: 12 }}>
             プロジェクトが登録されていません
           </div>
         )}
-        {projects.map(project => {
+        {filteredProjects.map(project => {
           const isOver = dragOver?.type === "project" && dragOver.id === project.id;
           const isExpanded = expandedProjects.has(project.id);
           const assignedGroupIds = project.groupIds ?? [];
@@ -812,13 +859,13 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
           const MAX_G = 3;
           // グループがある場合はメンバーを少なく抑えて +N バッジが確実に表示されるようにする
           const MAX_M = assignedGroups.length > 0 ? 2 : 4;
-          const visibleGroups  = assignedGroups.slice(0, MAX_G);
-          const hiddenGroups   = Math.max(0, assignedGroups.length - MAX_G);
+          const visibleGroups = assignedGroups.slice(0, MAX_G);
+          const hiddenGroups = Math.max(0, assignedGroups.length - MAX_G);
           const visibleMembers = individualMembers.slice(0, MAX_M);
-          const hiddenMembers  = Math.max(0, individualMembers.length - MAX_M);
+          const hiddenMembers = Math.max(0, individualMembers.length - MAX_M);
           const hasHidden = (hiddenGroups > 0 || hiddenMembers > 0) && !isEmpty;
 
-          const displayGroups  = isExpanded ? assignedGroups  : visibleGroups;
+          const displayGroups = isExpanded ? assignedGroups : visibleGroups;
           const displayMembers = isExpanded ? individualMembers : visibleMembers;
 
           return (
@@ -1142,7 +1189,7 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("project_member_permissions")
         .upsert({ project_id: projectId, member_id: member.id, permissions: local },
-                 { onConflict: "project_id,member_id" });
+          { onConflict: "project_id,member_id" });
       if (error) { toast("権限の保存に失敗しました", "error"); setSaving(false); return; }
     }
     toast(`「${member.name}」のプロジェクト権限を保存しました`);

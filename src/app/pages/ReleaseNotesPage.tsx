@@ -7,6 +7,7 @@ import { mapSprintTicket } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { useWindowSize } from "@/app/hooks/useWindowSize";
 import type { SprintTicket } from "@/app/types";
 
 interface ReleaseItem {
@@ -17,8 +18,8 @@ interface ReleaseItem {
   projectName: string;
 }
 
-const MONTH_NAMES = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
-const DOW = ["日","月","火","水","木","金","土"];
+const MONTH_NAMES = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+const DOW = ["日", "月", "火", "水", "木", "金", "土"];
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toDateStr(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}`; }
@@ -33,11 +34,13 @@ export function ReleaseNotesPage() {
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
 
-  const { userId, userRole } = useAuth();
+  const { userId, userName, userRole } = useAuth();
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem("releaseNotes:selectedProjectId") ?? ""
   );
+
+  const { height } = useWindowSize();
 
   useEffect(() => {
     if (selectedProjectId) localStorage.setItem("releaseNotes:selectedProjectId", selectedProjectId);
@@ -119,29 +122,55 @@ export function ReleaseNotesPage() {
 
   // Load projects the current user is assigned to
   useEffect(() => {
-    if (!isSupabaseEnabled) return;
-    const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-    const base = (supabase as NonNullable<typeof supabase>)
-      .from("projects").select("id, name").order("name");
-    const q = isAdminOrPM ? base : base.contains("members", [userId]);
+    if (!isSupabaseEnabled || (!userId && !userName)) return;
+
+    // 一旦プロジェクトを取得し、フロントエンドで確実にアサイン判定を行う
+    const q = (supabase as NonNullable<typeof supabase>)
+      .from("projects")
+      .select("id, name, members")
+      .order("name");
+
     q.then(({ data }) => {
       if (data && data.length > 0) {
-        const projects = data as { id: string; name: string }[];
-        setMyProjects(projects);
-        setSelectedProjectId(prev => {
-          const exists = projects.some(p => p.id === prev);
-          return exists ? prev : projects[0].id;
+        // 現在のユーザーが members に含まれているプロジェクトのみを抽出
+        // （userId と userName の両方で判定します）
+        const assignedProjects = data.filter((p: any) => {
+          if (!p.members) return false;
+          if (Array.isArray(p.members)) {
+            return p.members.some((m: any) =>
+              m === userId || m === userName || m.id === userId || m.userId === userId
+            );
+          }
+          if (typeof p.members === "string") {
+            return p.members.includes(userId) || (userName && p.members.includes(userName));
+          }
+          return false;
         });
+
+        if (assignedProjects.length > 0) {
+          const projects = assignedProjects.map(p => ({ id: p.id, name: p.name }));
+          setMyProjects(projects);
+          setSelectedProjectId(prev => {
+            const exists = projects.some(p => p.id === prev);
+            return exists ? prev : projects[0].id;
+          });
+        } else {
+          setMyProjects([]);
+          setSelectedProjectId("");
+        }
+      } else {
+        setMyProjects([]);
+        setSelectedProjectId("");
       }
     });
-  }, [userId, userRole]);
+  }, [userId, userName]);
 
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {
     if (!listPanelOpen) return;
     escStack.push(closeList);
     return () => escStack.pop(closeList);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listPanelOpen]);
 
   // Month navigation
@@ -335,7 +364,7 @@ export function ReleaseNotesPage() {
             animation: listClosing
               ? "slideOutRight 0.26s cubic-bezier(0.4,0,1,1) forwards"
               : listNeedsSlideIn ? "slideInRight 0.28s cubic-bezier(0.16,1,0.3,1)"
-              : "none",
+                : "none",
           }}>
             <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div>
@@ -403,20 +432,21 @@ export function ReleaseNotesPage() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
             {/* Project selector */}
-            {myProjects.length > 0 && (
-              <div style={{ width: 220 }}>
-                <CustomSelect
-                  value={selectedProjectId}
-                  options={myProjects.map(p => ({ value: p.id, label: p.name }))}
-                  onChange={setSelectedProjectId}
-                  placeholder="プロジェクト選択"
-                />
-              </div>
-            )}
+            <div style={{ width: 220 }}>
+              <CustomSelect
+                value={selectedProjectId}
+                onChange={setSelectedProjectId}
+                options={myProjects.length > 0
+                  ? myProjects.map(p => ({ value: p.id, label: p.name }))
+                  : [{ value: "", label: "アサイン済プロジェクトなし" }]}
+                disabled={myProjects.length === 0}
+
+                placeholder="プロジェクト選択"
+              />
+            </div>
+
             {/* Divider */}
-            {myProjects.length > 0 && (
-              <div style={{ width: 1, height: 24, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
-            )}
+            <div style={{ width: 1, height: 24, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
             {/* 今日ボタン */}
             <button
               onClick={goToday}
@@ -558,6 +588,9 @@ export function ReleaseNotesPage() {
             const isToday = dateStr === today.toISOString().split("T")[0];
             const isDragOver = dragOverTarget === dateStr;
 
+            // 🌟 修正：ブレイクポイントをより安全な数値に変更
+            const MAX_DISPLAY = height >= 960 ? 4 : height >= 760 ? 3 : height >= 600 ? 2 : 1;
+
             return (
               <div key={i}
                 onDragOver={e => { e.preventDefault(); if (!isDraggingReleasedRef.current) setDragOverTarget(dateStr); }}
@@ -604,66 +637,81 @@ export function ReleaseNotesPage() {
                   )}
                 </div>
 
-                {/* Ticket items — max 4 visible, remainder shown as "..." */}
-                {dayItems.slice(0, 4).map(item => {
-                  const isReleased = item.ticket.status === "released";
-                  const label = `${item.ticket.wbs} ${item.ticket.title}`;
-                  return (
-                    <div key={item.ticket.id}
-                      draggable
-                      onDragStart={e => {
-                        if (isReleased) {
-                          isDraggingReleasedRef.current = true;
-                          e.dataTransfer.setData("text/plain", "");
-                          setDragTooltipId(item.ticket.id);
-                          setTooltipPos({ x: e.clientX, y: e.clientY });
-                        } else {
-                          handleDragStart(e, item.ticket.id);
-                        }
-                      }}
-                      onDragEnd={() => {
-                        if (isReleased) {
-                          isDraggingReleasedRef.current = false;
-                          setDragTooltipId(null);
-                        } else {
-                          setDragId(null);
-                          setDragOverTarget(null);
-                        }
-                      }}
-                      onClick={e => {
-                        e.stopPropagation();
-                        setSelectedTicketMeta({ sprintId: item.sprintId, projectId: item.projectId, projectSlug: item.projectSlug });
-                        setSelectedTicket(item.ticket);
-                        setListPanelOpen(false);
-                      }}
-                      onMouseEnter={!isReleased ? (e => { (e.currentTarget as HTMLElement).style.background = "#E5E7EB"; }) : undefined}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isReleased ? "#F0FDF4" : "#F4F5F6"; }}
-                      style={{
-                        fontSize: 10, fontWeight: 500, color: isReleased ? "#16A34A" : "#1A1714",
-                        background: isReleased ? "#F0FDF4" : "#F4F5F6",
-                        borderRadius: 5, padding: "3px 5px",
-                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        cursor: "pointer", userSelect: "none",
-                        border: `1px solid ${isReleased ? "rgba(22,163,74,0.2)" : "transparent"}`,
-                        display: "flex", alignItems: "center", gap: 3,
-                        transition: "background 0.1s",
-                      }}>
-                      <GripVertical style={{ width: 9, height: 9, color: isReleased ? "rgba(22,163,74,0.4)" : "#B0A9A4", flexShrink: 0 }} />
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{truncateText(label, 16)}</span>
-                    </div>
-                  );
-                })}
-                {dayItems.length > 4 && (
+                {/* Ticket items Container — 領域を確保しつつはみ出さない設定 */}
+                <div style={{
+                  flex: 1, display: "flex", flexDirection: "column", gap: 2, minHeight: 0,
+                  overflow: "hidden" // 🌟 修正: 万が一スペースが足りない場合は、潰さずに綺麗に隠す
+                }}>
+                  {dayItems.slice(0, MAX_DISPLAY).map(item => {
+                    const isReleased = item.ticket.status === "released";
+                    const label = `${item.ticket.wbs} ${item.ticket.title}`;
+                    return (
+                      <div key={item.ticket.id}
+                        draggable
+                        onDragStart={e => {
+                          if (isReleased) {
+                            isDraggingReleasedRef.current = true;
+                            e.dataTransfer.setData("text/plain", "");
+                            setDragTooltipId(item.ticket.id);
+                            setTooltipPos({ x: e.clientX, y: e.clientY });
+                          } else {
+                            handleDragStart(e, item.ticket.id);
+                          }
+                        }}
+                        onDragEnd={() => {
+                          if (isReleased) {
+                            isDraggingReleasedRef.current = false;
+                            setDragTooltipId(null);
+                          } else {
+                            setDragId(null);
+                            setDragOverTarget(null);
+                          }
+                        }}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelectedTicketMeta({ sprintId: item.sprintId, projectId: item.projectId, projectSlug: item.projectSlug });
+                          setSelectedTicket(item.ticket);
+                          setListPanelOpen(false);
+                        }}
+                        onMouseEnter={!isReleased ? (e => { (e.currentTarget as HTMLElement).style.background = "#E5E7EB"; }) : undefined}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isReleased ? "#F0FDF4" : "#F4F5F6"; }}
+                        style={{
+                          flex: "0 0 22px", // 🌟 修正: 高さを絶対に22pxに固定（Squish防止）
+                          height: 22,
+                          boxSizing: "border-box", // 🌟 修正: ボーダー等を高さに含める
+                          fontSize: 10, fontWeight: 500, color: isReleased ? "#16A34A" : "#1A1714",
+                          background: isReleased ? "#F0FDF4" : "#F4F5F6",
+                          borderRadius: 5, padding: "0 6px", // 🌟 修正: 縦paddingをなくしflexのalignItemsで中央揃え
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          cursor: "pointer", userSelect: "none",
+                          border: `1px solid ${isReleased ? "rgba(22,163,74,0.2)" : "transparent"}`,
+                          display: "flex", alignItems: "center", gap: 3,
+                          transition: "background 0.1s",
+                        }}>
+                        <GripVertical style={{ width: 9, height: 9, color: isReleased ? "rgba(22,163,74,0.4)" : "#B0A9A4", flexShrink: 0 }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{truncateText(label, 16)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 🌟 修正：残りの省略バッジも高さを固定し、確実に最下部に表示 */}
+                {dayItems.length > MAX_DISPLAY && (
                   <div
                     onClick={e => { e.stopPropagation(); openList(dateStr); }}
                     style={{
+                      flex: "0 0 18px", // 🌟 追加: バッジの高さを18pxに固定
+                      height: 18,
+                      boxSizing: "border-box",
+                      display: "flex", alignItems: "center", justifyContent: "center",
                       fontSize: 10, fontWeight: 600, color: "#9E9690",
-                      background: "#F4F5F6", borderRadius: 5, padding: "3px 5px",
+                      background: "#F4F5F6", borderRadius: 5, padding: "0 5px",
                       cursor: "pointer", textAlign: "center",
                       border: "1px solid transparent",
+                      marginTop: 2
                     }}
                   >
-                    他 {dayItems.length - 4} 件...
+                    他 {dayItems.length - MAX_DISPLAY} 件...
                   </div>
                 )}
               </div>

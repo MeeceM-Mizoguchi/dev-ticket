@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardList, Trash2 } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardList, Trash2, Ticket } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -13,6 +13,8 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
+import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 
 const PRIORITY_META: Record<Priority, { label: string; color: string; bg: string }> = {
   high: { label: "高", color: "#DC2626", bg: "#FEF2F2" },
@@ -38,7 +40,7 @@ async function nextBacklogId(): Promise<string> {
 
 // ─── チケット化モーダル ─────────────────────────────────────
 function ConvertToTicketModal({
-  item, project, sprints, onClose, onConverted,
+  item, project, sprints: initialSprints, onClose, onConverted,
 }: {
   item: BacklogItem;
   project: Project;
@@ -46,10 +48,28 @@ function ConvertToTicketModal({
   onClose: () => void;
   onConverted: () => void;
 }) {
-  const [sprintId, setSprintId] = useState(sprints[0]?.id ?? "");
+  const [sprints, setSprints] = useState<Sprint[]>(initialSprints);
+  const [sprintId, setSprintId] = useState(initialSprints[0]?.id ?? "");
   const [saving, setSaving] = useState(false);
+  const [showNewSprint, setShowNewSprint] = useState(false);
   const { userName } = useAuth();
   const { toast } = useToast();
+
+  const reloadSprints = useCallback(async () => {
+    if (!isSupabaseEnabled) return;
+    const { data } = await supabase!
+      .from("sprints")
+      .select("id, project_id, name, goal, status, start_date, end_date, identifier")
+      .eq("project_id", project.id)
+      .order("created_at", { ascending: false });
+    const mapped: Sprint[] = (data ?? []).map((s: any) => ({
+      id: s.id, projectId: s.project_id, name: s.name, goal: s.goal || "",
+      status: s.status, startDate: s.start_date, endDate: s.end_date,
+      identifier: s.identifier || "", tickets: [],
+    }));
+    setSprints(mapped);
+    if (mapped.length > 0) setSprintId(mapped[0].id);
+  }, [project.id]);
 
   const handleConvert = async () => {
     if (!sprintId) { toast("スプリントを選択してください", "error"); return; }
@@ -68,11 +88,13 @@ function ConvertToTicketModal({
         id: ticketId, sprint_id: sprintId, wbs, title: item.title, status: "todo",
         priority: item.priority, assignee: item.assignee || "", estimated_hours: item.estimatedHours || 0,
         progress: 0, description: item.description || "", created_by: userName || null,
+        images: item.images?.length ? item.images : [],
       });
       if (insErr) { toast("チケット作成に失敗しました", "error"); setSaving(false); return; }
 
       await supabase!.from("backlog_items").update({
-        status: "converted", converted_ticket_id: ticketId, updated_at: new Date().toISOString(),
+        status: "converted", converted_ticket_id: ticketId, converted_ticket_wbs: wbs,
+        updated_at: new Date().toISOString(),
       }).eq("id", item.id);
 
       toast(`${wbs} としてチケットを作成しました`);
@@ -83,31 +105,52 @@ function ConvertToTicketModal({
   };
 
   return (
-    <DialogShell title={`${item.id} をチケット化`} onClose={onClose} size="sm"
-      footer={<>
-        <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
-        <button type="button" onClick={handleConvert} disabled={saving}
-          style={{ padding: "9px 20px", background: saving ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: saving ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-          {saving && <BtnSpinner />}{saving ? "作成中..." : "チケットを作成"}
-        </button>
-      </>}>
-      <p style={{ fontSize: 13, color: "#1A1714", margin: 0 }}>{item.title}</p>
-      <div>
-        <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 5 }}>追加先スプリント</label>
-        <CustomSelect value={sprintId} onChange={setSprintId}
-          options={sprints.map(s => ({ value: s.id, label: s.name }))} placeholder="スプリントを選択" />
-      </div>
-    </DialogShell>
+    <>
+      <DialogShell title={`${item.id} をチケット化`} onClose={onClose} size="sm"
+        footer={<>
+          <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
+          <button type="button" onClick={handleConvert} disabled={saving}
+            style={{ padding: "9px 20px", background: saving ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: saving ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+            {saving && <BtnSpinner />}{saving ? "作成中..." : "チケットを作成"}
+          </button>
+        </>}>
+        <p style={{ fontSize: 13, color: "#1A1714", margin: 0 }}>{item.title}</p>
+        <div>
+          <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 5 }}>追加先スプリント</label>
+          {sprints.length === 0 ? (
+            <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>スプリントがありません</p>
+          ) : (
+            <CustomSelect value={sprintId} onChange={setSprintId}
+              options={sprints.map(s => ({ value: s.id, label: s.name }))} placeholder="スプリントを選択" />
+          )}
+          <button
+            type="button"
+            onClick={() => setShowNewSprint(true)}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 8, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 7, cursor: "pointer" }}>
+            <Plus style={{ width: 11, height: 11 }} />新規スプリントを作成
+          </button>
+        </div>
+      </DialogShell>
+
+      {showNewSprint && (
+        <NewSprintDialog
+          projectId={project.id}
+          onClose={() => setShowNewSprint(false)}
+          onCreated={() => { setShowNewSprint(false); reloadSprints(); }}
+        />
+      )}
+    </>
   );
 }
 
 // ─── 左サイドバー アイテム行 ─────────────────────────────────
 function BacklogSidebarItem({
-  item, isSelected, canEdit, isDone, isDragOver,
+  item, isSelected, canEdit, isDone, isDragOver, projectSlug,
   onSelect, onDragStart, onDragOver, onDrop, onDragEnd,
 }: {
   item: BacklogItem; isSelected: boolean;
   canEdit: boolean; isDone: boolean; isDragOver?: boolean;
+  projectSlug: string;
   onSelect: () => void;
   onDragStart?: () => void;
   onDragOver?: () => void;
@@ -115,8 +158,22 @@ function BacklogSidebarItem({
   onDragEnd?: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const navigate = useNavigate();
   const pMeta = PRIORITY_META[item.priority];
   const sMeta = STATUS_META[item.status];
+  const isConverted = item.status === "converted" && !!(item.convertedTicketWbs || item.convertedTicketId);
+
+  const handleOpenTicket = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (item.convertedTicketWbs) {
+      navigate(`/${projectSlug}/${item.convertedTicketWbs}`);
+      return;
+    }
+    if (item.convertedTicketId && isSupabaseEnabled) {
+      const { data } = await supabase!.from("sprint_tickets").select("wbs").eq("id", item.convertedTicketId).maybeSingle();
+      if (data?.wbs) navigate(`/${projectSlug}/${data.wbs}`);
+    }
+  };
 
   return (
     <div
@@ -147,9 +204,17 @@ function BacklogSidebarItem({
           <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", background: isSelected ? "#A7F3D0" : "#EDE9FE", color: isSelected ? "#065F46" : "#6D28D9", padding: "1px 5px", borderRadius: 4, flexShrink: 0 }}>{item.id}</span>
           <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title || "無題"}</span>
         </div>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pMeta.bg, color: pMeta.color }}>{pMeta.label}</span>
           <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: sMeta.bg, color: sMeta.color }}>{sMeta.label}</span>
+          {isConverted && (
+            <button
+              onClick={handleOpenTicket}
+              title={`チケット ${item.convertedTicketWbs ?? ""} を開く`}
+              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", fontSize: 9, fontWeight: 700, borderRadius: 8, background: "#F5F3FF", color: "#6D28D9", border: "none", cursor: "pointer" }}>
+              <Ticket style={{ width: 9, height: 9 }} />{item.convertedTicketWbs ?? "開く"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -184,6 +249,7 @@ export function BacklogPage() {
   const [editAssignee, setEditAssignee] = useState("");
   const [editHours, setEditHours] = useState(0);
   const [editCategoryId, setEditCategoryId] = useState<string | null>(null);
+  const [editImages, setEditImages] = useState<string[]>([]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const canEdit = userPermissions.canEditDelete;
@@ -219,6 +285,8 @@ export function BacklogPage() {
   }, [searchParams, items]);
 
   const selectedItem = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId]);
+  // チケット化済・アーカイブ済の項目は編集不可
+  const itemCanEdit = canEdit && selectedItem != null && selectedItem.status !== "converted" && selectedItem.status !== "archived";
 
   // 選択アイテムが変わったら編集ステートを同期
   useEffect(() => {
@@ -229,6 +297,7 @@ export function BacklogPage() {
     setEditAssignee(selectedItem?.assignee ?? "");
     setEditHours(selectedItem?.estimatedHours ?? 0);
     setEditCategoryId(selectedItem?.categoryId ?? null);
+    setEditImages(selectedItem?.images ?? []);
   }, [selectedItem?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleSave = useCallback((patch: {
@@ -249,6 +318,15 @@ export function BacklogPage() {
       await supabase!.from("backlog_items").update(updateData).eq("id", selectedId);
       setItems(prev => prev.map(i => i.id === selectedId ? { ...i, ...patch } : i));
     }, 600);
+  }, [selectedId]);
+
+  const handleImagesChange = useCallback(async (next: string[]) => {
+    if (!selectedId) return;
+    setEditImages(next);
+    setItems(prev => prev.map(i => i.id === selectedId ? { ...i, images: next } : i));
+    if (isSupabaseEnabled) {
+      await supabase!.from("backlog_items").update({ images: next, updated_at: new Date().toISOString() }).eq("id", selectedId);
+    }
   }, [selectedId]);
 
   const grouped = useMemo(() => {
@@ -338,6 +416,7 @@ export function BacklogPage() {
                 <BacklogSidebarItem key={item.id} item={item}
                   isSelected={selectedId === item.id}
                   canEdit={canEdit} isDone={false}
+                  projectSlug={projectSlug ?? project?.slug ?? ""}
                   isDragOver={dragOverId === item.id && dragId !== item.id}
                   onSelect={() => setSelectedId(item.id)}
                   onDragStart={() => setDragId(item.id)}
@@ -352,6 +431,7 @@ export function BacklogPage() {
                     <BacklogSidebarItem key={item.id} item={item}
                       isSelected={selectedId === item.id}
                       canEdit={false} isDone
+                      projectSlug={projectSlug ?? project?.slug ?? ""}
                       onSelect={() => setSelectedId(item.id)} />
                   ))}
                 </>
@@ -361,7 +441,7 @@ export function BacklogPage() {
         </div>
 
         {/* ─── 右パネル ─── */}
-        <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 20, overflowY: "auto" }}>
+        <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
           {!selectedItem ? (
             <div style={{ padding: "60px 0", textAlign: "center" }}>
               <ClipboardList style={{ width: 32, height: 32, color: "#D4CEC8", margin: "0 auto 10px" }} />
@@ -369,88 +449,116 @@ export function BacklogPage() {
             </div>
           ) : (
             <>
-              {/* タイトル + アクションボタン */}
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
-                <input
-                  value={editTitle}
-                  disabled={!canEdit}
-                  onChange={e => { setEditTitle(e.target.value); scheduleSave({ title: e.target.value }); }}
-                  placeholder="バックログ項目のタイトル"
-                  style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                  {canCreate && selectedItem.status !== "converted" && (
-                    <button onClick={() => setConvertTarget(selectedItem)} title="チケット化"
-                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#EDE9FE", color: "#6D28D9", border: "none", borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
-                      <GitBranch style={{ width: 12, height: 12 }} />チケット化
-                    </button>
-                  )}
-                  {canEdit && (
-                    <button onClick={() => setDeleteTarget(selectedItem)} title="削除"
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4 }}>
-                      <Trash2 style={{ width: 14, height: 14 }} />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* フィールド行 */}
-              <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-                <div style={{ minWidth: 140, pointerEvents: canEdit ? "auto" : "none", opacity: canEdit ? 1 : 0.6 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>分類</label>
-                  <CustomSelect
-                    value={editCategoryId ?? ""}
-                    onChange={v => { setEditCategoryId(v || null); scheduleSave({ categoryId: v || null }); }}
-                    options={[{ value: "", label: "分類なし" }, ...categories.map(c => ({ value: c.id, label: c.name }))]}
-                    placeholder="分類なし" />
-                </div>
-                <div style={{ width: 100, pointerEvents: canEdit ? "auto" : "none", opacity: canEdit ? 1 : 0.6 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>優先度</label>
-                  <CustomSelect
-                    value={editPriority}
-                    onChange={v => { setEditPriority(v as Priority); scheduleSave({ priority: v as Priority }); }}
-                    options={[
-                      { value: "high", label: "高", color: PRIORITY_META.high.color },
-                      { value: "medium", label: "中", color: PRIORITY_META.medium.color },
-                      { value: "low", label: "低", color: PRIORITY_META.low.color },
-                    ]} />
-                </div>
-                <div style={{ width: 120, pointerEvents: canEdit ? "auto" : "none", opacity: canEdit ? 1 : 0.6 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>状態</label>
-                  <CustomSelect
-                    value={editStatus}
-                    onChange={v => { setEditStatus(v as BacklogStatus); scheduleSave({ status: v as BacklogStatus }); }}
-                    options={[
-                      { value: "open", label: "未対応", color: STATUS_META.open.color },
-                      { value: "in-progress", label: "対応中", color: STATUS_META["in-progress"].color },
-                      { value: "converted", label: "チケット化済", color: STATUS_META.converted.color },
-                      { value: "archived", label: "アーカイブ", color: STATUS_META.archived.color },
-                    ]} />
-                </div>
-                <div style={{ minWidth: 120, pointerEvents: canEdit ? "auto" : "none", opacity: canEdit ? 1 : 0.6 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>担当者</label>
-                  <CustomSelect
-                    value={editAssignee}
-                    onChange={v => { setEditAssignee(v); scheduleSave({ assignee: v }); }}
-                    options={(project?.members ?? []).map(m => ({ value: m, label: m }))}
-                    placeholder="未割当" />
-                </div>
-                <div style={{ width: 90 }}>
-                  <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>見積(h)</label>
+              {/* 固定ヘッダー: タイトル + アクションボタン + フィールド行 */}
+              <div style={{ padding: "20px 20px 14px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input
-                    type="number" min={0} value={editHours} disabled={!canEdit}
-                    onChange={e => { const v = Number(e.target.value); setEditHours(v); scheduleSave({ estimatedHours: v }); }}
-                    style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 9, outline: "none", fontFamily: "inherit" }} />
+                    value={editTitle}
+                    disabled={!itemCanEdit}
+                    onChange={e => { setEditTitle(e.target.value); scheduleSave({ title: e.target.value }); }}
+                    placeholder="バックログ項目のタイトル"
+                    style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    {canCreate && selectedItem.status !== "converted" && (
+                      <button onClick={() => setConvertTarget(selectedItem)} title="チケット化"
+                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#EDE9FE", color: "#6D28D9", border: "none", borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                        <GitBranch style={{ width: 12, height: 12 }} />チケット化
+                      </button>
+                    )}
+                    {selectedItem.status === "converted" && !!(selectedItem.convertedTicketWbs || selectedItem.convertedTicketId) && (
+                      <button
+                        onClick={async () => {
+                          if (selectedItem.convertedTicketWbs) {
+                            navigate(`/${projectSlug ?? project?.slug ?? ""}/${selectedItem.convertedTicketWbs}`);
+                            return;
+                          }
+                          if (selectedItem.convertedTicketId && isSupabaseEnabled) {
+                            const { data } = await supabase!.from("sprint_tickets").select("wbs").eq("id", selectedItem.convertedTicketId).maybeSingle();
+                            if (data?.wbs) navigate(`/${projectSlug ?? project?.slug ?? ""}/${data.wbs}`);
+                          }
+                        }}
+                        title={`チケット ${selectedItem.convertedTicketWbs ?? ""} を開く`}
+                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#ECFDF5", color: "#059669", border: "none", borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                        <Ticket style={{ width: 12, height: 12 }} />{selectedItem.convertedTicketWbs ?? "チケットを開く"}
+                      </button>
+                    )}
+                    {canEdit && (
+                      <button onClick={() => setDeleteTarget(selectedItem)} title="削除"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4 }}>
+                        <Trash2 style={{ width: 14, height: 14 }} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ minWidth: 160, flex: 1, pointerEvents: itemCanEdit ? "auto" : "none", opacity: itemCanEdit ? 1 : 0.6 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>分類</label>
+                    <CustomSelect
+                      value={editCategoryId ?? ""}
+                      onChange={v => { setEditCategoryId(v || null); scheduleSave({ categoryId: v || null }); }}
+                      options={[{ value: "", label: "分類なし" }, ...categories.map(c => ({ value: c.id, label: c.name }))]}
+                      placeholder="分類なし" />
+                  </div>
+                  <div style={{ width: 110, pointerEvents: itemCanEdit ? "auto" : "none", opacity: itemCanEdit ? 1 : 0.6 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>優先度</label>
+                    <CustomSelect
+                      value={editPriority}
+                      onChange={v => { setEditPriority(v as Priority); scheduleSave({ priority: v as Priority }); }}
+                      options={[
+                        { value: "high", label: "高", color: PRIORITY_META.high.color },
+                        { value: "medium", label: "中", color: PRIORITY_META.medium.color },
+                        { value: "low", label: "低", color: PRIORITY_META.low.color },
+                      ]} />
+                  </div>
+                  <div style={{ width: 155, pointerEvents: itemCanEdit ? "auto" : "none", opacity: itemCanEdit ? 1 : 0.6 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>状態</label>
+                    <CustomSelect
+                      value={editStatus}
+                      onChange={v => { setEditStatus(v as BacklogStatus); scheduleSave({ status: v as BacklogStatus }); }}
+                      options={[
+                        { value: "open", label: "未対応", color: STATUS_META.open.color },
+                        { value: "in-progress", label: "対応中", color: STATUS_META["in-progress"].color },
+                        { value: "converted", label: "チケット化済", color: STATUS_META.converted.color },
+                        { value: "archived", label: "アーカイブ", color: STATUS_META.archived.color },
+                      ]} />
+                  </div>
+                  <div style={{ minWidth: 140, pointerEvents: itemCanEdit ? "auto" : "none", opacity: itemCanEdit ? 1 : 0.6 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>担当者</label>
+                    <CustomSelect
+                      value={editAssignee}
+                      onChange={v => { setEditAssignee(v); scheduleSave({ assignee: v }); }}
+                      options={(project?.members ?? []).map(m => ({ value: m, label: m }))}
+                      placeholder="未割当" />
+                  </div>
+                  <div style={{ width: 90 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 3 }}>見積(h)</label>
+                    <input
+                      type="number" min={0} value={editHours} disabled={!itemCanEdit}
+                      onChange={e => { const v = Number(e.target.value); setEditHours(v); scheduleSave({ estimatedHours: v }); }}
+                      style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 9, outline: "none", fontFamily: "inherit" }} />
+                  </div>
                 </div>
               </div>
 
-              {/* 詳細エディター */}
-              <RichEditor
-                value={editDescription}
-                readOnly={!canEdit}
-                onChange={v => { setEditDescription(v); scheduleSave({ description: v }); }}
-                placeholder="背景や要件を入力..."
-                members={project?.members ?? []}
-                minHeight="calc(100vh - 366px)" />
+              {/* エディター + 画像添付（エディター内部でスクロール） */}
+              <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "12px 20px 16px", display: "flex", flexDirection: "column" }}>
+                <RichEditor
+                  value={editDescription}
+                  readOnly={!itemCanEdit}
+                  onChange={v => { setEditDescription(v); scheduleSave({ description: v }); }}
+                  placeholder="背景や要件を入力..."
+                  members={project?.members ?? []}
+                  minHeight={120}
+                  style={{ flex: 1, minHeight: 0 }} />
+                <div style={{ marginTop: 16, flexShrink: 0 }}>
+                  <ImageAttachments
+                    images={editImages}
+                    onImagesChange={handleImagesChange}
+                    uploadPathPrefix={`backlog/${selectedItem.id}`}
+                    readOnly={!itemCanEdit}
+                  />
+                </div>
+              </div>
             </>
           )}
         </div>
