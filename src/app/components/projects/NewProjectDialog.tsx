@@ -10,6 +10,7 @@ import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 // 🌟ログイン中のユーザー情報を取得するために useAuth をインポートします
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 
@@ -20,7 +21,10 @@ function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).sl
 
 export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () => void; clients: Client[]; onCreated?: () => void }) {
   // 🌟現在のログインユーザー名（userName）を取得
-  const { userName } = useAuth();
+  const { userName, userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
+  // オーナーはOrgSelectorの選択、それ以外は自分の組織IDを使用
+  const projectOrgId = userRole === "owner" ? selectedOrgId : userOrgId;
 
   const [name, setName] = useState("");
   const [clientName, setClientName] = useState("");
@@ -53,9 +57,9 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
       const { error } = await supabase!.from("projects").insert({
         id: projectId, name, client: clientName, description,
         start_date: startDate || null, end_date: endDate || null,
-        // 🌟 members を [] から [userName] へ変更し、作成者自身を初期メンバーとしてセット！
         status, members: userName ? [userName] : [], done: 0, in_progress: 0, todo: 0,
         slug: finalSlug, wbs_prefix: finalPrefix,
+        organization_id: projectOrgId || null,
       });
       if (error?.code === "23505") {
         setSlugError("その識別子はすでに使用されています。別の名前を使用してください。");

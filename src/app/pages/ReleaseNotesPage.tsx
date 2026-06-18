@@ -36,7 +36,7 @@ export function ReleaseNotesPage() {
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
 
-  const { userId, userName, userRole } = useAuth();
+  const { userId, userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
   const isOwner = userRole === "owner";
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
@@ -132,7 +132,11 @@ export function ReleaseNotesPage() {
       .from("projects")
       .select("id, name, members")
       .order("name");
-    if (isOwner && selectedOrgId) q = q.eq("organization_id", selectedOrgId);
+    if (isOwner && selectedOrgId) {
+      q = q.eq("organization_id", selectedOrgId);
+    } else if (!isOwner && userOrgId) {
+      q = q.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+    }
 
     q.then(({ data }) => {
       if (data && data.length > 0) {
@@ -167,7 +171,7 @@ export function ReleaseNotesPage() {
         setSelectedProjectId("");
       }
     });
-  }, [userId, userName, isOwner, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userId, userName, isOwner, selectedOrgId, userOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {

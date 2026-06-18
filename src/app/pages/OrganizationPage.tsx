@@ -106,12 +106,12 @@ function OrgFormDialog({ org, onClose, onSaved }: { org?: Organization; onClose:
       }
     >
       {/* 1行目: 組織名（全幅） */}
-      <FieldInput label="組織名" placeholder="例: Meece株式会社" value={name} onChange={setName} required />
+      <FieldInput label="組織名" placeholder="例: サンプル株式会社" value={name} onChange={setName} required />
 
       {/* 2行目: 代表者名・担当者名・電話番号 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
-        <FieldInput label="代表者名" placeholder="例: 溝口 雅登" value={representativeName} onChange={setRepresentativeName} />
-        <FieldInput label="担当者名" placeholder="例: 佐藤 瑛" value={contactName} onChange={setContactName} />
+        <FieldInput label="代表者名" placeholder="例: 山田 太郎" value={representativeName} onChange={setRepresentativeName} />
+        <FieldInput label="担当者名" placeholder="例: 鈴木 花子" value={contactName} onChange={setContactName} />
         <FieldInput label="電話番号" placeholder="例: 03-1234-5678" value={phone} onChange={setPhone} />
       </div>
 

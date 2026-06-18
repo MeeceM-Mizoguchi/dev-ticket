@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { htmlToText } from "@/app/lib/helpers";
@@ -128,7 +129,8 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
 const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [], comments: [], descriptions: [] };
 
 export function GlobalSearch() {
-  const { userName, userRole } = useAuth();
+  const { userName, userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResults>(EMPTY);
@@ -159,7 +161,14 @@ export function GlobalSearch() {
     try {
       // Get accessible projects with their sprints in one query_
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data: projData } = await supabase!.from("projects").select("id, name, client, status, members, sprints(id, name, status, project_id)") as { data: any[] | null };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let projQuery = supabase!.from("projects").select("id, name, client, status, members, organization_id, sprints(id, name, status, project_id)");
+      if (userRole === "owner") {
+        if (selectedOrgId) projQuery = projQuery.eq("organization_id", selectedOrgId);
+      } else if (userOrgId) {
+        projQuery = projQuery.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+      }
+      const { data: projData } = await projQuery as { data: any[] | null };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accessible: any[] = isAdmin ? (projData ?? []) : (projData ?? []).filter(p => Array.isArray(p.members) && p.members.includes(userName));
       const sprintIds: string[] = accessible.flatMap(p => (p.sprints ?? []).map((s: { id: string }) => s.id));
@@ -238,7 +247,7 @@ export function GlobalSearch() {
     } finally {
       setIsLoading(false);
     }
-  }, [userName, userRole, isAdmin]);
+  }, [userName, userRole, userOrgId, selectedOrgId, isAdmin]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);

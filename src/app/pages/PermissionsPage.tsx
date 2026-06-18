@@ -42,7 +42,7 @@ interface ConflictInfo {
 }
 
 export function PermissionsPage() {
-  const { userPermissions, userName, userRole } = useAuth();
+  const { userPermissions, userName, userRole, userOrgId } = useAuth();
   const { toast } = useToast();
   const { selectedOrgId } = useOrg();
 
@@ -66,7 +66,7 @@ export function PermissionsPage() {
     Promise.all([
       supabase!.from("permission_groups").select("*").order("id"),
       (() => { let q = supabase!.from("profiles").select("*").order("name"); if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); return q; })(),
-      supabase!.from("projects").select("*").order("id"),
+      (() => { const isOwner = userRole === "owner"; let q = supabase!.from("projects").select("*").order("id"); if (isOwner) { if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); } else if (userOrgId) { q = q.or(`organization_id.eq.${userOrgId},organization_id.is.null`); } return q; })(),
     ]).then(([{ data: gData }, { data: mData }, { data: pData }]) => {
       if (gData) setGroups(gData as PermissionGroup[]);
       if (mData) setMembers(mData.map(mapMember));
@@ -85,7 +85,7 @@ export function PermissionsPage() {
       setNeedsMigration(true);
       setLoading(false);
     });
-  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedOrgId, userOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -157,31 +157,20 @@ export function InviteDialog({ onClose, onInvited, fixedOrganizationId, fixedOrg
         />
       </div>
 
-      {/* 組織選択: ownerのみ表示 */}
-      {isOwner && (
+      {/* 組織選択: ownerかつ固定でない場合のみ表示 */}
+      {isOwner && !fixedOrganizationId && (
         <div>
           <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
             所属組織
-            {fixedOrganizationName && (
-              <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", padding: "2px 8px", borderRadius: 20 }}>
-                {fixedOrganizationName}（固定）
-              </span>
-            )}
           </label>
-          {fixedOrganizationId ? (
-            <div style={{ padding: "9px 12px", background: "#F4F5F6", borderRadius: 10, fontSize: 13, color: "#6B6458" }}>
-              {fixedOrganizationName}
-            </div>
-          ) : (
-            <CustomSelect
-              value={selectedOrgId}
-              options={[
-                { value: "", label: "未割り当て" },
-                ...organizations.map(o => ({ value: o.id, label: o.name })),
-              ]}
-              onChange={setSelectedOrgId}
-            />
-          )}
+          <CustomSelect
+            value={selectedOrgId}
+            options={[
+              { value: "", label: "未割り当て" },
+              ...organizations.map(o => ({ value: o.id, label: o.name })),
+            ]}
+            onChange={setSelectedOrgId}
+          />
         </div>
       )}
     </DialogShell>
