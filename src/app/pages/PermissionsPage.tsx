@@ -65,8 +65,8 @@ export function PermissionsPage() {
     // Load base tables first, then group_members separately with fallback
     Promise.all([
       supabase!.from("permission_groups").select("*").order("id"),
-      supabase!.from("profiles").select("*").order("name"),
-      (() => { let q = supabase!.from("projects").select("*").order("id"); if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); return q; })(),
+      (() => { let q = supabase!.from("profiles").select("*").order("name"); if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); return q; })(),
+      supabase!.from("projects").select("*").order("id"),
     ]).then(([{ data: gData }, { data: mData }, { data: pData }]) => {
       if (gData) setGroups(gData as PermissionGroup[]);
       if (mData) setMembers(mData.map(mapMember));
