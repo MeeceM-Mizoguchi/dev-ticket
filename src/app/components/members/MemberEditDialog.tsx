@@ -114,8 +114,9 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
   };
 
   const isEditingAdmin = member.role === "admin";
-  const canChangeRole = userRole === "admin";
-  const visibleRoles = roles.filter(r => canChangeRole || r.name !== "admin");
+  const canChangeRole = userRole === "admin" || userRole === "owner";
+  // ownerロールは常に選択肢から除外（UIからはownerに昇格・降格しない）
+  const visibleRoles = roles.filter(r => r.name !== "owner" && (canChangeRole || r.name !== "admin"));
   const roleDisabled = !rolesLoaded || (!canChangeRole && isEditingAdmin);
 
   const canSave = rolesLoaded && !saving;

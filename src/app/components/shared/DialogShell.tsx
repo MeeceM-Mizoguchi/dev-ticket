@@ -2,12 +2,13 @@ import { type ReactNode, useEffect } from "react";
 import { X } from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
 
-type DialogSize = "sm" | "md" | "lg";
+type DialogSize = "sm" | "md" | "lg" | "xl";
 
 const sizeConfig: Record<DialogSize, { maxWidth: number; minHeight?: number }> = {
   sm: { maxWidth: 420 },
   md: { maxWidth: 580, minHeight: 320 },
   lg: { maxWidth: 720, minHeight: 400 },
+  xl: { maxWidth: 940 },
 };
 
 export function DialogShell({ title, onClose, children, footer, size = "md" }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode; size?: DialogSize }) {

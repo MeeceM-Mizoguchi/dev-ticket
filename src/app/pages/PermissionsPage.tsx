@@ -22,6 +22,8 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
   canEditDelete: false, canReview: false, canSkipReview: false,
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
+  canAccessAdminSettings: false, canAccessWiki: false, canAccessBacklog: false,
+  canAccessMinutes: false, canAccessOrganization: false,
 };
 
 // Drag payload type identifier
@@ -388,10 +390,16 @@ export function PermissionsPage() {
 
   // ── Computed ──────────────────────────────────────────────────────────────────
 
-  const nonAdminMembers = useMemo(() => members.filter(m => m.role !== "admin"), [members]);
+  const isCurrentUserOwner = userRole === "owner";
+  // owner以外のユーザーにはownerロールのメンバーを非表示（ownerは自分でアサイン計画から自己追加できる）
+  const visibleMembers = useMemo(
+    () => isCurrentUserOwner ? members : members.filter(m => m.role !== "owner"),
+    [members, isCurrentUserOwner]
+  );
+  const nonAdminMembers = useMemo(() => visibleMembers.filter(m => m.role !== "admin"), [visibleMembers]);
   const allMembersForList = useMemo(
-    () => userRole === "admin" ? members : nonAdminMembers,
-    [members, nonAdminMembers, userRole]
+    () => (userRole === "admin" || userRole === "owner") ? visibleMembers : nonAdminMembers,
+    [visibleMembers, nonAdminMembers, userRole]
   );
   const settingsGroup = groups.find(g => g.id === settingsGroupId);
 
@@ -574,7 +582,8 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
             const memberGroupIds = groupMemberships.filter(gm => gm.member_id === m.id).map(gm => gm.group_id);
             const memberGroupNames = memberGroupIds.map(gid => groups.find(g => g.id === gid)?.name).filter(Boolean);
             const isAdmin = m.role === "admin";
-            const canDrag = isCurrentUserAdmin || !isAdmin;
+            // ownerユーザーは自分自身を含む全メンバーをドラッグ可能
+            const canDrag = isCurrentUserOwner ? true : (isCurrentUserAdmin || !isAdmin);
             return (
               <div key={m.id}
                 draggable={canDrag}
@@ -770,6 +779,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
   currentUserRole: string;
 }) {
   const isCurrentUserAdmin = currentUserRole === "admin";
+  const isCurrentUserOwner = currentUserRole === "owner";
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -852,7 +862,7 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
           const assignedGroupIds = project.groupIds ?? [];
           const assignedGroups = groups.filter(g => assignedGroupIds.includes(g.id));
           const individualNames = getIndividualMemberNames(project);
-          const individualMembers = members.filter(m => individualNames.includes(m.name) && (isCurrentUserAdmin || m.role !== "admin"));
+          const individualMembers = members.filter(m => individualNames.includes(m.name) && (isCurrentUserAdmin || isCurrentUserOwner || m.role !== "admin") && (isCurrentUserOwner || m.role !== "owner"));
           const isEmpty = assignedGroups.length === 0 && individualMembers.length === 0;
 
           // Truncation limits (collapsed only)

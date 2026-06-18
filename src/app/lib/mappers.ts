@@ -45,7 +45,7 @@ export function mapSourceFile(r: any): TicketSourceFile {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMember(r: any): Member {
-  return { id: r.id, name: r.name, email: r.email, role: r.role, group: r.group_name || "", status: r.status || "active", projects: r.project_count || 0, tickets: r.ticket_count || 0, permission_group_id: r.permission_group_id || null };
+  return { id: r.id, name: r.name, email: r.email, role: r.role, group: r.group_name || "", status: r.status || "active", projects: r.project_count || 0, tickets: r.ticket_count || 0, permission_group_id: r.permission_group_id || null, organizationId: r.organization_id ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

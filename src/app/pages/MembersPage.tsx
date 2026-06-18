@@ -1,12 +1,12 @@
 import { useEffect, useState, useRef } from "react";
-import { Search, UserPlus } from "lucide-react";
-import { useLocation } from "react-router";
+import { Search, UserPlus, Globe, Users, ExternalLink } from "lucide-react";
+import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MEMBERS, GROUPS } from "@/app/data/mock";
 import { mapMember } from "@/app/lib/mappers";
-import type { Member } from "@/app/types";
+import type { Member, Organization } from "@/app/types";
 import { MemberCard } from "@/app/components/members/MemberCard";
 import { MemberDetailDialog } from "@/app/components/members/MemberDetailDialog";
 import { MemberEditDialog } from "@/app/components/members/MemberEditDialog";
@@ -17,6 +17,7 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 export function MembersPage() {
   const { userRole, userId } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const location = useLocation();
   const highlightMemberId: string | undefined = (location.state as { highlightMemberId?: string } | null)?.highlightMemberId;
   const [highlightId, setHighlightId] = useState<string | undefined>(highlightMemberId);
@@ -29,8 +30,10 @@ export function MembersPage() {
   const [editTarget, setEditTarget] = useState<Member | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [group, setGroup] = useState("すべて");
-  const canAdd = userRole === "admin" || userRole === "project-manager";
-  const canEdit = userRole === "admin" || userRole === "project-manager";
+  const [myOrg, setMyOrg] = useState<(Organization & { memberCount: number }) | null>(null);
+  const isOwner = userRole === "owner";
+  const canAdd = isOwner || userRole === "admin" || userRole === "project-manager";
+  const canEdit = isOwner || userRole === "admin" || userRole === "project-manager";
 
   const refreshMembers = () => {
     if (!isSupabaseEnabled) return;
@@ -43,7 +46,19 @@ export function MembersPage() {
     supabase!.from("profiles").select("*").order("name")
       .then(({ data }) => { if (data) setMembers(data.map(mapMember)); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+
+    // 現在ユーザーの組織情報を取得
+    supabase!.from("profiles").select("organization_id").eq("id", userId).maybeSingle()
+      .then(async ({ data: profileData }) => {
+        if (!profileData?.organization_id) return;
+        const orgId = profileData.organization_id;
+        const [{ data: orgData }, { count }] = await Promise.all([
+          supabase!.from("organizations").select("id, name, created_at").eq("id", orgId).maybeSingle(),
+          supabase!.from("profiles").select("*", { count: "exact", head: true }).eq("organization_id", orgId),
+        ]);
+        if (orgData) setMyOrg({ id: orgData.id, name: orgData.name, createdAt: orgData.created_at || "", memberCount: count ?? 0 });
+      });
+  }, [userId]);
 
   // 10-second polling
   useEffect(() => {
@@ -76,17 +91,72 @@ export function MembersPage() {
   };
 
   const filtered = members.filter(m => {
+    if (!isOwner && m.role === "owner") return false;
     return (m.name.includes(search) || m.email.includes(search)) && (group === "すべて" || m.group === group);
   });
 
+
   if (loading) return <PageLoader />;
 
+  const visibleMembers = members.filter(m => isOwner || m.role !== "owner");
+  const activeCount  = visibleMembers.filter(m => m.status === "active").length;
+  const invitedCount = visibleMembers.filter(m => m.status === "invited").length;
+
   return (
-    <div style={{ padding: "24px" }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
+    <div style={{ padding: 0 }}>
+
+      {/* ── 組織バナー ── */}
+      {myOrg && (
+        <div style={{ background: "linear-gradient(135deg, #065F46 0%, #047857 50%, #059669 100%)", padding: "22px 28px 24px", position: "relative", overflow: "hidden", marginBottom: 0 }}>
+          <div style={{ position: "absolute", top: -30, right: -30, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
+          <div style={{ position: "absolute", bottom: -50, right: 120, width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 13, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <Globe style={{ width: 21, height: 21, color: "#FFFFFF" }} />
+              </div>
+              <div>
+                <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "rgba(255,255,255,0.55)", textTransform: "uppercase" as const, margin: "0 0 3px" }}>Organization</p>
+                <p style={{ fontSize: 20, fontWeight: 800, color: "#FFFFFF", margin: 0, letterSpacing: "-0.02em" }}>{myOrg.name}</p>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {/* 統計チップ */}
+              {[
+                { label: "総メンバー", value: myOrg.memberCount },
+                { label: "アクティブ",  value: activeCount },
+                { label: "招待中",      value: invitedCount },
+              ].map(({ label, value }) => (
+                <div key={label} style={{ padding: "8px 14px", background: "rgba(255,255,255,0.13)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.18)", textAlign: "center" as const }}>
+                  <p style={{ fontSize: 18, fontWeight: 800, color: "#FFFFFF", margin: 0 }}>{value}</p>
+                  <p style={{ fontSize: 10, color: "rgba(255,255,255,0.65)", margin: "2px 0 0", fontWeight: 600 }}>{label}</p>
+                </div>
+              ))}
+
+              {/* ownerのみ管理ページへのリンク */}
+              {isOwner && (
+                <button
+                  onClick={() => navigate(`/organization/${myOrg.id}`)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.30)", borderRadius: 10, fontSize: 12, fontWeight: 700, color: "#FFFFFF", cursor: "pointer", transition: "background 0.15s", flexShrink: 0 }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.24)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.15)"; }}
+                >
+                  <ExternalLink style={{ width: 13, height: 13 }} />
+                  管理画面
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ padding: "20px 24px" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>メンバー管理</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>総数 {members.length} 名 · アクティブ {members.filter(m => m.status === "active").length} 名</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>総数 {visibleMembers.length} 名 · アクティブ {activeCount} 名</p>
         </div>
         {canAdd && (
           <button onClick={() => setShowInvite(true)}
@@ -141,6 +211,7 @@ export function MembersPage() {
           onConfirm={() => handleDeleteMember(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}
+      </div>
     </div>
   );
 }
