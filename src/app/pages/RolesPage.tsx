@@ -5,6 +5,7 @@ import { Navigate } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { escStack } from "@/app/lib/escStack";
 
@@ -29,6 +30,7 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string }[] 
 
 export function RolesPage() {
   const { userPermissions } = useAuth();
+  const { selectedOrgId } = useOrg();
   const { toast } = useToast();
   const [roles, setRoles] = useState<RoleDefinition[]>([]);
   const [loading, setLoading] = useState(isSupabaseEnabled);
@@ -40,14 +42,16 @@ export function RolesPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
-    supabase!.from("roles").select("*").order("id")
-      .then(({ data }) => { if (data) setRoles(data as RoleDefinition[]); setLoading(false); });
-  }, []);
+    // 標準ロール（organization_id = NULL）＋選択中の組織固有ロールを表示
+    let q = supabase!.from("roles").select("*").order("id");
+    if (selectedOrgId) q = (q as any).or(`organization_id.eq.${selectedOrgId},organization_id.is.null`);
+    q.then(({ data }) => { if (data) setRoles(data as RoleDefinition[]); setLoading(false); });
+  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCreate = async (name: string, label: string, perms: UserPermissions) => {
     if (isSupabaseEnabled) {
       const { data, error } = await supabase!.from("roles")
-        .insert({ name, label, base_permissions: perms }).select().single();
+        .insert({ name, label, base_permissions: perms, organization_id: selectedOrgId || null }).select().single();
       if (error) { toast("ロールの作成に失敗しました", "error"); return; }
       if (data) setRoles(prev => [...prev, data as RoleDefinition]);
     } else {

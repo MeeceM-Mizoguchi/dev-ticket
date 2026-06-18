@@ -1128,6 +1128,14 @@ export function MyActionsPage() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setProjects(accessibleProjects.map((p: any) => ({ id: p.id, slug: p.slug, name: p.name })));
 
+      // アクセス可能なスプリントIDセット（組織フィルタ済みプロジェクトに属するものだけ）
+      const accessibleProjectIds = new Set(accessibleProjects.map((p: any) => p.id));
+      const accessibleSprintIds = new Set(
+        (sprintsRes.data ?? [])
+          .filter((s: any) => accessibleProjectIds.has(s.project_id))
+          .map((s: any) => s.id)
+      );
+
       const sprintMap: Record<string, string> = Object.fromEntries(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (sprintsRes.data ?? []).map((s: any) => [s.id, s.project_id])
@@ -1140,6 +1148,11 @@ export function MyActionsPage() {
         const proj = projectMap[projectId] ?? { slug: "", name: "" };
         return { ...ticket, projectSlug: proj.slug, projectName: proj.name, projectId, sprintId: r.sprint_id ?? "" };
       };
+
+      // 組織フィルタ: アクセス可能なスプリントに属するチケットのみ
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const filterByOrg = (tickets: any[]) =>
+        tickets.filter((t: any) => accessibleSprintIds.has(t.sprint_id));
 
       const [aRes, rRes, acRes, rcRes] = await Promise.all([
         supabase!.from("sprint_tickets").select("*")
@@ -1160,10 +1173,10 @@ export function MyActionsPage() {
           .order("created_at", { ascending: true }).order("id", { ascending: true }),
       ]);
 
-      setAllAssigned((aRes.data ?? []).map(toAction));
-      setAllReview((rRes.data ?? []).map(toAction));
-      setClosedAssigned((acRes.data ?? []).map(toAction));
-      setClosedReview((rcRes.data ?? []).map(toAction));
+      setAllAssigned(filterByOrg(aRes.data ?? []).map(toAction));
+      setAllReview(filterByOrg(rRes.data ?? []).map(toAction));
+      setClosedAssigned(filterByOrg(acRes.data ?? []).map(toAction));
+      setClosedReview(filterByOrg(rcRes.data ?? []).map(toAction));
     } catch (err) {
       console.error("[MyActionsPage] load failed:", err);
     } finally {

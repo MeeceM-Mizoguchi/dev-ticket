@@ -200,10 +200,14 @@ export function ReleaseNotesPage() {
   for (let d = 1; d <= daysInMonth; d++) calCells.push(d);
   while (calCells.length % 7 !== 0) calCells.push(null);
 
-  // Filter by selected project
-  const filteredItems = selectedProjectId
-    ? items.filter(i => i.projectId === selectedProjectId)
-    : items;
+  // アクセス可能なプロジェクトIDセット（組織フィルタ済み）
+  const accessibleProjectIds = new Set(myProjects.map(p => p.id));
+  // プロジェクトが0件のときは空 / 選択中プロジェクトがあれば単一絞り込み / なければ全アクセス可能プロジェクト
+  const filteredItems = myProjects.length === 0
+    ? []
+    : selectedProjectId
+      ? items.filter(i => i.projectId === selectedProjectId)
+      : items.filter(i => accessibleProjectIds.has(i.projectId));
 
   // Group items by release_date
   const byDate = new Map<string, ReleaseItem[]>();
@@ -570,6 +574,17 @@ export function ReleaseNotesPage() {
       </div>
 
       {/* Calendar body */}
+      {myProjects.length === 0 ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: "#F4F5F6", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#B0A9A4" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <p style={{ fontSize: 15, fontWeight: 700, color: "#3D3732", marginBottom: 6 }}>アサインされたプロジェクトがありません</p>
+            <p style={{ fontSize: 12, color: "#B0A9A4", lineHeight: 1.6 }}>選択中の組織にプロジェクトがないか、<br />まだアサインされていません</p>
+          </div>
+        </div>
+      ) : (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "10px 20px 14px", minHeight: 0, minWidth: 0 }}>
 
         {/* Day-of-week header */}
@@ -794,6 +809,7 @@ export function ReleaseNotesPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
