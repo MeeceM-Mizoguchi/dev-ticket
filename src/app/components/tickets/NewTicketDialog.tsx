@@ -33,7 +33,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   parentTicketId?: string; parentWbs?: string;
   zIndexBase?: number; // TicketDetailPanel 内から呼ぶ際は 310 を指定してz-index競合を回避
 }) {
-  const { userName, userRole } = useAuth();
+  const { userName, userRole, userOrgId } = useAuth();
   const isAdmin = userRole === "admin" || userRole === "project-manager";
   const isChildMode = !!parentTicketId;
   const needsSelection = !sprintId && !isChildMode;
@@ -288,7 +288,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     }
 
     // Supabaseから全プロフィールを取得した上で、プロジェクトの参加メンバーのみに厳重に .filter
-    supabase!.from("profiles").select("id, name").order("name").then(({ data }) => {
+    let pq = supabase!.from("profiles").select("id, name").order("name");
+    if (userOrgId) pq = pq.eq("organization_id", userOrgId);
+    pq.then(({ data }) => {
       if (data) {
         const filtered = data.filter((u: any) => currentProjectMembers.includes(u.name));
         setAssigneeList([noneOption, ...filtered]);

@@ -198,7 +198,12 @@ export function GlobalSearch() {
         sprintIds.length > 0
           ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id, description").or(`title.ilike.%${q}%,wbs.ilike.%${q}%,description.ilike.%${q}%`).in("sprint_id", sprintIds).limit(10)
           : Promise.resolve({ data: [] }),
-        supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(5),
+        (() => {
+          let mq = supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(5);
+          if (userRole === "owner") { if (selectedOrgId) mq = mq.eq("organization_id", selectedOrgId); }
+          else if (userOrgId) mq = mq.eq("organization_id", userOrgId);
+          return mq;
+        })(),
         sprintIds.length > 0
           ? supabase!.from("ticket_comments").select("id, content, ticket_id").eq("comment_type", "comment").ilike("content", `%${q}%`).limit(20)
           : Promise.resolve({ data: [] }),

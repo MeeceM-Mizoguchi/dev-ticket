@@ -64,7 +64,7 @@ export function PermissionsPage() {
     if (!isSupabaseEnabled) { setLoading(false); return; }
     // Load base tables first, then group_members separately with fallback
     Promise.all([
-      supabase!.from("permission_groups").select("*").order("id"),
+      (() => { const isOwner = userRole === "owner"; let q = supabase!.from("permission_groups").select("*").order("id"); if (isOwner) { if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); } else if (userOrgId) { q = (q as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`); } return q; })(),
       (() => { let q = supabase!.from("profiles").select("*").order("name"); if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); return q; })(),
       (() => { const isOwner = userRole === "owner"; let q = supabase!.from("projects").select("*").order("id"); if (isOwner) { if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); } else if (userOrgId) { q = q.or(`organization_id.eq.${userOrgId},organization_id.is.null`); } return q; })(),
     ]).then(([{ data: gData }, { data: mData }, { data: pData }]) => {
