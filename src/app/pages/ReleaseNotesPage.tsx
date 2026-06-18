@@ -6,6 +6,8 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { mapSprintTicket } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useWindowSize } from "@/app/hooks/useWindowSize";
 import type { SprintTicket } from "@/app/types";
@@ -35,6 +37,8 @@ export function ReleaseNotesPage() {
   const [month, setMonth] = useState(today.getMonth());
 
   const { userId, userName, userRole } = useAuth();
+  const { selectedOrgId } = useOrg();
+  const isOwner = userRole === "owner";
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem("releaseNotes:selectedProjectId") ?? ""
@@ -120,38 +124,38 @@ export function ReleaseNotesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Load projects the current user is assigned to
+  // Load projects (owner: all projects in selected org / others: assigned projects only)
   useEffect(() => {
     if (!isSupabaseEnabled || (!userId && !userName)) return;
 
-    // 一旦プロジェクトを取得し、フロントエンドで確実にアサイン判定を行う
-    const q = (supabase as NonNullable<typeof supabase>)
+    let q = (supabase as NonNullable<typeof supabase>)
       .from("projects")
       .select("id, name, members")
       .order("name");
+    if (isOwner && selectedOrgId) q = q.eq("organization_id", selectedOrgId);
 
     q.then(({ data }) => {
       if (data && data.length > 0) {
-        // 現在のユーザーが members に含まれているプロジェクトのみを抽出
-        // （userId と userName の両方で判定します）
-        const assignedProjects = data.filter((p: any) => {
-          if (!p.members) return false;
-          if (Array.isArray(p.members)) {
-            return p.members.some((m: any) =>
-              m === userId || m === userName || m.id === userId || m.userId === userId
-            );
-          }
-          if (typeof p.members === "string") {
-            return p.members.includes(userId) || (userName && p.members.includes(userName));
-          }
-          return false;
-        });
+        const visibleProjects = isOwner
+          ? data
+          : data.filter((p: any) => {
+              if (!p.members) return false;
+              if (Array.isArray(p.members)) {
+                return p.members.some((m: any) =>
+                  m === userId || m === userName || m.id === userId || m.userId === userId
+                );
+              }
+              if (typeof p.members === "string") {
+                return p.members.includes(userId) || (userName && p.members.includes(userName));
+              }
+              return false;
+            });
 
-        if (assignedProjects.length > 0) {
-          const projects = assignedProjects.map(p => ({ id: p.id, name: p.name }));
+        if (visibleProjects.length > 0) {
+          const projects = visibleProjects.map((p: any) => ({ id: p.id, name: p.name }));
           setMyProjects(projects);
           setSelectedProjectId(prev => {
-            const exists = projects.some(p => p.id === prev);
+            const exists = projects.some((p: any) => p.id === prev);
             return exists ? prev : projects[0].id;
           });
         } else {
@@ -163,7 +167,7 @@ export function ReleaseNotesPage() {
         setSelectedProjectId("");
       }
     });
-  }, [userId, userName]);
+  }, [userId, userName, isOwner, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {
@@ -431,6 +435,7 @@ export function ReleaseNotesPage() {
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>リリースノート</h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+            <OrgSelector />
             {/* Project selector */}
             <div style={{ width: 220 }}>
               <CustomSelect

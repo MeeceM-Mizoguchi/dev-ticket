@@ -87,7 +87,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 function searchMock(query: string, userName: string, userRole: string): SearchResults {
   const q = query.toLowerCase();
-  const isAdmin = userRole === "admin" || userRole === "project-manager";
+  const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const accessible = isAdmin ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
   const accessibleIds = new Set(accessible.map(p => p.id));
 
@@ -137,7 +137,7 @@ export function GlobalSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isAdmin = userRole === "admin" || userRole === "project-manager";
+  const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
 
   const hasResults = results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length > 0;
 

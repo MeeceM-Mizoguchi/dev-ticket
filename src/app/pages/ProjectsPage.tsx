@@ -3,6 +3,8 @@ import { useNavigate } from "react-router";
 import { Search, Plus, FolderKanban } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, CLIENTS } from "@/app/data/mock";
 import { mapProject, mapClient, mapSprint } from "@/app/lib/mappers";
@@ -18,6 +20,7 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 export function ProjectsPage() {
   const { userRole, userName } = useAuth();
   const { toast } = useToast();
+  const { selectedOrgId } = useOrg();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -28,7 +31,8 @@ export function ProjectsPage() {
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
-  const canManage = userRole === "admin" || userRole === "project-manager";
+  const isOwner = userRole === "owner";
+  const canManage = isOwner || userRole === "admin" || userRole === "project-manager";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const computeTicketCounts = (sprints: any[]) => {
@@ -57,8 +61,10 @@ export function ProjectsPage() {
 
   const refreshProjects = () => {
     if (!isSupabaseEnabled) return;
+    let q = supabase!.from("projects").select("*").order("id");
+    if (selectedOrgId) q = q.eq("organization_id", selectedOrgId);
     Promise.all([
-      supabase!.from("projects").select("*").order("id"),
+      q,
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: s }]) => {
       if (p) setProjects(mergeTicketCounts(p, computeTicketCounts(s ?? [])));
@@ -67,8 +73,10 @@ export function ProjectsPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
+    let q = supabase!.from("projects").select("*").order("id");
+    if (selectedOrgId) q = q.eq("organization_id", selectedOrgId);
     Promise.all([
-      supabase!.from("projects").select("*").order("id"),
+      q,
       supabase!.from("clients").select("*").order("id"),
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: c }, { data: s }]) => {
@@ -76,7 +84,7 @@ export function ProjectsPage() {
       if (c) setClients(c.map(mapClient));
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, []);
+  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteProject = async (project: Project) => {
     if (isSupabaseEnabled) {
@@ -98,7 +106,7 @@ export function ProjectsPage() {
     downloadProjectCsv(project.name, sprints, categories);
   };
 
-  const visibleProjects = userRole === "admin"
+  const visibleProjects = (isOwner || userRole === "admin")
     ? projects
     : projects.filter(p => p.members.includes(userName));
 
@@ -124,7 +132,8 @@ export function ProjectsPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>プロジェクト管理</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>進行中のプロジェクトとスプリント</p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <OrgSelector />
           {canManage && (
             <button onClick={() => setShowDialog(true)}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}

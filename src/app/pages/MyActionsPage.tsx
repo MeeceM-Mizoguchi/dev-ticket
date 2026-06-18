@@ -5,6 +5,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { escStack } from "@/app/lib/escStack";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
@@ -1062,7 +1064,8 @@ function AddMemoModal({
 // ─── メインページ ─────────────────────────────────────────────
 export function MyActionsPage() {
   const { userName, userRole } = useAuth();
-  const isAdmin = userRole === "admin";
+  const { selectedOrgId } = useOrg();
+  const isAdmin = userRole === "admin" || userRole === "owner";
   const [tab, setTab] = useState<Tab>("assigned");
   const [allAssigned, setAllAssigned] = useState<ActionTicket[]>([]);
   const [allReview, setAllReview] = useState<ActionTicket[]>([]);
@@ -1098,8 +1101,10 @@ export function MyActionsPage() {
     }
     if (showSpinner) setLoading(true);
     try {
+      let projectsQuery = supabase!.from("projects").select("id, slug, name, members");
+      if (selectedOrgId) projectsQuery = projectsQuery.eq("organization_id", selectedOrgId);
       const [projectsRes, sprintsRes] = await Promise.all([
-        supabase!.from("projects").select("id, slug, name, members"),
+        projectsQuery,
         supabase!.from("sprints").select("id, project_id"),
       ]);
 
@@ -1158,7 +1163,7 @@ export function MyActionsPage() {
       ticketsInitializedRef.current = true;
       if (showSpinner) setLoading(false);
     }
-  }, [userName, isAdmin]);
+  }, [userName, isAdmin, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── アクションメモロード（ステータス取得＋自動削除） ────
   const loadMemos = useCallback(async (showSpinner = true) => {
@@ -1389,6 +1394,7 @@ export function MyActionsPage() {
 
           {/* Controls */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <OrgSelector />
             {/* アクションメモ追加ボタン: 通知から追加タブでのみ表示 */}
             {tab === "from_notification" && (
               <button

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { Search, UserPlus, Globe, Users, ExternalLink } from "lucide-react";
-import { useLocation, useNavigate } from "react-router";
+import { Search, UserPlus, Globe, Users, ArrowLeft } from "lucide-react";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -19,9 +19,13 @@ export function MembersPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const paramOrgId = searchParams.get("orgId");
+
   const highlightMemberId: string | undefined = (location.state as { highlightMemberId?: string } | null)?.highlightMemberId;
   const [highlightId, setHighlightId] = useState<string | undefined>(highlightMemberId);
   const highlightCardRef = useRef<HTMLDivElement | null>(null);
+
   const [search, setSearch] = useState("");
   const [showInvite, setShowInvite] = useState(false);
   const [members, setMembers] = useState<Member[]>(isSupabaseEnabled ? [] : MEMBERS);
@@ -31,41 +35,68 @@ export function MembersPage() {
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [group, setGroup] = useState("すべて");
   const [myOrg, setMyOrg] = useState<(Organization & { memberCount: number }) | null>(null);
+  const [effectiveOrgId, setEffectiveOrgId] = useState<string | null>(paramOrgId);
+
   const isOwner = userRole === "owner";
   const canAdd = isOwner || userRole === "admin" || userRole === "project-manager";
   const canEdit = isOwner || userRole === "admin" || userRole === "project-manager";
 
-  const refreshMembers = () => {
+  // ownerはorgIdなしで直接アクセスした場合は組織一覧へリダイレクト
+  useEffect(() => {
+    if (isOwner && !paramOrgId) {
+      navigate("/organization", { replace: true });
+    }
+  }, [isOwner, paramOrgId, navigate]);
+
+  const refreshMembers = (orgId: string | null = effectiveOrgId) => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("profiles").select("*").order("name")
-      .then(({ data }) => setMembers((data ?? []).map(mapMember)));
+    (orgId
+      ? supabase!.from("profiles").select("*").eq("organization_id", orgId).order("name")
+      : supabase!.from("profiles").select("*").order("name")
+    ).then(({ data }) => setMembers((data ?? []).map(mapMember)));
   };
 
   useEffect(() => {
-    if (!isSupabaseEnabled) return;
-    supabase!.from("profiles").select("*").order("name")
-      .then(({ data }) => { if (data) setMembers(data.map(mapMember)); setLoading(false); })
-      .catch(() => setLoading(false));
+    if (!isSupabaseEnabled) { setLoading(false); return; }
 
-    // 現在ユーザーの組織情報を取得
-    supabase!.from("profiles").select("organization_id").eq("id", userId).maybeSingle()
-      .then(async ({ data: profileData }) => {
-        if (!profileData?.organization_id) return;
-        const orgId = profileData.organization_id;
-        const [{ data: orgData }, { count }] = await Promise.all([
-          supabase!.from("organizations").select("id, name, created_at").eq("id", orgId).maybeSingle(),
-          supabase!.from("profiles").select("*", { count: "exact", head: true }).eq("organization_id", orgId),
-        ]);
-        if (orgData) setMyOrg({ id: orgData.id, name: orgData.name, createdAt: orgData.created_at || "", memberCount: count ?? 0 });
-      });
-  }, [userId]);
+    const fetchData = async () => {
+      try {
+        let orgId = paramOrgId;
 
-  // 10-second polling
+        if (!orgId) {
+          // 管理者以下: 自分の所属組織を取得
+          const { data: profileData } = await supabase!
+            .from("profiles").select("organization_id").eq("id", userId).maybeSingle();
+          orgId = profileData?.organization_id ?? null;
+        }
+
+        setEffectiveOrgId(orgId);
+
+        if (orgId) {
+          const [{ data: orgData }, { data: membersData }] = await Promise.all([
+            supabase!.from("organizations").select("id, name, created_at").eq("id", orgId).maybeSingle(),
+            supabase!.from("profiles").select("*").eq("organization_id", orgId).order("name"),
+          ]);
+          if (orgData) setMyOrg({ id: orgData.id, name: orgData.name, createdAt: orgData.created_at || "", memberCount: (membersData ?? []).length });
+          if (membersData) setMembers(membersData.map(mapMember));
+        } else {
+          const { data } = await supabase!.from("profiles").select("*").order("name");
+          if (data) setMembers(data.map(mapMember));
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [userId, paramOrgId]);
+
+  // 10秒ポーリング
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    const id = setInterval(refreshMembers, 10000);
+    const id = setInterval(() => refreshMembers(), 10000);
     return () => clearInterval(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!highlightId) return;
@@ -95,7 +126,6 @@ export function MembersPage() {
     return (m.name.includes(search) || m.email.includes(search)) && (group === "すべて" || m.group === group);
   });
 
-
   if (loading) return <PageLoader />;
 
   const visibleMembers = members.filter(m => isOwner || m.role !== "owner");
@@ -107,9 +137,22 @@ export function MembersPage() {
 
       {/* ── 組織バナー ── */}
       {myOrg && (
-        <div style={{ background: "linear-gradient(135deg, #065F46 0%, #047857 50%, #059669 100%)", padding: "22px 28px 24px", position: "relative", overflow: "hidden", marginBottom: 0 }}>
+        <div style={{ background: "linear-gradient(135deg, #065F46 0%, #047857 50%, #059669 100%)", padding: "22px 28px 24px", position: "sticky", top: 0, zIndex: 10, overflow: "hidden" }}>
           <div style={{ position: "absolute", top: -30, right: -30, width: 160, height: 160, borderRadius: "50%", background: "rgba(255,255,255,0.05)" }} />
           <div style={{ position: "absolute", bottom: -50, right: 120, width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
+
+          {/* ownerは組織一覧に戻るボタン */}
+          {isOwner && (
+            <button
+              onClick={() => navigate("/organization")}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.20)", borderRadius: 8, padding: "5px 11px", fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.85)", cursor: "pointer", marginBottom: 14, transition: "background 0.15s" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.22)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.14)"; }}
+            >
+              <ArrowLeft style={{ width: 11, height: 11 }} />
+              組織一覧に戻る
+            </button>
+          )}
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -123,9 +166,8 @@ export function MembersPage() {
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {/* 統計チップ */}
               {[
-                { label: "総メンバー", value: myOrg.memberCount },
+                { label: "総メンバー", value: visibleMembers.length },
                 { label: "アクティブ",  value: activeCount },
                 { label: "招待中",      value: invitedCount },
               ].map(({ label, value }) => (
@@ -134,83 +176,77 @@ export function MembersPage() {
                   <p style={{ fontSize: 10, color: "rgba(255,255,255,0.65)", margin: "2px 0 0", fontWeight: 600 }}>{label}</p>
                 </div>
               ))}
-
-              {/* ownerのみ管理ページへのリンク */}
-              {isOwner && (
-                <button
-                  onClick={() => navigate(`/organization/${myOrg.id}`)}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: "rgba(255,255,255,0.15)", border: "1.5px solid rgba(255,255,255,0.30)", borderRadius: 10, fontSize: 12, fontWeight: 700, color: "#FFFFFF", cursor: "pointer", transition: "background 0.15s", flexShrink: 0 }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.24)"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.15)"; }}
-                >
-                  <ExternalLink style={{ width: 13, height: 13 }} />
-                  管理画面
-                </button>
-              )}
             </div>
           </div>
         </div>
       )}
 
       <div style={{ padding: "20px 24px" }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>メンバー管理</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>総数 {visibleMembers.length} 名 · アクティブ {activeCount} 名</p>
-        </div>
-        {canAdd && (
-          <button onClick={() => setShowInvite(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-            <UserPlus style={{ width: 15, height: 15 }} />メンバー招待
-          </button>
-        )}
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-        <div style={{ position: "relative" }}>
-          <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 13, height: 13, color: "#B0A9A4" }} />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="名前、メールで検索..."
-            style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px 8px 30px", fontSize: 12, color: "#1A1714", outline: "none", width: 220 }}
-            onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; }}
-            onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; }} />
-        </div>
-        <div style={{ display: "flex", gap: 4, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: 4 }}>
-          {GROUPS.map(g => (
-            <button key={g} onClick={() => setGroup(g)}
-              style={{ padding: "5px 10px", fontSize: 11, fontWeight: 500, borderRadius: 6, border: "none", cursor: "pointer", transition: "all 0.15s", background: group === g ? "#059669" : "transparent", color: group === g ? "#fff" : "#6B6458" }}>
-              {g === "すべて" ? "ALL" : g}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>メンバー管理</h1>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>総数 {visibleMembers.length} 名 · アクティブ {activeCount} 名</p>
+          </div>
+          {canAdd && (
+            <button onClick={() => setShowInvite(true)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+              <UserPlus style={{ width: 15, height: 15 }} />メンバー招待
             </button>
-          ))}
+          )}
         </div>
-      </div>
 
-      {filtered.length === 0
-        ? <div style={{ textAlign: "center", padding: "80px 0" }}><p style={{ fontSize: 13, color: "#A09790" }}>メンバーが見つかりません</p></div>
-        : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
-            {filtered.map(m => (
-              <MemberCard key={m.id} member={m}
-                canEdit={canEdit}
-                canDelete={m.id !== userId && (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager"))}
-                highlighted={m.id === highlightId}
-                cardRef={m.id === highlightId ? highlightCardRef : undefined}
-                onDetail={() => setDetailTarget(m)}
-                onEdit={() => setEditTarget(m)}
-                onDelete={() => setDeleteTarget(m)} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+          <div style={{ position: "relative" }}>
+            <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 13, height: 13, color: "#B0A9A4" }} />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="名前、メールで検索..."
+              style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px 8px 30px", fontSize: 12, color: "#1A1714", outline: "none", width: 220 }}
+              onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; }}
+              onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; }} />
+          </div>
+          <div style={{ display: "flex", gap: 4, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: 4 }}>
+            {GROUPS.map(g => (
+              <button key={g} onClick={() => setGroup(g)}
+                style={{ padding: "5px 10px", fontSize: 11, fontWeight: 500, borderRadius: 6, border: "none", cursor: "pointer", transition: "all 0.15s", background: group === g ? "#059669" : "transparent", color: group === g ? "#fff" : "#6B6458" }}>
+                {g === "すべて" ? "ALL" : g}
+              </button>
             ))}
           </div>
-      }
+        </div>
 
-      {showInvite && <InviteDialog onClose={() => setShowInvite(false)} onInvited={refreshMembers} />}
-      {detailTarget && <MemberDetailDialog member={detailTarget} onClose={() => setDetailTarget(null)} />}
-      {editTarget && <MemberEditDialog member={editTarget} onClose={() => setEditTarget(null)} onSaved={refreshMembers} />}
-      {deleteTarget && (
-        <ConfirmDialog
-          message={`「${deleteTarget.name}」をチームから削除しますか？担当チケットの割り当てもすべて解除されます。`}
-          onConfirm={() => handleDeleteMember(deleteTarget)}
-          onClose={() => setDeleteTarget(null)} />
-      )}
+        {filtered.length === 0
+          ? <div style={{ textAlign: "center", padding: "80px 0" }}><p style={{ fontSize: 13, color: "#A09790" }}>メンバーが見つかりません</p></div>
+          : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
+              {filtered.map(m => (
+                <MemberCard key={m.id} member={m}
+                  canEdit={canEdit}
+                  canDelete={m.id !== userId && (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager"))}
+                  highlighted={m.id === highlightId}
+                  cardRef={m.id === highlightId ? highlightCardRef : undefined}
+                  onDetail={() => setDetailTarget(m)}
+                  onEdit={() => setEditTarget(m)}
+                  onDelete={() => setDeleteTarget(m)} />
+              ))}
+            </div>
+        }
+
+        {showInvite && (
+          <InviteDialog
+            onClose={() => setShowInvite(false)}
+            onInvited={() => refreshMembers()}
+            fixedOrganizationId={effectiveOrgId ?? undefined}
+            fixedOrganizationName={myOrg?.name}
+          />
+        )}
+        {detailTarget && <MemberDetailDialog member={detailTarget} onClose={() => setDetailTarget(null)} />}
+        {editTarget && <MemberEditDialog member={editTarget} onClose={() => setEditTarget(null)} onSaved={() => refreshMembers()} />}
+        {deleteTarget && (
+          <ConfirmDialog
+            message={`「${deleteTarget.name}」をチームから削除しますか？担当チケットの割り当てもすべて解除されます。`}
+            onConfirm={() => handleDeleteMember(deleteTarget)}
+            onClose={() => setDeleteTarget(null)} />
+        )}
       </div>
     </div>
   );

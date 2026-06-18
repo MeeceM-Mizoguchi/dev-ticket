@@ -119,6 +119,7 @@ export interface Project {
   stgCompletedAt?: string | null;
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
+  organizationId?: string | null;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
