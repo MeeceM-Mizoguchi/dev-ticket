@@ -1,4 +1,17 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization";
+
+export interface Organization {
+  id: string;
+  name: string;
+  createdAt: string;
+  representativeName?: string;
+  contactName?: string;
+  phone?: string;
+  websiteUrl?: string;
+  address?: string;
+  industry?: string;
+  description?: string;
+}
 export type ActionMemoCategory = "todo" | "review" | "test" | "memo";
 export interface ActionMemo {
   id: string;
@@ -115,6 +128,7 @@ export interface Member {
   id: string; name: string; email: string; role: Role;
   group: string; status: MemberStatus; projects: number; tickets: number;
   permission_group_id?: number | null;
+  organizationId?: string | null;
 }
 export interface PermissionGroup {
   id: number; name: string; description: string;
@@ -163,4 +177,5 @@ export interface UserPermissions {
   canAccessWiki: boolean;
   canAccessBacklog: boolean;
   canAccessMinutes: boolean;
+  canAccessOrganization: boolean;
 }

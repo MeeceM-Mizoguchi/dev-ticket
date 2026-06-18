@@ -16,6 +16,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canAccessWiki: false,
   canAccessBacklog: false,
   canAccessMinutes: false,
+  canAccessOrganization: false,
 };
 
 interface AuthCtxType {
@@ -39,7 +40,15 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
   if (!isSupabaseEnabled) return { ...DEFAULT_PERMISSIONS };
   const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
   if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
-  // fallback: admin/PM get all permissions if roles table not yet seeded
+  // fallback: owner/admin/PM get permissions if roles table not yet seeded
+  if (role === "owner") {
+    return {
+      ...DEFAULT_PERMISSIONS,
+      canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true,
+      canAccessMembers: true, canAccessRoles: true, canAccessGroups: true, canAccessAdminSettings: true,
+      canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessOrganization: true,
+    };
+  }
   if (role === "admin" || role === "project-manager") {
     return {
       ...DEFAULT_PERMISSIONS,
