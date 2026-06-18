@@ -113,7 +113,6 @@ export function Dashboard() {
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
-      // 🛠️【最重要修正】SprintPageの参照仕様に合わせて「wbs」フィールドを明示的に取得
       supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
       supabase!.from("sprints").select("id, project_id, name"),
       supabase!.from("projects").select("id, slug, name, status, client, members"),
@@ -125,21 +124,19 @@ export function Dashboard() {
         const sprintToProject = new Map((sprints as { id: string; project_id: string; name?: string }[]).map(s => [s.id, s.project_id]));
         const sprintNameMap = new Map((sprints as { id: string; name?: string }[]).map(s => [s.id, s.name ?? '']));
 
-        // プロジェクトIDから、URLセグメントに使うべき「slug」または「id」を引っ張るマップを作成
         const projectSlugMap = new Map((projectsData as { id: string; slug?: string }[]).map(p => [p.id, p.slug || p.id]));
         const projectNameById = new Map((projectsData as { id: string; name: string }[]).map(p => [p.id, p.name]));
         const categoryNameMap = new Map(((cData ?? []) as { id: string; name: string }[]).map(c => [c.id, c.name]));
         
-        // 🛠️【データ完全同期】DB本来の「wbs」コードを最上位のidプロパティへ格納
         setTickets(tData.map((t: { id: string; wbs?: string; title: string; status: string; priority: string; due_date?: string; sprint_id?: string; assignee?: string; category_id?: string }) => {
           const resolvedProjectId = sprintToProject.get(t.sprint_id ?? '');
           const projSlug = projectSlugMap.get(resolvedProjectId ?? '') || 'DEVTICKET';
 
           return {
             id: t.wbs || t.id,
-            dbId: t.id,                    // Supabase UUID (TicketDetailPanel用)
+            dbId: t.id,                    
             sprintId: t.sprint_id,
-            projectDbId: resolvedProjectId, // Project Supabase UUID
+            projectDbId: resolvedProjectId, 
             title: t.title,
             status: t.status,
             priority: t.priority,
@@ -332,7 +329,6 @@ export function Dashboard() {
       assignedProjects.every(p => ((row as Record<string, number>)[p.name] ?? 0) === 0)
     );
 
-  // 💡【位置固定】JSXレンダーの前に確実に配置（ReferenceErrorの完全防止）
   const activeTickets = tickets.filter(t => t.status !== "done" && t.status !== "closed").slice(0, 5);
 
   const overdueCountValue = tickets.filter(t => {
@@ -352,11 +348,6 @@ export function Dashboard() {
       {payload.value}
     </text>
   );
-
-  const buildTicketUrl = (projId: string | undefined, projectName: string, ticketNo: string) => {
-    const urlSegment = projId ? projId.trim() : projectName.replace(/\s+/g, '').toUpperCase();
-    return `/${urlSegment}/${ticketNo.toUpperCase()}`;
-  };
 
   const handleTicketClick = (ticket: DashTicket, event: React.MouseEvent) => {
     event.stopPropagation();
@@ -386,8 +377,6 @@ export function Dashboard() {
     });
   };
 
-  // 🛠️【完全データ参照への一本化】
-  // データに内在する固有の管理用コード「id」（＝wbsデータ）を何の手も加えずにそのまま100%出力
   const getFormattedMatrixTickets = (isBugTarget: boolean, priorityTarget: string) => {
     if (!selectedScatterProject || !tickets || tickets.length === 0) return [];
     
@@ -504,7 +493,11 @@ export function Dashboard() {
                   style={{
                     position: "absolute",
                     bottom: "calc(100% + 6px)",
-                    ...(isBug ? { left: 0 } : { right: 0 }),
+                    // 🛠️ バグ欄（左側の列）なら左端をボタンに揃え、バグ以外（右側の列）なら真ん中揃えにする
+                    ...(isBug 
+                      ? { left: 0, transform: "none" } 
+                      : { left: "50%", transform: "translateX(-50%)" }
+                    ),
                     background: "#ffffff",
                     border: "1px solid #E6E2D9",
                     borderRadius: 12,
@@ -640,7 +633,7 @@ export function Dashboard() {
                   { value: 'horizontal' as ChartType, label: '横棒' },
                   { value: 'vertical' as ChartType, label: '縦棒' },
                   { value: 'line' as ChartType, label: '折れ線' },
-                  { value: 'scatter' as ChartType, label: '分布図' }
+                  { value: 'scatter' as ChartType, label: 'マトリックス図' }
                 ].map(btn => (
                   <button
                     key={btn.value}
@@ -707,7 +700,7 @@ export function Dashboard() {
             </div>
           </div>
 
-          <div style={{ height: 320 }}>
+          <div style={{ height: chartType === 'scatter' ? 'auto' : 320 }}>
             {chartType === 'horizontal' && (
               isBarChartAllZero ? (
                 <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -794,8 +787,8 @@ export function Dashboard() {
             )}
             
             {chartType === 'scatter' && (
-              <div style={{ height: "100%" }}>
-                <div style={{ border: "1.5px solid #E6E2D9", borderRadius: 12, display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" }}>
+              <div style={{ minHeight: 320, height: "auto" }}>
+                <div style={{ border: "1.5px solid #E6E2D9", borderRadius: 12, display: "flex", flexDirection: "column", height: "auto", boxSizing: "border-box" }}>
                   {/* ヘッダー行 */}
                   <div style={{
                     display: "grid",
@@ -831,8 +824,8 @@ export function Dashboard() {
                     { label: "優先度：低", priority: "low", dotColor: "#3B82F6" },
                   ].map(({ label, priority, dotColor }, idx, arr) => (
                     <div key={priority} style={{
-                      flex: 1,
-                      minHeight: 0,
+                      flex: "1 0 auto",
+                      minHeight: 80,
                       display: "grid",
                       gridTemplateColumns: "130px 1fr 1fr",
                       borderBottom: idx < arr.length - 1 ? "1.5px solid #E6E2D9" : "none"
@@ -869,7 +862,6 @@ export function Dashboard() {
             ) : activeTickets.map(ticket => {
               const pr = getPriorityMeta(ticket.priority as "high" | "medium" | "low");
               const isInProgress = ticket.status !== "todo";
-              const projName = ticket.project || "DEVTICKET";
               
               return (
                 <div style={{ display: "flex", gap: 10, padding: "9px 8px", borderRadius: 8, cursor: "pointer" }}
