@@ -61,10 +61,8 @@ export function ProjectsPage() {
 
   const refreshProjects = () => {
     if (!isSupabaseEnabled) return;
-    let q = supabase!.from("projects").select("*").order("id");
-    if (selectedOrgId) q = q.eq("organization_id", selectedOrgId);
     Promise.all([
-      q,
+      supabase!.from("projects").select("*").order("id"),
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: s }]) => {
       if (p) setProjects(mergeTicketCounts(p, computeTicketCounts(s ?? [])));
@@ -73,10 +71,8 @@ export function ProjectsPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    let q = supabase!.from("projects").select("*").order("id");
-    if (selectedOrgId) q = q.eq("organization_id", selectedOrgId);
     Promise.all([
-      q,
+      supabase!.from("projects").select("*").order("id"),
       supabase!.from("clients").select("*").order("id"),
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: c }, { data: s }]) => {
@@ -84,7 +80,7 @@ export function ProjectsPage() {
       if (c) setClients(c.map(mapClient));
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteProject = async (project: Project) => {
     if (isSupabaseEnabled) {
