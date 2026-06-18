@@ -7,7 +7,7 @@ export function mapProject(r: any): Project {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapClient(r: any): Client {
-  return { id: r.id, name: r.name, industry: r.industry || "", email: r.email || "", phone: r.phone || "", status: r.status };
+  return { id: r.id, name: r.name, industry: r.industry || "", email: r.email || "", phone: r.phone || "", status: r.status, organizationId: r.organization_id ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

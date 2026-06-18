@@ -124,6 +124,7 @@ export interface Project {
 export interface Client {
   id: string; name: string; industry: string; email: string;
   phone: string; status: "active" | "inactive";
+  organizationId?: string | null;
 }
 export interface Member {
   id: string; name: string; email: string; role: Role;

@@ -5,6 +5,7 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from "recharts";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKETS, PROJECTS } from "@/app/data/mock";
 import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
@@ -62,7 +63,8 @@ const PRIORITY_META_MODAL: Record<string, { label: string; color: string }> = {
 };
 
 export function Dashboard() {
-  const { userName } = useAuth();
+  const { userName, userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
   const firstName = userName.split(/[\s ]/)[0];
 
   // モックデータ読み込み時：wbsを最優先でidに設定して完全同期
@@ -112,10 +114,17 @@ export function Dashboard() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
+    const isOwner = userRole === "owner";
+    let projQ = supabase!.from("projects").select("id, slug, name, status, client, members, organization_id");
+    if (isOwner) {
+      if (selectedOrgId) projQ = projQ.eq("organization_id", selectedOrgId);
+    } else if (userOrgId) {
+      projQ = (projQ as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+    }
     Promise.all([
       supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
       supabase!.from("sprints").select("id, project_id, name"),
-      supabase!.from("projects").select("id, slug, name, status, client, members"),
+      projQ,
       supabase!.from("ticket_categories").select("id, name"),
     ]).then(([{ data: tData }, { data: sData }, { data: pData }, { data: cData }]) => {
       if (tData) {
@@ -172,7 +181,7 @@ export function Dashboard() {
       }
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, []);
+  }, [userRole, userOrgId, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const doneCount = tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProgressCount = tickets.filter(t => ["in-progress", "in-review", "review-done", "stg-test", "uat"].includes(t.status)).length;

@@ -10,7 +10,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "projects",   label: "PJ一覧",      icon: FolderKanban },
   { id: "my-actions", label: "アクション",  icon: ClipboardList },
   { id: "release-notes", label: "リリースノート", icon: FileText },
-  { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager"] },
+  { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager", "owner"] },
   { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
   { id: "roles", label: "ロール設定", icon: UserCog, permission: "canAccessRoles" },
