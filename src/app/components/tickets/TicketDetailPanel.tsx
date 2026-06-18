@@ -725,19 +725,6 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
-  const handleChildReset = async () => {
-    if (!ticket) return;
-    const newStatus: TicketStatus = "todo";
-    const p = STATUS_PROGRESS[newStatus];
-    setStatus(newStatus);
-    setProgress(p);
-    if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
-    }
-    await addComment(`<p>未着手に戻しました</p>`, "status_change", [], newStatus);
-    onUpdated?.();
-  };
-
   const handleAddToReleaseNotes = async () => {
     if (!ticket) return;
     const newStatus: TicketStatus = "waiting-release";
@@ -1593,12 +1580,6 @@ export function TicketDetailPanel({
             <button onClick={handleChildComplete}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(5,150,105,0.33)", cursor: "pointer", background: "#ECFDF5", color: "#059669", marginTop: 10 }}>
               対応完了 →
-            </button>
-          )}
-          {ticket.parentId && isAssignee && progress >= 0 && status === "closed" && (
-            <button onClick={handleChildReset}
-              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(26,23,20,0.12)", cursor: "pointer", background: "#F9F8F7", color: "#6B6458", marginTop: 10 }}>
-              未着手に戻す
             </button>
           )}
           {/* 親チケット専用のアクションボタン群 */}
