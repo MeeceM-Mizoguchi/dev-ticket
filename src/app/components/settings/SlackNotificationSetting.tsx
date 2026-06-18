@@ -28,9 +28,10 @@ interface ProjectSlackConfig {
 interface Props {
   isAdminOrPM: boolean;
   connectedProjectId?: string | null;
+  orgId?: string | null;
 }
 
-export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Props) {
+export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId, orgId }: Props) {
   const [projects, setProjects] = useState<ProjectSlackConfig[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [channel, setChannel] = useState("");
@@ -46,11 +47,12 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!
+    let q = supabase!
       .from("projects")
       .select("id, name, slug, slack_team_name, slack_channel, slack_notifications_enabled")
-      .order("name")
-      .then(({ data }) => {
+      .order("name");
+    if (orgId) q = q.eq("organization_id", orgId);
+    q.then(({ data }) => {
         if (!data) return;
         const mapped: ProjectSlackConfig[] = (data as any[]).map(p => ({
           id: p.id, name: p.name, slug: p.slug,
@@ -65,7 +67,7 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId }: Pr
         const initial = mapped.find(p => p.id === initialId);
         if (initial) { setChannel(initial.slackChannel); setEnabled(initial.slackEnabled); }
       });
-  }, [connectedProjectId]);
+  }, [connectedProjectId, orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleProjectChange = (id: string) => {
     setSelectedId(id);

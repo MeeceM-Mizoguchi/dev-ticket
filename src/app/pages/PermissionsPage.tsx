@@ -8,6 +8,8 @@ import type { Member, PermissionGroup, UserPermissions, Project } from "@/app/ty
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { Navigate } from "react-router";
 
 // Project-level permission flags only (admin-level flags are in ロール設定)
@@ -42,6 +44,7 @@ interface ConflictInfo {
 export function PermissionsPage() {
   const { userPermissions, userName, userRole } = useAuth();
   const { toast } = useToast();
+  const { selectedOrgId } = useOrg();
 
   if (!userPermissions.canAccessGroups) return <Navigate to="/dashboard" replace />;
 
@@ -63,7 +66,7 @@ export function PermissionsPage() {
     Promise.all([
       supabase!.from("permission_groups").select("*").order("id"),
       supabase!.from("profiles").select("*").order("name"),
-      supabase!.from("projects").select("*").order("id"),
+      (() => { let q = supabase!.from("projects").select("*").order("id"); if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); return q; })(),
     ]).then(([{ data: gData }, { data: mData }, { data: pData }]) => {
       if (gData) setGroups(gData as PermissionGroup[]);
       if (mData) setMembers(mData.map(mapMember));
@@ -82,7 +85,7 @@ export function PermissionsPage() {
       setNeedsMigration(true);
       setLoading(false);
     });
-  }, []);
+  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -425,12 +428,15 @@ export function PermissionsPage() {
           </div>
           <p style={{ fontSize: 12, color: "#A09790", marginLeft: 40 }}>グループを作成してメンバーを追加し、プロジェクトにアサインできます</p>
         </div>
-        <button onClick={() => setShowNewGroupModal(true)}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s", whiteSpace: "nowrap" as const }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-          <Plus style={{ width: 15, height: 15 }} />新規グループ作成
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <OrgSelector />
+          <button onClick={() => setShowNewGroupModal(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s", whiteSpace: "nowrap" as const }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+            <Plus style={{ width: 15, height: 15 }} />新規グループ作成
+          </button>
+        </div>
       </div>
 
       {/* Migration notice — shown when group_members table doesn't exist yet */}
@@ -550,6 +556,7 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
   const hasMore = filteredMembers.length > MEMBERS_INITIAL_COUNT;
   const displayMembers = expanded ? filteredMembers : filteredMembers.slice(0, MEMBERS_INITIAL_COUNT);
   const isCurrentUserAdmin = currentUserRole === "admin";
+  const isCurrentUserOwner = currentUserRole === "owner";
 
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, minHeight: 0 }}>

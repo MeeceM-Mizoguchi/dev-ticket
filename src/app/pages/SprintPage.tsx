@@ -33,7 +33,7 @@ export function SprintPage() {
   const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userPermissions } = useAuth();
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
   // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）

@@ -231,7 +231,7 @@ export function SprintDetailPage() {
   const { toast } = useToast();
   const { showAlert } = useAlert();
   const { userId, userPermissions, userRole } = useAuth();
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const [project, setProject] = useState<Project | null>(null);
   const [sprint, setSprint] = useState<Sprint | null>(null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);

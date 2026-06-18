@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, X, UserCog, Pencil, Trash2, AlertCircle } from "lucide-react";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { Navigate } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
@@ -92,13 +93,16 @@ export function RolesPage() {
             <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>管理画面アクセス権限をロールごとに管理します</p>
           </div>
         </div>
-        <button
-          onClick={() => setShowNewModal(true)}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#7C3AED", color: "#FFF", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}
-        >
-          <Plus style={{ width: 14, height: 14 }} />
-          ロール追加
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <OrgSelector />
+          <button
+            onClick={() => setShowNewModal(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#7C3AED", color: "#FFF", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}
+          >
+            <Plus style={{ width: 14, height: 14 }} />
+            ロール追加
+          </button>
+        </div>
       </div>
 
       {/* Info note */}

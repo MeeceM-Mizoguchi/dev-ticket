@@ -375,7 +375,7 @@ export function OrganizationPage() {
               <OrgCard
                 key={org.id}
                 org={org}
-                onNavigate={() => navigate(`/organization/${org.id}`)}
+                onNavigate={() => navigate(`/members?orgId=${org.id}`)}
                 onEdit={() => setEditTarget(org)}
                 onDelete={() => setDeleteTarget(org)}
               />

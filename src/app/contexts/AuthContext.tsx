@@ -38,9 +38,7 @@ export function useAuth() { return useContext(AuthContext); }
 
 async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> {
   if (!isSupabaseEnabled) return { ...DEFAULT_PERMISSIONS };
-  const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
-  if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
-  // fallback: owner/admin/PM get permissions if roles table not yet seeded
+  // ownerは常に全権限（DBのrolesテーブルに依存しない）
   if (role === "owner") {
     return {
       ...DEFAULT_PERMISSIONS,
@@ -49,6 +47,9 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessOrganization: true,
     };
   }
+  const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
+  if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
+  // fallback: admin/PMがrolesテーブル未seededの場合
   if (role === "admin" || role === "project-manager") {
     return {
       ...DEFAULT_PERMISSIONS,

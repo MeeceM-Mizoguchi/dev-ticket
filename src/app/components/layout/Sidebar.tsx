@@ -59,6 +59,8 @@ export function Sidebar() {
   const visible = NAV_ITEMS.filter(n => {
     if (n.roles && !n.roles.includes(userRole)) return false;
     if (n.permission && !userPermissions[n.permission]) return false;
+    // ownerはメンバーメニューを非表示（組織管理から各組織のメンバーページへ遷移）
+    if (n.id === "members" && userRole === "owner") return false;
     return true;
   });
 

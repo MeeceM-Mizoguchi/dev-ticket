@@ -2,7 +2,7 @@ import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, Tic
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
-  return { id: r.id, slug: r.slug || "", wbsPrefix: r.wbs_prefix || "T", name: r.name, client: r.client, status: r.status, startDate: r.start_date, endDate: r.end_date, members: r.members || [], groupIds: r.group_ids || [], done: r.done || 0, inProgress: r.in_progress || 0, todo: r.todo || 0, description: r.description || "", startedAt: r.started_at || null, reviewRequestedAt: r.review_requested_at || null, reviewApprovedAt: r.review_approved_at || null, stgCompletedAt: r.stg_completed_at || null, uatCompletedAt: r.uat_completed_at || null, releasedAt: r.released_at || null };
+  return { id: r.id, slug: r.slug || "", wbsPrefix: r.wbs_prefix || "T", name: r.name, client: r.client, status: r.status, startDate: r.start_date, endDate: r.end_date, members: r.members || [], groupIds: r.group_ids || [], done: r.done || 0, inProgress: r.in_progress || 0, todo: r.todo || 0, description: r.description || "", startedAt: r.started_at || null, reviewRequestedAt: r.review_requested_at || null, reviewApprovedAt: r.review_approved_at || null, stgCompletedAt: r.stg_completed_at || null, uatCompletedAt: r.uat_completed_at || null, releasedAt: r.released_at || null, organizationId: r.organization_id ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
