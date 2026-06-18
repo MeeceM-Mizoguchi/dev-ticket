@@ -85,7 +85,12 @@ export function ProjectsPage() {
     if (!isSupabaseEnabled) return;
     Promise.all([
       buildProjectQuery(),
-      supabase!.from("clients").select("*").order("id"),
+      (() => {
+        let q = supabase!.from("clients").select("*").order("id");
+        if (isOwner) { if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); }
+        else if (userOrgId) q = (q as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+        return q;
+      })(),
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: c }, { data: s }]) => {
       if (p) setProjects(mergeTicketCounts(p, computeTicketCounts(s ?? [])));

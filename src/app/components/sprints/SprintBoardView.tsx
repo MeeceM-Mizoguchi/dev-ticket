@@ -193,7 +193,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string) => void;
 }) {
-  const { userName, userPermissions } = useAuth();
+  const { userName, userPermissions, userOrgId } = useAuth();
   const canCreateTicket = userPermissions.canCreateTicket;
   const canSkipReview = userPermissions.canSkipReview;
 
@@ -222,9 +222,10 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("profiles").select("name").order("name")
-      .then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
-  }, []);
+    let q = supabase!.from("profiles").select("name").order("name");
+    if (userOrgId) q = q.eq("organization_id", userOrgId);
+    q.then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
+  }, [userOrgId]);
 
   const applyStatusUpdate = useCallback(async (
     ticketId: string, newStatus: TicketStatus, comment: string,
