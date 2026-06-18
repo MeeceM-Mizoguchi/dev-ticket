@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Project, ProjectStatus } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -17,6 +18,8 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
   onClose: () => void;
   onUpdated?: () => void;
 }) {
+  const { userOrgId } = useAuth();
+  const orgId = project.organizationId ?? userOrgId;
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description || "");
   const [startDate, setStartDate] = useState(project.startDate || "");
@@ -39,6 +42,13 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
 
     if (isSupabaseEnabled) {
       setSaving(true);
+      if (finalSlug && finalSlug !== project.slug) {
+        let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug).neq("id", project.id);
+        if (orgId) dupQ = dupQ.eq("organization_id", orgId);
+        else dupQ = dupQ.is("organization_id", null);
+        const { data: dup } = await dupQ.maybeSingle();
+        if (dup) { setSlugError("この組織内ですでに使用されている識別子です。"); setSaving(false); return; }
+      }
       const { error } = await supabase!.from("projects").update({
         name, description,
         start_date: startDate || null,

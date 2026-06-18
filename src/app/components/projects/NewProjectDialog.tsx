@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AlertCircle } from "lucide-react";
 import type { Client, ProjectStatus } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -6,13 +7,17 @@ import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
-// 🌟 追加: CustomSelect コンポーネントをインポート
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
-// 🌟ログイン中のユーザー情報を取得するために useAuth をインポートします
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
+
+const ErrMsg = ({ msg }: { msg: string }) => (
+  <p style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#DC2626", marginTop: 4 }}>
+    <AlertCircle style={{ width: 11, height: 11, flexShrink: 0 }} />{msg}
+  </p>
+);
 
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
 function sanitizePrefix(v: string) { return v.replace(/[^A-Z]/g, ""); }
@@ -20,30 +25,35 @@ function autoSlug(name: string) { return sanitizeSlug(name.toUpperCase()).slice(
 function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).slice(0, 3) || "TKT"; }
 
 export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () => void; clients: Client[]; onCreated?: () => void }) {
-  // 🌟現在のログインユーザー名（userName）を取得
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
-  // オーナーはOrgSelectorの選択、それ以外は自分の組織IDを使用
   const projectOrgId = userRole === "owner" ? selectedOrgId : userOrgId;
 
   const [name, setName] = useState("");
+  const handleNameChange = (v: string) => {
+    setName(v);
+    if (!slug) setSlug(sanitizeSlug(v.toUpperCase()).slice(0, 6));
+  };
   const [clientName, setClientName] = useState("");
   const [description, setDescription] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [status, setStatus] = useState<ProjectStatus>("planning");
   const [slug, setSlug] = useState("");
-  const [wbsPrefix, setWbsPrefix] = useState("");
   const [slugError, setSlugError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+
+  const canSubmit = name.trim() !== "" && slug.trim() !== "";
 
   const DEFAULT_CATEGORIES = ["バグ", "改善", "新機能"];
 
   const handleSave = async () => {
-    if (!name.trim()) return;
+    setAttempted(true);
+    if (!canSubmit) return;
 
     const finalSlug = sanitizeSlug((slug.trim() || autoSlug(name.trim())).toUpperCase());
-    const finalPrefix = sanitizePrefix((wbsPrefix.trim() || autoPrefix(name)).toUpperCase());
+    const finalPrefix = autoPrefix(name);
 
     if (RESERVED_SLUGS.has(finalSlug.toLowerCase())) {
       setSlugError("その識別子は予約済みです。別の名前を使用してください。");
@@ -53,6 +63,21 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
 
     if (isSupabaseEnabled) {
       setSaving(true);
+
+      // org スコープ内での重複チェック
+      let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug);
+      if (projectOrgId) {
+        dupQ = dupQ.eq("organization_id", projectOrgId);
+      } else {
+        dupQ = dupQ.is("organization_id", null);
+      }
+      const { data: existing } = await dupQ.maybeSingle();
+      if (existing) {
+        setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。");
+        setSaving(false);
+        return;
+      }
+
       const projectId = `P-${Date.now()}`;
       const { error } = await supabase!.from("projects").insert({
         id: projectId, name, client: clientName, description,
@@ -82,35 +107,27 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
 
   return (
     <DialogShell title="新規プロジェクト作成" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
-      <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required value={name} onChange={setName} />
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <FieldInput
-            label="プロジェクト識別子"
-            placeholder={name ? autoSlug(name) : "例: PROJ"}
-            required
-            value={slug}
-            onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
-          />
-          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合はプロジェクト名から自動生成</p>
-          {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 3 }}>{slugError}</p>}
-        </div>
-        <div>
-          <FieldInput
-            label="チケットNoのプレフィックス"
-            placeholder={name ? autoPrefix(name) : "例: TS"}
-            value={wbsPrefix}
-            onChange={v => setWbsPrefix(sanitizePrefix(v.toUpperCase()))}
-          />
-          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>チケットNoの接頭辞（例: TS-00001）</p>
-        </div>
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
+      <div>
+        <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required value={name} onChange={handleNameChange} />
+        {attempted && !name.trim() && <ErrMsg msg="プロジェクト名を入力してください" />}
+      </div>
+      <div>
+        <FieldInput
+          label="プロジェクト識別子"
+          placeholder={name ? autoSlug(name) : "例: PROJ"}
+          required
+          value={slug}
+          onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
+        />
+        <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合はプロジェクト名から自動生成</p>
+        {attempted && !slug.trim() && <ErrMsg msg="プロジェクト識別子を入力してください" />}
+        {slugError && <ErrMsg msg={slugError} />}
       </div>
 
-      {/* 🌟 修正: FieldSelect を CustomSelect に置き換え */}
       <div style={{ marginBottom: 16 }}>
         <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
-          クライアント <span style={{ color: "#DC2626" }}>*</span>
+          クライアント
         </label>
         <CustomSelect
           value={clientName}
@@ -126,11 +143,10 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
       <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
 
       <div className="grid grid-cols-2 gap-3" style={{ marginBottom: 16 }}>
-        <FieldInput label="開始日" type="date" required value={startDate} onChange={setStartDate} />
-        <FieldInput label="終了日" type="date" required value={endDate} onChange={setEndDate} />
+        <FieldInput label="開始日" type="date" value={startDate} onChange={setStartDate} />
+        <FieldInput label="終了日" type="date" value={endDate} onChange={setEndDate} />
       </div>
 
-      {/* 🌟 修正: FieldSelect を CustomSelect に置き換え */}
       <div>
         <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
           ステータス
