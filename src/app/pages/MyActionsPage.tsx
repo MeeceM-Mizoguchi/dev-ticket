@@ -1063,9 +1063,10 @@ function AddMemoModal({
 
 // ─── メインページ ─────────────────────────────────────────────
 export function MyActionsPage() {
-  const { userName, userRole } = useAuth();
+  const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
-  const isAdmin = userRole === "admin" || userRole === "owner";
+  const isOwner = userRole === "owner";
+  const isAdmin = userRole === "admin" || isOwner;
   const [tab, setTab] = useState<Tab>("assigned");
   const [allAssigned, setAllAssigned] = useState<ActionTicket[]>([]);
   const [allReview, setAllReview] = useState<ActionTicket[]>([]);
@@ -1101,8 +1102,14 @@ export function MyActionsPage() {
     }
     if (showSpinner) setLoading(true);
     try {
-      let projectsQuery = supabase!.from("projects").select("id, slug, name, members");
-      if (selectedOrgId) projectsQuery = projectsQuery.eq("organization_id", selectedOrgId);
+      let projectsQuery = supabase!.from("projects").select("id, slug, name, members, organization_id");
+      if (isOwner && selectedOrgId) {
+        // オーナーはOrgSelectorの選択で絞り込む
+        projectsQuery = projectsQuery.eq("organization_id", selectedOrgId);
+      } else if (!isOwner && userOrgId) {
+        // オーナー以外は自分の組織のプロジェクトのみ（未設定も含む）
+        projectsQuery = projectsQuery.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+      }
       const [projectsRes, sprintsRes] = await Promise.all([
         projectsQuery,
         supabase!.from("sprints").select("id, project_id"),
@@ -1163,7 +1170,7 @@ export function MyActionsPage() {
       ticketsInitializedRef.current = true;
       if (showSpinner) setLoading(false);
     }
-  }, [userName, isAdmin, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userName, isAdmin, isOwner, selectedOrgId, userOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── アクションメモロード（ステータス取得＋自動削除） ────
   const loadMemos = useCallback(async (showSpinner = true) => {

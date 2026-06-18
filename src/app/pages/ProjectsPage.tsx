@@ -18,7 +18,7 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 
 export function ProjectsPage() {
-  const { userRole, userName } = useAuth();
+  const { userRole, userName, userOrgId } = useAuth();
   const { toast } = useToast();
   const { selectedOrgId } = useOrg();
   const navigate = useNavigate();
@@ -59,10 +59,22 @@ export function ProjectsPage() {
       return mapped;
     });
 
+  const buildProjectQuery = () => {
+    let q = supabase!.from("projects").select("*").order("id");
+    if (isOwner) {
+      // オーナーはOrgSelectorで選択した組織のみ
+      if (selectedOrgId) q = q.eq("organization_id", selectedOrgId);
+    } else if (userOrgId) {
+      // 一般ユーザーは自分の組織のみ（organization_id未設定も暫定的に含む）
+      q = q.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+    }
+    return q;
+  };
+
   const refreshProjects = () => {
     if (!isSupabaseEnabled) return;
     Promise.all([
-      supabase!.from("projects").select("*").order("id"),
+      buildProjectQuery(),
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: s }]) => {
       if (p) setProjects(mergeTicketCounts(p, computeTicketCounts(s ?? [])));
@@ -72,7 +84,7 @@ export function ProjectsPage() {
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     Promise.all([
-      supabase!.from("projects").select("*").order("id"),
+      buildProjectQuery(),
       supabase!.from("clients").select("*").order("id"),
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: c }, { data: s }]) => {
@@ -80,7 +92,7 @@ export function ProjectsPage() {
       if (c) setClients(c.map(mapClient));
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOwner, userOrgId, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteProject = async (project: Project) => {
     if (isSupabaseEnabled) {
