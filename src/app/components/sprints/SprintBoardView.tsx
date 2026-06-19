@@ -223,7 +223,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     let q = supabase!.from("profiles").select("name").order("name");
-    if (userOrgId) q = q.eq("organization_id", userOrgId);
+    if (userOrgId) q = (q as any).or(`organization_id.eq.${userOrgId},role.eq.owner`);
     q.then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
   }, [userOrgId]);
 

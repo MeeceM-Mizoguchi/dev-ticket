@@ -427,7 +427,7 @@ export function TicketDetailPanel({
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     let q = supabase!.from("profiles").select("name, role, permissions").order("name");
-    if (userOrgId) q = q.eq("organization_id", userOrgId);
+    if (userOrgId) q = (q as any).or(`organization_id.eq.${userOrgId},role.eq.owner`);
     q.then(({ data }) => {
         if (!data) return;
         setMemberNames(data.map((r: { name: string }) => r.name));
