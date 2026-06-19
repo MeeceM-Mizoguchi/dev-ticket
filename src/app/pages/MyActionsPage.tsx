@@ -5,6 +5,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { escStack } from "@/app/lib/escStack";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
@@ -1061,8 +1063,10 @@ function AddMemoModal({
 
 // ─── メインページ ─────────────────────────────────────────────
 export function MyActionsPage() {
-  const { userName, userRole } = useAuth();
-  const isAdmin = userRole === "admin";
+  const { userName, userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
+  const isOwner = userRole === "owner";
+  const isAdmin = userRole === "admin" || isOwner;
   const [tab, setTab] = useState<Tab>("assigned");
   const [allAssigned, setAllAssigned] = useState<ActionTicket[]>([]);
   const [allReview, setAllReview] = useState<ActionTicket[]>([]);
@@ -1098,8 +1102,16 @@ export function MyActionsPage() {
     }
     if (showSpinner) setLoading(true);
     try {
+      let projectsQuery = supabase!.from("projects").select("id, slug, name, members, organization_id");
+      if (isOwner && selectedOrgId) {
+        // オーナーはOrgSelectorの選択で絞り込む
+        projectsQuery = projectsQuery.eq("organization_id", selectedOrgId);
+      } else if (!isOwner && userOrgId) {
+        // オーナー以外は自分の組織のプロジェクトのみ（未設定も含む）
+        projectsQuery = projectsQuery.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+      }
       const [projectsRes, sprintsRes] = await Promise.all([
-        supabase!.from("projects").select("id, slug, name, members"),
+        projectsQuery,
         supabase!.from("sprints").select("id, project_id"),
       ]);
 
@@ -1116,6 +1128,14 @@ export function MyActionsPage() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setProjects(accessibleProjects.map((p: any) => ({ id: p.id, slug: p.slug, name: p.name })));
 
+      // アクセス可能なスプリントIDセット（組織フィルタ済みプロジェクトに属するものだけ）
+      const accessibleProjectIds = new Set(accessibleProjects.map((p: any) => p.id));
+      const accessibleSprintIds = new Set(
+        (sprintsRes.data ?? [])
+          .filter((s: any) => accessibleProjectIds.has(s.project_id))
+          .map((s: any) => s.id)
+      );
+
       const sprintMap: Record<string, string> = Object.fromEntries(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (sprintsRes.data ?? []).map((s: any) => [s.id, s.project_id])
@@ -1128,6 +1148,11 @@ export function MyActionsPage() {
         const proj = projectMap[projectId] ?? { slug: "", name: "" };
         return { ...ticket, projectSlug: proj.slug, projectName: proj.name, projectId, sprintId: r.sprint_id ?? "" };
       };
+
+      // 組織フィルタ: アクセス可能なスプリントに属するチケットのみ
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const filterByOrg = (tickets: any[]) =>
+        tickets.filter((t: any) => accessibleSprintIds.has(t.sprint_id));
 
       const [aRes, rRes, acRes, rcRes] = await Promise.all([
         supabase!.from("sprint_tickets").select("*")
@@ -1148,17 +1173,17 @@ export function MyActionsPage() {
           .order("created_at", { ascending: true }).order("id", { ascending: true }),
       ]);
 
-      setAllAssigned((aRes.data ?? []).map(toAction));
-      setAllReview((rRes.data ?? []).map(toAction));
-      setClosedAssigned((acRes.data ?? []).map(toAction));
-      setClosedReview((rcRes.data ?? []).map(toAction));
+      setAllAssigned(filterByOrg(aRes.data ?? []).map(toAction));
+      setAllReview(filterByOrg(rRes.data ?? []).map(toAction));
+      setClosedAssigned(filterByOrg(acRes.data ?? []).map(toAction));
+      setClosedReview(filterByOrg(rcRes.data ?? []).map(toAction));
     } catch (err) {
       console.error("[MyActionsPage] load failed:", err);
     } finally {
       ticketsInitializedRef.current = true;
       if (showSpinner) setLoading(false);
     }
-  }, [userName, isAdmin]);
+  }, [userName, isAdmin, isOwner, selectedOrgId, userOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── アクションメモロード（ステータス取得＋自動削除） ────
   const loadMemos = useCallback(async (showSpinner = true) => {
@@ -1389,6 +1414,7 @@ export function MyActionsPage() {
 
           {/* Controls */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <OrgSelector />
             {/* アクションメモ追加ボタン: 通知から追加タブでのみ表示 */}
             {tab === "from_notification" && (
               <button

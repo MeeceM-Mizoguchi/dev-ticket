@@ -118,7 +118,7 @@ function inviteHtml(name: string, role: string, inviteUrl: string) {
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  const { email, name, role, group } = req.body ?? {};
+  const { email, name, role, group, organizationId } = req.body ?? {};
   if (!email) return res.status(400).json({ error: "email is required" });
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -137,7 +137,7 @@ export default async function handler(req: any, res: any) {
     type: "invite",
     email,
     options: {
-      data: { name: name || "", role: role || "developer", group_name: group || "" },
+      data: { name: name || "", role: role || "developer", group_name: group || "", organization_id: organizationId || null },
       redirectTo: `${publicUrl}/accept-invite`,
     },
   });
@@ -155,6 +155,7 @@ export default async function handler(req: any, res: any) {
       role: role || "developer",
       group_name: group || "",
       status: "invited",
+      organization_id: organizationId || null,
     }, { onConflict: "id" });
   }
 

@@ -67,7 +67,7 @@ export function TicketDetailPanel({
   ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
 }: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
 
-  const { userName, userRole, userPermissions } = useAuth();
+  const { userName, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const effectivePermissions = (userRole === "owner") ? userPermissions : (projectPermissions ?? userPermissions);
@@ -426,8 +426,9 @@ export function TicketDetailPanel({
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("profiles").select("name, role, permissions").order("name")
-      .then(({ data }) => {
+    let q = supabase!.from("profiles").select("name, role, permissions").order("name");
+    if (userOrgId) q = q.eq("organization_id", userOrgId);
+    q.then(({ data }) => {
         if (!data) return;
         setMemberNames(data.map((r: { name: string }) => r.name));
         const eligible = data
@@ -441,7 +442,7 @@ export function TicketDetailPanel({
           .map((r: { name: string }) => r.name);
         setAdminMemberNames(admins);
       });
-  }, []);
+  }, [userOrgId]);
 
   useEffect(() => { memberNamesRef.current = memberNames; }, [memberNames]);
 
@@ -722,19 +723,6 @@ export function TicketDetailPanel({
       await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
     }
     await addComment(`<p>対応完了しました</p>`, "status_change", [], newStatus);
-    onUpdated?.();
-  };
-
-  const handleChildReset = async () => {
-    if (!ticket) return;
-    const newStatus: TicketStatus = "todo";
-    const p = STATUS_PROGRESS[newStatus];
-    setStatus(newStatus);
-    setProgress(p);
-    if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
-    }
-    await addComment(`<p>未着手に戻しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
   };
 
@@ -1597,12 +1585,6 @@ export function TicketDetailPanel({
             <button onClick={handleChildComplete}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(5,150,105,0.33)", cursor: "pointer", background: "#ECFDF5", color: "#059669", marginTop: 10 }}>
               対応完了 →
-            </button>
-          )}
-          {ticket.parentId && isAssignee && progress >= 0 && status === "closed" && (
-            <button onClick={handleChildReset}
-              style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(26,23,20,0.12)", cursor: "pointer", background: "#F9F8F7", color: "#6B6458", marginTop: 10 }}>
-              未着手に戻す
             </button>
           )}
           {/* 親チケット専用のアクションボタン群 */}

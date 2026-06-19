@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -9,6 +9,7 @@ import type { Project, WikiPage as WikiPageType } from "@/app/types";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 
 interface TreeNode extends WikiPageType {
   children: TreeNode[];
@@ -34,41 +35,82 @@ function TreeItem({
   node, depth, selectedId, onSelect, onAddChild, onDelete,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
-  onSelect: (id: string) => void; onAddChild: (parentId: string) => void; onDelete: (node: WikiPageType) => void;
+  onSelect: (id: string) => void;
+  onAddChild: (parentId: string, isFolder: boolean) => void;
+  onDelete: (node: WikiPageType) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
   const hasChildren = node.children.length > 0;
+  const isFolder = node.isFolder;
+  const isSelected = selectedId === node.id;
+
+  const handleRowClick = () => {
+    if (isFolder) {
+      setExpanded(v => !v);
+    } else {
+      onSelect(node.id);
+    }
+  };
+
+  const FolderIcon = expanded ? FolderOpen : Folder;
+  const ItemIcon = isFolder ? FolderIcon : FileText;
+  const iconColor = isFolder ? "#F59E0B" : (isSelected ? "#059669" : "#B0A9A4");
 
   return (
     <div>
       <div
         onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-        onClick={() => onSelect(node.id)}
+        onClick={handleRowClick}
         style={{
           display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
-          borderRadius: 7, cursor: "pointer", background: selectedId === node.id ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent"),
+          borderRadius: 7, cursor: "pointer",
+          background: isSelected ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent"),
         }}>
-        <span onClick={e => { e.stopPropagation(); if (hasChildren) setExpanded(v => !v); }} style={{ width: 14, flexShrink: 0, display: "flex" }}>
-          {hasChildren && (expanded ? <ChevronDown style={{ width: 11, height: 11, color: "#9E9690" }} /> : <ChevronRight style={{ width: 11, height: 11, color: "#9E9690" }} />)}
+        <span
+          onClick={e => { e.stopPropagation(); if (hasChildren || isFolder) setExpanded(v => !v); }}
+          style={{ width: 14, flexShrink: 0, display: "flex" }}>
+          {(isFolder || hasChildren) && (
+            expanded
+              ? <ChevronDown style={{ width: 11, height: 11, color: "#9E9690" }} />
+              : <ChevronRight style={{ width: 11, height: 11, color: "#9E9690" }} />
+          )}
         </span>
-        <FileText style={{ width: 12, height: 12, color: selectedId === node.id ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: selectedId === node.id ? 700 : 500, color: selectedId === node.id ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {node.title || "無題のページ"}
+        <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
+        <span style={{
+          flex: 1, minWidth: 0, fontSize: 12,
+          fontWeight: isSelected ? 700 : 500,
+          color: isSelected ? "#059669" : "#1A1714",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
         </span>
         {hovered && (
           <>
-            <button onClick={e => { e.stopPropagation(); onAddChild(node.id); }} title="サブページを追加" style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+            <button
+              onClick={e => { e.stopPropagation(); onAddChild(node.id, false); }}
+              title="サブページを追加"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
               <Plus style={{ width: 12, height: 12 }} />
             </button>
-            <button onClick={e => { e.stopPropagation(); onDelete(node); }} title="削除" style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+            <button
+              onClick={e => { e.stopPropagation(); onAddChild(node.id, true); }}
+              title="サブフォルダを追加"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+              <FolderPlus style={{ width: 12, height: 12 }} />
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); onDelete(node); }}
+              title="削除"
+              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
               <Trash2 style={{ width: 12, height: 12 }} />
             </button>
           </>
         )}
       </div>
-      {hasChildren && expanded && node.children.map(c => (
-        <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId} onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} />
+      {(isFolder || hasChildren) && expanded && node.children.map(c => (
+        <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
+          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} />
       ))}
     </div>
   );
@@ -87,6 +129,7 @@ export function WikiPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<WikiPageType | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -111,6 +154,7 @@ export function WikiPage() {
   useEffect(() => {
     setTitle(selected?.title ?? "");
     setContent(selected?.content ?? "");
+    setImages(selected?.images ?? []);
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleSave = useCallback((nextTitle: string, nextContent: string) => {
@@ -124,24 +168,45 @@ export function WikiPage() {
     }, 600);
   }, [selectedId, userName]);
 
-  const handleAddPage = async (parentId: string | null) => {
+  const handleImagesChange = useCallback(async (next: string[]) => {
+    if (!selectedId) return;
+    setImages(next);
+    setPages(prev => prev.map(p => p.id === selectedId ? { ...p, images: next } : p));
+    if (isSupabaseEnabled) {
+      await supabase!.from("wiki_pages").update({ images: next, updated_by: userName || null, updated_at: new Date().toISOString() }).eq("id", selectedId);
+    }
+  }, [selectedId, userName]);
+
+  const handleAddItem = async (parentId: string | null, isFolder: boolean) => {
     if (!project) return;
     const id = crypto.randomUUID();
     const { error } = await supabase!.from("wiki_pages").insert({
-      id, project_id: project.id, parent_id: parentId, title: "無題のページ", content: "",
-      sort_order: pages.filter(p => p.parentId === parentId).length, created_by: userName || null, updated_by: userName || null,
+      id, project_id: project.id, parent_id: parentId,
+      title: isFolder ? "無題のフォルダ" : "無題のページ",
+      content: "", is_folder: isFolder,
+      sort_order: pages.filter(p => p.parentId === parentId).length,
+      created_by: userName || null, updated_by: userName || null,
     });
-    if (error) { toast("ページの作成に失敗しました", "error"); return; }
+    if (error) {
+      console.error("[WikiPage] insert error:", error);
+      const msg = error.message?.includes("column") || error.code === "42703"
+        ? "DBにis_folderカラムが存在しません。supabase/add_wiki_folder.sql を Supabase Dashboard で実行してください。"
+        : (isFolder ? "フォルダの作成に失敗しました" : "ページの作成に失敗しました");
+      toast(msg, "error");
+      return;
+    }
     await load();
-    setSelectedId(id);
+    if (!isFolder) setSelectedId(id);
   };
 
   const handleDelete = async (page: WikiPageType) => {
     await supabase!.from("wiki_pages").delete().eq("id", page.id);
     if (selectedId === page.id) setSelectedId(null);
-    toast(`「${page.title || "無題のページ"}」を削除しました`);
+    toast(`「${page.title || (page.isFolder ? "無題のフォルダ" : "無題のページ")}」を削除しました`);
     load();
   };
+
+  const pageCount = useMemo(() => pages.filter(p => !p.isFolder).length, [pages]);
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
   if (!loading && !userPermissions.canAccessWiki) return <Navigate to="/dashboard" replace />;
@@ -159,7 +224,7 @@ export function WikiPage() {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>Wiki</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${pages.length} ページ` : "..."}</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${pageCount} ページ` : "..."}</p>
         </div>
         <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} />
       </div>
@@ -167,10 +232,17 @@ export function WikiPage() {
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
         <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto" }}>
           {canEdit && (
-            <button onClick={() => handleAddPage(null)}
-              style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 6, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              <Plus style={{ width: 12, height: 12 }} />新規ページ
-            </button>
+            <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+              <button onClick={() => handleAddItem(null, false)}
+                style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                <Plus style={{ width: 12, height: 12 }} />新規ページ
+              </button>
+              <button onClick={() => handleAddItem(null, true)}
+                title="新規フォルダ"
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, padding: "7px 10px", background: "#FFFBEB", color: "#D97706", border: "1.5px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                <FolderPlus style={{ width: 13, height: 13 }} />
+              </button>
+            </div>
           )}
           {tree.length === 0 ? (
             <div style={{ padding: "24px 8px", textAlign: "center" }}>
@@ -179,26 +251,50 @@ export function WikiPage() {
             </div>
           ) : tree.map(node => (
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
-              onSelect={setSelectedId} onAddChild={canEdit ? handleAddPage : () => {}} onDelete={canEdit ? setDeleteTarget : () => {}} />
+              onSelect={setSelectedId}
+              onAddChild={canEdit ? handleAddItem : () => {}}
+              onDelete={canEdit ? setDeleteTarget : () => {}} />
           ))}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 20, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
           {!selected ? (
             <div style={{ padding: "60px 0", textAlign: "center" }}>
               <BookOpen style={{ width: 32, height: 32, color: "#D4CEC8", margin: "0 auto 10px" }} />
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>左のツリーからページを選択するか、新規ページを作成してください</p>
             </div>
+          ) : selected.isFolder ? (
+            <div style={{ padding: "60px 0", textAlign: "center" }}>
+              <FolderOpen style={{ width: 32, height: 32, color: "#FCD34D", margin: "0 auto 10px" }} />
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: "0 0 6px" }}>{selected.title || "無題のフォルダ"}</p>
+              <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>
+                {pages.filter(p => p.parentId === selected.id).length} 件のアイテム
+              </p>
+            </div>
           ) : (
             <>
-              <input
-                value={title} disabled={!canEdit}
-                onChange={e => { setTitle(e.target.value); scheduleSave(e.target.value, content); }}
-                placeholder="ページタイトル"
-                style={{ width: "100%", boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", marginBottom: 14, padding: 0, flexShrink: 0 }} />
-              <RichEditor value={content} readOnly={!canEdit}
-                onChange={v => { setContent(v); scheduleSave(title, v); }}
-                placeholder="ページの内容を入力..." minHeight="calc(100vh - 302px)" />
+              <div style={{ padding: "20px 20px 12px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                <input
+                  value={title} disabled={!canEdit}
+                  onChange={e => { setTitle(e.target.value); scheduleSave(e.target.value, content); }}
+                  placeholder="ページタイトル"
+                  style={{ width: "100%", boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "12px 20px 16px", display: "flex", flexDirection: "column" }}>
+                <RichEditor value={content} readOnly={!canEdit}
+                  onChange={v => { setContent(v); scheduleSave(title, v); }}
+                  placeholder="ページの内容を入力..." minHeight={120}
+                  style={{ flex: 1, minHeight: 0 }}
+                  onImageUpload={canEdit ? async (file) => {
+                    if (!isSupabaseEnabled) return URL.createObjectURL(file);
+                    const extMap: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+                    const ext = extMap[file.type] ?? "png";
+                    const path = `wiki/${selected.id}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+                    const { data, error } = await supabase!.storage.from("ticket-images").upload(path, file, { upsert: true, contentType: file.type });
+                    if (error || !data) return "";
+                    return supabase!.storage.from("ticket-images").getPublicUrl(path).data.publicUrl;
+                  } : undefined} />
+              </div>
             </>
           )}
         </div>
@@ -206,8 +302,8 @@ export function WikiPage() {
 
       {deleteTarget && (
         <ConfirmDialog
-          title="ページの削除"
-          message={`「${deleteTarget.title || "無題のページ"}」を削除します。子ページがある場合は一緒に削除されます。`}
+          title={deleteTarget.isFolder ? "フォルダの削除" : "ページの削除"}
+          message={`「${deleteTarget.title || (deleteTarget.isFolder ? "無題のフォルダ" : "無題のページ")}」を削除します。${deleteTarget.isFolder ? "フォルダ内のページも一緒に削除されます。" : "子ページがある場合は一緒に削除されます。"}`}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}

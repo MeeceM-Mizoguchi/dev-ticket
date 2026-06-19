@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { Client } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -11,6 +13,9 @@ import { CustomSelect } from "@/app/components/shared/CustomSelect";
 
 export function ClientFormDialog({ client, onClose, onSaved }: { client?: Client; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
+  const { userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
+  const clientOrgId = userRole === "owner" ? selectedOrgId : userOrgId;
   const isEdit = Boolean(client);
   const [name, setName] = useState(client?.name ?? "");
   const [industry, setIndustry] = useState(client?.industry ?? "");
@@ -28,7 +33,7 @@ export function ClientFormDialog({ client, onClose, onSaved }: { client?: Client
         if (error) { toast("更新に失敗しました", "error"); setSaving(false); return; }
         toast(`「${name}」を更新しました`);
       } else {
-        const { error } = await supabase!.from("clients").insert({ id: `C-${Date.now()}`, name, industry, email, phone, status });
+        const { error } = await supabase!.from("clients").insert({ id: `C-${Date.now()}`, name, industry, email, phone, status, organization_id: clientOrgId || null });
         if (error) { toast("追加に失敗しました", "error"); setSaving(false); return; }
         toast(`「${name}」を追加しました`);
       }

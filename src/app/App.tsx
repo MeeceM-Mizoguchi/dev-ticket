@@ -20,6 +20,8 @@ import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
 import { BacklogPage } from "@/app/pages/BacklogPage";
 import { WikiPage } from "@/app/pages/WikiPage";
 import { MinutesPage } from "@/app/pages/MinutesPage";
+import { OrganizationPage } from "@/app/pages/OrganizationPage";
+import { OrgProvider } from "@/app/contexts/OrgContext";
 
 export default function App() {
   return (
@@ -29,7 +31,7 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
-            <Route element={<ProtectedShell />}>
+            <Route element={<OrgProvider><ProtectedShell /></OrgProvider>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/clients" element={<ClientsPage />} />
@@ -40,6 +42,7 @@ export default function App() {
               <Route path="/admin-settings" element={<AdminSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
               <Route path="/release-notes" element={<ReleaseNotesPage />} />
+              <Route path="/organization" element={<OrganizationPage />} />
               {/* Sprint list */}
               <Route path="/:projectSlug" element={<SprintPage />} />
               <Route path="/:projectSlug/backlog" element={<BacklogPage />} />

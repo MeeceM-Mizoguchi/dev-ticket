@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { Plus, X, UserCog, Pencil, Trash2, AlertCircle } from "lucide-react";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { Navigate } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { escStack } from "@/app/lib/escStack";
 
@@ -28,6 +30,7 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string }[] 
 
 export function RolesPage() {
   const { userPermissions } = useAuth();
+  const { selectedOrgId } = useOrg();
   const { toast } = useToast();
   const [roles, setRoles] = useState<RoleDefinition[]>([]);
   const [loading, setLoading] = useState(isSupabaseEnabled);
@@ -39,14 +42,16 @@ export function RolesPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
-    supabase!.from("roles").select("*").order("id")
-      .then(({ data }) => { if (data) setRoles(data as RoleDefinition[]); setLoading(false); });
-  }, []);
+    // 標準ロール（organization_id = NULL）＋選択中の組織固有ロールを表示
+    let q = supabase!.from("roles").select("*").order("id");
+    if (selectedOrgId) q = (q as any).or(`organization_id.eq.${selectedOrgId},organization_id.is.null`);
+    q.then(({ data }) => { if (data) setRoles(data as RoleDefinition[]); setLoading(false); });
+  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCreate = async (name: string, label: string, perms: UserPermissions) => {
     if (isSupabaseEnabled) {
       const { data, error } = await supabase!.from("roles")
-        .insert({ name, label, base_permissions: perms }).select().single();
+        .insert({ name, label, base_permissions: perms, organization_id: selectedOrgId || null }).select().single();
       if (error) { toast("ロールの作成に失敗しました", "error"); return; }
       if (data) setRoles(prev => [...prev, data as RoleDefinition]);
     } else {
@@ -92,13 +97,16 @@ export function RolesPage() {
             <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>管理画面アクセス権限をロールごとに管理します</p>
           </div>
         </div>
-        <button
-          onClick={() => setShowNewModal(true)}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#7C3AED", color: "#FFF", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}
-        >
-          <Plus style={{ width: 14, height: 14 }} />
-          ロール追加
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <OrgSelector />
+          <button
+            onClick={() => setShowNewModal(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#7C3AED", color: "#FFF", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}
+          >
+            <Plus style={{ width: 14, height: 14 }} />
+            ロール追加
+          </button>
+        </div>
       </div>
 
       {/* Info note */}

@@ -2,12 +2,12 @@ import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, Tic
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
-  return { id: r.id, slug: r.slug || "", wbsPrefix: r.wbs_prefix || "T", name: r.name, client: r.client, status: r.status, startDate: r.start_date, endDate: r.end_date, members: r.members || [], groupIds: r.group_ids || [], done: r.done || 0, inProgress: r.in_progress || 0, todo: r.todo || 0, description: r.description || "", startedAt: r.started_at || null, reviewRequestedAt: r.review_requested_at || null, reviewApprovedAt: r.review_approved_at || null, stgCompletedAt: r.stg_completed_at || null, uatCompletedAt: r.uat_completed_at || null, releasedAt: r.released_at || null };
+  return { id: r.id, slug: r.slug || "", wbsPrefix: r.wbs_prefix || "T", name: r.name, client: r.client, status: r.status, startDate: r.start_date, endDate: r.end_date, members: r.members || [], groupIds: r.group_ids || [], done: r.done || 0, inProgress: r.in_progress || 0, todo: r.todo || 0, description: r.description || "", startedAt: r.started_at || null, reviewRequestedAt: r.review_requested_at || null, reviewApprovedAt: r.review_approved_at || null, stgCompletedAt: r.stg_completed_at || null, uatCompletedAt: r.uat_completed_at || null, releasedAt: r.released_at || null, organizationId: r.organization_id ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapClient(r: any): Client {
-  return { id: r.id, name: r.name, industry: r.industry || "", email: r.email || "", phone: r.phone || "", status: r.status };
+  return { id: r.id, name: r.name, industry: r.industry || "", email: r.email || "", phone: r.phone || "", status: r.status, organizationId: r.organization_id ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,7 +45,7 @@ export function mapSourceFile(r: any): TicketSourceFile {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMember(r: any): Member {
-  return { id: r.id, name: r.name, email: r.email, role: r.role, group: r.group_name || "", status: r.status || "active", projects: r.project_count || 0, tickets: r.ticket_count || 0, permission_group_id: r.permission_group_id || null };
+  return { id: r.id, name: r.name, email: r.email, role: r.role, group: r.group_name || "", status: r.status || "active", projects: r.project_count || 0, tickets: r.ticket_count || 0, permission_group_id: r.permission_group_id || null, organizationId: r.organization_id ?? null };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,15 +60,15 @@ export function mapActionMemo(r: any): ActionMemo {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapBacklogItem(r: any): BacklogItem {
-  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, categoryId: r.category_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, convertedTicketWbs: r.converted_ticket_wbs ?? null, categoryId: r.category_id ?? null, images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapWikiPage(r: any): WikiPage {
-  return { id: r.id, projectId: r.project_id, parentId: r.parent_id ?? null, title: r.title || "", content: r.content || "", sortOrder: r.sort_order ?? 0, createdBy: r.created_by || "", updatedBy: r.updated_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, parentId: r.parent_id ?? null, title: r.title || "", content: r.content || "", sortOrder: r.sort_order ?? 0, isFolder: r.is_folder ?? false, images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", updatedBy: r.updated_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMeetingMinute(r: any): MeetingMinute {
-  return { id: r.id, projectId: r.project_id, title: r.title || "", meetingDate: r.meeting_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, title: r.title || "", meetingDate: r.meeting_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }

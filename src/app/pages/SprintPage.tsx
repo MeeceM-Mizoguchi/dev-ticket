@@ -32,8 +32,8 @@ export function SprintPage() {
   });
   const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
   const { toast: _toast } = useToast();
-  const { userName, userRole, userId, userPermissions } = useAuth();
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
   // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）
@@ -164,7 +164,9 @@ export function SprintPage() {
   if (!loading && !project) return <Navigate to="/projects" replace />;
 
   if (project) {
-    const isMember = isAdminOrPM || (project.members ?? []).includes(userName);
+    // 組織が設定済みの場合、自分の組織と異なるプロジェクトにはアクセス不可（ownerは除く）
+    const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
+    const isMember = sameOrg && (isAdminOrPM || (project.members ?? []).includes(userName));
     if (!isMember) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
       <div style={{ textAlign: "center" as const, maxWidth: 380 }}>

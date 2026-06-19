@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Search, Plus, Mail, Phone, Edit2, Trash2 } from "lucide-react";
 import { Building2 } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { CLIENTS } from "@/app/data/mock";
@@ -14,7 +16,8 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 type ClientSortField = "name" | "industry" | "status";
 
 export function ClientsPage() {
-  const { userRole } = useAuth();
+  const { userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
   const { toast } = useToast();
   const [searchValue, setSearchValue] = useState("");
   const [searchField, setSearchField] = useState<"name" | "industry" | "email" | "all">("all");
@@ -25,21 +28,30 @@ export function ClientsPage() {
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
-  const isAdmin = userRole === "admin";
-  const canManage = userRole === "admin" || userRole === "project-manager";
+  const isOwner = userRole === "owner";
+  const canManage = isOwner || userRole === "admin" || userRole === "project-manager";
+
+  const buildQuery = () => {
+    let q = supabase!.from("clients").select("*").order("id");
+    if (isOwner) {
+      if (selectedOrgId) q = q.eq("organization_id", selectedOrgId);
+    } else if (userOrgId) {
+      q = (q as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+    }
+    return q;
+  };
 
   const refreshClients = () => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("clients").select("*").order("id")
-      .then(({ data }) => setClients((data ?? []).map(mapClient)));
+    buildQuery().then(({ data }) => setClients((data ?? []).map(mapClient)));
   };
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("clients").select("*").order("id")
+    buildQuery()
       .then(({ data }) => { if (data) setClients(data.map(mapClient)); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [isOwner, userOrgId, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteClient = async (client: Client) => {
     if (isSupabaseEnabled) {
@@ -88,14 +100,17 @@ export function ClientsPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>クライアント管理</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>取引先企業の一覧と基本情報 · {clients.length}社</p>
         </div>
-        {canManage && (
-          <button onClick={() => setShowCreate(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-            <Plus style={{ width: 15, height: 15 }} />新規クライアント
-          </button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <OrgSelector />
+          {canManage && (
+            <button onClick={() => setShowCreate(true)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+              <Plus style={{ width: 15, height: 15 }} />新規クライアント
+            </button>
+          )}
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
@@ -171,7 +186,7 @@ export function ClientsPage() {
                     <Edit2 style={{ width: 14, height: 14 }} />
                   </button>
                 )}
-                {isAdmin && (
+                {canManage && (
                   <button onClick={() => setDeleteTarget(client)} title="削除"
                     style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, transition: "all 0.15s" }}
                     onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#FEF2F2"; el.style.color = "#DC2626"; el.style.borderColor = "rgba(220,38,38,0.25)"; }}

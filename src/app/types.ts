@@ -1,4 +1,17 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization";
+
+export interface Organization {
+  id: string;
+  name: string;
+  createdAt: string;
+  representativeName?: string;
+  contactName?: string;
+  phone?: string;
+  websiteUrl?: string;
+  address?: string;
+  industry?: string;
+  description?: string;
+}
 export type ActionMemoCategory = "todo" | "review" | "test" | "memo";
 export interface ActionMemo {
   id: string;
@@ -106,15 +119,18 @@ export interface Project {
   stgCompletedAt?: string | null;
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
+  organizationId?: string | null;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
   phone: string; status: "active" | "inactive";
+  organizationId?: string | null;
 }
 export interface Member {
   id: string; name: string; email: string; role: Role;
   group: string; status: MemberStatus; projects: number; tickets: number;
   permission_group_id?: number | null;
+  organizationId?: string | null;
 }
 export interface PermissionGroup {
   id: number; name: string; description: string;
@@ -128,17 +144,22 @@ export interface BacklogItem {
   id: string; projectId: string; title: string; description: string;
   status: BacklogStatus; priority: Priority; rank: number;
   assignee: string; estimatedHours: number; convertedTicketId: string | null;
+  convertedTicketWbs: string | null;
   categoryId: string | null;
+  images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
 export interface WikiPage {
   id: string; projectId: string; parentId: string | null; title: string;
   content: string; sortOrder: number;
+  isFolder: boolean;
+  images: string[];
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
 }
 export interface MeetingMinute {
   id: string; projectId: string; title: string; meetingDate: string;
   attendees: string[]; content: string;
+  images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
 export interface TicketItem {
@@ -158,4 +179,5 @@ export interface UserPermissions {
   canAccessWiki: boolean;
   canAccessBacklog: boolean;
   canAccessMinutes: boolean;
+  canAccessOrganization: boolean;
 }

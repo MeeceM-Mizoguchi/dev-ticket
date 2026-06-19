@@ -230,8 +230,8 @@ export function SprintDetailPage() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { showAlert } = useAlert();
-  const { userId, userPermissions, userRole } = useAuth();
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const { userId, userPermissions, userRole, userOrgId, userName } = useAuth();
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const [project, setProject] = useState<Project | null>(null);
   const [sprint, setSprint] = useState<Sprint | null>(null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
@@ -298,7 +298,16 @@ export function SprintDetailPage() {
       // Try by identifier first, then by ID for backward compat
       const { data: byId } = await base.eq("identifier", sprintIdentifier).maybeSingle();
       const { data: byRawId } = byId ? { data: null } : await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprintIdentifier).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).maybeSingle();
-      const s = byId ?? byRawId;
+      // Fallback: segment looks like a ticket WBS (e.g. "T-001") — find the sprint that contains the ticket
+      let byTicketWbs = null;
+      if (!byId && !byRawId && ticketWbs) {
+        const { data: ticketRow } = await supabase!.from("sprint_tickets").select("sprint_id").eq("wbs", ticketWbs).maybeSingle();
+        if (ticketRow?.sprint_id) {
+          const { data: sprintByTicket } = await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", ticketRow.sprint_id).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).maybeSingle();
+          byTicketWbs = sprintByTicket;
+        }
+      }
+      const s = byId ?? byRawId ?? byTicketWbs;
       if (!s) { setProjectPermissionsLoaded(true); setLoading(false); return; }
       setSprint(mapSprint(s));
       const pid = s.project_id;
@@ -356,6 +365,11 @@ export function SprintDetailPage() {
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
+
+  // 組織チェック: organization_id が設定されていて一致しない場合はアクセス不可（ownerは除く）
+  const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
+  const isMemberOfProject = isAdminOrPM || (project.members ?? []).includes(userName);
+  if (!sameOrg || !isMemberOfProject) return <Navigate to="/projects" replace />;
 
   const selectedTicket = ticketWbs
     ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null)

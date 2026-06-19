@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Project } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { useAuth } from "@/app/contexts/AuthContext";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -15,6 +16,8 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
   onClose: () => void;
   onUpdated?: (newSlug: string) => void;
 }) {
+  const { userOrgId } = useAuth();
+  const orgId = project.organizationId ?? userOrgId;
   const [slug, setSlug] = useState(project.slug);
   const [slugError, setSlugError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -31,9 +34,14 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
 
     if (isSupabaseEnabled) {
       setSaving(true);
-      const { error } = await supabase!.from("projects").update({
-        slug: finalSlug,
-      }).eq("id", project.id);
+      if (finalSlug !== project.slug) {
+        let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug).neq("id", project.id);
+        if (orgId) dupQ = dupQ.eq("organization_id", orgId);
+        else dupQ = dupQ.is("organization_id", null);
+        const { data: dup } = await dupQ.maybeSingle();
+        if (dup) { setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。"); setSaving(false); return; }
+      }
+      const { error } = await supabase!.from("projects").update({ slug: finalSlug }).eq("id", project.id);
       setSaving(false);
       if (error?.code === "23505") {
         setSlugError("その識別子はすでに使用されています。別の名前を使用してください。");

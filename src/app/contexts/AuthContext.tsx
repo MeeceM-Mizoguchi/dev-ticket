@@ -16,19 +16,21 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canAccessWiki: false,
   canAccessBacklog: false,
   canAccessMinutes: false,
+  canAccessOrganization: false,
 };
 
 interface AuthCtxType {
   userName: string;
   userRole: Role;
   userId: string;
+  userOrgId: string | null;
   userPermissions: UserPermissions;
   login: (email: string, password: string) => Promise<string | null>;
   logout: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthCtxType>({
-  userName: "", userRole: "developer", userId: "",
+  userName: "", userRole: "developer", userId: "", userOrgId: null,
   userPermissions: { ...DEFAULT_PERMISSIONS },
   login: async () => null, logout: async () => {},
 });
@@ -37,9 +39,18 @@ export function useAuth() { return useContext(AuthContext); }
 
 async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> {
   if (!isSupabaseEnabled) return { ...DEFAULT_PERMISSIONS };
+  // ownerは常に全権限（DBのrolesテーブルに依存しない）
+  if (role === "owner") {
+    return {
+      ...DEFAULT_PERMISSIONS,
+      canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true,
+      canAccessMembers: true, canAccessRoles: true, canAccessGroups: true, canAccessAdminSettings: true,
+      canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessOrganization: true,
+    };
+  }
   const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
   if (data?.base_permissions) return { ...DEFAULT_PERMISSIONS, ...(data.base_permissions as Partial<UserPermissions>) };
-  // fallback: admin/PM get all permissions if roles table not yet seeded
+  // fallback: admin/PMがrolesテーブル未seededの場合
   if (role === "admin" || role === "project-manager") {
     return {
       ...DEFAULT_PERMISSIONS,
@@ -58,7 +69,7 @@ function resolvePermissions(basePerms: UserPermissions): UserPermissions {
 }
 
 async function fetchProfile(uid: string) {
-  const { data } = await supabase!.from("profiles").select("name, role, status").eq("id", uid).maybeSingle();
+  const { data } = await supabase!.from("profiles").select("name, role, status, organization_id").eq("id", uid).maybeSingle();
   return data ?? null;
 }
 
@@ -72,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userName, setUserName] = useState("");
   const [userRole, setUserRole] = useState<Role>("developer");
   const [userId, setUserId] = useState("");
+  const [userOrgId, setUserOrgId] = useState<string | null>(null);
   const [userPermissions, setUserPermissions] = useState<UserPermissions>({ ...DEFAULT_PERMISSIONS });
   const [authReady, setAuthReady] = useState(!isSupabaseEnabled);
 
@@ -80,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUserName(sessionStorage.getItem("userName") || "");
       setUserRole(sessionStorage.getItem("userRole") || "developer");
       setUserId(sessionStorage.getItem("userId") || "");
+      setUserOrgId(sessionStorage.getItem("userOrgId") || null);
       const savedPerms = sessionStorage.getItem("userPermissions");
       if (savedPerms) {
         try { setUserPermissions(JSON.parse(savedPerms)); } catch { /* ignore */ }
@@ -97,11 +110,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const basePerms = await fetchRoleBasePermissions(role);
           const perms = resolvePermissions(basePerms);
           setUserName(p.name); setUserRole(role); setUserId(session.user.id);
+          setUserOrgId(p.organization_id ?? null);
           setUserPermissions(perms);
           sessionStorage.setItem("isLoggedIn", "true");
           sessionStorage.setItem("userName", p.name);
           sessionStorage.setItem("userRole", p.role);
           sessionStorage.setItem("userId", session.user.id);
+          sessionStorage.setItem("userOrgId", p.organization_id ?? "");
           sessionStorage.setItem("userPermissions", JSON.stringify(perms));
         }
       }
@@ -117,20 +132,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const basePerms = await fetchRoleBasePermissions(role);
             const perms = resolvePermissions(basePerms);
             setUserName(p.name); setUserRole(role); setUserId(session.user.id);
+            setUserOrgId(p.organization_id ?? null);
             setUserPermissions(perms);
             sessionStorage.setItem("userName", p.name);
             sessionStorage.setItem("userRole", p.role);
             sessionStorage.setItem("userId", session.user.id);
+            sessionStorage.setItem("userOrgId", p.organization_id ?? "");
             sessionStorage.setItem("userPermissions", JSON.stringify(perms));
           }
         });
       } else {
-        setUserName(""); setUserRole("developer"); setUserId("");
+        setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
         setUserPermissions({ ...DEFAULT_PERMISSIONS });
         sessionStorage.removeItem("isLoggedIn");
         sessionStorage.removeItem("userName");
         sessionStorage.removeItem("userRole");
         sessionStorage.removeItem("userId");
+        sessionStorage.removeItem("userOrgId");
         sessionStorage.removeItem("userPermissions");
       }
     });
@@ -163,12 +181,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     if (isSupabaseEnabled) await supabase!.auth.signOut();
-    setUserName(""); setUserRole("developer"); setUserId("");
+    setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
     setUserPermissions({ ...DEFAULT_PERMISSIONS });
     sessionStorage.removeItem("isLoggedIn");
     sessionStorage.removeItem("userName");
     sessionStorage.removeItem("userRole");
     sessionStorage.removeItem("userId");
+    sessionStorage.removeItem("userOrgId");
     sessionStorage.removeItem("userPermissions");
   };
 
@@ -184,7 +203,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ userName, userRole, userId, userPermissions, login, logout }}>
+    <AuthContext.Provider value={{ userName, userRole, userId, userOrgId, userPermissions, login, logout }}>
       {children}
     </AuthContext.Provider>
   );
