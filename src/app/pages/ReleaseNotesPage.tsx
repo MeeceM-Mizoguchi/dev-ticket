@@ -210,15 +210,17 @@ export function ReleaseNotesPage() {
       : items.filter(i => accessibleProjectIds.has(i.projectId));
 
   // Group items by release_date
+  // 明示的に is_release_date_undecided=true のチケットのみ未定エリアへ。
+  // release_date も undecided フラグも未設定の旧チケットは表示しない。
   const byDate = new Map<string, ReleaseItem[]>();
   const undecidedItems: ReleaseItem[] = [];
   for (const item of filteredItems) {
-    if (item.ticket.isReleaseDateUndecided || !item.ticket.releaseDate) {
-      undecidedItems.push(item);
-    } else {
+    if (item.ticket.releaseDate) {
       const d = item.ticket.releaseDate;
       if (!byDate.has(d)) byDate.set(d, []);
       byDate.get(d)!.push(item);
+    } else if (item.ticket.isReleaseDateUndecided) {
+      undecidedItems.push(item);
     }
   }
 
