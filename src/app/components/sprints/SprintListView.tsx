@@ -212,6 +212,9 @@ function ColumnFilter({
   );
 }
 
+// 🌟 追加: LocalStorageのキーを定数で定義
+const LOCAL_STORAGE_KEY = "sprint_accordion_states";
+
 export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
   sprints: Sprint[];
   onSelectSprint: (s: Sprint) => void;
@@ -235,17 +238,65 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
   // 🌟 追加: アラート（茶色）ではなく、通常の美しい緑ヘッダーUIで完了通知を出すためのステート
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
+  // 🌟 修正: LocalStorageから初期状態を読み込むように変更
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    let savedStates: Record<string, boolean> = {};
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (saved) savedStates = JSON.parse(saved);
+    } catch (e) { }
 
+    const initial = new Set<string>();
+    sprints.forEach(s => {
+      // localStorageで明示的に false（閉じる）と記録されていなければ、デフォルトで開く
+      if (savedStates[s.id] !== false) {
+        initial.add(s.id);
+      }
+    });
+    return initial;
+  });
+
+  // 🌟 修正: データ再取得（更新）時も LocalStorage の状態を厳密に尊重する
   useEffect(() => {
-    setExpanded(prev => new Set([...prev, ...sprints.map(s => s.id)]));
+    let savedStates: Record<string, boolean> = {};
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (saved) savedStates = JSON.parse(saved);
+    } catch (e) { }
+
+    setExpanded(prev => {
+      const next = new Set(prev);
+      sprints.forEach(s => {
+        if (savedStates[s.id] === false) {
+          next.delete(s.id); // 明示的に閉じられたものは閉じたまま
+        } else {
+          next.add(s.id); // それ以外（新規スプリントや開いたもの）は開く
+        }
+      });
+      return next;
+    });
   }, [sprints.map(s => s.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Effect 1: アコーディオン展開
+  // Effect 1: アコーディオン展開（URLからのチケット直接指定時）
   useEffect(() => {
     if (!targetTicketWbs) return;
     const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
-    if (sprint) setExpanded(prev => new Set([...prev, sprint.id]));
+    if (sprint) {
+      setExpanded(prev => {
+        const n = new Set(prev);
+        if (!n.has(sprint.id)) {
+          n.add(sprint.id);
+          // 🌟 修正: URLから強制展開された際も、その状態をLocalStorageに記憶させる
+          try {
+            const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+            const savedStates = saved ? JSON.parse(saved) : {};
+            savedStates[sprint.id] = true;
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(savedStates));
+          } catch (e) { }
+        }
+        return n;
+      });
+    }
   }, [targetTicketWbs, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effect 2: 展開後にスクロール（expanded が更新されてDOMに要素が現れてから実行）
@@ -284,9 +335,29 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       .catch((err) => console.error("Failed to load category master:", err));
   }, [sprints]);
 
-  const toggle = (id: string) => setExpanded(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
-  });
+  // 🌟 修正: 開閉のトグル処理に LocalStorage への保存をフックさせる
+  const toggle = (id: string) => {
+    setExpanded(prev => {
+      const n = new Set(prev);
+      const willBeOpen = !n.has(id);
+
+      if (willBeOpen) {
+        n.add(id);
+      } else {
+        n.delete(id);
+      }
+
+      // LocalStorageへ現在の状態をシリアライズして記録
+      try {
+        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const savedStates = saved ? JSON.parse(saved) : {};
+        savedStates[id] = willBeOpen;
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(savedStates));
+      } catch (e) { }
+
+      return n;
+    });
+  };
 
   const getTicketsInSameProject = (currentSprint: Sprint): SprintTicket[] => {
     return sprints
