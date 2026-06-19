@@ -70,7 +70,7 @@ export function TicketDetailPanel({
   const { userName, userRole, userPermissions } = useAuth();
   const { showAlert } = useAlert();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
-  const effectivePermissions = projectPermissions ?? userPermissions;
+  const effectivePermissions = (userRole === "owner") ? userPermissions : (projectPermissions ?? userPermissions);
   const hasReviewPermission = effectivePermissions.canReview;
   const hasSkipReviewPermission = effectivePermissions.canSkipReview;
 
@@ -432,7 +432,7 @@ export function TicketDetailPanel({
         setMemberNames(data.map((r: { name: string }) => r.name));
         const eligible = data
           .filter((r: { name: string; role: string; permissions?: Record<string, boolean> | null }) =>
-            r.role === "admin" || r.role === "project-manager" || r.permissions?.canReview === true
+            r.role === "admin" || r.role === "owner" || r.role === "project-manager" || r.permissions?.canReview === true
           )
           .map((r: { name: string }) => r.name);
         setReviewerEligibleNames(eligible);

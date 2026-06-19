@@ -199,8 +199,8 @@ export function PermissionsPage() {
         .update({ members: newMembers }).eq("id", project.id);
       if (error) { toast("アサインの保存に失敗しました", "error"); return; }
       // Create an explicit all-false permissions record so role defaults don't leak through
-      // (admin/PM keep role fallback — they always have full access)
-      if (member.role !== "admin" && member.role !== "project-manager") {
+      // (admin/PM/owner keep role fallback — they always have full access)
+      if (member.role !== "admin" && member.role !== "project-manager" && member.role !== "owner") {
         await supabase!.from("project_member_permissions")
           .upsert({ project_id: project.id, member_id: member.id, permissions: { ...DEFAULT_GROUP_PERMS } });
       }
@@ -886,24 +886,36 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
                         )}
 
                         {/* Individual members */}
-                        {displayMembers.map(m => (
-                          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 0, background: "#F4F5F6", borderRadius: 20, border: "1px solid transparent", overflow: "hidden", transition: "all 0.12s", flexShrink: 0 }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.30)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
-                            <button title="クリックで権限設定"
-                              onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
-                              style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 5px 3px 4px", border: "none", background: "transparent", cursor: "pointer" }}>
-                              <Avatar name={m.name} size="xs" />
-                              <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732", whiteSpace: "nowrap" as const, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
-                            </button>
-                            <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
-                              style={{ padding: "3px 6px 3px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", transition: "color 0.1s", flexShrink: 0 }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                              <X style={{ width: 11, height: 11 }} />
-                            </button>
-                          </div>
-                        ))}
+                        {displayMembers.map(m => {
+                          const isOwnerMember = m.role === "owner";
+                          return (
+                            <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 0, background: isOwnerMember ? "#F5F3FF" : "#F4F5F6", borderRadius: 20, border: isOwnerMember ? "1px solid rgba(124,58,237,0.25)" : "1px solid transparent", overflow: "hidden", transition: "all 0.12s", flexShrink: 0 }}
+                              onMouseEnter={!isOwnerMember ? e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(124,58,237,0.30)"; (e.currentTarget as HTMLElement).style.background = "#FAF5FF"; } : undefined}
+                              onMouseLeave={!isOwnerMember ? e => { (e.currentTarget as HTMLElement).style.borderColor = "transparent"; (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; } : undefined}>
+                              {isOwnerMember ? (
+                                <div title="オーナー（全権限）"
+                                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 5px 3px 4px", cursor: "default" }}>
+                                  <Avatar name={m.name} size="xs" />
+                                  <span style={{ fontSize: 10, fontWeight: 600, color: "#7C3AED", whiteSpace: "nowrap" as const, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
+                                  <span style={{ fontSize: 9, fontWeight: 700, color: "#7C3AED", background: "rgba(124,58,237,0.12)", padding: "1px 5px", borderRadius: 8, flexShrink: 0 }}>オーナー</span>
+                                </div>
+                              ) : (
+                                <button title="クリックで権限設定"
+                                  onClick={e => { e.stopPropagation(); onPermClick(m, project.id); }}
+                                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 5px 3px 4px", border: "none", background: "transparent", cursor: "pointer" }}>
+                                  <Avatar name={m.name} size="xs" />
+                                  <span style={{ fontSize: 10, fontWeight: 600, color: "#3D3732", whiteSpace: "nowrap" as const, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
+                                </button>
+                              )}
+                              <button onClick={e => { e.stopPropagation(); onRemoveMember(m.name, project); }}
+                                style={{ padding: "3px 6px 3px 2px", border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center", transition: "color 0.1s", flexShrink: 0 }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                                <X style={{ width: 11, height: 11 }} />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {/* メンバー +N バッジ — 常に右端に表示（絶対配置） */}
