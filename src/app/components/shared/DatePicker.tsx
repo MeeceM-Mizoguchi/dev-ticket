@@ -14,11 +14,11 @@ interface Props {
   disabled?: boolean;
 }
 
-const MONTH_NAMES = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
-const DOW = ["日","月","火","水","木","金","土"];
+const MONTH_NAMES = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+const DOW = ["日", "月", "火", "水", "木", "金", "土"];
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
-function toStr(y: number, m: number, d: number) { return `${y}-${pad(m+1)}-${pad(d)}`; }
+function toStr(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}`; }
 function parseDate(s: string): [number, number, number] | null {
   if (!s) return null;
   const [y, m, d] = s.split("-").map(Number);
@@ -26,18 +26,21 @@ function parseDate(s: string): [number, number, number] | null {
 }
 
 export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required, disabled }: Props) {
-  const today = new Date().toISOString().split("T")[0];
+  // 🌟 修正：UTCベースの toISOString() ではなく、ローカルのタイムゾーン（JST）で「今日」を生成する
+  const todayObj = new Date();
+  const today = toStr(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
+
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
-  const wrapRef    = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
-  const popupRef   = useRef<HTMLDivElement>(null);   // portal popup — NOT inside wrapRef
+  const popupRef = useRef<HTMLDivElement>(null);   // portal popup — NOT inside wrapRef
   const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
 
   // Calendar month navigation
   const parsed = parseDate(value);
   const todayParsed = parseDate(today)!;
-  const [calYear, setCalYear]   = useState(parsed ? parsed[0] : todayParsed[0]);
+  const [calYear, setCalYear] = useState(parsed ? parsed[0] : todayParsed[0]);
   const [calMonth, setCalMonth] = useState(parsed ? parsed[1] : todayParsed[1]);
 
   useEffect(() => {
@@ -64,7 +67,7 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   useEffect(() => {
     if (!open) return;
     const h = (e: MouseEvent) => {
-      const inWrap  = wrapRef.current?.contains(e.target as Node);
+      const inWrap = wrapRef.current?.contains(e.target as Node);
       const inPopup = popupRef.current?.contains(e.target as Node);
       if (!inWrap && !inPopup) setOpen(false);
     };
@@ -73,7 +76,7 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   }, [open]);
 
   const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
-  const firstDow    = new Date(calYear, calMonth, 1).getDay();
+  const firstDow = new Date(calYear, calMonth, 1).getDay();
 
   const cells: (number | null)[] = [];
   for (let i = 0; i < firstDow; i++) cells.push(null);
@@ -84,11 +87,11 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
     const s = toStr(calYear, calMonth, d);
     return (!!min && s < min) || (!!max && s > max);
   };
-  const isToday    = (d: number) => toStr(calYear, calMonth, d) === today;
+  const isToday = (d: number) => toStr(calYear, calMonth, d) === today;
   const isSelected = (d: number) => toStr(calYear, calMonth, d) === value;
 
-  const prevMonth = () => { if (calMonth === 0) { setCalYear(y => y-1); setCalMonth(11); } else setCalMonth(m => m-1); };
-  const nextMonth = () => { if (calMonth === 11) { setCalYear(y => y+1); setCalMonth(0); } else setCalMonth(m => m+1); };
+  const prevMonth = () => { if (calMonth === 0) { setCalYear(y => y - 1); setCalMonth(11); } else setCalMonth(m => m - 1); };
+  const nextMonth = () => { if (calMonth === 11) { setCalYear(y => y + 1); setCalMonth(0); } else setCalMonth(m => m + 1); };
 
   const select = (d: number) => { if (!isDisabled(d)) { onChange(toStr(calYear, calMonth, d)); setOpen(false); } };
 
@@ -120,16 +123,18 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1 }}>
         {cells.map((day, i) => {
           if (!day) return <div key={i} />;
-          const dis  = isDisabled(day);
-          const tod  = isToday(day);
-          const sel  = isSelected(day);
-          const dow  = (firstDow + day - 1) % 7;
+          const dis = isDisabled(day);
+          const tod = isToday(day);
+          const sel = isSelected(day);
+          const dow = (firstDow + day - 1) % 7;
           return (
             <button key={i} onClick={e => { e.stopPropagation(); select(day); }}
-              style={{ padding: "5px 0", borderRadius: 7, border: sel ? "none" : tod ? "1.5px solid #059669" : "none", cursor: dis ? "not-allowed" : "pointer", fontSize: 12, fontWeight: sel || tod ? 700 : 400,
+              style={{
+                padding: "5px 0", borderRadius: 7, border: sel ? "none" : tod ? "1.5px solid #059669" : "none", cursor: dis ? "not-allowed" : "pointer", fontSize: 12, fontWeight: sel || tod ? 700 : 400,
                 background: sel ? "#059669" : "transparent",
                 color: dis ? "#D5D0CB" : sel ? "#FFF" : tod ? "#059669" : dow === 0 ? "#EF4444" : dow === 6 ? "#3B82F6" : "#1A1714",
-                opacity: dis ? 0.5 : 1, transition: "background 0.1s" }}
+                opacity: dis ? 0.5 : 1, transition: "background 0.1s"
+              }}
               onMouseEnter={e => { if (!dis && !sel) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
               onMouseLeave={e => { if (!dis && !sel) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
               {day}

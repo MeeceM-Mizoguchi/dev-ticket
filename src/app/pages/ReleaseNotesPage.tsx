@@ -29,9 +29,12 @@ function truncateText(text: string, maxLen = 20): string {
 }
 
 export function ReleaseNotesPage() {
-  const today = new Date();
-  const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth());
+  const todayObj = new Date();
+  // 🌟 修正：UTCベースの toISOString() ではなく、ローカルのタイムゾーン（JST）で「今日」を生成
+  const todayStr = toDateStr(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
+
+  const [year, setYear] = useState(todayObj.getFullYear());
+  const [month, setMonth] = useState(todayObj.getMonth());
 
   const { userId, userName, userRole } = useAuth();
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
@@ -73,7 +76,7 @@ export function ReleaseNotesPage() {
 
   // Month/Year picker
   const [showPicker, setShowPicker] = useState(false);
-  const [pickerYear, setPickerYear] = useState(today.getFullYear());
+  const [pickerYear, setPickerYear] = useState(todayObj.getFullYear());
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -87,7 +90,7 @@ export function ReleaseNotesPage() {
 
   const openPicker = () => { setPickerYear(year); setShowPicker(s => !s); };
   const selectPickerMonth = (y: number, m: number) => { setYear(y); setMonth(m); setShowPicker(false); };
-  const goToday = () => { setYear(today.getFullYear()); setMonth(today.getMonth()); };
+  const goToday = () => { setYear(todayObj.getFullYear()); setMonth(todayObj.getMonth()); };
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
@@ -511,7 +514,7 @@ export function ReleaseNotesPage() {
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
                       {MONTH_NAMES.map((name, i) => {
                         const isSel = pickerYear === year && i === month;
-                        const isNow = pickerYear === today.getFullYear() && i === today.getMonth();
+                        const isNow = pickerYear === todayObj.getFullYear() && i === todayObj.getMonth();
                         return (
                           <button
                             key={i}
@@ -535,7 +538,7 @@ export function ReleaseNotesPage() {
                     {/* 今日へジャンプ */}
                     <div style={{ marginTop: 10, borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 8 }}>
                       <button
-                        onClick={() => selectPickerMonth(today.getFullYear(), today.getMonth())}
+                        onClick={() => selectPickerMonth(todayObj.getFullYear(), todayObj.getMonth())}
                         style={{ width: "100%", padding: "7px 0", background: "#F0FDF4", color: "#059669", fontWeight: 700, fontSize: 12, border: "none", borderRadius: 8, cursor: "pointer", transition: "background 0.12s" }}
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
@@ -582,7 +585,9 @@ export function ReleaseNotesPage() {
             const dateStr = toDateStr(year, month, day);
             const dayItems = byDate.get(dateStr) ?? [];
             const allReleased = dayItems.length > 0 && dayItems.every(i => i.ticket.status === "released");
-            const isToday = dateStr === today.toISOString().split("T")[0];
+
+            // 🌟 修正：生成したJST基準の「今日」の文字列で比較
+            const isToday = dateStr === todayStr;
             const isDragOver = dragOverTarget === dateStr;
 
             return (
@@ -631,63 +636,78 @@ export function ReleaseNotesPage() {
                   )}
                 </div>
 
-                {/* Ticket items — max 4 visible, remainder shown as "..." */}
-                {dayItems.slice(0, 4).map(item => {
-                  const isReleased = item.ticket.status === "released";
-                  const label = `${item.ticket.wbs} ${item.ticket.title}`;
-                  return (
-                    <div key={item.ticket.id}
-                      draggable
-                      onDragStart={e => {
-                        if (isReleased) {
-                          isDraggingReleasedRef.current = true;
-                          e.dataTransfer.setData("text/plain", "");
-                          setDragTooltipId(item.ticket.id);
-                          setTooltipPos({ x: e.clientX, y: e.clientY });
-                        } else {
-                          handleDragStart(e, item.ticket.id);
-                        }
-                      }}
-                      onDragEnd={() => {
-                        if (isReleased) {
-                          isDraggingReleasedRef.current = false;
-                          setDragTooltipId(null);
-                        } else {
-                          setDragId(null);
-                          setDragOverTarget(null);
-                        }
-                      }}
-                      onClick={e => {
-                        e.stopPropagation();
-                        setSelectedTicketMeta({ sprintId: item.sprintId, projectId: item.projectId, projectSlug: item.projectSlug });
-                        setSelectedTicket(item.ticket);
-                        setListPanelOpen(false);
-                      }}
-                      onMouseEnter={!isReleased ? (e => { (e.currentTarget as HTMLElement).style.background = "#E5E7EB"; }) : undefined}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isReleased ? "#F0FDF4" : "#F4F5F6"; }}
-                      style={{
-                        fontSize: 10, fontWeight: 500, color: isReleased ? "#16A34A" : "#1A1714",
-                        background: isReleased ? "#F0FDF4" : "#F4F5F6",
-                        borderRadius: 5, padding: "3px 5px",
-                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        cursor: "pointer", userSelect: "none",
-                        border: `1px solid ${isReleased ? "rgba(22,163,74,0.2)" : "transparent"}`,
-                        display: "flex", alignItems: "center", gap: 3,
-                        transition: "background 0.1s",
-                      }}>
-                      <GripVertical style={{ width: 9, height: 9, color: isReleased ? "rgba(22,163,74,0.4)" : "#B0A9A4", flexShrink: 0 }} />
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{truncateText(label, 16)}</span>
-                    </div>
-                  );
-                })}
+                {/* Ticket items Container — 領域を確保しつつはみ出さない設定 */}
+                <div style={{
+                  flex: 1, display: "flex", flexDirection: "column", gap: 2, minHeight: 0,
+                  overflow: "hidden"
+                }}>
+                  {dayItems.slice(0, 4).map(item => {
+                    const isReleased = item.ticket.status === "released";
+                    const label = `${item.ticket.wbs} ${item.ticket.title}`;
+                    return (
+                      <div key={item.ticket.id}
+                        draggable
+                        onDragStart={e => {
+                          if (isReleased) {
+                            isDraggingReleasedRef.current = true;
+                            e.dataTransfer.setData("text/plain", "");
+                            setDragTooltipId(item.ticket.id);
+                            setTooltipPos({ x: e.clientX, y: e.clientY });
+                          } else {
+                            handleDragStart(e, item.ticket.id);
+                          }
+                        }}
+                        onDragEnd={() => {
+                          if (isReleased) {
+                            isDraggingReleasedRef.current = false;
+                            setDragTooltipId(null);
+                          } else {
+                            setDragId(null);
+                            setDragOverTarget(null);
+                          }
+                        }}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelectedTicketMeta({ sprintId: item.sprintId, projectId: item.projectId, projectSlug: item.projectSlug });
+                          setSelectedTicket(item.ticket);
+                          setListPanelOpen(false);
+                        }}
+                        onMouseEnter={!isReleased ? (e => { (e.currentTarget as HTMLElement).style.background = "#E5E7EB"; }) : undefined}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isReleased ? "#F0FDF4" : "#F4F5F6"; }}
+                        style={{
+                          flex: "0 0 22px", // 🌟 修正: 高さを絶対に22pxに固定（Squish防止）
+                          height: 22,
+                          boxSizing: "border-box",
+                          fontSize: 10, fontWeight: 500, color: isReleased ? "#16A34A" : "#1A1714",
+                          background: isReleased ? "#F0FDF4" : "#F4F5F6",
+                          borderRadius: 5, padding: "0 6px",
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          cursor: "pointer", userSelect: "none",
+                          border: `1px solid ${isReleased ? "rgba(22,163,74,0.2)" : "transparent"}`,
+                          display: "flex", alignItems: "center", gap: 3,
+                          transition: "background 0.1s",
+                        }}>
+                        <GripVertical style={{ width: 9, height: 9, color: isReleased ? "rgba(22,163,74,0.4)" : "#B0A9A4", flexShrink: 0 }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{truncateText(label, 16)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 🌟 修正：残りの省略バッジも高さを固定し、確実に最下部に表示 */}
                 {dayItems.length > 4 && (
                   <div
                     onClick={e => { e.stopPropagation(); openList(dateStr); }}
                     style={{
+                      flex: "0 0 18px", // 🌟 追加: バッジの高さを18pxに固定
+                      height: 18,
+                      boxSizing: "border-box",
+                      display: "flex", alignItems: "center", justifyContent: "center",
                       fontSize: 10, fontWeight: 600, color: "#9E9690",
-                      background: "#F4F5F6", borderRadius: 5, padding: "3px 5px",
+                      background: "#F4F5F6", borderRadius: 5, padding: "0 5px",
                       cursor: "pointer", textAlign: "center",
                       border: "1px solid transparent",
+                      marginTop: 2
                     }}
                   >
                     他 {dayItems.length - 4} 件...
