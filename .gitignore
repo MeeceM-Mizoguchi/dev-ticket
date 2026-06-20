@@ -10,3 +10,4 @@ Thumbs.db
 env
 .gitignore
 env.example
+.env.example
