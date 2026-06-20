@@ -32,9 +32,12 @@ function truncateText(text: string, maxLen = 20): string {
 }
 
 export function ReleaseNotesPage() {
-  const today = new Date();
-  const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth());
+  const todayObj = new Date();
+  // 🌟 修正：UTCベースの toISOString() ではなく、ローカルのタイムゾーン（JST）で「今日」を生成
+  const todayStr = toDateStr(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
+
+  const [year, setYear] = useState(todayObj.getFullYear());
+  const [month, setMonth] = useState(todayObj.getMonth());
 
   const { userId, userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
@@ -80,7 +83,7 @@ export function ReleaseNotesPage() {
 
   // Month/Year picker
   const [showPicker, setShowPicker] = useState(false);
-  const [pickerYear, setPickerYear] = useState(today.getFullYear());
+  const [pickerYear, setPickerYear] = useState(todayObj.getFullYear());
   const pickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -94,7 +97,7 @@ export function ReleaseNotesPage() {
 
   const openPicker = () => { setPickerYear(year); setShowPicker(s => !s); };
   const selectPickerMonth = (y: number, m: number) => { setYear(y); setMonth(m); setShowPicker(false); };
-  const goToday = () => { setYear(today.getFullYear()); setMonth(today.getMonth()); };
+  const goToday = () => { setYear(todayObj.getFullYear()); setMonth(todayObj.getMonth()); };
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
@@ -529,7 +532,7 @@ export function ReleaseNotesPage() {
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
                       {MONTH_NAMES.map((name, i) => {
                         const isSel = pickerYear === year && i === month;
-                        const isNow = pickerYear === today.getFullYear() && i === today.getMonth();
+                        const isNow = pickerYear === todayObj.getFullYear() && i === todayObj.getMonth();
                         return (
                           <button
                             key={i}
@@ -553,7 +556,7 @@ export function ReleaseNotesPage() {
                     {/* 今日へジャンプ */}
                     <div style={{ marginTop: 10, borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 8 }}>
                       <button
-                        onClick={() => selectPickerMonth(today.getFullYear(), today.getMonth())}
+                        onClick={() => selectPickerMonth(todayObj.getFullYear(), todayObj.getMonth())}
                         style={{ width: "100%", padding: "7px 0", background: "#F0FDF4", color: "#059669", fontWeight: 700, fontSize: 12, border: "none", borderRadius: 8, cursor: "pointer", transition: "background 0.12s" }}
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
@@ -611,7 +614,9 @@ export function ReleaseNotesPage() {
             const dateStr = toDateStr(year, month, day);
             const dayItems = byDate.get(dateStr) ?? [];
             const allReleased = dayItems.length > 0 && dayItems.every(i => i.ticket.status === "released");
-            const isToday = dateStr === today.toISOString().split("T")[0];
+
+            // 🌟 修正：生成したJST基準の「今日」の文字列で比較
+            const isToday = dateStr === todayStr;
             const isDragOver = dragOverTarget === dateStr;
 
             // 🌟 修正：ブレイクポイントをより安全な数値に変更
