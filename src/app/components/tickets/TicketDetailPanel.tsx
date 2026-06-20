@@ -1384,8 +1384,15 @@ export function TicketDetailPanel({
             title={`${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}`}
           >
             <ChevronLeft size={14} color="#A09690" strokeWidth={2.5} />
-            <span style={{ writingMode: "vertical-rl", textOrientation: "mixed", transform: "rotate(180deg)", fontSize: 10, fontWeight: 700, color: "#A09690", maxHeight: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: "0.02em" }}>
-              {breadcrumbParentTicket.wbs}
+            <span style={{ 
+              writingMode: "vertical-rl", 
+              textOrientation: "upright",  // 日本語が横に倒れず、真っ直ぐ正位置で並ぶ設定
+              fontSize: 11, 
+              fontWeight: 700, 
+              color: "#A09690", 
+              letterSpacing: "0.15em"      // 縦書きの文字の隙間をきれいにあける
+            }}>
+              親チケットに戻る
             </span>
           </div>
         )}
