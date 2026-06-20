@@ -610,15 +610,22 @@ export function SprintDetailPage() {
             const toggleTicketExpand = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTicketIds(prev => { const n = new Set(prev); n.has(ticket.id) ? n.delete(ticket.id) : n.add(ticket.id); return n; }); };
 
             const displayCategory = getCategoryLabel(ticket);
+            const needsHours = ticket.status === "waiting-release" && (ticket.actualWorkHours == null);
 
             return (
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
                   data-wbs={ticket.wbs}
-                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1 }}
+                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: needsHours ? "#FFF5F5" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isTerminal ? "#ECECEB" : "#FFF7F3"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent"; }}>
                   <div style={{ display: "flex", justifyContent: "center", gap: 3, alignItems: "center" }}>
+                    {needsHours && (
+                      <span
+                        title="工数が未入力です"
+                        style={{ fontSize: 11, fontWeight: 800, color: "#EF4444", lineHeight: 1, flexShrink: 0, cursor: "default", userSelect: "none" }}
+                      >!</span>
+                    )}
                     {hasChildren ? (
                       <button onClick={toggleTicketExpand} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
                         {isTicketExpanded ? <ChevronDown style={{ width: 10, height: 10 }} /> : <ChevronRight style={{ width: 10, height: 10 }} />}

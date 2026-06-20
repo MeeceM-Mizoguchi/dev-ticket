@@ -88,6 +88,8 @@ export interface SprintTicket {
   // リリースノート用フィールド
   releaseDate?: string | null;
   isReleaseDateUndecided?: boolean;
+  // 対応完了時の手動工数入力
+  actualWorkHours?: number | null;
 }
 
 export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";

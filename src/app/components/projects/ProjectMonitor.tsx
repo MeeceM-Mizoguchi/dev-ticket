@@ -64,13 +64,11 @@ export function ProjectMonitor({
     stgCompletedAt: null, uatCompletedAt: null, releasedAt: null,
   });
   const [loading, setLoading] = useState(true);
-  // 🌟 追加: 保留中フラグを管理するためのステート
   const [isHold, setIsHold] = useState(false);
-  // 🌟 追加: 取下フラグと取下日時を管理するためのステート
   const [isWithdrawn, setIsWithdrawn] = useState(false);
   const [withdrawnAt, setWithdrawnAt] = useState<string | null>(null);
-  // 🌟 追加: 保留時間を逆算するためにコメント履歴を保持するステート
   const [comments, setComments] = useState<any[]>([]);
+  const [actualWorkHours, setActualWorkHours] = useState<number | null>(null);
 
   // モーダルを開いた瞬間の時間を「計測中」の計算用に使用する
   const nowIso = new Date().toISOString();
@@ -79,12 +77,13 @@ export function ProjectMonitor({
     // 🌟 修正: milestones と ticket の進捗、さらに保留コメントを抽出するためにコメント履歴を並列取得する
     Promise.all([
       fetchMilestones(ticketId),
-      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress").eq("id", ticketId).single() : Promise.resolve({ data: null }),
+      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours").eq("id", ticketId).single() : Promise.resolve({ data: null }),
       isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null })
     ]).then(([data, ticketRes, commentsRes]) => {
       if (data) setMilestones(data);
       if (ticketRes?.data?.progress === -1) setIsHold(true);
       if (ticketRes?.data?.progress === -2) setIsWithdrawn(true);
+      if (ticketRes?.data?.actual_work_hours != null) setActualWorkHours(ticketRes.data.actual_work_hours);
       if (commentsRes?.data) {
         setComments(commentsRes.data);
         // 取下されている場合、最後に「チケットを取下げました」と記録された時間を探す
@@ -291,9 +290,16 @@ export function ProjectMonitor({
         {/* Footer (合計時間 - 常に固定表示) */}
         {!loading && (
           <div style={{ flexShrink: 0, padding: "16px 24px", background: "#FAFAF9", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>現時点の合計作業時間</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>現時点の合計作業時間</span>
+              {actualWorkHours != null && (
+                <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 500 }}>手動入力済み</span>
+              )}
+            </div>
             <span style={{ fontSize: 15, fontWeight: 800, color: "#059669", fontFamily: "var(--font-mono)" }}>
-              {formatDuration(totalHours)}
+              {actualWorkHours != null
+                ? formatDuration(actualWorkHours)
+                : formatDuration(totalHours)}
             </span>
           </div>
         )}

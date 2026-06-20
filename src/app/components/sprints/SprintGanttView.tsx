@@ -173,12 +173,13 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                   const children = sprint.tickets.filter(c => c.parentId === t.id);
                   const hasChildren = children.length > 0;
                   const isTicketExpanded = expandedTickets.has(t.id);
+                  const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
                   return (
                     <div key={t.id}>
                       <div onClick={() => onSelectTicket?.(t)}
-                        style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 14px", display: "flex", alignItems: "center", gap: 5, background: "rgba(26,23,20,0.012)", cursor: "pointer" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(26,23,20,0.012)"; }}>
+                        style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 14px", display: "flex", alignItems: "center", gap: 5, background: needsHours ? "rgba(239,68,68,0.06)" : "rgba(26,23,20,0.012)", cursor: "pointer", outline: needsHours ? "1px solid rgba(239,68,68,0.25)" : "none", outlineOffset: "-1px" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "rgba(239,68,68,0.10)" : "#F0F9F5"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "rgba(239,68,68,0.06)" : "rgba(26,23,20,0.012)"; }}>
                         {hasChildren ? (
                           <button onClick={e => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); }}
                             style={{ padding: 1, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", flexShrink: 0 }}>

@@ -14,7 +14,7 @@ export function useSprintActualHours(sprintId: string | null | undefined) {
     setLoading(true);
     supabase!
       .from("sprint_tickets")
-      .select("started_at, review_requested_at, review_approved_at, stg_completed_at, uat_completed_at, released_at")
+      .select("started_at, review_requested_at, review_approved_at, stg_completed_at, uat_completed_at, released_at, actual_work_hours")
       .eq("sprint_id", sprintId)
       .then(({ data }) => {
         if (!data) { setActualHours(null); return; }
@@ -26,6 +26,7 @@ export function useSprintActualHours(sprintId: string | null | undefined) {
             stgCompletedAt: t.stg_completed_at,
             uatCompletedAt: t.uat_completed_at,
             releasedAt: t.released_at,
+            actualWorkHours: t.actual_work_hours ?? null,
           }),
           0
         );

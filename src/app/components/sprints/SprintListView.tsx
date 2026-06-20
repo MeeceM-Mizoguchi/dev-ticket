@@ -720,16 +720,23 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
                     const displayCategory = getCategoryLabel(t);
                     const isHighlighted = t.wbs === targetTicketWbs;
                     const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? "#F5F5F4" : "#FFFFFF";
+                    const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
 
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           data-wbs={t.wbs}
                           // 🌟 修正: progress === -2 (取下) の時もグレーアウト＆半透明にする
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1 }}
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = baseBg; }}>
-                          <div style={{ display: "flex", justifyContent: "center", gap: 4 }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                            {needsHours && (
+                              <span
+                                title="工数が未入力です"
+                                style={{ fontSize: 11, fontWeight: 800, color: "#EF4444", lineHeight: 1, flexShrink: 0, cursor: "default", userSelect: "none" }}
+                              >!</span>
+                            )}
                             {hasChildren ? (
                               <button onClick={toggleTicket} style={{ padding: 2, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center" }}>
                                 {isTicketExpanded ? <ChevronDown style={{ width: 10, height: 10 }} /> : <ChevronRight style={{ width: 10, height: 10 }} />}
