@@ -110,6 +110,7 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
   const priColor = ticket.priority === "high" ? "#DC2626" : ticket.priority === "medium" ? "#D97706" : "#0284C7";
   const priLabel = ticket.priority === "high" ? "高" : ticket.priority === "medium" ? "中" : "低";
   const isChild = !!ticket.parentId;
+  const needsHours = ticket.status === "waiting-release" && (ticket.actualWorkHours == null);
 
   return (
     <div style={{ position: "relative" }}>
@@ -124,9 +125,9 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
         </div>
       )}
       <div ref={drag} onClick={() => onSelect?.(ticket)}
-        onMouseEnter={e => { if (!isDragging) { (e.currentTarget as HTMLElement).style.boxShadow = "0 3px 10px rgba(0,0,0,0.10)"; if (isChild) setShowParentTooltip(true); } }}
-        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.04)"; setShowParentTooltip(false); }}
-        style={{ background: "#FFF", borderRadius: 9, padding: "10px 12px", border: isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : "0 1px 3px rgba(0,0,0,0.04)" }}>
+        onMouseEnter={e => { if (!isDragging) { (e.currentTarget as HTMLElement).style.boxShadow = needsHours ? "0 0 0 2px rgba(239,68,68,0.35), 0 3px 10px rgba(0,0,0,0.10)" : "0 3px 10px rgba(0,0,0,0.10)"; if (isChild) setShowParentTooltip(true); } }}
+        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)"; setShowParentTooltip(false); }}
+        style={{ background: needsHours ? "#FFF5F5" : "#FFF", borderRadius: 9, padding: "10px 12px", border: needsHours ? "1px solid rgba(239,68,68,0.30)" : isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)" }}>
         {isChild && (
           <div style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", marginBottom: 4, display: "flex", alignItems: "center", gap: 3 }}>
             <span style={{ width: 8, height: 8, border: "1px solid rgba(5,150,105,0.4)", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 6 }}>↳</span>

@@ -69,11 +69,11 @@ export function getAvatarColor(name: string) {
   return colors[name.charCodeAt(0) % colors.length];
 }
 
-// 案1+案2: 日次8h上限＋夜間(23時〜翌8時)除外で実働時間を計算
-// 初日はactual開始時刻から、翌日以降は9時スタート、各日最大8h
+// 日次8h上限＋夜間(23時〜翌8時)除外で実働時間を計算
+// 初日はactual開始時刻（最早8時）から、翌日以降も夜明け8時スタート、各日最大8h
 export function calcWorkingHours(startMs: number, endMs: number): number {
   if (endMs <= startMs) return 0;
-  const NIGHT_END = 8, NEXT_DAY = 9, NIGHT_START = 23, MAX_PER_DAY = 8;
+  const NIGHT_END = 8, NIGHT_START = 23, MAX_PER_DAY = 8;
   let total = 0;
   const s = new Date(startMs);
   let cur = new Date(s.getFullYear(), s.getMonth(), s.getDate());
@@ -84,7 +84,7 @@ export function calcWorkingHours(startMs: number, endMs: number): number {
     const y = cur.getFullYear(), mo = cur.getMonth(), d = cur.getDate();
     const eff0 = isFirst
       ? Math.max(startMs, new Date(y, mo, d, NIGHT_END).getTime())
-      : new Date(y, mo, d, NEXT_DAY).getTime();
+      : new Date(y, mo, d, NIGHT_END).getTime();
     const eff1 = Math.min(endMs, new Date(y, mo, d, NIGHT_START).getTime());
     if (eff1 > eff0) total += Math.min((eff1 - eff0) / 3600000, MAX_PER_DAY);
     cur = new Date(y, mo, d + 1);
@@ -100,7 +100,9 @@ export function calcTicketActualHours(ticket: {
   stgCompletedAt?: string | null;
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
+  actualWorkHours?: number | null;
 }): number {
+  if (ticket.actualWorkHours != null) return ticket.actualWorkHours;
   const ts = [
     ticket.startedAt,
     ticket.reviewRequestedAt,

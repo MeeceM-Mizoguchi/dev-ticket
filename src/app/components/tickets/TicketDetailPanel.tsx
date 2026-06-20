@@ -17,6 +17,7 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
+import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
@@ -61,6 +62,28 @@ function StatusBadge({ status }: { status: string }) {
   const s = TICKET_STATUSES.find(x => x.value === status);
   if (!s) return null;
   return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: s.bg, color: s.color, flexShrink: 0 }}>{s.label}</span>;
+}
+
+function rawSegmentHour(a?: string | null, b?: string | null): number {
+  if (!a || !b) return 0;
+  return Math.max(0, Math.round(((new Date(b).getTime() - new Date(a).getTime()) / 3600000) * 10) / 10);
+}
+
+function computeRawSegments(t: {
+  startedAt?: string | null;
+  reviewRequestedAt?: string | null;
+  reviewApprovedAt?: string | null;
+  stgCompletedAt?: string | null;
+  uatCompletedAt?: string | null;
+  releasedAt?: string | null;
+}): number[] {
+  return [
+    rawSegmentHour(t.startedAt, t.reviewRequestedAt),
+    rawSegmentHour(t.reviewRequestedAt, t.reviewApprovedAt),
+    rawSegmentHour(t.reviewApprovedAt, t.stgCompletedAt),
+    rawSegmentHour(t.stgCompletedAt, t.uatCompletedAt),
+    rawSegmentHour(t.uatCompletedAt, t.releasedAt),
+  ];
 }
 
 export function TicketDetailPanel({
@@ -173,6 +196,14 @@ export function TicketDetailPanel({
   const [isReleaseDateUndecided, setIsReleaseDateUndecided] = useState(ticket?.isReleaseDateUndecided ?? false);
   const [showChangeDatePicker, setShowChangeDatePicker] = useState(false);
   const [pendingReleaseDate, setPendingReleaseDate] = useState<string | null>(null);
+
+  // 対応工数
+  const [actualWorkHours, setActualWorkHours] = useState<number | null>(ticket?.actualWorkHours ?? null);
+  const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
+  // waiting-release で工数未入力のとき true → パネル内を工数入力のみ表示
+  const [showHoursInputMode, setShowHoursInputMode] = useState(
+    ticket?.status === "waiting-release" && (ticket?.actualWorkHours == null)
+  );
 
   // レビューフロー アコーディオン
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
@@ -342,6 +373,9 @@ export function TicketDetailPanel({
     setIsReleaseDateUndecided(ticket.isReleaseDateUndecided ?? false);
     setShowChangeDatePicker(false);
     setPendingReleaseDate(null);
+    setActualWorkHours(ticket.actualWorkHours ?? null);
+    setShowCompletionOverlay(false);
+    setShowHoursInputMode(ticket.status === "waiting-release" && (ticket.actualWorkHours == null));
 
     if (ticket.id && isSupabaseEnabled) {
       supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
@@ -726,6 +760,14 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
+  const handleSaveActualWorkHours = async (hours: number) => {
+    if (!ticket || !isSupabaseEnabled) return;
+    await supabase!.from("sprint_tickets").update({ actual_work_hours: hours }).eq("id", ticket.id);
+    setActualWorkHours(hours);
+    setShowHoursInputMode(false);
+    onUpdated?.();
+  };
+
   const handleAddToReleaseNotes = async () => {
     if (!ticket) return;
     const newStatus: TicketStatus = "waiting-release";
@@ -743,7 +785,8 @@ export function TicketDetailPanel({
     if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
     const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
     await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
-    onUpdated?.();
+    // ステータス保存後にお祝いオーバーレイを表示（工数保存後に onUpdated を呼ぶ）
+    setShowCompletionOverlay(true);
   };
 
   const handleSaveReleaseDate = async (newDate: string) => {
@@ -1372,7 +1415,7 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 202 : 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim }}>
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 202 : 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim, overflow: "hidden" }}>
 
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
@@ -1660,6 +1703,8 @@ export function TicketDetailPanel({
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 32px", display: "flex", flexDirection: "column", gap: 16 }} onClick={() => assigneeOpen && setAssigneeOpen(false)}>
 
+          <>
+
           {/* Metadata */}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {/* ステータス | 優先度 */}
@@ -1672,6 +1717,23 @@ export function TicketDetailPanel({
                 </div>
                 {status === "released" && progress !== -2 && (
                   <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み{releaseDate ? ` ${releaseDate.replace(/-/g, "/")}` : ""}</span>
+                )}
+                {status === "waiting-release" && actualWorkHours != null && (
+                  <div style={{ marginTop: 5 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#ECFDF5", borderRadius: 4, padding: "1px 7px", display: "inline-block" }}>
+                      実績 {actualWorkHours}h
+                    </span>
+                  </div>
+                )}
+                {status === "waiting-release" && actualWorkHours == null && (
+                  <div style={{ marginTop: 6 }}>
+                    <p style={{ fontSize: 10, fontWeight: 700, color: "#EF4444", margin: "0 0 6px" }}>⚠ 対応工数が未入力です</p>
+                    <button
+                      onClick={() => setShowHoursInputMode(true)}
+                      style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 6, border: "none", cursor: "pointer", background: "#059669", color: "#FFF" }}>
+                      工数を入力する
+                    </button>
+                  </div>
                 )}
                 {status === "waiting-release" && (
                   <div style={{ marginTop: 6 }}>
@@ -2824,7 +2886,25 @@ export function TicketDetailPanel({
               </div>
             </div>
           </div>
+          </>
         </div>
+        {showCompletionOverlay && ticket && (
+          <CompletionOverlay
+            ticketTitle={title}
+            initialSegmentHours={computeRawSegments(ticket)}
+            onSave={handleSaveActualWorkHours}
+            onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
+          />
+        )}
+        {showHoursInputMode && !showCompletionOverlay && ticket && (
+          <CompletionOverlay
+            ticketTitle={title}
+            initialSegmentHours={computeRawSegments(ticket)}
+            skipAnimation
+            onSave={handleSaveActualWorkHours}
+            onClose={() => setShowHoursInputMode(false)}
+          />
+        )}
       </div>
     </>
   );
