@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { BellRing } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { Navigate } from "react-router";
 import { SlackNotificationSetting } from "@/app/components/settings/SlackNotificationSetting";
 
 export function AdminSettingsPage() {
   const { userPermissions } = useAuth();
+  const { selectedOrgId } = useOrg();
   const [searchParams, setSearchParams] = useSearchParams();
 
   if (!userPermissions.canAccessAdminSettings) return <Navigate to="/dashboard" replace />;
@@ -49,6 +52,7 @@ export function AdminSettingsPage() {
             <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>Slack通知のプロジェクト連携設定を管理します</p>
           </div>
         </div>
+        <OrgSelector />
       </div>
 
       {/* バナー */}
@@ -84,6 +88,7 @@ export function AdminSettingsPage() {
             <SlackNotificationSetting
               isAdminOrPM={userPermissions.canAccessAdminSettings}
               connectedProjectId={slackConnectedProjectId}
+              orgId={selectedOrgId}
             />
           </div>
 

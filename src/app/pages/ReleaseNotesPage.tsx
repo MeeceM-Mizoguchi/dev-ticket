@@ -6,7 +6,10 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { mapSprintTicket } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
+import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { useWindowSize } from "@/app/hooks/useWindowSize";
 import type { SprintTicket } from "@/app/types";
 
 interface ReleaseItem {
@@ -36,11 +39,15 @@ export function ReleaseNotesPage() {
   const [year, setYear] = useState(todayObj.getFullYear());
   const [month, setMonth] = useState(todayObj.getMonth());
 
-  const { userId, userName, userRole } = useAuth();
+  const { userId, userName, userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
+  const isOwner = userRole === "owner";
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem("releaseNotes:selectedProjectId") ?? ""
   );
+
+  const { height } = useWindowSize();
 
   useEffect(() => {
     if (selectedProjectId) localStorage.setItem("releaseNotes:selectedProjectId", selectedProjectId);
@@ -120,38 +127,42 @@ export function ReleaseNotesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Load projects the current user is assigned to
+  // Load projects (owner: all projects in selected org / others: assigned projects only)
   useEffect(() => {
     if (!isSupabaseEnabled || (!userId && !userName)) return;
 
-    // 一旦プロジェクトを取得し、フロントエンドで確実にアサイン判定を行う
-    const q = (supabase as NonNullable<typeof supabase>)
+    let q = (supabase as NonNullable<typeof supabase>)
       .from("projects")
       .select("id, name, members")
       .order("name");
+    if (isOwner && selectedOrgId) {
+      q = q.eq("organization_id", selectedOrgId);
+    } else if (!isOwner && userOrgId) {
+      q = q.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+    }
 
     q.then(({ data }) => {
       if (data && data.length > 0) {
-        // 現在のユーザーが members に含まれているプロジェクトのみを抽出
-        // （userId と userName の両方で判定します）
-        const assignedProjects = data.filter((p: any) => {
-          if (!p.members) return false;
-          if (Array.isArray(p.members)) {
-            return p.members.some((m: any) =>
-              m === userId || m === userName || m.id === userId || m.userId === userId
-            );
-          }
-          if (typeof p.members === "string") {
-            return p.members.includes(userId) || (userName && p.members.includes(userName));
-          }
-          return false;
-        });
+        const visibleProjects = isOwner
+          ? data
+          : data.filter((p: any) => {
+              if (!p.members) return false;
+              if (Array.isArray(p.members)) {
+                return p.members.some((m: any) =>
+                  m === userId || m === userName || m.id === userId || m.userId === userId
+                );
+              }
+              if (typeof p.members === "string") {
+                return p.members.includes(userId) || (userName && p.members.includes(userName));
+              }
+              return false;
+            });
 
-        if (assignedProjects.length > 0) {
-          const projects = assignedProjects.map(p => ({ id: p.id, name: p.name }));
+        if (visibleProjects.length > 0) {
+          const projects = visibleProjects.map((p: any) => ({ id: p.id, name: p.name }));
           setMyProjects(projects);
           setSelectedProjectId(prev => {
-            const exists = projects.some(p => p.id === prev);
+            const exists = projects.some((p: any) => p.id === prev);
             return exists ? prev : projects[0].id;
           });
         } else {
@@ -163,7 +174,7 @@ export function ReleaseNotesPage() {
         setSelectedProjectId("");
       }
     });
-  }, [userId, userName]);
+  }, [userId, userName, isOwner, selectedOrgId, userOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {
@@ -192,21 +203,27 @@ export function ReleaseNotesPage() {
   for (let d = 1; d <= daysInMonth; d++) calCells.push(d);
   while (calCells.length % 7 !== 0) calCells.push(null);
 
-  // Filter by selected project
-  const filteredItems = selectedProjectId
-    ? items.filter(i => i.projectId === selectedProjectId)
-    : items;
+  // アクセス可能なプロジェクトIDセット（組織フィルタ済み）
+  const accessibleProjectIds = new Set(myProjects.map(p => p.id));
+  // プロジェクトが0件のときは空 / 選択中プロジェクトがあれば単一絞り込み / なければ全アクセス可能プロジェクト
+  const filteredItems = myProjects.length === 0
+    ? []
+    : selectedProjectId
+      ? items.filter(i => i.projectId === selectedProjectId)
+      : items.filter(i => accessibleProjectIds.has(i.projectId));
 
   // Group items by release_date
+  // 明示的に is_release_date_undecided=true のチケットのみ未定エリアへ。
+  // release_date も undecided フラグも未設定の旧チケットは表示しない。
   const byDate = new Map<string, ReleaseItem[]>();
   const undecidedItems: ReleaseItem[] = [];
   for (const item of filteredItems) {
-    if (item.ticket.isReleaseDateUndecided || !item.ticket.releaseDate) {
-      undecidedItems.push(item);
-    } else {
+    if (item.ticket.releaseDate) {
       const d = item.ticket.releaseDate;
       if (!byDate.has(d)) byDate.set(d, []);
       byDate.get(d)!.push(item);
+    } else if (item.ticket.isReleaseDateUndecided) {
+      undecidedItems.push(item);
     }
   }
 
@@ -431,6 +448,7 @@ export function ReleaseNotesPage() {
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>リリースノート</h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+            <OrgSelector />
             {/* Project selector */}
             <div style={{ width: 220 }}>
               <CustomSelect
@@ -561,6 +579,17 @@ export function ReleaseNotesPage() {
       </div>
 
       {/* Calendar body */}
+      {myProjects.length === 0 ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: "#F4F5F6", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#B0A9A4" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <p style={{ fontSize: 15, fontWeight: 700, color: "#3D3732", marginBottom: 6 }}>アサインされたプロジェクトがありません</p>
+            <p style={{ fontSize: 12, color: "#B0A9A4", lineHeight: 1.6 }}>選択中の組織にプロジェクトがないか、<br />まだアサインされていません</p>
+          </div>
+        </div>
+      ) : (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "10px 20px 14px", minHeight: 0, minWidth: 0 }}>
 
         {/* Day-of-week header */}
@@ -589,6 +618,9 @@ export function ReleaseNotesPage() {
             // 🌟 修正：生成したJST基準の「今日」の文字列で比較
             const isToday = dateStr === todayStr;
             const isDragOver = dragOverTarget === dateStr;
+
+            // 🌟 修正：ブレイクポイントをより安全な数値に変更
+            const MAX_DISPLAY = height >= 960 ? 4 : height >= 760 ? 3 : height >= 600 ? 2 : 1;
 
             return (
               <div key={i}
@@ -639,9 +671,9 @@ export function ReleaseNotesPage() {
                 {/* Ticket items Container — 領域を確保しつつはみ出さない設定 */}
                 <div style={{
                   flex: 1, display: "flex", flexDirection: "column", gap: 2, minHeight: 0,
-                  overflow: "hidden"
+                  overflow: "hidden" // 🌟 修正: 万が一スペースが足りない場合は、潰さずに綺麗に隠す
                 }}>
-                  {dayItems.slice(0, 4).map(item => {
+                  {dayItems.slice(0, MAX_DISPLAY).map(item => {
                     const isReleased = item.ticket.status === "released";
                     const label = `${item.ticket.wbs} ${item.ticket.title}`;
                     return (
@@ -677,10 +709,10 @@ export function ReleaseNotesPage() {
                         style={{
                           flex: "0 0 22px", // 🌟 修正: 高さを絶対に22pxに固定（Squish防止）
                           height: 22,
-                          boxSizing: "border-box",
+                          boxSizing: "border-box", // 🌟 修正: ボーダー等を高さに含める
                           fontSize: 10, fontWeight: 500, color: isReleased ? "#16A34A" : "#1A1714",
                           background: isReleased ? "#F0FDF4" : "#F4F5F6",
-                          borderRadius: 5, padding: "0 6px",
+                          borderRadius: 5, padding: "0 6px", // 🌟 修正: 縦paddingをなくしflexのalignItemsで中央揃え
                           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                           cursor: "pointer", userSelect: "none",
                           border: `1px solid ${isReleased ? "rgba(22,163,74,0.2)" : "transparent"}`,
@@ -695,7 +727,7 @@ export function ReleaseNotesPage() {
                 </div>
 
                 {/* 🌟 修正：残りの省略バッジも高さを固定し、確実に最下部に表示 */}
-                {dayItems.length > 4 && (
+                {dayItems.length > MAX_DISPLAY && (
                   <div
                     onClick={e => { e.stopPropagation(); openList(dateStr); }}
                     style={{
@@ -710,7 +742,7 @@ export function ReleaseNotesPage() {
                       marginTop: 2
                     }}
                   >
-                    他 {dayItems.length - 4} 件...
+                    他 {dayItems.length - MAX_DISPLAY} 件...
                   </div>
                 )}
               </div>
@@ -784,6 +816,7 @@ export function ReleaseNotesPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

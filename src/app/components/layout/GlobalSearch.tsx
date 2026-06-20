@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { htmlToText } from "@/app/lib/helpers";
@@ -87,7 +88,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 function searchMock(query: string, userName: string, userRole: string): SearchResults {
   const q = query.toLowerCase();
-  const isAdmin = userRole === "admin" || userRole === "project-manager";
+  const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const accessible = isAdmin ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
   const accessibleIds = new Set(accessible.map(p => p.id));
 
@@ -128,7 +129,8 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
 const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [], comments: [], descriptions: [] };
 
 export function GlobalSearch() {
-  const { userName, userRole } = useAuth();
+  const { userName, userRole, userOrgId } = useAuth();
+  const { selectedOrgId } = useOrg();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResults>(EMPTY);
@@ -137,7 +139,7 @@ export function GlobalSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isAdmin = userRole === "admin" || userRole === "project-manager";
+  const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
 
   const hasResults = results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length > 0;
 
@@ -159,7 +161,14 @@ export function GlobalSearch() {
     try {
       // Get accessible projects with their sprints in one query_
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data: projData } = await supabase!.from("projects").select("id, name, client, status, members, sprints(id, name, status, project_id)") as { data: any[] | null };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let projQuery = supabase!.from("projects").select("id, name, client, status, members, organization_id, sprints(id, name, status, project_id)");
+      if (userRole === "owner") {
+        if (selectedOrgId) projQuery = projQuery.eq("organization_id", selectedOrgId);
+      } else if (userOrgId) {
+        projQuery = projQuery.or(`organization_id.eq.${userOrgId},organization_id.is.null`);
+      }
+      const { data: projData } = await projQuery as { data: any[] | null };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const accessible: any[] = isAdmin ? (projData ?? []) : (projData ?? []).filter(p => Array.isArray(p.members) && p.members.includes(userName));
       const sprintIds: string[] = accessible.flatMap(p => (p.sprints ?? []).map((s: { id: string }) => s.id));
@@ -189,7 +198,12 @@ export function GlobalSearch() {
         sprintIds.length > 0
           ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id, description").or(`title.ilike.%${q}%,wbs.ilike.%${q}%,description.ilike.%${q}%`).in("sprint_id", sprintIds).limit(10)
           : Promise.resolve({ data: [] }),
-        supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(5),
+        (() => {
+          let mq = supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(5);
+          if (userRole === "owner") { if (selectedOrgId) mq = mq.eq("organization_id", selectedOrgId); }
+          else if (userOrgId) mq = mq.eq("organization_id", userOrgId);
+          return mq;
+        })(),
         sprintIds.length > 0
           ? supabase!.from("ticket_comments").select("id, content, ticket_id").eq("comment_type", "comment").ilike("content", `%${q}%`).limit(20)
           : Promise.resolve({ data: [] }),
@@ -238,7 +252,7 @@ export function GlobalSearch() {
     } finally {
       setIsLoading(false);
     }
-  }, [userName, userRole, isAdmin]);
+  }, [userName, userRole, userOrgId, selectedOrgId, isAdmin]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);

@@ -1,5 +1,5 @@
 import { useState, useEffect, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText, Globe } from "lucide-react";
 import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -10,11 +10,12 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "projects",   label: "PJ一覧",      icon: FolderKanban },
   { id: "my-actions", label: "アクション",  icon: ClipboardList },
   { id: "release-notes", label: "リリースノート", icon: FileText },
-  { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager"] },
+  { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager", "owner"] },
   { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
   { id: "roles", label: "ロール設定", icon: UserCog, permission: "canAccessRoles" },
   { id: "admin-settings", label: "通知管理", icon: BellRing, permission: "canAccessAdminSettings" },
+  { id: "organization", label: "組織管理", icon: Globe, permission: "canAccessOrganization" },
 ];
 
 export function Sidebar() {
@@ -47,6 +48,7 @@ export function Sidebar() {
     if (p.startsWith("/admin-settings")) return "admin-settings";
     if (p.startsWith("/my-actions")) return "my-actions";
     if (p.startsWith("/release-notes")) return "release-notes";
+    if (p.startsWith("/organization")) return "organization";
 
     // 上記の固定パスに当てはまらない URL（例: /DevTicket や /DevTicket/TKT-001 など）は、
     // プロジェクト詳細画面やスプリント管理画面を表示しているため「プロジェクト」をハイライトさせる
@@ -57,6 +59,8 @@ export function Sidebar() {
   const visible = NAV_ITEMS.filter(n => {
     if (n.roles && !n.roles.includes(userRole)) return false;
     if (n.permission && !userPermissions[n.permission]) return false;
+    // ownerはメンバーメニューを非表示（組織管理から各組織のメンバーページへ遷移）
+    if (n.id === "members" && userRole === "owner") return false;
     return true;
   });
 

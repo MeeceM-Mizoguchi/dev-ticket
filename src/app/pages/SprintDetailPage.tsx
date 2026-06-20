@@ -230,8 +230,8 @@ export function SprintDetailPage() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { showAlert } = useAlert();
-  const { userId, userPermissions, userRole } = useAuth();
-  const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  const { userId, userPermissions, userRole, userOrgId, userName } = useAuth();
+  const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const [project, setProject] = useState<Project | null>(null);
   const [sprint, setSprint] = useState<Sprint | null>(null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
@@ -365,6 +365,11 @@ export function SprintDetailPage() {
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
+
+  // 組織チェック: organization_id が設定されていて一致しない場合はアクセス不可（ownerは除く）
+  const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
+  const isMemberOfProject = isAdminOrPM || (project.members ?? []).includes(userName);
+  if (!sameOrg || !isMemberOfProject) return <Navigate to="/projects" replace />;
 
   const selectedTicket = ticketWbs
     ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null)
