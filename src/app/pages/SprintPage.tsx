@@ -241,8 +241,8 @@ export function SprintPage() {
         )}
       </div>
 
-      {viewMode === "list" && <SprintListView sprints={sprints} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
+      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
