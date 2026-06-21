@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
+
+function toMinuteSlug(createdAt: string | null | undefined): string {
+  if (!createdAt) return "";
+  const m = createdAt.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return "";
+  return `${m[1]}${m[2]}${m[3]}-${m[4]}${m[5]}${m[6]}`;
+}
 import { FolderKanban, ChevronRight, Plus, FileText, Trash2, Users, Check, X } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { mapProject, mapMeetingMinute, mapActionMemo } from "@/app/lib/mappers";
-import type { Project, MeetingMinute, ActionMemo } from "@/app/types";
+import type { Project, MeetingMinute, ActionMemo, AccessLevel, UserPermissions } from "@/app/types";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -97,9 +105,9 @@ function ActionItemsPanel({
 
 // ─── メインページ ─────────────────────────────────────────
 export function MinutesPage() {
-  const { projectSlug } = useParams<{ projectSlug: string }>();
+  const { projectSlug, minuteId: minuteIdParam } = useParams<{ projectSlug: string; minuteId?: string }>();
   const navigate = useNavigate();
-  const { userPermissions, userName } = useAuth();
+  const { userPermissions, userName, userRole, userId } = useAuth();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -113,9 +121,14 @@ export function MinutesPage() {
   const [content, setContent] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<MeetingMinute | null>(null);
+  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
+  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
+  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const canEdit = userPermissions.canEditDelete;
+  const isAdminRole = userRole === "owner" || userRole === "admin";
+  const canEdit = effectiveMinutesPerm === "edit";
+  const { open: openPreview } = usePreviewPanel();
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
@@ -123,12 +136,36 @@ export function MinutesPage() {
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
     setProject(mapProject(p));
-    const { data } = await supabase!.from("meeting_minutes").select("*").eq("project_id", p.id).order("meeting_date", { ascending: false });
+    const [{ data }, permResult] = await Promise.all([
+      supabase!.from("meeting_minutes").select("*").eq("project_id", p.id).order("meeting_date", { ascending: false }),
+      isAdminRole ? Promise.resolve({ data: null }) :
+        supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
+    ]);
     setMinutes((data ?? []).map(mapMeetingMinute));
+
+    if (isAdminRole) {
+      setEffectiveMinutesPerm("edit");
+      setEffectiveWikiPerm("edit");
+      setEffectiveBacklogPerm("edit");
+    } else {
+      const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
+      setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
+    }
     setLoading(false);
-  }, [projectSlug]);
+  }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
+
+  // URLパスパラメータからアイテム選択（UUID後方互換 + yyyymmdd-hhmmss スラグ対応）
+  useEffect(() => {
+    if (minuteIdParam && minutes.length > 0) {
+      const found = minutes.find(m => m.id === minuteIdParam)
+        ?? minutes.find(m => toMinuteSlug(m.createdAt) === minuteIdParam);
+      if (found) setSelectedId(found.id);
+    }
+  }, [minuteIdParam, minutes]);
 
   const selected = minutes.find(m => m.id === selectedId) ?? null;
 
@@ -165,24 +202,28 @@ export function MinutesPage() {
     if (!project) return;
     const id = crypto.randomUUID();
     const today = new Date().toISOString().slice(0, 10);
-    const { error } = await supabase!.from("meeting_minutes").insert({
+    const { data: inserted, error } = await supabase!.from("meeting_minutes").insert({
       id, project_id: project.id, title: "新規議事録", meeting_date: today, attendees: [], content: "",
       created_by: userName || null,
-    });
+    }).select("created_at").single();
     if (error) { toast("議事録の作成に失敗しました", "error"); return; }
     await load();
-    setSelectedId(id);
+    const slug = toMinuteSlug(inserted?.created_at) || id;
+    navigate(`/${projectSlug ?? project?.slug}/minutes/${slug}`);
   };
 
   const handleDelete = async (m: MeetingMinute) => {
     await supabase!.from("meeting_minutes").delete().eq("id", m.id);
-    if (selectedId === m.id) setSelectedId(null);
+    if (selectedId === m.id) {
+      setSelectedId(null);
+      navigate(`/${projectSlug ?? project?.slug}/minutes`);
+    }
     toast(`「${m.title}」を削除しました`);
     load();
   };
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && !userPermissions.canAccessMinutes) return <Navigate to="/dashboard" replace />;
+  if (!loading && effectiveMinutesPerm === "none") return <Navigate to="/dashboard" replace />;
 
   return (
     <div style={{ padding: "24px 24px 0" }}>
@@ -199,7 +240,12 @@ export function MinutesPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>議事録</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${minutes.length} 件` : "..."}</p>
         </div>
-        <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {effectiveMinutesPerm === "view" && (
+            <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
+          )}
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} />
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
@@ -216,7 +262,7 @@ export function MinutesPage() {
               <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>議事録がありません</p>
             </div>
           ) : minutes.map(m => (
-            <div key={m.id} onClick={() => setSelectedId(m.id)}
+            <div key={m.id} onClick={() => navigate(`/${projectSlug ?? project?.slug}/minutes/${toMinuteSlug(m.createdAt) || m.id}`)}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 7, cursor: "pointer", background: selectedId === m.id ? "#ECFDF5" : "transparent" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ fontSize: 12, fontWeight: selectedId === m.id ? 700 : 500, color: selectedId === m.id ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</p>
@@ -282,6 +328,9 @@ export function MinutesPage() {
                   onChange={v => { setContent(v); scheduleSave({ title, meetingDate, attendees, content: v }); }}
                   placeholder="議事内容を入力..." members={project?.members ?? []} minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
+                  onBacklogClick={id => openPreview("backlog", id)}
+                  onWikiClick={id => openPreview("wiki", id)}
+                  onMinuteClick={id => openPreview("minute", id)}
                   onImageUpload={canEdit ? async (file) => {
                     if (!isSupabaseEnabled) return URL.createObjectURL(file);
                     const extMap: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };

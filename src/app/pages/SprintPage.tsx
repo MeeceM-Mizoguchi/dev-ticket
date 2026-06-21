@@ -6,7 +6,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
-import type { Project, Sprint, SprintTicket, SprintView } from "@/app/types";
+import type { Project, Sprint, SprintTicket, SprintView, AccessLevel } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
 import { SprintBoardView } from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
@@ -34,10 +34,11 @@ export function SprintPage() {
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
+  // owner/admin のみ全権限バイパス。PM はプロジェクト権限設定に従う
+  const isAdmin = userRole === "owner" || userRole === "admin";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
-  // レコードあり → 全員レコード優先（admin/PM も個別制限を反映）
-  // レコードなし → admin/PM はロール権限、それ以外は権限なし(all false)
+  // レコードあり → 全員レコード優先。レコードなし → admin/PM はロール権限、それ以外は権限なし
   const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
     ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
@@ -218,7 +219,13 @@ export function SprintPage() {
           </div>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
         </div>
-        <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="sprints" marginBottom={0} />
+        <ProjectSubNav
+          projectSlug={projectSlug ?? project?.slug ?? ""}
+          active="sprints" marginBottom={0}
+          wikiPerm={isAdmin ? "edit" : ((projectPermissions?.wikiPermission as AccessLevel | undefined) ?? "none")}
+          backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? "none")}
+          minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? "none")}
+        />
       </div>
 
       {/* ── ビュー切替・新規スプリント ── */}

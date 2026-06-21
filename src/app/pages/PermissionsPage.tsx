@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ChevronDown, ChevronUp, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
@@ -26,7 +26,22 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
   canAccessAdminSettings: false, canAccessWiki: false, canAccessBacklog: false,
   canAccessMinutes: false, canAccessOrganization: false,
+  wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
 };
+
+type AccessLevel = "none" | "view" | "edit";
+
+const ACCESS_LEVEL_OPTIONS: { value: AccessLevel; label: string }[] = [
+  { value: "none", label: "権限なし" },
+  { value: "view", label: "閲覧のみ" },
+  { value: "edit", label: "編集（追加・編集・削除）" },
+];
+
+const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission"; label: string; color: string }[] = [
+  { key: "backlogPermission", label: "バックログ", color: "#6D28D9" },
+  { key: "wikiPermission",    label: "Wiki",       color: "#0284C7" },
+  { key: "minutesPermission", label: "議事録",     color: "#059669" },
+];
 
 // Drag payload type identifier
 type DragType = "member" | "group";
@@ -206,8 +221,12 @@ export function PermissionsPage() {
       // Create an explicit all-false permissions record so role defaults don't leak through
       // (admin/PM/owner keep role fallback — they always have full access)
       if (member.role !== "admin" && member.role !== "project-manager" && member.role !== "owner") {
+        // 既存行を一旦削除してから挿入（upsertの競合キー依存を避けるため）
         await supabase!.from("project_member_permissions")
-          .upsert({ project_id: project.id, member_id: member.id, permissions: { ...DEFAULT_GROUP_PERMS } });
+          .delete().eq("project_id", project.id).eq("member_id", member.id);
+        const { error: permErr } = await supabase!.from("project_member_permissions")
+          .insert({ project_id: project.id, member_id: member.id, permissions: { ...DEFAULT_GROUP_PERMS } });
+        if (permErr) toast("権限レコードの作成に失敗しました（アクセスが制限されない場合があります）", "error");
       }
     }
     setProjects(prev => prev.map(p => p.id === project.id ? { ...p, members: newMembers } : p));
@@ -264,7 +283,9 @@ export function PermissionsPage() {
         const memberIds = getGroupMemberIds(groupId);
         for (const mid of memberIds) {
           await supabase!.from("project_member_permissions")
-            .upsert({ project_id: project.id, member_id: mid, permissions: group.permissions });
+            .delete().eq("project_id", project.id).eq("member_id", mid);
+          await supabase!.from("project_member_permissions")
+            .insert({ project_id: project.id, member_id: mid, permissions: group.permissions });
         }
       }
     }
@@ -325,7 +346,18 @@ export function PermissionsPage() {
     const newGroupIds = (project.groupIds ?? []).filter(id => id !== groupId);
     const newMembers = getAllProjectMemberNames(project, newGroupIds, getIndividualMemberNames(project));
     if (isSupabaseEnabled) {
-      await supabase!.from("projects").update({ group_ids: newGroupIds, members: newMembers }).eq("id", project.id);
+      const { error } = await supabase!.from("projects").update({ group_ids: newGroupIds, members: newMembers }).eq("id", project.id);
+      if (error) { toast("グループ削除の保存に失敗しました", "error"); return; }
+      // グループ経由でのみアサインされていたメンバーの権限レコードを削除
+      const indivNames = getIndividualMemberNames(project);
+      const groupMemberIds = getGroupMemberIds(groupId).filter(mid => {
+        const m = members.find(mm => mm.id === mid);
+        return m && !indivNames.includes(m.name);
+      });
+      for (const mid of groupMemberIds) {
+        await supabase!.from("project_member_permissions")
+          .delete().eq("project_id", project.id).eq("member_id", mid);
+      }
     }
     setProjects(prev => prev.map(p =>
       p.id === project.id ? { ...p, groupIds: newGroupIds, members: newMembers } : p
@@ -336,7 +368,14 @@ export function PermissionsPage() {
     const newIndiv = getIndividualMemberNames(project).filter(n => n !== memberName);
     const newMembers = getAllProjectMemberNames(project, undefined, newIndiv);
     if (isSupabaseEnabled) {
-      await supabase!.from("projects").update({ members: newMembers }).eq("id", project.id);
+      const { error } = await supabase!.from("projects").update({ members: newMembers }).eq("id", project.id);
+      if (error) { toast("メンバー削除の保存に失敗しました", "error"); return; }
+      // 権限レコードも削除してアクセスを完全に停止
+      const member = members.find(m => m.name === memberName);
+      if (member) {
+        await supabase!.from("project_member_permissions")
+          .delete().eq("project_id", project.id).eq("member_id", member.id);
+      }
     }
     setProjects(prev => prev.map(p =>
       p.id === project.id ? { ...p, members: newMembers } : p
@@ -1018,6 +1057,65 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
   );
 }
 
+// ── AccessLevel カスタムドロップダウン ──────────────────────────────────────────
+function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onChange: (v: AccessLevel) => void; color?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const current = ACCESS_LEVEL_OPTIONS.find(o => o.value === value) ?? ACCESS_LEVEL_OPTIONS[0];
+  const isActive = value !== "none";
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", minWidth: 160,
+          background: isActive && color ? color + "12" : "#F4F5F6",
+          border: `1.5px solid ${isActive && color ? color + "50" : "rgba(26,23,20,0.12)"}`,
+          borderRadius: 8, fontSize: 12, fontWeight: 600,
+          color: isActive && color ? color : "#4B4540", cursor: "pointer",
+          whiteSpace: "nowrap" as const,
+        }}>
+        <span style={{ flex: 1, textAlign: "left" as const }}>{current.label}</span>
+        <ChevronDown style={{ width: 11, height: 11, opacity: 0.5, flexShrink: 0 }} />
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600,
+          background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 200, overflow: "hidden",
+        }}>
+          {ACCESS_LEVEL_OPTIONS.map(o => (
+            <button key={o.value} type="button"
+              onClick={() => { onChange(o.value as AccessLevel); setOpen(false); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, width: "100%",
+                padding: "9px 14px", border: "none", cursor: "pointer",
+                background: value === o.value ? "rgba(5,150,105,0.06)" : "transparent",
+                fontSize: 12, fontWeight: value === o.value ? 700 : 400,
+                color: value === o.value ? "#059669" : "#1A1714", textAlign: "left" as const,
+              }}>
+              <span style={{ width: 14, flexShrink: 0, color: "#059669" }}>{value === o.value ? "✓" : ""}</span>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── New group modal ────────────────────────────────────────────────────────────
 function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, perms: UserPermissions) => void }) {
   const [name, setName] = useState("");
@@ -1077,6 +1175,19 @@ function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (
                 </label>
               );
             })}
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>ページアクセス権限</label>
+            {PAGE_ACCESS_FLAGS.map(f => (
+              <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, marginBottom: 5, background: perms[f.key] !== "none" ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${perms[f.key] !== "none" ? f.color + "30" : "transparent"}` }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: perms[f.key] !== "none" ? f.color : "#1A1714", flex: 1 }}>{f.label}</span>
+                <AccessLevelSelect
+                  value={(perms[f.key] as AccessLevel) ?? "none"}
+                  onChange={v => setPerms(prev => ({ ...prev, [f.key]: v }))}
+                  color={f.color}
+                />
+              </div>
+            ))}
           </div>
         </div>
         <div style={{ padding: "0 24px 22px", display: "flex", gap: 8 }}>
@@ -1153,6 +1264,19 @@ function GroupSettingsModal({ group, onClose, onSave }: {
               </label>
             );
           })}
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(26,23,20,0.06)" }}>
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 8, letterSpacing: "0.04em" }}>ページアクセス権限</p>
+            {PAGE_ACCESS_FLAGS.map(f => (
+              <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, marginBottom: 5, background: local[f.key] !== "none" ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${local[f.key] !== "none" ? f.color + "30" : "transparent"}` }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: local[f.key] !== "none" ? f.color : "#1A1714", flex: 1 }}>{f.label}</span>
+                <AccessLevelSelect
+                  value={(local[f.key] as AccessLevel) ?? "none"}
+                  onChange={v => setLocal(prev => ({ ...prev, [f.key]: v }))}
+                  color={f.color}
+                />
+              </div>
+            ))}
+          </div>
         </div>
         <div style={{ padding: "14px 24px 22px", display: "flex", gap: 8 }}>
           <button onClick={handleSave} disabled={saving}
@@ -1216,9 +1340,10 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
   const handleSave = async () => {
     setSaving(true);
     if (isSupabaseEnabled) {
+      await supabase!.from("project_member_permissions")
+        .delete().eq("project_id", projectId).eq("member_id", member.id);
       const { error } = await supabase!.from("project_member_permissions")
-        .upsert({ project_id: projectId, member_id: member.id, permissions: local },
-          { onConflict: "project_id,member_id" });
+        .insert({ project_id: projectId, member_id: member.id, permissions: local });
       if (error) { toast("権限の保存に失敗しました", "error"); setSaving(false); return; }
     }
     toast(`「${member.name}」のプロジェクト権限を保存しました`);
@@ -1226,7 +1351,8 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
     onClose();
   };
 
-  const activeCount = PROJECT_PERM_FLAGS.filter(f => local[f.key]).length;
+  const activeCount = PROJECT_PERM_FLAGS.filter(f => local[f.key]).length
+    + PAGE_ACCESS_FLAGS.filter(f => (local[f.key] as string) !== "none").length;
 
   return (
     <>
@@ -1258,25 +1384,44 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
           </p>
           {!loaded ? (
             <p style={{ textAlign: "center" as const, color: "#B0A9A4", fontSize: 13, padding: "24px 0" }}>読み込み中...</p>
-          ) : PROJECT_PERM_FLAGS.map(f => {
-            const active = local[f.key];
-            return (
-              <label key={f.key}
-                onClick={() => toggle(f.key)}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
-                <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
-                  {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 1 }}>{f.label}</p>
-                  <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
-                </div>
-                <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? f.color : "rgba(26,23,20,0.12)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
-                  <div style={{ position: "absolute", top: 2, left: active ? 14 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.20)" }} />
-                </div>
-              </label>
-            );
-          })}
+          ) : (
+            <>
+              {PROJECT_PERM_FLAGS.map(f => {
+                const active = local[f.key];
+                return (
+                  <label key={f.key}
+                    onClick={() => toggle(f.key)}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
+                    <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                      {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 1 }}>{f.label}</p>
+                      <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
+                    </div>
+                    <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? f.color : "rgba(26,23,20,0.12)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                      <div style={{ position: "absolute", top: 2, left: active ? 14 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.20)" }} />
+                    </div>
+                  </label>
+                );
+              })}
+
+              {/* ページアクセス権限 */}
+              <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 10, paddingTop: 12 }}>
+                <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>ページアクセス権限</label>
+                {PAGE_ACCESS_FLAGS.map(f => (
+                  <div key={f.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{f.label}</span>
+                    <AccessLevelSelect
+                      value={(local[f.key] as AccessLevel) ?? "none"}
+                      onChange={v => setLocal(prev => ({ ...prev, [f.key]: v }))}
+                      color={f.color}
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Footer */}

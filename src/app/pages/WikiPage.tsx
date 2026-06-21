@@ -4,8 +4,13 @@ import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOp
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { mapProject, mapWikiPage } from "@/app/lib/mappers";
-import type { Project, WikiPage as WikiPageType } from "@/app/types";
+import type { Project, WikiPage as WikiPageType, AccessLevel, UserPermissions } from "@/app/types";
+
+function titleToPathSegment(title: string): string {
+  return encodeURIComponent(title || "無題のページ");
+}
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -117,9 +122,9 @@ function TreeItem({
 }
 
 export function WikiPage() {
-  const { projectSlug } = useParams<{ projectSlug: string }>();
+  const { projectSlug, "*": wikiPath } = useParams<{ projectSlug: string; "*"?: string }>();
   const navigate = useNavigate();
-  const { userPermissions, userName } = useAuth();
+  const { userPermissions, userName, userRole, userId } = useAuth();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -131,9 +136,14 @@ export function WikiPage() {
   const [content, setContent] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<WikiPageType | null>(null);
+  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
+  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
+  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const canEdit = userPermissions.canEditDelete;
+  const isAdminRole = userRole === "owner" || userRole === "admin";
+  const canEdit = effectiveWikiPerm === "edit";
+  const { open: openPreview } = usePreviewPanel();
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
@@ -141,15 +151,60 @@ export function WikiPage() {
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
     setProject(mapProject(p));
-    const { data } = await supabase!.from("wiki_pages").select("*").eq("project_id", p.id).order("sort_order");
+    const [{ data }, permResult] = await Promise.all([
+      supabase!.from("wiki_pages").select("*").eq("project_id", p.id).order("sort_order"),
+      isAdminRole ? Promise.resolve({ data: null }) :
+        supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
+    ]);
     setPages((data ?? []).map(mapWikiPage));
+
+    if (isAdminRole) {
+      setEffectiveWikiPerm("edit");
+      setEffectiveBacklogPerm("edit");
+      setEffectiveMinutesPerm("edit");
+    } else {
+      const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
+      setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
+    }
     setLoading(false);
-  }, [projectSlug]);
+  }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 
   const tree = useMemo(() => buildTree(pages), [pages]);
   const selected = useMemo(() => pages.find(p => p.id === selectedId) ?? null, [pages, selectedId]);
+
+  // URLパスからページを選択 (/:projectSlug/wiki/フォルダ名/ページ名 or /:projectSlug/wiki/ページ名)
+  useEffect(() => {
+    if (!wikiPath || pages.length === 0) return;
+    const parts = wikiPath.split("/").map(s => decodeURIComponent(s)).filter(Boolean);
+    if (parts.length === 0) return;
+    let found: WikiPageType | undefined;
+    if (parts.length === 1) {
+      found = pages.find(p => !p.isFolder && p.title === parts[0] && !p.parentId);
+      if (!found) found = pages.find(p => !p.isFolder && p.title === parts[0]);
+    } else {
+      const folderTitle = parts[parts.length - 2];
+      const pageTitle = parts[parts.length - 1];
+      const folder = pages.find(p => p.isFolder && p.title === folderTitle);
+      if (folder) found = pages.find(p => !p.isFolder && p.title === pageTitle && p.parentId === folder.id);
+      if (!found) found = pages.find(p => !p.isFolder && p.title === pageTitle);
+    }
+    if (found && found.id !== selectedId) setSelectedId(found.id);
+  }, [wikiPath, pages]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSelectPage = useCallback((pageId: string) => {
+    const page = pages.find(p => p.id === pageId);
+    if (!page || page.isFolder) return;
+    const parent = page.parentId ? pages.find(p => p.id === page.parentId) : null;
+    const slug = projectSlug ?? "";
+    const path = parent
+      ? `/${slug}/wiki/${titleToPathSegment(parent.title)}/${titleToPathSegment(page.title)}`
+      : `/${slug}/wiki/${titleToPathSegment(page.title)}`;
+    navigate(path);
+  }, [pages, projectSlug, navigate]);
 
   useEffect(() => {
     setTitle(selected?.title ?? "");
@@ -209,7 +264,7 @@ export function WikiPage() {
   const pageCount = useMemo(() => pages.filter(p => !p.isFolder).length, [pages]);
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && !userPermissions.canAccessWiki) return <Navigate to="/dashboard" replace />;
+  if (!loading && effectiveWikiPerm === "none") return <Navigate to="/dashboard" replace />;
 
   return (
     <div style={{ padding: "24px 24px 0" }}>
@@ -226,7 +281,12 @@ export function WikiPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>Wiki</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${pageCount} ページ` : "..."}</p>
         </div>
-        <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {effectiveWikiPerm === "view" && (
+            <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
+          )}
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} minutesPerm={effectiveMinutesPerm} />
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
@@ -251,7 +311,7 @@ export function WikiPage() {
             </div>
           ) : tree.map(node => (
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={handleSelectPage}
               onAddChild={canEdit ? handleAddItem : () => {}}
               onDelete={canEdit ? setDeleteTarget : () => {}} />
           ))}
@@ -285,6 +345,9 @@ export function WikiPage() {
                   onChange={v => { setContent(v); scheduleSave(title, v); }}
                   placeholder="ページの内容を入力..." minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
+                  onBacklogClick={id => openPreview("backlog", id)}
+                  onWikiClick={id => openPreview("wiki", id)}
+                  onMinuteClick={id => openPreview("minute", id)}
                   onImageUpload={canEdit ? async (file) => {
                     if (!isSupabaseEnabled) return URL.createObjectURL(file);
                     const extMap: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };

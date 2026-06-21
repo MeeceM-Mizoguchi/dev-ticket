@@ -17,6 +17,9 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   canAccessBacklog: false,
   canAccessMinutes: false,
   canAccessOrganization: false,
+  wikiPermission: "none",
+  backlogPermission: "none",
+  minutesPermission: "none",
 };
 
 interface AuthCtxType {
@@ -46,6 +49,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true,
       canAccessMembers: true, canAccessRoles: true, canAccessGroups: true, canAccessAdminSettings: true,
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessOrganization: true,
+      wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
     };
   }
   const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
@@ -57,6 +61,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canCreateTicket: true, canCreateSprint: true, canEditDelete: true, canReview: true, canSkipReview: true,
       canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true, canAccessAdminSettings: role === "admin",
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true,
+      wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
     };
   }
   return { ...DEFAULT_PERMISSIONS };

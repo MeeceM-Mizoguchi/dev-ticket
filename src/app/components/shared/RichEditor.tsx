@@ -81,6 +81,8 @@ const SuggestionStore = Extension.create({
       members: [] as string[],
       tickets: [] as { wbs: string; title: string }[],
       backlogItems: [] as { id: string; title: string }[],
+      wikiItems: [] as { id: string; title: string }[],
+      minuteItems: [] as { id: string; title: string }[],
     };
   },
 });
@@ -139,15 +141,21 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 });
 MentionList.displayName = "MentionList";
 
-// ---- BacklogMentionList popup component --------------------------------------
+// ---- LinkMentionList popup: バックログ・Wiki・議事録の統合 $メンション ----
 
-interface BacklogItemOption { id: string; title: string }
-interface BacklogMentionListProps {
-  items: BacklogItemOption[];
+interface LinkMentionOption { id: string; title: string; type: "backlog" | "wiki" | "minute" }
+interface LinkMentionListProps {
+  items: LinkMentionOption[];
   command: (p: { id: string; label: string }) => void;
 }
 
-const BacklogMentionList = forwardRef<MentionListHandle, BacklogMentionListProps>(({ items, command }, ref) => {
+const TYPE_STYLE: Record<LinkMentionOption["type"], { bg: string; color: string; label: string }> = {
+  backlog: { bg: "#EDE9FE", color: "#6D28D9", label: "バックログ" },
+  wiki:    { bg: "#E0F2FE", color: "#0284C7", label: "Wiki" },
+  minute:  { bg: "#D1FAE5", color: "#059669", label: "議事録" },
+};
+
+const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ items, command }, ref) => {
   const [sel, setSel] = useState(0);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -163,7 +171,7 @@ const BacklogMentionList = forwardRef<MentionListHandle, BacklogMentionListProps
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
         const item = items[sel];
-        if (item) command({ id: item.id, label: item.title });
+        if (item) command({ id: `${item.type}:${item.id}`, label: item.title });
         return true;
       }
       return false;
@@ -171,43 +179,46 @@ const BacklogMentionList = forwardRef<MentionListHandle, BacklogMentionListProps
   }));
 
   if (!items.length) return (
-    <div style={{ padding: "10px 14px", fontSize: 11, color: "#B0A9A4" }}>バックログを読み込み中...</div>
+    <div style={{ padding: "10px 14px", fontSize: 11, color: "#B0A9A4" }}>該当なし</div>
   );
 
   return (
     <>
-      {items.map((item, i) => (
-        <button key={item.id}
-          ref={el => { itemRefs.current[i] = el; }}
-          onMouseDown={e => { e.preventDefault(); command({ id: item.id, label: item.title }); }}
-          style={{
-            width: "100%", padding: "7px 12px", textAlign: "left" as const,
-            background: i === sel ? "#F5F3FF" : "transparent",
-            border: "none", cursor: "pointer", fontSize: 12,
-            color: i === sel ? "#6D28D9" : "#1A1714",
-            display: "flex", alignItems: "center", gap: 8,
-            transition: "background 0.1s", boxSizing: "border-box" as const,
-          }}
-          onMouseEnter={() => setSel(i)}>
-          <span style={{
-            padding: "1px 6px", borderRadius: 4, background: "#EDE9FE",
-            fontSize: 10, fontWeight: 700, color: "#6D28D9",
-            flexShrink: 0, whiteSpace: "nowrap" as const,
-          }}>
-            ${item.id}
-          </span>
-          <span style={{
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
-            flex: 1, color: "#6B6458", fontSize: 11,
-          }}>
-            {item.title}
-          </span>
-        </button>
-      ))}
+      {items.map((item, i) => {
+        const ts = TYPE_STYLE[item.type];
+        return (
+          <button key={`${item.type}:${item.id}`}
+            ref={el => { itemRefs.current[i] = el; }}
+            onMouseDown={e => { e.preventDefault(); command({ id: `${item.type}:${item.id}`, label: item.title }); }}
+            style={{
+              width: "100%", padding: "7px 12px", textAlign: "left" as const,
+              background: i === sel ? "#F5F3FF" : "transparent",
+              border: "none", cursor: "pointer", fontSize: 12,
+              color: i === sel ? "#6D28D9" : "#1A1714",
+              display: "flex", alignItems: "center", gap: 8,
+              transition: "background 0.1s", boxSizing: "border-box" as const,
+            }}
+            onMouseEnter={() => setSel(i)}>
+            <span style={{
+              padding: "1px 6px", borderRadius: 4, background: ts.bg,
+              fontSize: 10, fontWeight: 700, color: ts.color,
+              flexShrink: 0, whiteSpace: "nowrap" as const,
+            }}>
+              {ts.label}
+            </span>
+            <span style={{
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
+              flex: 1, color: "#6B6458", fontSize: 11,
+            }}>
+              {item.title}
+            </span>
+          </button>
+        );
+      })}
     </>
   );
 });
-BacklogMentionList.displayName = "BacklogMentionList";
+LinkMentionList.displayName = "LinkMentionList";
 
 // ---- TicketMentionList popup component --------------------------------------
 
@@ -356,15 +367,19 @@ function makeSuggestionPopup<T>(
 // ---- RichEditor -------------------------------------------------------------
 
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], onTicketClick, onBacklogClick, onImageUpload, style,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onImageUpload, style,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
   members?: string[];
   tickets?: { wbs: string; title: string }[];
   backlogItems?: { id: string; title: string }[];
+  wikiItems?: { id: string; title: string }[];
+  minuteItems?: { id: string; title: string }[];
   onTicketClick?: (wbs: string) => void;
   onBacklogClick?: (id: string) => void;
+  onWikiClick?: (id: string) => void;
+  onMinuteClick?: (id: string) => void;
   onImageUpload?: (file: File) => Promise<string>;
   style?: React.CSSProperties;
 }) {
@@ -384,7 +399,11 @@ export function RichEditor({
         renderText({ node, suggestion }) {
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") return `#${node.attrs.id ?? ""}`;
-          if (char === "$") return `$${node.attrs.id ?? ""}`;
+          if (char === "$") {
+            const rawId = node.attrs.id ?? "";
+            const label = node.attrs.label ?? rawId.split(":").slice(1).join(":") ?? rawId;
+            return `$${label}`;
+          }
           return `@${node.attrs.label ?? node.attrs.id ?? ""}`;
         },
         renderHTML({ options, node, suggestion }) {
@@ -393,7 +412,11 @@ export function RichEditor({
             return ["span", { ...options.HTMLAttributes, class: "ticket-mention" }, `#${node.attrs.id ?? ""}`];
           }
           if (char === "$") {
-            return ["span", { ...options.HTMLAttributes, class: "backlog-mention" }, `$${node.attrs.id ?? ""}`];
+            const rawId = node.attrs.id ?? "";
+            const [type] = rawId.split(":");
+            const label = node.attrs.label ?? rawId.split(":").slice(1).join(":") ?? rawId;
+            const cls = type === "wiki" ? "wiki-mention" : type === "minute" ? "minute-mention" : "backlog-mention";
+            return ["span", { ...options.HTMLAttributes, class: cls }, `$${label}`];
           }
           return ["span", { ...options.HTMLAttributes, class: "mention" }, `@${node.attrs.label ?? node.attrs.id ?? ""}`];
         },
@@ -423,19 +446,35 @@ export function RichEditor({
             render: makeSuggestionPopup(TicketMentionList, 300),
           },
           {
-            // $バックログメンション
+            // $リンクメンション（$B=バックログ, $W=Wiki, $G=議事録, $ のみ=全表示）
             char: "$",
             items: ({ query, editor: ed }: { query: string; editor: any }) => {
               const b: { id: string; title: string }[] = ed?.storage?.suggestionStore?.backlogItems ?? [];
+              const w: { id: string; title: string }[] = ed?.storage?.suggestionStore?.wikiItems ?? [];
+              const m: { id: string; title: string }[] = ed?.storage?.suggestionStore?.minuteItems ?? [];
+              const prefix = query[0]?.toUpperCase();
+              const rest = query.slice(1).trimStart().toLowerCase();
+              if (prefix === "B") {
+                const src = rest ? b.filter(i => i.id.toLowerCase().includes(rest) || i.title.toLowerCase().includes(rest)) : b;
+                return src.map(i => ({ ...i, type: "backlog" as const }));
+              }
+              if (prefix === "W") {
+                const src = rest ? w.filter(i => i.title.toLowerCase().includes(rest)) : w;
+                return src.map(i => ({ ...i, type: "wiki" as const }));
+              }
+              if (prefix === "G") {
+                const src = rest ? m.filter(i => i.title.toLowerCase().includes(rest)) : m;
+                return src.map(i => ({ ...i, type: "minute" as const }));
+              }
+              const all: { id: string; title: string; type: "backlog" | "wiki" | "minute" }[] = [
+                ...b.map(i => ({ ...i, type: "backlog" as const })),
+                ...w.map(i => ({ ...i, type: "wiki" as const })),
+                ...m.map(i => ({ ...i, type: "minute" as const })),
+              ];
               const q = query.toLowerCase();
-              return q
-                ? b.filter(item =>
-                    item.id.toLowerCase().includes(q) ||
-                    item.title.toLowerCase().includes(q)
-                  )
-                : b;
+              return q ? all.filter(i => i.title.toLowerCase().includes(q)) : all;
             },
-            render: makeSuggestionPopup(BacklogMentionList, 300),
+            render: makeSuggestionPopup(LinkMentionList, 320),
           },
         ],
       }),
@@ -564,7 +603,9 @@ export function RichEditor({
     editor.storage.suggestionStore.members = members;
     editor.storage.suggestionStore.tickets = tickets;
     editor.storage.suggestionStore.backlogItems = backlogItems;
-  }, [editor, members, tickets, backlogItems]);
+    editor.storage.suggestionStore.wikiItems = wikiItems;
+    editor.storage.suggestionStore.minuteItems = minuteItems;
+  }, [editor, members, tickets, backlogItems, wikiItems, minuteItems]);
 
   useEffect(() => {
     if (!editor) return;
@@ -595,23 +636,39 @@ export function RichEditor({
     return () => dom.removeEventListener("click", handler);
   }, [editor, onTicketClick]);
 
-  // backlog-mention クリックでナビゲーション
+  // backlog/wiki/minute mention クリックでナビゲーション
   useEffect(() => {
-    if (!editor || !onBacklogClick) return;
+    if (!editor) return;
     const dom = editor.view.dom;
     const handler = (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest(".backlog-mention[data-id]");
-      if (!target) return;
-      const id = target.getAttribute("data-id");
-      if (id) {
-        e.preventDefault();
-        e.stopPropagation();
+      const el = e.target as HTMLElement;
+      const backlogEl = el.closest(".backlog-mention[data-id]");
+      if (backlogEl && onBacklogClick) {
+        const rawId = backlogEl.getAttribute("data-id") ?? "";
+        const id = rawId.startsWith("backlog:") ? rawId.slice(8) : rawId;
+        e.preventDefault(); e.stopPropagation();
         onBacklogClick(id);
+        return;
+      }
+      const wikiEl = el.closest(".wiki-mention[data-id]");
+      if (wikiEl && onWikiClick) {
+        const rawId = wikiEl.getAttribute("data-id") ?? "";
+        const id = rawId.startsWith("wiki:") ? rawId.slice(5) : rawId;
+        e.preventDefault(); e.stopPropagation();
+        onWikiClick(id);
+        return;
+      }
+      const minuteEl = el.closest(".minute-mention[data-id]");
+      if (minuteEl && onMinuteClick) {
+        const rawId = minuteEl.getAttribute("data-id") ?? "";
+        const id = rawId.startsWith("minute:") ? rawId.slice(7) : rawId;
+        e.preventDefault(); e.stopPropagation();
+        onMinuteClick(id);
       }
     };
     dom.addEventListener("click", handler);
     return () => dom.removeEventListener("click", handler);
-  }, [editor, onBacklogClick]);
+  }, [editor, onBacklogClick, onWikiClick, onMinuteClick]);
 
   if (!editor) return null;
 
@@ -643,6 +700,10 @@ export function RichEditor({
         .tiptap .ticket-mention:hover { background: #BFDBFE; }
         .tiptap .backlog-mention { color: #6D28D9; font-weight: 700; background: #EDE9FE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .backlog-mention:hover { background: #DDD6FE; }
+        .tiptap .wiki-mention { color: #0284C7; font-weight: 700; background: #E0F2FE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .wiki-mention:hover { background: #BAE6FD; }
+        .tiptap .minute-mention { color: #059669; font-weight: 700; background: #D1FAE5; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .minute-mention:hover { background: #A7F3D0; }
         .tiptap img { max-width: 100%; }
       `}</style>
       {!readOnly && toolbar && (
