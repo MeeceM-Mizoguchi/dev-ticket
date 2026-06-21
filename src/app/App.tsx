@@ -2,6 +2,8 @@ import { Routes, Route, Navigate } from "react-router";
 import { ToastProvider } from "@/app/contexts/ToastContext";
 import { AlertProvider } from "@/app/contexts/AlertContext";
 import { AuthProvider } from "@/app/contexts/AuthContext";
+import { PreviewPanelProvider } from "@/app/contexts/PreviewPanelContext";
+import { LinkPreviewPanel } from "@/app/components/shared/LinkPreviewPanel";
 import { ProtectedShell } from "@/app/components/layout/AppShell";
 import { LoginPage } from "@/app/pages/LoginPage";
 import { AcceptInvitePage } from "@/app/pages/AcceptInvitePage";
@@ -28,6 +30,8 @@ export default function App() {
     <ToastProvider>
       <AlertProvider>
         <AuthProvider>
+          <PreviewPanelProvider>
+          <LinkPreviewPanel />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
@@ -46,14 +50,18 @@ export default function App() {
               {/* Sprint list */}
               <Route path="/:projectSlug" element={<SprintPage />} />
               <Route path="/:projectSlug/backlog" element={<BacklogPage />} />
+              <Route path="/:projectSlug/backlog/:itemId" element={<BacklogPage />} />
               <Route path="/:projectSlug/wiki" element={<WikiPage />} />
+              <Route path="/:projectSlug/wiki/*" element={<WikiPage />} />
               <Route path="/:projectSlug/minutes" element={<MinutesPage />} />
+              <Route path="/:projectSlug/minutes/:minuteId" element={<MinutesPage />} />
               {/* Sprint detail (チケット一覧) with optional ticket open */}
               <Route path="/:projectSlug/:segment" element={<SprintDetailPage />} />
             </Route>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
+          </PreviewPanelProvider>
         </AuthProvider>
       </AlertProvider>
     </ToastProvider>

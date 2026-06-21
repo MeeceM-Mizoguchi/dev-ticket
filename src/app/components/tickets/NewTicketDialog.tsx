@@ -6,6 +6,7 @@ import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { labelCls, inputCls, TICKET_STATUSES } from "@/app/lib/helpers";
 import { mapTicketCategory } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -34,6 +35,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   zIndexBase?: number; // TicketDetailPanel 内から呼ぶ際は 310 を指定してz-index競合を回避
 }) {
   const { userName, userRole, userOrgId } = useAuth();
+  const { open: openPreview } = usePreviewPanel();
   const isAdmin = userRole === "admin" || userRole === "project-manager";
   const isChildMode = !!parentTicketId;
   const needsSelection = !sprintId && !isChildMode;
@@ -54,6 +56,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   // チケットメンション用: プロジェクト内チケット一覧
   const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
   const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
+  const [projectWikiItems, setProjectWikiItems] = useState<{ id: string; title: string }[]>([]);
+  const [projectMinuteItems, setProjectMinuteItems] = useState<{ id: string; title: string }[]>([]);
 
   // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -250,6 +254,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     })();
     supabase!.from("backlog_items").select("id, title").eq("project_id", effectiveProjectId).order("id")
       .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
+    supabase!.from("wiki_pages").select("id, title").eq("project_id", effectiveProjectId).eq("is_folder", false)
+      .then(({ data }) => { if (data) setProjectWikiItems(data as { id: string; title: string }[]); });
+    supabase!.from("meeting_minutes").select("id, title").eq("project_id", effectiveProjectId).order("meeting_date", { ascending: false })
+      .then(({ data }) => { if (data) setProjectMinuteItems(data as { id: string; title: string }[]); });
   }, [effectiveProjectId]);
 
   const calcHours = (start: string, due: string) => {
@@ -689,7 +697,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} />
           </div>
 
           <div>

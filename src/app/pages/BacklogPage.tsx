@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
+import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardList, Trash2, Ticket } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapBacklogItem, mapTicketCategory } from "@/app/lib/mappers";
-import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory } from "@/app/types";
+import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions } from "@/app/types";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -223,10 +224,9 @@ function BacklogSidebarItem({
 
 // ─── メインページ ─────────────────────────────────────────
 export function BacklogPage() {
-  const { projectSlug } = useParams<{ projectSlug: string }>();
-  const [searchParams] = useSearchParams();
+  const { projectSlug, itemId: itemIdParam } = useParams<{ projectSlug: string; itemId?: string }>();
   const navigate = useNavigate();
-  const { userPermissions, userName } = useAuth();
+  const { userPermissions, userName, userRole, userId } = useAuth();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -235,6 +235,9 @@ export function BacklogPage() {
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
+  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
+  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BacklogItem | null>(null);
   const [convertTarget, setConvertTarget] = useState<BacklogItem | null>(null);
@@ -252,7 +255,9 @@ export function BacklogPage() {
   const [editImages, setEditImages] = useState<string[]>([]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const canEdit = userPermissions.canEditDelete;
+  const isAdminRole = userRole === "owner" || userRole === "admin";
+  const canEdit = effectiveBacklogPerm === "edit";
+  const { open: openPreview } = usePreviewPanel();
   const canCreate = userPermissions.canCreateTicket;
 
   const load = useCallback(async () => {
@@ -262,27 +267,39 @@ export function BacklogPage() {
     if (!p) { setNotFound(true); setLoading(false); return; }
     setProject(mapProject(p));
 
-    const [{ data: itemRows }, { data: sprintRows }, { data: catRows }] = await Promise.all([
+    const [{ data: itemRows }, { data: sprintRows }, { data: catRows }, { data: permData }] = await Promise.all([
       supabase!.from("backlog_items").select("*").eq("project_id", p.id).order("rank"),
       supabase!.from("sprints").select("id, project_id, name, goal, status, start_date, end_date, identifier").eq("project_id", p.id),
       supabase!.from("ticket_categories").select("*").eq("project_id", p.id).order("name"),
+      isAdminRole ? Promise.resolve({ data: null }) :
+        supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
     ]);
     setItems((itemRows ?? []).map(mapBacklogItem));
     setSprints((sprintRows ?? []).map((s: any) => ({ id: s.id, projectId: s.project_id, name: s.name, goal: s.goal || "", status: s.status, startDate: s.start_date, endDate: s.end_date, identifier: s.identifier || "", tickets: [] })));
     setCategories((catRows ?? []).map(mapTicketCategory));
+
+    if (isAdminRole) {
+      setEffectiveBacklogPerm("edit");
+      setEffectiveWikiPerm("edit");
+      setEffectiveMinutesPerm("edit");
+    } else {
+      const perms = permData?.permissions as Partial<UserPermissions> | null;
+      setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
+    }
     setLoading(false);
-  }, [projectSlug]);
+  }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 
-  // URLパラメータからアイテム選択
+  // URLパスパラメータからアイテム選択
   useEffect(() => {
-    const itemParam = searchParams.get("item");
-    if (itemParam && items.length > 0) {
-      const found = items.find(i => i.id === itemParam);
+    if (itemIdParam && items.length > 0) {
+      const found = items.find(i => i.id === itemIdParam);
       if (found) setSelectedId(found.id);
     }
-  }, [searchParams, items]);
+  }, [itemIdParam, items]);
 
   const selectedItem = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId]);
   // チケット化済・アーカイブ済の項目は編集不可
@@ -370,12 +387,15 @@ export function BacklogPage() {
   const handleDelete = async (item: BacklogItem) => {
     await supabase!.from("backlog_items").delete().eq("id", item.id);
     setItems(prev => prev.filter(i => i.id !== item.id));
-    if (selectedId === item.id) setSelectedId(null);
+    if (selectedId === item.id) {
+      setSelectedId(null);
+      navigate(`/${projectSlug ?? project?.slug}/backlog`);
+    }
     toast(`${item.id} を削除しました`);
   };
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && !userPermissions.canAccessBacklog) return <Navigate to="/dashboard" replace />;
+  if (!loading && effectiveBacklogPerm === "none") return <Navigate to="/dashboard" replace />;
 
   return (
     <div style={{ padding: "24px 24px 0" }}>
@@ -392,13 +412,18 @@ export function BacklogPage() {
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>バックログ</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${items.length} 件` : "..."}</p>
         </div>
-        <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="backlog" marginBottom={0} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {effectiveBacklogPerm === "view" && (
+            <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
+          )}
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="backlog" marginBottom={0} backlogPerm={effectiveBacklogPerm} wikiPerm={effectiveWikiPerm} minutesPerm={effectiveMinutesPerm} />
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
         {/* ─── 左サイドバー ─── */}
         <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto", display: "flex", flexDirection: "column" }}>
-          {canCreate && (
+          {canEdit && canCreate && (
             <button onClick={handleAddItem}
               style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 8, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
               <Plus style={{ width: 12, height: 12 }} />新規追加
@@ -418,7 +443,7 @@ export function BacklogPage() {
                   canEdit={canEdit} isDone={false}
                   projectSlug={projectSlug ?? project?.slug ?? ""}
                   isDragOver={dragOverId === item.id && dragId !== item.id}
-                  onSelect={() => setSelectedId(item.id)}
+                  onSelect={() => navigate(`/${projectSlug ?? project?.slug}/backlog/${item.id}`)}
                   onDragStart={() => setDragId(item.id)}
                   onDragOver={() => { if (dragId && dragId !== item.id) setDragOverId(item.id); }}
                   onDrop={() => { if (dragId) reorderItems(dragId, item.id); }}
@@ -432,7 +457,7 @@ export function BacklogPage() {
                       isSelected={selectedId === item.id}
                       canEdit={false} isDone
                       projectSlug={projectSlug ?? project?.slug ?? ""}
-                      onSelect={() => setSelectedId(item.id)} />
+                      onSelect={() => navigate(`/${projectSlug ?? project?.slug}/backlog/${item.id}`)} />
                   ))}
                 </>
               )}
@@ -549,7 +574,10 @@ export function BacklogPage() {
                   placeholder="背景や要件を入力..."
                   members={project?.members ?? []}
                   minHeight={120}
-                  style={{ flex: 1, minHeight: 0 }} />
+                  style={{ flex: 1, minHeight: 0 }}
+                  onBacklogClick={id => openPreview("backlog", id)}
+                  onWikiClick={id => openPreview("wiki", id)}
+                  onMinuteClick={id => openPreview("minute", id)} />
                 <div style={{ marginTop: 16, flexShrink: 0 }}>
                   <ImageAttachments
                     images={editImages}
