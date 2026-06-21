@@ -13,7 +13,7 @@ interface TicketResult {
   title: string;
   wbs: string;
   status: string;
-  projectId: string;
+  projectSlug: string;
   projectName: string;
   sprintId: string;
   sprintName: string;
@@ -21,14 +21,16 @@ interface TicketResult {
 interface SprintResult {
   type: "sprint";
   id: string;
+  identifier: string;
   name: string;
   status: string;
-  projectId: string;
+  projectSlug: string;
   projectName: string;
 }
 interface ProjectResult {
   type: "project";
   id: string;
+  slug: string;
   name: string;
   client: string;
   status: string;
@@ -48,7 +50,7 @@ interface CommentResult {
   ticketWbs: string;
   ticketTitle: string;
   sprintId: string;
-  projectId: string;
+  projectSlug: string;
   projectName: string;
   sprintName: string;
 }
@@ -60,7 +62,7 @@ interface DescriptionResult {
   status: string;
   sprintId: string;
   sprintName: string;
-  projectId: string;
+  projectSlug: string;
   projectName: string;
   snippet: string;
 }
@@ -95,7 +97,7 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
   const projects: ProjectResult[] = accessible
     .filter(p => p.name.toLowerCase().includes(q) || p.client.toLowerCase().includes(q))
     .slice(0, 5)
-    .map(p => ({ type: "project", id: p.id, name: p.name, client: p.client, status: p.status }));
+    .map(p => ({ type: "project", id: p.id, slug: p.slug ?? p.id, name: p.name, client: p.client, status: p.status }));
 
   const accessibleSprints = SPRINTS.filter(s => accessibleIds.has(s.projectId));
   const sprints: SprintResult[] = accessibleSprints
@@ -103,7 +105,7 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
     .slice(0, 5)
     .map(s => {
       const proj = PROJECTS.find(p => p.id === s.projectId);
-      return { type: "sprint", id: s.id, name: s.name, status: s.status, projectId: s.projectId, projectName: proj?.name ?? "" };
+      return { type: "sprint", id: s.id, identifier: s.identifier ?? "", name: s.name, status: s.status, projectSlug: proj?.slug ?? proj?.id ?? "", projectName: proj?.name ?? "" };
     });
 
   const tickets: TicketResult[] = [];
@@ -111,7 +113,7 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
     const proj = PROJECTS.find(p => p.id === s.projectId);
     for (const t of s.tickets) {
       if (t.title.toLowerCase().includes(q) || t.wbs.toLowerCase().includes(q)) {
-        tickets.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs, status: t.status, projectId: s.projectId, projectName: proj?.name ?? "", sprintId: s.id, sprintName: s.name });
+        tickets.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs, status: t.status, projectSlug: proj?.slug ?? proj?.id ?? "", projectName: proj?.name ?? "", sprintId: s.id, sprintName: s.name });
         if (tickets.length >= 5) break;
       }
     }
@@ -162,7 +164,7 @@ export function GlobalSearch() {
       // Get accessible projects with their sprints in one query_
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let projQuery = supabase!.from("projects").select("id, name, client, status, members, organization_id, sprints(id, name, status, project_id)");
+      let projQuery = supabase!.from("projects").select("id, name, client, status, members, organization_id, slug, sprints(id, name, status, project_id, identifier)");
       if (userRole === "owner") {
         if (selectedOrgId) projQuery = projQuery.eq("organization_id", selectedOrgId);
       } else if (userOrgId) {
@@ -177,21 +179,21 @@ export function GlobalSearch() {
       const projectResults: ProjectResult[] = accessible
         .filter(p => p.name.toLowerCase().includes(ql) || (p.client ?? "").toLowerCase().includes(ql))
         .slice(0, 5)
-        .map(p => ({ type: "project", id: p.id, name: p.name, client: p.client ?? "", status: p.status }));
+        .map(p => ({ type: "project", id: p.id, slug: p.slug ?? p.id, name: p.name, client: p.client ?? "", status: p.status }));
 
       // Build sprint map for lookup
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sprintMap = new Map<string, { id: string; name: string; status: string; projectId: string; projectName: string }>();
+      const sprintMap = new Map<string, { id: string; identifier: string; name: string; status: string; projectSlug: string; projectName: string }>();
       for (const p of accessible) {
         for (const s of (p.sprints ?? [])) {
-          sprintMap.set(s.id, { id: s.id, name: s.name, status: s.status, projectId: p.id, projectName: p.name });
+          sprintMap.set(s.id, { id: s.id, identifier: s.identifier ?? "", name: s.name, status: s.status, projectSlug: p.slug ?? p.id, projectName: p.name });
         }
       }
 
       const sprintResults: SprintResult[] = Array.from(sprintMap.values())
         .filter(s => s.name.toLowerCase().includes(ql))
         .slice(0, 5)
-        .map(s => ({ type: "sprint", ...s }));
+        .map(s => ({ type: "sprint" as const, id: s.id, identifier: s.identifier, name: s.name, status: s.status, projectSlug: s.projectSlug, projectName: s.projectName }));
 
       // Parallel: search tickets(title/wbs/description) + members + raw comments
       const [ticketResp, memberResp, rawCommentResp] = await Promise.all([
@@ -217,10 +219,10 @@ export function GlobalSearch() {
         const sprint = sprintMap.get(t.sprint_id);
         const titleOrWbs = t.title.toLowerCase().includes(ql) || (t.wbs ?? "").toLowerCase().includes(ql);
         if (titleOrWbs && ticketResults.length < 5) {
-          ticketResults.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "" });
+          ticketResults.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectSlug: sprint?.projectSlug ?? "", projectName: sprint?.projectName ?? "" });
         } else if (!titleOrWbs && descriptionResults.length < 5) {
           const snippet = htmlToText(t.description ?? "").slice(0, 70);
-          descriptionResults.push({ type: "description", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "", snippet });
+          descriptionResults.push({ type: "description", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectSlug: sprint?.projectSlug ?? "", projectName: sprint?.projectName ?? "", snippet });
         }
       }
 
@@ -242,7 +244,7 @@ export function GlobalSearch() {
           .map(c => {
             const ticket = ctMap.get(c.ticket_id);
             const sprint = sprintMap.get(ticket.sprint_id);
-            return { type: "comment" as const, id: c.id, content: c.content, ticketId: c.ticket_id, ticketWbs: ticket.wbs ?? "", ticketTitle: ticket.title ?? "", sprintId: ticket.sprint_id, projectId: sprint?.projectId ?? "", projectName: sprint?.projectName ?? "", sprintName: sprint?.name ?? "" };
+            return { type: "comment" as const, id: c.id, content: c.content, ticketId: c.ticket_id, ticketWbs: ticket.wbs ?? "", ticketTitle: ticket.title ?? "", sprintId: ticket.sprint_id, projectSlug: sprint?.projectSlug ?? "", projectName: sprint?.projectName ?? "", sprintName: sprint?.name ?? "" };
           });
       }
 
@@ -280,19 +282,19 @@ export function GlobalSearch() {
     setQuery("");
     switch (result.type) {
       case "ticket":
-        navigate(`/${result.projectId}/${result.wbs}`);
+        navigate(`/${result.projectSlug}/${result.wbs}`);
         break;
       case "description":
-        navigate(`/${result.projectId}/${result.wbs}?anchor=description`);
+        navigate(`/${result.projectSlug}/${result.wbs}?anchor=description`);
         break;
       case "comment":
-        navigate(`/${result.projectId}/${result.ticketWbs}?anchor=comment:${result.id}`);
+        navigate(`/${result.projectSlug}/${result.ticketWbs}?anchor=comment:${result.id}`);
         break;
       case "sprint":
-        navigate(`/${result.projectId}/sprint/${result.id}`);
+        navigate(result.identifier ? `/${result.projectSlug}/${result.identifier}` : `/${result.projectSlug}`);
         break;
       case "project":
-        navigate(`/${result.id}`);
+        navigate(`/${result.slug}`);
         break;
       case "member":
         navigate("/members", { state: { highlightMemberId: result.id } });

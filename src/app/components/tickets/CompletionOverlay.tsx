@@ -73,7 +73,7 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
       return;
     }
     setSaving(true);
-    await onSave(Math.round(total * 10) / 10);
+    await onSave(Math.round(total * 100) / 100);
     setSaving(false);
     onClose();
   };
@@ -234,7 +234,7 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
           }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: "#3D3732" }}>合計</span>
             <span style={{ fontSize: 15, fontWeight: 800, color: "#059669" }}>
-              {Math.round(total * 10) / 10}h（{toPersonDays(total)}）
+              {Math.round(total * 100) / 100}h（{toPersonDays(total)}）
             </span>
           </div>
           {error && <p style={{ fontSize: 12, color: "#EF4444", margin: "0 0 8px", fontWeight: 600 }}>{error}</p>}
