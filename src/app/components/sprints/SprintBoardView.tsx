@@ -186,8 +186,9 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
 }
 
 // ── Main component (exported) ──────────────────────────────────────────────
-function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate }: {
+function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate }: {
   sprints: Sprint[];
+  loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
@@ -334,6 +335,32 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
   const modalMeta = pendingDrop ? MODAL_LABELS[pendingDrop.newStatus] : null;
   const isReviewRequest = pendingDrop?.newStatus === "in-review";
+
+  if (loading) return (
+    <div style={{ padding: "32px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 18px", marginBottom: 20, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12 }}>
+        <div style={{ display: "flex", gap: 5 }}>
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+        </div>
+        <span style={{ fontSize: 12, color: "#A09790", fontWeight: 500 }}>スプリントデータを読み込んでいます...</span>
+        <div className="loading-bar-track" style={{ flex: 1, height: 5 }}>
+          <div className="loading-bar-fill" />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 16 }}>
+        {[...Array(3)].map((_, i) => (
+          <div key={i} style={{ flex: 1, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: 16, minHeight: 200 }}>
+            <div className="skeleton-shimmer" style={{ width: "70%", height: 14, marginBottom: 12 }} />
+            {[...Array(3)].map((_, j) => (
+              <div key={j} className="skeleton-shimmer" style={{ width: "100%", height: 60, marginBottom: 8, borderRadius: 8 }} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   if (sprints.length === 0) return (
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>
@@ -571,6 +598,7 @@ function SprintBoardInner({ sprints, onSelectSprint, onSelectTicket, onUpdated, 
 
 export function SprintBoardView(props: {
   sprints: Sprint[];
+  loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;

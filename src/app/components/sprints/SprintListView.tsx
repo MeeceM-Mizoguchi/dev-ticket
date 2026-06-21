@@ -215,8 +215,44 @@ function ColumnFilter({
 // 🌟 追加: LocalStorageのキーを定数で定義
 const LOCAL_STORAGE_KEY = "sprint_accordion_states";
 
-export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
+function SkeletonBlock({ w, h, radius }: { w: number | string; h: number; radius?: number }) {
+  return <div className="skeleton-shimmer" style={{ width: w, height: h, borderRadius: radius ?? 6, flexShrink: 0 }} />;
+}
+
+function SkeletonSprintCard({ index }: { index: number }) {
+  const widths = [160, 200, 140];
+  const titleW = widths[index % widths.length];
+  return (
+    <div style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)", overflow: "hidden", animationDelay: `${index * 0.12}s` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", background: "#F9F8F6" }}>
+        <SkeletonBlock w={13} h={13} radius={3} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <SkeletonBlock w={titleW} h={15} />
+            <SkeletonBlock w={50} h={18} radius={20} />
+          </div>
+          <SkeletonBlock w="55%" h={4} radius={4} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, flexShrink: 0, marginLeft: 16 }}>
+          {[36, 36, 44, 52].map((w, i) => (
+            <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+              <SkeletonBlock w={w} h={18} />
+              <SkeletonBlock w={24} h={10} />
+            </div>
+          ))}
+          <SkeletonBlock w={110} h={12} radius={6} />
+          <SkeletonBlock w={72} h={28} radius={7} />
+          <SkeletonBlock w={58} h={28} radius={7} />
+          <SkeletonBlock w={90} h={28} radius={7} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
   sprints: Sprint[];
+  loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onEditSprint?: (s: Sprint) => void;
@@ -522,6 +558,27 @@ export function SprintListView({ sprints, onSelectSprint, onDeleteSprint, onEdit
       return String(av).localeCompare(String(bv), "ja") * dir;
     });
   };
+
+  if (loading) return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 18px", marginBottom: 12, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12 }}>
+        <div style={{ display: "flex", gap: 5 }}>
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+        </div>
+        <span style={{ fontSize: 12, color: "#A09790", fontWeight: 500 }}>スプリントデータを読み込んでいます...</span>
+        <div className="loading-bar-track" style={{ flex: 1, height: 5 }}>
+          <div className="loading-bar-fill" />
+        </div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <SkeletonSprintCard index={0} />
+        <SkeletonSprintCard index={1} />
+        <SkeletonSprintCard index={2} />
+      </div>
+    </div>
+  );
 
   if (!sprints.length) return (
     <div style={{ padding: "48px 0", textAlign: "center", color: "#C9C4BB", fontSize: 13 }}>スプリントがありません</div>

@@ -1,0 +1,49 @@
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes loading-sweep {
+  0% { transform: translateX(-100%) scaleX(0.4); }
+  60% { transform: translateX(60%) scaleX(0.9); }
+  100% { transform: translateX(120%) scaleX(0.4); }
+}
+
+@keyframes loading-dot-pulse {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #EDECEA 25%, #E0DED9 50%, #EDECEA 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+.loading-bar-track {
+  position: relative;
+  overflow: hidden;
+  background: #EAE8E4;
+  border-radius: 4px;
+}
+
+.loading-bar-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, #059669 40%, #10B981 60%, transparent 100%);
+  animation: loading-sweep 1.8s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+.loading-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #059669;
+  animation: loading-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.loading-dot:nth-child(2) { animation-delay: 0.2s; }
+.loading-dot:nth-child(3) { animation-delay: 0.4s; }
