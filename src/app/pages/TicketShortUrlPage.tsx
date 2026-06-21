@@ -51,7 +51,7 @@ export function TicketShortUrlPage() {
       }
 
       // 4. スプリント詳細ページへリダイレクト
-      navigate(`/projects/${project.id}/sprints/${ticket.sprint_id}/${ticket.wbs}`, { replace: true });
+      navigate(`/${project.slug}/${ticket.wbs}`, { replace: true });
     })();
   }, [projectSlug, ticketWbs, navigate]);
 
