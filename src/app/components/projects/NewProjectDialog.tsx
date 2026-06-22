@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Plus, X } from "lucide-react";
 import type { Client, ProjectStatus } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -40,6 +40,11 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const [endDate, setEndDate] = useState("");
   const [status, setStatus] = useState<ProjectStatus>("planning");
   const [slug, setSlug] = useState("");
+  
+  // プロジェクト用のカスタムタグ管理ステート
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+
   const [slugError, setSlugError] = useState("");
   const [saving, setSaving] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -47,6 +52,18 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const canSubmit = name.trim() !== "" && slug.trim() !== "";
 
   const DEFAULT_CATEGORIES = ["バグ", "改善", "新機能"];
+
+  const handleAddTag = () => {
+    const trimmed = tagInput.trim();
+    if (trimmed && !tags.includes(trimmed)) {
+      setTags([...tags, trimmed]);
+      setTagInput("");
+    }
+  };
+
+  const handleRemoveTag = (indexToRemove: number) => {
+    setTags(tags.filter((_, idx) => idx !== indexToRemove));
+  };
 
   const handleSave = async () => {
     setAttempted(true);
@@ -60,6 +77,9 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
       return;
     }
     setSlugError("");
+
+    // プロジェクトIDの決定（Supabase有効・無効問わず共通のキーにするためタイムスタンプベースで生成）
+    const projectId = `P-${Date.now()}`;
 
     if (isSupabaseEnabled) {
       setSaving(true);
@@ -78,7 +98,7 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
         return;
       }
 
-      const projectId = `P-${Date.now()}`;
+      // 🌟 tagsカラムは除外してインサート（エラーを完全に回避）
       const { error } = await supabase!.from("projects").insert({
         id: projectId, name, client: clientName, description,
         start_date: startDate || null, end_date: endDate || null,
@@ -101,6 +121,25 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
       );
       setSaving(false);
     }
+
+    // 🌟 データの登録成否に関わらず、タグ情報をローカルストレージへプロジェクトID（またはSlug）キーで退避
+    if (tags.length > 0) {
+      try {
+        const localTagsStore = localStorage.getItem("local_project_tags_map");
+        const currentMap = localTagsStore ? JSON.parse(localTagsStore) : {};
+        
+        // プロジェクトIDと、URL用Slugの両方のルートから引けるようにマッピングを保持
+        currentMap[projectId] = tags;
+        if (finalSlug) {
+          currentMap[finalSlug] = tags;
+        }
+        
+        localStorage.setItem("local_project_tags_map", JSON.stringify(currentMap));
+      } catch (e) {
+        console.error("Failed to save project tags to localStorage:", e);
+      }
+    }
+
     onCreated?.();
     onClose();
   };
@@ -138,6 +177,47 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
           onChange={setClientName}
           placeholder="クライアントを選択"
         />
+      </div>
+
+      {/* タグ登録UI領域 */}
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+          プロジェクトタグ
+        </label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1 }}>
+            <input 
+              value={tagInput}
+              onChange={e => setTagInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddTag(); } }}
+              placeholder="任意のタグを入力 (例: 自社コア, 重要顧客)"
+              style={{ width: "100%", background: "#F7F8F9", border: "1px solid #E6E2D9", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: "#1A1714", outline: "none" }}
+            />
+          </div>
+          <button 
+            type="button"
+            onClick={handleAddTag}
+            style={{ padding: "0 14px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center", justifyContent: "center" }}
+          >
+            <Plus style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
+        {tags.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.06)", padding: "10px", borderRadius: 10 }}>
+            {tags.map((tag, idx) => (
+              <span 
+                key={idx}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#F0F9FF", color: "#0284C7", border: "1px solid rgba(2,132,199,0.15)", borderRadius: 6, padding: "3px 8px", fontSize: 11, fontWeight: 600 }}
+              >
+                {tag}
+                <X 
+                  onClick={() => handleRemoveTag(idx)}
+                  style={{ width: 12, height: 12, cursor: "pointer", opacity: 0.7 }} 
+                />
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
