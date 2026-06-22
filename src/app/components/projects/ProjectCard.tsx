@@ -7,7 +7,7 @@ import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { ProjectActualHours } from "@/app/components/projects/ProjectActualHours";
 
 export function ProjectCard({
-  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload,
+  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload, onEditTags,
 }: {
   project: Project;
   onNavigate: () => void;
@@ -15,6 +15,7 @@ export function ProjectCard({
   onDelete?: () => void;
   onCategorySettings?: () => void;
   onDownload?: () => void;
+  onEditTags?: () => void; // 🌟 追加: タグ編集イベントハンドラー
 }) {
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
@@ -33,12 +34,16 @@ export function ProjectCard({
     return () => document.removeEventListener("mousedown", h);
   }, [menuOpen]);
 
+  // プロジェクトオブジェクト内のタグ情報を安全に参照
+  const projectTags = (project as any).tags && Array.isArray((project as any).tags) ? (project as any).tags : [];
+
   return (
-    <div onClick={onNavigate} style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}
+    <div onClick={onNavigate} style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
       <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)` }} />
-      <div style={{ padding: "16px 18px 18px" }}>
+      
+      <div style={{ padding: "16px 18px 18px", flex: 1, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
@@ -50,7 +55,6 @@ export function ProjectCard({
               <Building2 style={{ width: 10, height: 10 }} />{project.client}
             </p>
           </div>
-
 
           {/* Three-dot menu */}
           <div ref={menuRef} style={{ position: "relative", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
@@ -66,8 +70,12 @@ export function ProjectCard({
                 {onEdit && (
                   <MenuItem icon={<Pencil style={{ width: 12, height: 12 }} />} label="編集" onClick={() => { setMenuOpen(false); onEdit(); }} color="#1A1714" />
                 )}
+                {/* 🌟 追加: タグ編集メニュー項目 */}
+                {onEditTags && (
+                  <MenuItem icon={<Tags style={{ width: 12, height: 12 }} />} label="タグ編集" onClick={() => { setMenuOpen(false); onEditTags(); }} color="#0284C7" />
+                )}
                 {onCategorySettings && (
-                  <MenuItem icon={<Tags style={{ width: 12, height: 12 }} />} label="分類設定" onClick={() => { setMenuOpen(false); onCategorySettings(); }} color="#0284C7" />
+                  <MenuItem icon={<Tags style={{ width: 12, height: 12 }} />} label="分類設定" onClick={() => { setMenuOpen(false); onCategorySettings(); }} color="#4B5563" />
                 )}
                 {onDownload && (
                   <MenuItem icon={<Download style={{ width: 12, height: 12 }} />} label="CSVダウンロード" onClick={() => { setMenuOpen(false); onDownload(); }} color="#059669" />
@@ -75,7 +83,7 @@ export function ProjectCard({
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
                 )}
-                {!onEdit && !onDelete && !onCategorySettings && !onDownload && (
+                {!onEdit && !onDelete && !onCategorySettings && !onDownload && !onEditTags && (
                   <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
                 )}
               </div>
@@ -86,7 +94,7 @@ export function ProjectCard({
         {project.description && (
           <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.6, marginBottom: 14, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }}>{project.description}</p>
         )}
-        <div style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 14, flex: 1 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
             <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600 }}>進捗</span>
             <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", fontWeight: 700, color: "#3D3732" }}>{progress}%</span>
@@ -102,23 +110,50 @@ export function ProjectCard({
             <ProjectActualHours projectId={project.id} />
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12, borderTop: "1px solid rgba(26,23,20,0.05)" }}>
-          <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 4 }}>
-            <Calendar style={{ width: 10, height: 10 }} />{formatDate(project.startDate)} – {formatDate(project.endDate)}
-          </span>
-          {/* Member avatar group */}
-          <div style={{ display: "flex", alignItems: "center" }}>
-            {project.members.slice(0, 4).map((name, i) => (
-              <div key={name} style={{ marginLeft: i === 0 ? 0 : -8, border: "2px solid #fff", borderRadius: "50%", zIndex: 4 - i }}>
-                <Avatar name={name} size="xs" />
-              </div>
-            ))}
-            {project.members.length > 4 && (
-              <div style={{ marginLeft: -8, width: 24, height: 24, borderRadius: "50%", background: "#F4F5F6", border: "2px solid #fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#6B6458" }}>
-                +{project.members.length - 4}
-              </div>
-            )}
+        
+        {/* フッター外枠ブロック */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 12, borderTop: "1px solid rgba(26,23,20,0.05)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 4 }}>
+              <Calendar style={{ width: 10, height: 10 }} />{formatDate(project.startDate)} – {formatDate(project.endDate)}
+            </span>
+            {/* Member avatar group */}
+            <div style={{ display: "flex", alignItems: "center" }}>
+              {project.members.slice(0, 4).map((name, i) => (
+                <div key={name} style={{ marginLeft: i === 0 ? 0 : -8, border: "2px solid #fff", borderRadius: "50%", zIndex: 4 - i }}>
+                  <Avatar name={name} size="xs" />
+                </div>
+              ))}
+              {project.members.length > 4 && (
+                <div style={{ marginLeft: -8, width: 24, height: 24, borderRadius: "50%", background: "#F4F5F6", border: "2px solid #fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#6B6458" }}>
+                  +{project.members.length - 4}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* 期間とアバター表示の完全に真下に同一枠線内パーツとしてカスタムタグを描画 */}
+          {projectTags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+              {projectTags.map((tag: string, idx: number) => (
+                <span
+                  key={idx}
+                  style={{
+                    background: "#F0F9FF",
+                    color: "#0284C7",
+                    border: "1px solid rgba(2, 132, 199, 0.15)",
+                    borderRadius: "6px",
+                    padding: "2px 7px",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    letterSpacing: "0.01em"
+                  }}
+                >
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
