@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
@@ -202,6 +202,8 @@ export function TicketDetailPanel({
 
   // 対応工数
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(ticket?.actualWorkHours ?? null);
+  // 動作確認チェック
+  const [isOperationVerified, setIsOperationVerified] = useState(ticket?.isOperationVerified ?? false);
   const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
   const [completionSegmentHours, setCompletionSegmentHours] = useState<number[]>([]);
   // waiting-release で工数未入力のとき true → パネル内を工数入力のみ表示
@@ -378,6 +380,7 @@ export function TicketDetailPanel({
     setShowChangeDatePicker(false);
     setPendingReleaseDate(null);
     setActualWorkHours(ticket.actualWorkHours ?? null);
+    setIsOperationVerified(ticket.isOperationVerified ?? false);
     setShowCompletionOverlay(false);
     setShowHoursInputMode(ticket.status === "waiting-release" && (ticket.actualWorkHours == null));
 
@@ -405,6 +408,7 @@ export function TicketDetailPanel({
           setCreatedAt(t.createdAt ?? "");
           setReleaseDate(t.releaseDate ?? "");
           setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
+          setIsOperationVerified(t.isOperationVerified ?? false);
         });
     }
 
@@ -1519,8 +1523,8 @@ export function TicketDetailPanel({
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
 
-                {/* 🌟 修正: progress === -1 に連動した保留トグルボタン */}
-                {isAssignee && !ticket.parentId && (
+                {/* リリース済み以外のみ保留・取下ボタンを表示 */}
+                {isAssignee && !ticket.parentId && status !== "released" && (
                   <button onClick={handleToggleHold}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -1534,8 +1538,7 @@ export function TicketDetailPanel({
                     {progress === -1 ? "保留解除" : "保留する"}
                   </button>
                 )}
-                {/* 🌟 追加: 取下トグルボタン */}
-                {isAssignee && !ticket.parentId && (
+                {isAssignee && !ticket.parentId && status !== "released" && (
                   <button onClick={handleToggleWithdraw}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -1547,6 +1550,26 @@ export function TicketDetailPanel({
                     }}>
                     <Ban style={{ width: 11, height: 11 }} />
                     {progress === -2 ? "取下解除" : "取下する"}
+                  </button>
+                )}
+                {/* リリース済みのみ動作確認ボタンを表示 */}
+                {status === "released" && (
+                  <button
+                    onClick={async () => {
+                      const next = !isOperationVerified;
+                      setIsOperationVerified(next);
+                      await save({ is_operation_verified: next });
+                    }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                      border: isOperationVerified ? "1px solid rgba(5,150,105,0.4)" : "1px solid rgba(26,23,20,0.12)",
+                      background: isOperationVerified ? "#ECFDF5" : "#FFF",
+                      color: isOperationVerified ? "#059669" : "#6B6458",
+                      transition: "all 0.15s"
+                    }}>
+                    <ClipboardCheck style={{ width: 11, height: 11 }} />
+                    {isOperationVerified ? "動作確認済み" : "動作確認"}
                   </button>
                 )}
               </div>

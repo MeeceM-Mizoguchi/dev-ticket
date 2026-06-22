@@ -90,6 +90,8 @@ export interface SprintTicket {
   isReleaseDateUndecided?: boolean;
   // 対応完了時の手動工数入力
   actualWorkHours?: number | null;
+  // 動作確認チェック
+  isOperationVerified?: boolean;
 }
 
 export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";
