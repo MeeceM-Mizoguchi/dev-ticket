@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Bell, Trash2, ClipboardList, Check } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug } from "lucide-react";
 import { useNavigate } from "react-router";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -7,6 +7,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { GlobalSearch } from "@/app/components/layout/GlobalSearch";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
+import { BugReportModal } from "@/app/components/bug-report/BugReportModal";
 import type { AppNotification, ActionMemoCategory, NotificationType } from "@/app/types";
 
 function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
@@ -32,6 +33,7 @@ const NOTIF_VIEWED_KEY = "notif_last_viewed_at";
 export function Topbar() {
   const { userName } = useAuth();
   const navigate = useNavigate();
+  const [showBugReport, setShowBugReport] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
   const [hoveredNotifId, setHoveredNotifId] = useState<string | null>(null);
   const [existingActionNotifIds, setExistingActionNotifIds] = useState<Set<string>>(new Set());
@@ -158,10 +160,22 @@ export function Topbar() {
   };
 
   return (
+    <>
+    {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
     <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, flexShrink: 0 }}>
       <style>{`@keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }`}</style>
       <GlobalSearch />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+        {/* バグ報告ボタン */}
+        <button
+          onClick={() => setShowBugReport(true)}
+          title="バグ・不具合を報告する"
+          style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", transition: "background 0.15s" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+          <Bug style={{ width: 15, height: 15, color: "#9E9690" }} />
+        </button>
+
         <div style={{ position: "relative" }}>
           <button
             onClick={() => { if (showNotif) { setShowNotif(false); setHoveredNotifId(null); } else handleOpen(); }}
@@ -321,5 +335,6 @@ export function Topbar() {
         </div>
       </div>
     </header>
+    </>
   );
 }
