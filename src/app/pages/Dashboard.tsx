@@ -639,7 +639,7 @@ export function Dashboard() {
   };
 
   return (
-    <div style={{ padding: "32px 28px" }}>
+    <div style={{ padding: "32px 28px", minWidth: 900 }}>
       <div style={{ marginBottom: 28, display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
         <div>
           <p style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", letterSpacing: "0.10em", marginBottom: 8, textTransform: "uppercase" as const }}>

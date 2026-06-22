@@ -194,7 +194,7 @@ export function SprintPage() {
   ];
 
   return (
-    <div style={{ padding: "24px" }}>
+    <div style={{ padding: "24px", minWidth: 1100 }}>
       {/* ── パンくず（SprintDetailPageと同構造・同高さ） ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>

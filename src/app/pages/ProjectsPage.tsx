@@ -218,7 +218,7 @@ export function ProjectsPage() {
   const hasActiveTags = selectedTags.length > 0;
 
   return (
-    <div style={{ padding: "24px" }}>
+    <div style={{ padding: "24px", minWidth: 900 }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>プロジェクト管理</h1>
