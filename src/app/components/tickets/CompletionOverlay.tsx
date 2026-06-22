@@ -59,7 +59,7 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
 
   useEffect(() => {
     if (skipAnimation) return;
-    const t = setTimeout(() => setPhase("input"), 3000);
+    const t = setTimeout(() => setPhase("input"), 2000);
     return () => clearTimeout(t);
   }, [skipAnimation]);
 

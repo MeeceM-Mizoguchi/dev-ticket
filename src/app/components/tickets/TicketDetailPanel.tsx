@@ -791,29 +791,32 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
-  const handleAddToReleaseNotes = async () => {
+  const handleAddToReleaseNotes = () => {
     if (!ticket) return;
     const newStatus: TicketStatus = "waiting-release";
     const p = STATUS_PROGRESS[newStatus];
+    const now = new Date().toISOString();
+
+    // UIを即座に更新してアニメーションを表示
     setStatus(newStatus);
     setProgress(p);
-    if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({
-        status: newStatus,
-        progress: p,
-        release_date: isReleaseDateUndecided ? null : (releaseDate || null),
-        is_release_date_undecided: isReleaseDateUndecided,
-      }).eq("id", ticket.id);
-    }
-    if (ticket) await recordMilestoneFromTicketStatus(ticket.id, newStatus);
-    if (isSupabaseEnabled) {
-      const { data } = await supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single();
-      if (data) setCompletionSegmentHours(computeRawSegments(mapSprintTicket(data)));
-    }
-    const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
-    await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
-    // ステータス保存後にお祝いオーバーレイを表示（工数保存後に onUpdated を呼ぶ）
+    setCompletionSegmentHours(computeRawSegments({ ...ticket, releasedAt: now }));
     setShowCompletionOverlay(true);
+
+    // DB操作をバックグラウンドで実行
+    void (async () => {
+      if (isSupabaseEnabled) {
+        await supabase!.from("sprint_tickets").update({
+          status: newStatus,
+          progress: p,
+          release_date: isReleaseDateUndecided ? null : (releaseDate || null),
+          is_release_date_undecided: isReleaseDateUndecided,
+        }).eq("id", ticket.id);
+      }
+      await recordMilestoneFromTicketStatus(ticket.id, newStatus);
+      const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
+      await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
+    })();
   };
 
   const handleSaveReleaseDate = async (newDate: string) => {
