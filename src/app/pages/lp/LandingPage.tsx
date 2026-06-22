@@ -1092,19 +1092,22 @@ export function LandingPage() {
 
             </div>
 
+            <div className="flex justify-center">
+              <div className="w-0.5 h-6 bg-slate-300" />
+            </div>
+
             {/* ── Branch + Grid + Merge: single overflow container for exact alignment ── */}
             <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
               <div className="min-w-[720px]">
 
-              {/* Branch: center down → horizontal bar → 4 colored stubs */}
+              {/* Branch: horizontal bar → 4 colored stubs */}
               {/* calc() offsets account for gap-3 (12px): col1=−4.5px, col2=−1.5px, col3=+1.5px, col4=+4.5px */}
-              <div className="relative" style={{height:'48px'}}>
-                <div className="absolute left-1/2 top-0 h-6 w-0.5 bg-slate-300 -translate-x-1/2" />
-                <div className="absolute top-6 h-0.5 bg-slate-200" style={{left:'calc(12.5% - 4.5px)', right:'calc(12.5% - 4.5px)'}} />
-                <div className="absolute top-6 bottom-0 w-0.5 bg-teal-400" style={{left:'calc(12.5% - 4.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-6 bottom-0 w-0.5 bg-blue-400" style={{left:'calc(37.5% - 1.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-6 bottom-0 w-0.5 bg-violet-500" style={{left:'calc(62.5% + 1.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-6 bottom-0 w-0.5 bg-orange-400" style={{left:'calc(87.5% + 4.5px)', transform:'translateX(-50%)'}} />
+              <div className="relative" style={{height:'24px'}}>
+                <div className="absolute top-0 h-0.5 bg-slate-200" style={{left:'calc(12.5% - 4.5px)', right:'calc(12.5% - 4.5px)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-teal-400" style={{left:'calc(12.5% - 4.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-blue-400" style={{left:'calc(37.5% - 1.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-violet-500" style={{left:'calc(62.5% + 1.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-orange-400" style={{left:'calc(87.5% + 4.5px)', transform:'translateX(-50%)'}} />
               </div>
 
               <div className="grid grid-cols-4 gap-3">
@@ -1188,17 +1191,20 @@ export function LandingPage() {
                 ))}
               </div>
 
-              {/* Merge: 4 colored stubs → horizontal bar → center down */}
-              <div className="relative" style={{height:'48px'}}>
-                <div className="absolute top-0 h-6 w-0.5 bg-teal-400" style={{left:'calc(12.5% - 4.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-0 h-6 w-0.5 bg-blue-400" style={{left:'calc(37.5% - 1.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-0 h-6 w-0.5 bg-violet-500" style={{left:'calc(62.5% + 1.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-0 h-6 w-0.5 bg-orange-400" style={{left:'calc(87.5% + 4.5px)', transform:'translateX(-50%)'}} />
-                <div className="absolute top-6 h-0.5 bg-slate-200" style={{left:'calc(12.5% - 4.5px)', right:'calc(12.5% - 4.5px)'}} />
-                <div className="absolute left-1/2 top-6 bottom-0 w-0.5 bg-slate-300 -translate-x-1/2" />
+              {/* Merge: 4 colored stubs → horizontal bar */}
+              <div className="relative" style={{height:'24px'}}>
+                <div className="absolute top-0 bottom-0 w-0.5 bg-teal-400" style={{left:'calc(12.5% - 4.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-blue-400" style={{left:'calc(37.5% - 1.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-violet-500" style={{left:'calc(62.5% + 1.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute top-0 bottom-0 w-0.5 bg-orange-400" style={{left:'calc(87.5% + 4.5px)', transform:'translateX(-50%)'}} />
+                <div className="absolute bottom-0 h-0.5 bg-slate-200" style={{left:'calc(12.5% - 4.5px)', right:'calc(12.5% - 4.5px)'}} />
               </div>
 
               </div>
+            </div>
+
+            <div className="flex justify-center">
+              <div className="w-0.5 h-6 bg-slate-300" />
             </div>
 
             {/* ── Common end nodes ── */}
