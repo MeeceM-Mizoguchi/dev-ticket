@@ -7,6 +7,11 @@ import { LinkPreviewPanel } from "@/app/components/shared/LinkPreviewPanel";
 import { ProtectedShell } from "@/app/components/layout/AppShell";
 import { LoginPage } from "@/app/pages/LoginPage";
 import { AcceptInvitePage } from "@/app/pages/AcceptInvitePage";
+import { LandingPage } from "@/app/pages/lp/LandingPage";
+import { DemoBookingPage } from "@/app/pages/lp/DemoBookingPage";
+import { DemoPreviewPage } from "@/app/pages/lp/DemoPreviewPage";
+import { PrivacyPolicyPage } from "@/app/pages/lp/PrivacyPolicyPage";
+import { TermsOfServicePage } from "@/app/pages/lp/TermsOfServicePage";
 import { Dashboard } from "@/app/pages/Dashboard";
 import { ProjectsPage } from "@/app/pages/ProjectsPage";
 import { SprintPage } from "@/app/pages/SprintPage";
@@ -33,6 +38,11 @@ export default function App() {
           <PreviewPanelProvider>
           <LinkPreviewPanel />
           <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/book-demo" element={<DemoBookingPage />} />
+            <Route path="/demo-preview" element={<DemoPreviewPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/terms" element={<TermsOfServicePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
             <Route element={<OrgProvider><ProtectedShell /></OrgProvider>}>
@@ -58,7 +68,6 @@ export default function App() {
               {/* Sprint detail (チケット一覧) with optional ticket open */}
               <Route path="/:projectSlug/:segment" element={<SprintDetailPage />} />
             </Route>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
           </PreviewPanelProvider>
