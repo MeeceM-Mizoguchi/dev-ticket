@@ -23,6 +23,16 @@ import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
 
+function truncateQuoteHtml(html: string, maxLines = 5): string {
+  const breaks = [...html.matchAll(/(<\/p>|<br\s*\/?>|<\/li>)/gi)];
+  if (breaks.length <= maxLines) return html;
+  const cut = breaks[maxLines - 1];
+  let clipped = html.slice(0, cut.index! + cut[0].length);
+  if ((clipped.match(/<ul/gi) ?? []).length > (clipped.match(/<\/ul>/gi) ?? []).length) clipped += '</ul>';
+  if ((clipped.match(/<ol/gi) ?? []).length > (clipped.match(/<\/ol>/gi) ?? []).length) clipped += '</ol>';
+  return clipped + '<p style="color:#9E9690;margin:0">...</p>';
+}
+
 const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100, pending: 0,
@@ -2651,7 +2661,7 @@ export function TicketDetailPanel({
                         <button onClick={() => {
                           setReplyingToId(replyingToId === c.id ? null : c.id);
                           // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
-                          const cleanContent = c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim();
+                          const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                           // 左線ではなく全体を囲うボーダースタイルに変更
                           setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
                           setReplyImages([]);
@@ -2760,7 +2770,7 @@ export function TicketDetailPanel({
                                 <button onClick={() => {
                                   setReplyingToId(replyingToId === c.id ? null : c.id);
                                   // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
-                                  const cleanContent = reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim();
+                                  const cleanContent = truncateQuoteHtml(reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                                   // 左線ではなく全体を囲うボーダースタイルに変更
                                   setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
                                   setReplyImages([]);
