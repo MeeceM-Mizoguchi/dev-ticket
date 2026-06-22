@@ -414,6 +414,7 @@ export function ReleaseNotesPage() {
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                         <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "1px 6px", borderRadius: 4, flexShrink: 0 }}>{item.ticket.wbs}</span>
                         {isReleased && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: "#DCFCE7", color: "#16A34A" }}>リリース済み</span>}
+                        {isReleased && item.ticket.isOperationVerified && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: "#D1FAE5", color: "#059669", border: "1px solid rgba(5,150,105,0.25)" }}>動作確認済み</span>}
                       </div>
                       <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.ticket.title}</p>
                       <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2 }}>{item.projectName} ・ {item.ticket.assignee || "未定"}</p>
