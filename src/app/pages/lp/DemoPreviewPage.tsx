@@ -44,7 +44,7 @@ export function DemoPreviewPage() {
   const isExpired = status === 'expired';
   return (
     <div className="fixed inset-0 bg-slate-950 flex items-center justify-center px-4">
-      <div className="bg-white rounded-2xl p-10 max-w-md w-full text-center shadow-2xl">
+      <div className="bg-white rounded-2xl p-6 sm:p-10 max-w-md w-full text-center shadow-2xl">
         <div className="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-6">
           <span className="text-3xl">{isExpired ? '⏱' : '🔒'}</span>
         </div>

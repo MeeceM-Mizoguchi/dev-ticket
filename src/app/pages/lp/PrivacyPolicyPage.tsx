@@ -27,11 +27,11 @@ export function PrivacyPolicyPage() {
 
       <main className="flex-1 pt-32 pb-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-center gap-3 mb-8">
-            <ShieldCheck className="w-8 h-8 text-teal-600" />
-            <h1 className="text-3xl font-bold text-slate-900">プライバシーポリシー</h1>
+          <div className="flex items-center gap-3 mb-6 sm:mb-8">
+            <ShieldCheck className="w-7 h-7 sm:w-8 sm:h-8 text-teal-600 flex-shrink-0" />
+            <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">プライバシーポリシー</h1>
           </div>
-          <div className="bg-white p-8 sm:p-10 rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 space-y-8 text-slate-600 leading-relaxed">
+          <div className="bg-white p-5 sm:p-8 lg:p-10 rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 space-y-8 text-slate-600 leading-relaxed">
           <section>
             <h2 className="text-xl font-bold text-slate-800 mb-3">1. 個人情報の収集</h2>
             <p>当社は、サービスの提供にあたり、適法かつ公正な手段によって個人情報を取得します。</p>

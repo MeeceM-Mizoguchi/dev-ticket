@@ -45,7 +45,7 @@ function toPersonDays(h: number): string {
 export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimation, onSave, onClose }: Props) {
   const [phase, setPhase] = useState<"animation" | "input">(skipAnimation ? "input" : "animation");
   const [segmentValues, setSegmentValues] = useState<string[]>(
-    () => initialSegmentHours.map(h => h >= 0.25 ? String(h) : "")
+    () => initialSegmentHours.map(h => h > 0 ? String(h) : "")
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -192,11 +192,8 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
           <p style={{ fontSize: 12, color: "#9E9690", margin: "0 0 20px", textAlign: "center" }}>
             {ticketTitle}
           </p>
-          <p style={{ fontSize: 11, color: "#9E9690", margin: "0 0 6px" }}>
+          <p style={{ fontSize: 11, color: "#9E9690", margin: "0 0 12px" }}>
             各工程の実際の時間を入力してください（時間単位）
-          </p>
-          <p style={{ fontSize: 10, color: "#B0A9A4", margin: "0 0 12px", lineHeight: 1.5 }}>
-            ※ 自動計算が15分（0.25h）未満の工程は空白にしています。必要に応じて手入力してください。
           </p>
 
           {/* 工程別入力 */}

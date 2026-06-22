@@ -67,7 +67,7 @@ function StatusBadge({ status }: { status: string }) {
 
 function rawSegmentHour(a?: string | null, b?: string | null): number {
   if (!a || !b) return 0;
-  return Math.max(0, Math.round(((new Date(b).getTime() - new Date(a).getTime()) / 3600000) * 10) / 10);
+  return Math.max(0, Math.round(((new Date(b).getTime() - new Date(a).getTime()) / 3600000) * 100) / 100);
 }
 
 function computeRawSegments(t: {

@@ -150,7 +150,7 @@ export function DemoBookingPage() {
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 overflow-hidden">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 overflow-x-hidden">
       <style>{`
         @keyframes fadeInUp {
           from { opacity: 0; transform: translateY(20px); }
@@ -206,14 +206,14 @@ export function DemoBookingPage() {
 
       {/* ── STEP 1: お客様情報フォーム ── */}
       {step === 'form' && (
-        <main className="flex-1 flex flex-col justify-center max-w-4xl mx-auto w-full px-6 py-8">
-          <div className="text-center mb-8">
+        <main className="flex-1 flex flex-col justify-start sm:justify-center max-w-4xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
+          <div className="text-center mb-4 sm:mb-8">
             <h1 className="text-2xl font-bold text-slate-900 mb-1">デモのご予約</h1>
             <p className="text-slate-500 text-sm">お客様情報をご入力ください</p>
           </div>
 
-          <div className="bg-white rounded-3xl p-8 lg:p-10 shadow-xl shadow-slate-200/50 border border-slate-200">
-            <div className="grid lg:grid-cols-2 gap-8">
+          <div className="bg-white rounded-3xl p-5 sm:p-8 lg:p-10 shadow-xl shadow-slate-200/50 border border-slate-200">
+            <div className="grid lg:grid-cols-2 gap-5 sm:gap-8">
               <div className="space-y-5">
                 {/* 個人事業主チェック */}
                 <label className="flex items-center gap-3 p-4 bg-teal-50 rounded-2xl cursor-pointer select-none">
@@ -305,10 +305,10 @@ export function DemoBookingPage() {
               </div>
             </div>
 
-            <div className="pt-8 flex justify-end">
+            <div className="pt-6 sm:pt-8 flex flex-col sm:flex-row sm:justify-end">
               <button
                 onClick={() => { if (validate()) setStep('calendar'); }}
-                className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-bold px-10 py-4 rounded-2xl transition-all shadow-lg shadow-teal-600/20"
+                className="flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-bold px-10 py-4 rounded-2xl transition-all shadow-lg shadow-teal-600/20 w-full sm:w-auto"
               >
                 次へ：日程選択
                 <ChevronRight className="w-5 h-5" />
@@ -320,19 +320,19 @@ export function DemoBookingPage() {
 
       {/* ── STEP 2: 商談候補日時カレンダー ── */}
       {step === 'calendar' && (
-        <main className="flex-1 flex flex-col justify-center max-w-6xl mx-auto w-full px-6 py-8">
-          <div className="text-center mb-4">
-            <h1 className="text-3xl font-bold text-slate-900 mb-1 tracking-tight">商談候補日時を選択</h1>
+        <main className="flex-1 flex flex-col justify-start sm:justify-center max-w-6xl mx-auto w-full px-3 sm:px-6 py-4 sm:py-8">
+          <div className="text-center mb-3 sm:mb-4">
+            <h1 className="text-xl sm:text-3xl font-bold text-slate-900 mb-1 tracking-tight">商談候補日時を選択</h1>
             <p className="text-slate-500 text-sm mb-3">ご都合の良い日程を最大3つまでお選びください</p>
-            <span className="inline-flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-5 py-1.5 font-bold">
+            <span className="inline-flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 sm:px-5 py-1.5 font-bold">
               <CalendarDays className="w-4 h-4" />
               本日より1週間後以降の日付から選択できます
             </span>
           </div>
-          <div className="bg-white rounded-3xl p-6 lg:p-8 shadow-2xl shadow-slate-200/60 border border-slate-100 min-h-0">
+          <div className="bg-white rounded-3xl p-3 sm:p-6 lg:p-8 shadow-2xl shadow-slate-200/60 border border-slate-100 min-h-0">
             <div className="lg:grid lg:grid-cols-[400px_1fr] lg:gap-8 items-start">
               {/* カレンダー */}
-              <div className="flex justify-center mb-4 lg:mb-0 bg-slate-50 rounded-2xl p-6 border border-slate-100">
+              <div className="flex justify-center mb-4 lg:mb-0 bg-slate-50 rounded-2xl p-3 sm:p-6 border border-slate-100">
                 <div className="transform origin-center">
                   <Calendar
                     mode="multiple"
@@ -425,8 +425,8 @@ export function DemoBookingPage() {
 
       {/* ── 完了画面 ── */}
       {step === 'success' && (
-        <main className="flex-1 flex flex-col justify-center items-center max-w-2xl mx-auto w-full px-6 py-8">
-          <div className="bg-white rounded-[40px] p-12 shadow-2xl shadow-slate-200/60 border border-slate-100 w-full text-center animate-fade-in-up">
+        <main className="flex-1 flex flex-col justify-start sm:justify-center items-center max-w-2xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
+          <div className="bg-white rounded-3xl sm:rounded-[40px] p-6 sm:p-12 shadow-2xl shadow-slate-200/60 border border-slate-100 w-full text-center animate-fade-in-up">
             <div className="relative w-24 h-24 mx-auto mb-8">
               <div className="absolute inset-0 bg-teal-100 rounded-full animate-pulse-ring" />
               <div className="relative w-24 h-24 bg-gradient-to-br from-teal-500 to-emerald-600 rounded-full flex items-center justify-center shadow-lg shadow-teal-600/30 animate-scale-in">
@@ -434,7 +434,7 @@ export function DemoBookingPage() {
               </div>
             </div>
 
-            <h1 className="text-3xl font-extrabold text-slate-900 mb-4 tracking-tight">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 sm:mb-4 tracking-tight">
               デモ予約のリクエストを<br className="sm:hidden" />完了しました
             </h1>
 

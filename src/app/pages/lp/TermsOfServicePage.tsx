@@ -27,11 +27,11 @@ export function TermsOfServicePage() {
 
       <main className="flex-1 pt-32 pb-16 px-4 sm:px-6 lg:px-8">
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-center gap-3 mb-8">
-            <FileText className="w-8 h-8 text-teal-600" />
-            <h1 className="text-3xl font-bold text-slate-900">利用規約</h1>
+          <div className="flex items-center gap-3 mb-6 sm:mb-8">
+            <FileText className="w-7 h-7 sm:w-8 sm:h-8 text-teal-600 flex-shrink-0" />
+            <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">利用規約</h1>
           </div>
-          <div className="bg-white p-8 sm:p-10 rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 space-y-8 text-slate-600 leading-relaxed">
+          <div className="bg-white p-5 sm:p-8 lg:p-10 rounded-3xl border border-slate-200 shadow-xl shadow-slate-200/50 space-y-8 text-slate-600 leading-relaxed">
           <section>
             <h2 className="text-xl font-bold text-slate-800 mb-3">第1条（適用）</h2>
             <p>本規約は、Meece株式会社（以下、「当社」）が提供する「Dev Ticket」（以下、「本サービス」）の利用条件を定めるものです。本サービスを利用する全てのユーザーに適用されます。</p>
