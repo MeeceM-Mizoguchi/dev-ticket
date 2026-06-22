@@ -534,7 +534,7 @@ export function LandingPage() {
               <div className="mt-8 flex items-center gap-6 text-sm text-slate-600">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-5 h-5 text-teal-600" />
-                  <span>クレジットカード不要</span>
+                  <span>デモ予約可能</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-5 h-5 text-teal-600" />
@@ -1498,7 +1498,7 @@ export function LandingPage() {
                   </li>
                 </ul>
                 <Button variant="outline" onClick={() => navigate('/book-demo')} className="w-full">
-                  無料で始める
+                  今すぐ始める
                 </Button>
               </CardContent>
             </Card>
@@ -1582,7 +1582,7 @@ export function LandingPage() {
             今すぐDev Ticketを始めましょう
           </h2>
           <p className="text-xl text-teal-50 mb-8">
-            クレジットカード不要。数分でチーム全体の生産性を向上させます。
+            数分でチーム全体の生産性を向上させます。
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Button size="lg" onClick={() => navigate('/book-demo')} className="bg-white text-teal-600 hover:bg-slate-100 text-lg px-8 py-6">
