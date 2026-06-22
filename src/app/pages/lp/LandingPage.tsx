@@ -3,7 +3,7 @@ import { useNavigate, Link, useLocation } from 'react-router';
 import { Button } from '@/app/components/ui/button';
 import { Card, CardContent } from '@/app/components/ui/card';
 import { Badge } from '@/app/components/ui/badge';
-import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch } from 'lucide-react';
+import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X } from 'lucide-react';
 import { MockDashboard } from '@/app/components/lp/mocks/MockDashboard';
 import { MockSprintList } from '@/app/components/lp/mocks/MockSprintList';
 import { MockSprintBoard } from '@/app/components/lp/mocks/MockSprintBoard';
@@ -440,6 +440,7 @@ export function LandingPage() {
   const { pathname, hash } = useLocation();
   const [demoMode, setDemoMode] = useState<DemoMode>('none');
   const [activeFeature, setActiveFeature] = useState<FeatureId | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // storyboard state
   const [storyRoute, setStoryRoute] = useState(0);
   const [storySlide, setStorySlide] = useState(0);
@@ -500,7 +501,27 @@ export function LandingPage() {
                 ログイン
               </Button>
             </div>
+            <button
+              className="md:hidden p-2 rounded-md text-slate-600 hover:text-teal-600 hover:bg-slate-50 transition-colors"
+              onClick={() => setMobileMenuOpen(o => !o)}
+              aria-label="メニュー"
+            >
+              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+            </button>
           </div>
+          {mobileMenuOpen && (
+            <div className="md:hidden border-t border-slate-100 py-3 flex flex-col gap-1">
+              <button onClick={() => { scrollToSection('features'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">機能</button>
+              <button onClick={() => { scrollToSection('resources'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">リソース調達</button>
+              <button onClick={() => { scrollToSection('screenshots'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">製品紹介</button>
+              <button onClick={() => { scrollToSection('benefits'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">特徴</button>
+              <button onClick={() => { scrollToSection('pricing'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">料金</button>
+              <div className="flex flex-col gap-2 mt-2 pt-3 border-t border-slate-100">
+                <Button onClick={() => { navigate('/book-demo'); setMobileMenuOpen(false); }} className="bg-teal-600 hover:bg-teal-700 text-white w-full">デモのご予約</Button>
+                <Button onClick={() => { navigate('/login'); setMobileMenuOpen(false); }} variant="outline" className="w-full border-slate-300 hover:border-teal-600 hover:text-teal-600">ログイン</Button>
+              </div>
+            </div>
+          )}
         </div>
       </nav>
 
@@ -512,7 +533,7 @@ export function LandingPage() {
               <Badge className="mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100 w-fit">
                 チームの生産性を最大化
               </Badge>
-              <h1 className="text-5xl sm:text-6xl font-bold text-slate-900 mb-6 leading-tight">
+              <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-slate-900 mb-6 leading-tight">
                 プロジェクトを、<br />
                 <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-600 to-emerald-600">
                   スマートに。
@@ -558,7 +579,7 @@ export function LandingPage() {
             <Badge className="mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100">
               主要機能
             </Badge>
-            <h2 className="text-4xl font-bold text-slate-900 mb-4">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-4">
               開発チームに必要な<br />すべての機能を一つに
             </h2>
             <p className="text-xl text-slate-600">
@@ -905,7 +926,7 @@ export function LandingPage() {
               <Zap className="w-3.5 h-3.5" />
               リソース調達の新しいカタチ
             </div>
-            <h2 className="text-4xl lg:text-5xl font-black leading-tight mb-3">
+            <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black leading-tight mb-3">
               <span className="text-slate-900">リソース調達を</span>
               <span className="ml-2 text-transparent bg-clip-text" style={{ backgroundImage: 'linear-gradient(135deg, #0d9488, #10b981, #059669)' }}>
                 シームレスに行う
@@ -928,7 +949,7 @@ export function LandingPage() {
                 <Activity className="w-3.5 h-3.5 text-teal-500" />
                 調達フロー
               </div>
-              <h3 className="text-3xl font-black text-slate-900 mb-2">
+              <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mb-2">
                 チケットを起点に、<span className="text-transparent bg-clip-text" style={{backgroundImage:'linear-gradient(135deg,#0d9488,#10b981)'}}>担当が決まる</span>
               </h3>
               <p className="text-slate-500 text-sm max-w-xl mx-auto">4つのルートから最適なエンジニアを確保するまでの流れを、実際の画面でご覧ください</p>
@@ -957,14 +978,14 @@ export function LandingPage() {
                     })}
                   </div>
 
-                  {/* Content: mockup left, description right */}
-                  <div className="flex min-h-[380px]">
+                  {/* Content: mockup top/left, description bottom/right */}
+                  <div className="flex flex-col md:flex-row md:min-h-[380px]">
 
-                    <div className="w-[54%] p-6 flex items-center justify-center bg-slate-50 border-r border-slate-100">
-                      <div className="w-full max-w-xs">{slide.screen}</div>
+                    <div className="w-full md:w-[54%] p-4 md:p-6 flex items-center justify-center bg-slate-50 border-b md:border-b-0 md:border-r border-slate-100">
+                      <div className="w-full max-w-[280px] md:max-w-xs">{slide.screen}</div>
                     </div>
 
-                    <div className="flex-1 p-6 flex flex-col">
+                    <div className="flex-1 p-4 md:p-6 flex flex-col">
                       <div className="flex-1">
                         <div className="flex items-baseline gap-1.5 mb-3" style={{ color:route.hex }}>
                           <span className="text-[10px] font-black tracking-widest uppercase">STEP</span>
@@ -1037,7 +1058,7 @@ export function LandingPage() {
                 <GitBranch className="w-3.5 h-3.5 text-teal-500" />
                 詳細フロー
               </div>
-              <h3 className="text-3xl font-black text-slate-900 mb-2">
+              <h3 className="text-2xl sm:text-3xl font-black text-slate-900 mb-2">
                 ルート別の<span className="text-transparent bg-clip-text" style={{backgroundImage:'linear-gradient(135deg,#0d9488,#10b981)'}}>実施フロー</span>
               </h3>
               <p className="text-slate-500 text-sm max-w-xl mx-auto">選んだルートに応じて担当が決まるまでのプロセスが異なります。すべてチケットを起点に動きます。</p>
@@ -1218,7 +1239,7 @@ export function LandingPage() {
             <Badge className="mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100">
               製品紹介
             </Badge>
-            <h2 className="text-4xl font-bold text-slate-900 mb-4">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-4">
               直感的で使いやすいインターフェース
             </h2>
             <p className="text-xl text-slate-600">
@@ -1230,7 +1251,7 @@ export function LandingPage() {
             {/* Dashboard */}
             <div className="grid lg:grid-cols-2 gap-8 items-center">
               <div className="order-2 lg:order-1">
-                <h3 className="text-3xl font-bold text-slate-900 mb-4">ダッシュボード</h3>
+                <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-4">ダッシュボード</h3>
                 <p className="text-lg text-slate-600 mb-6">
                   プロジェクト全体の状況を一目で確認。進行中のタスク、完了率、チームの進捗状況をビジュアルで表示します。グラフやチャートで、データドリブンな意思決定をサポートします。
                 </p>
@@ -1264,7 +1285,7 @@ export function LandingPage() {
                 </div>
               </div>
               <div>
-                <h3 className="text-3xl font-bold text-slate-900 mb-4">スプリント管理 - リストビュー</h3>
+                <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-4">スプリント管理 - リストビュー</h3>
                 <p className="text-lg text-slate-600 mb-6">
                   チケットを表形式で管理。WBS番号、優先度、担当者、期限などを一覧で確認できます。フィルターやソート機能で、必要な情報に素早くアクセスできます。
                 </p>
@@ -1288,7 +1309,7 @@ export function LandingPage() {
             {/* Sprint Board */}
             <div className="grid lg:grid-cols-2 gap-8 items-center">
               <div className="order-2 lg:order-1">
-                <h3 className="text-3xl font-bold text-slate-900 mb-4">スプリント管理 - ボードビュー</h3>
+                <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-4">スプリント管理 - ボードビュー</h3>
                 <p className="text-lg text-slate-600 mb-6">
                   カンバン形式でチケットを管理。ステータスごとにカラム分けされており、ドラッグ&ドロップで直感的にステータス変更が可能です。
                 </p>
@@ -1322,7 +1343,7 @@ export function LandingPage() {
                 </div>
               </div>
               <div>
-                <h3 className="text-3xl font-bold text-slate-900 mb-4">スプリント管理 - ガントチャート</h3>
+                <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-4">スプリント管理 - ガントチャート</h3>
                 <p className="text-lg text-slate-600 mb-6">
                   タイムライン形式でチケットの予定と進捗を可視化。期間の重複や依存関係を把握しやすく、スケジュール管理に最適です。
                 </p>
@@ -1346,7 +1367,7 @@ export function LandingPage() {
             {/* Projects */}
             <div className="grid lg:grid-cols-2 gap-8 items-center">
               <div className="order-2 lg:order-1">
-                <h3 className="text-3xl font-bold text-slate-900 mb-4">プロジェクト一覧</h3>
+                <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-4">プロジェクト一覧</h3>
                 <p className="text-lg text-slate-600 mb-6">
                   すべてのプロジェクトをカード形式で表示。クライアント情報、ステータス、メンバー、進捗状況を一目で確認できます。
                 </p>
@@ -1380,7 +1401,7 @@ export function LandingPage() {
                 </div>
               </div>
               <div>
-                <h3 className="text-3xl font-bold text-slate-900 mb-4">メンバー管理</h3>
+                <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-4">メンバー管理</h3>
                 <p className="text-lg text-slate-600 mb-6">
                   チームメンバーの招待、編集、権限管理を一箇所で実施。ロールやチームごとにメンバーをフィルタリングできます。
                 </p>
@@ -1411,7 +1432,7 @@ export function LandingPage() {
             <Badge className="mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100">
               Dev Ticketの特徴
             </Badge>
-            <h2 className="text-4xl font-bold text-slate-900 mb-4">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-4">
               チームの生産性を最大化する理由
             </h2>
           </div>
@@ -1463,7 +1484,7 @@ export function LandingPage() {
             <Badge className="mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100">
               料金プラン
             </Badge>
-            <h2 className="text-4xl font-bold text-slate-900 mb-4">
+            <h2 className="text-3xl sm:text-4xl font-bold text-slate-900 mb-4">
               シンプルで分かりやすい料金体系
             </h2>
             <p className="text-xl text-slate-600">
@@ -1578,7 +1599,7 @@ export function LandingPage() {
       {/* CTA Section */}
       <section className="py-20 px-4 sm:px-6 lg:px-8 bg-gradient-to-br from-teal-600 to-emerald-600">
         <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-4xl sm:text-5xl font-bold text-white mb-6">
+          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-white mb-6">
             今すぐDev Ticketを始めましょう
           </h2>
           <p className="text-xl text-teal-50 mb-8">
