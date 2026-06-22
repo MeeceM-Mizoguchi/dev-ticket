@@ -10,7 +10,7 @@ export function AppShell() {
       <Sidebar />
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
         <Topbar />
-        <main style={{ flex:1, overflowY:"auto" }}>
+        <main style={{ flex:1, overflow:"auto" }}>
           <Outlet />
         </main>
       </div>

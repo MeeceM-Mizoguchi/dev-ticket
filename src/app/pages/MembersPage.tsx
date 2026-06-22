@@ -133,7 +133,7 @@ export function MembersPage() {
   const invitedCount = visibleMembers.filter(m => m.status === "invited").length;
 
   return (
-    <div style={{ padding: 0 }}>
+    <div style={{ padding: 0, minWidth: 900 }}>
 
       {/* ── 組織バナー ── */}
       {myOrg && (

@@ -401,7 +401,7 @@ export function BacklogPage() {
   if (!loading && effectiveBacklogPerm === "none") return <Navigate to="/dashboard" replace />;
 
   return (
-    <div style={{ padding: "24px 24px 0" }}>
+    <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
