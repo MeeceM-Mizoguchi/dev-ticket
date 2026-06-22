@@ -82,13 +82,13 @@ export function LoginPage() {
           </div>
         </div>
       </div>
-      <div className="flex-1 flex items-center justify-center p-8 bg-[#F5F6F8]">
+      <div className="flex-1 flex items-center justify-center p-5 sm:p-8 bg-[#F5F6F8]">
         <div className="w-full max-w-[360px]">
-          <div className="mb-8">
+          <div className="mb-6 sm:mb-8">
             <h1 className="text-2xl font-bold text-stone-900 mb-1" style={{ fontFamily: "var(--font-heading)" }}>ログイン</h1>
             <p className="text-sm text-stone-500">アカウントにアクセスしてください</p>
           </div>
-          <div className="bg-white rounded-2xl border border-stone-200 p-7 shadow-sm">
+          <div className="bg-white rounded-2xl border border-stone-200 p-5 sm:p-7 shadow-sm">
             <form onSubmit={handleSubmit} className="space-y-5" noValidate>
               {error && (
                 <div className="flex items-center gap-2.5 p-3.5 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm">
