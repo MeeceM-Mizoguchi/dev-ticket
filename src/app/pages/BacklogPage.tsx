@@ -208,6 +208,9 @@ function BacklogSidebarItem({
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pMeta.bg, color: pMeta.color }}>{pMeta.label}</span>
           <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: sMeta.bg, color: sMeta.color }}>{sMeta.label}</span>
+          {item.isUserInquiry && (
+            <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: "#FFF7ED", color: "#D97706" }}>問い合わせ</span>
+          )}
           {isConverted && (
             <button
               onClick={handleOpenTicket}

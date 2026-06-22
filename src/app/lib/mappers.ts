@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -60,7 +60,12 @@ export function mapActionMemo(r: any): ActionMemo {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapBacklogItem(r: any): BacklogItem {
-  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, convertedTicketWbs: r.converted_ticket_wbs ?? null, categoryId: r.category_id ?? null, images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, projectId: r.project_id, title: r.title, description: r.description || "", status: r.status || "open", priority: r.priority || "medium", rank: r.rank ?? 0, assignee: r.assignee || "", estimatedHours: r.estimated_hours || 0, convertedTicketId: r.converted_ticket_id ?? null, convertedTicketWbs: r.converted_ticket_wbs ?? null, categoryId: r.category_id ?? null, images: Array.isArray(r.images) ? r.images : [], isUserInquiry: r.is_user_inquiry ?? false, bugReportId: r.bug_report_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapBugReport(r: any): BugReport {
+  return { id: r.id, userId: r.user_id ?? null, userName: r.user_name || "", userEmail: r.user_email || "", category: r.category || "other", severity: r.severity || "minor", title: r.title || "", steps: r.steps || "", actual: r.actual || "", expected: r.expected || "", url: r.url || "", images: Array.isArray(r.images) ? r.images : [], status: r.status || "open", backlogItemId: r.backlog_item_id ?? null, createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

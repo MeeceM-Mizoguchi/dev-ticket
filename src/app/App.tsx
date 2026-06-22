@@ -25,6 +25,7 @@ import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 import { MyActionsPage } from "@/app/pages/MyActionsPage";
 import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
 import { BacklogPage } from "@/app/pages/BacklogPage";
+import { BugReportsPage } from "@/app/pages/BugReportsPage";
 import { WikiPage } from "@/app/pages/WikiPage";
 import { MinutesPage } from "@/app/pages/MinutesPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
@@ -56,6 +57,7 @@ export default function App() {
               <Route path="/admin-settings" element={<AdminSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
               <Route path="/release-notes" element={<ReleaseNotesPage />} />
+              <Route path="/bug-reports" element={<BugReportsPage />} />
               <Route path="/organization" element={<OrganizationPage />} />
               {/* Sprint list */}
               <Route path="/:projectSlug" element={<SprintPage />} />

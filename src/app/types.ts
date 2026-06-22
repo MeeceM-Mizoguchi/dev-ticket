@@ -149,7 +149,30 @@ export interface BacklogItem {
   convertedTicketWbs: string | null;
   categoryId: string | null;
   images: string[];
+  isUserInquiry: boolean;
+  bugReportId: string | null;
   createdBy: string; createdAt: string; updatedAt: string;
+}
+export type BugCategory = "login" | "ticket" | "sprint" | "member" | "ui" | "other";
+export type BugSeverity = "critical" | "major" | "minor";
+export type BugReportStatus = "open" | "resolved";
+export interface BugReport {
+  id: string;
+  userId: string | null;
+  userName: string;
+  userEmail: string;
+  category: BugCategory;
+  severity: BugSeverity;
+  title: string;
+  steps: string;
+  actual: string;
+  expected: string;
+  url: string;
+  images: string[];
+  status: BugReportStatus;
+  backlogItemId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 export interface WikiPage {
   id: string; projectId: string; parentId: string | null; title: string;
