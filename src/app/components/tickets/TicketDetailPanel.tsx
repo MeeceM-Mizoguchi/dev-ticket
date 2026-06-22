@@ -203,6 +203,7 @@ export function TicketDetailPanel({
   // 対応工数
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(ticket?.actualWorkHours ?? null);
   const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
+  const [completionSegmentHours, setCompletionSegmentHours] = useState<number[]>([]);
   // waiting-release で工数未入力のとき true → パネル内を工数入力のみ表示
   const [showHoursInputMode, setShowHoursInputMode] = useState(
     ticket?.status === "waiting-release" && (ticket?.actualWorkHours == null)
@@ -790,7 +791,11 @@ export function TicketDetailPanel({
         is_release_date_undecided: isReleaseDateUndecided,
       }).eq("id", ticket.id);
     }
-    if (ticket) recordMilestoneFromTicketStatus(ticket.id, newStatus);
+    if (ticket) await recordMilestoneFromTicketStatus(ticket.id, newStatus);
+    if (isSupabaseEnabled) {
+      const { data } = await supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single();
+      if (data) setCompletionSegmentHours(computeRawSegments(mapSprintTicket(data)));
+    }
     const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
     await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
     // ステータス保存後にお祝いオーバーレイを表示（工数保存後に onUpdated を呼ぶ）
@@ -2899,7 +2904,7 @@ export function TicketDetailPanel({
         {showCompletionOverlay && ticket && (
           <CompletionOverlay
             ticketTitle={title}
-            initialSegmentHours={computeRawSegments(ticket)}
+            initialSegmentHours={completionSegmentHours}
             onSave={handleSaveActualWorkHours}
             onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
           />
