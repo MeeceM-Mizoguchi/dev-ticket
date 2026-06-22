@@ -723,6 +723,19 @@ export function RichEditor({
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>表</button>
+          {editor.isActive("table") && (
+            <>
+              <span style={{ width: "100%", height: 0 }} />
+              <span style={{ fontSize: 11, color: "rgba(26,23,20,0.45)", alignSelf: "center", paddingRight: 2 }}>表編集:</span>
+              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addColumnBefore().run()} title="左に列を挿入">左列+</button>
+              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addColumnAfter().run()} title="右に列を挿入">右列+</button>
+              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().deleteColumn().run()} title="列を削除">列削除</button>
+              <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
+              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowBefore().run()} title="上に行を挿入">上行+</button>
+              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowAfter().run()} title="下に行を挿入">下行+</button>
+              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().deleteRow().run()} title="行を削除">行削除</button>
+            </>
+          )}
         </div>
       )}
       {/* ツールバーは固定、EditorContentだけスクロール */}
