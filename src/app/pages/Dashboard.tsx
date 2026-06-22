@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef, type ElementType } from "react";
-import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, X } from "lucide-react";
+import { useEffect, useState, useRef, useCallback, type ElementType } from "react";
+import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, X, RefreshCw } from "lucide-react";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
@@ -46,14 +46,16 @@ type DashProject = {
 type MatrixTicket = DashTicket & { isBug: boolean };
 
 const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }> = {
-  'todo':        { label: '未着手',     bg: '#F4F5F6', color: '#A09790' },
-  'in-progress': { label: '進行中',     bg: '#FFFBEB', color: '#D97706' },
-  'in-review':   { label: 'レビュー中', bg: '#EFF6FF', color: '#2563EB' },
-  'review-done': { label: 'レビュー完了', bg: '#F0FDF4', color: '#16A34A' },
-  'stg-test':    { label: 'STGテスト',  bg: '#F5F3FF', color: '#7C3AED' },
-  'uat':         { label: 'UAT',        bg: '#FFF7ED', color: '#EA580C' },
-  'done':        { label: '完了',       bg: '#ECFDF5', color: '#059669' },
-  'closed':      { label: 'クローズ',  bg: '#F1F5F9', color: '#64748B' },
+  'todo':            { label: '未着手',     bg: '#F4F5F6', color: '#A09790' },
+  'in-progress':     { label: '進行中',     bg: '#FFFBEB', color: '#D97706' },
+  'in-review':       { label: 'レビュー中', bg: '#EFF6FF', color: '#2563EB' },
+  'review-done':     { label: 'レビュー完了', bg: '#F0FDF4', color: '#16A34A' },
+  'stg-test':        { label: 'STGテスト',  bg: '#F5F3FF', color: '#7C3AED' },
+  'uat':             { label: 'UAT',        bg: '#FFF7ED', color: '#EA580C' },
+  'done':            { label: '完了',       bg: '#ECFDF5', color: '#059669' },
+  'closed':          { label: 'クローズ',  bg: '#F1F5F9', color: '#64748B' },
+  'waiting-release': { label: 'リリース待ち', color: "#7C3AED", bg: "#F5F3FF" },
+  'released':        { label: 'クローズ',  color: "#6B7280", bg: "#F3F4F6" },
 };
 
 const PRIORITY_META_MODAL: Record<string, { label: string; color: string }> = {
@@ -62,14 +64,17 @@ const PRIORITY_META_MODAL: Record<string, { label: string; color: string }> = {
   'low':    { label: '低', color: '#3B82F6' },
 };
 
+// 判定を一元化するため、完了・クローズ系のステータス配列を定義
+const TERMINAL_STATUSES = ["done", "closed", "waiting-release", "released"];
+
 export function Dashboard() {
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
   const firstName = userName.split(/[\s ]/)[0];
 
-  // モックデータ読み込み時：wbsを最優先でidに設定して完全同期
+  // モックデータ読み込み時：クローズ・完了系のステータスのチケットをすべて除外する
   const [tickets, setTickets] = useState<DashTicket[]>(
-    isSupabaseEnabled ? [] : TICKETS.map(t => {
+    isSupabaseEnabled ? [] : TICKETS.filter(t => !TERMINAL_STATUSES.includes(t.status)).map(t => {
       const matchingProj = PROJECTS.find(p => p.name === t.project);
       return { 
         id: (t as any).wbs || t.id, // wbsプロパティがあれば最優先で参照
@@ -104,16 +109,35 @@ export function Dashboard() {
   } | null>(null);
   const [selectedSprintTicket, setSelectedSprintTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketCtx, setSelectedTicketCtx] = useState<{ projectId: string; sprintId: string; projectSlug: string } | null>(null);
+  
+  // 更新中アニメーション制御用ステートを追加
+  const [isRefreshing, setIsRefreshRefreshing] = useState(false);
 
-  useEffect(() => {
-    if (!expandModalData) return;
-    const fn = () => setExpandModalData(null);
-    escStack.push(fn);
-    return () => escStack.pop(fn);
-  }, [expandModalData]);
+  // 画面チカチカを発生させずにバックグラウンドで値を最新にマッピングし直す関数を切り出し
+  const handleRefreshData = useCallback(async () => {
+    if (!isSupabaseEnabled) {
+      // ローカル環境時のサイレント・アップデート
+      setIsRefreshRefreshing(true);
+      setTickets(TICKETS.filter(t => !TERMINAL_STATUSES.includes(t.status)).map(t => {
+        const matchingProj = PROJECTS.find(p => p.name === t.project);
+        return { 
+          id: (t as any).wbs || t.id,
+          title: t.title, 
+          project: t.project, 
+          projectId: matchingProj ? matchingProj.slug || matchingProj.id : (t.project === "DevTicket" ? "DEVTICKET" : "PROJ5e88"),
+          status: t.status, 
+          priority: t.priority, 
+          assignee: t.assignee, 
+          dueDate: t.dueDate 
+        };
+      }));
+      setProjects(PROJECTS.map(p => ({ id: p.slug || p.id, name: p.name, status: p.status, client: p.client, members: p.members ?? [], done: p.done, inProgress: p.inProgress, todo: p.todo })));
+      setTimeout(() => setIsRefreshRefreshing(false), 500);
+      return;
+    }
 
-  useEffect(() => {
-    if (!isSupabaseEnabled) return;
+    // Supabase環境時のサイレント・アップデート
+    setIsRefreshRefreshing(true);
     const isOwner = userRole === "owner";
     let projQ = supabase!.from("projects").select("id, slug, name, status, client, members, organization_id");
     if (isOwner) {
@@ -121,23 +145,32 @@ export function Dashboard() {
     } else if (userOrgId) {
       projQ = (projQ as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`);
     }
-    Promise.all([
-      supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
-      supabase!.from("sprints").select("id, project_id, name"),
-      projQ,
-      supabase!.from("ticket_categories").select("id, name"),
-    ]).then(([{ data: tData }, { data: sData }, { data: pData }, { data: cData }]) => {
+
+    try {
+      const [tRes, sDataRes, pRes, cDataRes] = await Promise.all([
+        supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
+        supabase!.from("sprints").select("id, project_id, name"),
+        projQ,
+        supabase!.from("ticket_categories").select("id, name"),
+      ]);
+
+      const tData = tRes.data;
+      const sData = sDataRes.data;
+      const pData = pRes.data;
+      const cData = cDataRes.data;
+
       if (tData) {
         const sprints = sData ?? [];
         const projectsData = pData ?? [];
-        const sprintToProject = new Map((sprints as { id: string; project_id: string; name?: string }[]).map(s => [s.id, s.project_id]));
-        const sprintNameMap = new Map((sprints as { id: string; name?: string }[]).map(s => [s.id, s.name ?? '']));
-
-        const projectSlugMap = new Map((projectsData as { id: string; slug?: string }[]).map(p => [p.id, p.slug || p.id]));
-        const projectNameById = new Map((projectsData as { id: string; name: string }[]).map(p => [p.id, p.name]));
-        const categoryNameMap = new Map(((cData ?? []) as { id: string; name: string }[]).map(c => [c.id, c.name]));
+        const sprintToProject = new Map((sprints as any[]).map(s => [s.id, s.project_id]));
+        const sprintNameMap = new Map((sprints as any[]).map(s => [s.id, s.name ?? '']));
+        const projectSlugMap = new Map((projectsData as any[]).map(p => [p.id, p.slug || p.id]));
+        const projectNameById = new Map((projectsData as any[]).map(p => [p.id, p.name]));
+        const categoryNameMap = new Map(((cData ?? []) as any[]).map(c => [c.id, c.name]));
         
-        setTickets(tData.map((t: { id: string; wbs?: string; title: string; status: string; priority: string; due_date?: string; sprint_id?: string; assignee?: string; category_id?: string }) => {
+        const filteredTData = tData.filter((t: any) => !TERMINAL_STATUSES.includes(t.status));
+
+        setTickets(filteredTData.map((t: any) => {
           const resolvedProjectId = sprintToProject.get(t.sprint_id ?? '');
           const projSlug = projectSlugMap.get(resolvedProjectId ?? '') || 'DEVTICKET';
 
@@ -158,33 +191,49 @@ export function Dashboard() {
           };
         }));
       }
+
       if (pData) {
         const sprints = sData ?? [];
         const ticketsData = tData ?? [];
-        const mapped = pData.map((p: { id: string; slug?: string; name: string; status: string; client: string; members?: string[] }) => {
-          const sprintIds = sprints
-            .filter((s: { id: string; project_id: string }) => s.project_id === p.id)
-            .map((s: { id: string }) => s.id);
-          const projectTickets = ticketsData.filter((t: { sprint_id: string }) => sprintIds.includes(t.sprint_id));
+        const mapped = pData.map((p: any) => {
+          const sprintIds = sprints.filter((s: any) => s.project_id === p.id).map((s: any) => s.id);
+          const projectTickets = ticketsData.filter((t: any) => sprintIds.includes(t.sprint_id));
           return {
             id: p.slug || p.id,
             name: p.name,
             status: p.status as ProjectStatus,
             client: p.client,
             members: (p as any).members ?? [],
-            done: projectTickets.filter((t: { status: string }) => t.status === "done" || t.status === "closed").length,
-            inProgress: projectTickets.filter((t: { status: string }) => ["in-progress","in-review","review-done","stg-test","uat"].includes(t.status)).length,
-            todo: projectTickets.filter((t: { status: string }) => t.status === "todo").length,
+            done: projectTickets.filter((t: any) => TERMINAL_STATUSES.includes(t.status)).length,
+            inProgress: projectTickets.filter((t: any) => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo").length,
+            todo: projectTickets.filter((t: any) => t.status === "todo").length,
           };
         });
         setProjects(mapped);
       }
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, [userRole, userOrgId, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+    } catch (err) {
+      console.error("Failed to background refresh dashboard:", err);
+    } finally {
+      setIsRefreshRefreshing(false);
+    }
+  }, [userRole, userOrgId, selectedOrgId]);
 
-  const doneCount = tickets.filter(t => t.status === "done" || t.status === "closed").length;
-  const inProgressCount = tickets.filter(t => ["in-progress", "in-review", "review-done", "stg-test", "uat"].includes(t.status)).length;
+  useEffect(() => {
+    if (!expandModalData) return;
+    const fn = () => setExpandModalData(null);
+    escStack.push(fn);
+    return () => escStack.pop(fn);
+  }, [expandModalData]);
+
+  // 初回ロード時
+  useEffect(() => {
+    if (!isSupabaseEnabled) return;
+    setLoading(true);
+    handleRefreshData().then(() => setLoading(false));
+  }, [handleRefreshData]);
+
+  const doneCount = tickets.filter(t => TERMINAL_STATUSES.includes(t.status)).length;
+  const inProgressCount = tickets.filter(t => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo").length;
   const todoCount = tickets.filter(t => t.status === "todo").length;
   const completionRate = tickets.length > 0 ? Math.round((doneCount / tickets.length) * 100) : 0;
   const activeProjects = projects.filter(p => p.status === "in-progress").length;
@@ -219,7 +268,7 @@ export function Dashboard() {
     { key: 'レビュー完了', statuses: ['review-done'] },
     { key: 'STG完了', statuses: ['stg-test'] },
     { key: 'UAT完了', statuses: ['uat'] },
-    { key: 'クローズ', statuses: ['done', 'closed'] },
+    { key: 'クローズ', statuses: ['done', 'closed', 'waiting-release', 'released'] },
   ] as const;
 
   const getWeekStartKey = (dateString?: string) => {
@@ -258,7 +307,7 @@ export function Dashboard() {
   const weeklyCloseData = (() => {
     const grouped: Record<string, Record<string, number>> = {};
     assignedTickets
-      .filter(t => ['done', 'closed'].includes(t.status) && t.dueDate)
+      .filter(t => TERMINAL_STATUSES.includes(t.status) && t.dueDate)
       .forEach(t => {
         const weekKey = getWeekStartKey(t.dueDate);
         if (!weekKey) return;
@@ -315,7 +364,7 @@ export function Dashboard() {
     });
   })();
 
-  const isWeeklyCloseAllZero = (() => {
+  const RectangleMatrix = (() => {
     if (!filteredWeeklyCloseData || filteredWeeklyCloseData.length === 0) return true;
     let totalScore = 0;
     filteredWeeklyCloseData.forEach(weekItem => {
@@ -338,10 +387,10 @@ export function Dashboard() {
       assignedProjects.every(p => ((row as Record<string, number>)[p.name] ?? 0) === 0)
     );
 
-  const activeTickets = tickets.filter(t => t.status !== "done" && t.status !== "closed").slice(0, 5);
+  const activeTickets = tickets.filter(t => !TERMINAL_STATUSES.includes(t.status)).slice(0, 5);
 
   const overdueCountValue = tickets.filter(t => {
-    if (!t.dueDate || t.status === "done" || t.status === "closed") return false;
+    if (!t.dueDate || TERMINAL_STATUSES.includes(t.status)) return false;
     return t.dueDate < new Date().toISOString().split("T")[0];
   }).length;
 
@@ -389,7 +438,7 @@ export function Dashboard() {
   const getFormattedMatrixTickets = (isBugTarget: boolean, priorityTarget: string) => {
     if (!selectedScatterProject || !tickets || tickets.length === 0) return [];
     
-    const projectAllTickets = tickets.filter(t => t.project === selectedScatterProject);
+    const projectAllTickets = tickets.filter(t => t.project === selectedScatterProject && !TERMINAL_STATUSES.includes(t.status));
     
     return projectAllTickets.map(ticket => {
       const isBug = ticket.title.toLowerCase().includes('バグ') || ticket.title.toLowerCase().includes('bug') || ticket.title.toLowerCase().includes('不具合');
@@ -502,7 +551,6 @@ export function Dashboard() {
                   style={{
                     position: "absolute",
                     bottom: "calc(100% + 6px)",
-                    // 🛠️ バグ欄（左側の列）なら左端をボタンに揃え、バグ以外（右側の列）なら真ん中揃えにする
                     ...(isBug 
                       ? { left: 0, transform: "none" } 
                       : { left: "50%", transform: "translateX(-50%)" }
@@ -617,7 +665,7 @@ export function Dashboard() {
             <div style={{ width: 4, background: accent, flexShrink: 0 }} />
             <div style={{ flex: 1, padding: "18px 18px 18px 16px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", center: "center" }}>
                   <Icon style={{ width: 15, height: 15, color: accent }} />
                 </div>
                 <span style={{ fontSize: 9, color: up ? "#059669" : "#D97706", fontFamily: "var(--font-mono)", fontWeight: 600, background: up ? "#ECFDF5" : "#FFFBEB", padding: "2px 7px", borderRadius: 20 }}>{trend}</span>
@@ -706,6 +754,30 @@ export function Dashboard() {
                   ))}
                 </div>
               )}
+              
+              {/* 右上にサイレント更新を走らせるリロードボタンを配置 */}
+              <button 
+                type="button"
+                onClick={handleRefreshData}
+                disabled={isRefreshing}
+                title="データを最新に更新"
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: 6, borderRadius: 8, border: "1px solid #E6E2D9",
+                  background: "#FFFFFF", cursor: isRefreshing ? "not-allowed" : "pointer",
+                  color: "#6B6458", transition: "all 0.15s ease", outline: "none"
+                }}
+                onMouseEnter={e => { if (!isRefreshing) e.currentTarget.style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { if (!isRefreshing) e.currentTarget.style.background = "#FFFFFF"; }}
+              >
+                <RefreshCw 
+                  style={{ 
+                    width: 14, height: 14,
+                    transition: "transform 0.5s ease",
+                    transform: isRefreshing ? "rotate(360deg)" : "none"
+                  }} 
+                />
+              </button>
             </div>
           </div>
 
@@ -749,7 +821,7 @@ export function Dashboard() {
               )
             )}
             {chartType === 'line' && (
-              (lineChartMode === 'project-progress' ? isProjectProgressAllZero : isWeeklyCloseAllZero) ? (
+              (lineChartMode === 'project-progress' ? isProjectProgressAllZero : RectangleMatrix) ? (
                 <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <span style={{ fontSize: 13, color: "#C9C4BB" }}>実績データがありません</span>
                 </div>
@@ -759,7 +831,7 @@ export function Dashboard() {
                     <XAxis
                       type="category"
                       dataKey={lineChartMode === 'project-progress' ? 'status' : 'week'}
-                      ticks={lineChartMode === 'project-progress' ? lineStatusCategories.map(c => c.key) : undefined}
+                      ticks={lineStatusCategories.map(c => c.key)}
                       interval={0}
                       tick={{ fontSize: 11, fill: '#B0A9A4' }}
                       angle={0}
@@ -919,8 +991,8 @@ export function Dashboard() {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: ss.color, flexShrink: 0 }} />
                   <div style={{ minWidth: 0 }}>
-                    <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{p.name}</p>
-                    <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{p.client}</p>
+                    <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</p>
+                    <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.client}</p>
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -928,7 +1000,7 @@ export function Dashboard() {
                     <div style={{ height: "100%", width: `${progress}%`, background: "#059669", borderRadius: 99 }} />
                   </div>
                 </div>
-                <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732", fontFamily: "var(--font-mono)", textAlign: "right" as const }}>{progress}%</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732", fontFamily: "var(--font-mono)", textAlign: "right" }}>{progress}%</span>
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <span style={{ fontSize: 10, padding: "3px 10px", borderRadius: 20, background: ss.bg, color: ss.color, fontWeight: 700, letterSpacing: "0.01em" }}>{ss.label}</span>
                 </div>
@@ -985,8 +1057,8 @@ export function Dashboard() {
                     }
                     return groups.flatMap((g) =>
                       g.tickets.map((t, ti) => {
-                        const sm = STATUS_LABELS[t.status] ?? { label: t.status, bg: '#F4F5F6', color: '#6B7280' };
-                        const pm = PRIORITY_META_MODAL[t.priority] ?? { label: t.priority, color: '#6B7280' };
+                        const sm = STATUS_LABELS[t.status] ?? { label: t.status, bg: '#F4F5F6', color: '#6B6458' };
+                        const pm = PRIORITY_META_MODAL[t.priority] ?? { label: t.priority, color: '#6B6458' };
                         return (
                           <tr
                             key={t.id}
