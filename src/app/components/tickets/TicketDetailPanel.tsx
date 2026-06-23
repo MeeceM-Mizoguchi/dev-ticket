@@ -186,9 +186,9 @@ export function TicketDetailPanel({
   const [imageDragOver, setImageDragOver] = useState(false);
   const [fileDragOver, setFileDragOver] = useState(false);
 
-  const [copiedMd, setCopiedMd] = useState(false);
   const [copiedImageUrl, setCopiedImageUrl] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedContent, setCopiedContent] = useState(false);
 
   // comment editing
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -608,6 +608,28 @@ export function TicketDetailPanel({
     const { data: urlData } = supabase!.storage.from("ticket-images").getPublicUrl(path);
     return urlData.publicUrl;
   }, [ticket?.id]);
+
+  const handleCopyContent = useCallback(async () => {
+    if (!ticket) return;
+    const categoryName = categoryId ? (categories.find(c => c.id === categoryId)?.name ?? "") : "";
+    const descriptionText = htmlToMarkdown(description).trim();
+    const text = [
+      "【基本情報】",
+      `チケット番号: ${ticket.wbs}`,
+      `チケット名: ${title}`,
+      `分類: ${categoryName || "なし"}`,
+      "",
+      "【チケット詳細】",
+      descriptionText,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedContent(true);
+      setTimeout(() => setCopiedContent(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy ticket content:", err);
+    }
+  }, [ticket, title, categoryId, categories, description]);
 
   const copyImageToClipboard = useCallback(async (url: string) => {
     try {
@@ -1598,6 +1620,25 @@ export function TicketDetailPanel({
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              <div style={{ position: "relative" }}>
+                {copiedContent && (
+                  <div style={{
+                    position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "#1E293B", color: "#fff", fontSize: 12, padding: "4px 8px", borderRadius: 6, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 9999,
+                  }}>
+                    コピーしました！
+                    <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "#1E293B" }} />
+                  </div>
+                )}
+                <button
+                  onClick={handleCopyContent}
+                  title="チケット内容をコピー"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: copiedContent ? "#059669" : "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = copiedContent ? "#059669" : "#B0A9A4"; }}
+                >
+                  <Copy style={{ width: 15, height: 15 }} />
+                </button>
+              </div>
               {projectSlug && (
                 <div style={{ position: "relative" }}>
                   {copiedLink && (
@@ -1953,15 +1994,8 @@ export function TicketDetailPanel({
             onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
             onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
+            <div style={{ marginBottom: 7 }}>
               <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
-              <button
-                onClick={() => { navigator.clipboard.writeText(htmlToMarkdown(description)); setCopiedMd(true); setTimeout(() => setCopiedMd(false), 2000); }}
-                title="Markdownとしてコピー"
-                style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 8px", fontSize: 10, fontWeight: 600, borderRadius: 5, border: "1px solid rgba(26,23,20,0.12)", background: copiedMd ? "#ECFDF5" : "transparent", color: copiedMd ? "#059669" : "#B0A9A4", cursor: "pointer" }}>
-                {copiedMd ? <CheckCheck style={{ width: 10, height: 10 }} /> : <Copy style={{ width: 10, height: 10 }} />}
-                MDコピー
-              </button>
             </div>
             <div id="panel-description-section">
               <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
