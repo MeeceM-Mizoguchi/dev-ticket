@@ -47,6 +47,21 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
   const [segmentValues, setSegmentValues] = useState<string[]>(
     () => initialSegmentHours.map(h => h > 0 ? String(h) : "")
   );
+
+  // 高速クリック対策: DB取得でマイルストーンが後から確定した場合に空欄のみ補完する。
+  // ユーザーが既に入力したフィールドは上書きしない。
+  useEffect(() => {
+    setSegmentValues(prev => {
+      const next = prev.map((v, i) => {
+        const h = initialSegmentHours[i] ?? 0;
+        if ((!v || parseFloat(v) <= 0) && h > 0) return String(h);
+        return v;
+      });
+      return next.some((v, i) => v !== prev[i]) ? next : prev;
+    });
+  // initialSegmentHours の参照は setCompletionSegmentHours 呼び出し時にのみ変わる
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSegmentHours]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const bubbles = useRef(createBubbles(24)).current;

@@ -19,7 +19,7 @@ import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
-import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
+import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
 
@@ -850,6 +850,14 @@ export function TicketDetailPanel({
         }).eq("id", ticket.id);
       }
       await recordMilestoneFromTicketStatus(ticket.id, newStatus);
+      // マイルストーン記録後にDB実データを取得して工数表示を正確に補正する。
+      // 高速クリック時は ticket プロップのタイムスタンプが古い（null のまま）ことがあるため、
+      // ここで最新値を読み直して CompletionOverlay の入力欄を正しく初期化する。
+      const milestones = await fetchMilestones(ticket.id);
+      if (milestones) {
+        const releasedAt = milestones.releasedAt || now;
+        setCompletionSegmentHours(computeRawSegments({ ...milestones, releasedAt }));
+      }
       const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
       await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
     })();
