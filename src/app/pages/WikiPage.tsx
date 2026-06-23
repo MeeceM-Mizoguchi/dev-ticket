@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -36,7 +36,7 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelect, onAddChild, onDelete, onMoveNode, onOpenMoveModal, canEdit,
+  node, depth, selectedId, onSelect, onAddChild, onDelete, onMoveNode, onOpenMoveModal, onRename, canEdit,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
   onSelect: (id: string) => void;
@@ -44,17 +44,34 @@ function TreeItem({
   onDelete: (node: WikiPageType) => void;
   onMoveNode: (draggedId: string, targetParentId: string | null) => Promise<void>;
   onOpenMoveModal: (node: WikiPageType) => void;
+  onRename: (id: string, newTitle: string) => Promise<void>;
   canEdit: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(node.title);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const hasChildren = node.children.length > 0;
   const isFolder = node.isFolder;
   const isSelected = selectedId === node.id;
 
+  // node.title が親側の再読み込みなどで変わった場合に追従させる
+  useEffect(() => {
+    setEditTitle(node.title);
+  }, [node.title]);
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
   const handleRowClick = () => {
+    if (isEditing) return;
     if (isFolder) {
       setExpanded(v => !v);
     } else {
@@ -72,7 +89,7 @@ function TreeItem({
     if (!canEdit || !isFolder) return;
     e.preventDefault();
     e.stopPropagation();
-    
+
     const draggedId = e.dataTransfer.types.includes("text/plain") ? "valid" : "";
     if (draggedId) {
       setIsDragOver(true);
@@ -95,6 +112,22 @@ function TreeItem({
     await onMoveNode(draggedId, node.id);
   };
 
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!canEdit) return;
+    setIsEditing(true);
+  };
+
+  const handleSaveRename = async () => {
+    setIsEditing(false);
+    const trimmed = editTitle.trim();
+    if (!trimmed || trimmed === node.title) {
+      setEditTitle(node.title);
+      return;
+    }
+    await onRename(node.id, trimmed);
+  };
+
   const FolderIcon = expanded ? FolderOpen : Folder;
   const ItemIcon = isFolder ? FolderIcon : FileText;
   const iconColor = isFolder ? "#F59E0B" : (isSelected ? "#059669" : "#B0A9A4");
@@ -115,6 +148,7 @@ function TreeItem({
         onDragStart={handleDragStart}
         onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
         onClick={handleRowClick}
+        onDoubleClick={handleDoubleClick}
         style={{
           display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
           borderRadius: 7, cursor: "pointer",
@@ -131,16 +165,39 @@ function TreeItem({
         </span>
         <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
         
-        <span style={{
-          flex: 1, minWidth: 0, fontSize: 12,
-          fontWeight: isSelected ? 700 : 500,
-          color: isSelected ? "#059669" : "#1A1714",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
-        </span>
+        {isEditing ? (
+          <input
+            ref={inputRef}
+            value={editTitle}
+            onChange={e => setEditTitle(e.target.value)}
+            onBlur={handleSaveRename}
+            onKeyDown={e => {
+              if (e.key === "Enter") handleSaveRename();
+              if (e.key === "Escape") {
+                setEditTitle(node.title);
+                setIsEditing(false);
+              }
+            }}
+            onClick={e => e.stopPropagation()}
+            onDoubleClick={e => e.stopPropagation()}
+            style={{
+              flex: 1, minWidth: 0, fontSize: 12, padding: "1px 4px",
+              border: "1px solid #059669", borderRadius: 4, outline: "none",
+              color: "#1A1714", background: "#FFFFFF", height: "18px"
+            }}
+          />
+        ) : (
+          <span style={{
+            flex: 1, minWidth: 0, fontSize: 12,
+            fontWeight: isSelected ? 700 : 500,
+            color: isSelected ? "#059669" : "#1A1714",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
+            {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
+          </span>
+        )}
 
-        {hovered && (
+        {hovered && !isEditing && (
           <>
             {canEdit && (
               <>
@@ -156,20 +213,24 @@ function TreeItem({
                   style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
                   <FolderPlus style={{ width: 12, height: 12 }} />
                 </button>
-                
-                {/* 🌟 修正: 移動アイコンにホバーした際、人差し指マーク（pointer）になるよう cursor を指定 */}
                 <div
                   draggable
                   onDragStart={handleDragStart}
                   onClick={e => { e.stopPropagation(); onOpenMoveModal(node); }}
                   title={isFolder ? "フォルダを移動 (クリックで一覧から選択)" : "ページを移動 (クリックで一覧から選択)"}
-                  style={{ 
+                  style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: "pointer", color: isFolder ? "#F59E0B" : "#0284C7", padding: 2, flexShrink: 0 
+                    cursor: "pointer", color: isFolder ? "#F59E0B" : "#0284C7", padding: 2, flexShrink: 0
                   }}
                 >
                   <GripVertical style={{ width: 12, height: 12 }} />
                 </div>
+                <button
+                  onClick={e => { e.stopPropagation(); setIsEditing(true); }}
+                  title="名前を変更"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                  <Pencil style={{ width: 11, height: 11 }} />
+                </button>
               </>
             )}
             {canEdit && (
@@ -185,7 +246,7 @@ function TreeItem({
       </div>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} canEdit={canEdit} />
+          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} canEdit={canEdit} />
       ))}
     </div>
   );
@@ -296,9 +357,37 @@ export function WikiPage() {
     }, 600);
   }, [selectedId, userName]);
 
+  const handleTreeItemRename = useCallback(async (id: string, nextTitle: string) => {
+    setPages(prev => prev.map(p => p.id === id ? { ...p, title: nextTitle } : p));
+    if (id === selectedId) {
+      setTitle(nextTitle);
+    }
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!
+        .from("wiki_pages")
+        .update({ title: nextTitle, updated_by: userName || null, updated_at: new Date().toISOString() })
+        .eq("id", id);
+
+      if (error) {
+        console.error("[WikiPage] rename error:", error);
+        toast("名前の変更に失敗しました", "error");
+        load();
+      }
+    }
+  }, [selectedId, userName, load, toast]);
+
+  const handleImagesChange = useCallback(async (next: string[]) => {
+    if (!selectedId) return;
+    setImages(next);
+    setPages(prev => prev.map(p => p.id === selectedId ? { ...p, images: next } : p));
+    if (isSupabaseEnabled) {
+      await supabase!.from("wiki_pages").update({ images: next, updated_by: userName || null, updated_at: new Date().toISOString() }).eq("id", selectedId);
+    }
+  }, [selectedId, userName]);
+
   const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
     if (draggedId === targetParentId) return;
-    
+
     const checkCyclic = (parentId: string | null): boolean => {
       if (!parentId) return false;
       if (parentId === draggedId) return true;
@@ -426,6 +515,7 @@ export function WikiPage() {
               onDelete={canEdit ? setDeleteTarget : () => {}}
               onMoveNode={handleMoveNode}
               onOpenMoveModal={setMovingNodeTarget}
+              onRename={handleTreeItemRename}
               canEdit={canEdit}
             />
           ))}
@@ -501,15 +591,14 @@ export function WikiPage() {
   );
 }
 
-// Googleドライブ風の選択移動モーダルコンポーネント
-function GoogleDriveMoveModal({ 
-  node, pages, onClose, onConfirm 
-}: { 
-  node: WikiPageType; pages: WikiPageType[]; onClose: () => void; onConfirm: (targetParentId: string | null) => Promise<void> 
+function GoogleDriveMoveModal({
+  node, pages, onClose, onConfirm
+}: {
+  node: WikiPageType; pages: WikiPageType[]; onClose: () => void; onConfirm: (targetParentId: string | null) => Promise<void>
 }) {
   const foldersOnly = useMemo(() => pages.filter(p => p.isFolder && p.id !== node.id), [pages, node.id]);
   const folderTree = useMemo(() => buildTree(foldersOnly), [foldersOnly]);
-  
+
   const [selectedParentId, setSelectedParentId] = useState<string | null>(node.parentId);
 
   const renderFolderOption = (folder: TreeNode, depth: number) => {
