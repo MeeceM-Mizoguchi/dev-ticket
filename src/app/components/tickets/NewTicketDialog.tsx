@@ -353,6 +353,20 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     }
   }, []);
 
+  // RichEditor(contenteditable)にフォーカスがあると React onPaste が届かないため
+  // document レベルでキャプチャして画像だけ処理する
+  useEffect(() => {
+    const handler = (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.items ?? []);
+      const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+      if (imgFiles.length === 0) return;
+      e.preventDefault();
+      addImages(imgFiles);
+    };
+    document.addEventListener("paste", handler);
+    return () => document.removeEventListener("paste", handler);
+  }, [addImages]);
+
   const handleSave = async () => {
     let valid = true;
     if (needsSelection && !selectedProjectId) { setProjectError(true); valid = false; }
@@ -559,13 +573,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           </div>
         </div>
 
-        <div onPaste={e => {
-          const items = Array.from(e.clipboardData?.items ?? []);
-          const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
-          if (imgFiles.length === 0) return;
-          e.preventDefault();
-          addImages(imgFiles);
-        }} style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
 
           {/* プロジェクト・スプリント選択 */}
           {needsSelection && (

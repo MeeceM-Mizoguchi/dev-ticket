@@ -6,6 +6,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
+
+const MEECE_ORG_NAME = "Meece株式会社";
 import { useToast } from "@/app/contexts/ToastContext";
 import { escStack } from "@/app/lib/escStack";
 
@@ -13,23 +15,27 @@ const DEFAULT_PERMS: UserPermissions = {
   canCreateTicket: false, canCreateSprint: false,
   canEditDelete: false, canReview: false, canSkipReview: false,
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
-  canAccessAdminSettings: false,
+  canAccessAdminSettings: false, canUpdateAnnouncement: false,
   canAccessWiki: false, canAccessBacklog: false, canAccessMinutes: false,
+  canAccessOrganization: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
 };
 
-const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string }[] = [
+const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; meeceOnly?: boolean }[] = [
   { key: "canSkipReview",          label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
   { key: "canAccessMembers",       label: "メンバー管理",     desc: "メンバー管理画面へのアクセスが可能" },
   { key: "canAccessRoles",         label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
   { key: "canAccessGroups",        label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
   { key: "canAccessAdminSettings", label: "通知管理",         desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
+  { key: "canUpdateAnnouncement",  label: "お知らせ更新",     desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
 ];
 
 export function RolesPage() {
   const { userPermissions } = useAuth();
-  const { selectedOrgId } = useOrg();
+  const { selectedOrgId, selectedOrgName } = useOrg();
   const { toast } = useToast();
+  const isMeeceOrg = selectedOrgName === MEECE_ORG_NAME;
+  const visiblePermFlags = PERM_FLAGS.filter(f => !f.meeceOnly || isMeeceOrg);
   const [roles, setRoles] = useState<RoleDefinition[]>([]);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [editTarget, setEditTarget] = useState<RoleDefinition | null>(null);
@@ -120,7 +126,7 @@ export function RolesPage() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
           {roles.map(role => {
-            const activePerms = PERM_FLAGS.filter(f => role.base_permissions?.[f.key]);
+            const activePerms = visiblePermFlags.filter(f => role.base_permissions?.[f.key]);
             return (
               <div
                 key={role.id}
@@ -177,6 +183,7 @@ export function RolesPage() {
       {showNewModal && (
         <RoleModal
           existingNames={roles.map(r => r.name)}
+          isMeeceOrg={isMeeceOrg}
           onClose={() => setShowNewModal(false)}
           onSave={handleCreate}
         />
@@ -185,6 +192,7 @@ export function RolesPage() {
         <RoleModal
           role={editTarget}
           existingNames={roles.filter(r => r.id !== editTarget.id).map(r => r.name)}
+          isMeeceOrg={isMeeceOrg}
           onClose={() => setEditTarget(null)}
           onSave={(name, label, perms) => handleUpdate(editTarget.id, name, label, perms)}
         />
@@ -204,14 +212,17 @@ export function RolesPage() {
 function RoleModal({
   role,
   existingNames,
+  isMeeceOrg,
   onClose,
   onSave,
 }: {
   role?: RoleDefinition;
   existingNames: string[];
+  isMeeceOrg: boolean;
   onClose: () => void;
   onSave: (name: string, label: string, perms: UserPermissions) => Promise<void>;
 }) {
+  const modalPermFlags = PERM_FLAGS.filter(f => !f.meeceOnly || isMeeceOrg);
   const isEdit = !!role;
   const [label, setLabel] = useState(role?.label ?? "");
   const [name, setName] = useState(role?.name ?? "");
@@ -303,7 +314,7 @@ function RoleModal({
           <div>
             <p style={{ fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 10 }}>権限設定</p>
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
-              {PERM_FLAGS.map(f => {
+              {modalPermFlags.map(f => {
                 const active = perms[f.key];
                 return (
                   <label

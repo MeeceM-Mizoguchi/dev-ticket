@@ -1,4 +1,19 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization" | "announcement-settings";
+
+export interface AnnouncementItem {
+  imageUrl: string;
+  description: string;
+}
+
+export interface Announcement {
+  id: string;
+  orgId: string;
+  title: string;
+  items: AnnouncementItem[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface Organization {
   id: string;
@@ -210,6 +225,7 @@ export interface UserPermissions {
   canAccessBacklog: boolean;
   canAccessMinutes: boolean;
   canAccessOrganization: boolean;
+  canUpdateAnnouncement: boolean;
   wikiPermission: AccessLevel;
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
