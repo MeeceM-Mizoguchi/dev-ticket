@@ -215,6 +215,13 @@ export function TicketDetailPanel({
   // 動作確認チェック
   const [isOperationVerified, setIsOperationVerified] = useState(ticket?.isOperationVerified ?? false);
   const [showCompletionOverlay, setShowCompletionOverlay] = useState(false);
+
+  // プレフィックス
+  const [prefixes, setPrefixes] = useState<string[]>(ticket?.prefixes ?? []);
+  const [showPrefixInput, setShowPrefixInput] = useState(false);
+  const [prefixInputValue, setPrefixInputValue] = useState("");
+  const [allProjectPrefixLabels, setAllProjectPrefixLabels] = useState<string[]>([]);
+  const prefixInputRef = useRef<HTMLInputElement>(null);
   const [completionSegmentHours, setCompletionSegmentHours] = useState<number[]>([]);
   // waiting-release で工数未入力のとき true → パネル内を工数入力のみ表示
   const [showHoursInputMode, setShowHoursInputMode] = useState(
@@ -393,6 +400,9 @@ export function TicketDetailPanel({
     setIsOperationVerified(ticket.isOperationVerified ?? false);
     setShowCompletionOverlay(false);
     setShowHoursInputMode(ticket.status === "waiting-release" && (ticket.actualWorkHours == null));
+    setPrefixes(ticket.prefixes ?? []);
+    setShowPrefixInput(false);
+    setPrefixInputValue("");
 
     if (ticket.id && isSupabaseEnabled) {
       supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
@@ -419,6 +429,7 @@ export function TicketDetailPanel({
           setReleaseDate(t.releaseDate ?? "");
           setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
           setIsOperationVerified(t.isOperationVerified ?? false);
+          setPrefixes(t.prefixes ?? []);
         });
     }
 
@@ -464,12 +475,15 @@ export function TicketDetailPanel({
     (async () => {
       const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", projectId);
       if (!sprintData?.length) return;
-      const { data } = await supabase!.from("sprint_tickets")
-        .select("wbs, title")
-        .in("sprint_id", sprintData.map((s: { id: string }) => s.id))
-        .order("wbs");
-      if (data) {
-        setProjectTickets(data as { wbs: string; title: string }[]);
+      const sprintIds = sprintData.map((s: { id: string }) => s.id);
+      const [{ data: ticketData }, { data: prefixData }] = await Promise.all([
+        supabase!.from("sprint_tickets").select("wbs, title").in("sprint_id", sprintIds).order("wbs"),
+        supabase!.from("sprint_tickets").select("prefixes").in("sprint_id", sprintIds),
+      ]);
+      if (ticketData) setProjectTickets(ticketData as { wbs: string; title: string }[]);
+      if (prefixData) {
+        const labels = [...new Set((prefixData as { prefixes: string[] }[]).flatMap(r => r.prefixes ?? []))].sort();
+        setAllProjectPrefixLabels(labels);
       }
     })();
     supabase!.from("backlog_items").select("id, title").eq("project_id", projectId).order("id")
@@ -1547,6 +1561,138 @@ export function TicketDetailPanel({
             )}
           </div>
 
+          {/* プレフィックス */}
+          {(prefixes.length > 0 || showPrefixInput) && (() => {
+            const PREFIX_COLORS = [
+              { color: "#4F46E5", bg: "#EEF2FF" },
+              { color: "#059669", bg: "#ECFDF5" },
+              { color: "#D97706", bg: "#FFFBEB" },
+            ];
+            const filteredSuggestions = allProjectPrefixLabels.filter(
+              l => l.toLowerCase().includes(prefixInputValue.toLowerCase())
+            );
+            const addPrefix = (v: string) => {
+              const trimmed = v.trim();
+              if (!trimmed || prefixes.length >= 3 || prefixes.includes(trimmed)) return;
+              const next = [...prefixes, trimmed];
+              setPrefixes(next);
+              save({ prefixes: next });
+              if (!allProjectPrefixLabels.includes(trimmed)) {
+                setAllProjectPrefixLabels(prev => [...prev, trimmed].sort());
+              }
+            };
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {prefixes.map((p, i) => {
+                  const { color, bg } = PREFIX_COLORS[i % PREFIX_COLORS.length];
+                  return (
+                    <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: bg, color, border: `1px solid ${color}22` }}>
+                      {p}
+                      <button
+                        onClick={() => {
+                          const next = prefixes.filter((_, j) => j !== i);
+                          setPrefixes(next);
+                          save({ prefixes: next });
+                        }}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", border: "none", background: "transparent", cursor: "pointer", color, padding: 0, lineHeight: 1, fontSize: 13, fontWeight: 700 }}
+                        title="削除"
+                      >×</button>
+                    </span>
+                  );
+                })}
+                {showPrefixInput && (() => {
+                  const trimmed = prefixInputValue.trim();
+                  // 入力中のみドロップダウン表示
+                  const showDropdown = trimmed.length > 0;
+                  // 既存ラベルに完全一致しない かつ まだ追加されていない場合のみ追加ボタンを出す
+                  // ただし既存サジェストがある場合は下部に追加ボタンを表示、ない場合のみ表示
+                  const exactExists = allProjectPrefixLabels.some(l => l.toLowerCase() === trimmed.toLowerCase());
+                  const alreadyAdded = prefixes.some(p => p.toLowerCase() === trimmed.toLowerCase());
+                  const canCreate = trimmed.length > 0 && !exactExists && !alreadyAdded;
+                  return (
+                    <div style={{ position: "relative" }}>
+                      <input
+                        ref={prefixInputRef}
+                        autoFocus
+                        value={prefixInputValue}
+                        onChange={e => setPrefixInputValue(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") {
+                            const addable = filteredSuggestions.find(l => !prefixes.includes(l));
+                            if (addable && !trimmed) {
+                              addPrefix(addable);
+                            } else {
+                              addPrefix(prefixInputValue);
+                            }
+                            setShowPrefixInput(false);
+                            setPrefixInputValue("");
+                          } else if (e.key === "Escape") {
+                            setShowPrefixInput(false);
+                            setPrefixInputValue("");
+                          }
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => {
+                            setShowPrefixInput(false);
+                            setPrefixInputValue("");
+                          }, 150);
+                        }}
+                        placeholder="ラベル名"
+                        style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 20, border: "1px solid #4F46E5", outline: "none", background: "#EEF2FF", color: "#4F46E5", width: 96, fontFamily: "inherit" }}
+                      />
+                      {showDropdown && (() => {
+                        const rect = prefixInputRef.current?.getBoundingClientRect();
+                        if (filteredSuggestions.length === 0 && !canCreate) return null;
+                        return (
+                          <div style={{ position: "fixed", top: rect ? rect.bottom + 4 : 0, left: rect ? rect.left : 0, background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 9999, minWidth: 168, maxHeight: 200, overflowY: "auto" }}>
+                            {filteredSuggestions.map(label => {
+                              const isUsed = prefixes.includes(label);
+                              return (
+                                <button
+                                  key={label}
+                                  onMouseDown={e => {
+                                    e.preventDefault();
+                                    if (!isUsed) {
+                                      addPrefix(label);
+                                      setShowPrefixInput(false);
+                                      setPrefixInputValue("");
+                                    }
+                                  }}
+                                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", textAlign: "left", padding: "7px 12px", fontSize: 12, fontWeight: 600, color: isUsed ? "#B0A9A4" : "#1A1714", background: "transparent", border: "none", cursor: isUsed ? "default" : "pointer", fontFamily: "inherit" }}
+                                  onMouseEnter={e => { if (!isUsed) (e.currentTarget as HTMLElement).style.background = "#F5F3F0"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                                >
+                                  <span>{label}</span>
+                                  {isUsed && <Check style={{ width: 12, height: 12, color: "#059669", flexShrink: 0 }} />}
+                                </button>
+                              );
+                            })}
+                            {canCreate && (
+                              <button
+                                onMouseDown={e => {
+                                  e.preventDefault();
+                                  addPrefix(trimmed);
+                                  setShowPrefixInput(false);
+                                  setPrefixInputValue("");
+                                }}
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: "7px 12px", fontSize: 12, fontWeight: 600, color: "#4F46E5", background: "transparent", border: "none", borderTop: filteredSuggestions.length > 0 ? "1px solid rgba(26,23,20,0.08)" : "none", cursor: "pointer", fontFamily: "inherit" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF2FF"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                              >
+                                <Plus style={{ width: 11, height: 11, flexShrink: 0 }} />
+                                「{trimmed}」を追加
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  );
+                })()}
+              </div>
+            );
+          })()}
+
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, flexWrap: "wrap" }}>
@@ -1605,6 +1751,24 @@ export function TicketDetailPanel({
                     }}>
                     <ClipboardCheck style={{ width: 11, height: 11 }} />
                     {isOperationVerified ? "動作確認済み" : "動作確認"}
+                  </button>
+                )}
+                {/* プレフィックス追加ボタン */}
+                {prefixes.length < 3 && !showPrefixInput && (
+                  <button
+                    onClick={() => setShowPrefixInput(true)}
+                    title="プレフィックスを追加（最大3つ）"
+                    style={{
+                      display: "flex", alignItems: "center", gap: 3,
+                      padding: "3px 8px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                      border: "1px dashed rgba(26,23,20,0.20)",
+                      background: "transparent", color: "#A09690", transition: "all 0.15s"
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "#4F46E5"; (e.currentTarget as HTMLElement).style.color = "#4F46E5"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.20)"; (e.currentTarget as HTMLElement).style.color = "#A09690"; }}
+                  >
+                    <Plus style={{ width: 10, height: 10 }} />
+                    ラベル
                   </button>
                 )}
               </div>

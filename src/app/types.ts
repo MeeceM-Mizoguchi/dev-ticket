@@ -91,6 +91,8 @@ export interface SprintTicket {
   actualWorkHours?: number | null;
   // 動作確認チェック
   isOperationVerified?: boolean;
+  // チケットプレフィックス（最大3つ）
+  prefixes?: string[];
 }
 
 export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";
