@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -8,7 +8,8 @@ import { GlobalSearch } from "@/app/components/layout/GlobalSearch";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
 import { BugReportModal } from "@/app/components/bug-report/BugReportModal";
-import type { AppNotification, ActionMemoCategory, NotificationType } from "@/app/types";
+import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
+import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
 
 function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
   if (type === "assign") return "todo";
@@ -46,6 +47,33 @@ export function Topbar() {
   const [lastViewedAt, setLastViewedAt] = useState<string>(
     () => localStorage.getItem(NOTIF_VIEWED_KEY) ?? ""
   );
+
+  // お知らせ
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
+  const [showAnnouncement, setShowAnnouncement] = useState(false);
+  const [announcementAnchorX, setAnnouncementAnchorX] = useState(0);
+  const announcementBtnRef = useRef<HTMLButtonElement>(null);
+
+  const loadAnnouncement = useCallback(async () => {
+    if (!isSupabaseEnabled) return;
+    const { data } = await supabase!
+      .from("announcements")
+      .select("*")
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data) {
+      const items: AnnouncementItem[] = Array.isArray(data.items)
+        ? data.items.map((r: Record<string, string>) => ({ imageUrl: r.image_url ?? "", description: r.description ?? "" }))
+        : [];
+      setAnnouncement({ id: data.id, orgId: data.org_id, title: data.title ?? "", items, isActive: data.is_active ?? true, createdAt: data.created_at ?? "", updatedAt: data.updated_at ?? "" });
+    } else {
+      setAnnouncement(null);
+    }
+  }, []);
+
+  useEffect(() => { loadAnnouncement(); }, [loadAnnouncement]);
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
   const hasNewSinceLastView = !showNotif && notifications.some(
@@ -162,9 +190,68 @@ export function Topbar() {
   return (
     <>
     {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
-    <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, flexShrink: 0 }}>
-      <style>{`@keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }`}</style>
+    {showAnnouncement && announcement && (
+      <AnnouncementModal announcement={announcement} onClose={() => setShowAnnouncement(false)} anchorX={announcementAnchorX} />
+    )}
+    <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 10, flexShrink: 0 }}>
+      <style>{`
+        @keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }
+      `}</style>
       <GlobalSearch />
+
+      {/* お知らせバナー */}
+      {announcement && (
+        <button
+          ref={announcementBtnRef}
+          onClick={() => {
+            if (announcement.items.length > 0) {
+              if (announcementBtnRef.current) {
+                const rect = announcementBtnRef.current.getBoundingClientRect();
+                setAnnouncementAnchorX(Math.round(rect.left + rect.width / 2));
+              }
+              setShowAnnouncement(true);
+            }
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            padding: "0 13px 0 9px",
+            height: 34,
+            borderRadius: 10,
+            border: "none",
+            background: "linear-gradient(135deg, #34D399 0%, #059669 100%)",
+            boxShadow: "0 2px 8px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.22)",
+            cursor: announcement.items.length > 0 ? "pointer" : "default",
+            flexShrink: 0,
+            maxWidth: 360,
+            transition: "opacity 0.15s, box-shadow 0.15s",
+          }}
+          onMouseEnter={e => {
+            if (announcement.items.length > 0) {
+              (e.currentTarget as HTMLElement).style.opacity = "0.88";
+              (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 14px rgba(5,150,105,0.40), inset 0 1px 0 rgba(255,255,255,0.22)";
+            }
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLElement).style.opacity = "1";
+            (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 8px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.22)";
+          }}
+        >
+          <Megaphone style={{ width: 14, height: 14, color: "rgba(255,255,255,0.88)", flexShrink: 0 }} />
+          <span style={{
+            fontSize: 13, fontWeight: 700, color: "#fff",
+            whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis",
+            maxWidth: 260,
+          }}>
+            {announcement.title}
+          </span>
+          {announcement.items.length > 0 && (
+            <ChevronRight style={{ width: 13, height: 13, color: "rgba(255,255,255,0.55)", flexShrink: 0 }} />
+          )}
+        </button>
+      )}
+
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
         {/* バグ報告ボタン */}
         <button

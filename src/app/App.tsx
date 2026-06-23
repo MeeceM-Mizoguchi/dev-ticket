@@ -28,6 +28,7 @@ import { BugReportsPage } from "@/app/pages/BugReportsPage";
 import { WikiPage } from "@/app/pages/WikiPage";
 import { MinutesPage } from "@/app/pages/MinutesPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
+import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
 import { OrgProvider } from "@/app/contexts/OrgContext";
 
 export default function App() {
@@ -54,6 +55,7 @@ export default function App() {
               <Route path="/roles" element={<RolesPage />} />
               <Route path="/settings" element={<Navigate to="/admin-settings" replace />} />
               <Route path="/admin-settings" element={<AdminSettingsPage />} />
+              <Route path="/announcement-settings" element={<AnnouncementSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
               <Route path="/release-notes" element={<ReleaseNotesPage />} />
               <Route path="/bug-reports" element={<BugReportsPage />} />
