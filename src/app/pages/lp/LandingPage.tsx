@@ -490,7 +490,10 @@ export function LandingPage() {
             </div>
             <div className="hidden md:flex items-center gap-8">
               <button onClick={() => scrollToSection('features')} className="text-slate-600 hover:text-teal-600 transition-colors">機能</button>
-              <button onClick={() => scrollToSection('resources')} className="text-slate-600 hover:text-teal-600 transition-colors">リソース調達</button>
+              <button onClick={() => scrollToSection('resources')} className="flex items-center gap-1.5 text-slate-600 hover:text-teal-600 transition-colors">
+                リソース調達
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#ffedd5', color: '#ea580c' }}>準備中</span>
+              </button>
               <button onClick={() => scrollToSection('screenshots')} className="text-slate-600 hover:text-teal-600 transition-colors">製品紹介</button>
               <button onClick={() => scrollToSection('benefits')} className="text-slate-600 hover:text-teal-600 transition-colors">特徴</button>
               <button onClick={() => scrollToSection('pricing')} className="text-slate-600 hover:text-teal-600 transition-colors">料金</button>
@@ -512,7 +515,10 @@ export function LandingPage() {
           {mobileMenuOpen && (
             <div className="md:hidden border-t border-slate-100 py-3 flex flex-col gap-1">
               <button onClick={() => { scrollToSection('features'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">機能</button>
-              <button onClick={() => { scrollToSection('resources'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">リソース調達</button>
+              <button onClick={() => { scrollToSection('resources'); setMobileMenuOpen(false); }} className="flex items-center gap-2 text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">
+                リソース調達
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#ffedd5', color: '#ea580c' }}>準備中</span>
+              </button>
               <button onClick={() => { scrollToSection('screenshots'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">製品紹介</button>
               <button onClick={() => { scrollToSection('benefits'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">特徴</button>
               <button onClick={() => { scrollToSection('pricing'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">料金</button>
@@ -903,14 +909,31 @@ export function LandingPage() {
       </section>
 
       {/* Resource Section */}
-      <section id="resources" className="pt-10 pb-0 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 50%, #f0fdfa 100%)' }}>
+      <section id="resources" className="pt-0 pb-0 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 50%, #f0fdfa 100%)' }}>
 
         <style>{`
           @keyframes progressFill {
             from { width: 0%; }
             to   { width: 100%; }
           }
+          @keyframes bannerSlide {
+            from { opacity: 0; transform: translateY(-8px); }
+            to   { opacity: 1; transform: translateY(0); }
+          }
         `}</style>
+
+        {/* 次期開発予定 告知バナー */}
+        <div
+          className="-mx-4 sm:-mx-6 lg:-mx-8 flex items-center justify-center gap-3 px-4 py-3 text-sm font-bold"
+          style={{
+            background: 'linear-gradient(90deg, #c2410c 0%, #ea580c 40%, #f97316 60%, #ea580c 80%, #c2410c 100%)',
+            animation: 'bannerSlide 0.4s ease-out',
+            color: '#fff',
+          }}
+        >
+          <span className="text-base">🚧</span>
+          <span>リソース調達機能は<span className="font-black underline underline-offset-2">2次開発</span>にてリリース予定です</span>
+        </div>
 
         {/* Decorative blobs */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -918,13 +941,19 @@ export function LandingPage() {
           <div className="absolute -bottom-32 -left-32 w-[500px] h-[500px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(20,184,166,0.09) 0%, transparent 65%)' }} />
         </div>
 
-        <div className="max-w-7xl mx-auto relative">
+        <div className="max-w-7xl mx-auto relative pt-10">
 
           {/* Section header */}
           <div className="text-center mb-8">
-            <div className="inline-flex items-center gap-2 text-white rounded-full px-5 py-2 text-sm font-bold mb-4" style={{ background: 'linear-gradient(135deg, #0d9488, #10b981)', boxShadow: '0 4px 20px rgba(16,185,129,0.4)' }}>
-              <Zap className="w-3.5 h-3.5" />
-              リソース調達の新しいカタチ
+            <div className="flex items-center justify-center gap-3 mb-4 flex-wrap">
+              <div className="inline-flex items-center gap-2 text-white rounded-full px-5 py-2 text-sm font-bold" style={{ background: 'linear-gradient(135deg, #0d9488, #10b981)', boxShadow: '0 4px 20px rgba(16,185,129,0.4)' }}>
+                <Zap className="w-3.5 h-3.5" />
+                リソース調達の新しいカタチ
+              </div>
+              <div className="inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold border" style={{ background: 'linear-gradient(135deg, #fff7ed, #ffedd5)', borderColor: '#fb923c', color: '#ea580c' }}>
+                <span>🚧</span>
+                次期開発予定
+              </div>
             </div>
             <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black leading-tight mb-3">
               <span className="text-slate-900">リソース調達を</span>
