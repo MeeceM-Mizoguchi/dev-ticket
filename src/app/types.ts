@@ -1,4 +1,4 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "settings" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization";
 
 export interface Organization {
   id: string;
@@ -42,7 +42,6 @@ export type ProjectStatus = "planning" | "in-progress" | "completed" | "on-hold"
 export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed" | "waiting-release" | "released";
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
-export type NotifKey = "email" | "assign" | "status" | "comment" | "reminder";
 export type NotificationType = "mention" | "assign" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status" | "comment";
 
 export interface AppNotification {

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { BellRing } from "lucide-react";
+import { BellRing, Users } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { Navigate } from "react-router";
 import { SlackNotificationSetting } from "@/app/components/settings/SlackNotificationSetting";
+import { MemberSlackSetting } from "@/app/components/settings/MemberSlackSetting";
 
 export function AdminSettingsPage() {
   const { userPermissions } = useAuth();
@@ -36,7 +37,10 @@ export function AdminSettingsPage() {
     }
   }, []);
 
-  const tabs = [{ id: "slack", label: "Slack通知" }];
+  const tabs = [
+    { id: "slack", label: "Slack通知" },
+    { id: "members", label: "メンバー設定" },
+  ];
 
   return (
     <div style={{ padding: "28px 32px" }}>
@@ -75,6 +79,21 @@ export function AdminSettingsPage() {
           </button>
         ))}
       </div>
+
+      {tab === "members" && (
+        <div>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <Users style={{ width: 16, height: 16, color: "#059669" }} />
+              <p style={{ fontSize: 14, fontWeight: 600, color: "#111827" }}>メンバーのSlack連携</p>
+            </div>
+            <p style={{ fontSize: 12, color: "#9CA3AF" }}>
+              各メンバーのSlackメンバーIDを設定します。設定済みのメンバーには通知がメンション付きで届きます。
+            </p>
+          </div>
+          <MemberSlackSetting />
+        </div>
+      )}
 
       {tab === "slack" && (
         <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>

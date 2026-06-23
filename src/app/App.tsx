@@ -20,7 +20,6 @@ import { ClientsPage } from "@/app/pages/ClientsPage";
 import { MembersPage } from "@/app/pages/MembersPage";
 import { PermissionsPage } from "@/app/pages/PermissionsPage";
 import { RolesPage } from "@/app/pages/RolesPage";
-import { SettingsPage } from "@/app/pages/SettingsPage";
 import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 import { MyActionsPage } from "@/app/pages/MyActionsPage";
 import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
@@ -53,7 +52,7 @@ export default function App() {
               <Route path="/members" element={<MembersPage />} />
               <Route path="/permissions" element={<PermissionsPage />} />
               <Route path="/roles" element={<RolesPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/settings" element={<Navigate to="/admin-settings" replace />} />
               <Route path="/admin-settings" element={<AdminSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
               <Route path="/release-notes" element={<ReleaseNotesPage />} />

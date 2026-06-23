@@ -1,5 +1,5 @@
 import { useState, useEffect, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, Settings, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText, Globe } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText, Globe } from "lucide-react";
 import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -42,7 +42,6 @@ export function Sidebar() {
     if (p.startsWith("/projects")) return "projects";
     if (p.startsWith("/clients")) return "clients";
     if (p.startsWith("/members")) return "members";
-    if (p.startsWith("/settings")) return "settings";
     if (p.startsWith("/permissions")) return "permissions";
     if (p.startsWith("/roles")) return "roles";
     if (p.startsWith("/admin-settings")) return "admin-settings";
@@ -111,7 +110,6 @@ export function Sidebar() {
       </nav>
       <div style={{ width: "100%", paddingBottom: 16 }}>
         <div style={{ width: 28, height: 1, background: "rgba(26,23,20,0.06)", margin: "4px auto 4px" }} />
-        <NavBtn id="settings" label="設定" Icon={Settings} />
         <div style={{ position: "relative" }}
           onMouseEnter={() => setHoveredNav("logout")}
           onMouseLeave={() => setHoveredNav(null)}>
