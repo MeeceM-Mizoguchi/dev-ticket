@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { Toggle } from "@/app/components/shared/Toggle";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { labelCls, inputCls } from "@/app/lib/helpers";
+
+const LS_KEY = "slack_notification_selected_project";
 
 const SLACK_ICON = (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -61,8 +64,13 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId, orgI
           slackEnabled: p.slack_notifications_enabled ?? false,
         }));
         setProjects(mapped);
-        const initialId = connectedProjectId && mapped.find(p => p.id === connectedProjectId)
-          ? connectedProjectId : mapped[0]?.id ?? "";
+        const saved = localStorage.getItem(LS_KEY);
+        const initialId =
+          (connectedProjectId && mapped.find(p => p.id === connectedProjectId))
+            ? connectedProjectId
+            : (saved && mapped.find(p => p.id === saved))
+              ? saved
+              : mapped[0]?.id ?? "";
         setSelectedId(initialId);
         const initial = mapped.find(p => p.id === initialId);
         if (initial) { setChannel(initial.slackChannel); setEnabled(initial.slackEnabled); }
@@ -71,6 +79,7 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId, orgI
 
   const handleProjectChange = (id: string) => {
     setSelectedId(id);
+    localStorage.setItem(LS_KEY, id);
     const p = projects.find(pr => pr.id === id);
     if (p) { setChannel(p.slackChannel); setEnabled(p.slackEnabled); }
   };
@@ -124,9 +133,11 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId, orgI
       {/* プロジェクト選択 */}
       <div>
         <label className={labelCls}>対象プロジェクト</label>
-        <select className={inputCls} value={selectedId} onChange={e => handleProjectChange(e.target.value)}>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
+        <CustomSelect
+          value={selectedId}
+          options={projects.map(p => ({ value: p.id, label: p.name }))}
+          onChange={handleProjectChange}
+        />
       </div>
 
       {selected && (isConnected ? (

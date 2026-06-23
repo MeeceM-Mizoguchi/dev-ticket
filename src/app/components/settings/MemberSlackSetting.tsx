@@ -89,10 +89,16 @@ export function MemberSlackSetting() {
     const target = members.find(m => m.id === memberId);
     if (!target) return;
     setMembers(prev => prev.map(m => m.id === memberId ? { ...m, saving: true } : m));
-    await supabase!
+    const { error } = await supabase!
       .from("profiles")
       .update({ slack_member_id: target.draft.trim() || null })
       .eq("id", memberId);
+    if (error) {
+      console.error("[MemberSlackSetting] 保存失敗:", error.message);
+      setMembers(prev => prev.map(m => m.id === memberId ? { ...m, saving: false } : m));
+      alert("保存に失敗しました。権限を確認してください。");
+      return;
+    }
     setMembers(prev => prev.map(m =>
       m.id === memberId ? { ...m, slackMemberId: target.draft.trim(), saving: false, saved: true } : m
     ));
@@ -101,7 +107,16 @@ export function MemberSlackSetting() {
 
   const handleClear = async (memberId: string) => {
     if (!isSupabaseEnabled) return;
-    await supabase!.from("profiles").update({ slack_member_id: null }).eq("id", memberId);
+    const { error, count } = await supabase!
+      .from("profiles")
+      .update({ slack_member_id: null })
+      .eq("id", memberId)
+      .select("id", { count: "exact", head: true });
+    if (error || count === 0) {
+      console.error("[MemberSlackSetting] 解除失敗:", error?.message ?? "0 rows updated (RLS?)");
+      alert("解除に失敗しました。Supabase の RLS ポリシーを確認してください（add_admin_slack_update.sql を適用済みか確認）。");
+      return;
+    }
     setMembers(prev => prev.map(m =>
       m.id === memberId ? { ...m, slackMemberId: "", draft: "" } : m
     ));
