@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -14,7 +14,6 @@ function titleToPathSegment(title: string): string {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
-import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 
 interface TreeNode extends WikiPageType {
   children: TreeNode[];
@@ -37,15 +36,20 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelect, onAddChild, onDelete,
+  node, depth, selectedId, onSelect, onAddChild, onDelete, onMoveNode, onOpenMoveModal, canEdit,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
   onSelect: (id: string) => void;
   onAddChild: (parentId: string, isFolder: boolean) => void;
   onDelete: (node: WikiPageType) => void;
+  onMoveNode: (draggedId: string, targetParentId: string | null) => Promise<void>;
+  onOpenMoveModal: (node: WikiPageType) => void;
+  canEdit: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+
   const hasChildren = node.children.length > 0;
   const isFolder = node.isFolder;
   const isSelected = selectedId === node.id;
@@ -58,13 +62,57 @@ function TreeItem({
     }
   };
 
+  const handleDragStart = (e: React.DragEvent) => {
+    if (!canEdit) return;
+    e.dataTransfer.setData("text/plain", node.id);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!canEdit || !isFolder) return;
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const draggedId = e.dataTransfer.types.includes("text/plain") ? "valid" : "";
+    if (draggedId) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    if (!canEdit || !isFolder) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const draggedId = e.dataTransfer.getData("text/plain");
+    if (!draggedId || draggedId === node.id) return;
+
+    await onMoveNode(draggedId, node.id);
+  };
+
   const FolderIcon = expanded ? FolderOpen : Folder;
   const ItemIcon = isFolder ? FolderIcon : FileText;
   const iconColor = isFolder ? "#F59E0B" : (isSelected ? "#059669" : "#B0A9A4");
 
   return (
-    <div>
+    <div 
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{
+        background: isDragOver ? "rgba(5,150,105,0.08)" : "transparent",
+        borderRadius: 8,
+        transition: "background 0.15s"
+      }}
+    >
       <div
+        draggable={canEdit}
+        onDragStart={handleDragStart}
         onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
         onClick={handleRowClick}
         style={{
@@ -82,6 +130,7 @@ function TreeItem({
           )}
         </span>
         <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
+        
         <span style={{
           flex: 1, minWidth: 0, fontSize: 12,
           fontWeight: isSelected ? 700 : 500,
@@ -90,32 +139,53 @@ function TreeItem({
         }}>
           {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
         </span>
+
         {hovered && (
           <>
-            <button
-              onClick={e => { e.stopPropagation(); onAddChild(node.id, false); }}
-              title="サブページを追加"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-              <Plus style={{ width: 12, height: 12 }} />
-            </button>
-            <button
-              onClick={e => { e.stopPropagation(); onAddChild(node.id, true); }}
-              title="サブフォルダを追加"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-              <FolderPlus style={{ width: 12, height: 12 }} />
-            </button>
-            <button
-              onClick={e => { e.stopPropagation(); onDelete(node); }}
-              title="削除"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-              <Trash2 style={{ width: 12, height: 12 }} />
-            </button>
+            {canEdit && (
+              <>
+                <button
+                  onClick={e => { e.stopPropagation(); onAddChild(node.id, false); }}
+                  title="サブページを追加"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                  <Plus style={{ width: 12, height: 12 }} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onAddChild(node.id, true); }}
+                  title="サブフォルダを追加"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                  <FolderPlus style={{ width: 12, height: 12 }} />
+                </button>
+                
+                {/* 🌟 修正: 移動アイコンにホバーした際、人差し指マーク（pointer）になるよう cursor を指定 */}
+                <div
+                  draggable
+                  onDragStart={handleDragStart}
+                  onClick={e => { e.stopPropagation(); onOpenMoveModal(node); }}
+                  title={isFolder ? "フォルダを移動 (クリックで一覧から選択)" : "ページを移動 (クリックで一覧から選択)"}
+                  style={{ 
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: "pointer", color: isFolder ? "#F59E0B" : "#0284C7", padding: 2, flexShrink: 0 
+                  }}
+                >
+                  <GripVertical style={{ width: 12, height: 12 }} />
+                </div>
+              </>
+            )}
+            {canEdit && (
+              <button
+                onClick={e => { e.stopPropagation(); onDelete(node); }}
+                title="削除"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                <Trash2 style={{ width: 12, height: 12 }} />
+              </button>
+            )}
           </>
         )}
       </div>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} />
+          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} canEdit={canEdit} />
       ))}
     </div>
   );
@@ -124,7 +194,7 @@ function TreeItem({
 export function WikiPage() {
   const { projectSlug, "*": wikiPath } = useParams<{ projectSlug: string; "*"?: string }>();
   const navigate = useNavigate();
-  const { userPermissions, userName, userRole, userId } = useAuth();
+  const { userName, userRole, userId } = useAuth();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -139,6 +209,10 @@ export function WikiPage() {
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
+  const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
+  
+  const [movingNodeTarget, setMovingNodeTarget] = useState<WikiPageType | null>(null);
+
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
@@ -169,14 +243,13 @@ export function WikiPage() {
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
     }
     setLoading(false);
-  }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectSlug, userId, isAdminRole]);
 
   useEffect(() => { load(); }, [load]);
 
   const tree = useMemo(() => buildTree(pages), [pages]);
   const selected = useMemo(() => pages.find(p => p.id === selectedId) ?? null, [pages, selectedId]);
 
-  // URLパスからページを選択 (/:projectSlug/wiki/フォルダ名/ページ名 or /:projectSlug/wiki/ページ名)
   useEffect(() => {
     if (!wikiPath || pages.length === 0) return;
     const parts = wikiPath.split("/").map(s => decodeURIComponent(s)).filter(Boolean);
@@ -193,7 +266,7 @@ export function WikiPage() {
       if (!found) found = pages.find(p => !p.isFolder && p.title === pageTitle);
     }
     if (found && found.id !== selectedId) setSelectedId(found.id);
-  }, [wikiPath, pages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wikiPath, pages]);
 
   const handleSelectPage = useCallback((pageId: string) => {
     const page = pages.find(p => p.id === pageId);
@@ -210,7 +283,7 @@ export function WikiPage() {
     setTitle(selected?.title ?? "");
     setContent(selected?.content ?? "");
     setImages(selected?.images ?? []);
-  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
 
   const scheduleSave = useCallback((nextTitle: string, nextContent: string) => {
     if (!selectedId) return;
@@ -223,14 +296,39 @@ export function WikiPage() {
     }, 600);
   }, [selectedId, userName]);
 
-  const handleImagesChange = useCallback(async (next: string[]) => {
-    if (!selectedId) return;
-    setImages(next);
-    setPages(prev => prev.map(p => p.id === selectedId ? { ...p, images: next } : p));
-    if (isSupabaseEnabled) {
-      await supabase!.from("wiki_pages").update({ images: next, updated_by: userName || null, updated_at: new Date().toISOString() }).eq("id", selectedId);
+  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
+    if (draggedId === targetParentId) return;
+    
+    const checkCyclic = (parentId: string | null): boolean => {
+      if (!parentId) return false;
+      if (parentId === draggedId) return true;
+      const p = pages.find(page => page.id === parentId);
+      return p ? checkCyclic(p.parentId) : false;
+    };
+    if (checkCyclic(targetParentId)) {
+      toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
+      return;
     }
-  }, [selectedId, userName]);
+
+    const sortOrder = pages.filter(p => p.parentId === targetParentId).length;
+    setPages(prev => prev.map(p => p.id === draggedId ? { ...p, parentId: targetParentId, sortOrder } : p));
+
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!
+        .from("wiki_pages")
+        .update({ parent_id: targetParentId, sort_order: sortOrder, updated_by: userName || null, updated_at: new Date().toISOString() })
+        .eq("id", draggedId);
+
+      if (error) {
+        console.error("[WikiPage] move node error:", error);
+        toast("移動に失敗しました", "error");
+        load();
+      } else {
+        toast("配置を変更しました");
+        load();
+      }
+    }
+  }, [pages, userName, load, toast]);
 
   const handleAddItem = async (parentId: string | null, isFolder: boolean) => {
     if (!project) return;
@@ -244,10 +342,7 @@ export function WikiPage() {
     });
     if (error) {
       console.error("[WikiPage] insert error:", error);
-      const msg = error.message?.includes("column") || error.code === "42703"
-        ? "DBにis_folderカラムが存在しません。supabase/add_wiki_folder.sql を Supabase Dashboard で実行してください。"
-        : (isFolder ? "フォルダの作成に失敗しました" : "ページの作成に失敗しました");
-      toast(msg, "error");
+      toast("作成に失敗しました", "error");
       return;
     }
     await load();
@@ -290,7 +385,22 @@ export function WikiPage() {
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
-        <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto" }}>
+        <div 
+          onDragOver={(e) => { if (!canEdit) return; e.preventDefault(); setIsTreeDragOverRoot(true); }}
+          onDragLeave={() => setIsTreeDragOverRoot(false)}
+          onDrop={async (e) => {
+            if (!canEdit) return;
+            e.preventDefault();
+            setIsTreeDragOverRoot(false);
+            const draggedId = e.dataTransfer.getData("text/plain");
+            if (draggedId) { await handleMoveNode(draggedId, null); }
+          }}
+          style={{ 
+            width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, 
+            border: isTreeDragOverRoot ? "1px dashed #059669" : "1px solid rgba(26,23,20,0.07)", 
+            padding: 10, overflowY: "auto", transition: "all 0.15s"
+          }}
+        >
           {canEdit && (
             <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
               <button onClick={() => handleAddItem(null, false)}
@@ -313,7 +423,11 @@ export function WikiPage() {
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
               onSelect={handleSelectPage}
               onAddChild={canEdit ? handleAddItem : () => {}}
-              onDelete={canEdit ? setDeleteTarget : () => {}} />
+              onDelete={canEdit ? setDeleteTarget : () => {}}
+              onMoveNode={handleMoveNode}
+              onOpenMoveModal={setMovingNodeTarget}
+              canEdit={canEdit}
+            />
           ))}
         </div>
 
@@ -370,6 +484,113 @@ export function WikiPage() {
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
       )}
+
+      {/* Googleドライブ風のフォルダ階層一覧選択移動モーダル */}
+      {movingNodeTarget && (
+        <GoogleDriveMoveModal 
+          node={movingNodeTarget} 
+          pages={pages} 
+          onClose={() => setMovingNodeTarget(null)} 
+          onConfirm={async (targetParentId) => {
+            await handleMoveNode(movingNodeTarget.id, targetParentId);
+            setMovingNodeTarget(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// Googleドライブ風の選択移動モーダルコンポーネント
+function GoogleDriveMoveModal({ 
+  node, pages, onClose, onConfirm 
+}: { 
+  node: WikiPageType; pages: WikiPageType[]; onClose: () => void; onConfirm: (targetParentId: string | null) => Promise<void> 
+}) {
+  const foldersOnly = useMemo(() => pages.filter(p => p.isFolder && p.id !== node.id), [pages, node.id]);
+  const folderTree = useMemo(() => buildTree(foldersOnly), [foldersOnly]);
+  
+  const [selectedParentId, setSelectedParentId] = useState<string | null>(node.parentId);
+
+  const renderFolderOption = (folder: TreeNode, depth: number) => {
+    const isChosen = selectedParentId === folder.id;
+    return (
+      <div key={folder.id}>
+        <div
+          onClick={() => setSelectedParentId(folder.id)}
+          style={{
+            display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px",
+            paddingLeft: 12 + depth * 16, borderRadius: "8px", cursor: "pointer",
+            background: isChosen ? "#ECFDF5" : "transparent",
+            border: isChosen ? "1px solid #10B981" : "1px solid transparent",
+            transition: "all 0.1s", marginBottom: "2px"
+          }}
+        >
+          <Folder style={{ width: 14, height: 14, color: isChosen ? "#059669" : "#F59E0B" }} />
+          <span style={{ fontSize: "12px", fontWeight: isChosen ? 700 : 500, color: isChosen ? "#059669" : "#1A1714" }}>
+            {folder.title || "無題のフォルダ"}
+          </span>
+        </div>
+        {folder.children.map(c => renderFolderOption(c, depth + 1))}
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(2px)" }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: "400px", background: "#FFFFFF", borderRadius: "14px", padding: "20px", zIndex: 401, boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <FolderTree style={{ width: 16, height: 16, color: "#059669" }} />
+            <h3 style={{ fontSize: "15px", fontWeight: 700, color: "#1A1714" }}>移動先フォルダーの選択</h3>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#B0A9A4" }}>
+            <X style={{ width: 16, height: 16 }} />
+          </button>
+        </div>
+        <p style={{ fontSize: "11px", color: "#9E9690", marginBottom: "12px" }}>
+          「{node.title || "無題"}」を配置する移動先フォルダーを選択してください。
+        </p>
+
+        <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: "10px", padding: "8px", maxHeight: "220px", overflowY: "auto", background: "#FAFAF8", marginBottom: "16px" }}>
+          <div
+            onClick={() => setSelectedParentId(null)}
+            style={{
+              display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px", borderRadius: "8px", cursor: "pointer",
+              background: selectedParentId === null ? "#ECFDF5" : "transparent",
+              border: selectedParentId === null ? "1px solid #10B981" : "1px solid transparent",
+              transition: "all 0.1s", marginBottom: "4px"
+            }}
+          >
+            <FolderTree style={{ width: 14, height: 14, color: selectedParentId === null ? "#059669" : "#B0A9A4" }} />
+            <span style={{ fontSize: "12px", fontWeight: selectedParentId === null ? 700 : 500, color: selectedParentId === null ? "#059669" : "#1A1714" }}>
+              / プロジェクトの最上位（ルート階層）
+            </span>
+          </div>
+
+          <div style={{ height: "1px", background: "rgba(26,23,20,0.04)", margin: "4px 0" }} />
+
+          {folderTree.length === 0 ? (
+            <div style={{ padding: "16px", textAlign: "center", fontSize: "11px", color: "#B0A9A4" }}>
+              移動可能な他のフォルダがありません。
+            </div>
+          ) : (
+            folderTree.map(f => renderFolderOption(f, 0))
+          )}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+          <button type="button" onClick={onClose}
+            style={{ padding: "8px 14px", fontSize: "12px", fontWeight: 600, color: "#6B6458", background: "#F4F5F6", border: "none", borderRadius: "8px", cursor: "pointer" }}>
+            キャンセル
+          </button>
+          <button type="button" onClick={() => onConfirm(selectedParentId)}
+            style={{ padding: "8px 16px", fontSize: "12px", fontWeight: 600, color: "#FFFFFF", background: "#059669", border: "none", borderRadius: "8px", cursor: "pointer", boxShadow: "0 2px 4px rgba(5,150,105,0.2)" }}>
+            この場所に移動
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
