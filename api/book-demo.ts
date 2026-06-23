@@ -22,7 +22,14 @@ interface BookingPayload {
   email: string;
   phone: string;
   candidates: Candidate[];
+  plan?: string;
 }
+
+const PLAN_LABELS: Record<string, string> = {
+  starter:      'スターター',
+  professional: 'プロフェッショナル',
+  enterprise:   'エンタープライズ',
+};
 
 const PREF_LABELS: Record<string, string> = {
   morning:   '午前（10:00〜12:00）',
@@ -152,6 +159,7 @@ function confirmationHtml(p: BookingPayload): string {
 function adminNotificationHtml(p: BookingPayload, demoUrl: string): string {
   const company = p.isIndividual ? `${p.contactName}（個人事業主）` : p.companyName;
   const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+  const planLabel = p.plan ? (PLAN_LABELS[p.plan] ?? p.plan) : '未選択';
   return `
 <!DOCTYPE html>
 <html lang="ja">
@@ -173,7 +181,11 @@ function adminNotificationHtml(p: BookingPayload, demoUrl: string): string {
             <tr><td style="padding:20px 24px;">
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td style="font-size:13px;color:#6B7280;padding:5px 0;width:120px;">会社名</td>
+                  <td style="font-size:13px;color:#6B7280;padding:5px 0;width:120px;">問い合わせプラン</td>
+                  <td style="font-size:13px;font-weight:700;padding:5px 0;"><span style="background:#ECFDF5;color:#065F46;border-radius:6px;padding:2px 10px;">${planLabel}</span></td>
+                </tr>
+                <tr>
+                  <td style="font-size:13px;color:#6B7280;padding:5px 0;">会社名</td>
                   <td style="font-size:13px;color:#1A1714;font-weight:600;padding:5px 0;">${company}</td>
                 </tr>
                 <tr>
@@ -284,11 +296,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await resend.emails.send({
       from: FROM_EMAIL,
       to: ADMIN_EMAIL,
-      subject: `【Dev Ticket】デモ商談リクエスト：${companyLabel}`,
+      subject: `【Dev Ticket】デモ商談リクエスト：${companyLabel}（${payload.plan ? (PLAN_LABELS[payload.plan] ?? payload.plan) : '未選択'}）`,
       html: adminNotificationHtml(payload, demoUrl),
       text: [
         '新しいデモ商談リクエストが届きました。',
         '',
+        `問い合わせプラン：${payload.plan ? (PLAN_LABELS[payload.plan] ?? payload.plan) : '未選択'}`,
         `会社名：${payload.isIndividual ? '（個人事業主）' : payload.companyName}`,
         `担当者：${payload.contactName}`,
         `メール：${payload.email}`,
