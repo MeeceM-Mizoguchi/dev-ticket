@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, Pencil } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -37,25 +37,64 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelect, onAddChild, onDelete,
+  node, depth, selectedId, onSelect, onAddChild, onDelete, onRename, canEdit,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
   onSelect: (id: string) => void;
   onAddChild: (parentId: string, isFolder: boolean) => void;
   onDelete: (node: WikiPageType) => void;
+  onRename: (id: string, newTitle: string) => Promise<void>;
+  canEdit: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
+  
+  // 🌟 追加: インライン編集モード用のステート
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(node.title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const hasChildren = node.children.length > 0;
   const isFolder = node.isFolder;
   const isSelected = selectedId === node.id;
 
+  // node.title が親側の再読み込みなどで変わった場合に追従させる
+  useEffect(() => {
+    setEditTitle(node.title);
+  }, [node.title]);
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
   const handleRowClick = () => {
+    if (isEditing) return;
     if (isFolder) {
       setExpanded(v => !v);
     } else {
       onSelect(node.id);
     }
+  };
+
+  // 🌟 追加: ダブルクリック時に編集モードを起動するハンドラー
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!canEdit) return;
+    setIsEditing(true);
+  };
+
+  // 🌟 追加: 編集内容の確定処理
+  const handleSaveRename = async () => {
+    setIsEditing(false);
+    const trimmed = editTitle.trim();
+    if (!trimmed || trimmed === node.title) {
+      setEditTitle(node.title);
+      return;
+    }
+    await onRename(node.id, trimmed);
   };
 
   const FolderIcon = expanded ? FolderOpen : Folder;
@@ -67,6 +106,7 @@ function TreeItem({
       <div
         onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
         onClick={handleRowClick}
+        onDoubleClick={handleDoubleClick}
         style={{
           display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
           borderRadius: 7, cursor: "pointer",
@@ -82,40 +122,79 @@ function TreeItem({
           )}
         </span>
         <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
-        <span style={{
-          flex: 1, minWidth: 0, fontSize: 12,
-          fontWeight: isSelected ? 700 : 500,
-          color: isSelected ? "#059669" : "#1A1714",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
-        </span>
-        {hovered && (
+        
+        {/* 🌟 修正: 編集モードと通常テキスト表示の動的切り替え */}
+        {isEditing ? (
+          <input
+            ref={inputRef}
+            value={editTitle}
+            onChange={e => setEditTitle(e.target.value)}
+            onBlur={handleSaveRename}
+            onKeyDown={e => {
+              if (e.key === "Enter") handleSaveRename();
+              if (e.key === "Escape") {
+                setEditTitle(node.title);
+                setIsEditing(false);
+              }
+            }}
+            onClick={e => e.stopPropagation()}
+            onDoubleClick={e => e.stopPropagation()}
+            style={{
+              flex: 1, minWidth: 0, fontSize: 12, padding: "1px 4px",
+              border: "1px solid #059669", borderRadius: 4, outline: "none",
+              color: "#1A1714", background: "#FFFFFF", height: "18px"
+            }}
+          />
+        ) : (
+          <span style={{
+            flex: 1, minWidth: 0, fontSize: 12,
+            fontWeight: isSelected ? 700 : 500,
+            color: isSelected ? "#059669" : "#1A1714",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
+            {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
+          </span>
+        )}
+
+        {hovered && !isEditing && (
           <>
-            <button
-              onClick={e => { e.stopPropagation(); onAddChild(node.id, false); }}
-              title="サブページを追加"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-              <Plus style={{ width: 12, height: 12 }} />
-            </button>
-            <button
-              onClick={e => { e.stopPropagation(); onAddChild(node.id, true); }}
-              title="サブフォルダを追加"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-              <FolderPlus style={{ width: 12, height: 12 }} />
-            </button>
-            <button
-              onClick={e => { e.stopPropagation(); onDelete(node); }}
-              title="削除"
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-              <Trash2 style={{ width: 12, height: 12 }} />
-            </button>
+            {canEdit && (
+              <>
+                <button
+                  onClick={e => { e.stopPropagation(); onAddChild(node.id, false); }}
+                  title="サブページを追加"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                  <Plus style={{ width: 12, height: 12 }} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onAddChild(node.id, true); }}
+                  title="サブフォルダを追加"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                  <FolderPlus style={{ width: 12, height: 12 }} />
+                </button>
+                {/* 🌟 追加: ゴミ箱の左隣に配置した、フォルダ名・ページ名個別リネーム用アイコンボタン */}
+                <button
+                  onClick={e => { e.stopPropagation(); setIsEditing(true); }}
+                  title="名前を変更"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                  <Pencil style={{ width: 11, height: 11 }} />
+                </button>
+              </>
+            )}
+            {canEdit && (
+              <button
+                onClick={e => { e.stopPropagation(); onDelete(node); }}
+                title="削除"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
+                <Trash2 style={{ width: 12, height: 12 }} />
+              </button>
+            )}
           </>
         )}
       </div>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} />
+          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} onRename={onRename} canEdit={canEdit} />
       ))}
     </div>
   );
@@ -169,7 +248,7 @@ export function WikiPage() {
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
     }
     setLoading(false);
-  }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectSlug, userId, isAdminRole]); // eslint-disable-with-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 
@@ -222,6 +301,26 @@ export function WikiPage() {
       setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title: nextTitle, content: nextContent } : p));
     }, 600);
   }, [selectedId, userName]);
+
+  // 🌟 追加: ツリービュー側から直接フォルダ名やページ名を変更した際の実インサート関数
+  const handleTreeItemRename = useCallback(async (id: string, nextTitle: string) => {
+    setPages(prev => prev.map(p => p.id === id ? { ...p, title: nextTitle } : p));
+    if (id === selectedId) {
+      setTitle(nextTitle);
+    }
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!
+        .from("wiki_pages")
+        .update({ title: nextTitle, updated_by: userName || null, updated_at: new Date().toISOString() })
+        .eq("id", id);
+      
+      if (error) {
+        console.error("[WikiPage] rename error:", error);
+        toast("名前の変更に失敗しました", "error");
+        load(); // ロールバックのために再読み込み
+      }
+    }
+  }, [selectedId, userName, load, toast]);
 
   const handleImagesChange = useCallback(async (next: string[]) => {
     if (!selectedId) return;
@@ -313,7 +412,10 @@ export function WikiPage() {
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
               onSelect={handleSelectPage}
               onAddChild={canEdit ? handleAddItem : () => {}}
-              onDelete={canEdit ? setDeleteTarget : () => {}} />
+              onDelete={canEdit ? setDeleteTarget : () => {}}
+              onRename={handleTreeItemRename} // 🌟 紐付け
+              canEdit={canEdit}
+            />
           ))}
         </div>
 
