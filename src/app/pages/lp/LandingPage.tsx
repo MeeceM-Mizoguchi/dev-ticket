@@ -1583,7 +1583,7 @@ export function LandingPage() {
                     <span className="text-slate-700">メールサポート</span>
                   </li>
                 </ul>
-                <Button variant="outline" onClick={() => navigate('/book-demo')} className="w-full">
+                <Button variant="outline" onClick={() => navigate('/book-demo?plan=starter')} className="w-full">
                   今すぐ始める
                 </Button>
               </CardContent>
@@ -1617,7 +1617,7 @@ export function LandingPage() {
                     <span className="text-slate-700">優先サポート</span>
                   </li>
                 </ul>
-                <Button onClick={() => navigate('/book-demo')} className="w-full bg-teal-600 hover:bg-teal-700 text-white">
+                <Button onClick={() => navigate('/book-demo?plan=professional')} className="w-full bg-teal-600 hover:bg-teal-700 text-white">
                   今すぐ始める
                 </Button>
               </CardContent>
@@ -1652,7 +1652,7 @@ export function LandingPage() {
                     <span className="text-slate-700">専任サポート</span>
                   </li>
                 </ul>
-                <Button variant="outline" className="w-full">
+                <Button variant="outline" onClick={() => navigate('/book-demo?plan=enterprise')} className="w-full">
                   お問い合わせ
                 </Button>
               </CardContent>

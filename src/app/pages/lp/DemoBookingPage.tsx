@@ -1,5 +1,5 @@
 ﻿import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Building2, User, Mail, Phone, CheckCircle2,
   ChevronRight, ChevronLeft, CalendarDays, Ticket,
@@ -64,8 +64,16 @@ function StepBar({ step }: { step: 'form' | 'calendar' | 'success' }) {
 
 // ─── Page component ───────────────────────────────────────────────────────────
 
+const PLAN_LABELS: Record<string, string> = {
+  starter:      'スターター',
+  professional: 'プロフェッショナル',
+  enterprise:   'エンタープライズ',
+};
+
 export function DemoBookingPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const plan = searchParams.get('plan') ?? '';
   const [step, setStep] = useState<'form' | 'calendar' | 'success'>('form');
   const [form, setForm] = useState<FormData>({
     isIndividual: false,
@@ -138,7 +146,7 @@ export function DemoBookingPage() {
       await fetch('/api/book-demo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, candidates }),
+        body: JSON.stringify({ ...form, candidates, plan }),
       });
     } catch {
       // APIが未設定でも成功画面を表示する
