@@ -12,13 +12,13 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
-// 🌟 追加: CustomSelect コンポーネントをインポート
+// CustomSelect コンポーネントをインポート
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
-// 🛠️ 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
+// 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { escStack } from "@/app/lib/escStack";
 
-// 🌟 追加: 優先度の選択肢と色を定義
+// 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
   { value: "high", label: "高", color: "#DC2626", bg: "#FEF2F2" },
   { value: "medium", label: "中", color: "#D97706", bg: "#FFFBEB" },
@@ -30,20 +30,17 @@ const CACHE_KEY_PREFIX = "new_ticket_draft_";
 export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
   sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
   sprintStartDate?: string; sprintEndDate?: string;
-  // 子チケット作成モード用。parentTicketId が指定された場合は子チケットとして作成される。将来の孫チケット対応も同プロパティを再利用予定。
   parentTicketId?: string; parentWbs?: string;
-  zIndexBase?: number; // TicketDetailPanel 内から呼ぶ際は 310 を指定してz-index競合を回避
+  zIndexBase?: number;
 }) {
   const { userName, userRole, userOrgId } = useAuth();
   const { open: openPreview } = usePreviewPanel();
-  const isAdmin = userRole === "admin" || userRole === "project-manager";
   const isChildMode = !!parentTicketId;
   const needsSelection = !sprintId && !isChildMode;
 
-  // 🛠️ 追加: コンテキスト（追加先スコープ）ごとにキャッシュが混ざらないように固有のローカルストレージキーを生成
   const contextKey = `${CACHE_KEY_PREFIX}${projectId || "global"}_${sprintId || "global"}_${parentTicketId || "root"}`;
 
-  // --- プロジェクト・スプリント選択（ダッシュボードから開く場合） ---
+  // --- プロジェクト・スプリント選択 ---
   const [availableProjects, setAvailableProjects] = useState<{ id: string; name: string; slug?: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; startDate?: string; endDate?: string }[]>([]);
@@ -51,15 +48,12 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [projectError, setProjectError] = useState(false);
   const [sprintError, setSprintError] = useState(false);
 
-  // 現在選択されている（または親から渡された）プロジェクトのメンバー名の配列
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
-  // チケットメンション用: プロジェクト内チケット一覧
   const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
   const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
   const [projectWikiItems, setProjectWikiItems] = useState<{ id: string; title: string }[]>([]);
   const [projectMinuteItems, setProjectMinuteItems] = useState<{ id: string; title: string }[]>([]);
 
-  // 🛠️ 確認用モーダルダイアログの表示状態を管理するステートを追加
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
@@ -83,16 +77,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
-  // 🌟 追加: ダッシュボードから選択した場合でも、正しい projectSlug を特定して保持する
   const effectiveProjectSlug = projectSlug || availableProjects.find(p => p.id === effectiveProjectId)?.slug || "";
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
   const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
 
-  // 🛠️ 修正: 自動リセットを完全に防ぐため、復元対象のスプリントIDを保持するRefを追加
   const savedSprintIdRef = useRef<string>("");
 
-  // 🛠️ 修正: コンポーネント起動時に、ストレージから下書きデータを一度だけ安全に復元
+  // 下書きデータの復元
   useEffect(() => {
     try {
       const savedDraft = localStorage.getItem(contextKey);
@@ -121,7 +113,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     }
   }, [contextKey, needsSelection]);
 
-  // 🛠️ 修正: スプリントの選択肢一覧（availableSprints）のロードが完了したタイミングで確実に再セット
   useEffect(() => {
     if (needsSelection && availableSprints.length > 0 && savedSprintIdRef.current) {
       const exists = availableSprints.some(s => s.id === savedSprintIdRef.current);
@@ -131,7 +122,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     }
   }, [availableSprints, needsSelection]);
 
-  // 🛠️ 修正: ユーザーの入力変更をローカルストレージへ退避（保存実行中、またはクリーンアップ中は書き込まない）
+  // 入力変更時のローカルストレージ自動退避
   useEffect(() => {
     if (saving) return;
     const draftPayload = {
@@ -155,7 +146,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     }
   }, [title, status, priority, categoryId, assignee, startDate, dueDate, estimatedHours, description, images, selectedProjectId, selectedSprintId, contextKey, saving]);
 
-  // 🛠️ バツボタン、キャンセルボタン、背景マスクがクリックされた際に確認画面を呼び出すハンドラー
   const handleInterceptClose = useCallback(() => {
     setShowCloseConfirm(true);
   }, []);
@@ -165,13 +155,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     return () => escStack.pop(handleInterceptClose);
   }, [handleInterceptClose]);
 
-  // 1. プロジェクト一覧の取得、および固定プロジェクト時のメンバー取得
+  // 1. プロジェクト一覧と固定プロジェクト時のメンバー取得
   useEffect(() => {
     if (!isSupabaseEnabled) {
       const accessible = userRole === "admin" ? PROJECTS : PROJECTS.filter(p => p.members.includes(userName));
       setAvailableProjects(accessible.map(p => ({ id: p.id, name: p.name, slug: p.slug })));
-
-      // 親から固定の projectId が渡されている場合はそのメンバーを設定
       if (projectId) {
         const pData = PROJECTS.find(p => p.id === projectId);
         if (pData?.members) setCurrentProjectMembers(pData.members);
@@ -179,24 +167,20 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       return;
     }
 
-    // 🌟 修正: 最上位の admin 特権以外は、PMであってもアサイン計画（members）に名前が入っているプロジェクトのみに厳重に絞り込む
     supabase!.from("projects").select("id, name, members, slug").order("name").then(({ data }) => {
       if (data) {
         const accessible = userRole === "admin"
           ? data
           : data.filter((p: any) => {
             if (!Array.isArray(p.members)) return false;
-            // members 配列の中に、name が userName と一致するオブジェクトがあるか調べる
             return p.members.some((m: any) => m && (m.name === userName || m === userName));
           });
 
         setAvailableProjects(accessible.map((p: any) => ({ id: p.id, name: p.name, slug: p.slug })));
 
-        // 親から固定の projectId が渡されている場合は、そのプロジェクトの所属メンバー名配列を初期設定
         if (projectId) {
           const pData = data.find((p: any) => p.id === projectId);
           if (pData?.members) {
-            // 担当者候補リスト用にも、オブジェクト配列から名前の文字列配列 [ "名前", ... ] に変換してセットする
             const memberNames = Array.isArray(pData.members)
               ? pData.members.map((m: any) => typeof m === 'object' ? m?.name : m).filter(Boolean)
               : [];
@@ -205,10 +189,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
       }
     });
-  }, [needsSelection, isAdmin, userName, userRole, projectId]);
+  }, [needsSelection, userName, userRole, projectId]);
 
-
-  // 2. 選択されたプロジェクトに応じたスプリント一覧、およびメンバー情報の動的更新
+  // 2. 選択されたプロジェクトに応じたスプリント一覧、メンバー情報の動的更新
   useEffect(() => {
     if (!effectiveProjectId) { setAvailableSprints([]); setSelectedSprintId(""); return; }
 
@@ -222,7 +205,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       return;
     }
 
-    // スプリント一覧を取得
     supabase!.from("sprints").select("id, name, start_date, end_date").eq("project_id", effectiveProjectId).order("created_at")
       .then(({ data }) => {
         if (data) {
@@ -231,7 +213,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
       });
 
-    // 🌟 追加：動的にプロジェクトが変わった、あるいは子チケット作成時のプロジェクトメンバー情報を再取得
     supabase!.from("projects").select("members").eq("id", effectiveProjectId).single().then(({ data }) => {
       if (data?.members) {
         setCurrentProjectMembers(data.members);
@@ -240,7 +221,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   }, [needsSelection, effectiveProjectId, contextKey]);
 
-  // チケットメンション用: プロジェクト全スプリントのチケットを取得（別スプリントのチケットも参照可能にする）
+  // チケットメンション等の関連アイテムロード
   useEffect(() => {
     if (!isSupabaseEnabled || !effectiveProjectId) { setProjectTickets([]); return; }
     (async () => {
@@ -263,8 +244,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const calcHours = (start: string, due: string) => {
     if (!start || !due) return 0;
     const diffDays = Math.round((new Date(due).getTime() - new Date(start).getTime()) / 86400000);
-    return Math.max(0, diffDays + 1) * 8; // 🌟 修正: 当日完了の場合も1日（8h）として計算する
+    return Math.max(0, diffDays + 1) * 8;
   };
+
   const handleDateChange = (field: "start" | "due", v: string) => {
     const s = field === "start" ? v : startDate;
     const d = field === "due" ? v : dueDate;
@@ -272,18 +254,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     setEstimatedHours(calcHours(s, d));
   };
 
-  // 🌟【メンバー制限ロジック】
-  // プロジェクト所属メンバー（currentProjectMembers）が更新されるたびに、担当者セレクトボックスの選択肢をフィルタリング
+  // 担当者選択肢のフィルタリング
   useEffect(() => {
-    // 未設定（分類なし用フォールバック）を常に先頭に配置できるよう準備
     const noneOption = { id: "none", name: "担当者なし" };
 
     if (!isSupabaseEnabled) {
-      // モックデータから該当プロジェクトのメンバーのみに制限
       const filteredMock = MEMBERS.filter(m => currentProjectMembers.includes(m.name));
       const list = filteredMock.map(m => ({ id: m.id, name: m.name }));
       setAssigneeList([noneOption, ...list]);
-      // メンバーが未ロードの間は担当者をセットしない（"担当者なし"がキャッシュに書かれてデフォルト自分が上書きされるバグ防止）
       if (currentProjectMembers.length > 0) {
         const cached = localStorage.getItem(contextKey);
         if (cached && JSON.parse(cached).assignee) {
@@ -295,14 +273,12 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       return;
     }
 
-    // Supabaseから全プロフィールを取得した上で、プロジェクトの参加メンバーのみに厳重に .filter
     let pq = supabase!.from("profiles").select("id, name").order("name");
     if (userOrgId) pq = pq.eq("organization_id", userOrgId);
     pq.then(({ data }) => {
       if (data) {
         const filtered = data.filter((u: any) => currentProjectMembers.includes(u.name));
         setAssigneeList([noneOption, ...filtered]);
-        // メンバーが未ロードの間は担当者をセットしない（"担当者なし"がキャッシュに書かれてデフォルト自分が上書きされるバグ防止）
         if (currentProjectMembers.length > 0) {
           const cached = localStorage.getItem(contextKey);
           if (cached && JSON.parse(cached).assignee) {
@@ -322,19 +298,16 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (!isSupabaseEnabled || !effectiveProjectId) return;
     supabase!.from("ticket_categories").select("*").eq("project_id", effectiveProjectId).order("created_at")
       .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
-    // Project prefix is fallback when sprint has no identifier
     supabase!.from("projects").select("wbs_prefix").eq("id", effectiveProjectId).single()
       .then(({ data }) => { if (data?.wbs_prefix) setWbsPrefix(data.wbs_prefix); });
   }, [effectiveProjectId]);
 
-  // Sprint identifier takes priority over project prefix
   useEffect(() => {
     if (!isSupabaseEnabled || !effectiveSprintId) return;
     supabase!.from("sprints").select("identifier").eq("id", effectiveSprintId).single()
       .then(({ data }) => { if (data?.identifier) setWbsPrefix(data.identifier); });
   }, [effectiveSprintId]);
 
-  // 🛠️ 入力状態を初期状態へ一気にクリアする実処理関数（下書きキャッシュも明示的に除去）
   const executeFormClear = () => {
     savedSprintIdRef.current = "";
     setTitle("");
@@ -368,9 +341,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
         const ext = extMap[f.type] ?? 'png';
         const path = `tickets/${ticketId.current}/detail/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
-        const { data, error } = await supabase!.storage.from("ticket-images").upload(path, f, { upsert: false });
-        if (error || !data) { console.error("[image upload] failed:", error?.message); continue; }
-        const { data: { publicUrl } } = supabase!.storage.from("ticket-images").getPublicUrl(data.path);
+        const { data: error } = await supabase!.storage.from("ticket-images").upload(path, f, { upsert: false });
+        if (error) { console.error("[image upload] failed:", error); continue; }
+        const { data: { publicUrl } } = supabase!.storage.from("ticket-images").getPublicUrl(path);
         setImages(prev => [...prev, publicUrl]);
       } else {
         const reader = new FileReader();
@@ -389,7 +362,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
     const finalAssignee = (assignee === "担当者なし" || !assignee) ? "" : assignee;
 
-    // 🌟 追加：新規チケット作成時に、詳細欄のメンションを解析して通知を飛ばす関数
     const notifyMentions = async (ticketWbs: string) => {
       if (!description || !effectiveProjectSlug) return;
       const stripped = description.replace(/<[^>]*>/g, " ");
@@ -418,14 +390,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       }
     };
 
-    // 🛠️ 修正: 保存処理中にキャッシュが自動上書きされないよう、先にフラグを立ててからインサートに移行
     setSaving(true);
 
     if (isSupabaseEnabled) {
       let wbs: string;
       if (isChildMode && parentTicketId && parentWbs) {
-        // 子チケットのWBS: 親WBS + "-" + 連番 (例: PRJ-001-1, PRJ-001-2)
-        // 削除による巻き戻りを防ぐため、現在の子チケットの最大連番を取得して+1する
         const { data: maxChildRow } = await supabase!
           .from("sprint_tickets")
           .select("wbs")
@@ -440,7 +409,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           : 1;
 
         wbs = `${parentWbs}-${nextNum}`;
-        // sprintId が未指定の場合は親チケットから取得
         if (!effectiveSprintId) {
           const { data: parentRow } = await supabase!
             .from("sprint_tickets").select("sprint_id").eq("id", parentTicketId).single();
@@ -468,7 +436,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
                 fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
               }
-              await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
+              await notifyMentions(wbs);
             }
             try { localStorage.removeItem(contextKey); } catch (e) { }
             savedSprintIdRef.current = "";
@@ -479,7 +447,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           }
         }
       } else {
-        // プロジェクト内の全スプリントIDを取得し、プロジェクトスコープでwbs連番を生成
         const { data: sprintRows } = await supabase!.from("sprints").select("id, identifier").eq("project_id", effectiveProjectId!);
         const sprintIds = sprintRows?.map(s => s.id) ?? [];
         const currentSprintIdentifier = sprintRows?.find(s => s.id === effectiveSprintId)?.identifier;
@@ -522,19 +489,43 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
           fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
         }
-        await notifyMentions(wbs); // 🌟 ここでメンション通知を実行
+        await notifyMentions(wbs);
       }
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
     } else {
-      // モック環境などのフォールバック
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
     }
     onCreated?.();
     onClose();
+  };
+
+  // 🌟 追加: 親チケット用のマスタ配列から「UAT完了の直後にある重複したクローズ（2つ目）」を確実にフィルタリングして排除する処理
+  const getFilteredParentStatuses = () => {
+    let uatIndex = TICKET_STATUSES.findIndex(s => s.value === "uat");
+    if (uatIndex === -1) {
+      // マップ内に大文字の "UAT" や別のキーで定義されている場合のフォールバック
+      uatIndex = TICKET_STATUSES.findIndex(s => s.label.toLowerCase().includes("uat"));
+    }
+    
+    // UAT完了が見つかった場合、その次のインデックスにクローズ（closed）があればそれを間引く
+    if (uatIndex !== -1 && TICKET_STATUSES[uatIndex + 1]?.value === "closed") {
+      return TICKET_STATUSES.filter((_, idx) => idx !== uatIndex + 1);
+    }
+    
+    // インデックスベースでヒットしなかった場合の安全な値重複ガード（末尾のクローズを1つ残し、他を間引く）
+    let closedCount = 0;
+    return TICKET_STATUSES.filter(s => {
+      if (s.value === "closed") {
+        closedCount++;
+        // 2回目以降に登場したクローズの選択肢は問答無用で除外
+        return closedCount <= 1;
+      }
+      return true;
+    });
   };
 
   return (
@@ -549,7 +540,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 4 }}>{isChildMode ? "子チケット作成" : "新規チケット"}</p>
               <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em" }}>{isChildMode ? `子チケット作成 (${parentWbs})` : "チケット作成"}</h2>
             </div>
-            {/* 🛠️ ボタンコンテナを整列させ、×ボタンの左横へゴミ箱デザインのクリアボタンを精密に配置 */}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <button
                 type="button"
@@ -577,13 +567,12 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           addImages(imgFiles);
         }} style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* プロジェクト・スプリント選択（ダッシュボードから開く場合のみ表示） */}
+          {/* プロジェクト・スプリント選択 */}
           {needsSelection && (
             <div style={{ background: "#F0FDF8", borderRadius: 12, border: "1px solid rgba(5,150,105,0.18)", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
               <p style={{ fontSize: 11, fontWeight: 700, color: "#059669", letterSpacing: "0.04em", textTransform: "uppercase" as const }}>追加先を選択</p>
               <div>
                 <label className={labelCls}>プロジェクト <span style={{ color: "#DC2626" }}>*</span></label>
-                {/* 🌟 修正: CustomSelect に置換し、エラー時は枠線で囲う */}
                 <div style={projectError ? { outline: "2px solid #DC2626", outlineOffset: 1, borderRadius: 8 } : undefined}>
                   <CustomSelect
                     value={selectedProjectId}
@@ -596,7 +585,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               </div>
               <div>
                 <label className={labelCls}>スプリント <span style={{ color: "#DC2626" }}>*</span></label>
-                {/* 🌟 修正: CustomSelect に置換 */}
                 <div style={sprintError ? { outline: "2px solid #DC2626", outlineOffset: 1, borderRadius: 8 } : undefined}>
                   <CustomSelect
                     value={selectedSprintId}
@@ -628,7 +616,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label className={labelCls}>ステータス</label>
-              {/* 🌟 修正: CustomSelect に置換。ステータスは色付きバッジで表示 */}
               <CustomSelect
                 value={status}
                 options={isChildMode
@@ -637,13 +624,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                     { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
                     { value: "closed", label: "対応完了", color: "#059669", bg: "#ECFDF5" },
                   ]
-                  : TICKET_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
+                  // 🌟 修正: 親チケット選択肢側のみ、UAT完了の次にある不要な2つ目のクローズを除外した配列を用いて描画
+                  : getFilteredParentStatuses().map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
                 onChange={v => setStatus(v as TicketStatus)}
               />
             </div>
             <div>
               <label className={labelCls}>優先度</label>
-              {/* 🌟 修正: CustomSelect に置換 */}
               <CustomSelect
                 value={priority}
                 options={PRIORITY_OPTIONS}
@@ -655,7 +642,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           {categories.length > 0 && (
             <div>
               <label className={labelCls}>分類</label>
-              {/* 🌟 修正: CustomSelect に置換 */}
               <CustomSelect
                 value={categoryId}
                 options={[
@@ -670,7 +656,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>担当者</label>
-            {/* 🌟 修正: CustomSelect に置換 */}
             <CustomSelect
               value={assignee}
               options={assigneeList.map(m => ({ value: m.name, label: m.name }))}
@@ -757,7 +742,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         </div>
       </div>
 
-      {/* 🛠️ 修正: z-index 競合によるデッドロックを防ぐため、呼び出し先モーダルに現在の zIndexBase + 10 を引き渡す */}
       {showCloseConfirm && (
         <ConfirmDialog
           title="画面を閉じる確認"
@@ -771,7 +755,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         />
       )}
 
-      {/* 🛠️ 修正: クリア確認用モーダルにも同様の zIndexBase + 10 を注入 */}
       {showClearConfirm && (
         <ConfirmDialog
           title="入力内容のクリア"
