@@ -8,7 +8,9 @@
 -- ── 1. profiles UPDATE ポリシーを差し替え ────────────────────
 --
 -- 変更前: 本人のみ更新可
--- 変更後: 本人 OR admin ロールのユーザーが更新可
+-- 変更後: 本人 OR canAccessAdminSettings 権限を持つロールのユーザーが更新可
+--   - owner は roles テーブルに依存せず常に全権限を持つため個別に許可
+--   - それ以外は roles.base_permissions->canAccessAdminSettings で判定
 --
 -- USING    … 対象行を特定する条件（どの行を操作できるか）
 -- WITH CHECK … 書き込み後の値の検証（不正なロール昇格などを防ぐ）
@@ -18,22 +20,32 @@ DROP POLICY IF EXISTS "auth_update_profiles" ON profiles;
 CREATE POLICY "auth_update_profiles" ON profiles
   FOR UPDATE
   USING (
-    -- 本人
     auth.uid() = id
     OR
-    -- admin ロールのユーザー
-    (
-      SELECT role FROM profiles
-      WHERE id = auth.uid()
-    ) = 'admin'
+    EXISTS (
+      SELECT 1
+      FROM profiles p
+      LEFT JOIN roles r ON r.name = p.role
+      WHERE p.id = auth.uid()
+        AND (
+          p.role = 'owner'
+          OR (r.base_permissions->>'canAccessAdminSettings')::boolean = true
+        )
+    )
   )
   WITH CHECK (
     auth.uid() = id
     OR
-    (
-      SELECT role FROM profiles
-      WHERE id = auth.uid()
-    ) = 'admin'
+    EXISTS (
+      SELECT 1
+      FROM profiles p
+      LEFT JOIN roles r ON r.name = p.role
+      WHERE p.id = auth.uid()
+        AND (
+          p.role = 'owner'
+          OR (r.base_permissions->>'canAccessAdminSettings')::boolean = true
+        )
+    )
   );
 
 
