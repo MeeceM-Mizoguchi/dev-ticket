@@ -127,6 +127,8 @@ export function MinutesPage() {
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<MeetingMinute | null>(null);
   const [pendingActionsByMinute, setPendingActionsByMinute] = useState<Record<string, number>>({});
+  const [showExternalInput, setShowExternalInput] = useState(false);
+  const [externalInput, setExternalInput] = useState("");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
@@ -194,6 +196,8 @@ export function MinutesPage() {
     setAttendees(selected?.attendees ?? []);
     setContent(selected?.content ?? "");
     setImages(selected?.images ?? []);
+    setShowExternalInput(false);
+    setExternalInput("");
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleSave = useCallback((patch: Partial<{ title: string; meetingDate: string; attendees: string[]; content: string }>) => {
@@ -327,7 +331,7 @@ export function MinutesPage() {
                   </div>
                   <div style={{ flex: 1, minWidth: 200 }}>
                     <label style={{ fontSize: 10, fontWeight: 700, color: "#9E9690", display: "flex", alignItems: "center", gap: 4, marginBottom: 3 }}><Users style={{ width: 10, height: 10 }} />出席者</label>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
                       {(project?.members ?? []).map(member => {
                         const active = attendees.includes(member);
                         return (
@@ -342,6 +346,66 @@ export function MinutesPage() {
                           </button>
                         );
                       })}
+                      {attendees.filter(a => !(project?.members ?? []).includes(a)).map(external => (
+                        <span key={external} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 20, border: "1.5px solid #059669", background: "#ECFDF5", color: "#059669" }}>
+                          {external}
+                          {canEdit && (
+                            <button onClick={() => {
+                              const next = attendees.filter(a => a !== external);
+                              setAttendees(next);
+                              scheduleSave({ title, meetingDate, attendees: next, content });
+                            }} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", color: "#059669" }}>
+                              <X style={{ width: 10, height: 10 }} />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                      {canEdit && !showExternalInput && (
+                        <button onClick={() => setShowExternalInput(true)}
+                          style={{ width: 22, height: 22, borderRadius: "50%", border: "1.5px dashed rgba(26,23,20,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#9E9690" }}>
+                          <Plus style={{ width: 11, height: 11 }} />
+                        </button>
+                      )}
+                      {canEdit && showExternalInput && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <input
+                            autoFocus
+                            value={externalInput}
+                            onChange={e => setExternalInput(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === "Enter" && externalInput.trim()) {
+                                const name = externalInput.trim();
+                                if (!attendees.includes(name)) {
+                                  const next = [...attendees, name];
+                                  setAttendees(next);
+                                  scheduleSave({ title, meetingDate, attendees: next, content });
+                                }
+                                setExternalInput("");
+                                setShowExternalInput(false);
+                              } else if (e.key === "Escape") {
+                                setExternalInput("");
+                                setShowExternalInput(false);
+                              }
+                            }}
+                            placeholder="名前を入力..."
+                            style={{ padding: "3px 8px", fontSize: 11, border: "1.5px solid #059669", borderRadius: 20, outline: "none", fontFamily: "inherit", width: 100 }}
+                          />
+                          <button onClick={() => {
+                            const name = externalInput.trim();
+                            if (name && !attendees.includes(name)) {
+                              const next = [...attendees, name];
+                              setAttendees(next);
+                              scheduleSave({ title, meetingDate, attendees: next, content });
+                            }
+                            setExternalInput("");
+                            setShowExternalInput(false);
+                          }} style={{ padding: "3px 8px", fontSize: 11, fontWeight: 600, background: "#059669", color: "#fff", border: "none", borderRadius: 20, cursor: "pointer" }}>追加</button>
+                          <button onClick={() => { setExternalInput(""); setShowExternalInput(false); }}
+                            style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: "#9E9690" }}>
+                            <X style={{ width: 11, height: 11 }} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
