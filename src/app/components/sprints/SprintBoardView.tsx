@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight } from "lucide-react";
@@ -6,7 +6,7 @@ import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 
-// 🌟 追加: ステータスごとの進捗率（progress）を定義
+// ステータスごとの進捗率（progress）を定義
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100,
@@ -31,7 +31,6 @@ const STATUS_RANK: Record<TicketStatus, number> = {
   "stg-test": 4, "uat": 5, "done": 6, "closed": 7,
 };
 
-// progress === -1（保留中）/ -2（取下）はステータス列に関わらずカード表示上は専用列に振り分ける
 function effectiveStatus(ticket: SprintTicket): string {
   if (ticket.progress === -1) return "pending";
   if (ticket.progress === -2) return "withdrawn";
@@ -56,7 +55,6 @@ function validateDrop(
   const currentRank = STATUS_RANK[ticket.status] ?? 0;
   const newRank = STATUS_RANK[newStatus] ?? 0;
 
-  // in-review: 担当者のみ
   if (newStatus === "in-review") {
     if (ticket.assignee && ticket.assignee !== userName) {
       return {
@@ -66,7 +64,6 @@ function validateDrop(
     }
   }
 
-  // review-done へ in-review を経由せずに移動
   if (newStatus === "review-done" && currentRank < STATUS_RANK["in-review"]) {
     if (canSkipReview) {
       return {
@@ -82,7 +79,6 @@ function validateDrop(
     };
   }
 
-  // stg-test 以降へ review-done を経由せずに移動
   if (newRank >= STATUS_RANK["stg-test"] && currentRank < STATUS_RANK["review-done"]) {
     return {
       ticketId: ticket.id,
@@ -93,10 +89,9 @@ function validateDrop(
   return null;
 }
 
-// ── Draggable ticket card ──────────────────────────────────────────────────
 function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
   ticket: SprintTicket; sprintId: string; onSelect?: (t: SprintTicket) => void;
-  parentTicket?: SprintTicket; // 子チケットの場合に親チケット情報を渡す（ホバー表示用）
+  parentTicket?: SprintTicket;
 }) {
   const [{ isDragging }, drag] = useDrag<DragItem, void, { isDragging: boolean }>(() => ({
     type: DRAG_TYPE,
@@ -114,13 +109,11 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
 
   return (
     <div style={{ position: "relative" }}>
-      {/* 親チケット情報ツールチップ（子チケットのホバー時） */}
       {isChild && showParentTooltip && parentTicket && (
         <div style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, background: "#1A1714", color: "#FFF", borderRadius: 8, padding: "8px 10px", fontSize: 10, lineHeight: 1.5, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", pointerEvents: "none" }}>
           <div style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", marginBottom: 2 }}>親チケット</div>
           <div style={{ fontWeight: 700, fontSize: 10, color: "#059669" }}>{parentTicket.wbs}</div>
           <div style={{ fontSize: 10, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{parentTicket.title}</div>
-          {/* tooltip arrow */}
           <div style={{ position: "absolute", bottom: -5, left: 12, width: 10, height: 10, background: "#1A1714", transform: "rotate(45deg)", borderRadius: 2 }} />
         </div>
       )}
@@ -147,19 +140,17 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
   );
 }
 
-// ── Droppable status column ────────────────────────────────────────────────
 function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket, style: extraStyle }: {
   sprintId: string;
   col: typeof TICKET_STATUSES[number];
   tickets: SprintTicket[];
-  allTickets: SprintTicket[]; // 親チケット解決用の全チケットリスト
+  allTickets: SprintTicket[];
   onDrop: (item: DragItem, targetStatus: TicketStatus) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   style?: React.CSSProperties;
 }) {
   const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(() => ({
     accept: DRAG_TYPE,
-    // 保留中・取下はチケット詳細の専用ボタンでのみ切り替える運用のため、ドラッグ&ドロップでの移動先には含めない
     canDrop: item => item.sprintId === sprintId && item.currentStatus !== col.value && col.value !== "pending" && col.value !== "withdrawn",
     drop: item => onDrop(item, col.value),
     collect: m => ({ isOver: m.isOver(), canDrop: m.canDrop() }),
@@ -185,7 +176,6 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
   );
 }
 
-// ── Main component (exported) ──────────────────────────────────────────────
 function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate }: {
   sprints: Sprint[];
   loading?: boolean;
@@ -215,7 +205,6 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
   const headerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Keep selectedSprintId valid when sprints prop changes
   useEffect(() => {
     if (sprints.length && !sprints.find(s => s.id === selectedSprintId)) {
       setSelectedSprintId(sprints[0].id);
@@ -229,6 +218,19 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
     q.then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
   }, [userOrgId]);
 
+  // ボード用のフィルタリングされたステータス配列を取得するヘルパー関数
+  const getFilteredBoardStatuses = () => {
+    return TICKET_STATUSES.filter((col, idx) => {
+      const nextCol = TICKET_STATUSES[idx + 1];
+      if (col.value === "closed" && nextCol && nextCol.value === "waiting-release") {
+        return false;
+      }
+      return true;
+    });
+  };
+
+  const visibleStatuses = useMemo(() => getFilteredBoardStatuses(), []);
+
   const applyStatusUpdate = useCallback(async (
     ticketId: string, newStatus: TicketStatus, comment: string,
     reviewer?: string, srcFile?: File | null, srcUrl?: string
@@ -236,10 +238,9 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
     setSaving(true);
     try {
       if (isSupabaseEnabled) {
-        // 🌟 修正: status と一緒に、そのステータスに対応する progress（進捗率）もDBに保存する
         const updateData: Record<string, unknown> = {
           status: newStatus,
-          progress: STATUS_PROGRESS[newStatus] // ここを追加！
+          progress: STATUS_PROGRESS[newStatus]
         };
         if (newStatus === "in-review" && reviewer) updateData.reviewer_name = reviewer;
         await supabase!.from("sprint_tickets").update(updateData).eq("id", ticketId);
@@ -425,7 +426,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             style={{ position: "sticky", top: 0, overflow: "hidden", zIndex: 10, background: "#F5F6F8", marginBottom: 4 }}
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
-              {TICKET_STATUSES.map(col => {
+              {visibleStatuses.map(col => {
                 const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px" }}>
@@ -449,7 +450,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             }}
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
-              {TICKET_STATUSES.map(col => {
+              {visibleStatuses.map(col => {
                 const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
@@ -577,7 +578,6 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
               </button>
             </div>
 
-            {/* レビュースキップボタン（canSkipReview かつ in-review モーダル） */}
             {isReviewRequest && canSkipReview && (
               <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 16, paddingTop: 16 }}>
                 <button onClick={handleSkipFromModal} disabled={saving}
@@ -596,7 +596,8 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
   );
 }
 
-export function SprintBoardView(props: {
+// 🌟 修正: 読み込みエラーを完全に防止するデフォルトエクスポート宣言
+export default function SprintBoardView(props: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
