@@ -8,7 +8,7 @@ import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { Project, Sprint, SprintTicket, SprintView, AccessLevel } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
-import { SprintBoardView } from "@/app/components/sprints/SprintBoardView";
+import SprintBoardView from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { MyFilterModal } from "@/app/components/sprints/MyFilterModal";
@@ -34,11 +34,9 @@ export function SprintPage() {
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
-  // owner/admin のみ全権限バイパス。PM はプロジェクト権限設定に従う
   const isAdmin = userRole === "owner" || userRole === "admin";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
-  // レコードあり → 全員レコード優先。レコードなし → admin/PM はロール権限、それ以外は権限なし
   const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
     ? (projectPermissions ?? (isAdminOrPM ? userPermissions : NO_PERMS))
@@ -69,7 +67,7 @@ export function SprintPage() {
   useEffect(() => {
     if (isParentNav) {
       setIsParentNav(false);
-      }
+    }
   }, [selectedTicketWbs]);
 
   const refreshSprints = () => {
@@ -84,7 +82,6 @@ export function SprintPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) {
-      // mock mode: find by slug or fall back
       const mock = PROJECTS.find(p => p.slug === projectSlug?.toUpperCase());
       if (mock) { setProject(mock); setSprints(SPRINTS.filter(s => s.projectId === mock.id)); }
       setLoading(false);
@@ -93,7 +90,6 @@ export function SprintPage() {
     if (!projectSlug) { setLoading(false); return; }
 
     const lookupProject = async () => {
-      // Try slug lookup first (new projects), then fall back to ID (old projects without slug)
       const { data: bySlugRows } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
       const p = bySlugRows?.[0]
         ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
@@ -115,7 +111,7 @@ export function SprintPage() {
     if (!isSupabaseEnabled || !projectId) return;
     const id = setInterval(refreshSprints, 60000);
     return () => clearInterval(id);
-  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   useEffect(() => {
     const onPop = () => {
@@ -165,25 +161,24 @@ export function SprintPage() {
   if (!loading && !project) return <Navigate to="/projects" replace />;
 
   if (project) {
-    // 組織が設定済みの場合、自分の組織と異なるプロジェクトにはアクセス不可（ownerは除く）
     const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
     const isMember = sameOrg && (isAdminOrPM || (project.members ?? []).includes(userName));
     if (!isMember) return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
-      <div style={{ textAlign: "center" as const, maxWidth: 380 }}>
-        <div style={{ width: 56, height: 56, borderRadius: 16, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
-          <Lock style={{ width: 24, height: 24, color: "#DC2626" }} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
+        <div style={{ textAlign: "center" as const, maxWidth: 380 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+            <Lock style={{ width: 24, height: 24, color: "#DC2626" }} />
+          </div>
+          <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", marginBottom: 10, fontFamily: "var(--font-heading)" }}>アクセスできません</h2>
+          <p style={{ fontSize: 13, color: "#9E9690", lineHeight: 1.65, marginBottom: 24 }}>
+            このプロジェクトからアサイン解除されたため、<br />アクセスできません。
+          </p>
+          <button onClick={() => navigate("/projects")}
+            style={{ padding: "10px 28px", background: "#059669", color: "#FFF", border: "none", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            プロジェクト一覧に戻る
+          </button>
         </div>
-        <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", marginBottom: 10, fontFamily: "var(--font-heading)" }}>アクセスできません</h2>
-        <p style={{ fontSize: 13, color: "#9E9690", lineHeight: 1.65, marginBottom: 24 }}>
-          このプロジェクトからアサイン解除されたため、<br />アクセスできません。
-        </p>
-        <button onClick={() => navigate("/projects")}
-          style={{ padding: "10px 28px", background: "#059669", color: "#FFF", border: "none", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-          プロジェクト一覧に戻る
-        </button>
       </div>
-    </div>
     );
   }
 
@@ -195,7 +190,6 @@ export function SprintPage() {
 
   return (
     <div style={{ padding: "24px", minWidth: 1100 }}>
-      {/* ── パンくず（SprintDetailPageと同構造・同高さ） ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -204,7 +198,6 @@ export function SprintPage() {
         <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
       </div>
 
-      {/* ── タイトル行: h1左・ProjectSubNav右 ── */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -228,7 +221,6 @@ export function SprintPage() {
         />
       </div>
 
-      {/* ── ビュー切替・新規スプリント ── */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
         <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3 }}>
           {viewBtns.map(({ mode, label, Icon }) => (
@@ -315,7 +307,6 @@ export function SprintPage() {
         <MyFilterModal
           onClose={() => setMyFilterSprintId(null)}
           onApply={(filters) => {
-            // TODO: 将来的にここで MyFilterModal から受け取ったフィルタを SprintListView に適用する処理を実装
             console.log("Apply filter for sprint:", myFilterSprintId, filters);
             setMyFilterSprintId(null);
           }}
@@ -333,19 +324,17 @@ export function SprintPage() {
             projectSlug={projectSlug}
             anchor={anchor}
             onClose={() => {
-              const currentTicketWbs = selectedTicketWbs; // This is the ticket being closed (child or initial)
-              const parentWbsToRestore = backgroundParentWbs; // This is the parent's WBS if a child was opened from it
+              const currentTicketWbs = selectedTicketWbs;
+              const parentWbsToRestore = backgroundParentWbs;
 
-              setClosedHighlightWbs(currentTicketWbs); // Highlight the ticket that was just closed
-              setBackgroundParentWbs(null); // Clear the background parent WBS
+              setClosedHighlightWbs(currentTicketWbs);
+              setBackgroundParentWbs(null);
 
               if (parentWbsToRestore) {
-                // If there was a parent ticket in the background, navigate back to it without animation
                 window.history.pushState(null, '', `/${projectSlug}/${parentWbsToRestore}`);
                 setSelectedTicketWbs(parentWbsToRestore);
-                setIsParentNav(true); // Signal to force no animation for the parent panel
+                setIsParentNav(true);
               } else {
-                // No parent in background, so close the panel entirely
                 window.history.pushState(null, '', `/${projectSlug}`);
                 setSelectedTicketWbs(null);
               }
@@ -368,7 +357,6 @@ export function SprintPage() {
                 const prevWbs = selectedTicketWbs;
                 window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
                 if (t.wbs === backgroundParentWbs) {
-                  // strip/Esc: 背景の親に戻る → 背景解除
                   setBackgroundParentWbs(null);
                   setIsParentNav(true);
                   setClosedHighlightWbs(prevWbs);
@@ -378,7 +366,6 @@ export function SprintPage() {
                     });
                   }
                 } else if (selectedTicket && t.parentId === selectedTicket.id) {
-                  // 親から子を開く → 現在チケットを背景に
                   setBackgroundParentWbs(selectedTicketWbs);
                   setIsParentNav(false);
                   setClosedHighlightWbs(null);
