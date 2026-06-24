@@ -80,7 +80,7 @@ export function PermissionsPage() {
     // Load base tables first, then group_members separately with fallback
     Promise.all([
       (() => { const isOwner = userRole === "owner"; let q = supabase!.from("permission_groups").select("*").order("id"); if (isOwner) { if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); } else if (userOrgId) { q = (q as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`); } return q; })(),
-      (() => { const isOwner = userRole === "owner"; let q = supabase!.from("profiles").select("*").order("name"); if (selectedOrgId) { if (isOwner && userId) { q = (q as any).or(`organization_id.eq.${selectedOrgId},id.eq.${userId}`); } else { q = q.eq("organization_id", selectedOrgId); } } return q; })(),
+      (() => { const isOwner = userRole === "owner"; let q = supabase!.from("profiles").select("*").order("name"); if (isOwner) { if (selectedOrgId) q = (q as any).or(`organization_id.eq.${selectedOrgId},id.eq.${userId}`); } else if (userOrgId) { q = q.eq("organization_id", userOrgId); } return q; })(),
       (() => { const isOwner = userRole === "owner"; let q = supabase!.from("projects").select("*").order("id"); if (isOwner) { if (selectedOrgId) q = q.eq("organization_id", selectedOrgId); } else if (userOrgId) { q = q.or(`organization_id.eq.${userOrgId},organization_id.is.null`); } return q; })(),
     ]).then(([{ data: gData }, { data: mData }, { data: pData }]) => {
       if (gData) setGroups(gData as PermissionGroup[]);
