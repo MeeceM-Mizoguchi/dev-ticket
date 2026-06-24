@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -273,6 +273,7 @@ export function WikiPage() {
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
   
   const [movingNodeTarget, setMovingNodeTarget] = useState<WikiPageType | null>(null);
+  const [sidebarSearch, setSidebarSearch] = useState("");
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -495,23 +496,39 @@ export function WikiPage() {
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
-        <div 
-          onDragOver={(e) => { if (!canEdit) return; e.preventDefault(); setIsTreeDragOverRoot(true); }}
+        <div
+          onDragOver={(e) => { if (!canEdit || sidebarSearch) return; e.preventDefault(); setIsTreeDragOverRoot(true); }}
           onDragLeave={() => setIsTreeDragOverRoot(false)}
           onDrop={async (e) => {
-            if (!canEdit) return;
+            if (!canEdit || sidebarSearch) return;
             e.preventDefault();
             setIsTreeDragOverRoot(false);
             const draggedId = e.dataTransfer.getData("text/plain");
             if (draggedId) { await handleMoveNode(draggedId, null); }
           }}
-          style={{ 
-            width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, 
-            border: isTreeDragOverRoot ? "1px dashed #059669" : "1px solid rgba(26,23,20,0.07)", 
+          style={{
+            width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14,
+            border: isTreeDragOverRoot ? "1px dashed #059669" : "1px solid rgba(26,23,20,0.07)",
             padding: 10, overflowY: "auto", transition: "all 0.15s"
           }}
         >
-          {canEdit && (
+          {/* 検索バー */}
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
+            <input
+              value={sidebarSearch}
+              onChange={e => setSidebarSearch(e.target.value)}
+              placeholder="検索..."
+              style={{ width: "100%", boxSizing: "border-box", padding: "6px 26px 6px 26px", fontSize: 11, background: "#F4F5F6", border: `1px solid ${sidebarSearch ? "rgba(5,150,105,0.25)" : "transparent"}`, borderRadius: 7, outline: "none", fontFamily: "inherit" }}
+            />
+            {sidebarSearch && (
+              <button onClick={() => setSidebarSearch("")} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 2, color: "#A09790", display: "flex", alignItems: "center" }}>
+                <X style={{ width: 10, height: 10 }} />
+              </button>
+            )}
+          </div>
+
+          {canEdit && !sidebarSearch && (
             <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
               <button onClick={() => handleAddItem(null, false)}
                 style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -524,7 +541,37 @@ export function WikiPage() {
               </button>
             </div>
           )}
-          {tree.length === 0 ? (
+          {sidebarSearch ? (
+            (() => {
+              const q = sidebarSearch.toLowerCase();
+              const matched = pages.filter(p => !p.isFolder && (p.title.toLowerCase().includes(q) || (p.content ?? "").toLowerCase().includes(q)));
+              if (matched.length === 0) return (
+                <div style={{ padding: "24px 8px", textAlign: "center" }}>
+                  <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致するページがありません</p>
+                </div>
+              );
+              return (
+                <div>
+                  {matched.map(page => {
+                    const parent = page.parentId ? pages.find(p => p.id === page.parentId) : null;
+                    const isSelected = selectedId === page.id;
+                    return (
+                      <div key={page.id} onClick={() => handleSelectPage(page.id)}
+                        style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "7px 8px", borderRadius: 7, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 1 }}
+                        onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                        onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                        <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 1 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{page.title || "無題のページ"}</div>
+                          {parent && <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>{parent.title || "無題のフォルダ"}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()
+          ) : tree.length === 0 ? (
             <div style={{ padding: "24px 8px", textAlign: "center" }}>
               <BookOpen style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
               <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>ページがありません</p>

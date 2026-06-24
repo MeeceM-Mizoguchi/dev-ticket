@@ -7,7 +7,7 @@ function toMinuteSlug(createdAt: string | null | undefined): string {
   if (!m) return "";
   return `${m[1]}${m[2]}${m[3]}-${m[4]}${m[5]}${m[6]}`;
 }
-import { FolderKanban, ChevronRight, Plus, FileText, Trash2, Users, Check, X } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, FileText, Trash2, Users, Check, X, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -132,6 +132,7 @@ export function MinutesPage() {
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
+  const [sidebarSearch, setSidebarSearch] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
@@ -274,6 +275,22 @@ export function MinutesPage() {
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
         <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto" }}>
+          {/* 検索バー */}
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
+            <input
+              value={sidebarSearch}
+              onChange={e => setSidebarSearch(e.target.value)}
+              placeholder="検索..."
+              style={{ width: "100%", boxSizing: "border-box", padding: "6px 26px 6px 26px", fontSize: 11, background: "#F4F5F6", border: `1px solid ${sidebarSearch ? "rgba(5,150,105,0.25)" : "transparent"}`, borderRadius: 7, outline: "none", fontFamily: "inherit" }}
+            />
+            {sidebarSearch && (
+              <button onClick={() => setSidebarSearch("")} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 2, color: "#A09790", display: "flex", alignItems: "center" }}>
+                <X style={{ width: 10, height: 10 }} />
+              </button>
+            )}
+          </div>
+
           {canEdit && (
             <button onClick={handleAdd}
               style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 6, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -285,7 +302,16 @@ export function MinutesPage() {
               <FileText style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
               <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>議事録がありません</p>
             </div>
-          ) : minutes.map(m => (
+          ) : (() => {
+            const filteredMinutes = sidebarSearch
+              ? minutes.filter(m => (m.title || "").toLowerCase().includes(sidebarSearch.toLowerCase()) || (m.content ?? "").toLowerCase().includes(sidebarSearch.toLowerCase()))
+              : minutes;
+            if (sidebarSearch && filteredMinutes.length === 0) return (
+              <div style={{ padding: "24px 8px", textAlign: "center" }}>
+                <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致する議事録がありません</p>
+              </div>
+            );
+            return filteredMinutes.map(m => (
             <div key={m.id} onClick={() => navigate(`/${projectSlug ?? project?.slug}/minutes/${toMinuteSlug(m.createdAt) || m.id}`)}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 7, cursor: "pointer", background: selectedId === m.id ? "#ECFDF5" : "transparent" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -297,7 +323,8 @@ export function MinutesPage() {
                   style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />
               )}
             </div>
-          ))}
+          ));
+          })()}
         </div>
 
         <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
