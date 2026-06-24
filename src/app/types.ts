@@ -128,11 +128,16 @@ export interface Sprint {
   status: SprintStatus; startDate: string; endDate: string;
   tickets: SprintTicket[]; identifier: string;
 }
+export interface EnvMemo {
+  name: string;
+  url: string;
+}
 export interface Project {
   id: string; slug: string; wbsPrefix: string;
   name: string; client: string; status: ProjectStatus;
   startDate: string; endDate: string; members: string[]; groupIds: number[];
   done: number; inProgress: number; todo: number; description: string;
+  envMemos: EnvMemo[];
   startedAt?: string | null;
   reviewRequestedAt?: string | null;
   reviewApprovedAt?: string | null;

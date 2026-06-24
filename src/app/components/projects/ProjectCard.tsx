@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, Calendar, CheckCircle2, Circle, Download, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
+import { Building2, Calendar, CheckCircle2, Circle, Download, Globe, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
 import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -7,7 +7,7 @@ import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { ProjectActualHours } from "@/app/components/projects/ProjectActualHours";
 
 export function ProjectCard({
-  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload, onEditTags,
+  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo,
 }: {
   project: Project;
   onNavigate: () => void;
@@ -15,7 +15,8 @@ export function ProjectCard({
   onDelete?: () => void;
   onCategorySettings?: () => void;
   onDownload?: () => void;
-  onEditTags?: () => void; // 🌟 追加: タグ編集イベントハンドラー
+  onEditTags?: () => void;
+  onEnvMemo?: () => void;
 }) {
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
@@ -77,13 +78,16 @@ export function ProjectCard({
                 {onCategorySettings && (
                   <MenuItem icon={<Tags style={{ width: 12, height: 12 }} />} label="分類設定" onClick={() => { setMenuOpen(false); onCategorySettings(); }} color="#4B5563" />
                 )}
+                {onEnvMemo && (
+                  <MenuItem icon={<Globe style={{ width: 12, height: 12 }} />} label="設定" onClick={() => { setMenuOpen(false); onEnvMemo(); }} color="#0284C7" />
+                )}
                 {onDownload && (
                   <MenuItem icon={<Download style={{ width: 12, height: 12 }} />} label="CSVダウンロード" onClick={() => { setMenuOpen(false); onDownload(); }} color="#059669" />
                 )}
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
                 )}
-                {!onEdit && !onDelete && !onCategorySettings && !onDownload && !onEditTags && (
+                {!onEdit && !onDelete && !onCategorySettings && !onDownload && !onEditTags && !onEnvMemo && (
                   <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
                 )}
               </div>

@@ -17,7 +17,7 @@ import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog"
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
-import { EditProjectIdentifiersDialog } from "@/app/components/projects/EditProjectIdentifiersDialog";
+import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 
 export function SprintPage() {
@@ -210,7 +210,18 @@ export function SprintPage() {
               <Settings2 style={{ width: 13, height: 13 }} />
             </button>
           </div>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
+            <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
+            {project?.envMemos?.filter(m => m.url).map((m, i) => (
+              <a key={i} href={m.url} target="_blank" rel="noopener noreferrer"
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none", transition: "background 0.15s" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                {m.name || m.url}
+              </a>
+            ))}
+          </div>
         </div>
         <ProjectSubNav
           projectSlug={projectSlug ?? project?.slug ?? ""}
@@ -279,7 +290,7 @@ export function SprintPage() {
           onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
       )}
       {showEditIdentifiers && project && (
-        <EditProjectIdentifiersDialog
+        <ProjectSettingsDialog
           project={project}
           onClose={() => setShowEditIdentifiers(false)}
           onUpdated={(newSlug) => {
