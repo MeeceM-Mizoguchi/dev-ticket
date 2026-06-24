@@ -368,7 +368,7 @@ export function SprintDetailPage() {
 
   // 組織チェック: organization_id が設定されていて一致しない場合はアクセス不可（ownerは除く）
   const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
-  const isMemberOfProject = isAdminOrPM || (project.members ?? []).includes(userName);
+  const isMemberOfProject = userRole === "owner" || (project.members ?? []).includes(userName);
   if (!sameOrg || !isMemberOfProject) return <Navigate to="/projects" replace />;
 
   const selectedTicket = ticketWbs

@@ -468,6 +468,7 @@ export function WikiPage() {
   const pageCount = useMemo(() => pages.filter(p => !p.isFolder).length, [pages]);
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
+  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
   if (!loading && effectiveWikiPerm === "none") return <Navigate to="/dashboard" replace />;
 
   return (

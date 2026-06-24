@@ -186,7 +186,7 @@ export function SprintPage() {
 
   if (project) {
     const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
-    const isMember = sameOrg && (isAdminOrPM || (project.members ?? []).includes(userName));
+    const isMember = userRole === "owner" || (sameOrg && (project.members ?? []).includes(userName));
     if (!isMember) return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
         <div style={{ textAlign: "center" as const, maxWidth: 380 }}>
