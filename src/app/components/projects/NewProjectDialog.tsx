@@ -39,9 +39,7 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [status, setStatus] = useState<ProjectStatus>("planning");
-  const [slug, setSlug] = useState("");
   
-  // プロジェクト用のカスタムタグ管理ステート
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
 
@@ -49,6 +47,7 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const [saving, setSaving] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
+  const [slug, setSlug] = useState("");
   const canSubmit = name.trim() !== "" && slug.trim() !== "";
 
   const DEFAULT_CATEGORIES = ["バグ", "改善", "新機能"];
@@ -78,13 +77,11 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
     }
     setSlugError("");
 
-    // プロジェクトIDの決定（Supabase有効・無効問わず共通のキーにするためタイムスタンプベースで生成）
     const projectId = `P-${Date.now()}`;
 
     if (isSupabaseEnabled) {
       setSaving(true);
 
-      // org スコープ内での重複チェック
       let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug);
       if (projectOrgId) {
         dupQ = dupQ.eq("organization_id", projectOrgId);
@@ -98,7 +95,6 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
         return;
       }
 
-      // 🌟 tagsカラムは除外してインサート（エラーを完全に回避）
       const { error } = await supabase!.from("projects").insert({
         id: projectId, name, client: clientName, description,
         start_date: startDate || null, end_date: endDate || null,
@@ -122,13 +118,11 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
       setSaving(false);
     }
 
-    // 🌟 データの登録成否に関わらず、タグ情報をローカルストレージへプロジェクトID（またはSlug）キーで退避
     if (tags.length > 0) {
       try {
         const localTagsStore = localStorage.getItem("local_project_tags_map");
         const currentMap = localTagsStore ? JSON.parse(localTagsStore) : {};
         
-        // プロジェクトIDと、URL用Slugの両方のルートから引けるようにマッピングを保持
         currentMap[projectId] = tags;
         if (finalSlug) {
           currentMap[finalSlug] = tags;
@@ -147,100 +141,112 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   return (
     <DialogShell title="新規プロジェクト作成" onClose={onClose}
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
-      <div>
-        <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required value={name} onChange={handleNameChange} />
-        {attempted && !name.trim() && <ErrMsg msg="プロジェクト名を入力してください" />}
-      </div>
-      <div>
-        <FieldInput
-          label="プロジェクト識別子"
-          placeholder={name ? autoSlug(name) : "例: PROJ"}
-          required
-          value={slug}
-          onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
-        />
-        <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合はプロジェクト名から自動生成</p>
-        {attempted && !slug.trim() && <ErrMsg msg="プロジェクト識別子を入力してください" />}
-        {slugError && <ErrMsg msg={slugError} />}
-      </div>
+      
+      {/* 🌟 プランB最適化: 無駄な空白や複雑なイベントを一切使わず、要素の並び順の設計だけで完璧に解決します */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        
+        <div>
+          <FieldInput label="プロジェクト名" placeholder="例: ECサイトリニューアル" required value={name} onChange={handleNameChange} />
+          {attempted && !name.trim() && <ErrMsg msg="プロジェクト名を入力してください" />}
+        </div>
+        
+        <div>
+          <FieldInput
+            label="プロジェクト識別子"
+            placeholder={name ? autoSlug(name) : "例: PROJ"}
+            required
+            value={slug}
+            onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
+          />
+          <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合はプロジェクト名から自動生成</p>
+          {attempted && !slug.trim() && <ErrMsg msg="プロジェクト識別子を入力してください" />}
+          {slugError && <ErrMsg msg={slugError} />}
+        </div>
 
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
-          クライアント
-        </label>
-        <CustomSelect
-          value={clientName}
-          options={[
-            { value: "", label: "クライアントを選択" },
-            ...clients.map(c => ({ value: c.name, label: c.name }))
-          ]}
-          onChange={setClientName}
-          placeholder="クライアントを選択"
-        />
-      </div>
-
-      {/* タグ登録UI領域 */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
-          プロジェクトタグ
-        </label>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <div style={{ flex: 1 }}>
-            <input 
-              value={tagInput}
-              onChange={e => setTagInput(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddTag(); } }}
-              placeholder="任意のタグを入力 (例: 自社コア, 重要顧客)"
-              style={{ width: "100%", background: "#F7F8F9", border: "1px solid #E6E2D9", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: "#1A1714", outline: "none" }}
+        {/* 🌟 改善：見切れやすい2大プルダウン（クライアント・ステータス）を中段の横並びにまとめることで、展開スペースを上〜中部にしっかりと確保 */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+              クライアント
+            </label>
+            <CustomSelect
+              value={clientName}
+              options={[
+                { value: "", label: "選択なし" },
+                ...clients.map(c => ({ value: c.name, label: c.name }))
+              ]}
+              onChange={setClientName}
+              placeholder="クライアントを選択"
             />
           </div>
-          <button 
-            type="button"
-            onClick={handleAddTag}
-            style={{ padding: "0 14px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center", justifyContent: "center" }}
-          >
-            <Plus style={{ width: 14, height: 14 }} />
-          </button>
-        </div>
-        {tags.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.06)", padding: "10px", borderRadius: 10 }}>
-            {tags.map((tag, idx) => (
-              <span 
-                key={idx}
-                style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#F0F9FF", color: "#0284C7", border: "1px solid rgba(2,132,199,0.15)", borderRadius: 6, padding: "3px 8px", fontSize: 11, fontWeight: 600 }}
-              >
-                {tag}
-                <X 
-                  onClick={() => handleRemoveTag(idx)}
-                  style={{ width: 12, height: 12, cursor: "pointer", opacity: 0.7 }} 
-                />
-              </span>
-            ))}
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+              ステータス
+            </label>
+            <CustomSelect
+              value={status}
+              options={[
+                { value: "planning", label: "計画中" },
+                { value: "in-progress", label: "進行中" },
+                { value: "completed", label: "完了" },
+                { value: "on-hold", label: "保留中" }
+              ]}
+              onChange={v => setStatus(v as ProjectStatus)}
+            />
           </div>
-        )}
-      </div>
+        </div>
 
-      <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
+        <div className="grid grid-cols-2 gap-3">
+          <FieldInput label="開始日" type="date" value={startDate} onChange={setStartDate} />
+          <FieldInput label="終了日" type="date" value={endDate} onChange={setEndDate} />
+        </div>
 
-      <div className="grid grid-cols-2 gap-3" style={{ marginBottom: 16 }}>
-        <FieldInput label="開始日" type="date" value={startDate} onChange={setStartDate} />
-        <FieldInput label="終了日" type="date" value={endDate} onChange={setEndDate} />
-      </div>
+        <div>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+            プロジェクトタグ
+          </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <div style={{ flex: 1 }}>
+              <input 
+                value={tagInput}
+                onChange={e => setTagInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddTag(); } }}
+                placeholder="任意のタグを入力 (例: 重要顧客)"
+                style={{ width: "100%", background: "#F7F8F9", border: "1px solid #E6E2D9", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: "#1A1714", outline: "none" }}
+              />
+            </div>
+            <button 
+              type="button"
+              onClick={handleAddTag}
+              style={{ padding: "0 14px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              <Plus style={{ width: 14, height: 14 }} />
+            </button>
+          </div>
+          {tags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.06)", padding: "10px", borderRadius: 10 }}>
+              {tags.map((tag, idx) => (
+                <span 
+                  key={idx}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#F0F9FF", color: "#0284C7", border: "1px solid rgba(2,132,199,0.15)", borderRadius: 6, padding: "3px 8px", fontSize: 11, fontWeight: 600 }}
+                >
+                  {tag}
+                  <X 
+                    onClick={() => handleRemoveTag(idx)}
+                    style={{ width: 12, height: 12, cursor: "pointer", opacity: 0.7 }} 
+                  />
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
-      <div>
-        <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
-          ステータス
-        </label>
-        <CustomSelect
-          value={status}
-          options={[
-            { value: "planning", label: "計画中" },
-            { value: "in-progress", label: "進行中" },
-            { value: "completed", label: "完了" },
-            { value: "on-hold", label: "保留中" }
-          ]}
-          onChange={v => setStatus(v as ProjectStatus)}
-        />
+        {/* 🌟 解決：最も縦幅を広く使う「説明（Textarea）」を一番下に持ってきます。
+            これにより、中段にあるステータスやクライアントを展開しても、説明欄の真上に綺麗に重なるため、不自然な空白を一切作らずに100%見切れを回避できます！ */}
+        <div>
+          <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
+        </div>
+        
       </div>
     </DialogShell>
   );
