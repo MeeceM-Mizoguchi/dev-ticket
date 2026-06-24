@@ -27,9 +27,10 @@ function formatDate(d: string) {
 
 // ─── アクション項目 ─────────────────────────────────────────
 function ActionItemsPanel({
-  minuteId, projectId, projectSlug, members, canEdit,
+  minuteId, projectId, projectSlug, members, canEdit, onPendingCountChange,
 }: {
   minuteId: string; projectId: string; projectSlug: string; members: string[]; canEdit: boolean;
+  onPendingCountChange?: (count: number) => void;
 }) {
   const [items, setItems] = useState<ActionMemo[]>([]);
   const [text, setText] = useState("");
@@ -42,6 +43,10 @@ function ActionItemsPanel({
   }, [minuteId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    onPendingCountChange?.(items.filter(i => !i.isDone).length);
+  }, [items, onPendingCountChange]);
 
   const handleAdd = async () => {
     if (!text.trim() || !assignee) return;
@@ -70,7 +75,7 @@ function ActionItemsPanel({
       {items.length === 0 ? (
         <p style={{ fontSize: 11, color: "#D4CEC8", marginBottom: 10 }}>なし</p>
       ) : (
-        <div style={{ marginBottom: 10 }}>
+        <div style={{ marginBottom: 10, maxHeight: 90, overflowY: "auto" }}>
           {items.map(item => (
             <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid rgba(26,23,20,0.05)" }}>
               <button onClick={() => handleToggle(item)}
@@ -121,6 +126,7 @@ export function MinutesPage() {
   const [content, setContent] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<MeetingMinute | null>(null);
+  const [pendingActionsByMinute, setPendingActionsByMinute] = useState<Record<string, number>>({});
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
@@ -130,18 +136,31 @@ export function MinutesPage() {
   const canEdit = effectiveMinutesPerm === "edit";
   const { open: openPreview } = usePreviewPanel();
 
+  const handlePendingCountChange = useCallback((count: number) => {
+    if (!selectedId) return;
+    setPendingActionsByMinute(prev => ({ ...prev, [selectedId]: count }));
+  }, [selectedId]);
+
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
     setProject(mapProject(p));
-    const [{ data }, permResult] = await Promise.all([
+    const [{ data }, permResult, { data: actionData }] = await Promise.all([
       supabase!.from("meeting_minutes").select("*").eq("project_id", p.id).order("meeting_date", { ascending: false }),
       isAdminRole ? Promise.resolve({ data: null }) :
         supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
+      supabase!.from("action_memos").select("meeting_minute_id, is_done").eq("project_id", p.id),
     ]);
     setMinutes((data ?? []).map(mapMeetingMinute));
+    const pendingMap: Record<string, number> = {};
+    for (const a of actionData ?? []) {
+      if (!a.is_done && a.meeting_minute_id) {
+        pendingMap[a.meeting_minute_id] = (pendingMap[a.meeting_minute_id] ?? 0) + 1;
+      }
+    }
+    setPendingActionsByMinute(pendingMap);
 
     if (isAdminRole) {
       setEffectiveMinutesPerm("edit");
@@ -268,6 +287,10 @@ export function MinutesPage() {
                 <p style={{ fontSize: 12, fontWeight: selectedId === m.id ? 700 : 500, color: selectedId === m.id ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</p>
                 <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>{formatDate(m.meetingDate)}</p>
               </div>
+              {(pendingActionsByMinute[m.id] ?? 0) > 0 && (
+                <span title={`未完了アクション ${pendingActionsByMinute[m.id]} 件`}
+                  style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />
+              )}
             </div>
           ))}
         </div>
@@ -340,7 +363,7 @@ export function MinutesPage() {
                     if (error || !data) return "";
                     return supabase!.storage.from("ticket-images").getPublicUrl(path).data.publicUrl;
                   } : undefined} />
-                <ActionItemsPanel minuteId={selected.id} projectId={project.id} projectSlug={projectSlug ?? project.slug} members={project.members} canEdit={canEdit} />
+                <ActionItemsPanel minuteId={selected.id} projectId={project.id} projectSlug={projectSlug ?? project.slug} members={project.members} canEdit={canEdit} onPendingCountChange={handlePendingCountChange} />
               </div>
             </>
           )}
