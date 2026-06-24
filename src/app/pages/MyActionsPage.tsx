@@ -1154,9 +1154,30 @@ export function MyActionsPage() {
       const filterByOrg = (tickets: any[]) =>
         tickets.filter((t: any) => accessibleSprintIds.has(t.sprint_id));
 
-      const [aRes, rRes, acRes, rcRes] = await Promise.all([
+      // assignee(単数)とassignees(配列)を別クエリに分けてマージ
+      // .or()内のcs.{}フィルターがPostgRESTで正しく動作しないケースを回避
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mergeById = (a: any[], b: any[]): any[] => {
+        const seen = new Set<string>();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result: any[] = [];
+        for (const t of [...a, ...b]) {
+          if (!seen.has(t.id)) { seen.add(t.id); result.push(t); }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return result.sort((x: any, y: any) => {
+          const d = (x.created_at || "").localeCompare(y.created_at || "");
+          return d !== 0 ? d : x.id.localeCompare(y.id);
+        });
+      };
+
+      const [a1Res, a2Res, rRes, ac1Res, ac2Res, rcRes] = await Promise.all([
         supabase!.from("sprint_tickets").select("*")
-          .or(`assignee.eq.${userName},assignees.cs.{${userName}}`)
+          .eq("assignee", userName)
+          .not("status", "in", '("done","closed")')
+          .order("created_at", { ascending: true }).order("id", { ascending: true }),
+        supabase!.from("sprint_tickets").select("*")
+          .contains("assignees", [userName])
           .not("status", "in", '("done","closed")')
           .order("created_at", { ascending: true }).order("id", { ascending: true }),
         supabase!.from("sprint_tickets").select("*")
@@ -1164,7 +1185,11 @@ export function MyActionsPage() {
           .not("status", "in", '("done","closed")')
           .order("created_at", { ascending: true }).order("id", { ascending: true }),
         supabase!.from("sprint_tickets").select("*")
-          .or(`assignee.eq.${userName},assignees.cs.{${userName}}`)
+          .eq("assignee", userName)
+          .eq("status", "closed")
+          .order("created_at", { ascending: true }).order("id", { ascending: true }),
+        supabase!.from("sprint_tickets").select("*")
+          .contains("assignees", [userName])
           .eq("status", "closed")
           .order("created_at", { ascending: true }).order("id", { ascending: true }),
         supabase!.from("sprint_tickets").select("*")
@@ -1173,9 +1198,9 @@ export function MyActionsPage() {
           .order("created_at", { ascending: true }).order("id", { ascending: true }),
       ]);
 
-      setAllAssigned(filterByOrg(aRes.data ?? []).map(toAction));
+      setAllAssigned(filterByOrg(mergeById(a1Res.data ?? [], a2Res.data ?? [])).map(toAction));
       setAllReview(filterByOrg(rRes.data ?? []).map(toAction));
-      setClosedAssigned(filterByOrg(acRes.data ?? []).map(toAction));
+      setClosedAssigned(filterByOrg(mergeById(ac1Res.data ?? [], ac2Res.data ?? [])).map(toAction));
       setClosedReview(filterByOrg(rcRes.data ?? []).map(toAction));
     } catch (err) {
       console.error("[MyActionsPage] load failed:", err);
