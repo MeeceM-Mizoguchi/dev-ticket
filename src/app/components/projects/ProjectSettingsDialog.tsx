@@ -119,34 +119,47 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
               <p style={{ fontSize: 12, color: "#B0A9A4" }}>環境URLを追加できます（本番・テスト・ステージングなど）</p>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {envMemos.map((memo, idx) => (
-                <div key={idx} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                  <div style={{ flex: "0 0 120px" }}>
-                    <label className={labelCls}>項目名</label>
-                    <input
+                <div key={idx} style={{ background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "10px 10px 8px" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ flex: "0 0 120px" }}>
+                      <label className={labelCls}>項目名</label>
+                      <input
+                        className={inputCls}
+                        placeholder="例: 本番環境"
+                        value={memo.name}
+                        onChange={e => updateMemo(idx, "name", e.target.value)}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label className={labelCls}>URL</label>
+                      <input
+                        className={inputCls}
+                        placeholder="https://example.com"
+                        value={memo.url}
+                        onChange={e => updateMemo(idx, "url", e.target.value)}
+                      />
+                    </div>
+                    <button
+                      onClick={() => removeMemo(idx)}
+                      style={{ marginTop: 22, flexShrink: 0, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.15)", borderRadius: 7, cursor: "pointer", color: "#DC2626", transition: "background 0.15s" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEE2E2"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}>
+                      <Minus style={{ width: 11, height: 11 }} />
+                    </button>
+                  </div>
+                  <div style={{ marginTop: 6 }}>
+                    <label className={labelCls}>メモ（ログイン情報・注意点など）</label>
+                    <textarea
                       className={inputCls}
-                      placeholder="例: 本番環境"
-                      value={memo.name}
-                      onChange={e => updateMemo(idx, "name", e.target.value)}
+                      placeholder="例: admin / password123&#10;本番DBに直接接続しているので注意"
+                      value={memo.memo ?? ""}
+                      onChange={e => updateMemo(idx, "memo", e.target.value)}
+                      rows={2}
+                      style={{ resize: "vertical", minHeight: 48, fontFamily: "inherit" }}
                     />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label className={labelCls}>URL</label>
-                    <input
-                      className={inputCls}
-                      placeholder="https://example.com"
-                      value={memo.url}
-                      onChange={e => updateMemo(idx, "url", e.target.value)}
-                    />
-                  </div>
-                  <button
-                    onClick={() => removeMemo(idx)}
-                    style={{ marginTop: 22, flexShrink: 0, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.15)", borderRadius: 7, cursor: "pointer", color: "#DC2626", transition: "background 0.15s" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEE2E2"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}>
-                    <Minus style={{ width: 11, height: 11 }} />
-                  </button>
                 </div>
               ))}
             </div>
