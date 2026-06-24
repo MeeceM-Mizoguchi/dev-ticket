@@ -35,6 +35,7 @@ export function Topbar() {
   const { userName } = useAuth();
   const navigate = useNavigate();
   const [showBugReport, setShowBugReport] = useState(false);
+  const closeBugReport = useCallback(() => setShowBugReport(false), []);
   const [showNotif, setShowNotif] = useState(false);
   const [hoveredNotifId, setHoveredNotifId] = useState<string | null>(null);
   const [existingActionNotifIds, setExistingActionNotifIds] = useState<Set<string>>(new Set());
@@ -189,7 +190,7 @@ export function Topbar() {
 
   return (
     <>
-    {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
+    {showBugReport && <BugReportModal onClose={closeBugReport} />}
     {showAnnouncement && announcement && (
       <AnnouncementModal announcement={announcement} onClose={() => setShowAnnouncement(false)} anchorX={announcementAnchorX} />
     )}
