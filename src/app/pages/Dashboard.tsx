@@ -232,12 +232,6 @@ export function Dashboard() {
     handleRefreshData().then(() => setLoading(false));
   }, [handleRefreshData]);
 
-  const doneCount = tickets.filter(t => TERMINAL_STATUSES.includes(t.status)).length;
-  const inProgressCount = tickets.filter(t => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo").length;
-  const todoCount = tickets.filter(t => t.status === "todo").length;
-  const completionRate = tickets.length > 0 ? Math.round((doneCount / tickets.length) * 100) : 0;
-  const activeProjects = projects.filter(p => p.status === "in-progress").length;
-
   const normalizedFirst = firstName ? firstName.trim() : "";
   const normalizeName = (s?: string) => (s || "").toString().trim().replace(/\s+/g, '').replace(/[\p{P}\p{S}]/gu, '').toLowerCase();
   const userNorm = normalizeName(userName || normalizedFirst);
@@ -249,6 +243,15 @@ export function Dashboard() {
       return userNorm && (mNorm.includes(userNorm) || userNorm.includes(mNorm));
     });
   });
+
+  const assignedProjectNames = assignedProjects.map(p => p.name);
+  const assignedTickets = tickets.filter(t => t.project && assignedProjectNames.includes(t.project));
+
+  const doneCount = assignedTickets.filter(t => TERMINAL_STATUSES.includes(t.status)).length;
+  const inProgressCount = assignedTickets.filter(t => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo").length;
+  const todoCount = assignedTickets.filter(t => t.status === "todo").length;
+  const completionRate = assignedTickets.length > 0 ? Math.round((doneCount / assignedTickets.length) * 100) : 0;
+  const activeProjects = assignedProjects.filter(p => p.status === "in-progress").length;
 
   useEffect(() => {
     if (assignedProjects.length > 0 && !selectedScatterProject) {
@@ -293,9 +296,6 @@ export function Dashboard() {
     if (Number.isNaN(value.getTime())) return '';
     return `${value.getMonth() + 1}/${value.getDate()}週`;
   };
-
-  const assignedProjectNames = assignedProjects.map(p => p.name);
-  const assignedTickets = tickets.filter(t => t.project && assignedProjectNames.includes(t.project));
 
   const projectProgressLineData = lineStatusCategories.map(category => ({
     status: category.key,
@@ -388,17 +388,17 @@ export function Dashboard() {
       assignedProjects.every(p => ((row as Record<string, number>)[p.name] ?? 0) === 0)
     );
 
-  const activeTickets = tickets.filter(t => !TERMINAL_STATUSES.includes(t.status)).slice(0, 5);
+  const activeTickets = assignedTickets.filter(t => !TERMINAL_STATUSES.includes(t.status)).slice(0, 5);
 
-  const overdueCountValue = tickets.filter(t => {
+  const overdueCountValue = assignedTickets.filter(t => {
     if (!t.dueDate || TERMINAL_STATUSES.includes(t.status)) return false;
     return t.dueDate < new Date().toISOString().split("T")[0];
   }).length;
 
   const statTiles = [
-    { value: activeProjects, label: "進行中プロジェクト", icon: FolderKanban, accent: "#059669", accentBg: "#ECFDF5", trend: `全${projects.length}件`, up: true },
+    { value: activeProjects, label: "進行中プロジェクト", icon: FolderKanban, accent: "#059669", accentBg: "#ECFDF5", trend: `全${assignedProjects.length}件`, up: true },
     { value: inProgressCount, label: "進行中チケット", icon: Zap, accent: "#D97706", accentBg: "#FFFBEB", trend: overdueCountValue > 0 ? `期限超過 ${overdueCountValue}件` : "遅延なし", up: overdueCountValue === 0 },
-    { value: todoCount, label: "未着手チケット", icon: Clock, accent: "#0284C7", accentBg: "#F0F9FF", trend: `全${tickets.length}件`, up: true },
+    { value: todoCount, label: "未着手チケット", icon: Clock, accent: "#0284C7", accentBg: "#F0F9FF", trend: `全${assignedTickets.length}件`, up: true },
     { value: `${completionRate}%`, label: "チーム完了率", icon: TrendingUp, accent: "#059669", accentBg: "#ECFDF5", trend: `完了 ${doneCount}件`, up: true },
   ];
 
@@ -974,7 +974,7 @@ export function Dashboard() {
           <ChevronRight style={{ width: 14, height: 14, color: "#C9C4BB" }} />
         </div>
         <div style={{ borderTop: "1px solid rgba(26,23,20,0.05)" }}>
-          {projects.map((p, i) => {
+          {assignedProjects.map((p, i) => {
             const progress = calcProgress(p.done, p.inProgress, p.todo);
             const statusStyle: Record<ProjectStatus, { bg: string; color: string; label: string }> = {
               "in-progress": { bg: "#ECFDF5", color: "#059669", label: "進行中" },
