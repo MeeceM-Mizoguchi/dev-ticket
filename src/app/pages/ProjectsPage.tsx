@@ -14,6 +14,7 @@ import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
 import { EditProjectDialog } from "@/app/components/projects/EditProjectDialog";
 import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
+import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 
@@ -49,6 +50,7 @@ export function ProjectsPage() {
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [tagsEditTarget, setProjectTagsEditTarget] = useState<Project | null>(null);
+  const [envMemoTarget, setEnvMemoTarget] = useState<Project | null>(null);
 
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const isOwner = userRole === "owner";
@@ -378,6 +380,7 @@ export function ProjectsPage() {
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}
               onDownload={() => handleDownloadProject(p)}
               onEditTags={() => setProjectTagsEditTarget(p)}
+              onEnvMemo={canManage ? () => setEnvMemoTarget(p) : undefined}
             />
           ))}
         </div>
@@ -394,10 +397,19 @@ export function ProjectsPage() {
 
       {/* タグ個別編集用モーダルダイアログ */}
       {tagsEditTarget && (
-        <ProjectTagsEditDialog 
-          project={tagsEditTarget} 
-          onClose={() => setProjectTagsEditTarget(null)} 
-          onUpdated={() => { refreshProjects(); setProjectTagsEditTarget(null); }} 
+        <ProjectTagsEditDialog
+          project={tagsEditTarget}
+          onClose={() => setProjectTagsEditTarget(null)}
+          onUpdated={() => { refreshProjects(); setProjectTagsEditTarget(null); }}
+        />
+      )}
+
+      {/* 環境メモダイアログ */}
+      {envMemoTarget && (
+        <ProjectSettingsDialog
+          project={envMemoTarget}
+          onClose={() => setEnvMemoTarget(null)}
+          onUpdated={() => { refreshProjects(); setEnvMemoTarget(null); }}
         />
       )}
     </div>
