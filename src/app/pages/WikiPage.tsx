@@ -313,32 +313,52 @@ export function WikiPage() {
 
   useEffect(() => {
     if (!wikiPath || pages.length === 0) return;
-    const parts = wikiPath.split("/").map(s => decodeURIComponent(s)).filter(Boolean);
+    const parts = wikiPath.split("/").filter(Boolean);
     if (parts.length === 0) return;
+
+    const firstPart = decodeURIComponent(parts[0]);
+    // UUID形式かどうかを判定（IDベースの新形式URL）
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(firstPart);
+
     let found: WikiPageType | undefined;
-    if (parts.length === 1) {
-      found = pages.find(p => !p.isFolder && p.title === parts[0] && !p.parentId);
-      if (!found) found = pages.find(p => !p.isFolder && p.title === parts[0]);
+    if (isUUID) {
+      // IDで直接引く（タイトル重複による誤選択を防ぐ）
+      found = pages.find(p => p.id === firstPart && !p.isFolder);
     } else {
-      const folderTitle = parts[parts.length - 2];
-      const pageTitle = parts[parts.length - 1];
-      const folder = pages.find(p => p.isFolder && p.title === folderTitle);
-      if (folder) found = pages.find(p => !p.isFolder && p.title === pageTitle && p.parentId === folder.id);
-      if (!found) found = pages.find(p => !p.isFolder && p.title === pageTitle);
+      // タイトルベースの旧URL形式（後方互換）
+      const decodedParts = parts.map(s => decodeURIComponent(s));
+      if (decodedParts.length === 1) {
+        found = pages.find(p => !p.isFolder && p.title === decodedParts[0] && !p.parentId);
+        if (!found) found = pages.find(p => !p.isFolder && p.title === decodedParts[0]);
+      } else {
+        const folderTitle = decodedParts[decodedParts.length - 2];
+        const pageTitle = decodedParts[decodedParts.length - 1];
+        const folder = pages.find(p => p.isFolder && p.title === folderTitle);
+        if (folder) found = pages.find(p => !p.isFolder && p.title === pageTitle && p.parentId === folder.id);
+        if (!found) found = pages.find(p => !p.isFolder && p.title === pageTitle);
+      }
     }
+
     if (found && found.id !== selectedId) setSelectedId(found.id);
   }, [wikiPath, pages]);
 
   const handleSelectPage = useCallback((pageId: string) => {
     const page = pages.find(p => p.id === pageId);
     if (!page || page.isFolder) return;
-    const parent = page.parentId ? pages.find(p => p.id === page.parentId) : null;
+    // Flush any pending auto-save for the current page before navigating
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (selectedId && isSupabaseEnabled) {
+        supabase!.from("wiki_pages").update({
+          title, content, updated_by: userName || null, updated_at: new Date().toISOString(),
+        }).eq("id", selectedId);
+        setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title, content } : p));
+      }
+    }
     const slug = projectSlug ?? "";
-    const path = parent
-      ? `/${slug}/wiki/${titleToPathSegment(parent.title)}/${titleToPathSegment(page.title)}`
-      : `/${slug}/wiki/${titleToPathSegment(page.title)}`;
-    navigate(path);
-  }, [pages, projectSlug, navigate]);
+    navigate(`/${slug}/wiki/${pageId}`);
+  }, [pages, projectSlug, navigate, selectedId, title, content, userName]);
 
   useEffect(() => {
     setTitle(selected?.title ?? "");
