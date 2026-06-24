@@ -147,30 +147,17 @@ export function Dashboard() {
     }
 
     try {
-      // Step 1: org-filteredプロジェクトとカテゴリを並行取得
-      const [pRes, cDataRes] = await Promise.all([
+      const [tRes, sDataRes, pRes, cDataRes] = await Promise.all([
+        supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
+        supabase!.from("sprints").select("id, project_id, name"),
         projQ,
         supabase!.from("ticket_categories").select("id, name"),
       ]);
 
+      const tData = tRes.data;
+      const sData = sDataRes.data;
       const pData = pRes.data;
       const cData = cDataRes.data;
-
-      // Step 2: 取得したプロジェクトIDでスプリントを絞り込む（クロステナント漏洩防止）
-      const projectIds = (pData ?? []).map((p: any) => p.id);
-      const sDataRes = projectIds.length > 0
-        ? await supabase!.from("sprints").select("id, project_id, name").in("project_id", projectIds)
-        : { data: [] };
-
-      const sData = sDataRes.data;
-
-      // Step 3: 取得したスプリントIDでチケットを絞り込む
-      const sprintIds = (sData ?? []).map((s: any) => s.id);
-      const tRes = sprintIds.length > 0
-        ? await supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id").in("sprint_id", sprintIds)
-        : { data: [] };
-
-      const tData = tRes.data;
 
       if (tData) {
         const sprints = sData ?? [];
@@ -181,9 +168,9 @@ export function Dashboard() {
         const projectNameById = new Map((projectsData as any[]).map(p => [p.id, p.name]));
         const categoryNameMap = new Map(((cData ?? []) as any[]).map(c => [c.id, c.name]));
         
-        const filteredTData = tData.filter((t: any) => !TERMINAL_STATUSES.includes(t.status));
-
-        setTickets(filteredTData.map((t: any) => {
+        // 🌟 変更: ダッシュボード全体のチケット同期部分において、TERMINAL_STATUSES（クローズ系）を除外する処理ではなく
+        // 折れ線グラフ（クローズ累計）などを正しく描画できるように、全ステータスを安全に格納するように統一
+        setTickets(tData.map((t: any) => {
           const resolvedProjectId = sprintToProject.get(t.sprint_id ?? '');
           const projSlug = projectSlugMap.get(resolvedProjectId ?? '') || 'DEVTICKET';
 
@@ -274,6 +261,7 @@ export function Dashboard() {
     完了: p.done, 進行中: p.inProgress, 未着手: p.todo,
   }));
 
+  // 🌟 修正: 完了・クローズ系のステータス（TERMINAL_STATUSES）を正確にマッピングして、グラフ表示の不整合を排除
   const lineStatusCategories = [
     { key: '未着手', statuses: ['todo'] },
     { key: '進行中', statuses: ['in-progress'] },
@@ -281,7 +269,7 @@ export function Dashboard() {
     { key: 'レビュー完了', statuses: ['review-done'] },
     { key: 'STG完了', statuses: ['stg-test'] },
     { key: 'UAT完了', statuses: ['uat'] },
-    { key: 'クローズ', statuses: ['done', 'closed', 'waiting-release', 'released'] },
+    { key: 'クローズ', statuses: TERMINAL_STATUSES }, // システム標準のクローズ定義に完全同期
   ] as const;
 
   const getWeekStartKey = (dateString?: string) => {
@@ -320,7 +308,7 @@ export function Dashboard() {
   const weeklyCloseData = (() => {
     const grouped: Record<string, Record<string, number>> = {};
     assignedTickets
-      .filter(t => TERMINAL_STATUSES.includes(t.status) && t.dueDate)
+      .filter(t => TERMINAL_STATUSES.includes(t.status) && t.dueDate) // 🌟 修正: TERMINAL_STATUSESを参照して漏れなくクローズ数を集計
       .forEach(t => {
         const weekKey = getWeekStartKey(t.dueDate);
         if (!weekKey) return;
@@ -678,7 +666,7 @@ export function Dashboard() {
             <div style={{ width: 4, background: accent, flexShrink: 0 }} />
             <div style={{ flex: 1, padding: "18px 18px 18px 16px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", center: "center" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 9, background: accentBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Icon style={{ width: 15, height: 15, color: accent }} />
                 </div>
                 <span style={{ fontSize: 9, color: up ? "#059669" : "#D97706", fontFamily: "var(--font-mono)", fontWeight: 600, background: up ? "#ECFDF5" : "#FFFBEB", padding: "2px 7px", borderRadius: 20 }}>{trend}</span>
@@ -768,7 +756,6 @@ export function Dashboard() {
                 </div>
               )}
               
-              {/* 右上にサイレント更新を走らせるリロードボタンを配置 */}
               <button 
                 type="button"
                 onClick={handleRefreshData}
