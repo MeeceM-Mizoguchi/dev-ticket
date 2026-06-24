@@ -341,8 +341,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         const extMap: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
         const ext = extMap[f.type] ?? 'png';
         const path = `tickets/${ticketId.current}/detail/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
-        const { data: error } = await supabase!.storage.from("ticket-images").upload(path, f, { upsert: false });
-        if (error) { console.error("[image upload] failed:", error); continue; }
+        const { data, error } = await supabase!.storage.from("ticket-images").upload(path, f, { upsert: false });
+        if (error || !data) { console.error("[image upload] failed:", error); continue; }
         const { data: { publicUrl } } = supabase!.storage.from("ticket-images").getPublicUrl(path);
         setImages(prev => [...prev, publicUrl]);
       } else {

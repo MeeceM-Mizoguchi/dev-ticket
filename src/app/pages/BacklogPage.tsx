@@ -256,6 +256,8 @@ export function BacklogPage() {
   const [editHours, setEditHours] = useState(0);
   const [editCategoryId, setEditCategoryId] = useState<string | null>(null);
   const [editImages, setEditImages] = useState<string[]>([]);
+  const editImagesRef = useRef<string[]>([]);
+  editImagesRef.current = editImages;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
@@ -348,6 +350,28 @@ export function BacklogPage() {
       await supabase!.from("backlog_items").update({ images: next, updated_at: new Date().toISOString() }).eq("id", selectedId);
     }
   }, [selectedId]);
+
+  // RichEditor上でのペースト・ドロップ画像をImageAttachmentsに追加（インライン挿入しない）
+  const onEditorImageUpload = useCallback(async (file: File): Promise<string> => {
+    if (!selectedId) return "";
+    let url: string;
+    if (!isSupabaseEnabled) {
+      url = URL.createObjectURL(file);
+    } else {
+      const extMap: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+      const ext = extMap[file.type] ?? "png";
+      const path = `backlog/${selectedId}/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+      const { data, error } = await supabase!.storage.from("ticket-images").upload(path, file, { upsert: true, contentType: file.type || "image/png" });
+      if (error || !data) return "";
+      url = supabase!.storage.from("ticket-images").getPublicUrl(path).data.publicUrl;
+    }
+    if (url) {
+      const next = [...editImagesRef.current, url];
+      editImagesRef.current = next;
+      handleImagesChange(next);
+    }
+    return ""; // インライン挿入を抑制
+  }, [selectedId, handleImagesChange]);
 
   const grouped = useMemo(() => {
     const sorted = [...items].sort((a, b) => a.rank - b.rank);
@@ -580,7 +604,8 @@ export function BacklogPage() {
                   style={{ flex: 1, minHeight: 0 }}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
-                  onMinuteClick={id => openPreview("minute", id)} />
+                  onMinuteClick={id => openPreview("minute", id)}
+                  onImageUpload={itemCanEdit ? onEditorImageUpload : undefined} />
                 <div style={{ marginTop: 16, flexShrink: 0 }}>
                   <ImageAttachments
                     images={editImages}
