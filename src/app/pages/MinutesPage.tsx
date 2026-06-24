@@ -242,6 +242,7 @@ export function MinutesPage() {
   };
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
+  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
   if (!loading && effectiveMinutesPerm === "none") return <Navigate to="/dashboard" replace />;
 
   return (
