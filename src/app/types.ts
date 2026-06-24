@@ -131,6 +131,7 @@ export interface Sprint {
 export interface EnvMemo {
   name: string;
   url: string;
+  memo?: string;
 }
 export interface Project {
   id: string; slug: string; wbsPrefix: string;

@@ -6,7 +6,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
-import type { Project, Sprint, SprintTicket, SprintView, AccessLevel } from "@/app/types";
+import type { Project, Sprint, SprintTicket, SprintView, AccessLevel, EnvMemo } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
 import SprintBoardView from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
@@ -19,6 +19,30 @@ import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreat
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+
+function EnvMemoTag({ m }: { m: EnvMemo }) {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const show = () => { if (timer.current) clearTimeout(timer.current); setOpen(true); };
+  const hide = () => { timer.current = setTimeout(() => setOpen(false), 120); };
+
+  return (
+    <div style={{ position: "relative", display: "inline-flex" }} onMouseEnter={show} onMouseLeave={hide}>
+      <a href={m.url} target="_blank" rel="noopener noreferrer"
+        style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: open ? "#E0F2FE" : "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none" }}>
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        {m.name || m.url}
+      </a>
+      {open && m.memo && (
+        <div onMouseEnter={show} onMouseLeave={hide}
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 9999, background: "#1A1714", color: "#F9FAFB", borderRadius: 9, padding: "8px 12px", fontSize: 11, lineHeight: 1.6, whiteSpace: "pre-wrap", minWidth: 160, maxWidth: 300, maxHeight: "calc(1.6em * 4 + 16px)", overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.28)", userSelect: "text", cursor: "text" }}>
+          {m.name && <div style={{ fontWeight: 700, marginBottom: 4, color: "#D1FAE5", fontSize: 10 }}>{m.name}</div>}
+          {m.memo}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SprintPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
@@ -213,13 +237,7 @@ export function SprintPage() {
           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
             <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
             {project?.envMemos?.filter(m => m.url).map((m, i) => (
-              <a key={i} href={m.url} target="_blank" rel="noopener noreferrer"
-                style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none", transition: "background 0.15s" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                {m.name || m.url}
-              </a>
+              <EnvMemoTag key={i} m={m} />
             ))}
           </div>
         </div>
