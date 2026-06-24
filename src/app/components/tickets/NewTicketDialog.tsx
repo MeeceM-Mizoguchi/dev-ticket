@@ -517,30 +517,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     onClose();
   };
 
-  // 🌟 追加: 親チケット用のマスタ配列から「UAT完了の直後にある重複したクローズ（2つ目）」を確実にフィルタリングして排除する処理
-  const getFilteredParentStatuses = () => {
-    let uatIndex = TICKET_STATUSES.findIndex(s => s.value === "uat");
-    if (uatIndex === -1) {
-      // マップ内に大文字の "UAT" や別のキーで定義されている場合のフォールバック
-      uatIndex = TICKET_STATUSES.findIndex(s => s.label.toLowerCase().includes("uat"));
-    }
-    
-    // UAT完了が見つかった場合、その次のインデックスにクローズ（closed）があればそれを間引く
-    if (uatIndex !== -1 && TICKET_STATUSES[uatIndex + 1]?.value === "closed") {
-      return TICKET_STATUSES.filter((_, idx) => idx !== uatIndex + 1);
-    }
-    
-    // インデックスベースでヒットしなかった場合の安全な値重複ガード（末尾のクローズを1つ残し、他を間引く）
-    let closedCount = 0;
-    return TICKET_STATUSES.filter(s => {
-      if (s.value === "closed") {
-        closedCount++;
-        // 2回目以降に登場したクローズの選択肢は問答無用で除外
-        return closedCount <= 1;
-      }
-      return true;
-    });
-  };
+
 
   return (
     <>
@@ -632,8 +609,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                     { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
                     { value: "closed", label: "対応完了", color: "#059669", bg: "#ECFDF5" },
                   ]
-                  // 🌟 修正: 親チケット選択肢側のみ、UAT完了の次にある不要な2つ目のクローズを除外した配列を用いて描画
-                  : getFilteredParentStatuses().map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
+                  : TICKET_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color, bg: s.bg }))}
                 onChange={v => setStatus(v as TicketStatus)}
               />
             </div>
