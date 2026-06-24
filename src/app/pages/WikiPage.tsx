@@ -267,9 +267,10 @@ export function WikiPage() {
   const [content, setContent] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<WikiPageType | null>(null);
-  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
-  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
-  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
+  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
+  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
+  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
+  const [permsLoaded, setPermsLoaded] = useState(false);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
   
   const [movingNodeTarget, setMovingNodeTarget] = useState<WikiPageType | null>(null);
@@ -304,6 +305,7 @@ export function WikiPage() {
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
     }
+    setPermsLoaded(true);
     setLoading(false);
   }, [projectSlug, userId, isAdminRole]);
 
@@ -488,7 +490,7 @@ export function WikiPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${pageCount} ページ` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {effectiveWikiPerm === "view" && (
+          {permsLoaded && effectiveWikiPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} minutesPerm={effectiveMinutesPerm} />

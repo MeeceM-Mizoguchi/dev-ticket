@@ -244,9 +244,9 @@ export function SprintPage() {
         <ProjectSubNav
           projectSlug={projectSlug ?? project?.slug ?? ""}
           active="sprints" marginBottom={0}
-          wikiPerm={isAdmin ? "edit" : ((projectPermissions?.wikiPermission as AccessLevel | undefined) ?? "none")}
-          backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? "none")}
-          minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? "none")}
+          wikiPerm={isAdmin ? "edit" : ((projectPermissions?.wikiPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+          backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+          minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
         />
       </div>
 

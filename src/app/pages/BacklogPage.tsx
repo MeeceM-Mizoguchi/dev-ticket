@@ -238,9 +238,10 @@ export function BacklogPage() {
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
-  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
-  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
+  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
+  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
+  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
+  const [permsLoaded, setPermsLoaded] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BacklogItem | null>(null);
   const [convertTarget, setConvertTarget] = useState<BacklogItem | null>(null);
@@ -294,6 +295,7 @@ export function BacklogPage() {
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
     }
+    setPermsLoaded(true);
     setLoading(false);
   }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -451,7 +453,7 @@ export function BacklogPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${items.length} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {effectiveBacklogPerm === "view" && (
+          {permsLoaded && effectiveBacklogPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="backlog" marginBottom={0} backlogPerm={effectiveBacklogPerm} wikiPerm={effectiveWikiPerm} minutesPerm={effectiveMinutesPerm} />

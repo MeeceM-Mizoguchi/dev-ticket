@@ -129,9 +129,10 @@ export function MinutesPage() {
   const [pendingActionsByMinute, setPendingActionsByMinute] = useState<Record<string, number>>({});
   const [showExternalInput, setShowExternalInput] = useState(false);
   const [externalInput, setExternalInput] = useState("");
-  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("none");
-  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("none");
-  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("none");
+  const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
+  const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
+  const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
+  const [permsLoaded, setPermsLoaded] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -175,6 +176,7 @@ export function MinutesPage() {
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
     }
+    setPermsLoaded(true);
     setLoading(false);
   }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -266,7 +268,7 @@ export function MinutesPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${minutes.length} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {effectiveMinutesPerm === "view" && (
+          {permsLoaded && effectiveMinutesPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} />
