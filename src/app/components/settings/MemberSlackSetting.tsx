@@ -57,18 +57,23 @@ function GuidePanel() {
   );
 }
 
-export function MemberSlackSetting() {
+interface MemberSlackSettingProps {
+  orgId?: string | null;
+}
+
+export function MemberSlackSetting({ orgId }: MemberSlackSettingProps) {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
-    supabase!
+    let q = supabase!
       .from("profiles")
       .select("id, name, email, role, slack_member_id")
       .in("status", ["active", "invited"])
-      .order("name")
-      .then(({ data }) => {
+      .order("name");
+    if (orgId) q = q.eq("organization_id", orgId);
+    q.then(({ data }) => {
         if (!data) return;
         setMembers((data as any[]).map(m => ({
           id: m.id,
@@ -82,7 +87,7 @@ export function MemberSlackSetting() {
         })));
         setLoading(false);
       });
-  }, []);
+  }, [orgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSave = async (memberId: string) => {
     if (!isSupabaseEnabled) return;

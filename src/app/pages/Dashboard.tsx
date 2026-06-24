@@ -147,17 +147,30 @@ export function Dashboard() {
     }
 
     try {
-      const [tRes, sDataRes, pRes, cDataRes] = await Promise.all([
-        supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
-        supabase!.from("sprints").select("id, project_id, name"),
+      // Step 1: org-filteredプロジェクトとカテゴリを並行取得
+      const [pRes, cDataRes] = await Promise.all([
         projQ,
         supabase!.from("ticket_categories").select("id, name"),
       ]);
 
-      const tData = tRes.data;
-      const sData = sDataRes.data;
       const pData = pRes.data;
       const cData = cDataRes.data;
+
+      // Step 2: 取得したプロジェクトIDでスプリントを絞り込む（クロステナント漏洩防止）
+      const projectIds = (pData ?? []).map((p: any) => p.id);
+      const sDataRes = projectIds.length > 0
+        ? await supabase!.from("sprints").select("id, project_id, name").in("project_id", projectIds)
+        : { data: [] };
+
+      const sData = sDataRes.data;
+
+      // Step 3: 取得したスプリントIDでチケットを絞り込む
+      const sprintIds = (sData ?? []).map((s: any) => s.id);
+      const tRes = sprintIds.length > 0
+        ? await supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id").in("sprint_id", sprintIds)
+        : { data: [] };
+
+      const tData = tRes.data;
 
       if (tData) {
         const sprints = sData ?? [];

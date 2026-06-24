@@ -9,8 +9,9 @@ import { SlackNotificationSetting } from "@/app/components/settings/SlackNotific
 import { MemberSlackSetting } from "@/app/components/settings/MemberSlackSetting";
 
 export function AdminSettingsPage() {
-  const { userPermissions } = useAuth();
+  const { userPermissions, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
+  const effectiveOrgId = selectedOrgId ?? userOrgId;
   const [searchParams, setSearchParams] = useSearchParams();
 
   if (!userPermissions.canAccessAdminSettings) return <Navigate to="/dashboard" replace />;
@@ -91,7 +92,7 @@ export function AdminSettingsPage() {
               各メンバーのSlackメンバーIDを設定します。設定済みのメンバーには通知がメンション付きで届きます。
             </p>
           </div>
-          <MemberSlackSetting />
+          <MemberSlackSetting orgId={effectiveOrgId} />
         </div>
       )}
 
@@ -107,7 +108,7 @@ export function AdminSettingsPage() {
             <SlackNotificationSetting
               isAdminOrPM={userPermissions.canAccessAdminSettings}
               connectedProjectId={slackConnectedProjectId}
-              orgId={selectedOrgId}
+              orgId={effectiveOrgId}
             />
           </div>
 
