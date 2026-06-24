@@ -65,6 +65,7 @@ export function BugReportModal({ onClose }: Props) {
   const [actual, setActual] = useState("");
   const [expected, setExpected] = useState("");
   const [url, setUrl] = useState("");
+  const [consoleLog, setConsoleLog] = useState(""); // 🌟 追加: コンソールログ用のステート
   const [images, setImages] = useState<string[]>([]);
   const [error, setError] = useState("");
 
@@ -90,7 +91,7 @@ export function BugReportModal({ onClose }: Props) {
 
   const resetForm = () => {
     setCategory("other"); setSeverity("minor");
-    setTitle(""); setSteps(""); setActual(""); setExpected(""); setUrl("");
+    setTitle(""); setSteps(""); setActual(""); setExpected(""); setUrl(""); setConsoleLog(""); // 🌟 追加: ログのリセット
     setImages([]); setError("");
   };
 
@@ -114,6 +115,8 @@ export function BugReportModal({ onClose }: Props) {
       const { data: { session } } = await supabase!.auth.getSession();
       const userEmail = session?.user?.email ?? "";
 
+      // 🌟 注: データベース（bug_reportsテーブル）にconsole_logカラム等がある場合は、
+      // 以下のオブジェクトにも `console_log: consoleLog.trim() || null` のように追加設定してください。
       const { data: reportData, error: reportErr } = await supabase!
         .from("bug_reports")
         .insert({
@@ -142,13 +145,15 @@ export function BugReportModal({ onClose }: Props) {
           const sevLabel = SEVERITY_OPTIONS.find(s => s.value === severity)?.label ?? severity;
           const toLines = (text: string) => text.split("\n").map(l => `<p>${l || ""}</p>`).join("");
           const description = [
-            `<p><strong>【カテゴリ】</strong>${catLabel}　<strong>【深刻度】</strong>${sevLabel}</p>`,
+            `<p><strong>【カテゴリ】</strong>${catLabel} <strong>【深刻度】</strong>${sevLabel}</p>`,
             `<p></p>`,
             `<p><strong>【再現手順】</strong></p>`, toLines(steps.trim()),
             `<p></p>`,
             `<p><strong>【実際の動作】</strong></p>`, toLines(actual.trim()),
             ...(expected.trim() ? [`<p></p>`, `<p><strong>【期待する動作】</strong></p>`, toLines(expected.trim())] : []),
             ...(url.trim() ? [`<p></p>`, `<p><strong>【発生URL】</strong></p>`, `<p>${url.trim()}</p>`] : []),
+            // 🌟 変更: バックログ起票時にコンソールログが貼られていればdescriptionに埋め込む
+            ...(consoleLog.trim() ? [`<p></p>`, `<p><strong>【コンソールログ】</strong></p>`, `<pre style="background:#f4f5f6; padding:8px; border-radius:6px; font-family:monospace; font-size:11px; white-space:pre-wrap;">${consoleLog.replace(/</g, "&lt;").replace(/>/g, "&gt;").trim()}</pre>`] : []),
             `<p></p>`,
             `<p><strong>【報告者】</strong>${userName}</p>`,
           ].join("");
@@ -453,6 +458,19 @@ export function BugReportModal({ onClose }: Props) {
                   <div>
                     <label style={labelStyle}>発生URL <span style={{ color:"#9E9690", fontWeight:500 }}>（任意）</span></label>
                     <input value={url} onChange={e => setUrl(e.target.value)} placeholder="例：https://dv-ticket.com/devticket/sprint" style={inputStyle} onFocus={focusStyle} onBlur={blurStyle} />
+                  </div>
+
+                  {/* 🌟 追加: コンソールログ貼り付けフィールド */}
+                  <div>
+                    <label style={labelStyle}>コンソールログ <span style={{ color:"#9E9690", fontWeight:500 }}>（任意）</span></label>
+                    <textarea 
+                      value={consoleLog} 
+                      onChange={e => setConsoleLog(e.target.value)} 
+                      placeholder={"デベロッパーツール（F12）の Console タブに表示されているエラーログ等があれば、ここにコピー＆ペーストしてください。"} 
+                      style={{ ...textareaStyle, minHeight:90, fontFamily:"var(--font-mono)", fontSize:12 }} 
+                      onFocus={focusStyle} 
+                      onBlur={blurStyle} 
+                    />
                   </div>
 
                   {/* 画像添付 */}
