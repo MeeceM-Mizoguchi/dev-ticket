@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardList, Trash2, Ticket } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardList, Trash2, Ticket, Search, X } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
@@ -246,6 +246,7 @@ export function BacklogPage() {
   const [convertTarget, setConvertTarget] = useState<BacklogItem | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [sidebarSearch, setSidebarSearch] = useState("");
 
   // 右パネル編集ステート
   const [editTitle, setEditTitle] = useState("");
@@ -380,6 +381,15 @@ export function BacklogPage() {
     return { active, done };
   }, [items]);
 
+  const sidebarFiltered = useMemo(() => {
+    if (!sidebarSearch.trim()) return grouped;
+    const q = sidebarSearch.toLowerCase();
+    return {
+      active: grouped.active.filter(i => i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)),
+      done: grouped.done.filter(i => i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)),
+    };
+  }, [grouped, sidebarSearch]);
+
   const handleAddItem = async () => {
     if (!project) return;
     const id = await nextBacklogId();
@@ -451,6 +461,22 @@ export function BacklogPage() {
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
         {/* ─── 左サイドバー ─── */}
         <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          {/* 検索バー */}
+          <div style={{ position: "relative", marginBottom: 8 }}>
+            <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
+            <input
+              value={sidebarSearch}
+              onChange={e => setSidebarSearch(e.target.value)}
+              placeholder="検索..."
+              style={{ width: "100%", boxSizing: "border-box", padding: "6px 26px 6px 26px", fontSize: 11, background: "#F4F5F6", border: `1px solid ${sidebarSearch ? "rgba(5,150,105,0.25)" : "transparent"}`, borderRadius: 7, outline: "none", fontFamily: "inherit" }}
+            />
+            {sidebarSearch && (
+              <button onClick={() => setSidebarSearch("")} style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 2, color: "#A09790", display: "flex", alignItems: "center" }}>
+                <X style={{ width: 10, height: 10 }} />
+              </button>
+            )}
+          </div>
+
           {canEdit && canCreate && (
             <button onClick={handleAddItem}
               style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 8, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -463,24 +489,28 @@ export function BacklogPage() {
               <ClipboardList style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
               <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>バックログ項目がありません</p>
             </div>
+          ) : sidebarFiltered.active.length === 0 && sidebarFiltered.done.length === 0 && sidebarSearch ? (
+            <div style={{ padding: "24px 8px", textAlign: "center" }}>
+              <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致する項目がありません</p>
+            </div>
           ) : (
             <>
-              {grouped.active.map((item) => (
+              {sidebarFiltered.active.map((item) => (
                 <BacklogSidebarItem key={item.id} item={item}
                   isSelected={selectedId === item.id}
-                  canEdit={canEdit} isDone={false}
+                  canEdit={canEdit && !sidebarSearch} isDone={false}
                   projectSlug={projectSlug ?? project?.slug ?? ""}
-                  isDragOver={dragOverId === item.id && dragId !== item.id}
+                  isDragOver={!sidebarSearch && dragOverId === item.id && dragId !== item.id}
                   onSelect={() => navigate(`/${projectSlug ?? project?.slug}/backlog/${item.id}`)}
                   onDragStart={() => setDragId(item.id)}
-                  onDragOver={() => { if (dragId && dragId !== item.id) setDragOverId(item.id); }}
-                  onDrop={() => { if (dragId) reorderItems(dragId, item.id); }}
+                  onDragOver={() => { if (!sidebarSearch && dragId && dragId !== item.id) setDragOverId(item.id); }}
+                  onDrop={() => { if (!sidebarSearch && dragId) reorderItems(dragId, item.id); }}
                   onDragEnd={() => { setDragId(null); setDragOverId(null); }} />
               ))}
-              {grouped.done.length > 0 && (
+              {sidebarFiltered.done.length > 0 && (
                 <>
-                  <p style={{ fontSize: 10, fontWeight: 700, color: "#C9C4BB", padding: "8px 4px 4px", margin: 0 }}>完了・アーカイブ ({grouped.done.length})</p>
-                  {grouped.done.map((item) => (
+                  <p style={{ fontSize: 10, fontWeight: 700, color: "#C9C4BB", padding: "8px 4px 4px", margin: 0 }}>完了・アーカイブ ({sidebarFiltered.done.length})</p>
+                  {sidebarFiltered.done.map((item) => (
                     <BacklogSidebarItem key={item.id} item={item}
                       isSelected={selectedId === item.id}
                       canEdit={false} isDone

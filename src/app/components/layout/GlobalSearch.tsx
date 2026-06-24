@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft } from "lucide-react";
+import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft, BookOpen, FileText } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
@@ -66,7 +66,26 @@ interface DescriptionResult {
   projectName: string;
   snippet: string;
 }
-type SearchResult = TicketResult | SprintResult | ProjectResult | MemberResult | CommentResult | DescriptionResult;
+interface WikiResult {
+  type: "wiki";
+  id: string;
+  title: string;
+  projectId: string;
+  projectSlug: string;
+  projectName: string;
+  snippet: string;
+}
+interface MinuteResult {
+  type: "minute";
+  id: string;
+  title: string;
+  meetingDate: string;
+  createdAt: string;
+  projectId: string;
+  projectSlug: string;
+  projectName: string;
+}
+type SearchResult = TicketResult | SprintResult | ProjectResult | MemberResult | CommentResult | DescriptionResult | WikiResult | MinuteResult;
 interface SearchResults {
   tickets: TicketResult[];
   sprints: SprintResult[];
@@ -74,6 +93,15 @@ interface SearchResults {
   members: MemberResult[];
   comments: CommentResult[];
   descriptions: DescriptionResult[];
+  wikis: WikiResult[];
+  minutes: MinuteResult[];
+}
+
+function toMinuteSlug(createdAt: string | null | undefined): string {
+  if (!createdAt) return "";
+  const m = createdAt.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return "";
+  return `${m[1]}${m[2]}${m[3]}-${m[4]}${m[5]}${m[6]}`;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -125,10 +153,10 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
     .slice(0, 5)
     .map(m => ({ type: "member", id: m.id, name: m.name, email: m.email, role: m.role }));
 
-  return { tickets, sprints, projects, members, comments: [], descriptions: [] };
+  return { tickets, sprints, projects, members, comments: [], descriptions: [], wikis: [], minutes: [] };
 }
 
-const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [], comments: [], descriptions: [] };
+const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [], comments: [], descriptions: [], wikis: [], minutes: [] };
 
 export function GlobalSearch() {
   const { userName, userRole, userOrgId } = useAuth();
@@ -143,7 +171,7 @@ export function GlobalSearch() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
 
-  const hasResults = results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length > 0;
+  const hasResults = results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length + results.wikis.length + results.minutes.length > 0;
 
   const doSearch = useCallback(async (q: string) => {
     if (q.length < 2) {
@@ -195,8 +223,11 @@ export function GlobalSearch() {
         .slice(0, 5)
         .map(s => ({ type: "sprint" as const, id: s.id, identifier: s.identifier, name: s.name, status: s.status, projectSlug: s.projectSlug, projectName: s.projectName }));
 
-      // Parallel: search tickets(title/wbs/description) + members + raw comments
-      const [ticketResp, memberResp, rawCommentResp] = await Promise.all([
+      const accessibleProjectIds = accessible.map(p => p.id);
+      const projectLookup = new Map(accessible.map(p => [p.id, { slug: p.slug ?? p.id, name: p.name }]));
+
+      // Parallel: search tickets(title/wbs/description) + members + raw comments + wiki + minutes
+      const [ticketResp, memberResp, rawCommentResp, wikiResp, minuteResp] = await Promise.all([
         sprintIds.length > 0
           ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id, description").or(`title.ilike.%${q}%,wbs.ilike.%${q}%,description.ilike.%${q}%`).in("sprint_id", sprintIds).limit(10)
           : Promise.resolve({ data: [] }),
@@ -208,6 +239,12 @@ export function GlobalSearch() {
         })(),
         sprintIds.length > 0
           ? supabase!.from("ticket_comments").select("id, content, ticket_id").eq("comment_type", "comment").ilike("content", `%${q}%`).limit(20)
+          : Promise.resolve({ data: [] }),
+        accessibleProjectIds.length > 0
+          ? supabase!.from("wiki_pages").select("id, title, content, project_id").eq("is_folder", false).in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(5)
+          : Promise.resolve({ data: [] }),
+        accessibleProjectIds.length > 0
+          ? supabase!.from("meeting_minutes").select("id, title, meeting_date, content, project_id, created_at").in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(5)
           : Promise.resolve({ data: [] }),
       ]);
 
@@ -248,7 +285,20 @@ export function GlobalSearch() {
           });
       }
 
-      setResults({ tickets: ticketResults, sprints: sprintResults, projects: projectResults, members: memberResults, comments: commentResults, descriptions: descriptionResults });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const wikiResults: WikiResult[] = (wikiResp.data ?? []).map((w: any) => {
+        const proj = projectLookup.get(w.project_id);
+        const snippet = htmlToText(w.content ?? "").slice(0, 70);
+        return { type: "wiki" as const, id: w.id, title: w.title || "無題のページ", projectId: w.project_id, projectSlug: proj?.slug ?? "", projectName: proj?.name ?? "", snippet };
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const minuteResults: MinuteResult[] = (minuteResp.data ?? []).map((m: any) => {
+        const proj = projectLookup.get(m.project_id);
+        return { type: "minute" as const, id: m.id, title: m.title || "新規議事録", meetingDate: m.meeting_date ?? "", createdAt: m.created_at ?? "", projectId: m.project_id, projectSlug: proj?.slug ?? "", projectName: proj?.name ?? "" };
+      });
+
+      setResults({ tickets: ticketResults, sprints: sprintResults, projects: projectResults, members: memberResults, comments: commentResults, descriptions: descriptionResults, wikis: wikiResults, minutes: minuteResults });
     } catch {
       setResults(EMPTY);
     } finally {
@@ -298,6 +348,12 @@ export function GlobalSearch() {
         break;
       case "member":
         navigate("/members", { state: { highlightMemberId: result.id } });
+        break;
+      case "wiki":
+        navigate(`/${result.projectSlug}/wiki/${result.id}`);
+        break;
+      case "minute":
+        navigate(`/${result.projectSlug}/minutes/${toMinuteSlug(result.createdAt) || result.id}`);
         break;
     }
   };
@@ -486,6 +542,50 @@ export function GlobalSearch() {
                         </div>
                         <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{ROLE_LABELS[m.role] ?? m.role}</span>
                       </div>
+                    </ResultRow>
+                  ))}
+                </div>
+              )}
+
+              {results.wikis.length > 0 && (
+                <div>
+                  <CategoryHeader
+                    icon={<BookOpen style={{ width: 10, height: 10, color: "#7C3AED" }} />}
+                    label="Wiki"
+                    color="#7C3AED"
+                    showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length > 0}
+                  />
+                  {results.wikis.map(w => (
+                    <ResultRow key={w.id} onClick={() => handleSelect(w)} hoverColor="#F5F3FF">
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.title}</span>
+                      </div>
+                      {w.snippet && (
+                        <div style={{ fontSize: 11, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.snippet}</div>
+                      )}
+                      <div style={{ fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{w.projectName}</div>
+                    </ResultRow>
+                  ))}
+                </div>
+              )}
+
+              {results.minutes.length > 0 && (
+                <div>
+                  <CategoryHeader
+                    icon={<FileText style={{ width: 10, height: 10, color: "#0891B2" }} />}
+                    label="議事録"
+                    color="#0891B2"
+                    showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length + results.wikis.length > 0}
+                  />
+                  {results.minutes.map(m => (
+                    <ResultRow key={m.id} onClick={() => handleSelect(m)} hoverColor="#ECFEFF">
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
+                        {m.meetingDate && (
+                          <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{m.meetingDate}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{m.projectName}</div>
                     </ResultRow>
                   ))}
                 </div>
