@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight } from "lucide-react";
@@ -218,18 +218,6 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
     q.then(({ data }) => { if (data?.length) setReviewerList(data.map((d: { name: string }) => d.name)); });
   }, [userOrgId]);
 
-  // ボード用のフィルタリングされたステータス配列を取得するヘルパー関数
-  const getFilteredBoardStatuses = () => {
-    return TICKET_STATUSES.filter((col, idx) => {
-      const nextCol = TICKET_STATUSES[idx + 1];
-      if (col.value === "closed" && nextCol && nextCol.value === "waiting-release") {
-        return false;
-      }
-      return true;
-    });
-  };
-
-  const visibleStatuses = useMemo(() => getFilteredBoardStatuses(), []);
 
   const applyStatusUpdate = useCallback(async (
     ticketId: string, newStatus: TicketStatus, comment: string,
@@ -426,7 +414,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             style={{ position: "sticky", top: 0, overflow: "hidden", zIndex: 10, background: "#F5F6F8", marginBottom: 4 }}
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
-              {visibleStatuses.map(col => {
+              {TICKET_STATUSES.map(col => {
                 const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px" }}>
@@ -450,7 +438,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             }}
           >
             <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
-              {visibleStatuses.map(col => {
+              {TICKET_STATUSES.map(col => {
                 const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>

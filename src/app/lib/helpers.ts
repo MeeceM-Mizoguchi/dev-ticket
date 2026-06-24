@@ -26,7 +26,7 @@ export function getStatusMeta(status: ProjectStatus | TicketStatus) {
     uat: { label: "UAT完了", cls: "bg-indigo-50 text-indigo-700", dot: "bg-indigo-500", bar: "bg-indigo-500" },
     closed: { label: "クローズ", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-500", bar: "bg-stone-400" },
     "waiting-release": { label: "リリース待ち", cls: "bg-purple-50 text-purple-700", dot: "bg-purple-500", bar: "bg-purple-500" },
-    released: { label: "リリース済み", cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500", bar: "bg-emerald-500" },
+    released: { label: "クローズ", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-500", bar: "bg-stone-400" },
   };
   return map[status] ?? { label: status, cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" };
 }
@@ -41,7 +41,6 @@ export const TICKET_STATUSES = [
   { value: "review-done", label: "レビュー完了", color: "#0284C7", bg: "#F0F9FF" },
   { value: "stg-test", label: "STG完了", color: "#0D9488", bg: "#F0FDFA" },
   { value: "uat", label: "UAT完了", color: "#4F46E5", bg: "#EEF2FF" },
-  { value: "closed", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
   { value: "waiting-release", label: "リリース待ち", color: "#7C3AED", bg: "#F5F3FF" },
   { value: "released", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
 ];
