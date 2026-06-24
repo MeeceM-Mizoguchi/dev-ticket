@@ -10,13 +10,16 @@ import { Extension } from "@tiptap/core";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
 import { Copy, X, CheckCheck } from "lucide-react";
+import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
-// ---- インライン画像 NodeView（ホバーでコピー/削除ボタン表示） ----
-function ImageNodeView({ node, deleteNode }: NodeViewProps) {
+// ---- インライン画像 NodeView（ホバーでコピー/削除、クリックで拡大表示） ----
+function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [preview, setPreview] = useState(false);
   const src = (node.attrs as { src: string }).src;
+  const isEditable = editor.isEditable;
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -45,8 +48,9 @@ function ImageNodeView({ node, deleteNode }: NodeViewProps) {
     <NodeViewWrapper as="span" style={{ display: "inline-block", position: "relative", lineHeight: 0 }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}>
-      <img src={src} style={{ maxWidth: "100%", maxHeight: 300, borderRadius: 6, margin: "4px 0", display: "block", objectFit: "contain", boxShadow: "0 1px 4px rgba(0,0,0,0.10)", cursor: "default" }} />
-      {hovered && (
+      <img src={src} style={{ maxWidth: "100%", maxHeight: 300, borderRadius: 6, margin: "4px 0", display: "block", objectFit: "contain", boxShadow: "0 1px 4px rgba(0,0,0,0.10)", cursor: "zoom-in" }}
+        onClick={() => setPreview(true)} />
+      {hovered && isEditable && (
         <div contentEditable={false} style={{ position: "absolute", top: 8, right: 4, display: "flex", gap: 4 }}>
           <button type="button" onMouseDown={handleCopy}
             style={{ width: 22, height: 22, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -59,6 +63,20 @@ function ImageNodeView({ node, deleteNode }: NodeViewProps) {
             <X style={{ width: 10, height: 10, color: "#FFF" }} />
           </button>
         </div>
+      )}
+      {preview && createPortal(
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}
+          onClick={() => setPreview(false)}
+        >
+          <img src={src} alt="" style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8, objectFit: "contain", boxShadow: "0 24px 80px rgba(0,0,0,0.6)", cursor: "default" }}
+            onClick={e => e.stopPropagation()} />
+          <button type="button" onClick={() => setPreview(false)}
+            style={{ position: "absolute", top: 20, right: 20, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+            <X style={{ width: 18, height: 18 }} />
+          </button>
+        </div>,
+        document.body
       )}
     </NodeViewWrapper>
   );
