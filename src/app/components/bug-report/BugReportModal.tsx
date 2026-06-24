@@ -4,6 +4,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { mapBugReport } from "@/app/lib/mappers";
+import { escStack } from "@/app/lib/escStack";
 import type { BugCategory, BugSeverity, BugReport } from "@/app/types";
 
 const CATEGORY_OPTIONS: { value: BugCategory; label: string }[] = [
@@ -54,6 +55,11 @@ type Phase = "form" | "submitting" | "success" | "list";
 export function BugReportModal({ onClose }: Props) {
   const { userId, userName } = useAuth();
   const bubbles = useRef(createBubbles(18)).current;
+
+  useEffect(() => {
+    escStack.push(onClose);
+    return () => escStack.pop(onClose);
+  }, [onClose]);
 
   const [phase, setPhase] = useState<Phase>("form");
 

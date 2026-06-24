@@ -329,11 +329,21 @@ export function TicketDetailPanel({
     return () => escStack.pop(stableEscHandler);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!previewImage) return;
+    const close = () => setPreviewImage(null);
+    escStack.push(close);
+    return () => escStack.pop(close);
+  }, [previewImage]);
+
   // Runs synchronously before paint — sets the panel animation value without any visible flash.
   // useLayoutEffect + setState causes a sync re-render before the browser draws, so the first
   // paint always shows the correct animation (slideIn, suppressed, etc.).
   useLayoutEffect(() => {
     if (!ticket?.id) return;
+    // isClosing が前のチケットのクローズ操作から残っていると開く瞬間に
+    // slideOutPanel アニメーションが一瞬走るため、描画前にリセットする。
+    setIsClosing(false);
     if (forceNoAnim || isParentNavigationActive) {
       isParentNavigationActive = false;
       isParentNavRef.current = false;
