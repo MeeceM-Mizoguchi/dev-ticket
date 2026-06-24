@@ -133,7 +133,7 @@ export default async function handler(req: any, res: any) {
   const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
 
   // Generate invite link (does NOT send Supabase's default email)
-  const { data, error } = await sb.auth.admin.generateLink({
+  let { data, error } = await sb.auth.admin.generateLink({
     type: "invite",
     email,
     options: {
@@ -141,6 +141,17 @@ export default async function handler(req: any, res: any) {
       redirectTo: `${publicUrl}/accept-invite`,
     },
   });
+
+  // Fall back to magic link if user is already registered in Supabase Auth
+  if (error?.message?.toLowerCase().includes("already been registered") || error?.message?.toLowerCase().includes("already registered")) {
+    const mlResult = await sb.auth.admin.generateLink({
+      type: "magiclink",
+      email,
+      options: { redirectTo: `${publicUrl}/accept-invite` },
+    });
+    data = mlResult.data;
+    error = mlResult.error;
+  }
 
   if (error || !data?.properties?.action_link) {
     return res.status(400).json({ error: error?.message || "招待リンクの生成に失敗しました" });
