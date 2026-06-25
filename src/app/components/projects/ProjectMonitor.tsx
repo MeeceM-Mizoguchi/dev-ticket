@@ -76,6 +76,7 @@ export function ProjectMonitor({
   const [withdrawnAt, setWithdrawnAt] = useState<string | null>(null);
   const [comments, setComments] = useState<any[]>([]);
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(null);
+  const [breakdown, setBreakdown] = useState<string[] | null>(null);
   const [ticketStatus, setTicketStatus] = useState<string>("");
 
   // インライン修正モード用のステート
@@ -90,13 +91,14 @@ export function ProjectMonitor({
   useEffect(() => {
     Promise.all([
       fetchMilestones(ticketId),
-      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours, status").eq("id", ticketId).single() : Promise.resolve({ data: null }),
+      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours, actual_work_hours_breakdown, status").eq("id", ticketId).single() : Promise.resolve({ data: null }),
       isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null })
     ]).then(([data, ticketRes, commentsRes]) => {
       if (data) setMilestones(data);
       if (ticketRes?.data?.progress === -1) setIsHold(true);
       if (ticketRes?.data?.progress === -2) setIsWithdrawn(true);
       if (ticketRes?.data?.actual_work_hours != null) setActualWorkHours(ticketRes.data.actual_work_hours);
+      if (Array.isArray(ticketRes?.data?.actual_work_hours_breakdown)) setBreakdown(ticketRes.data.actual_work_hours_breakdown.map((v: unknown) => String(v)));
       if (ticketRes?.data?.status) setTicketStatus(ticketRes.data.status);
       if (commentsRes?.data) {
         setComments(commentsRes.data);
@@ -107,27 +109,14 @@ export function ProjectMonitor({
     }).catch(() => setLoading(false));
   }, [ticketId]);
 
-  // 🌟 修正: 過去ログからユーザーが入力した「オリジナルの工程別内訳」を100%そのまま復元する
+  // ユーザーが入力した「オリジナルの工程別内訳」を専用カラムから100%そのまま復元する
   useEffect(() => {
     if (loading) return;
 
-    // 前回の保存時に裏で仕込んだ、このチケットの固有内訳「[工数内訳]: ...」のコメントログを検索
-    const savedRecordComment = [...comments]
-      .reverse()
-      .find(c => c.content && c.content.includes("[工数内訳]:"));
-
-    if (savedRecordComment) {
-      try {
-        const rawValues = savedRecordComment.content.split("[工数内訳]:")[1].trim();
-        const parsedArray = JSON.parse(rawValues) as string[];
-        if (Array.isArray(parsedArray) && parsedArray.length === 5) {
-          // 前回打ち込んだ通りの各マスの数値をそのままフォームへ完全再現
-          setSegmentValues(parsedArray.map(v => v === "0" || v === "" ? "" : String(v)));
-          return; 
-        }
-      } catch (e) {
-        console.warn("内訳のオリジナル復元に失敗しました。システム計測値へフォールバックします", e);
-      }
+    // 前回保存された工程別内訳があれば、打ち込んだ通りの各マスの数値をそのままフォームへ完全再現
+    if (breakdown && breakdown.length === 5) {
+      setSegmentValues(breakdown.map(v => v === "0" || v === "" ? "" : String(v)));
+      return;
     }
 
     // 初回入力時などで、内訳データがまだ存在しない場合のみシステム自動計測値を初期値にする
@@ -154,7 +143,7 @@ export function ProjectMonitor({
     } else {
       setSegmentValues(systemSegments.map(h => h > 0 ? String(h) : ""));
     }
-  }, [loading, milestones, actualWorkHours, comments]);
+  }, [loading, milestones, actualWorkHours, breakdown]);
 
   const effectiveNow = isWithdrawn && withdrawnAt ? withdrawnAt : nowIso;
 
@@ -227,11 +216,16 @@ export function ProjectMonitor({
     return sum;
   }, 0);
 
+  // 手動入力された工程別内訳があれば、タイムラインはシステム計測値ではなく入力値をそのまま表示する
+  const savedBreakdown: number[] | null = breakdown && breakdown.length === 5
+    ? breakdown.map(v => { const n = parseFloat(v); return isNaN(n) || n < 0 ? 0 : n; })
+    : null;
+
   const handleTriggerEdit = () => {
     setIsEditFormMode(true);
   };
 
-  // 🌟 修正: 保存完了時、各マスのオリジナル数値を次回100%復元させるため、裏で履歴コメントへ配列を保存する
+  // 保存完了時、各マスのオリジナル数値を次回100%復元させるため、合計と工程別内訳を専用カラムへ保存する
   const handleFormSave = async () => {
     const total = segmentValues.reduce((sum, v) => {
       const n = parseFloat(v);
@@ -244,19 +238,13 @@ export function ProjectMonitor({
     }
     setSaving(true);
     if (isSupabaseEnabled) {
-      // 1. 合計工数実績の登録
-      await supabase!.from("sprint_tickets").update({ actual_work_hours: Math.round(total * 100) / 100 }).eq("id", ticketId);
-      
-      // 2. 内訳配列データをシステムログとして書き込み
-      const arrayString = JSON.stringify(segmentValues.map(v => v === "" ? "0" : v));
-      await supabase!.from("ticket_comments").insert({
-        ticket_id: ticketId,
-        content: `[工数内訳]: ${arrayString}`,
-        comment_type: "status_change"
-      });
+      await supabase!.from("sprint_tickets").update({
+        actual_work_hours: Math.round(total * 100) / 100,
+        actual_work_hours_breakdown: segmentValues.map(v => v === "" ? "0" : v),
+      }).eq("id", ticketId);
     }
     setSaving(false);
-    onClose(); 
+    onClose();
   };
 
   const updateSegment = (i: number, v: string) => {
@@ -382,7 +370,17 @@ export function ProjectMonitor({
                       {idx > 0 && (
                         <div style={{ display: "flex", alignItems: "center", paddingLeft: 32, paddingRight: 24, height: 36 }}>
                           <div style={{ width: 2, height: "100%", background: (isDone || isOngoing) && !!prevDate ? "#A7F3D0" : "#EDE9E0", marginLeft: 7 }} />
-                          {skipped ? (
+                          {savedBreakdown ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 12 }}>
+                              <span style={{
+                                fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)",
+                                background: "#ECFDF5", padding: "2px 9px", borderRadius: 20,
+                                fontWeight: 600, border: "1px solid transparent", width: "fit-content"
+                              }}>
+                                {formatDuration(savedBreakdown[idx - 1] ?? 0)}
+                              </span>
+                            </div>
+                          ) : skipped ? (
                             <span style={{ fontSize: 10, color: "#F59E0B", fontFamily: "var(--font-mono)", marginLeft: 12, background: "#FFFBEB", padding: "2px 9px", borderRadius: 20, fontWeight: 600, border: "1px solid rgba(245,158,11,0.25)" }}>
                               スキップ
                             </span>
@@ -446,7 +444,12 @@ export function ProjectMonitor({
         {!loading && !isEditFormMode && (
           <div style={{ flexShrink: 0, padding: "16px 24px", background: "#FAFAF9", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>現時点の合計作業時間</span>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>現時点の合計作業時間</span>
+                <span style={{ fontSize: 13, fontWeight: 800, color: "#059669", fontFamily: "var(--font-mono)" }}>
+                  {Math.round((actualWorkHours != null ? actualWorkHours : totalHours) * 100) / 100}h
+                </span>
+              </div>
               {actualWorkHours != null && (
                 <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 500 }}>手動入力済み</span>
               )}
