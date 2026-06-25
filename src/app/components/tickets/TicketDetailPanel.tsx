@@ -231,6 +231,8 @@ export function TicketDetailPanel({
     ticket?.status === "waiting-release" && (ticket?.actualWorkHours == null)
   );
 
+const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実績の打ち直し（修正モード）フラグ
+
   // レビューフロー アコーディオン
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
@@ -833,13 +835,14 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
-  const handleSaveActualWorkHours = async (hours: number) => {
-    if (!ticket || !isSupabaseEnabled) return;
-    await supabase!.from("sprint_tickets").update({ actual_work_hours: hours }).eq("id", ticket.id);
-    setActualWorkHours(hours);
-    setShowHoursInputMode(false);
-    onUpdated?.();
-  };
+ const handleSaveActualWorkHours = async (hours: number) => {
+   if (!ticket || !isSupabaseEnabled) return;
+   await supabase!.from("sprint_tickets").update({ actual_work_hours: hours }).eq("id", ticket.id);
+   setActualWorkHours(hours);
+   setShowHoursInputMode(false);
+   setIsEditingActualHours(false); // 🌟 追加：保存が完了したら自動的に修正モードを終了してロックする
+   onUpdated?.();
+ };
 
   const handleAddToReleaseNotes = () => {
     if (!ticket) return;
@@ -3182,24 +3185,24 @@ export function TicketDetailPanel({
           </div>
           </>
         </div>
-        {showCompletionOverlay && ticket && (
-          <CompletionOverlay
-            ticketTitle={title}
-            initialSegmentHours={completionSegmentHours}
-            onSave={handleSaveActualWorkHours}
-            onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
-          />
-        )}
-        {showHoursInputMode && !showCompletionOverlay && ticket && (
-          <CompletionOverlay
-            ticketTitle={title}
-            initialSegmentHours={computeRawSegments(ticket)}
-            skipAnimation
-            onSave={handleSaveActualWorkHours}
-            onClose={() => setShowHoursInputMode(false)}
-          />
-        )}
-      </div>
-    </>
+    {showCompletionOverlay && ticket && (
+      <CompletionOverlay
+        ticketTitle={title}
+        initialSegmentHours={completionSegmentHours}
+        onSave={handleSaveActualWorkHours}
+        onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
+      />
+    )}
+    {showHoursInputMode && !showCompletionOverlay && ticket && (
+      <CompletionOverlay
+        ticketTitle={title}
+        initialSegmentHours={computeRawSegments(ticket)}
+        skipAnimation
+        onSave={handleSaveActualWorkHours}
+        onClose={() => setShowHoursInputMode(false)}
+      />
+    )}
+  </div>
+</>
   );
 }

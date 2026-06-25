@@ -59,9 +59,8 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
       });
       return next.some((v, i) => v !== prev[i]) ? next : prev;
     });
-  // initialSegmentHours の参照は setCompletionSegmentHours 呼び出し時にのみ変わる
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSegmentHours]);
+  
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const bubbles = useRef(createBubbles(24)).current;
