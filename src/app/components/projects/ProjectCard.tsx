@@ -39,7 +39,7 @@ export function ProjectCard({
   }, [menuOpen]);
 
   // プロジェクトオブジェクト内のタグ情報を安全に参照
-  const projectTags = (project as any).tags && Array.isArray((project as any).tags) ? (project as any).tags : [];
+  const projectTags = Array.isArray(project.tags) ? project.tags : [];
 
   return (
     <div onClick={onNavigate} style={{ background: "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}

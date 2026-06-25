@@ -128,8 +128,9 @@ export function ProjectsPage() {
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: s }]) => {
       if (p) {
+        // Supabaseのprojects.tagsカラムから直接タグを取得（mapProject内でマッピング済み）
         const merged = mergeTicketCounts(p, computeTicketCounts(s ?? []));
-        setProjects(injectLocalTags(merged));
+        setProjects(merged);
       }
     });
   };
@@ -150,8 +151,9 @@ export function ProjectsPage() {
       supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
     ]).then(([{ data: p }, { data: c }, { data: s }]) => {
       if (p) {
+        // Supabaseのprojects.tagsカラムから直接タグを取得（mapProject内でマッピング済み）
         const merged = mergeTicketCounts(p, computeTicketCounts(s ?? []));
-        setProjects(injectLocalTags(merged));
+        setProjects(merged);
       }
       if (c) setClients(c.map(mapClient));
       setLoading(false);
@@ -195,7 +197,7 @@ export function ProjectsPage() {
 
   // 動的タグ一覧の抽出
   const allUniqueTags = Array.from(
-    new Set(visibleProjects.flatMap(p => (p as any).tags && Array.isArray((p as any).tags) ? (p as any).tags : []))
+    new Set(visibleProjects.flatMap(p => Array.isArray(p.tags) ? p.tags : []))
   ) as string[];
 
   const filteredTagsInMenu = allUniqueTags.filter(tag => tag.toLowerCase().includes(tagSearchQuery.toLowerCase()));
@@ -207,7 +209,7 @@ export function ProjectsPage() {
   const filtered = visibleProjects.filter(p => {
     const ms = p.name.includes(search) || p.client.includes(search) || p.id.includes(search);
     const matchesStatus = statusFilter === "all" || p.status === statusFilter;
-    const projectTags = (p as any).tags && Array.isArray((p as any).tags) ? (p as any).tags : [];
+    const projectTags = Array.isArray(p.tags) ? p.tags : [];
     const matchesTags = selectedTags.length === 0 || selectedTags.every(t => projectTags.includes(t));
     return ms && matchesStatus && matchesTags;
   });
@@ -407,6 +409,7 @@ export function ProjectsPage() {
       {tagsEditTarget && (
         <ProjectTagsEditDialog
           project={tagsEditTarget}
+          allTags={allUniqueTags}
           onClose={() => setProjectTagsEditTarget(null)}
           onUpdated={() => { refreshProjects(); setProjectTagsEditTarget(null); }}
         />
@@ -424,41 +427,81 @@ export function ProjectsPage() {
   );
 }
 
-function ProjectTagsEditDialog({ project, onClose, onUpdated }: { project: Project; onClose: () => void; onUpdated: () => void }) {
-  const currentTags = (project as any).tags && Array.isArray((project as any).tags) ? (project as any).tags : [];
+function ProjectTagsEditDialog({ project, allTags, onClose, onUpdated }: { project: Project; allTags: string[]; onClose: () => void; onUpdated: () => void }) {
+  const { toast } = useToast();
+  const currentTags = Array.isArray(project.tags) ? project.tags : [];
   const [tagsList, setTagsArray] = useState<string[]>(currentTags);
   const [inputTag, setInputTag] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleAddTag = () => {
-    const trimmed = inputTag.trim();
+  // 入力中の文字列に部分一致する既存タグをサジェスト（追加済みのものも「追加済み」として表示）
+  const trimmedInput = inputTag.trim();
+  const suggestions = trimmedInput
+    ? allTags
+        .filter(t => t.toLowerCase().includes(trimmedInput.toLowerCase()))
+        .map(t => ({ tag: t, added: tagsList.includes(t) }))
+        .sort((a, b) => Number(a.added) - Number(b.added))
+    : [];
+
+  // 既存タグと完全一致するものがあれば、それを優先して適用する（重複登録を防ぐ）
+  const addTag = (rawTag: string) => {
+    const trimmed = rawTag.trim();
     if (!trimmed) return;
     if (tagsList.includes(trimmed)) {
-      setInputTag("");
+      setError(`「${trimmed}」は既に追加されているタグです`);
       return;
     }
-    setTagsArray([...tagsList, trimmed]);
+    // 大文字小文字差を吸収し、既存タグと同名なら既存の表記を採用
+    const existing = allTags.find(t => t.toLowerCase() === trimmed.toLowerCase());
+    setTagsArray([...tagsList, existing ?? trimmed]);
     setInputTag("");
+    setError(null);
+  };
+
+  const handleAddTag = () => addTag(inputTag);
+
+  const handleInputChange = (value: string) => {
+    setInputTag(value);
+    if (error) setError(null);
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
     setTagsArray(tagsList.filter(t => t !== tagToRemove));
   };
 
-  const handleSaveTags = () => {
-    try {
-      const storeStr = localStorage.getItem("local_project_tags_map") || "{}";
-      const currentMap = JSON.parse(storeStr);
-      
-      currentMap[project.id] = tagsList;
-      if (project.slug) {
-        currentMap[project.slug] = tagsList;
-      }
+  const handleSaveTags = async () => {
+    if (saving) return;
+    setSaving(true);
 
-      localStorage.setItem("local_project_tags_map", JSON.stringify(currentMap));
-      onUpdated();
-    } catch (e) {
-      console.error("Failed to save project tags to localStorage", e);
+    // Supabase未接続時はローカルストレージにフォールバック保存
+    if (!isSupabaseEnabled) {
+      try {
+        const storeStr = localStorage.getItem("local_project_tags_map") || "{}";
+        const currentMap = JSON.parse(storeStr);
+        currentMap[project.id] = tagsList;
+        if (project.slug) currentMap[project.slug] = tagsList;
+        localStorage.setItem("local_project_tags_map", JSON.stringify(currentMap));
+        toast("タグを保存しました");
+        onUpdated();
+      } catch (e) {
+        console.error("Failed to save project tags to localStorage", e);
+        toast("タグの保存に失敗しました", "error");
+      } finally {
+        setSaving(false);
+      }
+      return;
     }
+
+    const { error } = await supabase!.from("projects").update({ tags: tagsList }).eq("id", project.id);
+    setSaving(false);
+    if (error) {
+      console.error("Failed to save project tags", error);
+      toast("タグの保存に失敗しました", "error");
+      return;
+    }
+    toast("タグを保存しました");
+    onUpdated();
   };
 
   return (
@@ -470,25 +513,52 @@ function ProjectTagsEditDialog({ project, onClose, onUpdated }: { project: Proje
         
         <div style={{ marginBottom: "16px" }}>
           <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#6B6458", marginBottom: "6px" }}>新しいタグを追加</label>
-          <div style={{ display: "flex", gap: "6px" }}>
-            <input 
-              type="text"
-              value={inputTag}
-              onChange={e => setInputTag(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddTag(); } }}
-              placeholder="例: 重要顧客"
-              style={{ flex: 1, padding: "8px 12px", fontSize: "13px", color: "#1A1714", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.15)", borderRadius: "8px", outline: "none" }}
-            />
-            <button 
+          <div style={{ display: "flex", gap: "6px", position: "relative" }}>
+            <div style={{ flex: 1, position: "relative" }}>
+              <input
+                type="text"
+                value={inputTag}
+                onChange={e => handleInputChange(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); handleAddTag(); } }}
+                placeholder="例: 重要顧客"
+                style={{ width: "100%", padding: "8px 12px", fontSize: "13px", color: "#1A1714", background: "#FFFFFF", border: `1px solid ${error ? "rgba(220,38,38,0.55)" : "rgba(26,23,20,0.15)"}`, borderRadius: "8px", outline: "none" }}
+              />
+
+              {/* 既存タグのサジェスト候補 */}
+              {suggestions.length > 0 && (
+                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 10, background: "#FFFFFF", borderRadius: "8px", boxShadow: "0 4px 20px rgba(26,23,20,0.10), 0 2px 6px rgba(26,23,20,0.05)", border: "1px solid rgba(26,23,20,0.06)", padding: "4px", maxHeight: "180px", overflowY: "auto" }}>
+                  <div style={{ padding: "4px 8px 6px", fontSize: "10px", fontWeight: 700, color: "#B0A9A4" }}>既存のタグ</div>
+                  {suggestions.map(({ tag, added }) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onMouseDown={e => { e.preventDefault(); addTag(tag); }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", width: "100%", padding: "7px 8px", fontSize: "12px", fontWeight: 600, color: added ? "#B0A9A4" : "#0284C7", textAlign: "left", background: "transparent", border: "none", borderRadius: "6px", cursor: added ? "default" : "pointer" }}
+                      onMouseEnter={e => e.currentTarget.style.background = added ? "transparent" : "#F0F9FF"}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                    >
+                      <span>#{tag}</span>
+                      {added && <span style={{ fontSize: "10px", fontWeight: 600, color: "#C9C4BB" }}>追加済み</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
               type="button"
               onClick={handleAddTag}
-              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", background: "#059669", color: "#FFFFFF", border: "none", borderRadius: "8px", cursor: "pointer", transition: "background 0.15s" }}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", background: "#059669", color: "#FFFFFF", border: "none", borderRadius: "8px", cursor: "pointer", transition: "background 0.15s", flexShrink: 0 }}
               onMouseEnter={e => e.currentTarget.style.background = "#047857"}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}
             >
               <Plus style={{ width: 18, height: 18 }} />
             </button>
           </div>
+
+          {/* 重複追加時のバリデーションエラー */}
+          {error && (
+            <p style={{ marginTop: "6px", fontSize: "11px", fontWeight: 600, color: "#DC2626" }}>{error}</p>
+          )}
         </div>
 
         <div style={{ marginBottom: "22px" }}>
@@ -536,9 +606,9 @@ function ProjectTagsEditDialog({ project, onClose, onUpdated }: { project: Proje
             style={{ padding: "8px 14px", fontSize: "12px", fontWeight: 600, color: "#6B6458", background: "#F4F5F6", border: "none", borderRadius: "8px", cursor: "pointer" }}>
             キャンセル
           </button>
-          <button type="button" onClick={handleSaveTags}
-            style={{ padding: "8px 16px", fontSize: "12px", fontWeight: 600, color: "#FFFFFF", background: "#059669", border: "none", borderRadius: "8px", cursor: "pointer", boxShadow: "0 2px 4px rgba(5,150,105,0.2)" }}>
-            変更を保存
+          <button type="button" onClick={handleSaveTags} disabled={saving}
+            style={{ padding: "8px 16px", fontSize: "12px", fontWeight: 600, color: "#FFFFFF", background: saving ? "#9CA3AF" : "#059669", border: "none", borderRadius: "8px", cursor: saving ? "not-allowed" : "pointer", boxShadow: "0 2px 4px rgba(5,150,105,0.2)" }}>
+            {saving ? "保存中..." : "変更を保存"}
           </button>
         </div>
       </div>
