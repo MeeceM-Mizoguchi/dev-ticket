@@ -258,7 +258,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // å®Ÿç
     if (!isSupabaseEnabled) return;
     const { data } = await supabase!
       .from("sprint_tickets")
-      .select("id,wbs,title,status,priority,progress")
+      .select("id,wbs,title,status,priority,progress,parent_id")
       .eq("parent_id", ticketId)
       .order("wbs");
     if (data) setChildTickets(data.map(mapSprintTicket));

@@ -367,6 +367,7 @@ export function ReleaseNotesPage() {
           projectSlug={selectedTicketMeta.projectSlug}
           onClose={closeDetail}
           onUpdated={() => load()}
+          onSelectTicket={t => setSelectedTicket(t)}
         />
       )}
 

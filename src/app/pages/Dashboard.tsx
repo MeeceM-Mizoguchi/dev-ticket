@@ -1197,6 +1197,7 @@ export function Dashboard() {
           onClose={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
           onUpdated={() => {}}
           onDeleted={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
+          onSelectTicket={t => setSelectedSprintTicket(t)}
         />
       )}
     </div>

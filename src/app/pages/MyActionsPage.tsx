@@ -1613,6 +1613,7 @@ export function MyActionsPage() {
           onClose={() => setMemoPanel(null)}
           onUpdated={() => loadMemos()}
           onDeleted={() => { setMemoPanel(null); loadMemos(); }}
+          onSelectTicket={child => setMemoPanel(prev => prev ? { ...prev, ticket: child } : prev)}
         />
       )}
 
