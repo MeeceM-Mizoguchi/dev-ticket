@@ -205,8 +205,6 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
   const currentSprint = sprints.find(s => s.id === selectedSprintId) ?? sprints[0] ?? null;
   const currentSprintRef = useRef(currentSprint);
   currentSprintRef.current = currentSprint;
-  const headerRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (sprints.length && !sprints.find(s => s.id === selectedSprintId)) {
@@ -412,13 +410,10 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
 
       {/* ── Kanban board ── */}
       {currentSprint && (
-        <div>
-          {/* Sticky status header row */}
-          <div
-            ref={headerRef}
-            style={{ position: "sticky", top: 0, overflow: "hidden", zIndex: 10, background: "#F5F6F8", marginBottom: 4 }}
-          >
-            <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
+        <div style={{ overflowX: "auto", overflowY: "clip" }}>
+          {/* Sticky status header row — overflow-y:clip doesn't create a scroll container, so sticky still works relative to the window */}
+          <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F5F6F8", marginBottom: 4, minWidth: "fit-content" }}>
+            <div style={{ display: "flex", gap: 8 }}>
               {TICKET_STATUSES.map(col => {
                 const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
                 return (
@@ -433,26 +428,16 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             </div>
           </div>
           {/* Board body */}
-          <div
-            ref={bodyRef}
-            style={{ overflowX: "auto" }}
-            onScroll={() => {
-              if (headerRef.current && bodyRef.current) {
-                headerRef.current.scrollLeft = bodyRef.current.scrollLeft;
-              }
-            }}
-          >
-            <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
-              {TICKET_STATUSES.map(col => {
-                const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
-                return (
-                  <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
-                    <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                      style={{ flex: 1 }} />
-                  </div>
-                );
-              })}
-            </div>
+          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
+            {TICKET_STATUSES.map(col => {
+              const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
+              return (
+                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
+                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
+                    style={{ flex: 1 }} />
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

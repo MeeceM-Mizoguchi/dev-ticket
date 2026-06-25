@@ -1557,7 +1557,38 @@ export function LandingPage() {
             </p>
           </div>
 
-          <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-7xl mx-auto">
+            <Card className="border-slate-200 hover:border-slate-300 transition-all">
+              <CardContent className="pt-6">
+                <div className="text-center mb-6">
+                  <h3 className="text-2xl font-bold text-slate-900 mb-2">無料</h3>
+                  <div className="text-4xl font-bold text-slate-900 mb-2">¥0</div>
+                  <div className="text-slate-600">/ 月</div>
+                </div>
+                <ul className="space-y-3 mb-6">
+                  <li className="flex items-start gap-3">
+                    <CheckCheck className="w-5 h-5 text-teal-600 mt-1 flex-shrink-0" />
+                    <span className="text-slate-700">1プロジェクトまで</span>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <CheckCheck className="w-5 h-5 text-teal-600 mt-1 flex-shrink-0" />
+                    <span className="text-slate-700">3メンバーまで</span>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <CheckCheck className="w-5 h-5 text-teal-600 mt-1 flex-shrink-0" />
+                    <span className="text-slate-700">基本機能のみ</span>
+                  </li>
+                  <li className="flex items-start gap-3">
+                    <CheckCheck className="w-5 h-5 text-teal-600 mt-1 flex-shrink-0" />
+                    <span className="text-slate-700">メールサポート</span>
+                  </li>
+                </ul>
+                <Button variant="outline" onClick={() => navigate('/book-demo?plan=free')} className="w-full">
+                  無料で始める
+                </Button>
+              </CardContent>
+            </Card>
+
             <Card className="border-slate-200 hover:border-slate-300 transition-all">
               <CardContent className="pt-6">
                 <div className="text-center mb-6">
@@ -1568,7 +1599,7 @@ export function LandingPage() {
                 <ul className="space-y-3 mb-6">
                   <li className="flex items-start gap-3">
                     <CheckCheck className="w-5 h-5 text-teal-600 mt-1 flex-shrink-0" />
-                    <span className="text-slate-700">1プロジェクトまで</span>
+                    <span className="text-slate-700">3プロジェクトまで</span>
                   </li>
                   <li className="flex items-start gap-3">
                     <CheckCheck className="w-5 h-5 text-teal-600 mt-1 flex-shrink-0" />
