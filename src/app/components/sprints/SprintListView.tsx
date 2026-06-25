@@ -12,6 +12,8 @@ import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 // 🌟 修正: 重複を事前に検知するため、checkDuplicateFilter も一緒にインポートへ追加する
 import { MyFilterModal, addMyFilter, SaveFilterDialog, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
 // 🌟 追加: 自前の美しいアラートダイアログを呼び出すためのインポート
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -261,8 +263,17 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
 }) {
-  const { userId } = useAuth(); // 🌟 追加: userId を取得
-  const { showAlert } = useAlert(); // 🌟 追加: 自前のアラート関数を取得
+  const { userId } = useAuth();
+  const { plan } = usePlan();
+  const { showAlert } = useAlert();
+
+  const [filterCounts, setFilterCounts] = useState<Record<string, number>>({});
+  const refreshFilterCount = (sprintId: string) => {
+    if (!isSupabaseEnabled || !userId || !sprintId) return;
+    supabase!.from("my_filters").select("*", { count: "exact", head: true })
+      .eq("sprint_id", sprintId).eq("member_id", userId)
+      .then(({ count }) => { setFilterCounts(prev => ({ ...prev, [sprintId]: count ?? 0 })); });
+  };
 
   // 🌟 追加: window.promptの代わりにオリジナル入力ダイアロップを立ち上げるための制御用ステート
   const [saveFilterTarget, setSaveFilterTarget] = useState<{
@@ -273,6 +284,15 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   } | null>(null);
   // 🌟 追加: アラート（茶色）ではなく、通常の美しい緑ヘッダーUIで完了通知を出すためのステート
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !userId || sprints.length === 0) return;
+    sprints.forEach(s => {
+      supabase!.from("my_filters").select("*", { count: "exact", head: true })
+        .eq("sprint_id", s.id).eq("member_id", userId)
+        .then(({ count }) => { setFilterCounts(prev => ({ ...prev, [s.id]: count ?? 0 })); });
+    });
+  }, [sprints, userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 🌟 修正: LocalStorageから初期状態を読み込むように変更
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -631,7 +651,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                         <p style={{ fontSize: 10, color: "#B0A9A4" }}>{label}</p>
                       </div>
                     ))}
-                    <SprintActualHours actualHours={actualHours} />
+                    {plan.featureActualMonitor && <SprintActualHours actualHours={actualHours} />}
                     <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
 
                     {/* 🌟 追加: Myフィルタ ボタン */}
@@ -648,28 +668,37 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
                       <ExternalLink style={{ width: 11, height: 11 }} />詳細
                     </button>
-                    <button onClick={e => { e.stopPropagation(); downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }}
-                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                      <Download style={{ width: 11, height: 11 }} />CSVダウンロード
-                    </button>
+                    <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureCsvExport} placement="bottom-left">
+                      <button onClick={e => { e.stopPropagation(); if (plan.featureCsvExport) downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }}
+                        style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureCsvExport ? "#059669" : "#9CA3AF", background: plan.featureCsvExport ? "#ECFDF5" : "#F3F4F6", border: `1px solid ${plan.featureCsvExport ? "rgba(5,150,105,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureCsvExport ? "pointer" : "not-allowed" }}
+                        onMouseEnter={e => { if (plan.featureCsvExport) (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                        onMouseLeave={e => { if (plan.featureCsvExport) (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                        <Download style={{ width: 11, height: 11 }} />CSVダウンロード
+                      </button>
+                    </PlanTooltip>
                     {onBulkCreate && (
-                      <button onClick={e => { e.stopPropagation(); onBulkCreate(sprint.id); }}
-                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-                        <Plus style={{ width: 11, height: 11 }} />一括作成
-                      </button>
+                      <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
+                        <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) onBulkCreate(sprint.id); }}
+                          style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureBulkCreate ? "#7C3AED" : "#9CA3AF", background: plan.featureBulkCreate ? "#F5F3FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(124,58,237,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed" }}
+                          onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                          onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                          <Plus style={{ width: 11, height: 11 }} />一括作成
+                        </button>
+                      </PlanTooltip>
                     )}
-                    {onCreateTicket && (
-                      <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
-                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-                        <Plus style={{ width: 11, height: 11 }} />新規チケット
-                      </button>
-                    )}
+                    {onCreateTicket && (() => {
+                      const ticketAtLimit = plan.maxTicketsPerSprint !== null && sprint.tickets.length >= plan.maxTicketsPerSprint;
+                      return (
+                        <PlanTooltip text="現在のプランではこれ以上作成できません" active={ticketAtLimit}>
+                          <button onClick={e => { e.stopPropagation(); if (!ticketAtLimit) onCreateTicket(sprint.id); }}
+                            style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: ticketAtLimit ? "#9CA3AF" : "#7C3AED", background: ticketAtLimit ? "#F3F4F6" : "#F5F3FF", border: `1px solid ${ticketAtLimit ? "rgba(156,163,175,0.30)" : "rgba(124,58,237,0.20)"}`, borderRadius: 7, cursor: ticketAtLimit ? "not-allowed" : "pointer" }}
+                            onMouseEnter={e => { if (!ticketAtLimit) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                            onMouseLeave={e => { if (!ticketAtLimit) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                            <Plus style={{ width: 11, height: 11 }} />新規チケット
+                          </button>
+                        </PlanTooltip>
+                      );
+                    })()}
                     {onEditSprint && (
                       <button onClick={e => { e.stopPropagation(); onEditSprint(sprint); }}
                         style={{ padding: 6, borderRadius: 7, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB" }}
@@ -716,37 +745,37 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           <X style={{ width: 11, height: 11 }} />
                         </button>
                       )}
-                      {(hasAnyFilter || sprintSort.col) && (
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            const serialized: Record<string, string[]> = {};
-                            Object.entries(currentFilters).forEach(([k, v]) => {
-                              if (v && v.size > 0) serialized[k] = Array.from(v);
-                            });
-
-                            // 🌟 修正: クリックした瞬間に既存の保存フィルタと条件が被っているか検証する
-                            const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
-                            if (dupTitle) {
-                              // 被りがある場合は、入力画面に進まず、2枚目の写真の独立したアラートUI (showAlert) を直接呼び出す
-                              showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
-                              return;
-                            }
-
-                            // 🌟 修正: 被りがない場合のみ、通常通り名前入力のカスタムモーダルを開く
-                            setSaveFilterTarget({
-                              sprintId: sprint.id,
-                              serializedFilters: serialized,
-                              sortCol: sprintSort.col,
-                              sortDir: sprintSort.dir as "asc" | "desc",
-                            });
-                          }}
-                          title="現在の絞り込み・並び替えを保存"
-                          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}
-                        >
-                          <Save style={{ width: 11, height: 11 }} />
-                        </button>
-                      )}
+                      {(hasAnyFilter || sprintSort.col) && (() => {
+                        const filterAtLimit = plan.maxFiltersPerSprint !== null && (filterCounts[sprint.id] ?? 0) >= plan.maxFiltersPerSprint;
+                        return (
+                          <PlanTooltip text="現在のプランではこれ以上作成できません" active={filterAtLimit} placement="bottom-left">
+                            <button
+                              onClick={filterAtLimit ? undefined : async (e) => {
+                                e.stopPropagation();
+                                const serialized: Record<string, string[]> = {};
+                                Object.entries(currentFilters).forEach(([k, v]) => {
+                                  if (v && v.size > 0) serialized[k] = Array.from(v);
+                                });
+                                const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
+                                if (dupTitle) {
+                                  showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
+                                  return;
+                                }
+                                setSaveFilterTarget({
+                                  sprintId: sprint.id,
+                                  serializedFilters: serialized,
+                                  sortCol: sprintSort.col,
+                                  sortDir: sprintSort.dir as "asc" | "desc",
+                                });
+                              }}
+                              title={filterAtLimit ? undefined : "現在の絞り込み・並び替えを保存"}
+                              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: `1px solid ${filterAtLimit ? "rgba(156,163,175,0.30)" : "rgba(5,150,105,0.25)"}`, background: filterAtLimit ? "#F3F4F6" : "#ECFDF5", color: filterAtLimit ? "#9CA3AF" : "#059669", cursor: filterAtLimit ? "not-allowed" : "pointer", padding: 0, flexShrink: 0 }}
+                            >
+                              <Save style={{ width: 11, height: 11 }} />
+                            </button>
+                          </PlanTooltip>
+                        );
+                      })()}
                     </div>
                   </div>
                 )}
@@ -882,7 +911,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       {/* 🌟 追加: MyFilter モーダルの描画と適用処理 */}
       {myFilterSprintId && (
         <MyFilterModal
-          onClose={() => setMyFilterSprintId(null)}
+          onClose={() => { refreshFilterCount(myFilterSprintId); setMyFilterSprintId(null); }}
           // 🌟 修正: 詳細画面での参照条件と完全に一致させるため、myFilterSprintId（本物のスプリントID）をそのまま渡す
           sprintId={myFilterSprintId}
           userId={userId ?? ""}
@@ -910,8 +939,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           userId={userId ?? ""}
           filters={saveFilterTarget.serializedFilters}
           onSave={async (title) => {
+            const sprintId = saveFilterTarget.sprintId;
             const result = await addMyFilter(
-              saveFilterTarget.sprintId,
+              sprintId,
               userId ?? "",
               title,
               saveFilterTarget.serializedFilters,
@@ -920,10 +950,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
             );
             setSaveFilterTarget(null);
             if (result && !result.success) {
-              // 🌟 修正: ブラウザ標準の alert を自前のきれいなダイアログに置き換え
               showAlert("保存に失敗しました。\n\nエラー詳細: " + result.error, "エラー");
             } else {
-              // 🌟 修正: アラート（茶色）は使わず、入力時と同じ自前の美しい緑ヘッダーダイアログを起動するためにステートへ格納
+              refreshFilterCount(sprintId);
               setSuccessMessage("フィルタを保存しました。「Myフィルタ」から呼び出せます。");
             }
           }}

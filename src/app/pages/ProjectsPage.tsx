@@ -4,6 +4,7 @@ import { Search, Plus, FolderKanban, ChevronDown, X, Check } from "lucide-react"
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useOrg } from "@/app/contexts/OrgContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, CLIENTS } from "@/app/data/mock";
@@ -16,6 +17,7 @@ import { EditProjectDialog } from "@/app/components/projects/EditProjectDialog";
 import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 
 const CACHE_STATUS_KEY = "projects_page_status_filter";
@@ -25,6 +27,7 @@ export function ProjectsPage() {
   const { userRole, userName, userOrgId } = useAuth();
   const { toast } = useToast();
   const { selectedOrgId } = useOrg();
+  const { plan } = usePlan();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   
@@ -186,7 +189,7 @@ export function ProjectsPage() {
     downloadProjectCsv(project.name, sprints, categories);
   };
 
-  const visibleProjects = (isOwner || userRole === "admin")
+  const visibleProjects = isOwner
     ? projects
     : projects.filter(p => p.members.includes(userName));
 
@@ -228,14 +231,19 @@ export function ProjectsPage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <OrgSelector />
-          {canManage && (
-            <button onClick={() => setShowDialog(true)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-              <Plus style={{ width: 15, height: 15 }} />新規プロジェクト
-            </button>
-          )}
+          {canManage && (() => {
+            const atLimit = plan.maxProjects !== null && projects.length >= plan.maxProjects;
+            return (
+              <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
+                <button onClick={atLimit ? undefined : () => setShowDialog(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+                  onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                  onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+                  <Plus style={{ width: 15, height: 15 }} />新規プロジェクト
+                </button>
+              </PlanTooltip>
+            );
+          })()}
         </div>
       </div>
 
@@ -386,7 +394,7 @@ export function ProjectsPage() {
         </div>
       )}
 
-      {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients} onCreated={refreshProjects} />}
+      {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients} onCreated={refreshProjects} currentProjectCount={projects.length} />}
       {editTarget && <EditProjectDialog project={editTarget} onClose={() => setEditTarget(null)} onUpdated={() => { refreshProjects(); setEditTarget(null); }} />}
       {deleteTarget && (
         <ConfirmDialog message={`「${deleteTarget.name}」を削除しますか？`} onConfirm={() => handleDeleteProject(deleteTarget)} onClose={() => setDeleteTarget(null)} />

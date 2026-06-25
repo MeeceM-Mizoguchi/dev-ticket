@@ -10,6 +10,7 @@ import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 
@@ -24,9 +25,10 @@ function sanitizePrefix(v: string) { return v.replace(/[^A-Z]/g, ""); }
 function autoSlug(name: string) { return sanitizeSlug(name.toUpperCase()).slice(0, 6) || "PROJ"; }
 function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).slice(0, 3) || "TKT"; }
 
-export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () => void; clients: Client[]; onCreated?: () => void }) {
+export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCount }: { onClose: () => void; clients: Client[]; onCreated?: () => void; currentProjectCount?: number }) {
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
+  const { plan } = usePlan();
   const projectOrgId = userRole === "owner" ? selectedOrgId : userOrgId;
 
   const [name, setName] = useState("");
@@ -67,6 +69,7 @@ export function NewProjectDialog({ onClose, clients, onCreated }: { onClose: () 
   const handleSave = async () => {
     setAttempted(true);
     if (!canSubmit) return;
+    if (plan.maxProjects !== null && currentProjectCount !== undefined && currentProjectCount >= plan.maxProjects) return;
 
     const finalSlug = sanitizeSlug((slug.trim() || autoSlug(name.trim())).toUpperCase());
     const finalPrefix = autoPrefix(name);

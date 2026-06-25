@@ -7,6 +7,8 @@ import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown }
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
+import { usePlan } from "@/app/contexts/PlanContext";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -103,6 +105,7 @@ export function TicketDetailPanel({
 
   const { userName, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
+  const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const effectivePermissions = (userRole === "owner") ? userPermissions : (projectPermissions ?? userPermissions);
   const hasReviewPermission = effectivePermissions.canReview;
@@ -695,6 +698,7 @@ export function TicketDetailPanel({
     if (!ticket) return;
     for (const f of Array.from(files)) {
       if (!f.type.startsWith("image/")) continue;
+      if (plan.maxImagesPerItem !== null && ticketImagesRef.current.length >= plan.maxImagesPerItem) break;
       const url = await uploadImageToStorage(f, `tickets/${ticket.id}/detail`);
       if (!url) continue;
       const next = [...ticketImagesRef.current, url];
@@ -705,7 +709,7 @@ export function TicketDetailPanel({
         if (error) console.error("[images] DB save failed:", error.message);
       }
     }
-  }, [ticket?.id, uploadImageToStorage]);
+  }, [ticket?.id, uploadImageToStorage, plan.maxImagesPerItem]);
 
   const removeTicketImage = useCallback(async (idx: number) => {
     if (!ticket) return;
@@ -966,6 +970,11 @@ export function TicketDetailPanel({
 
   const addComment = async (content: string, type: CommentType = "comment", images: string[] = [], explicitStatus?: TicketStatus) => {
     if (!ticket) return;
+    // ユーザー投稿コメントのみ件数制限チェック（status_change等の自動コメントは除外）
+    if (type === "comment" && plan.maxCommentsPerTicket !== null) {
+      const userCommentCount = comments.filter(c => c.commentType === "comment").length;
+      if (userCommentCount >= plan.maxCommentsPerTicket) return;
+    }
     const ts = explicitStatus ?? (status as TicketStatus);
     const row = { id: `CMT-${Date.now()}`, ticket_id: ticket.id, user_name: userName, content, ticket_status: ts, comment_type: type, images };
     if (isSupabaseEnabled) {
@@ -980,6 +989,11 @@ export function TicketDetailPanel({
 
   const addReply = async (parentComment: TicketComment, content: string, images: string[]) => {
     if (!ticket || !content.trim()) return;
+    // 返信も1投稿としてカウント
+    if (plan.maxCommentsPerTicket !== null) {
+      const userCommentCount = comments.filter(c => c.commentType === "comment").length;
+      if (userCommentCount >= plan.maxCommentsPerTicket) return;
+    }
     const id = `CMT-${Date.now()}`;
     const row = { id, ticket_id: ticket.id, user_name: userName, content, ticket_status: (status as TicketStatus), comment_type: "comment" as CommentType, images, reply_to: parentComment.id };
     if (isSupabaseEnabled) {
@@ -1845,13 +1859,20 @@ export function TicketDetailPanel({
                   </button>
                 </div>
               )}
-              {projectId && !ticket.parentId && (
+              {projectId && !ticket.parentId && plan.featureActualMonitor && (
                 <button onClick={() => setShowMonitor(true)} title="実績モニタ"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
                   <Activity style={{ width: 15, height: 15 }} />
                 </button>
+              )}
+              {projectId && !ticket.parentId && !plan.featureActualMonitor && (
+                <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
+                  <button style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "not-allowed", color: "#D1CEC9", opacity: 0.5 }}>
+                    <Activity style={{ width: 15, height: 15 }} />
+                  </button>
+                </PlanTooltip>
               )}
               {!ticket.parentId && (
                 <button onClick={() => setShowCreateChild(true)} title="子チケットを作成"
@@ -2127,12 +2148,20 @@ export function TicketDetailPanel({
                   子チケット
                   <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({childTickets.length}件)</span>
                 </p>
-                <button onClick={() => setShowCreateChild(true)}
-                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                  <Plus style={{ width: 11, height: 11 }} />子チケット作成
-                </button>
+                {plan.featureChildTickets ? (
+                  <button onClick={() => setShowCreateChild(true)}
+                    style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                    <Plus style={{ width: 11, height: 11 }} />子チケット作成
+                  </button>
+                ) : (
+                  <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
+                    <button style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#F4F5F6", color: "#C9C4BB", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "not-allowed", opacity: 0.6 }}>
+                      <Plus style={{ width: 11, height: 11 }} />子チケット作成
+                    </button>
+                  </PlanTooltip>
+                )}
               </div>
               {childTickets.length === 0 ? (
                 <div style={{ padding: "12px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>

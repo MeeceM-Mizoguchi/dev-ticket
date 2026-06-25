@@ -6,6 +6,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 
 const MEECE_ORG_NAME = "Meece株式会社";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -34,8 +35,14 @@ export function RolesPage() {
   const { userPermissions } = useAuth();
   const { selectedOrgId, selectedOrgName } = useOrg();
   const { toast } = useToast();
+  const { plan } = usePlan();
   const isMeeceOrg = selectedOrgName === MEECE_ORG_NAME;
-  const visiblePermFlags = PERM_FLAGS.filter(f => !f.meeceOnly || isMeeceOrg);
+  const visiblePermFlags = PERM_FLAGS.filter(f => {
+    if (f.meeceOnly && !isMeeceOrg) return false;
+    // 通知管理がプランでOFFの場合はロール設定から非表示
+    if (f.key === "canAccessAdminSettings" && !plan.featureNotifications) return false;
+    return true;
+  });
   const [roles, setRoles] = useState<RoleDefinition[]>([]);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [editTarget, setEditTarget] = useState<RoleDefinition | null>(null);
@@ -184,6 +191,7 @@ export function RolesPage() {
         <RoleModal
           existingNames={roles.map(r => r.name)}
           isMeeceOrg={isMeeceOrg}
+          featureNotifications={plan.featureNotifications}
           onClose={() => setShowNewModal(false)}
           onSave={handleCreate}
         />
@@ -193,6 +201,7 @@ export function RolesPage() {
           role={editTarget}
           existingNames={roles.filter(r => r.id !== editTarget.id).map(r => r.name)}
           isMeeceOrg={isMeeceOrg}
+          featureNotifications={plan.featureNotifications}
           onClose={() => setEditTarget(null)}
           onSave={(name, label, perms) => handleUpdate(editTarget.id, name, label, perms)}
         />
@@ -213,16 +222,22 @@ function RoleModal({
   role,
   existingNames,
   isMeeceOrg,
+  featureNotifications,
   onClose,
   onSave,
 }: {
   role?: RoleDefinition;
   existingNames: string[];
   isMeeceOrg: boolean;
+  featureNotifications: boolean;
   onClose: () => void;
   onSave: (name: string, label: string, perms: UserPermissions) => Promise<void>;
 }) {
-  const modalPermFlags = PERM_FLAGS.filter(f => !f.meeceOnly || isMeeceOrg);
+  const modalPermFlags = PERM_FLAGS.filter(f => {
+    if (f.meeceOnly && !isMeeceOrg) return false;
+    if (f.key === "canAccessAdminSettings" && !featureNotifications) return false;
+    return true;
+  });
   const isEdit = !!role;
   const [label, setLabel] = useState(role?.label ?? "");
   const [name, setName] = useState(role?.name ?? "");

@@ -217,6 +217,25 @@ export interface TicketItem {
 }
 export type AccessLevel = "none" | "view" | "edit";
 
+export interface PlanSettings {
+  id: string;
+  name: string;
+  isSystem: boolean;
+  accountExpiresAt: string | null;
+  maxMembers: number | null;
+  maxProjects: number | null;
+  maxSprintsPerProject: number | null;
+  maxTicketsPerSprint: number | null;
+  maxImagesPerItem: number | null;
+  maxCommentsPerTicket: number | null;
+  maxFiltersPerSprint: number | null;
+  featureNotifications: boolean;
+  featureCsvExport: boolean;
+  featureActualMonitor: boolean;
+  featureChildTickets: boolean;
+  featureBulkCreate: boolean;
+}
+
 export interface UserPermissions {
   canCreateTicket: boolean;
   canCreateSprint: boolean;

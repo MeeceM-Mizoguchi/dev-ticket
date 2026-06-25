@@ -3,6 +3,7 @@ import { Search, UserPlus, Globe, Users, ArrowLeft } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MEMBERS, GROUPS } from "@/app/data/mock";
 import { mapMember } from "@/app/lib/mappers";
@@ -12,10 +13,12 @@ import { MemberDetailDialog } from "@/app/components/members/MemberDetailDialog"
 import { MemberEditDialog } from "@/app/components/members/MemberEditDialog";
 import { InviteDialog } from "@/app/components/members/InviteDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 
 export function MembersPage() {
   const { userRole, userId } = useAuth();
+  const { plan } = usePlan();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
@@ -187,14 +190,19 @@ export function MembersPage() {
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>メンバー管理</h1>
             <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>総数 {visibleMembers.length} 名 · アクティブ {activeCount} 名</p>
           </div>
-          {canAdd && (
-            <button onClick={() => setShowInvite(true)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-              <UserPlus style={{ width: 15, height: 15 }} />メンバー招待
-            </button>
-          )}
+          {canAdd && (() => {
+            const atLimit = plan.maxMembers !== null && members.length >= plan.maxMembers;
+            return (
+              <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
+                <button onClick={atLimit ? undefined : () => setShowInvite(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+                  onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                  onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+                  <UserPlus style={{ width: 15, height: 15 }} />メンバー招待
+                </button>
+              </PlanTooltip>
+            );
+          })()}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
@@ -237,6 +245,7 @@ export function MembersPage() {
             onInvited={() => refreshMembers()}
             fixedOrganizationId={effectiveOrgId ?? undefined}
             fixedOrganizationName={myOrg?.name}
+            currentMemberCount={members.length}
           />
         )}
         {detailTarget && <MemberDetailDialog member={detailTarget} onClose={() => setDetailTarget(null)} />}

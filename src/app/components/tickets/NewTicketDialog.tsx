@@ -7,6 +7,7 @@ import { labelCls, inputCls, TICKET_STATUSES } from "@/app/lib/helpers";
 import { mapTicketCategory } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -27,14 +28,16 @@ const PRIORITY_OPTIONS: SelectOption[] = [
 
 const CACHE_KEY_PREFIX = "new_ticket_draft_";
 
-export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200 }: {
+export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200, currentTicketCount }: {
   sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
   sprintStartDate?: string; sprintEndDate?: string;
   parentTicketId?: string; parentWbs?: string;
   zIndexBase?: number;
+  currentTicketCount?: number;
 }) {
   const { userName, userRole, userOrgId } = useAuth();
   const { open: openPreview } = usePreviewPanel();
+  const { plan } = usePlan();
   const isChildMode = !!parentTicketId;
   const needsSelection = !sprintId && !isChildMode;
 
@@ -373,6 +376,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (needsSelection && !selectedSprintId) { setSprintError(true); valid = false; }
     if (!title.trim()) { setTitleError(true); valid = false; }
     if (!valid) return;
+    if (plan.maxTicketsPerSprint !== null && currentTicketCount !== undefined && currentTicketCount >= plan.maxTicketsPerSprint) return;
 
     const finalAssignee = (assignee === "担当者なし" || !assignee) ? "" : assignee;
 

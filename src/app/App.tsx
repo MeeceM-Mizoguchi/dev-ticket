@@ -30,6 +30,7 @@ import { MinutesPage } from "@/app/pages/MinutesPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
 import { OrgProvider } from "@/app/contexts/OrgContext";
+import { PlanProvider } from "@/app/contexts/PlanContext";
 
 export default function App() {
   return (
@@ -46,7 +47,7 @@ export default function App() {
             <Route path="/terms" element={<TermsOfServicePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
-            <Route element={<OrgProvider><ProtectedShell /></OrgProvider>}>
+            <Route element={<OrgProvider><PlanProvider><ProtectedShell /></PlanProvider></OrgProvider>}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/clients" element={<ClientsPage />} />

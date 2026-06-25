@@ -5,6 +5,8 @@ import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, Che
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
+import { usePlan } from "@/app/contexts/PlanContext";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
 // ステータスごとの進捗率（progress）を定義
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
@@ -187,6 +189,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
 }) {
   const { userName, userPermissions, userOrgId } = useAuth();
   const canCreateTicket = userPermissions.canCreateTicket;
+  const { plan } = usePlan();
   const canSkipReview = userPermissions.canSkipReview;
 
   const [selectedSprintId, setSelectedSprintId] = useState(sprints[0]?.id ?? "");
@@ -395,12 +398,14 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             </button>
           )}
           {onBulkCreate && canCreateTicket && (
-            <button onClick={() => onBulkCreate(currentSprint.id)}
-              style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
-              <Plus style={{ width: 11, height: 11 }} />一括作成
-            </button>
+            <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
+              <button onClick={plan.featureBulkCreate ? () => onBulkCreate(currentSprint.id) : undefined}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureBulkCreate ? "#0284C7" : "#9CA3AF", background: plan.featureBulkCreate ? "#F0F9FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(2,132,199,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", flexShrink: 0 }}
+                onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
+                onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
+                <Plus style={{ width: 11, height: 11 }} />一括作成
+              </button>
+            </PlanTooltip>
           )}
         </div>
       )}

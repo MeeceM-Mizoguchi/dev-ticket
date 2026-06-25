@@ -3,6 +3,7 @@ import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange,
 import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { escStack } from "@/app/lib/escStack";
 
 const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; permission?: keyof UserPermissions }[] = [
@@ -21,6 +22,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
 
 export function Sidebar() {
   const { userRole, userPermissions, logout } = useAuth();
+  const { plan } = usePlan();
   const location = useLocation();
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -62,6 +64,8 @@ export function Sidebar() {
     if (n.permission && !userPermissions[n.permission]) return false;
     // ownerはメンバーメニューを非表示（組織管理から各組織のメンバーページへ遷移）
     if (n.id === "members" && userRole === "owner") return false;
+    // 通知管理: プランでOFFの場合は非表示
+    if (n.id === "admin-settings" && !plan.featureNotifications) return false;
     return true;
   });
 

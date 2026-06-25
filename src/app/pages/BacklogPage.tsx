@@ -4,6 +4,7 @@ import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardLis
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapBacklogItem, mapTicketCategory } from "@/app/lib/mappers";
 import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions } from "@/app/types";
@@ -138,6 +139,7 @@ function ConvertToTicketModal({
           projectId={project.id}
           onClose={() => setShowNewSprint(false)}
           onCreated={() => { setShowNewSprint(false); reloadSprints(); }}
+          currentSprintCount={sprints.length}
         />
       )}
     </>
@@ -230,6 +232,7 @@ export function BacklogPage() {
   const { projectSlug, itemId: itemIdParam } = useParams<{ projectSlug: string; itemId?: string }>();
   const navigate = useNavigate();
   const { userPermissions, userName, userRole, userId } = useAuth();
+  const { plan } = usePlan();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -645,6 +648,7 @@ export function BacklogPage() {
                     onImagesChange={handleImagesChange}
                     uploadPathPrefix={`backlog/${selectedItem.id}`}
                     readOnly={!itemCanEdit}
+                    maxImages={plan.maxImagesPerItem}
                   />
                 </div>
               </div>

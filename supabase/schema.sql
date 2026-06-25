@@ -155,7 +155,41 @@ create policy "auth_insert_notifications" on notifications for insert with check
 create policy "auth_update_notifications" on notifications for update using (auth.role()='authenticated');
 create policy "auth_delete_notifications" on notifications for delete using (auth.role()='authenticated');
 
+-- ── Plans ────────────────────────────────────────────────────
+create table if not exists plans (
+  id                      text primary key,
+  name                    text not null,
+  is_system               boolean not null default false,
+  account_expires_at      timestamptz,
+  max_members             int,
+  max_projects            int,
+  max_sprints_per_project int,
+  max_tickets_per_sprint  int,
+  max_images_per_item     int,
+  max_comments_per_ticket int,
+  max_filters_per_sprint  int,
+  feature_notifications   boolean not null default true,
+  feature_csv_export      boolean not null default true,
+  feature_actual_monitor  boolean not null default true,
+  feature_child_tickets   boolean not null default true,
+  created_at              timestamptz not null default now()
+);
+
+alter table plans enable row level security;
+create policy "auth_select_plans" on plans for select using (auth.role()='authenticated');
+create policy "auth_insert_plans" on plans for insert with check (auth.role()='authenticated');
+create policy "auth_update_plans" on plans for update using (auth.role()='authenticated');
+create policy "auth_delete_plans" on plans for delete using (auth.role()='authenticated');
+
+-- system "無制限" plan (always exists, cannot be deleted)
+insert into plans (id, name, is_system) values ('system-unlimited', '無制限', true)
+on conflict (id) do nothing;
+
 -- ── Migrations (run manually in Supabase SQL Editor) ─────────
+-- ENHA-034: plansテーブルと organizations.plan_id 追加（初回のみ実行）
+-- 上記 plans テーブルの create table 文をそのまま実行する
+-- alter table organizations add column if not exists plan_id text references plans(id) on delete set null;
+
 -- generated_prompt カラム追加（初回のみ実行）
 -- alter table sprint_tickets add column if not exists generated_prompt text;
 -- notifications テーブル追加（初回のみ実行）

@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams, Navigate } from "react-router"
 import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Lock, Settings2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
@@ -11,6 +12,7 @@ import { SprintListView } from "@/app/components/sprints/SprintListView";
 import SprintBoardView from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { MyFilterModal } from "@/app/components/sprints/MyFilterModal";
 import { EditSprintDialog } from "@/app/components/sprints/EditSprintDialog";
 import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog";
@@ -57,6 +59,7 @@ export function SprintPage() {
   const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
   const { toast: _toast } = useToast();
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
+  const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const isAdmin = userRole === "owner" || userRole === "admin";
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
@@ -259,21 +262,26 @@ export function SprintPage() {
             </button>
           ))}
         </div>
-        {canCreateSprint && (
-          <button onClick={() => setShowCreate(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-            <Plus style={{ width: 15, height: 15 }} />新規スプリント
-          </button>
-        )}
+        {canCreateSprint && (() => {
+          const atLimit = plan.maxSprintsPerProject !== null && sprints.length >= plan.maxSprintsPerProject;
+          return (
+            <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
+              <button onClick={atLimit ? undefined : () => setShowCreate(true)}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+                onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+                <Plus style={{ width: 15, height: 15 }} />新規スプリント
+              </button>
+            </PlanTooltip>
+          );
+        })()}
       </div>
 
       {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
       {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
-      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} />}
+      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} currentSprintCount={sprints.length} />}
       {bulkCreateForSprintId && (() => {
         const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
         return (
@@ -298,6 +306,7 @@ export function SprintPage() {
           onCreated={() => { refreshSprints(); setCreateForSprintId(null); }}
           sprintStartDate={createForSprint.startDate || undefined}
           sprintEndDate={createForSprint.endDate || undefined}
+          currentTicketCount={createForSprint.tickets.length}
         />
       )}
       {editTarget && (

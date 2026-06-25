@@ -2,10 +2,13 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, ExternalLink, Plus, GitBranch } from "lucide-react";
 import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
+import { usePlan } from "@/app/contexts/PlanContext";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
 export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate }: {
   sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void; onBulkCreate?: (sprintId: string) => void;
 }) {
+  const { plan } = usePlan();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -159,13 +162,15 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     </button>
                   )}
                   {onBulkCreate && (
-                    <button onClick={e => { e.stopPropagation(); onBulkCreate(sprint.id); }}
-                      title="一括作成"
-                      style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                      <Plus style={{ width: 11, height: 11 }} />
-                    </button>
+                    <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
+                      <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) onBulkCreate(sprint.id); }}
+                        title={plan.featureBulkCreate ? "一括作成" : undefined}
+                        style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", color: plan.featureBulkCreate ? "#C9C4BB" : "#9CA3AF", flexShrink: 0, display: "flex", alignItems: "center", opacity: plan.featureBulkCreate ? 1 : 0.5 }}
+                        onMouseEnter={e => { if (plan.featureBulkCreate) { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; } }}
+                        onMouseLeave={e => { if (plan.featureBulkCreate) { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; } }}>
+                        <Plus style={{ width: 11, height: 11 }} />
+                      </button>
+                    </PlanTooltip>
                   )}
                 </div>
                 {isExp && sprint.tickets.filter(t => !t.parentId).map(t => {

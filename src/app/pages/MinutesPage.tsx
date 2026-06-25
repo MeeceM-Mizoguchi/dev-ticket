@@ -12,6 +12,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { mapProject, mapMeetingMinute, mapActionMemo } from "@/app/lib/mappers";
 import type { Project, MeetingMinute, ActionMemo, AccessLevel, UserPermissions } from "@/app/types";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
@@ -113,6 +114,7 @@ export function MinutesPage() {
   const { projectSlug, minuteId: minuteIdParam } = useParams<{ projectSlug: string; minuteId?: string }>();
   const navigate = useNavigate();
   const { userPermissions, userName, userRole, userId } = useAuth();
+  const { plan } = usePlan();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -449,6 +451,10 @@ export function MinutesPage() {
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
                   onImageUpload={canEdit ? async (file) => {
+                    if (plan.maxImagesPerItem !== null) {
+                      const currentCount = (content.match(/<img/g) ?? []).length;
+                      if (currentCount >= plan.maxImagesPerItem) { toast("現在のプランではこれ以上添付できません", "error"); return ""; }
+                    }
                     if (!isSupabaseEnabled) return URL.createObjectURL(file);
                     const extMap: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
                     const ext = extMap[file.type] ?? "png";
