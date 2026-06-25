@@ -139,6 +139,7 @@ export interface Project {
   startDate: string; endDate: string; members: string[]; groupIds: number[];
   done: number; inProgress: number; todo: number; description: string;
   envMemos: EnvMemo[];
+  tags: string[];
   startedAt?: string | null;
   reviewRequestedAt?: string | null;
   reviewApprovedAt?: string | null;

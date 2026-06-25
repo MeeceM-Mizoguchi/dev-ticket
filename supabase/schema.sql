@@ -65,6 +65,7 @@ create table if not exists projects (
   start_date  date,
   end_date    date,
   members     text[] not null default '{}',
+  tags        text[] not null default '{}',
   done        int   not null default 0,
   in_progress int   not null default 0,
   todo        int   not null default 0,

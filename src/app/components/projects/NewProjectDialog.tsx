@@ -103,6 +103,7 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
         start_date: startDate || null, end_date: endDate || null,
         status, members: userName ? [userName] : [], done: 0, in_progress: 0, todo: 0,
         slug: finalSlug, wbs_prefix: finalPrefix,
+        tags,
         organization_id: projectOrgId || null,
       });
       if (error?.code === "23505") {
@@ -121,16 +122,17 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
       setSaving(false);
     }
 
-    if (tags.length > 0) {
+    // Supabase未接続時のみローカルストレージにフォールバック保存（接続時はinsertのtagsカラムへ保存済み）
+    if (!isSupabaseEnabled && tags.length > 0) {
       try {
         const localTagsStore = localStorage.getItem("local_project_tags_map");
         const currentMap = localTagsStore ? JSON.parse(localTagsStore) : {};
-        
+
         currentMap[projectId] = tags;
         if (finalSlug) {
           currentMap[finalSlug] = tags;
         }
-        
+
         localStorage.setItem("local_project_tags_map", JSON.stringify(currentMap));
       } catch (e) {
         console.error("Failed to save project tags to localStorage:", e);
@@ -213,7 +215,7 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
               <input 
                 value={tagInput}
                 onChange={e => setTagInput(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); handleAddTag(); } }}
+                onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); handleAddTag(); } }}
                 placeholder="任意のタグを入力 (例: 重要顧客)"
                 style={{ width: "100%", background: "#F7F8F9", border: "1px solid #E6E2D9", borderRadius: 10, padding: "8px 12px", fontSize: 13, color: "#1A1714", outline: "none" }}
               />
