@@ -12,7 +12,7 @@ interface Props {
   ticketTitle: string;
   initialSegmentHours: number[];
   skipAnimation?: boolean;
-  onSave: (totalHours: number) => Promise<void>;
+  onSave: (totalHours: number, segmentHours: string[]) => Promise<void>;
   onClose: () => void;
 }
 
@@ -87,7 +87,7 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
       return;
     }
     setSaving(true);
-    await onSave(Math.round(total * 100) / 100);
+    await onSave(Math.round(total * 100) / 100, segmentValues);
     setSaving(false);
     onClose();
   };
