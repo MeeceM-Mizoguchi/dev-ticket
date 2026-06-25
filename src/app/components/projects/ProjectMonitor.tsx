@@ -1,12 +1,20 @@
-import { useEffect, useState } from "react";
-// 🌟 修正: 進行中工程が取下になった際に表示するアイコン (Ban) を追加
-import { X, CheckCircle2, Circle, Ban } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+// 🌟 修正: 修正ボタン用のペンアイコン (Pencil) を追加
+import { X, CheckCircle2, Circle, Ban, Pencil } from "lucide-react";
 import { fetchMilestones } from "@/app/hooks/useProject";
 import type { MilestoneRow } from "@/app/hooks/useProject";
 import { calcWorkingHours } from "@/app/lib/helpers";
-// 🌟 追加: データベース接続チェック用の道具をインポート
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { escStack } from "@/app/lib/escStack";
+
+// 工程ラベルの定義
+const SEGMENT_LABELS = [
+  "開始 → レビュー依頼",
+  "レビュー依頼 → レビュー承認",
+  "レビュー承認 → STG完了",
+  "STG完了 → UAT完了",
+  "UAT完了 → 対応完了",
+];
 
 interface Milestone {
   key: keyof MilestoneRow;
@@ -34,8 +42,7 @@ function calcHours(a: string | null | undefined, b: string | null | undefined): 
 }
 
 /**
- * スキップ判定：カスケード記録時は同一の `now` を使うため完全一致になる。
- * idx=2 (レビュー依頼→レビュー承認のコネクタ) のみ対象。
+ * スキップ判定
  */
 function isReviewSkipped(idx: number, a: string | null | undefined, b: string | null | undefined): boolean {
   if (idx !== 2) return false;
@@ -69,24 +76,30 @@ export function ProjectMonitor({
   const [withdrawnAt, setWithdrawnAt] = useState<string | null>(null);
   const [comments, setComments] = useState<any[]>([]);
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(null);
+  const [ticketStatus, setTicketStatus] = useState<string>("");
 
-  // モーダルを開いた瞬間の時間を「計測中」の計算用に使用する
+  // インライン修正モード用のステート
+  const [isEditFormMode, setIsEditFormMode] = useState(false);
+  const [segmentValues, setSegmentValues] = useState<string[]>(["", "", "", "", ""]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const firstInputRef = useRef<HTMLInputElement>(null);
+
   const nowIso = new Date().toISOString();
 
   useEffect(() => {
-    // 🌟 修正: milestones と ticket の進捗、さらに保留コメントを抽出するためにコメント履歴を並列取得する
     Promise.all([
       fetchMilestones(ticketId),
-      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours").eq("id", ticketId).single() : Promise.resolve({ data: null }),
+      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours, status").eq("id", ticketId).single() : Promise.resolve({ data: null }),
       isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null })
     ]).then(([data, ticketRes, commentsRes]) => {
       if (data) setMilestones(data);
       if (ticketRes?.data?.progress === -1) setIsHold(true);
       if (ticketRes?.data?.progress === -2) setIsWithdrawn(true);
       if (ticketRes?.data?.actual_work_hours != null) setActualWorkHours(ticketRes.data.actual_work_hours);
+      if (ticketRes?.data?.status) setTicketStatus(ticketRes.data.status);
       if (commentsRes?.data) {
         setComments(commentsRes.data);
-        // 取下されている場合、最後に「チケットを取下げました」と記録された時間を探す
         const wCmt = [...commentsRes.data].reverse().find(c => c.content && c.content.includes("チケットを取下げました"));
         if (wCmt) setWithdrawnAt(wCmt.created_at || wCmt.createdAt);
       }
@@ -94,7 +107,55 @@ export function ProjectMonitor({
     }).catch(() => setLoading(false));
   }, [ticketId]);
 
-  // 🌟 追加: 現在取下中の場合は、計測の現在時刻（now）を「取下日時」でストップさせる
+  // 🌟 修正: 過去ログからユーザーが入力した「オリジナルの工程別内訳」を100%そのまま復元する
+  useEffect(() => {
+    if (loading) return;
+
+    // 前回の保存時に裏で仕込んだ、このチケットの固有内訳「[工数内訳]: ...」のコメントログを検索
+    const savedRecordComment = [...comments]
+      .reverse()
+      .find(c => c.content && c.content.includes("[工数内訳]:"));
+
+    if (savedRecordComment) {
+      try {
+        const rawValues = savedRecordComment.content.split("[工数内訳]:")[1].trim();
+        const parsedArray = JSON.parse(rawValues) as string[];
+        if (Array.isArray(parsedArray) && parsedArray.length === 5) {
+          // 前回打ち込んだ通りの各マスの数値をそのままフォームへ完全再現
+          setSegmentValues(parsedArray.map(v => v === "0" || v === "" ? "" : String(v)));
+          return; 
+        }
+      } catch (e) {
+        console.warn("内訳のオリジナル復元に失敗しました。システム計測値へフォールバックします", e);
+      }
+    }
+
+    // 初回入力時などで、内訳データがまだ存在しない場合のみシステム自動計測値を初期値にする
+    const systemSegments = MILESTONES.map((m, idx) => {
+      if (idx === 0) return 0;
+      const prev = milestones[MILESTONES[idx - 1].key];
+      const cur = milestones[m.key];
+      const val = calcHours(prev, cur) || 0;
+      const hold = getHoldHoursForRange(prev, cur, false);
+      return Math.max(0, val - hold);
+    }).slice(1);
+
+    const systemTotal = systemSegments.reduce((a, b) => a + b, 0);
+
+    if (actualWorkHours != null && actualWorkHours > 0) {
+      if (systemTotal > 0) {
+        const ratio = actualWorkHours / systemTotal;
+        const adjusted = systemSegments.map(h => Math.round(h * ratio * 10) / 10);
+        setSegmentValues(adjusted.map(h => h > 0 ? String(h) : ""));
+      } else {
+        const equalShare = Math.round((actualWorkHours / 5) * 10) / 10;
+        setSegmentValues(Array(5).fill(String(equalShare)));
+      }
+    } else {
+      setSegmentValues(systemSegments.map(h => h > 0 ? String(h) : ""));
+    }
+  }, [loading, milestones, actualWorkHours, comments]);
+
   const effectiveNow = isWithdrawn && withdrawnAt ? withdrawnAt : nowIso;
 
   useEffect(() => {
@@ -102,14 +163,16 @@ export function ProjectMonitor({
     return () => escStack.pop(onClose);
   }, [onClose]);
 
-  // 🌟 修正: 抜け漏れや後戻りに対応するため、「記録済みの最も後ろの工程」を算出
+  useEffect(() => {
+    if (isEditFormMode) setTimeout(() => firstInputRef.current?.focus(), 100);
+  }, [isEditFormMode]);
+
   let lastCompletedIdx = -1;
   MILESTONES.forEach((m, i) => {
     if (milestones[m.key]) lastCompletedIdx = i;
   });
   const completedCount = lastCompletedIdx + 1;
 
-  // 🌟 追加: 特定の期間（工程の開始〜終了）の間に発生した保留時間をピンポイントで計算する共通ヘルパー関数
   const getHoldHoursForRange = (startStr: string | null | undefined, endStr: string | null | undefined, checkHoldCurrent: boolean) => {
     if (!startStr) return 0;
     const startTime = new Date(startStr).getTime();
@@ -142,7 +205,6 @@ export function ProjectMonitor({
     return Math.max(0, totalHoldHours);
   };
 
-  // 🌟 修正: 過去の完了した工程も、現在進行中の工程も、それぞれの区間内で発生した保留時間をそれぞれ引いて合算する
   const totalHours = MILESTONES.reduce((sum, m, idx) => {
     if (idx === 0) return sum;
     const prev = milestones[MILESTONES[idx - 1].key];
@@ -156,7 +218,6 @@ export function ProjectMonitor({
       }
     } else if (prev && !cur) {
       const noLaterDone = MILESTONES.slice(idx).every(ms => !milestones[ms.key]);
-      // 最終工程（対応完了）はリリース待ちの間は集計しない
       if (noLaterDone && idx < MILESTONES.length - 1) {
         const elapsed = calcHours(prev, effectiveNow) || 0;
         const stepHoldHours = getHoldHoursForRange(prev, effectiveNow, true);
@@ -166,21 +227,61 @@ export function ProjectMonitor({
     return sum;
   }, 0);
 
+  const handleTriggerEdit = () => {
+    setIsEditFormMode(true);
+  };
+
+  // 🌟 修正: 保存完了時、各マスのオリジナル数値を次回100%復元させるため、裏で履歴コメントへ配列を保存する
+  const handleFormSave = async () => {
+    const total = segmentValues.reduce((sum, v) => {
+      const n = parseFloat(v);
+      return sum + (isNaN(n) || n < 0 ? 0 : n);
+    }, 0);
+
+    if (total <= 0) {
+      setError("少なくとも1つの工程に時間を入力してください");
+      return;
+    }
+    setSaving(true);
+    if (isSupabaseEnabled) {
+      // 1. 合計工数実績の登録
+      await supabase!.from("sprint_tickets").update({ actual_work_hours: Math.round(total * 100) / 100 }).eq("id", ticketId);
+      
+      // 2. 内訳配列データをシステムログとして書き込み
+      const arrayString = JSON.stringify(segmentValues.map(v => v === "" ? "0" : v));
+      await supabase!.from("ticket_comments").insert({
+        ticket_id: ticketId,
+        content: `[工数内訳]: ${arrayString}`,
+        comment_type: "status_change"
+      });
+    }
+    setSaving(false);
+    onClose(); 
+  };
+
+  const updateSegment = (i: number, v: string) => {
+    setSegmentValues(prev => { const n = [...prev]; n[i] = v; return n; });
+    setError("");
+  };
+
+  const isEligibleForEdit = ticketStatus === "waiting-release" || ticketStatus === "waiting_release" || ticketStatus === "released" || ticketStatus === "closed";
+
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={onClose}
     >
-      {/* 🌟 修正: maxHeightとflexboxを設定し、下部が潰れず内部スクロールできるように改修 */}
       <div
         style={{ background: "#FFFFFF", borderRadius: 16, width: 460, maxHeight: "85vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 64px rgba(0,0,0,0.18)" }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header (固定) */}
+        {/* Header */}
         <div style={{ flexShrink: 0, padding: "20px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
-              <h2 style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>実績モニタ</h2>
+              <h2 style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>
+                {isEditFormMode ? "対応工数の修正" : "実績モニタ"}
+              </h2>
               <p style={{ fontSize: 11, color: "#A09790", marginTop: 2 }}>{subtitle}</p>
             </div>
             <button onClick={onClose}
@@ -190,117 +291,201 @@ export function ProjectMonitor({
               <X style={{ width: 15, height: 15 }} />
             </button>
           </div>
-          <div style={{ marginTop: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-              <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 600 }}>工程進捗</span>
-              <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{completedCount} / {MILESTONES.length}</span>
+          {!isEditFormMode && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 600 }}>工程進捗</span>
+                <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{completedCount} / {MILESTONES.length}</span>
+              </div>
+              <div style={{ height: 5, background: "#F4F5F6", borderRadius: 99, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${(completedCount / MILESTONES.length) * 100}%`, background: "linear-gradient(90deg, #059669, #10B981)", borderRadius: 99, transition: "width 0.3s cubic-bezier(0.4, 0, 0.2, 1)" }} />
+              </div>
             </div>
-            <div style={{ height: 5, background: "#F4F5F6", borderRadius: 99, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: `${(completedCount / MILESTONES.length) * 100}%`, background: "linear-gradient(90deg, #059669, #10B981)", borderRadius: 99, transition: "width 0.3s cubic-bezier(0.4, 0, 0.2, 1)" }} />
-            </div>
-          </div>
-        </div>
-
-        {/* Milestones Timeline (スクロール領域) */}
-        <div style={{ flex: 1, minHeight: 0, padding: "12px 0 24px", overflowY: "auto" }}>
-          {loading ? (
-            <div style={{ padding: "32px 0", textAlign: "center", color: "#B0A9A4", fontSize: 12 }}>読み込み中...</div>
-          ) : (
-            <>
-              {MILESTONES.map((milestone, idx) => {
-                const dateValue = milestones[milestone.key];
-                const isDone = !!dateValue;
-                const prevDate = idx > 0 ? milestones[MILESTONES[idx - 1].key] : null;
-
-                // 🌟 修正: 現在進行中の工程を特定（最終工程 = 対応完了 はongoing扱いしない）
-                const noLaterDone = MILESTONES.slice(idx).every(m => !milestones[m.key]);
-                const isOngoing = idx > 0 && idx < MILESTONES.length - 1 && !!prevDate && !dateValue && noLaterDone;
-
-                const hours = isOngoing ? calcHours(prevDate, effectiveNow) : calcHours(prevDate, dateValue);
-                const skipped = isReviewSkipped(idx, prevDate, dateValue);
-                // 🌟 追加: その工程区間内で発生した保留時間をピンポイントで計算する
-                const currentStepHoldHours = getHoldHoursForRange(prevDate, isOngoing ? effectiveNow : dateValue, isOngoing);
-
-                return (
-                  <div key={milestone.key}>
-                    {/* コネクターライン */}
-                    {idx > 0 && (
-                      <div style={{ display: "flex", alignItems: "center", paddingLeft: 32, paddingRight: 24, height: 36 }}>
-                        <div style={{ width: 2, height: "100%", background: (isDone || isOngoing) && !!prevDate ? "#A7F3D0" : "#EDE9E0", marginLeft: 7 }} />
-                        {skipped ? (
-                          <span style={{ fontSize: 10, color: "#F59E0B", fontFamily: "var(--font-mono)", marginLeft: 12, background: "#FFFBEB", padding: "2px 9px", borderRadius: 20, fontWeight: 600, border: "1px solid rgba(245,158,11,0.25)" }}>
-                            スキップ
-                          </span>
-                        ) : hours !== null ? (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 12 }}>
-                            <span style={{
-                              fontSize: 10,
-                              color: isOngoing ? (isWithdrawn ? "#6B7280" : isHold ? "#DC2626" : "#D97706") : "#059669",
-                              fontFamily: "var(--font-mono)",
-                              background: isOngoing ? (isWithdrawn ? "#F3F4F6" : isHold ? "#FEF2F2" : "#FFF7ED") : "#ECFDF5",
-                              padding: "2px 9px",
-                              borderRadius: 20,
-                              fontWeight: 600,
-                              border: isOngoing ? (isWithdrawn ? "1px solid rgba(107,114,128,0.25)" : isHold ? "1px solid rgba(220,38,38,0.25)" : "1px solid rgba(217,119,6,0.25)") : "1px solid transparent",
-                              width: "fit-content"
-                            }}>
-                              {isOngoing && (isHold || isWithdrawn) ? formatDuration(calcHours(prevDate, effectiveNow) || 0) : formatDuration(hours)} {isOngoing && (isWithdrawn ? "（取下済）" : isHold ? "（保留中）" : "（計測中）")}
-                            </span>
-                            {/* 🌟 修正: この工程の区間内で発生した保留時間（currentStepHoldHours > 0）が存在すれば、工程が進んだ後でも常にマイナス表示を残す */}
-                            {currentStepHoldHours > 0 && (
-                              <span style={{ fontSize: 10, color: "#EF4444", fontFamily: "var(--font-mono)", fontWeight: 600, paddingLeft: 6 }}>
-                                - 保留時間 {formatDuration(currentStepHoldHours)}
-                              </span>
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-
-                    {/* ステータスノード */}
-                    <div style={{ display: "flex", gap: 12, padding: "4px 24px", alignItems: "center" }}>
-                      <div style={{ flexShrink: 0 }}>
-                        {isDone
-                          ? <CheckCircle2 style={{ width: 18, height: 18, color: "#059669" }} />
-                          : isOngoing
-                            ? (isWithdrawn ? <Ban style={{ width: 18, height: 18, color: "#6B7280", fill: "#F3F4F6" }} /> : <Circle style={{ width: 18, height: 18, color: "#F59E0B", fill: "#FFFBEB" }} />)
-                            : <Circle style={{ width: 18, height: 18, color: "#D1CBC5" }} />
-                        }
-                      </div>
-                      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? "#1A1714" : isOngoing ? (isWithdrawn ? "#6B7280" : "#D97706") : "#A09790" }}>
-                          {milestone.label}
-                        </span>
-                        {isDone ? (
-                          <span style={{ fontSize: 11, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 500 }}>
-                            {formatDateTime(dateValue)}
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 11, color: "#C9C4BB" }}>未記録</span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </>
           )}
         </div>
 
-        {/* Footer (合計時間 - 常に固定表示) */}
-        {!loading && (
-          <div style={{ flexShrink: 0, padding: "16px 24px", background: "#FAFAF9", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        {/* 修正用フォームモード / タイムライン表示 */}
+        {isEditFormMode ? (
+          <div style={{ flex: 1, minHeight: 0, padding: "20px 24px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+            <p style={{ fontSize: 12, color: "#9E9690", margin: "0 0 4px" }}>
+              各工程の実際の時間を修正してください（時間単位）
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {SEGMENT_LABELS.map((label, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ flex: 1, fontSize: 12, color: "#4B4744", fontWeight: 500 }}>{label}</span>
+                  <input
+                    ref={i === 0 ? firstInputRef : undefined}
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={segmentValues[i]}
+                    // 🌟 修正: event => のアロー指定を完全付与。閉じタグとの噛み合わせを完全に整合
+                    onChange={event => updateSegment(i, event.target.value)}
+                    style={{
+                      width: 72, padding: "6px 8px", fontSize: 14, fontWeight: 700,
+                      border: "1.5px solid rgba(26,23,20,0.15)", borderRadius: 8, outline: "none",
+                      color: "#1A1714", background: "#FFFFFF", textAlign: "right"
+                    }}
+                    onFocus={e => { e.currentTarget.style.borderColor = "#059669"; e.currentTarget.style.boxShadow = "0 0 0 2px rgba(5,150,105,0.12)"; }}
+                    onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.15)"; e.currentTarget.style.boxShadow = "none"; }}
+                  />
+                  <span style={{ fontSize: 12, color: "#6B6458", width: 18, flexShrink: 0 }}>h</span>
+                </div>
+              ))}
+            </div>
+            
+            {error && <p style={{ fontSize: 12, color: "#EF4444", margin: "8px 0 0", fontWeight: 600 }}>{error}</p>}
+            
+            <button
+              onClick={handleFormSave}
+              disabled={saving}
+              style={{
+                width: "100%", padding: "12px 0", marginTop: 16, fontSize: 14, fontWeight: 700, borderRadius: 11,
+                border: "none", cursor: saving ? "not-allowed" : "pointer",
+                background: saving ? "rgba(5,150,105,0.25)" : "#059669", color: "#FFFFFF",
+                boxShadow: saving ? "none" : "0 4px 14px rgba(5,150,105,0.30)", transition: "all 0.15s"
+              }}
+            >
+              {saving ? "保存中..." : "修正を完了する"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsEditFormMode(false)}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "#B0A9A4", fontSize: 13, textDecoration: "underline", marginTop: 4, width: "fit-content", alignSelf: "center" }}
+            >
+              戻る
+            </button>
+          </div>
+        ) : (
+          /* 通常のタイムライン領域 */
+          <div style={{ flex: 1, minHeight: 0, padding: "12px 0 24px", overflowY: "auto" }}>
+            {loading ? (
+              <div style={{ padding: "32px 0", textAlign: "center", color: "#B0A9A4", fontSize: 12 }}>読み込み中...</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                {MILESTONES.map((milestone, idx) => {
+                  const dateValue = milestones[milestone.key];
+                  const isDone = !!dateValue;
+                  const prevDate = idx > 0 ? milestones[MILESTONES[idx - 1].key] : null;
+
+                  const noLaterDone = MILESTONES.slice(idx).every(m => !milestones[m.key]);
+                  const isOngoing = idx > 0 && idx < MILESTONES.length - 1 && !!prevDate && !dateValue && noLaterDone;
+
+                  const hours = isOngoing ? calcHours(prevDate, effectiveNow) : calcHours(prevDate, dateValue);
+                  const skipped = isReviewSkipped(idx, prevDate, dateValue);
+                  const currentStepHoldHours = getHoldHoursForRange(prevDate, isOngoing ? effectiveNow : dateValue, isOngoing);
+
+                  return (
+                    <div key={milestone.key}>
+                      {/* コネクターライン */}
+                      {idx > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", paddingLeft: 32, paddingRight: 24, height: 36 }}>
+                          <div style={{ width: 2, height: "100%", background: (isDone || isOngoing) && !!prevDate ? "#A7F3D0" : "#EDE9E0", marginLeft: 7 }} />
+                          {skipped ? (
+                            <span style={{ fontSize: 10, color: "#F59E0B", fontFamily: "var(--font-mono)", marginLeft: 12, background: "#FFFBEB", padding: "2px 9px", borderRadius: 20, fontWeight: 600, border: "1px solid rgba(245,158,11,0.25)" }}>
+                              スキップ
+                            </span>
+                          ) : hours !== null ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 12 }}>
+                              <span style={{
+                                fontSize: 10,
+                                color: isOngoing ? (isWithdrawn ? "#6B7280" : isHold ? "#DC2626" : "#D97706") : "#059669",
+                                fontFamily: "var(--font-mono)",
+                                background: isOngoing ? (isWithdrawn ? "#F3F4F6" : isHold ? "#FEF2F2" : "#FFF7ED") : "#ECFDF5",
+                                padding: "2px 9px",
+                                borderRadius: 20,
+                                fontWeight: 600,
+                                border: isOngoing ? (isWithdrawn ? "1px solid rgba(107,114,128,0.25)" : isHold ? "1px solid rgba(220,38,38,0.25)" : "1px solid rgba(217,119,6,0.25)") : "1px solid transparent",
+                                width: "fit-content"
+                              }}>
+                                {isOngoing && (isHold || isWithdrawn) ? formatDuration(calcHours(prevDate, effectiveNow) || 0) : formatDuration(hours)} {isOngoing && (isWithdrawn ? "（取下済）" : isHold ? "（保留中）" : "（計測中）")}
+                              </span>
+                              {currentStepHoldHours > 0 && (
+                                <span style={{ fontSize: 10, color: "#EF4444", fontFamily: "var(--font-mono)", fontWeight: 600, paddingLeft: 6 }}>
+                                  - 保留時間 {formatDuration(currentStepHoldHours)}
+                                </span>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+
+                      {/* ステータスノード */}
+                      <div style={{ display: "flex", gap: 12, padding: "4px 24px", alignItems: "center" }}>
+                        <div style={{ flexShrink: 0 }}>
+                          {isDone
+                            ? <CheckCircle2 style={{ width: 18, height: 18, color: "#059669" }} />
+                            : isOngoing
+                              ? (isWithdrawn ? <Ban style={{ width: 18, height: 18, color: "#6B7280", fill: "#F3F4F6" }} /> : <Circle style={{ width: 18, height: 18, color: "#F59E0B", fill: "#FFFBEB" }} />)
+                              : <Circle style={{ width: 18, height: 18, color: "#D1CBC5" }} />
+                        }
+                        </div>
+                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? "#1A1714" : isOngoing ? (isWithdrawn ? "#6B7280" : "#D97706") : "#A09790" }}>
+                            {milestone.label}
+                          </span>
+                          {isDone ? (
+                            <span style={{ fontSize: 11, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 500 }}>
+                              {formatDateTime(dateValue)}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: "#C9C4BB" }}>未記録</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Footer (合計時間) */}
+        {!loading && !isEditFormMode && (
+          <div style={{ flexShrink: 0, padding: "16px 24px", background: "#FAFAF9", borderTop: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: "#3D3732" }}>現時点の合計作業時間</span>
               {actualWorkHours != null && (
                 <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 500 }}>手動入力済み</span>
               )}
             </div>
-            <span style={{ fontSize: 15, fontWeight: 800, color: "#059669", fontFamily: "var(--font-mono)" }}>
-              {actualWorkHours != null
-                ? formatDuration(actualWorkHours)
-                : formatDuration(totalHours)}
-            </span>
+            
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              {isEligibleForEdit && (
+                <button
+                  type="button"
+                  onClick={handleTriggerEdit}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "6px 14px",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "#059669",
+                    color: "#FFFFFF",
+                    cursor: "pointer",
+                    boxShadow: "0 2px 8px rgba(5,150,105,0.18)",
+                    transition: "all 0.15s"
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}
+                >
+                  <Pencil style={{ width: 13, height: 13 }} />
+                  実績を修正する
+                </button>
+              )}
+
+              <span style={{ fontSize: 15, fontWeight: 800, color: "#059669", fontFamily: "var(--font-mono)" }}>
+                {actualWorkHours != null
+                  ? formatDuration(actualWorkHours)
+                  : formatDuration(totalHours)}
+              </span>
+            </div>
           </div>
         )}
       </div>
