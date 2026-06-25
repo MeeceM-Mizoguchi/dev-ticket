@@ -234,6 +234,13 @@ export function TicketDetailPanel({
   // レビューフロー アコーディオン
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
+  // 🌟 カテゴリー一覧を最新の状態に更新する関数
+  const refreshCategories = useCallback(async () => {
+    if (!isSupabaseEnabled || !projectId) return;
+    const { data } = await supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at");
+    if (data) setCategories(data.map(mapTicketCategory));
+  }, [projectId]);
+
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const descTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const closeTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -481,8 +488,7 @@ export function TicketDetailPanel({
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
-    supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at")
-      .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
+    refreshCategories();
     supabase!.from("projects").select("members").eq("id", projectId).single()
       .then(({ data }) => { if (data?.members) setProjectMemberNames(data.members as string[]); });
     (async () => {
@@ -2063,20 +2069,44 @@ export function TicketDetailPanel({
             </div>
 
             {/* 分類 */}
-            {categories.length > 0 && (
-              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>分類</p>
-                <CustomSelect
-                  value={categoryId ?? ""}
-                  options={[
-                    { value: "", label: "分類なし" },
-                    ...categories.map(c => ({ value: c.id, label: c.name })),
-                  ]}
-                  onChange={v => { const val = v || null; setCategoryId(val); save({ category_id: val }); }}
-                  placeholder="分類なし"
-                />
-              </div>
-            )}
+            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>分類</p>
+              <CustomSelect
+                value={categoryId ?? ""}
+                options={[
+                  { value: "", label: "分類なし" },
+                  ...categories.map(c => ({ value: c.id, label: c.name })),
+                ]}
+                onChange={v => { const val = v || null; setCategoryId(val); save({ category_id: val }); }}
+                placeholder="分類なし"
+                // 🌟 修正: プロジェクト画面(CategorySettingsModal)と完全に同一のIDフォーマットを生成
+                onAddOption={async (newLabel) => {
+                  if (!isSupabaseEnabled || !projectId) return null;
+                  
+                  // 💡 プロジェクト画面の「CAT-タイムスタンプ」という正解の命名規則をそのまま再現します
+                  const correctIdFormat = `CAT-${Date.now()}`;
+                  
+                  const { error } = await supabase!
+                    .from("ticket_categories")
+                    .insert({ 
+                      id: correctIdFormat, // 🌟 これでプロジェクト画面と全く同じ形式になり、制約を突破できます
+                      project_id: projectId, 
+                      name: newLabel.trim() 
+                    });
+                  
+                  if (error) {
+                    console.error("カテゴリーの追加に失敗しました:", error.message);
+                    return null;
+                  }
+                  
+                  // 親のステート（categories）を再取得してプルダウンの選択肢を更新
+                  await refreshCategories();
+                  
+                  // 生成したIDをプルダウンに返して、自動的にその項目を選択状態にする
+                  return correctIdFormat; 
+                }}
+              />
+            </div>
 
             {/* 担当者 */}
             <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>

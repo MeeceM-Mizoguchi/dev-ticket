@@ -194,6 +194,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     });
   }, [needsSelection, userName, userRole, projectId]);
 
+  // 🌟 追加: 分類カテゴリー一覧を再取得してステートを同期する共通関数
+  const refreshCategories = useCallback(async () => {
+    if (!isSupabaseEnabled || !effectiveProjectId) return;
+    const { data } = await supabase!.from("ticket_categories").select("*").eq("project_id", effectiveProjectId).order("created_at");
+    if (data) setCategories(data.map(mapTicketCategory));
+  }, [effectiveProjectId]);
+
   // 2. 選択されたプロジェクトに応じたスプリント一覧、メンバー情報の動的更新
   useEffect(() => {
     if (!effectiveProjectId) { setAvailableSprints([]); setSelectedSprintId(""); return; }
@@ -299,11 +306,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   useEffect(() => {
     if (!isSupabaseEnabled || !effectiveProjectId) return;
-    supabase!.from("ticket_categories").select("*").eq("project_id", effectiveProjectId).order("created_at")
-      .then(({ data }) => { if (data) setCategories(data.map(mapTicketCategory)); });
+    refreshCategories(); // 🌟 修正: 共通化された読み込み関数をコール
     supabase!.from("projects").select("wbs_prefix").eq("id", effectiveProjectId).single()
       .then(({ data }) => { if (data?.wbs_prefix) setWbsPrefix(data.wbs_prefix); });
-  }, [effectiveProjectId]);
+  }, [effectiveProjectId, refreshCategories]);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !effectiveSprintId) return;
@@ -627,20 +633,44 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             </div>
           </div>
 
-          {categories.length > 0 && (
-            <div>
-              <label className={labelCls}>分類</label>
-              <CustomSelect
-                value={categoryId}
-                options={[
-                  { value: "", label: "分類なし" },
-                  ...categories.map(c => ({ value: c.id, label: c.name }))
-                ]}
-                onChange={v => setCategoryId(v)}
-                placeholder="分類なし"
-              />
-            </div>
-          )}
+          {/* 🌟 修正: 0件の初期状態でもインライン追加プルダウンが常に表示されるように条件分岐(categories.length > 0)を排除 */}
+          <div>
+            <label className={labelCls}>分類</label>
+            <CustomSelect
+              value={categoryId}
+              options={[
+                { value: "", label: "分類なし" },
+                ...categories.map(c => ({ value: c.id, label: c.name }))
+              ]}
+              onChange={v => setCategoryId(v)}
+              placeholder="分類なし"
+              // 🌟 追加: 新規追加ボタン押下時に「CAT-タイムスタンプ」フォーマットのIDを自作してインサートする処理
+              onAddOption={async (newLabel) => {
+                if (!isSupabaseEnabled || !effectiveProjectId) return null;
+                
+                const correctIdFormat = `CAT-${Date.now()}`;
+                
+                const { error } = await supabase!
+                  .from("ticket_categories")
+                  .insert({ 
+                    id: correctIdFormat,
+                    project_id: effectiveProjectId, 
+                    name: newLabel.trim() 
+                  });
+                
+                if (error) {
+                  console.error("カテゴリーの追加に失敗しました:", error.message);
+                  return null;
+                }
+                
+                // チケット作成モーダル内のカテゴリー一覧ステートを再取得
+                await refreshCategories();
+                
+                // 作成したIDを返してプルダウンで自動選択
+                return correctIdFormat;
+              }}
+            />
+          </div>
 
           <div>
             <label className={labelCls}>担当者</label>
