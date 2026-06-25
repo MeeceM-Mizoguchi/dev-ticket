@@ -386,8 +386,11 @@ export function PermissionsPage() {
 
   const handleCreateGroup = async (name: string, perms: UserPermissions) => {
     if (isSupabaseEnabled) {
+      // 所属組織を必ず付与する。RLS(tenant_insert_permission_groups) は非 owner に対し
+      // organization_id = get_my_org_id() を要求するため、未設定だと 403 で挿入が拒否される。
+      const orgId = (userRole === "owner" ? selectedOrgId : userOrgId) || null;
       const { data, error } = await supabase!.from("permission_groups")
-        .insert({ name, description: "", permissions: perms }).select().single();
+        .insert({ name, description: "", permissions: perms, organization_id: orgId }).select().single();
       if (error) { toast("グループの作成に失敗しました", "error"); return; }
       if (data) setGroups(prev => [...prev, data as PermissionGroup]);
     } else {
