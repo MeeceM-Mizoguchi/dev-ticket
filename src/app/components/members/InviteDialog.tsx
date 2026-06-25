@@ -6,6 +6,7 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, Organization } from "@/app/types";
 
@@ -24,9 +25,10 @@ interface Props {
   fixedOrganizationName?: string;
 }
 
-export function InviteDialog({ onClose, onInvited, fixedOrganizationId, fixedOrganizationName }: Props) {
+export function InviteDialog({ onClose, onInvited, fixedOrganizationId, fixedOrganizationName, currentMemberCount }: Props & { currentMemberCount?: number }) {
   const { toast } = useToast();
   const { userRole, userId } = useAuth();
+  const { plan } = usePlan();
   const isOwner = userRole === "owner";
 
   const [email, setEmail] = useState("");
@@ -69,8 +71,11 @@ export function InviteDialog({ onClose, onInvited, fixedOrganizationId, fixedOrg
     }
   }, [isOwner, userId, fixedOrganizationId]);
 
+  const memberLimitReached = plan.maxMembers !== null && currentMemberCount !== undefined && currentMemberCount >= plan.maxMembers;
+
   const handleSend = async () => {
     if (!email.trim()) return;
+    if (memberLimitReached) { setError(`現在のプランのメンバー上限（${plan.maxMembers}名）に達しています`); return; }
     setSending(true);
     setError("");
 

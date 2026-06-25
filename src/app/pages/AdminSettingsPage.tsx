@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import { BellRing, Users } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { Navigate } from "react-router";
 import { SlackNotificationSetting } from "@/app/components/settings/SlackNotificationSetting";
@@ -11,10 +12,12 @@ import { MemberSlackSetting } from "@/app/components/settings/MemberSlackSetting
 export function AdminSettingsPage() {
   const { userPermissions, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
+  const { plan } = usePlan();
   const effectiveOrgId = selectedOrgId ?? userOrgId;
   const [searchParams, setSearchParams] = useSearchParams();
 
   if (!userPermissions.canAccessAdminSettings) return <Navigate to="/dashboard" replace />;
+  if (!plan.featureNotifications) return <Navigate to="/dashboard" replace />;
 
   const urlTab = searchParams.get("tab");
   const slackResult = searchParams.get("slack");

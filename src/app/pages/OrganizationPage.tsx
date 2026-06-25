@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Plus, Globe, Users, ChevronRight, Pencil, Trash2, Building2, Sparkles } from "lucide-react";
+import { Plus, Globe, Users, ChevronRight, Pencil, Trash2, Building2, Sparkles, CreditCard, ToggleLeft, ToggleRight, Calendar } from "lucide-react";
 import { useNavigate, Navigate } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
-import type { Organization } from "@/app/types";
+import type { Organization, PlanSettings } from "@/app/types";
+import { UNLIMITED_PLAN } from "@/app/contexts/PlanContext";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -13,29 +14,35 @@ import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 
 interface OrgWithStats extends Organization {
   memberCount: number;
   activeCount: number;
   memberPreviews: { id: string; name: string }[];
+  planId: string | null;
+  planName: string;
 }
 
-function mapOrgWithStats(r: any): OrgWithStats {
-  const profiles: { id: string; name: string; status: string }[] = r.profiles ?? [];
+function mapOrgWithStats(r: Record<string, unknown>, planMap: Map<string, string>): OrgWithStats {
+  const profiles = (r.profiles as { id: string; name: string; status: string }[]) ?? [];
+  const planId = (r.plan_id as string | null) ?? null;
   return {
-    id: r.id,
-    name: r.name,
-    createdAt: r.created_at || "",
-    representativeName: r.representative_name || "",
-    contactName: r.contact_name || "",
-    phone: r.phone || "",
-    websiteUrl: r.website_url || "",
-    address: r.address || "",
-    industry: r.industry || "",
-    description: r.description || "",
+    id: r.id as string,
+    name: r.name as string,
+    createdAt: (r.created_at as string) || "",
+    representativeName: (r.representative_name as string) || "",
+    contactName: (r.contact_name as string) || "",
+    phone: (r.phone as string) || "",
+    websiteUrl: (r.website_url as string) || "",
+    address: (r.address as string) || "",
+    industry: (r.industry as string) || "",
+    description: (r.description as string) || "",
     memberCount: profiles.length,
     activeCount: profiles.filter(p => p.status === "active").length,
     memberPreviews: profiles.slice(0, 5).map(p => ({ id: p.id, name: p.name })),
+    planId,
+    planName: planId ? (planMap.get(planId) ?? "—") : "無制限",
   };
 }
 
@@ -48,8 +55,276 @@ function SectionLabel({ label }: { label: string }) {
   );
 }
 
-// ── 新規 / 編集モーダル ──────────────────────────────────────────
-function OrgFormDialog({ org, onClose, onSaved }: { org?: Organization; onClose: () => void; onSaved: () => void }) {
+// ── トグルスイッチ ────────────────────────────────────────────────
+function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button onClick={() => onChange(!value)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}>
+      {value
+        ? <ToggleRight style={{ width: 28, height: 28, color: "#059669" }} />
+        : <ToggleLeft style={{ width: 28, height: 28, color: "#C9C4BB" }} />}
+    </button>
+  );
+}
+
+// ── 数値入力（空=無制限） ─────────────────────────────────────────
+function LimitInput({ label, value, onChange }: { label: string; value: number | null; onChange: (v: number | null) => void }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+      <label style={{ fontSize: 11, fontWeight: 600, color: "#6B6458" }}>{label}</label>
+      <input
+        type="number" min={1}
+        value={value ?? ""}
+        placeholder="無制限"
+        onChange={e => onChange(e.target.value === "" ? null : Math.max(1, parseInt(e.target.value) || 1))}
+        style={{ width: "100%", padding: "8px 10px", fontSize: 13, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", color: "#1A1714", background: "#FAFAF8" }}
+      />
+    </div>
+  );
+}
+
+// ── プラン作成/編集モーダル ───────────────────────────────────────
+function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [name, setName] = useState(plan?.name ?? "");
+  const [expiresAt, setExpiresAt] = useState(plan?.accountExpiresAt ? plan.accountExpiresAt.slice(0, 10) : "");
+  const [maxMembers, setMaxMembers] = useState<number | null>(plan?.maxMembers ?? null);
+  const [maxProjects, setMaxProjects] = useState<number | null>(plan?.maxProjects ?? null);
+  const [maxSprintsPerProject, setMaxSprintsPerProject] = useState<number | null>(plan?.maxSprintsPerProject ?? null);
+  const [maxTicketsPerSprint, setMaxTicketsPerSprint] = useState<number | null>(plan?.maxTicketsPerSprint ?? null);
+  const [maxImagesPerItem, setMaxImagesPerItem] = useState<number | null>(plan?.maxImagesPerItem ?? null);
+  const [maxCommentsPerTicket, setMaxCommentsPerTicket] = useState<number | null>(plan?.maxCommentsPerTicket ?? null);
+  const [maxFiltersPerSprint, setMaxFiltersPerSprint] = useState<number | null>(plan?.maxFiltersPerSprint ?? null);
+  const [featureNotifications, setFeatureNotifications] = useState(plan?.featureNotifications ?? true);
+  const [featureCsvExport, setFeatureCsvExport] = useState(plan?.featureCsvExport ?? true);
+  const [featureActualMonitor, setFeatureActualMonitor] = useState(plan?.featureActualMonitor ?? true);
+  const [featureChildTickets, setFeatureChildTickets] = useState(plan?.featureChildTickets ?? true);
+  const [featureBulkCreate, setFeatureBulkCreate] = useState(plan?.featureBulkCreate ?? true);
+  const [saving, setSaving] = useState(false);
+  const [nameErr, setNameErr] = useState(false);
+
+  const isSystem = !!plan?.isSystem;
+  const isEdit = !!plan && !isSystem;
+
+  const handleSave = async () => {
+    if (!name.trim()) { setNameErr(true); return; }
+    setSaving(true);
+    const payload = {
+      name: name.trim(),
+      account_expires_at: expiresAt ? new Date(expiresAt + "T23:59:59").toISOString() : null,
+      max_members: maxMembers,
+      max_projects: maxProjects,
+      max_sprints_per_project: maxSprintsPerProject,
+      max_tickets_per_sprint: maxTicketsPerSprint,
+      max_images_per_item: maxImagesPerItem,
+      max_comments_per_ticket: maxCommentsPerTicket,
+      max_filters_per_sprint: maxFiltersPerSprint,
+      feature_notifications: featureNotifications,
+      feature_csv_export: featureCsvExport,
+      feature_actual_monitor: featureActualMonitor,
+      feature_child_tickets: featureChildTickets,
+      feature_bulk_create: featureBulkCreate,
+    };
+    if (isSupabaseEnabled) {
+      if (isEdit) {
+        const { error } = await supabase!.from("plans").update(payload).eq("id", plan!.id);
+        if (error) { toast("更新に失敗しました", "error"); setSaving(false); return; }
+      } else {
+        const { error } = await supabase!.from("plans").insert({ id: `plan-${Date.now()}`, ...payload });
+        if (error) { toast("作成に失敗しました", "error"); setSaving(false); return; }
+      }
+    }
+    toast(isEdit ? `「${name}」を更新しました` : `「${name}」を作成しました`);
+    onSaved();
+    onClose();
+  };
+
+  const FeatureRow = ({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid rgba(26,23,20,0.05)" }}>
+      <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500 }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 11, color: value ? "#059669" : "#9E9690", fontWeight: 600 }}>{value ? "ON" : "OFF"}</span>
+        <Toggle value={value} onChange={onChange} />
+      </div>
+    </div>
+  );
+
+  return (
+    <DialogShell
+      title={isSystem ? `プラン詳細：${plan!.name}` : isEdit ? `プランを編集：${plan!.name}` : "新規プランを作成"}
+      size="xl"
+      onClose={saving ? () => {} : onClose}
+      footer={
+        isSystem ? (
+          <BtnSecondary onClick={onClose}>閉じる</BtnSecondary>
+        ) : (
+          <>
+            <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
+            <BtnPrimary onClick={handleSave} disabled={saving || !name.trim()}>
+              {saving ? "保存中..." : isEdit ? "更新する" : "作成する"}
+            </BtnPrimary>
+          </>
+        )
+      }
+    >
+      {/* プラン名 */}
+      <FieldInput label="プラン名" placeholder="例: スタータープラン" value={name} onChange={isSystem ? () => {} : v => { setName(v); setNameErr(false); }} required />
+      {nameErr && <p style={{ fontSize: 11, color: "#DC2626", marginTop: -8 }}>プラン名は必須です</p>}
+
+      {/* 有効期限 */}
+      <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#6B6458", display: "flex", alignItems: "center", gap: 5 }}>
+          <Calendar style={{ width: 12, height: 12 }} />
+          アカウント有効期限
+          <span style={{ fontSize: 11, color: "#A09790", fontWeight: 400 }}>（未設定の場合は無期限）</span>
+        </label>
+        <input
+          type="date"
+          value={expiresAt}
+          onChange={e => setExpiresAt(e.target.value)}
+          style={{ padding: "8px 10px", fontSize: 13, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", color: "#1A1714", background: "#FAFAF8", width: "fit-content" }}
+        />
+      </div>
+
+      <SectionLabel label="数制限（空欄 = 無制限）" />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <LimitInput label="メンバー招待数（組織の総メンバー数上限）" value={maxMembers} onChange={setMaxMembers} />
+        <LimitInput label="プロジェクト作成数（組織全体）" value={maxProjects} onChange={setMaxProjects} />
+        <LimitInput label="スプリント数（1プロジェクトあたり）" value={maxSprintsPerProject} onChange={setMaxSprintsPerProject} />
+        <LimitInput label="チケット数（1スプリントあたり）" value={maxTicketsPerSprint} onChange={setMaxTicketsPerSprint} />
+        <LimitInput label="添付画像枚数（1アイテムあたり）" value={maxImagesPerItem} onChange={setMaxImagesPerItem} />
+        <LimitInput label="コメント投稿数（1チケットあたり）" value={maxCommentsPerTicket} onChange={setMaxCommentsPerTicket} />
+        <LimitInput label="Myフィルタ保存数（1スプリントあたり）" value={maxFiltersPerSprint} onChange={setMaxFiltersPerSprint} />
+      </div>
+
+      <SectionLabel label="機能 ON/OFF" />
+      <div style={{ background: "#FAFAF8", borderRadius: 10, padding: "0 12px", border: "1px solid rgba(26,23,20,0.07)" }}>
+        <FeatureRow label="通知管理（Slack連携・通知設定）" value={featureNotifications} onChange={setFeatureNotifications} />
+        <FeatureRow label="CSV出力" value={featureCsvExport} onChange={setFeatureCsvExport} />
+        <FeatureRow label="実績モニタ" value={featureActualMonitor} onChange={setFeatureActualMonitor} />
+        <FeatureRow label="子チケット作成" value={featureChildTickets} onChange={setFeatureChildTickets} />
+        <FeatureRow label="チケット一括作成" value={featureBulkCreate} onChange={setFeatureBulkCreate} />
+      </div>
+    </DialogShell>
+  );
+}
+
+// ── プランカード（コンパクト正方形） ──────────────────────────────
+function PlanCard({ plan, onClick, onDelete }: { plan: PlanSettings; onClick: () => void; onDelete?: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  const limits = [
+    { label: "メンバー", val: plan.maxMembers },
+    { label: "PJ", val: plan.maxProjects },
+    { label: "スプリント", val: plan.maxSprintsPerProject },
+    { label: "チケット", val: plan.maxTicketsPerSprint },
+    { label: "画像", val: plan.maxImagesPerItem },
+    { label: "コメント", val: plan.maxCommentsPerTicket },
+    { label: "フィルタ", val: plan.maxFiltersPerSprint },
+  ];
+  const featuresOff = [
+    !plan.featureNotifications && "通知",
+    !plan.featureCsvExport && "CSV",
+    !plan.featureActualMonitor && "実績",
+    !plan.featureChildTickets && "子TK",
+    !plan.featureBulkCreate && "一括作成",
+  ].filter(Boolean) as string[];
+  const isAllUnlimited = limits.every(l => l.val === null) && featuresOff.length === 0;
+
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ background: "#FFFFFF", border: hovered ? "1.5px solid rgba(5,150,105,0.35)" : "1.5px solid rgba(26,23,20,0.08)", borderRadius: 16, padding: "16px", cursor: "pointer", transition: "all 0.18s", boxShadow: hovered ? "0 8px 24px rgba(5,150,105,0.12)" : "0 2px 6px rgba(0,0,0,0.04)", display: "flex", flexDirection: "column" as const, gap: 10, position: "relative" as const }}
+    >
+      {/* ヘッダー */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+        <div style={{ width: 36, height: 36, borderRadius: 10, background: plan.isSystem ? "linear-gradient(135deg,#ECFDF5,#D1FAE5)" : "linear-gradient(135deg,#EFF6FF,#DBEAFE)", display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${plan.isSystem ? "rgba(5,150,105,0.15)" : "rgba(37,99,235,0.15)"}`, flexShrink: 0 }}>
+          <CreditCard style={{ width: 16, height: 16, color: plan.isSystem ? "#059669" : "#2563EB" }} />
+        </div>
+        {!plan.isSystem && onDelete && (
+          <button onClick={e => { e.stopPropagation(); onDelete(); }}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, borderRadius: 6, border: "1px solid rgba(26,23,20,0.09)", background: "#FAFAF9", cursor: "pointer", color: "#C9C4BB", opacity: hovered ? 1 : 0, transition: "opacity 0.15s" }}
+            onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#FEF2F2"; el.style.color = "#DC2626"; el.style.borderColor = "rgba(220,38,38,0.20)"; }}
+            onMouseLeave={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#FAFAF9"; el.style.color = "#C9C4BB"; el.style.borderColor = "rgba(26,23,20,0.09)"; }}>
+            <Trash2 style={{ width: 10, height: 10 }} />
+          </button>
+        )}
+      </div>
+
+      {/* プラン名 */}
+      <div>
+        <p style={{ fontSize: 14, fontWeight: 800, color: "#1A1714", margin: 0, lineHeight: 1.2 }}>{plan.name}</p>
+        <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" as const }}>
+          {plan.isSystem && <span style={{ fontSize: 9, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 20, padding: "1px 6px" }}>システム</span>}
+          {plan.accountExpiresAt && <span style={{ fontSize: 9, fontWeight: 600, color: "#D97706", background: "#FEF3C7", border: "1px solid rgba(217,119,6,0.20)", borderRadius: 20, padding: "1px 6px" }}>期限あり</span>}
+        </div>
+      </div>
+
+      {/* 制限サマリー */}
+      <div style={{ flex: 1 }}>
+        {isAllUnlimited ? (
+          <span style={{ fontSize: 11, color: "#B0A9A4", fontWeight: 500 }}>すべて無制限</span>
+        ) : (
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" as const }}>
+            {limits.filter(l => l.val !== null).map(l => (
+              <span key={l.label} style={{ fontSize: 10, fontWeight: 600, color: "#92400E", background: "#FEF3C7", borderRadius: 5, padding: "2px 6px" }}>{l.label}: {l.val}</span>
+            ))}
+            {featuresOff.map(f => (
+              <span key={f} style={{ fontSize: 10, fontWeight: 600, color: "#991B1B", background: "#FEF2F2", borderRadius: 5, padding: "2px 6px" }}>{f} OFF</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* フッター */}
+      <div style={{ display: "flex", alignItems: "center", gap: 4, opacity: hovered ? 1 : 0, transition: "opacity 0.15s" }}>
+        <Pencil style={{ width: 10, height: 10, color: "#6B6458" }} />
+        <span style={{ fontSize: 11, color: "#6B6458", fontWeight: 600 }}>{plan.isSystem ? "詳細を見る" : "クリックして編集"}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── プラン追加カード ───────────────────────────────────────────
+function AddPlanCard({ onClick }: { onClick: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ background: hovered ? "#F0FDF4" : "#FAFAFA", border: `1.5px dashed ${hovered ? "rgba(5,150,105,0.45)" : "rgba(26,23,20,0.13)"}`, borderRadius: 16, cursor: "pointer", transition: "all 0.18s", display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", gap: 8, minHeight: 130 }}
+    >
+      <div style={{ width: 36, height: 36, borderRadius: 10, background: hovered ? "linear-gradient(135deg,#059669,#047857)" : "rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.18s" }}>
+        <Plus style={{ width: 16, height: 16, color: hovered ? "#FFFFFF" : "#B0A9A4", transition: "color 0.18s" }} />
+      </div>
+      <span style={{ fontSize: 12, fontWeight: 700, color: hovered ? "#059669" : "#A09790", transition: "color 0.18s" }}>新規プランを作成</span>
+    </div>
+  );
+}
+
+// ── 組織グリッド末尾の追加カード ───────────────────────────────
+function AddOrgCard({ onClick }: { onClick: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ background: hovered ? "#F0FDF4" : "#FAFAFA", border: `1.5px dashed ${hovered ? "rgba(5,150,105,0.40)" : "rgba(26,23,20,0.13)"}`, borderRadius: 20, padding: "0", cursor: "pointer", transition: "all 0.20s", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 180 }}
+    >
+      <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 10 }}>
+        <div style={{ width: 44, height: 44, borderRadius: 13, background: hovered ? "linear-gradient(135deg, #059669, #047857)" : "rgba(26,23,20,0.06)", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.20s" }}>
+          <Plus style={{ width: 20, height: 20, color: hovered ? "#FFFFFF" : "#B0A9A4", transition: "color 0.20s" }} />
+        </div>
+        <span style={{ fontSize: 13, fontWeight: 700, color: hovered ? "#059669" : "#9E9690", transition: "color 0.20s" }}>新規組織を作成</span>
+      </div>
+    </div>
+  );
+}
+
+// ── 組織フォームモーダル（プラン選択含む） ──────────────────────
+function OrgFormDialog({ org, plans, onClose, onSaved }: { org?: OrgWithStats; plans: PlanSettings[]; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
   const [name,               setName]               = useState(org?.name               ?? "");
   const [representativeName, setRepresentativeName] = useState(org?.representativeName ?? "");
@@ -59,10 +334,16 @@ function OrgFormDialog({ org, onClose, onSaved }: { org?: Organization; onClose:
   const [address,            setAddress]            = useState(org?.address            ?? "");
   const [industry,           setIndustry]           = useState(org?.industry           ?? "");
   const [description,        setDescription]        = useState(org?.description        ?? "");
+  const [planId,             setPlanId]             = useState<string>(org?.planId ?? "");
   const [saving, setSaving] = useState(false);
+  const [planErr, setPlanErr] = useState(false);
+
+  const isNew = !org;
+  const allPlans = [UNLIMITED_PLAN, ...plans.filter(p => !p.isSystem)];
 
   const handleSave = async () => {
     if (!name.trim()) return;
+    if (isNew && !planId) { setPlanErr(true); return; }
     setSaving(true);
     const payload = {
       name,
@@ -73,6 +354,7 @@ function OrgFormDialog({ org, onClose, onSaved }: { org?: Organization; onClose:
       address,
       industry,
       description,
+      plan_id:             (planId && planId !== "system-unlimited") ? planId : null,
     };
     if (isSupabaseEnabled) {
       if (org) {
@@ -105,25 +387,39 @@ function OrgFormDialog({ org, onClose, onSaved }: { org?: Organization; onClose:
         </>
       }
     >
-      {/* 1行目: 組織名（全幅） */}
       <FieldInput label="組織名" placeholder="例: サンプル株式会社" value={name} onChange={setName} required />
 
-      {/* 2行目: 代表者名・担当者名・電話番号 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
         <FieldInput label="代表者名" placeholder="例: 山田 太郎" value={representativeName} onChange={setRepresentativeName} />
         <FieldInput label="担当者名" placeholder="例: 鈴木 花子" value={contactName} onChange={setContactName} />
         <FieldInput label="電話番号" placeholder="例: 03-1234-5678" value={phone} onChange={setPhone} />
       </div>
 
-      {/* 3行目: 業界・ウェブサイト・住所 */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
         <FieldInput label="業界" placeholder="例: IT・ソフトウェア" value={industry} onChange={setIndustry} />
         <FieldInput label="ウェブサイト URL" placeholder="例: https://example.com" value={websiteUrl} onChange={setWebsiteUrl} />
         <FieldInput label="住所" placeholder="例: 東京都渋谷区〇〇 1-2-3" value={address} onChange={setAddress} />
       </div>
 
-      {/* 4行目: 概要（全幅・2行） */}
       <FieldTextarea label="概要・備考" placeholder="組織の概要や備考を入力..." value={description} onChange={setDescription} />
+
+      {/* プラン選択 */}
+      <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#6B6458", display: "flex", alignItems: "center", gap: 4 }}>
+          <CreditCard style={{ width: 12, height: 12 }} />
+          適用プラン
+          {isNew && <span style={{ color: "#DC2626" }}> *</span>}
+        </label>
+        <div style={{ outline: planErr ? "1.5px solid #DC2626" : "none", borderRadius: 9 }}>
+          <CustomSelect
+            value={planId}
+            onChange={v => { setPlanId(v); setPlanErr(false); }}
+            placeholder="プランを選択してください"
+            options={allPlans.map(p => ({ value: p.id!, label: p.name + (p.isSystem ? "（システム）" : "") }))}
+          />
+        </div>
+        {planErr && <p style={{ fontSize: 11, color: "#DC2626" }}>プランは必須です</p>}
+      </div>
     </DialogShell>
   );
 }
@@ -165,11 +461,9 @@ function OrgCard({
         flexDirection: "column" as const,
       }}
     >
-      {/* カード上部グラデーション帯 */}
       <div style={{ height: 6, background: hovered ? "linear-gradient(90deg, #059669, #34D399)" : "linear-gradient(90deg, #D1FAE5, #A7F3D0)", transition: "all 0.20s" }} />
 
       <div style={{ padding: "22px 24px 20px" }}>
-        {/* ヘッダー行 */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 18 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ width: 48, height: 48, borderRadius: 14, background: hovered ? "linear-gradient(135deg, #059669, #047857)" : "linear-gradient(135deg, #ECFDF5, #D1FAE5)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: hovered ? "none" : "1px solid rgba(5,150,105,0.12)", transition: "all 0.20s" }}>
@@ -178,11 +472,14 @@ function OrgCard({
             <div>
               <p style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0, letterSpacing: "-0.01em" }}>{org.name}</p>
               <p style={{ fontSize: 11, color: "#A09790", margin: "4px 0 0" }}>作成日 {formatDate(org.createdAt)}</p>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                <CreditCard style={{ width: 10, height: 10, color: "#6B6458" }} />
+                <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 600 }}>{org.planName}</span>
+              </div>
             </div>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {/* 操作ボタン */}
             <button onClick={e => { e.stopPropagation(); onEdit(); }} title="編集"
               style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid rgba(26,23,20,0.09)", background: "#FAFAF9", cursor: "pointer", color: "#9E9690", transition: "all 0.15s", flexShrink: 0 }}
               onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#ECFDF5"; el.style.color = "#059669"; el.style.borderColor = "rgba(5,150,105,0.25)"; }}
@@ -199,7 +496,6 @@ function OrgCard({
           </div>
         </div>
 
-        {/* 統計バー */}
         <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
           {[
             { label: "総メンバー", value: org.memberCount, icon: Users },
@@ -213,7 +509,6 @@ function OrgCard({
           ))}
         </div>
 
-        {/* メンバーアバター */}
         {org.memberPreviews.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ display: "flex", alignItems: "center" }}>
@@ -252,31 +547,112 @@ export function OrganizationPage() {
   if (!userPermissions.canAccessOrganization) return <Navigate to="/dashboard" replace />;
 
   const [orgs, setOrgs] = useState<OrgWithStats[]>([]);
+  const [plans, setPlans] = useState<PlanSettings[]>([]);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [showCreate, setShowCreate] = useState(false);
-  const [editTarget, setEditTarget] = useState<Organization | null>(null);
+  const [editTarget, setEditTarget] = useState<OrgWithStats | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Organization | null>(null);
+  const [showCreatePlan, setShowCreatePlan] = useState(false);
+  const [editPlan, setEditPlan] = useState<PlanSettings | null>(null);
+  const [deletePlan, setDeletePlan] = useState<PlanSettings | null>(null);
 
-  const refresh = () => {
+  const loadPlans = async (): Promise<Map<string, string>> => {
+    if (!isSupabaseEnabled) return new Map();
+    const { data } = await supabase!.from("plans").select("id, name").order("created_at");
+    const map = new Map<string, string>();
+    if (data) data.forEach((p: { id: string; name: string }) => map.set(p.id, p.name));
+    return map;
+  };
+
+  const loadFullPlans = async () => {
     if (!isSupabaseEnabled) return;
-    supabase!
+    const { data } = await supabase!.from("plans").select("*").order("created_at");
+    if (data) {
+      setPlans(data.map((row: Record<string, unknown>) => ({
+        id: row.id as string,
+        name: row.name as string,
+        isSystem: (row.is_system as boolean) ?? false,
+        accountExpiresAt: (row.account_expires_at as string | null) ?? null,
+        maxMembers: (row.max_members as number | null) ?? null,
+        maxProjects: (row.max_projects as number | null) ?? null,
+        maxSprintsPerProject: (row.max_sprints_per_project as number | null) ?? null,
+        maxTicketsPerSprint: (row.max_tickets_per_sprint as number | null) ?? null,
+        maxImagesPerItem: (row.max_images_per_item as number | null) ?? null,
+        maxCommentsPerTicket: (row.max_comments_per_ticket as number | null) ?? null,
+        maxFiltersPerSprint: (row.max_filters_per_sprint as number | null) ?? null,
+        featureNotifications: (row.feature_notifications as boolean) ?? true,
+        featureCsvExport: (row.feature_csv_export as boolean) ?? true,
+        featureActualMonitor: (row.feature_actual_monitor as boolean) ?? true,
+        featureChildTickets: (row.feature_child_tickets as boolean) ?? true,
+        featureBulkCreate: (row.feature_bulk_create as boolean) ?? true,
+      })));
+    }
+  };
+
+  const fetchOrgs = async (planMap: Map<string, string>) => {
+    const { data: orgsData } = await supabase!
       .from("organizations")
-      .select("id, name, created_at, representative_name, contact_name, phone, website_url, address, industry, description, profiles(id, name, status)")
-      .order("created_at")
-      .then(({ data }) => { if (data) setOrgs(data.map(mapOrgWithStats)); });
+      .select("id, name, created_at, representative_name, contact_name, phone, website_url, address, industry, description, plan_id")
+      .order("created_at");
+    if (!orgsData) return;
+
+    const orgIds = orgsData.map((o: any) => o.id as string);
+    let profileRows: { id: string; name: string; status: string; organization_id: string }[] = [];
+    if (orgIds.length > 0) {
+      const { data: pd } = await supabase!
+        .from("profiles")
+        .select("id, name, status, organization_id")
+        .in("organization_id", orgIds);
+      profileRows = (pd ?? []) as typeof profileRows;
+    }
+
+    const profilesByOrg = new Map<string, typeof profileRows>();
+    for (const p of profileRows) {
+      if (!profilesByOrg.has(p.organization_id)) profilesByOrg.set(p.organization_id, []);
+      profilesByOrg.get(p.organization_id)!.push(p);
+    }
+
+    setOrgs(orgsData.map((r: any) => {
+      const profiles = profilesByOrg.get(r.id as string) ?? [];
+      const planId = (r.plan_id as string | null) ?? null;
+      return {
+        id: r.id as string,
+        name: r.name as string,
+        createdAt: (r.created_at as string) || "",
+        representativeName: (r.representative_name as string) || "",
+        contactName: (r.contact_name as string) || "",
+        phone: (r.phone as string) || "",
+        websiteUrl: (r.website_url as string) || "",
+        address: (r.address as string) || "",
+        industry: (r.industry as string) || "",
+        description: (r.description as string) || "",
+        memberCount: profiles.length,
+        activeCount: profiles.filter(p => p.status === "active").length,
+        memberPreviews: profiles.slice(0, 5).map(p => ({ id: p.id, name: p.name })),
+        planId,
+        planName: planId ? (planMap.get(planId) ?? "—") : "無制限",
+      } as OrgWithStats;
+    }));
+  };
+
+  const refresh = async () => {
+    if (!isSupabaseEnabled) return;
+    const planMap = await loadPlans();
+    await fetchOrgs(planMap);
   };
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
-    supabase!
-      .from("organizations")
-      .select("id, name, created_at, representative_name, contact_name, phone, website_url, address, industry, description, profiles(id, name, status)")
-      .order("created_at")
-      .then(({ data }) => { if (data) setOrgs(data.map(mapOrgWithStats)); setLoading(false); })
-      .catch(() => setLoading(false));
+    Promise.all([
+      loadFullPlans(),
+      (async () => {
+        const planMap = await loadPlans();
+        await fetchOrgs(planMap);
+      })(),
+    ]).finally(() => setLoading(false));
   }, []);
 
-  const handleDelete = async (org: Organization) => {
+  const handleDeleteOrg = async (org: Organization) => {
     if (isSupabaseEnabled) {
       const { error } = await supabase!.from("organizations").delete().eq("id", org.id);
       if (error) { toast("削除に失敗しました", "error"); throw error; }
@@ -285,8 +661,20 @@ export function OrganizationPage() {
     toast(`「${org.name}」を削除しました`);
   };
 
+  const handleDeletePlan = async (plan: PlanSettings) => {
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!.from("plans").delete().eq("id", plan.id);
+      if (error) { toast("削除に失敗しました", "error"); throw error; }
+    }
+    setPlans(prev => prev.filter(p => p.id !== plan.id));
+    toast(`「${plan.name}」を削除しました`);
+  };
+
+  const handleRefreshAll = () => { refresh(); loadFullPlans(); };
+
   const totalMembers = orgs.reduce((sum, o) => sum + o.memberCount, 0);
   const totalActive  = orgs.reduce((sum, o) => sum + o.activeCount,  0);
+  const nonSystemPlans = plans.filter(p => !p.isSystem);
 
   if (loading) return <PageLoader />;
 
@@ -295,18 +683,15 @@ export function OrganizationPage() {
 
       {/* ── ヒーローヘッダー ── */}
       <div style={{ background: "linear-gradient(135deg, #022c22 0%, #064E3B 40%, #065F46 70%, #047857 100%)", padding: "40px 40px 44px", position: "relative", overflow: "hidden" }}>
-        {/* 装飾 */}
         <div style={{ position: "absolute", top: -60, right: -60, width: 280, height: 280, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
         <div style={{ position: "absolute", bottom: -80, right: 200, width: 200, height: 200, borderRadius: "50%", background: "rgba(52,211,153,0.08)" }} />
         <div style={{ position: "absolute", top: 20, right: 160, width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.03)" }} />
 
-        {/* ラベル */}
         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.20)", borderRadius: 20, padding: "5px 12px", marginBottom: 20 }}>
           <Sparkles style={{ width: 11, height: 11, color: "#34D399" }} />
           <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.80)", letterSpacing: "0.10em" }}>PLATFORM MANAGEMENT</span>
         </div>
 
-        {/* タイトル行 + 新規作成ボタン（DetailPageと同じ構成） */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24, position: "relative" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ width: 54, height: 54, borderRadius: 16, background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -319,24 +704,16 @@ export function OrganizationPage() {
             </div>
           </div>
 
-          <button
-            onClick={() => setShowCreate(true)}
-            style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 18px", background: "rgba(255,255,255,0.16)", border: "1.5px solid rgba(255,255,255,0.35)", borderRadius: 12, fontSize: 13, fontWeight: 700, color: "#FFFFFF", cursor: "pointer", transition: "all 0.15s", flexShrink: 0, position: "relative", zIndex: 1 }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.26)"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.16)"; }}
-          >
-            <Plus style={{ width: 15, height: 15 }} />
-            新規組織を作成
-          </button>
+          <div />
         </div>
 
-        {/* 統計チップ行（DetailPageと同じ位置・スタイル） */}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" as const, position: "relative" }}>
           {[
             { label: "登録組織",   value: orgs.length  },
             { label: "総メンバー", value: totalMembers },
             { label: "アクティブ", value: totalActive  },
             { label: "招待中",     value: totalMembers - totalActive },
+            { label: "プラン数",   value: plans.length },
           ].map(({ label, value }) => (
             <div key={label} style={{ padding: "10px 18px", background: "rgba(255,255,255,0.14)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.18)", textAlign: "center" as const }}>
               <p style={{ fontSize: 22, fontWeight: 800, color: "#FFFFFF", margin: 0 }}>{value}</p>
@@ -346,30 +723,34 @@ export function OrganizationPage() {
         </div>
       </div>
 
-      {/* ── 組織リスト ── */}
       <div style={{ padding: "32px 40px 48px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
-          <Building2 style={{ width: 16, height: 16, color: "#6B6458" }} />
-          <h2 style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: 0 }}>登録済み組織</h2>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "#059669", background: "#ECFDF5", padding: "2px 9px", borderRadius: 20 }}>{orgs.length}</span>
+        {/* ── プラン一覧 ── */}
+        <div style={{ marginBottom: 36 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <CreditCard style={{ width: 16, height: 16, color: "#6B6458" }} />
+            <h2 style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: 0 }}>プラン一覧</h2>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#2563EB", background: "#EFF6FF", padding: "2px 9px", borderRadius: 20 }}>{plans.length}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+            <PlanCard plan={UNLIMITED_PLAN} onClick={() => setEditPlan(UNLIMITED_PLAN)} />
+            {nonSystemPlans.map(p => (
+              <PlanCard key={p.id} plan={p}
+                onClick={() => setEditPlan(p)}
+                onDelete={() => setDeletePlan(p)}
+              />
+            ))}
+            <AddPlanCard onClick={() => setShowCreatePlan(true)} />
+          </div>
         </div>
 
-        {orgs.length === 0 ? (
-          <div style={{ background: "#FFFFFF", border: "1.5px dashed rgba(26,23,20,0.12)", borderRadius: 20, padding: "80px 0", textAlign: "center" as const }}>
-            <div style={{ width: 60, height: 60, borderRadius: 18, background: "linear-gradient(135deg, #ECFDF5, #D1FAE5)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px" }}>
-              <Globe style={{ width: 28, height: 28, color: "#059669" }} />
-            </div>
-            <p style={{ fontSize: 16, fontWeight: 700, color: "#1A1714", margin: "0 0 8px" }}>組織がまだありません</p>
-            <p style={{ fontSize: 13, color: "#A09790", margin: "0 0 24px" }}>「新規組織を作成」から最初の組織を登録してください</p>
-            <button
-              onClick={() => setShowCreate(true)}
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "11px 22px", background: "linear-gradient(135deg, #059669, #047857)", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 11, border: "none", cursor: "pointer", boxShadow: "0 4px 14px rgba(5,150,105,0.30)" }}
-            >
-              <Plus style={{ width: 15, height: 15 }} />
-              組織を作成する
-            </button>
+        {/* ── 組織リスト ── */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <Building2 style={{ width: 16, height: 16, color: "#6B6458" }} />
+            <h2 style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: 0 }}>登録済み組織</h2>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#059669", background: "#ECFDF5", padding: "2px 9px", borderRadius: 20 }}>{orgs.length}</span>
           </div>
-        ) : (
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 20 }}>
             {orgs.map(org => (
               <OrgCard
@@ -380,17 +761,28 @@ export function OrganizationPage() {
                 onDelete={() => setDeleteTarget(org)}
               />
             ))}
+            {/* 末尾：新規組織追加カード */}
+            <AddOrgCard onClick={() => setShowCreate(true)} />
           </div>
-        )}
+        </div>
       </div>
 
-      {showCreate && <OrgFormDialog onClose={() => setShowCreate(false)} onSaved={refresh} />}
-      {editTarget && <OrgFormDialog org={editTarget} onClose={() => setEditTarget(null)} onSaved={refresh} />}
+      {showCreate && <OrgFormDialog plans={plans} onClose={() => setShowCreate(false)} onSaved={handleRefreshAll} />}
+      {editTarget && <OrgFormDialog org={editTarget} plans={plans} onClose={() => setEditTarget(null)} onSaved={handleRefreshAll} />}
       {deleteTarget && (
         <ConfirmDialog
           message={`「${deleteTarget.name}」を削除しますか？\n所属メンバーのorganization_idがNULLになります。`}
-          onConfirm={() => handleDelete(deleteTarget)}
+          onConfirm={() => handleDeleteOrg(deleteTarget)}
           onClose={() => setDeleteTarget(null)}
+        />
+      )}
+      {showCreatePlan && <PlanFormDialog onClose={() => setShowCreatePlan(false)} onSaved={handleRefreshAll} />}
+      {editPlan && <PlanFormDialog plan={editPlan} onClose={() => setEditPlan(null)} onSaved={handleRefreshAll} />}
+      {deletePlan && (
+        <ConfirmDialog
+          message={`プラン「${deletePlan.name}」を削除しますか？\nこのプランを使用している組織のプランが外れます。`}
+          onConfirm={() => handleDeletePlan(deletePlan)}
+          onClose={() => setDeletePlan(null)}
         />
       )}
     </div>

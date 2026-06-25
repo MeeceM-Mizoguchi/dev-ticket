@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
@@ -14,7 +15,8 @@ const ErrMsg = ({ msg }: { msg: string }) => (
   </p>
 );
 
-export function NewSprintDialog({ onClose, projectId, onCreated }: { onClose: () => void; projectId: string; onCreated?: () => void }) {
+export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCount }: { onClose: () => void; projectId: string; onCreated?: () => void; currentSprintCount?: number }) {
+  const { plan } = usePlan();
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -29,6 +31,10 @@ export function NewSprintDialog({ onClose, projectId, onCreated }: { onClose: ()
   const handleSave = async () => {
     setAttempted(true);
     if (!canSubmit) return;
+    if (plan.maxSprintsPerProject !== null && currentSprintCount !== undefined && currentSprintCount >= plan.maxSprintsPerProject) {
+      setErrorMsg(`現在のプランのスプリント上限（${plan.maxSprintsPerProject}件/プロジェクト）に達しています`);
+      return;
+    }
     setErrorMsg(null);
     if (isSupabaseEnabled) {
       setSaving(true);

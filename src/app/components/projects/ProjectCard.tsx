@@ -5,6 +5,8 @@ import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { ProjectActualHours } from "@/app/components/projects/ProjectActualHours";
+import { usePlan } from "@/app/contexts/PlanContext";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
 export function ProjectCard({
   project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo,
@@ -18,6 +20,7 @@ export function ProjectCard({
   onEditTags?: () => void;
   onEnvMemo?: () => void;
 }) {
+  const { plan } = usePlan();
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
   const sm = getStatusMeta(project.status);
@@ -82,7 +85,14 @@ export function ProjectCard({
                   <MenuItem icon={<Globe style={{ width: 12, height: 12 }} />} label="設定" onClick={() => { setMenuOpen(false); onEnvMemo(); }} color="#0284C7" />
                 )}
                 {onDownload && (
-                  <MenuItem icon={<Download style={{ width: 12, height: 12 }} />} label="CSVダウンロード" onClick={() => { setMenuOpen(false); onDownload(); }} color="#059669" />
+                  <MenuItem
+                    icon={<Download style={{ width: 12, height: 12 }} />}
+                    label="CSVダウンロード"
+                    onClick={() => { if (!plan.featureCsvExport) return; setMenuOpen(false); onDownload(); }}
+                    color={plan.featureCsvExport ? "#059669" : "#9CA3AF"}
+                    disabled={!plan.featureCsvExport}
+                    tooltip={!plan.featureCsvExport ? "現在のプランではご利用できません" : undefined}
+                  />
                 )}
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
@@ -110,9 +120,11 @@ export function ProjectCard({
             <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", gap: 4 }}><Circle style={{ width: 10, height: 10 }} />{project.todo}</span>
             <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)", marginLeft: "auto" }}>{total}件</span>
           </div>
-          <div style={{ marginTop: 8 }}>
-            <ProjectActualHours projectId={project.id} />
-          </div>
+          {plan.featureActualMonitor && (
+            <div style={{ marginTop: 8 }}>
+              <ProjectActualHours projectId={project.id} />
+            </div>
+          )}
         </div>
         
         {/* フッター外枠ブロック */}
@@ -164,13 +176,15 @@ export function ProjectCard({
   );
 }
 
-function MenuItem({ icon, label, onClick, color }: { icon: React.ReactNode; label: string; onClick: () => void; color: string }) {
+function MenuItem({ icon, label, onClick, color, disabled, tooltip }: { icon: React.ReactNode; label: string; onClick: () => void; color: string; disabled?: boolean; tooltip?: string }) {
   return (
-    <button onClick={onClick}
-      style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "transparent", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 12, fontWeight: 500, color, textAlign: "left" as const, transition: "background 0.1s", whiteSpace: "nowrap" as const }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = color === "#DC2626" ? "#FEF2F2" : "#F4F5F6"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
-      {icon}{label}
-    </button>
+    <PlanTooltip text={tooltip ?? ""} active={!!tooltip} placement="bottom-left">
+      <button onClick={onClick}
+        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "transparent", border: "none", borderRadius: 7, cursor: disabled ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 500, color, textAlign: "left" as const, transition: "background 0.1s", whiteSpace: "nowrap" as const, opacity: disabled ? 0.5 : 1 }}
+        onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = color === "#DC2626" ? "#FEF2F2" : "#F4F5F6"; }}
+        onMouseLeave={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+        {icon}{label}
+      </button>
+    </PlanTooltip>
   );
 }

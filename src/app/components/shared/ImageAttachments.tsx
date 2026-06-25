@@ -1,15 +1,17 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { Image as ImageIcon, X, Copy, CheckCheck } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { PlanTooltip } from "./PlanTooltip";
 
 interface Props {
   images: string[];
   onImagesChange: (images: string[]) => void;
   uploadPathPrefix: string;
   readOnly?: boolean;
+  maxImages?: number | null;
 }
 
-export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, readOnly }: Props) {
+export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, readOnly, maxImages }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
@@ -30,13 +32,14 @@ export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, rea
   const addImages = useCallback(async (files: FileList | File[]) => {
     for (const f of Array.from(files)) {
       if (!f.type.startsWith("image/")) continue;
+      if (maxImages !== null && maxImages !== undefined && imagesRef.current.length >= maxImages) break;
       const url = await uploadImage(f);
       if (!url) continue;
       const next = [...imagesRef.current, url];
       imagesRef.current = next;
       onImagesChange(next);
     }
-  }, [uploadImage, onImagesChange]);
+  }, [uploadImage, onImagesChange, maxImages]);
 
   const removeImage = useCallback((idx: number) => {
     const next = imagesRef.current.filter((_, j) => j !== idx);
@@ -88,20 +91,30 @@ export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, rea
   return (
     <>
       <div
-        onDragOver={readOnly ? undefined : e => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={readOnly ? undefined : e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
-        onDrop={readOnly ? undefined : e => { e.preventDefault(); setDragOver(false); addImages(e.dataTransfer.files); }}
+        onDragOver={readOnly || (maxImages !== null && maxImages !== undefined && images.length >= maxImages) ? undefined : e => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={readOnly || (maxImages !== null && maxImages !== undefined && images.length >= maxImages) ? undefined : e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
+        onDrop={readOnly || (maxImages !== null && maxImages !== undefined && images.length >= maxImages) ? undefined : e => { e.preventDefault(); setDragOver(false); addImages(e.dataTransfer.files); }}
       >
-        {!readOnly && (
-          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
-            <ImageIcon style={{ width: 13, height: 13, color: dragOver ? "#059669" : "#B0A9A4" }} />
-            <span style={{ fontSize: 12, color: dragOver ? "#059669" : "#B0A9A4" }}>
-              {dragOver ? "ドロップして追加" : "クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ"}
-            </span>
-            <input type="file" accept="image/*" multiple style={{ display: "none" }}
-              onChange={e => { addImages(e.target.files || []); e.target.value = ""; }} />
-          </label>
-        )}
+        {!readOnly && (() => {
+          const limitReached = maxImages !== null && maxImages !== undefined && images.length >= maxImages;
+          return limitReached ? (
+            <PlanTooltip text="現在のプランではこれ以上添付できません" active={true}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: "1.5px dashed rgba(156,163,175,0.40)", borderRadius: 9, background: "#F3F4F6", cursor: "not-allowed", width: "100%" }}>
+                <ImageIcon style={{ width: 13, height: 13, color: "#9CA3AF" }} />
+                <span style={{ fontSize: 12, color: "#9CA3AF" }}>画像の上限（{maxImages}枚）に達しました</span>
+              </div>
+            </PlanTooltip>
+          ) : (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
+              <ImageIcon style={{ width: 13, height: 13, color: dragOver ? "#059669" : "#B0A9A4" }} />
+              <span style={{ fontSize: 12, color: dragOver ? "#059669" : "#B0A9A4" }}>
+                {dragOver ? "ドロップして追加" : `クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ${maxImages ? `（残り${maxImages - images.length}枚）` : ""}`}
+              </span>
+              <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                onChange={e => { addImages(e.target.files || []); e.target.value = ""; }} />
+            </label>
+          );
+        })()}
         {images.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
             {images.map((img, i) => (

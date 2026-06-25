@@ -3,6 +3,7 @@ import { useNavigate, useParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
@@ -10,6 +11,7 @@ import type { Project, Sprint, SprintTicket, TicketStatus, Priority, SortCol } f
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, htmlToText, calcTicketActualHours, formatActualHours, formatPersonDays } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -231,6 +233,7 @@ export function SprintDetailPage() {
   const { toast } = useToast();
   const { showAlert } = useAlert();
   const { userId, userPermissions, userRole, userOrgId, userName } = useAuth();
+  const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const [project, setProject] = useState<Project | null>(null);
   const [sprint, setSprint] = useState<Sprint | null>(null);
@@ -254,6 +257,14 @@ export function SprintDetailPage() {
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
   const [showMyFilterModal, setShowMyFilterModal] = useState(false);
   const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
+  const [savedFilterCount, setSavedFilterCount] = useState(0);
+  const refreshFilterCount = (sprintId?: string) => {
+    const sid = sprintId ?? sprint?.id;
+    if (!isSupabaseEnabled || !userId || !sid) return;
+    supabase!.from("my_filters").select("*", { count: "exact", head: true })
+      .eq("sprint_id", sid).eq("member_id", userId)
+      .then(({ count }) => { setSavedFilterCount(count ?? 0); });
+  };
   const [lastOpenedWbs, setLastOpenedWbs] = useState<string | null>(() => {
     const v = sessionStorage.getItem('hl_wbs');
     if (v) sessionStorage.removeItem('hl_wbs');
@@ -310,6 +321,7 @@ export function SprintDetailPage() {
       const s = byId ?? byRawId ?? byTicketWbs;
       if (!s) { setProjectPermissionsLoaded(true); setLoading(false); return; }
       setSprint(mapSprint(s));
+      refreshFilterCount(s.id);
       const pid = s.project_id;
       const [{ data: p }, { data: pmp }] = await Promise.all([
         supabase!.from("projects").select("*").eq("id", pid).single(),
@@ -321,6 +333,13 @@ export function SprintDetailPage() {
       setLoading(false);
     })().catch(() => { setProjectPermissionsLoaded(true); setLoading(false); });
   }, [sprintIdentifier, userId]);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !userId || !sprint?.id) return;
+    supabase!.from("my_filters").select("*", { count: "exact", head: true })
+      .eq("sprint_id", sprint.id).eq("member_id", userId)
+      .then(({ count }) => { setSavedFilterCount(count ?? 0); });
+  }, [sprint?.id, userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshSprint = () => {
     if (!isSupabaseEnabled || !sprint) return;
@@ -518,21 +537,28 @@ export function SprintDetailPage() {
             <FolderOpen style={{ width: 14, height: 14 }} />Myフィルタ
           </button>
           {canCreateTicket && (
-            <button onClick={() => setShowBulkCreate(true)}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", fontSize: 13, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 10, cursor: "pointer", flexShrink: 0 }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-              <Plus style={{ width: 14, height: 14 }} />一括作成
-            </button>
+            <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
+              <button onClick={plan.featureBulkCreate ? () => setShowBulkCreate(true) : undefined}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", fontSize: 13, fontWeight: 600, color: plan.featureBulkCreate ? "#7C3AED" : "#9CA3AF", background: plan.featureBulkCreate ? "#F5F3FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(124,58,237,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 10, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", flexShrink: 0 }}
+                onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                <Plus style={{ width: 14, height: 14 }} />一括作成
+              </button>
+            </PlanTooltip>
           )}
-          {canCreateTicket && (
-            <button onClick={() => setShowCreate(true)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-              <Plus style={{ width: 15, height: 15 }} />チケット作成
-            </button>
-          )}
+          {canCreateTicket && (() => {
+            const atLimit = plan.maxTicketsPerSprint !== null && sprint.tickets.length >= plan.maxTicketsPerSprint;
+            return (
+              <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
+                <button onClick={atLimit ? undefined : () => setShowCreate(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
+                  onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                  onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+                  <Plus style={{ width: 15, height: 15 }} />チケット作成
+                </button>
+              </PlanTooltip>
+            );
+          })()}
         </div>
       </div>
 
@@ -569,15 +595,21 @@ export function SprintDetailPage() {
             />
           ))}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-            {Object.values(colFilters).some(s => s.size > 0) && (
-              <button onClick={async () => {
-                const dupName = await checkDuplicateFilter(sprint?.id!, userId, serializedColFilters);
-                if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
-                setShowSaveFilterDialog(true);
-              }} title="現在のフィルタを保存" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(5,150,105,0.25)", background: "#ECFDF5", color: "#059669", cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                <BookmarkPlus style={{ width: 11, height: 11 }} />
-              </button>
-            )}
+            {Object.values(colFilters).some(s => s.size > 0) && (() => {
+              const filterAtLimit = plan.maxFiltersPerSprint !== null && savedFilterCount >= plan.maxFiltersPerSprint;
+              return (
+                <PlanTooltip text="現在のプランではこれ以上作成できません" active={filterAtLimit} placement="bottom-left">
+                  <button onClick={filterAtLimit ? undefined : async () => {
+                    const dupName = await checkDuplicateFilter(sprint?.id!, userId, serializedColFilters);
+                    if (dupName) { showAlert(`「${dupName}」と同じ条件のフィルタが既に保存されています`, "重複するフィルタ"); return; }
+                    setShowSaveFilterDialog(true);
+                  }} title="現在のフィルタを保存"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: `1px solid ${filterAtLimit ? "rgba(156,163,175,0.30)" : "rgba(5,150,105,0.25)"}`, background: filterAtLimit ? "#F3F4F6" : "#ECFDF5", color: filterAtLimit ? "#9CA3AF" : "#059669", cursor: filterAtLimit ? "not-allowed" : "pointer", padding: 0, flexShrink: 0 }}>
+                    <BookmarkPlus style={{ width: 11, height: 11 }} />
+                  </button>
+                </PlanTooltip>
+              );
+            })()}
             {Object.values(colFilters).some(s => s.size > 0) && (
               <button onClick={() => setColFilters({})} title="フィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
                 <X style={{ width: 11, height: 11 }} />
@@ -744,7 +776,7 @@ export function SprintDetailPage() {
         </div>
       </div>
 
-      {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} />}
+      {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} currentTicketCount={sprint.tickets.length} />}
       {showBulkCreate && (
         <BulkTicketCreateDialog
           sprintId={sprint.id}
@@ -801,7 +833,7 @@ export function SprintDetailPage() {
 
       {showMyFilterModal && (
         <MyFilterModal
-          onClose={() => setShowMyFilterModal(false)}
+          onClose={() => { setShowMyFilterModal(false); if (sprint?.id) refreshFilterCount(sprint.id); }}
           sprintId={sprint?.id!}
           userId={userId}
           cols={DETAIL_COL_DEFS}
@@ -818,6 +850,7 @@ export function SprintDetailPage() {
           onClose={() => setShowSaveFilterDialog(false)}
           onSave={async (title) => {
             await addMyFilter(sprint?.id!, userId, title, serializedColFilters, sortCol, sortDir);
+            if (sprint?.id) refreshFilterCount(sprint.id);
             setShowSaveFilterDialog(false);
           }}
         />
