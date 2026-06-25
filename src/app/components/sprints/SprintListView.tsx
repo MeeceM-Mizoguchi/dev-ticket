@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
@@ -790,11 +790,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     </div>
                   ) : displayTickets.map((t) => {
                     // 🌟 修正: progress が -1 なら「保留中」、-2 なら「取下」のスタイルを強制適用する
-                    const tsm = t.progress === -1
-                      ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
-                      : t.progress === -2
-                        ? { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }
-                        : TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                    const tsm = getTicketStatusMeta(t.status, t.progress);
                     const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                     const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
                     const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
@@ -859,12 +855,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                         </div>
                         {/* 子チケット行（アコーディオン展開時） */}
                         {hasChildren && isTicketExpanded && children.map(child => {
-                          // 🌟 修正: progress が -1 なら「保留中」、-2 なら「取下」のスタイルを強制適用する
-                          const ctsm = child.progress === -1
-                            ? { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }
-                            : child.progress === -2
-                              ? { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }
-                              : TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                          // 🌟 修正: progress -1=保留中 / -2=取下、status closed=クローズ を一元解決
+                          const ctsm = getTicketStatusMeta(child.status, child.progress);
                           const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";

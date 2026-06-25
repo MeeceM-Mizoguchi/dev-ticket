@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { TICKET_STATUSES, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -258,7 +258,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     if (!isSupabaseEnabled) return;
     const { data } = await supabase!
       .from("sprint_tickets")
-      .select("id,wbs,title,status,priority")
+      .select("id,wbs,title,status,priority,progress")
       .eq("parent_id", ticketId)
       .order("wbs");
     if (data) setChildTickets(data.map(mapSprintTicket));
@@ -2206,7 +2206,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   {childTickets.map(child => {
-                    const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                    const ctsm = getTicketStatusMeta(child.status, child.progress);
                     const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                     const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                     const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
