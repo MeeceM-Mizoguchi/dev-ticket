@@ -45,6 +45,19 @@ export const TICKET_STATUSES = [
   { value: "released", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
 ];
 
+// チケットの status ＋ progress からバッジ表示用メタを解決する。
+// - progress === -1: 保留中 / -2: 取下（DB制約回避のための裏ワザ値）
+// - status === "closed"（子チケットの「対応完了」）は TICKET_STATUSES に
+//   独立エントリが無いため「クローズ」(released) にフォールバックさせる。
+//   これを入れないと find が undefined になり TICKET_STATUSES[0]（未着手）に
+//   誤フォールバックして、完了済みの子チケットが親ビューで「未着手」表示になる。
+export function getTicketStatusMeta(status: TicketStatus, progress?: number) {
+  if (progress === -1) return TICKET_STATUSES.find(s => s.value === "pending")!;
+  if (progress === -2) return TICKET_STATUSES.find(s => s.value === "withdrawn")!;
+  if (status === "closed") return TICKET_STATUSES.find(s => s.value === "released")!;
+  return TICKET_STATUSES.find(s => s.value === status) ?? TICKET_STATUSES[0];
+}
+
 export function getPriorityMeta(p: Priority) {
   return {
     high: { label: "高", cls: "bg-red-50 text-red-600", dot: "bg-red-500" },

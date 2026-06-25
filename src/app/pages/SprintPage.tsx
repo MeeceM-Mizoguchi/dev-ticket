@@ -74,7 +74,10 @@ export function SprintPage() {
 
   const [project, setProject] = useState<Project | null>(null);
   const [sprints, setSprints] = useState<Sprint[]>([]);
-  const [viewMode, setViewMode] = useState<SprintView>("list");
+  const [viewMode, setViewMode] = useState<SprintView>(() => {
+    const v = searchParams.get("view");
+    return (v === "gantt" || v === "board" || v === "list") ? v : "list";
+  });
   const [showCreate, setShowCreate] = useState(false);
   const [createForSprintId, setCreateForSprintId] = useState<string | null>(null);
   const [bulkCreateForSprintId, setBulkCreateForSprintId] = useState<string | null>(null);

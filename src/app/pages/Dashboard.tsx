@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef, useCallback, type ElementType } from "react";
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, type ElementType } from "react";
+import { useNavigate } from "react-router";
 import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, X, RefreshCw } from "lucide-react";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -7,13 +8,13 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, L
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { TICKETS, PROJECTS } from "@/app/data/mock";
+import { TICKETS, PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
-import { calcProgress, formatDate, getPriorityMeta } from "@/app/lib/helpers";
-import type { ProjectStatus, SprintTicket, TicketStatus, Priority } from "@/app/types";
+import { calcProgress, formatDate, getPriorityMeta, computeSprintStatus, getSprintStatusMeta, sprintProgress } from "@/app/lib/helpers";
+import type { ProjectStatus, SprintTicket, TicketStatus, Priority, SprintStatus } from "@/app/types";
 import { escStack } from "@/app/lib/escStack";
 
-type ChartType = 'horizontal' | 'vertical' | 'line' | 'scatter';
+type ChartType = 'horizontal' | 'vertical' | 'line' | 'scatter' | 'gantt';
 type LineChartMode = 'project-progress' | 'weekly-close';
 
 type DashTicket = {
@@ -67,9 +68,189 @@ const PRIORITY_META_MODAL: Record<string, { label: string; color: string }> = {
 // 判定を一元化するため、完了・クローズ系のステータス配列を定義
 const TERMINAL_STATUSES = ["done", "closed", "waiting-release", "released"];
 
+// ガント帯ホバー時に表示するチケット
+type GanttTicket = { id: string; title: string; status: string; priority: string };
+
+// ガントチャート用のスプリント期間データ
+type GanttSprint = {
+  id: string;
+  projectName: string;
+  projectSlug: string;   // 遷移用（/{slug}）
+  identifier: string;    // スプリント識別子（/{slug}/{identifier}）
+  name: string;
+  startDate: string;
+  endDate: string;
+  status: SprintStatus;
+  progress: number;
+  tickets: GanttTicket[]; // 帯ホバーで一覧表示
+};
+
+// ガントの1行の高さ（プロジェクト行・スプリント行 共通）。他チャートの高さ揃えにも使う
+const GANTT_ROW_H = 34;
+// ガントの描画高さ（行数から算出）= トグル(40) + 枠[ボーダー+ヘッダー28+行] + 凡例(30)
+function ganttContentHeight(rowCount: number) {
+  if (rowCount <= 0) return 320;
+  return 40 + (28 + rowCount * GANTT_ROW_H + 3) + 30;
+}
+
+// モックデータからガント用スプリント配列を生成（開始日/終了日・ステータス・進捗）
+function buildMockGantt(): GanttSprint[] {
+  return SPRINTS.map(s => {
+    const proj = PROJECTS.find(p => p.id === s.projectId);
+    return {
+      id: s.id,
+      projectName: proj?.name ?? "",
+      projectSlug: (proj as any)?.slug || proj?.id || "",
+      identifier: (s as any).identifier || s.id,
+      name: s.name,
+      startDate: s.startDate,
+      endDate: s.endDate,
+      status: computeSprintStatus(s),
+      progress: sprintProgress(s),
+      tickets: s.tickets.map(t => ({ id: t.wbs || t.id, title: t.title, status: t.status, priority: t.priority })),
+    };
+  });
+}
+
+// マトリックスのセル: 高さに収まるだけバッジを表示し、入り切らない分だけ「+N」にする
+type MatrixCellProps = {
+  isBug: boolean;
+  hasLeftBorder: boolean;
+  tickets: MatrixTicket[];
+  cellKey: string;
+  hoveredKey: string | null;
+  onTicketClick: (t: MatrixTicket, e: React.MouseEvent) => void;
+  onHoverEnter: () => void;
+  onHoverLeave: () => void;
+  onOpenModal: () => void;
+};
+
+function MatrixCell({ isBug, hasLeftBorder, tickets, cellKey, hoveredKey, onTicketClick, onHoverEnter, onHoverLeave, onOpenModal }: MatrixCellProps) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const chipRef = useRef<HTMLDivElement>(null);
+  const sig = tickets.map(t => t.id).join(",");
+  const [visible, setVisible] = useState(tickets.length);
+  const [measuring, setMeasuring] = useState(true);
+  const [popupPos, setPopupPos] = useState<{ left: number; top: number } | null>(null);
+
+  // データ変化で全件表示に戻して再計測
+  useLayoutEffect(() => { setMeasuring(true); setVisible(tickets.length); }, [sig]);
+
+  // 計測: セル高さに収まるバッジ数を算出
+  useLayoutEffect(() => {
+    if (!measuring) return;
+    const el = wrapRef.current;
+    if (!el) { setMeasuring(false); return; }
+    const H = el.clientHeight;
+    const kids = Array.from(el.querySelectorAll('[data-badge="1"]')) as HTMLElement[];
+    let count = kids.length;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i].offsetTop + kids[i].offsetHeight > H + 1) { count = i; break; }
+    }
+    if (count < tickets.length && count > 0) count -= 1; // 「+N」チップの分を1枠空ける
+    if (count < 0) count = 0;
+    setVisible(count);
+    setMeasuring(false);
+  }, [measuring, sig]);
+
+  // セルのリサイズで再計測
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => { setMeasuring(true); setVisible(tickets.length); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [sig]);
+
+  const hasAny = tickets.length > 0;
+  const shown = measuring ? tickets : tickets.slice(0, visible);
+  const hidden = measuring ? [] : tickets.slice(visible);
+
+  const handleMoreEnter = () => {
+    onHoverEnter();
+    const r = chipRef.current?.getBoundingClientRect();
+    if (r) setPopupPos({ left: isBug ? r.left : r.left + r.width / 2, top: r.top - 6 });
+  };
+
+  return (
+    <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", position: "relative", minHeight: 0, overflow: "hidden", borderLeft: hasLeftBorder ? "1.5px solid #E6E2D9" : "none", background: "#FFFFFF" }}>
+      <div style={{ position: "absolute", top: 8, right: 10, fontSize: 11, color: hasAny ? "#374151" : "#C9C4BB", fontWeight: 700, fontFamily: "var(--font-mono)", background: hasAny ? "#F3F4F6" : "transparent", padding: "1px 7px", borderRadius: 20, zIndex: 1 }}>
+        {tickets.length} 件
+      </div>
+
+      <div ref={wrapRef} style={{ display: "flex", flexWrap: "wrap", alignContent: "flex-start", gap: 6, marginTop: 4, paddingRight: 42, flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {shown.map(ticket => (
+          <div
+            key={ticket.id}
+            data-badge="1"
+            onClick={(e) => onTicketClick(ticket, e)}
+            style={{ padding: "3px 10px", border: "1.5px solid #8B5CF6", borderRadius: 20, background: "#F3F0FF", color: "#6D28D9", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", cursor: "pointer", transition: "all 0.15s ease", letterSpacing: "0.01em", height: "fit-content" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "#EDE9FE"; e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(109,40,217,0.18)"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "#F3F0FF"; e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; }}
+            title={`クリックして詳細へ: ${ticket.title}`}
+          >
+            {ticket.id}
+          </div>
+        ))}
+
+        {hidden.length > 0 && (
+          <div ref={chipRef} style={{ display: "inline-block", alignSelf: "center", height: "fit-content" }}
+            onMouseEnter={handleMoreEnter} onMouseLeave={onHoverLeave}>
+            <div style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, cursor: "pointer", background: "#F3F4F6", padding: "3px 10px", borderRadius: 20, border: "1.5px solid #E5E7EB" }}>
+              +{hidden.length}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {hidden.length > 0 && hoveredKey === cellKey && popupPos && (
+        <div
+          data-popup-id={cellKey}
+          style={{
+            position: "fixed", top: popupPos.top, left: popupPos.left,
+            transform: isBug ? "translateY(-100%)" : "translate(-50%, -100%)",
+            background: "#ffffff", border: "1px solid #E6E2D9", borderRadius: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: "10px 12px", zIndex: 9999,
+            minWidth: 260, display: "flex", flexDirection: "column", gap: 6,
+          }}
+          onMouseEnter={handleMoreEnter} onMouseLeave={onHoverLeave}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #F3F4F6", paddingBottom: 6 }}>
+            <span style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 600 }}>残り {hidden.length} 件</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onOpenModal(); }}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, border: "1px solid #E6E2D9", borderRadius: 4, background: "#FFFFFF", cursor: "pointer", color: "#9CA3AF", padding: 0, transition: "all 0.15s ease" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6D28D9"; (e.currentTarget as HTMLElement).style.borderColor = "#8B5CF6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#9CA3AF"; (e.currentTarget as HTMLElement).style.borderColor = "#E6E2D9"; }}
+              title="一覧をモーダルで表示"
+            >
+              <Maximize2 style={{ width: 12, height: 12 }} />
+            </button>
+          </div>
+          <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+            {hidden.map(t => (
+              <div
+                key={t.id}
+                onClick={(e) => onTicketClick(t, e)}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 6, cursor: "pointer", background: "transparent", transition: "background 0.12s ease" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "#F5F3FF"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#6D28D9", border: "1.5px solid #8B5CF6", borderRadius: 10, padding: "1px 6px", background: "#F3F0FF", whiteSpace: "nowrap" }}>{t.id}</span>
+                <span style={{ fontSize: 11, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={t.title}>{t.title}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Dashboard() {
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
+  const navigate = useNavigate();
   const firstName = userName.split(/[\s ]/)[0];
 
   // モックデータ読み込み時：クローズ・完了系のステータスのチケットをすべて除外する
@@ -95,6 +276,7 @@ export function Dashboard() {
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [chartType, setChartType] = useState<ChartType>('vertical');
+  const [ganttSprints, setGanttSprints] = useState<GanttSprint[]>(isSupabaseEnabled ? [] : buildMockGantt());
   const [lineChartMode, setLineChartMode] = useState<LineChartMode>('project-progress');
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
 
@@ -132,6 +314,7 @@ export function Dashboard() {
         };
       }));
       setProjects(PROJECTS.map(p => ({ id: p.slug || p.id, name: p.name, status: p.status, client: p.client, members: p.members ?? [], done: p.done, inProgress: p.inProgress, todo: p.todo })));
+      setGanttSprints(buildMockGantt());
       setTimeout(() => setIsRefreshRefreshing(false), 500);
       return;
     }
@@ -149,7 +332,7 @@ export function Dashboard() {
     try {
       const [tRes, sDataRes, pRes, cDataRes] = await Promise.all([
         supabase!.from("sprint_tickets").select("id, wbs, title, status, priority, due_date, sprint_id, assignee, category_id"),
-        supabase!.from("sprints").select("id, project_id, name"),
+        supabase!.from("sprints").select("id, project_id, name, start_date, end_date, identifier"),
         projQ,
         supabase!.from("ticket_categories").select("id, name"),
       ]);
@@ -190,6 +373,27 @@ export function Dashboard() {
             category: t.category_id ? categoryNameMap.get(t.category_id) || undefined : undefined,
           };
         }));
+
+        // ガント用: スプリント期間データを構築（ステータス/進捗・所属チケットは sprint_tickets から算出）
+        const ganttData: GanttSprint[] = (sprints as any[])
+          .filter(s => s.start_date && s.end_date)
+          .map(s => {
+            const rows = (tData as any[]).filter(t => t.sprint_id === s.id);
+            const minimalSprint = { tickets: rows.map(t => ({ status: t.status })), endDate: s.end_date } as any;
+            return {
+              id: s.id,
+              projectName: projectNameById.get(s.project_id ?? '') ?? '',
+              projectSlug: projectSlugMap.get(s.project_id ?? '') || '',
+              identifier: s.identifier || s.id,
+              name: s.name ?? '',
+              startDate: s.start_date,
+              endDate: s.end_date,
+              status: computeSprintStatus(minimalSprint),
+              progress: sprintProgress(minimalSprint),
+              tickets: rows.map(t => ({ id: t.wbs || t.id, title: t.title, status: t.status, priority: t.priority })),
+            };
+          });
+        setGanttSprints(ganttData);
       }
 
       if (pData) {
@@ -402,6 +606,17 @@ export function Dashboard() {
     { value: `${completionRate}%`, label: "チーム完了率", icon: TrendingUp, accent: "#059669", accentBg: "#ECFDF5", trend: `完了 ${doneCount}件`, up: true },
   ];
 
+  // ガントの行数から高さを算出し、他チャート（横棒/縦棒/折れ線）も同じ縦サイズに揃える
+  const ganttRowCount = (() => {
+    const names = assignedProjects.map(p => p.name);
+    const validGantt = ganttSprints.filter(s => s.startDate && s.endDate && names.includes(s.projectName));
+    return names.reduce((sum, n) => {
+      const c = validGantt.filter(s => s.projectName === n).length;
+      return c > 0 ? sum + 1 + c : sum;
+    }, 0);
+  })();
+  const chartAreaHeight = ganttContentHeight(ganttRowCount);
+
   const renderProjectNameTick = ({ x, y, payload }: { x: number; y: number; payload: { value: string } }) => (
     <text x={2} y={y + 7} textAnchor="start" fill="#6B6458" fontSize={14} fontFamily="Inter,ui-sans-serif,system-ui,sans-serif" fontWeight={500}>
       {payload.value}
@@ -462,180 +677,28 @@ export function Dashboard() {
     hideTimerRef.current = setTimeout(() => setHoveredExtraCellKey(null), delay);
   };
 
+  const openMatrixModal = (isBug: boolean, priority: string, allTickets: MatrixTicket[]) => {
+    const priorityLabel = priority === 'high' ? '優先度：高' : priority === 'medium' ? '優先度：中' : '優先度：低';
+    setExpandModalData({ tickets: allTickets, isBug, priority, priorityLabel });
+    setHoveredExtraCellKey(null);
+    cancelHideTimer();
+  };
+
   const renderMatrixCell = (isBug: boolean, priority: string, hasLeftBorder: boolean) => {
     const targetTickets = getFormattedMatrixTickets(isBug, priority);
-    const displayTickets = targetTickets.slice(0, 6);
-    const hiddenTickets = targetTickets.slice(6);
     const cellKey = `${isBug ? "bug" : "nobug"}_${priority}`;
-    const hasAny = targetTickets.length > 0;
-
     return (
-      <div style={{
-        padding: "8px 12px",
-        display: "flex",
-        flexDirection: "column",
-        position: "relative",
-        borderLeft: hasLeftBorder ? "1.5px solid #E6E2D9" : "none",
-        background: "#FFFFFF"
-      }}>
-        <div style={{
-          position: "absolute",
-          top: 8,
-          right: 10,
-          fontSize: 11,
-          color: hasAny ? "#374151" : "#C9C4BB",
-          fontWeight: 700,
-          fontFamily: "var(--font-mono)",
-          background: hasAny ? "#F3F4F6" : "transparent",
-          padding: "1px 7px",
-          borderRadius: 20
-        }}>
-          {targetTickets.length} 件
-        </div>
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4, paddingRight: 42 }}>
-          {displayTickets.map(ticket => (
-            <div
-              key={ticket.id}
-              onClick={(e) => handleTicketClick(ticket, e)}
-              style={{
-                padding: "3px 10px",
-                border: "1.5px solid #8B5CF6",
-                borderRadius: 20,
-                background: "#F3F0FF",
-                color: "#6D28D9",
-                fontSize: 11,
-                fontWeight: 700,
-                whiteSpace: "nowrap",
-                cursor: "pointer",
-                transition: "all 0.15s ease",
-                letterSpacing: "0.01em"
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.background = "#EDE9FE";
-                e.currentTarget.style.transform = "translateY(-1px)";
-                e.currentTarget.style.boxShadow = "0 2px 8px rgba(109,40,217,0.18)";
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = "#F3F0FF";
-                e.currentTarget.style.transform = "translateY(0)";
-                e.currentTarget.style.boxShadow = "none";
-              }}
-              title={`クリックして詳細へ: ${ticket.title}`}
-            >
-              {ticket.id}
-            </div>
-          ))}
-
-          {hiddenTickets.length > 0 && (
-            <div
-              style={{ position: "relative", display: "inline-block", alignSelf: "center" }}
-              onMouseEnter={() => { cancelHideTimer(); setHoveredExtraCellKey(cellKey); }}
-              onMouseLeave={() => startHideTimer()}
-            >
-              <div style={{
-                fontSize: 11,
-                color: "#6B7280",
-                fontWeight: 600,
-                cursor: "pointer",
-                background: "#F3F4F6",
-                padding: "3px 10px",
-                borderRadius: 20,
-                border: "1.5px solid #E5E7EB"
-              }}>
-                +{hiddenTickets.length}
-              </div>
-
-              {hoveredExtraCellKey === cellKey && (
-                <div
-                  data-popup-id={cellKey}
-                  style={{
-                    position: "absolute",
-                    bottom: "calc(100% + 6px)",
-                    ...(isBug 
-                      ? { left: 0, transform: "none" } 
-                      : { left: "50%", transform: "translateX(-50%)" }
-                    ),
-                    background: "#ffffff",
-                    border: "1px solid #E6E2D9",
-                    borderRadius: 12,
-                    boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-                    padding: "10px 12px",
-                    zIndex: 9999,
-                    minWidth: 260,
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6
-                  }}
-                  onMouseEnter={() => { cancelHideTimer(); setHoveredExtraCellKey(cellKey); }}
-                  onMouseLeave={() => startHideTimer()}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #F3F4F6", paddingBottom: 6 }}>
-                    <span style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 600 }}>残り {hiddenTickets.length} 件</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const allTickets = getFormattedMatrixTickets(isBug, priority);
-                        const priorityLabel = priority === 'high' ? '優先度：高' : priority === 'medium' ? '優先度：中' : '優先度：低';
-                        setExpandModalData({ tickets: allTickets, isBug, priority, priorityLabel });
-                        setHoveredExtraCellKey(null);
-                        cancelHideTimer();
-                      }}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        width: 22, height: 22, border: "1px solid #E6E2D9", borderRadius: 4,
-                        background: "#FFFFFF", cursor: "pointer", color: "#9CA3AF", padding: 0,
-                        transition: "all 0.15s ease"
-                      }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6D28D9"; (e.currentTarget as HTMLElement).style.borderColor = "#8B5CF6"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#9CA3AF"; (e.currentTarget as HTMLElement).style.borderColor = "#E6E2D9"; }}
-                      title="一覧をモーダルで表示"
-                    >
-                      <Maximize2 style={{ width: 12, height: 12 }} />
-                    </button>
-                  </div>
-                  <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
-                    {hiddenTickets.map(t => (
-                      <div
-                        key={t.id}
-                        onClick={(e) => handleTicketClick(t, e)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "5px 6px",
-                          borderRadius: 6,
-                          cursor: "pointer",
-                          background: "transparent",
-                          transition: "background 0.12s ease"
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.background = "#F5F3FF"; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-                      >
-                        <span style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          color: "#6D28D9",
-                          border: "1.5px solid #8B5CF6",
-                          borderRadius: 10,
-                          padding: "1px 6px",
-                          background: "#F3F0FF",
-                          whiteSpace: "nowrap"
-                        }}>
-                          {t.id}
-                        </span>
-                        <span style={{ fontSize: 11, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={t.title}>
-                          {t.title}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+      <MatrixCell
+        isBug={isBug}
+        hasLeftBorder={hasLeftBorder}
+        tickets={targetTickets}
+        cellKey={cellKey}
+        hoveredKey={hoveredExtraCellKey}
+        onTicketClick={handleTicketClick}
+        onHoverEnter={() => { cancelHideTimer(); setHoveredExtraCellKey(cellKey); }}
+        onHoverLeave={() => startHideTimer()}
+        onOpenModal={() => openMatrixModal(isBug, priority, targetTickets)}
+      />
     );
   };
 
@@ -679,7 +742,7 @@ export function Dashboard() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, marginBottom: 16 }}>
-        <div style={{ background: "#FFFFFF", borderRadius: 14, padding: "20px 24px", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}>
+        <div style={{ minWidth: 0, background: "#FFFFFF", borderRadius: 14, padding: "20px 24px", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)" }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
             <div>
               <h2 style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>プロジェクト進捗</h2>
@@ -691,7 +754,8 @@ export function Dashboard() {
                   { value: 'horizontal' as ChartType, label: '横棒' },
                   { value: 'vertical' as ChartType, label: '縦棒' },
                   { value: 'line' as ChartType, label: '折れ線' },
-                  { value: 'scatter' as ChartType, label: 'マトリックス図' }
+                  { value: 'scatter' as ChartType, label: 'マトリックス図' },
+                  { value: 'gantt' as ChartType, label: 'ガント' }
                 ].map(btn => (
                   <button
                     key={btn.value}
@@ -781,7 +845,7 @@ export function Dashboard() {
             </div>
           </div>
 
-          <div style={{ height: chartType === 'scatter' ? 'auto' : 320 }}>
+          <div style={{ height: chartType === 'gantt' ? 'auto' : chartAreaHeight }}>
             {chartType === 'horizontal' && (
               isBarChartAllZero ? (
                 <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -868,8 +932,8 @@ export function Dashboard() {
             )}
             
             {chartType === 'scatter' && (
-              <div style={{ minHeight: 320, height: "auto" }}>
-                <div style={{ border: "1.5px solid #E6E2D9", borderRadius: 12, display: "flex", flexDirection: "column", height: "auto", boxSizing: "border-box" }}>
+              <div style={{ height: "100%" }}>
+                <div style={{ border: "1.5px solid #E6E2D9", borderRadius: 12, display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" }}>
                   {/* ヘッダー行 */}
                   <div style={{
                     display: "grid",
@@ -905,8 +969,8 @@ export function Dashboard() {
                     { label: "優先度：低", priority: "low", dotColor: "#3B82F6" },
                   ].map(({ label, priority, dotColor }, idx, arr) => (
                     <div key={priority} style={{
-                      flex: "1 0 auto",
-                      minHeight: 80,
+                      flex: "1 1 0",
+                      minHeight: 0,
                       display: "grid",
                       gridTemplateColumns: "130px 1fr 1fr",
                       borderBottom: idx < arr.length - 1 ? "1.5px solid #E6E2D9" : "none"
@@ -927,6 +991,10 @@ export function Dashboard() {
                   ))}
                 </div>
               </div>
+            )}
+
+            {chartType === 'gantt' && (
+              <DashboardGantt projectNames={assignedProjects.map(p => p.name)} sprints={ganttSprints} navigate={navigate} />
             )}
           </div>
         </div>
@@ -985,6 +1053,8 @@ export function Dashboard() {
             const ss = statusStyle[p.status];
             return (
               <div key={p.id}
+                onClick={() => navigate(`/${p.id}`)}
+                title={`${p.name} のスプリント一覧へ`}
                 style={{ display: "grid", gridTemplateColumns: "1fr 160px 60px 90px", alignItems: "center", gap: 20, padding: "13px 24px", background: i % 2 === 1 ? "rgba(26,23,20,0.015)" : "transparent", cursor: "pointer", transition: "background 0.12s" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = i % 2 === 1 ? "rgba(26,23,20,0.015)" : "transparent"; }}>
@@ -1110,6 +1180,265 @@ export function Dashboard() {
           onUpdated={() => {}}
           onDeleted={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
         />
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// ガントチャート（プロジェクト → スプリント階層 / 月・週ビュー切替）
+// ----------------------------------------------------------------------------
+function DashboardGantt({ projectNames, sprints, navigate }: { projectNames: string[]; sprints: GanttSprint[]; navigate: (to: string) => void }) {
+  const [scale, setScale] = useState<'month' | 'week'>('month');
+  const [hover, setHover] = useState<{ sprint: GanttSprint; left: number; top: number } | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHover = (sprint: GanttSprint, e: React.MouseEvent) => {
+    if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setHover({ sprint, left: r.left, top: r.top - 6 });
+  };
+  const hideHover = () => { hoverTimer.current = setTimeout(() => setHover(null), 200); };
+  const keepHover = () => { if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; } };
+  const openSprint = (s: GanttSprint) => navigate(`/${s.projectSlug}/${s.identifier || s.id}`);
+
+  const LABEL_W = 200;
+  const DAY = 86400000;
+  const ROW_H = GANTT_ROW_H;
+  const pxPerDay = scale === 'month' ? 4 : 12;
+  const dayDiff = (a: Date, b: Date) => Math.round((b.getTime() - a.getTime()) / DAY);
+  const addDays = (d: Date, n: number) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+
+  const valid = sprints.filter(s => s.startDate && s.endDate && projectNames.includes(s.projectName));
+
+  // 表示領域の幅を計測して、空き領域まで月/週を伸ばす
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [viewW, setViewW] = useState(0);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => setViewW(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [valid.length]);
+
+  if (valid.length === 0) {
+    return (
+      <div style={{ height: 320, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ fontSize: 13, color: "#C9C4BB" }}>表示できるスプリント期間データがありません</span>
+      </div>
+    );
+  }
+
+  const maxD = new Date(Math.max(...valid.map(s => new Date(s.endDate).getTime())));
+  // 開始 = 今月の2ヶ月前の1日で固定。終了 = データ範囲 or 表示領域の広い方まで可変に伸ばす
+  const today = new Date();
+  const tlStart = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+  const availTimeline = Math.max(0, viewW - LABEL_W);
+  const dataWidth = (dayDiff(tlStart, maxD) + 1) * pxPerDay;
+  const totalWidth = Math.max(dataWidth, availTimeline);
+  const tickEnd = addDays(tlStart, Math.ceil(totalWidth / pxPerDay));
+  const x = (d: Date) => dayDiff(tlStart, d) * pxPerDay;
+  // バーを表示範囲[0,totalWidth]にクランプ（完全に範囲外ならnull）
+  const barRange = (s: Date, e: Date) => {
+    const l = x(s), r = x(e) + pxPerDay;
+    const cl = Math.max(0, l), cr = Math.min(totalWidth, r);
+    if (cr <= 0 || cl >= totalWidth || cr - cl <= 0) return null;
+    return { left: cl, width: Math.max(cr - cl, 6) };
+  };
+
+  // 目盛り
+  const ticks: { x: number; label: string; major: boolean }[] = [];
+  if (scale === 'month') {
+    const cur = new Date(tlStart);
+    while (cur <= tickEnd) { ticks.push({ x: x(cur), label: `${cur.getMonth() + 1}月`, major: cur.getMonth() === 0 }); cur.setMonth(cur.getMonth() + 1); }
+  } else {
+    const cur = new Date(tlStart);
+    cur.setDate(cur.getDate() + ((8 - cur.getDay()) % 7)); // 次の月曜
+    while (cur <= tickEnd) { ticks.push({ x: x(cur), label: `${cur.getMonth() + 1}/${cur.getDate()}`, major: cur.getDate() <= 7 }); cur.setDate(cur.getDate() + 7); }
+  }
+
+  const todayX = x(today);
+  const showToday = todayX >= 0 && todayX <= totalWidth;
+  const groups = projectNames.map(name => ({ name, sprints: valid.filter(s => s.projectName === name) })).filter(g => g.sprints.length);
+
+  return (
+    <div style={{ minHeight: 320 }}>
+      {/* 月/週 切替 */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 4, background: "#F4F5F6", padding: 3, borderRadius: 9, border: "1px solid #E6E2D9" }}>
+          {[{ v: 'month' as const, l: '月' }, { v: 'week' as const, l: '週' }].map(({ v, l }) => (
+            <button key={v} onClick={() => setScale(v)} style={{
+              padding: "5px 16px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer",
+              background: scale === v ? "#FFFFFF" : "transparent", color: scale === v ? "#059669" : "#9E9690",
+              boxShadow: scale === v ? "0 1px 3px rgba(0,0,0,0.10)" : "none",
+            }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div ref={scrollRef} style={{ overflowX: "auto", overflowY: "hidden", border: "1.5px solid #E6E2D9", borderRadius: 12 }}>
+        <div style={{ width: LABEL_W + totalWidth, position: "relative" }}>
+          {/* 目盛りヘッダー */}
+          <div style={{ display: "flex", height: 28, borderBottom: "1.5px solid #E6E2D9", position: "relative" }}>
+            <div style={{ width: LABEL_W, flexShrink: 0, position: "sticky", left: 0, zIndex: 3, background: "#FFFFFF", display: "flex", alignItems: "center", paddingLeft: 12 }}>
+              <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600 }}>プロジェクト / スプリント</span>
+            </div>
+            <div style={{ position: "relative", flex: 1 }}>
+              {ticks.map((t, i) => (
+                <div key={i} style={{ position: "absolute", left: t.x, top: 0, bottom: 0, display: "flex", alignItems: "center", paddingLeft: 4 }}>
+                  <span style={{ fontSize: 10, color: t.major ? "#6B6458" : "#B0A9A4", fontWeight: t.major ? 700 : 500, fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>{t.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 本体 */}
+          <div style={{ position: "relative" }}>
+            {/* 縦グリッド線 */}
+            {ticks.map((t, i) => (
+              <div key={i} style={{ position: "absolute", left: LABEL_W + t.x, top: 0, bottom: 0, width: 1, background: t.major ? "#E6E2D9" : "#F4F5F6", zIndex: 0 }} />
+            ))}
+            {/* 今日ライン */}
+            {showToday && (
+              <div style={{ position: "absolute", left: LABEL_W + todayX, top: 0, bottom: 0, width: 2, background: "#DC2626", zIndex: 1 }}>
+                <span style={{ position: "absolute", top: 2, left: 4, fontSize: 9, fontWeight: 700, color: "#DC2626", background: "#FEF2F2", padding: "0 5px", borderRadius: 10, whiteSpace: "nowrap" }}>今日</span>
+              </div>
+            )}
+
+            {groups.map(g => {
+              const gStart = new Date(Math.min(...g.sprints.map(s => new Date(s.startDate).getTime())));
+              const gEnd = new Date(Math.max(...g.sprints.map(s => new Date(s.endDate).getTime())));
+              const projSlug = g.sprints[0]?.projectSlug || "";
+              return (
+                <div key={g.name}>
+                  {/* プロジェクト行 */}
+                  <div style={{ display: "flex", height: ROW_H, alignItems: "center", position: "relative", zIndex: 2 }}>
+                    <div
+                      onClick={() => projSlug && navigate(`/${projSlug}?view=gantt`)}
+                      title={`${g.name} のガントチャートを開く`}
+                      style={{ width: LABEL_W, flexShrink: 0, position: "sticky", left: 0, zIndex: 2, background: "#FAFAF8", display: "flex", alignItems: "center", gap: 7, paddingLeft: 12, paddingRight: 8, height: "100%", cursor: projSlug ? "pointer" : "default" }}
+                      onMouseEnter={e => { (e.currentTarget.querySelector('[data-projname]') as HTMLElement | null)?.style.setProperty('text-decoration', 'underline'); }}
+                      onMouseLeave={e => { (e.currentTarget.querySelector('[data-projname]') as HTMLElement | null)?.style.setProperty('text-decoration', 'none'); }}
+                    >
+                      <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#059669", flexShrink: 0 }} />
+                      <span data-projname style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecorationColor: "#059669" }}>{g.name}</span>
+                    </div>
+                    <div style={{ position: "relative", flex: 1, height: "100%" }}>
+                      {(() => { const b = barRange(gStart, gEnd); return b ? (
+                        <div style={{ position: "absolute", left: b.left, width: b.width, top: "50%", transform: "translateY(-50%)", height: 8, background: "rgba(5,150,105,0.20)", borderRadius: 99 }} />
+                      ) : null; })()}
+                    </div>
+                  </div>
+                  {/* スプリント行 */}
+                  {g.sprints.map(s => {
+                    const meta = getSprintStatusMeta(s.status);
+                    const b = barRange(new Date(s.startDate), new Date(s.endDate));
+                    return (
+                      <div key={s.id} style={{ display: "flex", height: ROW_H, alignItems: "center", position: "relative", zIndex: 2 }}>
+                        <div
+                          onClick={() => openSprint(s)}
+                          title={`${s.name} のチケット一覧へ`}
+                          style={{ width: LABEL_W, flexShrink: 0, position: "sticky", left: 0, zIndex: 2, background: "#FFFFFF", display: "flex", alignItems: "center", paddingLeft: 28, paddingRight: 8, height: "100%", cursor: "pointer" }}
+                          onMouseEnter={e => { (e.currentTarget.querySelector('[data-sprname]') as HTMLElement | null)?.style.setProperty('text-decoration', 'underline'); }}
+                          onMouseLeave={e => { (e.currentTarget.querySelector('[data-sprname]') as HTMLElement | null)?.style.setProperty('text-decoration', 'none'); }}
+                        >
+                          <span data-sprname style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecorationColor: "#9CA3AF" }}>{s.name}</span>
+                        </div>
+                        <div style={{ position: "relative", flex: 1, height: "100%" }}>
+                          {b && (
+                            <div
+                              onClick={() => openSprint(s)}
+                              onMouseEnter={e => showHover(s, e)}
+                              onMouseLeave={hideHover}
+                              style={{
+                                position: "absolute", left: b.left, width: b.width, top: "50%", transform: "translateY(-50%)",
+                                height: 18, background: meta.bg, border: `1px solid ${meta.color}`, borderRadius: 6, overflow: "hidden", display: "flex", alignItems: "center", cursor: "pointer",
+                              }}>
+                              <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${s.progress}%`, background: meta.color, opacity: 0.32 }} />
+                              {b.width > 44 && <span style={{ position: "relative", fontSize: 9, fontWeight: 700, color: meta.color, paddingLeft: 6, whiteSpace: "nowrap" }}>{s.progress}%</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* 凡例 */}
+      <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
+        {(['active', 'completed', 'planning', 'delayed'] as SprintStatus[]).map(k => {
+          const m = getSprintStatusMeta(k);
+          return (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 12, height: 12, background: m.bg, border: `1px solid ${m.color}`, borderRadius: 3 }} />
+              <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 500 }}>{m.label}</span>
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+          <div style={{ width: 2, height: 12, background: "#DC2626" }} />
+          <span style={{ fontSize: 10, color: "#6B6458", fontWeight: 500 }}>今日</span>
+        </div>
+      </div>
+
+      {/* 帯ホバー: 対象スプリントのチケット一覧（マトリックスの+Nポップアップを踏襲） */}
+      {hover && (
+        <div
+          onMouseEnter={keepHover}
+          onMouseLeave={hideHover}
+          style={{
+            position: "fixed", top: hover.top, left: hover.left, transform: "translateY(-100%)",
+            background: "#ffffff", border: "1px solid #E6E2D9", borderRadius: 12,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: "10px 12px", zIndex: 9999,
+            minWidth: 300, maxWidth: 420, display: "flex", flexDirection: "column", gap: 6,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, borderBottom: "1px solid #F3F4F6", paddingBottom: 6 }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{hover.sprint.name}</p>
+              <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 1 }}>
+                {(() => { const m = getSprintStatusMeta(hover.sprint.status); return m.label; })()}・進捗{hover.sprint.progress}%・{hover.sprint.tickets.length}件
+              </p>
+            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); openSprint(hover.sprint); }}
+              title="このスプリントのチケット一覧へ"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, border: "1px solid #E6E2D9", borderRadius: 4, background: "#FFFFFF", cursor: "pointer", color: "#9CA3AF", padding: 0, flexShrink: 0, transition: "all 0.15s ease" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; (e.currentTarget as HTMLElement).style.borderColor = "#059669"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#9CA3AF"; (e.currentTarget as HTMLElement).style.borderColor = "#E6E2D9"; }}
+            >
+              <Maximize2 style={{ width: 12, height: 12 }} />
+            </button>
+          </div>
+          <div style={{ maxHeight: 240, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+            {hover.sprint.tickets.length === 0 ? (
+              <div style={{ padding: "10px 0", textAlign: "center", color: "#C9C4BB", fontSize: 11 }}>チケットなし</div>
+            ) : hover.sprint.tickets.map(t => {
+              const sm = STATUS_LABELS[t.status] ?? { label: t.status, bg: "#F4F5F6", color: "#6B6458" };
+              return (
+                <div
+                  key={t.id}
+                  onClick={() => navigate(`/${hover.sprint.projectSlug}/${t.id}`)}
+                  title={`${t.id} のチケットを開く`}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 6, cursor: "pointer", background: "transparent", transition: "background 0.12s ease" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "#F0FDF4"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                >
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#6D28D9", border: "1.5px solid #8B5CF6", borderRadius: 10, padding: "1px 6px", background: "#F3F0FF", whiteSpace: "nowrap", flexShrink: 0 }}>{t.id}</span>
+                  <span style={{ fontSize: 11, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={t.title}>{t.title}</span>
+                  <span style={{ fontSize: 9, padding: "1px 7px", borderRadius: 20, fontWeight: 600, background: sm.bg, color: sm.color, whiteSpace: "nowrap", flexShrink: 0 }}>{sm.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );

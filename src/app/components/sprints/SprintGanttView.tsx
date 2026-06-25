@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { ChevronDown, ChevronRight, ExternalLink, Plus, GitBranch } from "lucide-react";
 import type { Sprint, SprintTicket } from "@/app/types";
-import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, computeSprintStatus } from "@/app/lib/helpers";
+import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, getTicketStatusMeta, computeSprintStatus } from "@/app/lib/helpers";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
@@ -174,7 +174,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                   )}
                 </div>
                 {isExp && sprint.tickets.filter(t => !t.parentId).map(t => {
-                  const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                  const tsm = getTicketStatusMeta(t.status, t.progress);
                   const children = sprint.tickets.filter(c => c.parentId === t.id);
                   const hasChildren = children.length > 0;
                   const isTicketExpanded = expandedTickets.has(t.id);
@@ -197,7 +197,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                         <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: tsm.bg, color: tsm.color, flexShrink: 0 }}>{tsm.label}</span>
                       </div>
                       {hasChildren && isTicketExpanded && children.map(child => {
-                        const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                        const ctsm = getTicketStatusMeta(child.status, child.progress);
                         return (
                           <div key={child.id} onClick={() => onSelectTicket?.(child)}
                             style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 30px", display: "flex", alignItems: "center", gap: 5, background: "rgba(5,150,105,0.02)", cursor: "pointer" }}
@@ -253,7 +253,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     )}
                   </div>
                   {isExp && sprint.tickets.filter(t => !t.parentId).map(t => {
-                    const tsm = TICKET_STATUSES.find(s => s.value === t.status) ?? TICKET_STATUSES[0];
+                    const tsm = getTicketStatusMeta(t.status, t.progress);
                     const hasBar = !!(t.startDate && t.dueDate);
                     const tL = t.startDate ? getLeft(t.startDate) : 0;
                     const tW = hasBar ? getWidth(t.startDate, t.dueDate) : 0;
@@ -276,7 +276,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                           )}
                         </div>
                         {children.length > 0 && isTicketExpanded && children.map(child => {
-                          const ctsm = TICKET_STATUSES.find(s => s.value === child.status) ?? TICKET_STATUSES[0];
+                          const ctsm = getTicketStatusMeta(child.status, child.progress);
                           const cHasBar = !!(child.startDate && child.dueDate);
                           const cL = child.startDate ? getLeft(child.startDate) : 0;
                           const cW = cHasBar ? getWidth(child.startDate, child.dueDate) : 0;
