@@ -232,7 +232,7 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
       feature_csv_export: featureCsvExport,
       feature_actual_monitor: featureActualMonitor,
       feature_child_tickets: featureChildTickets,
-      feature_bulk_create: featureBulkCreate,
+      // feature_bulk_create は supabase/add_bulk_create_to_plans.sql 適用後に追加
     };
     if (isSupabaseEnabled) {
       if (isEdit) {
