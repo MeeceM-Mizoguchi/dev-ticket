@@ -4,7 +4,7 @@ import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, X,
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, Legend } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid, Legend } from "recharts";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -753,7 +753,7 @@ export function Dashboard() {
                 {[
                   { value: 'horizontal' as ChartType, label: '横棒' },
                   { value: 'vertical' as ChartType, label: '縦棒' },
-                  { value: 'line' as ChartType, label: '折れ線' },
+                  { value: 'line' as ChartType, label: '面グラフ' },
                   { value: 'scatter' as ChartType, label: 'マトリックス図' },
                   { value: 'gantt' as ChartType, label: 'ガント' }
                 ].map(btn => (
@@ -891,11 +891,24 @@ export function Dashboard() {
                 </div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={lineChartMode === 'project-progress' ? projectProgressLineData : filteredWeeklyCloseData} margin={{ left: 40, right: 80, top: 20, bottom: 10 }}>
+                  <AreaChart data={lineChartMode === 'project-progress' ? projectProgressLineData : filteredWeeklyCloseData} margin={{ left: 40, right: 80, top: 20, bottom: 10 }}>
+                    <defs>
+                      {assignedProjects.map((project, index) => {
+                        const colors = ['#059669', '#D97706', '#2563EB', '#9333EA', '#F59E0B', '#14B8A6'];
+                        const color = colors[index % colors.length];
+                        return (
+                          <linearGradient key={project.id} id={`areaGradient-${index}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={color} stopOpacity={0.28} />
+                            <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+                          </linearGradient>
+                        );
+                      })}
+                    </defs>
+                    <CartesianGrid vertical={false} stroke="#F0EEE9" strokeDasharray="0" />
                     <XAxis
                       type="category"
                       dataKey={lineChartMode === 'project-progress' ? 'status' : 'week'}
-                      ticks={lineStatusCategories.map(c => c.key)}
+                      ticks={lineChartMode === 'project-progress' ? lineStatusCategories.map(c => c.key) : undefined}
                       interval={0}
                       tick={{ fontSize: 11, fill: '#B0A9A4' }}
                       angle={0}
@@ -903,6 +916,7 @@ export function Dashboard() {
                       height={40}
                       axisLine={false}
                       tickLine={false}
+                      padding={{ left: 12, right: 12 }}
                     />
                     <YAxis
                       allowDecimals={false}
@@ -915,18 +929,22 @@ export function Dashboard() {
                     <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ paddingBottom: 8 }} />
                     {assignedProjects.map((project, index) => {
                       const colors = ['#059669', '#D97706', '#2563EB', '#9333EA', '#F59E0B', '#14B8A6'];
+                      const color = colors[index % colors.length];
                       return (
-                        <Line
+                        <Area
                           key={project.id}
                           type="monotone"
                           dataKey={project.name}
-                          stroke={colors[index % colors.length]}
-                          strokeWidth={2}
-                          dot={{ fill: colors[index % colors.length], r: 4 }}
+                          stroke={color}
+                          strokeWidth={2.5}
+                          fill={`url(#areaGradient-${index})`}
+                          fillOpacity={1}
+                          dot={false}
+                          activeDot={{ r: 4, fill: color, stroke: '#fff', strokeWidth: 2 }}
                         />
                       );
                     })}
-                  </LineChart>
+                  </AreaChart>
                 </ResponsiveContainer>
               )
             )}
