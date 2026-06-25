@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Plus, Globe, Users, ChevronRight, Pencil, Trash2, Building2, Sparkles, CreditCard, ToggleLeft, ToggleRight, Calendar } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Plus, Globe, Users, ChevronLeft, ChevronRight, Pencil, Trash2, Building2, Sparkles, CreditCard, ToggleLeft, ToggleRight, Calendar } from "lucide-react";
 import { useNavigate, Navigate } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -44,6 +44,116 @@ function mapOrgWithStats(r: Record<string, unknown>, planMap: Map<string, string
     planId,
     planName: planId ? (planMap.get(planId) ?? "—") : "無制限",
   };
+}
+
+// ── カスタム日付ピッカー ─────────────────────────────────────────
+function DatePickerInput({ value, onChange, disabled = false }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const [viewYear, setViewYear] = useState(() => value ? parseInt(value.split("-")[0]) : today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(() => value ? parseInt(value.split("-")[1]) - 1 : today.getMonth());
+
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+
+  const displayValue = value ? (() => {
+    const d = new Date(value + "T00:00:00");
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  })() : "";
+
+  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+
+  const prevMonth = () => { if (viewMonth === 0) { setViewYear(y => y - 1); setViewMonth(11); } else setViewMonth(m => m - 1); };
+  const nextMonth = () => { if (viewMonth === 11) { setViewYear(y => y + 1); setViewMonth(0); } else setViewMonth(m => m + 1); };
+
+  const toYMD = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  const handleDayClick = (day: number) => {
+    const d = new Date(viewYear, viewMonth, day);
+    if (d < today) return;
+    onChange(toYMD(d));
+    setOpen(false);
+  };
+
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const isSelected = (day: number) => {
+    if (!value) return false;
+    const d = new Date(value + "T00:00:00");
+    return d.getFullYear() === viewYear && d.getMonth() === viewMonth && d.getDate() === day;
+  };
+  const isToday = (day: number) => new Date(viewYear, viewMonth, day).getTime() === today.getTime();
+  const isPast  = (day: number) => new Date(viewYear, viewMonth, day) < today;
+
+  const DOW = ["日", "月", "火", "水", "木", "金", "土"];
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block" }}>
+      <button onClick={() => { if (!disabled) setOpen(o => !o); }}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", fontSize: 13, border: `1.5px solid ${open ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 8, background: "#FAFAF8", cursor: disabled ? "not-allowed" : "pointer", color: value ? "#1A1714" : "#B0A9A4", minWidth: 180, fontFamily: "inherit" }}>
+        <Calendar style={{ width: 13, height: 13, color: "#6B6458", flexShrink: 0 }} />
+        {displayValue || "未設定（無期限）"}
+      </button>
+
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 9999, background: "#fff", borderRadius: 12, boxShadow: "0 8px 28px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.08)", border: "1px solid rgba(26,23,20,0.09)", padding: 14, width: 256 }}>
+          {/* ヘッダー */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <button onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", padding: "4px 6px", borderRadius: 6, color: "#6B6458", display: "flex", alignItems: "center" }}>
+              <ChevronLeft style={{ width: 14, height: 14 }} />
+            </button>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{viewYear}年{viewMonth + 1}月</span>
+            <button onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", padding: "4px 6px", borderRadius: 6, color: "#6B6458", display: "flex", alignItems: "center" }}>
+              <ChevronRight style={{ width: 14, height: 14 }} />
+            </button>
+          </div>
+          {/* 曜日ヘッダー */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", textAlign: "center" as const, marginBottom: 4 }}>
+            {DOW.map((d, i) => (
+              <span key={d} style={{ fontSize: 10, fontWeight: 700, padding: "2px 0", color: i === 0 ? "#EF4444" : i === 6 ? "#3B82F6" : "#9E9690" }}>{d}</span>
+            ))}
+          </div>
+          {/* 日付グリッド */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 1 }}>
+            {cells.map((day, i) => {
+              if (day === null) return <div key={`e-${i}`} />;
+              const past = isPast(day);
+              const sel  = isSelected(day);
+              const tod  = isToday(day);
+              const col  = (i % 7);
+              return (
+                <button key={day} onClick={() => handleDayClick(day)} disabled={past}
+                  style={{ padding: "5px 2px", fontSize: 12, border: "none", borderRadius: 6, background: sel ? "#059669" : "transparent", color: past ? "#D4CFC9" : sel ? "#fff" : col === 0 ? "#EF4444" : col === 6 ? "#3B82F6" : "#1A1714", fontWeight: tod ? 700 : 400, cursor: past ? "not-allowed" : "pointer", outline: tod && !sel ? "2px solid #059669" : "none", outlineOffset: "-2px", fontFamily: "inherit" }}
+                  onMouseEnter={e => { if (!past && !sel) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                  onMouseLeave={e => { if (!past && !sel) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+          {/* フッター */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 8, borderTop: "1px solid rgba(26,23,20,0.07)" }}>
+            {value
+              ? <button onClick={() => { onChange(""); setOpen(false); }} style={{ fontSize: 11, fontWeight: 600, color: "#DC2626", background: "none", border: "none", cursor: "pointer", padding: "3px 6px", borderRadius: 5 }}>クリア</button>
+              : <span />
+            }
+            <button onClick={() => { onChange(toYMD(today)); setOpen(false); }} style={{ fontSize: 11, fontWeight: 600, color: "#059669", background: "none", border: "none", cursor: "pointer", padding: "3px 6px", borderRadius: 5 }}>今日</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── セクションラベル ─────────────────────────────────────────────
@@ -177,12 +287,7 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
           アカウント有効期限
           <span style={{ fontSize: 11, color: "#A09790", fontWeight: 400 }}>（未設定の場合は無期限）</span>
         </label>
-        <input
-          type="date"
-          value={expiresAt}
-          onChange={e => setExpiresAt(e.target.value)}
-          style={{ padding: "8px 10px", fontSize: 13, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", color: "#1A1714", background: "#FAFAF8", width: "fit-content" }}
-        />
+        <DatePickerInput value={expiresAt} onChange={setExpiresAt} disabled={isSystem} />
       </div>
 
       <SectionLabel label="数制限（空欄 = 無制限）" />

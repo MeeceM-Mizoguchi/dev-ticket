@@ -42,10 +42,10 @@ export function ProjectCard({
   const projectTags = (project as any).tags && Array.isArray((project as any).tags) ? (project as any).tags : [];
 
   return (
-    <div onClick={onNavigate} style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}
+    <div onClick={onNavigate} style={{ background: "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
-      <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)` }} />
+      <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)`, borderRadius: "16px 16px 0 0" }} />
       
       <div style={{ padding: "16px 18px 18px", flex: 1, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
@@ -70,7 +70,7 @@ export function ProjectCard({
             </button>
 
             {menuOpen && (
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 50, background: "#FFF", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.09)", padding: "4px", minWidth: 170, overflow: "hidden" }}>
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 9999, background: "#FFF", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.09)", padding: "4px", minWidth: 170 }}>
                 {onEdit && (
                   <MenuItem icon={<Pencil style={{ width: 12, height: 12 }} />} label="編集" onClick={() => { setMenuOpen(false); onEdit(); }} color="#1A1714" />
                 )}
@@ -92,6 +92,7 @@ export function ProjectCard({
                     color={plan.featureCsvExport ? "#059669" : "#9CA3AF"}
                     disabled={!plan.featureCsvExport}
                     tooltip={!plan.featureCsvExport ? "現在のプランではご利用できません" : undefined}
+                    tooltipPlacement="top"
                   />
                 )}
                 {onDelete && (
@@ -176,9 +177,9 @@ export function ProjectCard({
   );
 }
 
-function MenuItem({ icon, label, onClick, color, disabled, tooltip }: { icon: React.ReactNode; label: string; onClick: () => void; color: string; disabled?: boolean; tooltip?: string }) {
+function MenuItem({ icon, label, onClick, color, disabled, tooltip, tooltipPlacement }: { icon: React.ReactNode; label: string; onClick: () => void; color: string; disabled?: boolean; tooltip?: string; tooltipPlacement?: "top" | "bottom" | "bottom-left" | "bottom-right" }) {
   return (
-    <PlanTooltip text={tooltip ?? ""} active={!!tooltip} placement="bottom-left">
+    <PlanTooltip text={tooltip ?? ""} active={!!tooltip} placement={tooltipPlacement ?? "bottom-left"}>
       <button onClick={onClick}
         style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "transparent", border: "none", borderRadius: 7, cursor: disabled ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 500, color, textAlign: "left" as const, transition: "background 0.1s", whiteSpace: "nowrap" as const, opacity: disabled ? 0.5 : 1 }}
         onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = color === "#DC2626" ? "#FEF2F2" : "#F4F5F6"; }}
