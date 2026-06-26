@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useState, useRef, useCallback, type ElementType } from "react";
+import { useEffect, useState, useRef, useCallback, type ElementType } from "react";
 import { useNavigate } from "react-router";
-import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, X, RefreshCw } from "lucide-react";
+import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, RefreshCw } from "lucide-react";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
@@ -12,9 +12,8 @@ import { TICKETS, PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
 import { calcProgress, formatDate, getPriorityMeta, computeSprintStatus, getSprintStatusMeta, sprintProgress } from "@/app/lib/helpers";
 import type { ProjectStatus, SprintTicket, TicketStatus, Priority, SprintStatus } from "@/app/types";
-import { escStack } from "@/app/lib/escStack";
 
-type ChartType = 'horizontal' | 'vertical' | 'line' | 'scatter' | 'gantt';
+type ChartType = 'horizontal' | 'vertical' | 'line' | 'gantt';
 type LineChartMode = 'project-progress' | 'weekly-close';
 
 type DashTicket = {
@@ -44,8 +43,6 @@ type DashProject = {
   todo: number;
 };
 
-type MatrixTicket = DashTicket & { isBug: boolean };
-
 const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }> = {
   'todo':            { label: '未着手',     bg: '#F4F5F6', color: '#A09790' },
   'in-progress':     { label: '進行中',     bg: '#FFFBEB', color: '#D97706' },
@@ -57,12 +54,6 @@ const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }
   'closed':          { label: 'クローズ',  bg: '#F1F5F9', color: '#64748B' },
   'waiting-release': { label: 'リリース待ち', color: "#7C3AED", bg: "#F5F3FF" },
   'released':        { label: 'クローズ',  color: "#6B7280", bg: "#F3F4F6" },
-};
-
-const PRIORITY_META_MODAL: Record<string, { label: string; color: string }> = {
-  'high':   { label: '高', color: '#EF4444' },
-  'medium': { label: '中', color: '#F59E0B' },
-  'low':    { label: '低', color: '#3B82F6' },
 };
 
 // 判定を一元化するため、完了・クローズ系のステータス配列を定義
@@ -112,141 +103,6 @@ function buildMockGantt(): GanttSprint[] {
   });
 }
 
-// マトリックスのセル: 高さに収まるだけバッジを表示し、入り切らない分だけ「+N」にする
-type MatrixCellProps = {
-  isBug: boolean;
-  hasLeftBorder: boolean;
-  tickets: MatrixTicket[];
-  cellKey: string;
-  hoveredKey: string | null;
-  onTicketClick: (t: MatrixTicket, e: React.MouseEvent) => void;
-  onHoverEnter: () => void;
-  onHoverLeave: () => void;
-  onOpenModal: () => void;
-};
-
-function MatrixCell({ isBug, hasLeftBorder, tickets, cellKey, hoveredKey, onTicketClick, onHoverEnter, onHoverLeave, onOpenModal }: MatrixCellProps) {
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const chipRef = useRef<HTMLDivElement>(null);
-  const sig = tickets.map(t => t.id).join(",");
-  const [visible, setVisible] = useState(tickets.length);
-  const [measuring, setMeasuring] = useState(true);
-  const [popupPos, setPopupPos] = useState<{ left: number; top: number } | null>(null);
-
-  // データ変化で全件表示に戻して再計測
-  useLayoutEffect(() => { setMeasuring(true); setVisible(tickets.length); }, [sig]);
-
-  // 計測: セル高さに収まるバッジ数を算出
-  useLayoutEffect(() => {
-    if (!measuring) return;
-    const el = wrapRef.current;
-    if (!el) { setMeasuring(false); return; }
-    const H = el.clientHeight;
-    const kids = Array.from(el.querySelectorAll('[data-badge="1"]')) as HTMLElement[];
-    let count = kids.length;
-    for (let i = 0; i < kids.length; i++) {
-      if (kids[i].offsetTop + kids[i].offsetHeight > H + 1) { count = i; break; }
-    }
-    if (count < tickets.length && count > 0) count -= 1; // 「+N」チップの分を1枠空ける
-    if (count < 0) count = 0;
-    setVisible(count);
-    setMeasuring(false);
-  }, [measuring, sig]);
-
-  // セルのリサイズで再計測
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => { setMeasuring(true); setVisible(tickets.length); });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [sig]);
-
-  const hasAny = tickets.length > 0;
-  const shown = measuring ? tickets : tickets.slice(0, visible);
-  const hidden = measuring ? [] : tickets.slice(visible);
-
-  const handleMoreEnter = () => {
-    onHoverEnter();
-    const r = chipRef.current?.getBoundingClientRect();
-    if (r) setPopupPos({ left: isBug ? r.left : r.left + r.width / 2, top: r.top - 6 });
-  };
-
-  return (
-    <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", position: "relative", minHeight: 0, overflow: "hidden", borderLeft: hasLeftBorder ? "1.5px solid #E6E2D9" : "none", background: "#FFFFFF" }}>
-      <div style={{ position: "absolute", top: 8, right: 10, fontSize: 11, color: hasAny ? "#374151" : "#C9C4BB", fontWeight: 700, fontFamily: "var(--font-mono)", background: hasAny ? "#F3F4F6" : "transparent", padding: "1px 7px", borderRadius: 20, zIndex: 1 }}>
-        {tickets.length} 件
-      </div>
-
-      <div ref={wrapRef} style={{ display: "flex", flexWrap: "wrap", alignContent: "flex-start", gap: 6, marginTop: 4, paddingRight: 42, flex: 1, minHeight: 0, overflow: "hidden" }}>
-        {shown.map(ticket => (
-          <div
-            key={ticket.id}
-            data-badge="1"
-            onClick={(e) => onTicketClick(ticket, e)}
-            style={{ padding: "3px 10px", border: "1.5px solid #8B5CF6", borderRadius: 20, background: "#F3F0FF", color: "#6D28D9", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", cursor: "pointer", transition: "all 0.15s ease", letterSpacing: "0.01em", height: "fit-content" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "#EDE9FE"; e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = "0 2px 8px rgba(109,40,217,0.18)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "#F3F0FF"; e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; }}
-            title={`クリックして詳細へ: ${ticket.title}`}
-          >
-            {ticket.id}
-          </div>
-        ))}
-
-        {hidden.length > 0 && (
-          <div ref={chipRef} style={{ display: "inline-block", alignSelf: "center", height: "fit-content" }}
-            onMouseEnter={handleMoreEnter} onMouseLeave={onHoverLeave}>
-            <div style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, cursor: "pointer", background: "#F3F4F6", padding: "3px 10px", borderRadius: 20, border: "1.5px solid #E5E7EB" }}>
-              +{hidden.length}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {hidden.length > 0 && hoveredKey === cellKey && popupPos && (
-        <div
-          data-popup-id={cellKey}
-          style={{
-            position: "fixed", top: popupPos.top, left: popupPos.left,
-            transform: isBug ? "translateY(-100%)" : "translate(-50%, -100%)",
-            background: "#ffffff", border: "1px solid #E6E2D9", borderRadius: 12,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: "10px 12px", zIndex: 9999,
-            minWidth: 260, display: "flex", flexDirection: "column", gap: 6,
-          }}
-          onMouseEnter={handleMoreEnter} onMouseLeave={onHoverLeave}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #F3F4F6", paddingBottom: 6 }}>
-            <span style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 600 }}>残り {hidden.length} 件</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); onOpenModal(); }}
-              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, border: "1px solid #E6E2D9", borderRadius: 4, background: "#FFFFFF", cursor: "pointer", color: "#9CA3AF", padding: 0, transition: "all 0.15s ease" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6D28D9"; (e.currentTarget as HTMLElement).style.borderColor = "#8B5CF6"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#9CA3AF"; (e.currentTarget as HTMLElement).style.borderColor = "#E6E2D9"; }}
-              title="一覧をモーダルで表示"
-            >
-              <Maximize2 style={{ width: 12, height: 12 }} />
-            </button>
-          </div>
-          <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
-            {hidden.map(t => (
-              <div
-                key={t.id}
-                onClick={(e) => onTicketClick(t, e)}
-                style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 6, cursor: "pointer", background: "transparent", transition: "background 0.12s ease" }}
-                onMouseEnter={e => { e.currentTarget.style.background = "#F5F3FF"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
-              >
-                <span style={{ fontSize: 10, fontWeight: 700, color: "#6D28D9", border: "1.5px solid #8B5CF6", borderRadius: 10, padding: "1px 6px", background: "#F3F0FF", whiteSpace: "nowrap" }}>{t.id}</span>
-                <span style={{ fontSize: 11, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={t.title}>{t.title}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function Dashboard() {
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
@@ -280,15 +136,6 @@ export function Dashboard() {
   const [lineChartMode] = useState<LineChartMode>('weekly-close');
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
 
-  const [selectedScatterProject, setSelectedScatterProject] = useState<string>("");
-  const [hoveredExtraCellKey, setHoveredExtraCellKey] = useState<string | null>(null);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [expandModalData, setExpandModalData] = useState<{
-    tickets: MatrixTicket[];
-    isBug: boolean;
-    priority: string;
-    priorityLabel: string;
-  } | null>(null);
   const [selectedSprintTicket, setSelectedSprintTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketCtx, setSelectedTicketCtx] = useState<{ projectId: string; sprintId: string; projectSlug: string } | null>(null);
   
@@ -422,13 +269,6 @@ export function Dashboard() {
     }
   }, [userRole, userOrgId, selectedOrgId]);
 
-  useEffect(() => {
-    if (!expandModalData) return;
-    const fn = () => setExpandModalData(null);
-    escStack.push(fn);
-    return () => escStack.pop(fn);
-  }, [expandModalData]);
-
   // 初回ロード時
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -456,12 +296,6 @@ export function Dashboard() {
   const todoCount = assignedTickets.filter(t => t.status === "todo").length;
   const completionRate = assignedTickets.length > 0 ? Math.round((doneCount / assignedTickets.length) * 100) : 0;
   const activeProjects = assignedProjects.filter(p => p.status === "in-progress").length;
-
-  useEffect(() => {
-    if (assignedProjects.length > 0 && !selectedScatterProject) {
-      setSelectedScatterProject(assignedProjects[0].name);
-    }
-  }, [assignedProjects, selectedScatterProject]);
 
   const chartData = assignedProjects.map(p => ({
     name: p.name,
@@ -651,57 +485,6 @@ export function Dashboard() {
     });
   };
 
-  const getFormattedMatrixTickets = (isBugTarget: boolean, priorityTarget: string) => {
-    if (!selectedScatterProject || !tickets || tickets.length === 0) return [];
-    
-    const projectAllTickets = tickets.filter(t => t.project === selectedScatterProject && !TERMINAL_STATUSES.includes(t.status));
-    
-    return projectAllTickets.map(ticket => {
-      const isBug = ticket.title.toLowerCase().includes('バグ') || ticket.title.toLowerCase().includes('bug') || ticket.title.toLowerCase().includes('不具合');
-      return {
-        ...ticket,
-        isBug
-      };
-    }).filter(t => t.isBug === isBugTarget && t.priority === priorityTarget);
-  };
-
-  const cancelHideTimer = () => {
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-  };
-
-  const startHideTimer = (delay = 200) => {
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = setTimeout(() => setHoveredExtraCellKey(null), delay);
-  };
-
-  const openMatrixModal = (isBug: boolean, priority: string, allTickets: MatrixTicket[]) => {
-    const priorityLabel = priority === 'high' ? '優先度：高' : priority === 'medium' ? '優先度：中' : '優先度：低';
-    setExpandModalData({ tickets: allTickets, isBug, priority, priorityLabel });
-    setHoveredExtraCellKey(null);
-    cancelHideTimer();
-  };
-
-  const renderMatrixCell = (isBug: boolean, priority: string, hasLeftBorder: boolean) => {
-    const targetTickets = getFormattedMatrixTickets(isBug, priority);
-    const cellKey = `${isBug ? "bug" : "nobug"}_${priority}`;
-    return (
-      <MatrixCell
-        isBug={isBug}
-        hasLeftBorder={hasLeftBorder}
-        tickets={targetTickets}
-        cellKey={cellKey}
-        hoveredKey={hoveredExtraCellKey}
-        onTicketClick={handleTicketClick}
-        onHoverEnter={() => { cancelHideTimer(); setHoveredExtraCellKey(cellKey); }}
-        onHoverLeave={() => startHideTimer()}
-        onOpenModal={() => openMatrixModal(isBug, priority, targetTickets)}
-      />
-    );
-  };
-
   return (
     <div style={{ padding: "32px 28px", minWidth: 900 }}>
       <div style={{ marginBottom: 28, display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
@@ -754,7 +537,6 @@ export function Dashboard() {
                   { value: 'horizontal' as ChartType, label: '横棒' },
                   { value: 'vertical' as ChartType, label: '縦棒' },
                   { value: 'line' as ChartType, label: '面グラフ' },
-                  { value: 'scatter' as ChartType, label: 'マトリックス図' },
                   { value: 'gantt' as ChartType, label: 'ガント' }
                 ].map(btn => (
                   <button
@@ -786,15 +568,6 @@ export function Dashboard() {
                       onChange={v => setSelectedMonth(Number(v))}
                     />
                   </div>
-                </div>
-              )}
-              {chartType === 'scatter' && (
-                <div style={{ minWidth: 160 }}>
-                  <CustomSelect
-                    value={selectedScatterProject}
-                    options={assignedProjects.map(p => ({ value: p.name, label: p.name }))}
-                    onChange={v => setSelectedScatterProject(v)}
-                  />
                 </div>
               )}
               {(chartType === 'horizontal' || chartType === 'vertical') && (
@@ -937,68 +710,6 @@ export function Dashboard() {
               )
             )}
             
-            {chartType === 'scatter' && (
-              <div style={{ height: "100%" }}>
-                <div style={{ border: "1.5px solid #E6E2D9", borderRadius: 12, display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" }}>
-                  {/* ヘッダー行 */}
-                  <div style={{
-                    display: "grid",
-                    gridTemplateColumns: "130px 1fr 1fr",
-                    background: "#F9F8F6",
-                    borderBottom: "1.5px solid #E6E2D9",
-                    flexShrink: 0
-                  }}>
-                    <div style={{ padding: "10px 14px", borderTopLeftRadius: 11 }}></div>
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: 7, justifyContent: "center",
-                      padding: "10px 16px",
-                      borderLeft: "1.5px solid #E6E2D9"
-                    }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#F87171", display: "inline-block", flexShrink: 0 }}></span>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", letterSpacing: "-0.01em" }}>バグ</span>
-                    </div>
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: 7, justifyContent: "center",
-                      padding: "10px 16px",
-                      borderLeft: "1.5px solid #E6E2D9",
-                      borderTopRightRadius: 11
-                    }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#34D399", display: "inline-block", flexShrink: 0 }}></span>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", letterSpacing: "-0.01em" }}>バグ以外</span>
-                    </div>
-                  </div>
-
-                  {/* 優先度行 */}
-                  {[
-                    { label: "優先度：高", priority: "high", dotColor: "#EF4444" },
-                    { label: "優先度：中", priority: "medium", dotColor: "#F59E0B" },
-                    { label: "優先度：低", priority: "low", dotColor: "#3B82F6" },
-                  ].map(({ label, priority, dotColor }, idx, arr) => (
-                    <div key={priority} style={{
-                      flex: "1 1 0",
-                      minHeight: 0,
-                      display: "grid",
-                      gridTemplateColumns: "130px 1fr 1fr",
-                      borderBottom: idx < arr.length - 1 ? "1.5px solid #E6E2D9" : "none"
-                    }}>
-                      <div style={{
-                        display: "flex", alignItems: "center", gap: 8,
-                        padding: "10px 12px",
-                        borderRight: "1.5px solid #E6E2D9",
-                        background: "#F9F8F6",
-                        borderBottomLeftRadius: idx === arr.length - 1 ? 11 : 0
-                      }}>
-                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: dotColor, flexShrink: 0 }}></div>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: "#374151", letterSpacing: "-0.01em" }}>{label}</span>
-                      </div>
-                      {renderMatrixCell(true, priority, false)}
-                      {renderMatrixCell(false, priority, true)}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {chartType === 'gantt' && (
               <DashboardGantt projectNames={assignedProjects.map(p => p.name)} sprints={ganttSprints} navigate={navigate} />
             )}
@@ -1087,93 +798,6 @@ export function Dashboard() {
       </div>
       {showNewTicket && (
         <NewTicketDialog onClose={() => setShowNewTicket(false)} />
-      )}
-
-      {/* 拡大モーダル */}
-      {expandModalData && (
-        <div
-          onClick={() => setExpandModalData(null)}
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150, padding: 24 }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{ background: "#FFFFFF", borderRadius: 16, width: "min(1200px, 95vw)", maxHeight: "82vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid #F3F4F6", flexShrink: 0 }}>
-              <div>
-                <h2 style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }}>
-                  {expandModalData.priorityLabel} / {expandModalData.isBug ? 'バグ' : 'バグ以外'}
-                </h2>
-                <p style={{ fontSize: 11, color: "#B0A9A4", marginTop: 2 }}>{expandModalData.tickets.length} 件のチケット</p>
-              </div>
-              <button
-                onClick={() => setExpandModalData(null)}
-                style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #E6E2D9", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B7280" }}
-              >
-                <X style={{ width: 16, height: 16 }} />
-              </button>
-            </div>
-            <div style={{ overflowY: "auto", flex: 1 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "#F9F8F6", position: "sticky", top: 0, zIndex: 1 }}>
-                    {['スプリント', 'チケット番号', 'チケット名', '分類', 'ステータス', '優先度', '担当者'].map(h => (
-                      <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.05em", borderBottom: "1px solid #E6E2D9", whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(() => {
-                    const sorted = [...expandModalData.tickets].sort((a, b) => (a.sprint || '').localeCompare(b.sprint || '', 'ja'));
-                    const groups: { sprintName: string; tickets: MatrixTicket[] }[] = [];
-                    for (const t of sorted) {
-                      const sn = t.sprint || '—';
-                      const last = groups[groups.length - 1];
-                      if (last && last.sprintName === sn) { last.tickets.push(t); } else { groups.push({ sprintName: sn, tickets: [t] }); }
-                    }
-                    return groups.flatMap((g) =>
-                      g.tickets.map((t, ti) => {
-                        const sm = STATUS_LABELS[t.status] ?? { label: t.status, bg: '#F4F5F6', color: '#6B6458' };
-                        const pm = PRIORITY_META_MODAL[t.priority] ?? { label: t.priority, color: '#6B6458' };
-                        return (
-                          <tr
-                            key={t.id}
-                            onClick={(e) => { handleTicketClick(t, e); }}
-                            style={{ background: "transparent", cursor: "pointer", transition: "background 0.1s" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FFF7F3"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                          >
-                            {ti === 0 && (
-                              <td rowSpan={g.tickets.length} style={{ padding: "10px 16px", fontSize: 12, color: "#9CA3AF", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap", verticalAlign: "top" }}>{g.sprintName}</td>
-                            )}
-                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
-                              <span style={{ fontSize: 11, fontWeight: 700, color: "#6D28D9", border: "1.5px solid #8B5CF6", borderRadius: 10, padding: "2px 8px", background: "#F3F0FF" }}>{t.id}</span>
-                            </td>
-                            <td style={{ padding: "10px 16px", fontSize: 13, color: "#1A1714", borderBottom: "1px solid #F3F4F6", maxWidth: 280 }}>
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{t.title}</span>
-                            </td>
-                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
-                              <span style={{ fontSize: 11, color: "#6B7280" }}>
-                                {t.category || '—'}
-                              </span>
-                            </td>
-                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
-                              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, fontWeight: 600, background: sm.bg, color: sm.color }}>{sm.label}</span>
-                            </td>
-                            <td style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
-                              <span style={{ fontSize: 12, color: pm.color, fontWeight: 700 }}>● {pm.label}</span>
-                            </td>
-                            <td style={{ padding: "10px 16px", fontSize: 12, color: "#6B7280", borderBottom: "1px solid #F3F4F6" }}>{t.assignee || '—'}</td>
-                          </tr>
-                        );
-                      })
-                    );
-                  })()}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
       )}
 
       {selectedSprintTicket && selectedTicketCtx && (
