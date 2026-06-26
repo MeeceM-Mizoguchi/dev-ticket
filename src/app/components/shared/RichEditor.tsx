@@ -89,9 +89,6 @@ const CustomImage = Image.extend({
 }).configure({ inline: true, allowBase64: false });
 
 // ---- SuggestionStore: editor.storage 経由でチケット/メンバーをプラグインに渡す ----
-// TipTap のプラグインは最初のレンダーで closure をキャプチャするため、
-// useRef の .current 更新が届かないケースがある。
-// editor.storage は items({ editor }) で受け取る生きたインスタンス経由でアクセスするので確実。
 const SuggestionStore = Extension.create({
   name: "suggestionStore",
   addStorage() {
@@ -106,7 +103,6 @@ const SuggestionStore = Extension.create({
 });
 
 // ---- MentionList popup component ----------------------------------------
-
 interface MentionListProps {
   items: string[];
   command: (p: { id: string; label: string }) => void;
@@ -160,7 +156,6 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 MentionList.displayName = "MentionList";
 
 // ---- LinkMentionList popup: バックログ・Wiki・議事録の統合 $メンション ----
-
 interface LinkMentionOption { id: string; title: string; type: "backlog" | "wiki" | "minute" }
 interface LinkMentionListProps {
   items: LinkMentionOption[];
@@ -239,7 +234,6 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
 LinkMentionList.displayName = "LinkMentionList";
 
 // ---- TicketMentionList popup component --------------------------------------
-
 interface TicketItem { wbs: string; title: string }
 interface TicketMentionListProps {
   items: TicketItem[];
@@ -309,7 +303,6 @@ const TicketMentionList = forwardRef<MentionListHandle, TicketMentionListProps>(
 TicketMentionList.displayName = "TicketMentionList";
 
 // ---- helpers ----------------------------------------------------------------
-
 const btnStyle = (active?: boolean): React.CSSProperties => ({
   padding: "3px 7px", fontSize: 11, fontWeight: 600, borderRadius: 5,
   border: `1px solid ${active ? "#059669" : "rgba(26,23,20,0.12)"}`,
@@ -383,7 +376,6 @@ function makeSuggestionPopup<T>(
 }
 
 // ---- RichEditor -------------------------------------------------------------
-
 export function RichEditor({
   value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onImageUpload, style,
 }: {
@@ -411,7 +403,6 @@ export function RichEditor({
       Table.configure({ resizable: false }),
       TableRow, TableCell, TableHeader,
       SuggestionStore,
-      // TipTap v3: suggestions 配列で @mention と #ticket を1つの Mention extension に統合
       Mention.configure({
         HTMLAttributes: {},
         renderText({ node, suggestion }) {
@@ -464,7 +455,7 @@ export function RichEditor({
             render: makeSuggestionPopup(TicketMentionList, 300),
           },
           {
-            // $リンクメンション（$B=バックログ, $W=Wiki, $G=議事録, $ のみ=全表示）
+            // $リンクメンション
             char: "$",
             items: ({ query, editor: ed }: { query: string; editor: any }) => {
               const b: { id: string; title: string }[] = ed?.storage?.suggestionStore?.backlogItems ?? [];
@@ -614,8 +605,6 @@ export function RichEditor({
     },
   });
 
-  // editor.storage に最新の members/tickets を同期
-  // useLayoutEffect でペイント前に確実に更新（ユーザーが入力する前に必ず反映される）
   useLayoutEffect(() => {
     if (!editor || editor.isDestroyed) return;
     editor.storage.suggestionStore.members = members;
@@ -690,6 +679,9 @@ export function RichEditor({
 
   if (!editor) return null;
 
+  // 🌟 修正: コメントエリア内にテーブル（<table>）のデータが存在するかどうかをHTML文字列から常時判定
+  const hasTableInContent = editor.getHTML().includes("<table");
+
   return (
     <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF", display: "flex", flexDirection: "column", ...style }}>
       <style>{`
@@ -741,7 +733,9 @@ export function RichEditor({
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>表</button>
-          {editor.isActive("table") && (
+          
+          {/* 🌟 修正: editor.isActive("table") だけでなく、エディタ内に表のデータ(hasTableInContent)が存在していればツールバーを維持する */}
+          {hasTableInContent && (
             <>
               <span style={{ width: "100%", height: 0 }} />
               <span style={{ fontSize: 11, color: "rgba(26,23,20,0.45)", alignSelf: "center", paddingRight: 2 }}>表編集:</span>
