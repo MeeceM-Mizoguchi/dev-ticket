@@ -26,10 +26,10 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
   const [attempted, setAttempted] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // 識別子の重複状態を管理するステート
+  // 🌟 追加: 識別子の重複状態を管理するステート
   const [isDuplicateIdentifier, setIsDuplicateIdentifier] = useState(false);
 
-  // 識別子が入力されるたびに、同じプロジェクト内での重複をリアルタイムチェックする
+  // 🌟 追加: 識別子が入力されるたびに、同じプロジェクト内での重複をリアルタイムチェックする
   useEffect(() => {
     const trimmedIdentifier = identifier.trim();
     if (!trimmedIdentifier || !isSupabaseEnabled) {
@@ -57,7 +57,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
     return () => clearTimeout(timer);
   }, [identifier, projectId]);
 
-  // 識別子が重複している場合は canSubmit を false にして作成できないようにする
+  // 🌟 修正: 識別子が重複している場合は canSubmit を false にして作成できないようにする
   const canSubmit = name.trim() !== "" && identifier.trim() !== "" && !isDuplicateIdentifier;
 
   const handleSave = async () => {
@@ -87,6 +87,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
 
   return (
     <DialogShell title="新規スプリント作成" onClose={onClose}
+      // 🌟 修正: disabled 条件に「!canSubmit」を適用し、未入力や重複時はボタンを非活性にする
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving || !canSubmit}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
       <div>
         <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
@@ -95,13 +96,9 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
       <div>
         <FieldInput label="スプリント識別子" placeholder="例: SP5, S1（URLに使用）" required value={identifier} onChange={setIdentifier} />
         <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。英数字推奨（例: SP5, S1, Q1）</p>
-        
-        {/* 🌟 修正: 重複メッセージの文字サイズを12.5pxに拡大し、少し太字(600)にして目立たせる */}
+        {/* 🌟 修正: 識別子が存在する場合の重複バリデーションメッセージをオリジナルUIで即時表示 */}
         {isDuplicateIdentifier ? (
-          <p style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "12.5px", fontWeight: 600, color: "#DC2626", marginTop: 5 }}>
-            <AlertCircle style={{ width: 13, height: 13, flexShrink: 0 }} />
-            他スプリントで使っている識別子は利用できません
-          </p>
+          <ErrMsg msg="他スプリントで使っている識別子は利用できません" />
         ) : (
           attempted && !identifier.trim() && <ErrMsg msg="スプリント識別子を入力してください" />
         )}
