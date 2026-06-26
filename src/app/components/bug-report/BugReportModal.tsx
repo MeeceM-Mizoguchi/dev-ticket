@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from "react";
-import { X, Bug, List, ChevronLeft, CheckCircle2, Clock, Plus } from "lucide-react";
+import { X, Bug, List, ChevronLeft, CheckCircle2, Clock, Plus, AlertCircle } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
@@ -49,6 +49,13 @@ function createBubbles(count: number): BugReportBubble[] {
   }));
 }
 
+// 🌟 追加: スプリント等とデザインを統一したオリジナルUIのエラーコンポーネント
+const ErrMsg = ({ msg }: { msg: string }) => (
+  <p style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#DC2626", marginTop: 4, marginBottom: 0 }}>
+    <AlertCircle style={{ width: 11, height: 11, flexShrink: 0 }} />{msg}
+  </p>
+);
+
 interface Props { onClose: () => void; }
 type Phase = "form" | "submitting" | "success" | "list";
 
@@ -71,9 +78,12 @@ export function BugReportModal({ onClose }: Props) {
   const [actual, setActual] = useState("");
   const [expected, setExpected] = useState("");
   const [url, setUrl] = useState("");
-  const [consoleLog, setConsoleLog] = useState(""); // 🌟 追加: コンソールログ用のステート
+  const [consoleLog, setConsoleLog] = useState(""); // コンソールログ用のステート
   const [images, setImages] = useState<string[]>([]);
-  const [error, setError] = useState("");
+  
+  // 🌟 修正: フッター一括文字列ではなく、送信を試みたかどうかのフラグと通信系一般エラー用ステートに変更
+  const [attempted, setAttempted] = useState(false);
+  const [generalError, setGeneralError] = useState("");
 
   // 一覧の状態
   const [reports, setReports] = useState<BugReport[]>([]);
@@ -97,8 +107,8 @@ export function BugReportModal({ onClose }: Props) {
 
   const resetForm = () => {
     setCategory("other"); setSeverity("minor");
-    setTitle(""); setSteps(""); setActual(""); setExpected(""); setUrl(""); setConsoleLog(""); // 🌟 追加: ログのリセット
-    setImages([]); setError("");
+    setTitle(""); setSteps(""); setActual(""); setExpected(""); setUrl(""); setConsoleLog("");
+    setImages([]); setAttempted(false); setGeneralError("");
   };
 
   const handleImagesChange = useCallback((next: string[]) => {
@@ -106,10 +116,15 @@ export function BugReportModal({ onClose }: Props) {
   }, []);
 
   const handleSubmit = async () => {
-    if (!title.trim()) { setError("バグの概要を入力してください"); return; }
-    if (!steps.trim()) { setError("再現手順を入力してください"); return; }
-    if (!actual.trim()) { setError("実際の動作を入力してください"); return; }
-    setError("");
+    // 🌟 追加: 送信を試みたフラグを立てて個別エラー表示をONにする
+    setAttempted(true);
+    setGeneralError("");
+
+    // バリデーションチェック
+    if (!title.trim() || !steps.trim() || !actual.trim()) {
+      return; 
+    }
+
     setPhase("submitting");
 
     if (!isSupabaseEnabled) {
@@ -121,8 +136,6 @@ export function BugReportModal({ onClose }: Props) {
       const { data: { session } } = await supabase!.auth.getSession();
       const userEmail = session?.user?.email ?? "";
 
-      // 🌟 注: データベース（bug_reportsテーブル）にconsole_logカラム等がある場合は、
-      // 以下のオブジェクトにも `console_log: consoleLog.trim() || null` のように追加設定してください。
       const { data: reportData, error: reportErr } = await supabase!
         .from("bug_reports")
         .insert({
@@ -158,7 +171,6 @@ export function BugReportModal({ onClose }: Props) {
             `<p><strong>【実際の動作】</strong></p>`, toLines(actual.trim()),
             ...(expected.trim() ? [`<p></p>`, `<p><strong>【期待する動作】</strong></p>`, toLines(expected.trim())] : []),
             ...(url.trim() ? [`<p></p>`, `<p><strong>【発生URL】</strong></p>`, `<p>${url.trim()}</p>`] : []),
-            // 🌟 変更: バックログ起票時にコンソールログが貼られていればdescriptionに埋め込む
             ...(consoleLog.trim() ? [`<p></p>`, `<p><strong>【コンソールログ】</strong></p>`, `<pre style="background:#f4f5f6; padding:8px; border-radius:6px; font-family:monospace; font-size:11px; white-space:pre-wrap;">${consoleLog.replace(/</g, "&lt;").replace(/>/g, "&gt;").trim()}</pre>`] : []),
             `<p></p>`,
             `<p><strong>【報告者】</strong>${userName}</p>`,
@@ -182,7 +194,7 @@ export function BugReportModal({ onClose }: Props) {
       setPhase("success");
     } catch (e) {
       console.error("[bug-report] submit failed:", e);
-      setError("送信に失敗しました。もう一度お試しください。");
+      setGeneralError("送信に失敗しました。もう一度お試しください。");
       setPhase("form");
     }
   };
@@ -400,7 +412,7 @@ export function BugReportModal({ onClose }: Props) {
                 </div>
                 <button
                   onClick={onClose}
-                  style={{ width:28, height:28, borderRadius:7, border:"none", background:"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#9E9690" }}
+                  style={{ width:28, height:28, borderRadius:7, border:"none", background:"transparent", cursor:"pointer", display:"flex", alignItems:"center", justifySelf:"center", color:"#9E9690" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   <X style={{ width:15, height:15 }} />
@@ -439,19 +451,46 @@ export function BugReportModal({ onClose }: Props) {
                   {/* バグ概要 */}
                   <div>
                     <label style={labelStyle}>バグの概要 <span style={{ color:"#EF4444" }}>*</span></label>
-                    <input value={title} onChange={e => { setTitle(e.target.value); setError(""); }} placeholder="例：チケットのステータスが保存されない" style={inputStyle} onFocus={focusStyle} onBlur={blurStyle} />
+                    <input 
+                      value={title} 
+                      onChange={e => setTitle(e.target.value)} 
+                      placeholder="例：チケットのステータスが保存されない" 
+                      style={inputStyle} 
+                      onFocus={focusStyle} 
+                      onBlur={blurStyle} 
+                    />
+                    {/* 🌟 修正: オリジナルUIの個別バリデーションエラーを追加 */}
+                    {attempted && !title.trim() && <ErrMsg msg="バグの概要を入力してください" />}
                   </div>
 
                   {/* 再現手順 */}
                   <div>
                     <label style={labelStyle}>再現手順 <span style={{ color:"#EF4444" }}>*</span></label>
-                    <textarea value={steps} onChange={e => { setSteps(e.target.value); setError(""); }} placeholder={"1. ○○ページを開く\n2. △△をクリックする\n3. □□が起きる"} style={textareaStyle} onFocus={focusStyle} onBlur={blurStyle} />
+                    <textarea 
+                      value={steps} 
+                      onChange={e => setSteps(e.target.value)} 
+                      placeholder={"1. ○○ページを開く\n2. △△をクリックする\n3. □□が起きる"} 
+                      style={textareaStyle} 
+                      onFocus={focusStyle} 
+                      onBlur={blurStyle} 
+                    />
+                    {/* 🌟 修正: オリジナルUIの個別バリデーションエラーを追加 */}
+                    {attempted && !steps.trim() && <ErrMsg msg="再現手順を入力してください" />}
                   </div>
 
                   {/* 実際の動作 */}
                   <div>
                     <label style={labelStyle}>実際の動作 <span style={{ color:"#EF4444" }}>*</span></label>
-                    <textarea value={actual} onChange={e => { setActual(e.target.value); setError(""); }} placeholder="実際に何が起きているか" style={textareaStyle} onFocus={focusStyle} onBlur={blurStyle} />
+                    <textarea 
+                      value={actual} 
+                      onChange={e => setActual(e.target.value)} 
+                      placeholder="実際に何が起きているか" 
+                      style={textareaStyle} 
+                      onFocus={focusStyle} 
+                      onBlur={blurStyle} 
+                    />
+                    {/* 🌟 修正: オリジナルUIの個別バリデーションエラーを追加 */}
+                    {attempted && !actual.trim() && <ErrMsg msg="実際の動作を入力してください" />}
                   </div>
 
                   {/* 期待する動作 */}
@@ -466,7 +505,7 @@ export function BugReportModal({ onClose }: Props) {
                     <input value={url} onChange={e => setUrl(e.target.value)} placeholder="例：https://dv-ticket.com/devticket/sprint" style={inputStyle} onFocus={focusStyle} onBlur={blurStyle} />
                   </div>
 
-                  {/* 🌟 追加: コンソールログ貼り付けフィールド */}
+                  {/* コンソールログ貼り付けフィールド */}
                   <div>
                     <label style={labelStyle}>コンソールログ <span style={{ color:"#9E9690", fontWeight:500 }}>（任意）</span></label>
                     <textarea 
@@ -496,7 +535,8 @@ export function BugReportModal({ onClose }: Props) {
 
               {/* フッター */}
               <div style={{ padding:"14px 20px", borderTop:"1px solid rgba(26,23,20,0.07)", flexShrink:0 }}>
-                {error && <p style={{ fontSize:12, color:"#EF4444", fontWeight:600, margin:"0 0 10px" }}>{error}</p>}
+                {/* 🌟 修正: 一括バリデーションの文言配置を廃止し、Supabase接続失敗などのシステムエラー(generalError)のみを出すように変更 */}
+                {generalError && <p style={{ fontSize:12, color:"#EF4444", fontWeight:600, margin:"0 0 10px" }}>{generalError}</p>}
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}>
                   <button
                     onClick={openList}
