@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AlertCircle } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -26,7 +26,39 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
   const [attempted, setAttempted] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const canSubmit = name.trim() !== "" && identifier.trim() !== "";
+  // 識別子の重複状態を管理するステート
+  const [isDuplicateIdentifier, setIsDuplicateIdentifier] = useState(false);
+
+  // 識別子が入力されるたびに、同じプロジェクト内での重複をリアルタイムチェックする
+  useEffect(() => {
+    const trimmedIdentifier = identifier.trim();
+    if (!trimmedIdentifier || !isSupabaseEnabled) {
+      setIsDuplicateIdentifier(false);
+      return;
+    }
+
+    const checkDuplicate = async () => {
+      const { data, error } = await supabase!
+        .from("sprints")
+        .select("id")
+        .eq("project_id", projectId)
+        .eq("identifier", trimmedIdentifier)
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        setIsDuplicateIdentifier(true);
+      } else {
+        setIsDuplicateIdentifier(false);
+      }
+    };
+
+    // 入力中の連続クエリを防ぐため、簡易的なデバウンス（300ms）を挟む
+    const timer = setTimeout(checkDuplicate, 300);
+    return () => clearTimeout(timer);
+  }, [identifier, projectId]);
+
+  // 識別子が重複している場合は canSubmit を false にして作成できないようにする
+  const canSubmit = name.trim() !== "" && identifier.trim() !== "" && !isDuplicateIdentifier;
 
   const handleSave = async () => {
     setAttempted(true);
@@ -55,7 +87,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
 
   return (
     <DialogShell title="新規スプリント作成" onClose={onClose}
-      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
+      footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving || !canSubmit}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
       <div>
         <FieldInput label="スプリント名" placeholder="例: Sprint 5: リリース準備" required value={name} onChange={setName} />
         {attempted && !name.trim() && <ErrMsg msg="スプリント名を入力してください" />}
@@ -63,7 +95,16 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
       <div>
         <FieldInput label="スプリント識別子" placeholder="例: SP5, S1（URLに使用）" required value={identifier} onChange={setIdentifier} />
         <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。英数字推奨（例: SP5, S1, Q1）</p>
-        {attempted && !identifier.trim() && <ErrMsg msg="スプリント識別子を入力してください" />}
+        
+        {/* 🌟 修正: 重複メッセージの文字サイズを12.5pxに拡大し、少し太字(600)にして目立たせる */}
+        {isDuplicateIdentifier ? (
+          <p style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "12.5px", fontWeight: 600, color: "#DC2626", marginTop: 5 }}>
+            <AlertCircle style={{ width: 13, height: 13, flexShrink: 0 }} />
+            他スプリントで使っている識別子は利用できません
+          </p>
+        ) : (
+          attempted && !identifier.trim() && <ErrMsg msg="スプリント識別子を入力してください" />
+        )}
       </div>
       <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
       <div className="grid grid-cols-2 gap-3">
