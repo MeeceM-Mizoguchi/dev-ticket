@@ -9,7 +9,8 @@ import Mention from "@tiptap/extension-mention";
 import { Extension } from "@tiptap/core";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
-import { Copy, X, CheckCheck } from "lucide-react";
+// 🌟 修正: ゴミ箱アイコン (Trash2) を lucide-react から追加インポート
+import { Copy, X, CheckCheck, Trash2 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
@@ -679,8 +680,8 @@ export function RichEditor({
 
   if (!editor) return null;
 
-  // 🌟 修正: コメントエリア内にテーブル（<table>）のデータが存在するかどうかをHTML文字列から常時判定
-  const hasTableInContent = editor.getHTML().includes("<table");
+  // 🌟 修正: コメントエリア内にテーブルタグが実在しており、かつ空のテーブルでないことを厳密に判定
+  const hasTableInContent = editor.getHTML().includes("<table") && editor.getHTML().includes("</table>");
 
   return (
     <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF", display: "flex", flexDirection: "column", ...style }}>
@@ -734,7 +735,7 @@ export function RichEditor({
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>表</button>
           
-          {/* 🌟 修正: editor.isActive("table") だけでなく、エディタ内に表のデータ(hasTableInContent)が存在していればツールバーを維持する */}
+          {/* 🌟 修正: エディタ内に表のデータ(hasTableInContent)が存在していれば、どこを触っていてもツールバーを表示 */}
           {hasTableInContent && (
             <>
               <span style={{ width: "100%", height: 0 }} />
@@ -746,6 +747,17 @@ export function RichEditor({
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowBefore().run()} title="上に行を挿入">上行+</button>
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowAfter().run()} title="下に行を挿入">下行+</button>
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().deleteRow().run()} title="行を削除">行削除</button>
+              <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
+              {/* 🌟 追加: 現在選択（またはカーソルが乗っている）している表を丸ごと一発で削除するボタン */}
+              <button 
+                type="button" 
+                style={{ ...btnStyle(), color: "#DC2626" }} 
+                onClick={() => editor.chain().focus().deleteTable().run()} 
+                title="表を丸ごと削除"
+              >
+                <Trash2 style={{ width: 11, height: 11, display: "inline-block", marginRight: 3, verticalAlign: "-1px" }} />
+                表削除
+              </button>
             </>
           )}
         </div>
