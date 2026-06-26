@@ -277,7 +277,7 @@ export function Dashboard() {
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [chartType, setChartType] = useState<ChartType>('vertical');
   const [ganttSprints, setGanttSprints] = useState<GanttSprint[]>(isSupabaseEnabled ? [] : buildMockGantt());
-  const [lineChartMode, setLineChartMode] = useState<LineChartMode>('project-progress');
+  const [lineChartMode] = useState<LineChartMode>('weekly-close');
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
 
   const [selectedScatterProject, setSelectedScatterProject] = useState<string>("");
@@ -779,25 +779,13 @@ export function Dashboard() {
               </div>
               {chartType === 'line' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ minWidth: 160 }}>
+                  <div style={{ minWidth: 80 }}>
                     <CustomSelect
-                      value={lineChartMode}
-                      options={[
-                        { value: 'project-progress', label: 'プロジェクト進捗' },
-                        { value: 'weekly-close', label: '週次クローズ数' },
-                      ]}
-                      onChange={v => setLineChartMode(v as LineChartMode)}
+                      value={String(selectedMonth)}
+                      options={[1,2,3,4,5,6,7,8,9,10,11,12].map(m => ({ value: String(m), label: `${m}月` }))}
+                      onChange={v => setSelectedMonth(Number(v))}
                     />
                   </div>
-                  {lineChartMode === 'weekly-close' && (
-                    <div style={{ minWidth: 80 }}>
-                      <CustomSelect
-                        value={String(selectedMonth)}
-                        options={[1,2,3,4,5,6,7,8,9,10,11,12].map(m => ({ value: String(m), label: `${m}月` }))}
-                        onChange={v => setSelectedMonth(Number(v))}
-                      />
-                    </div>
-                  )}
                 </div>
               )}
               {chartType === 'scatter' && (
