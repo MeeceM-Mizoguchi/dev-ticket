@@ -1,0 +1,8 @@
+{
+  "appId": "io.meece.devticket",
+  "appName": "dev-ticket",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "never"
+  }
+}

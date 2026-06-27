@@ -11,3 +11,12 @@ env
 .gitignore
 env.example
 .env.example
+
+# Capacitor / iOS
+ios/App/App/public/
+ios/App/build/
+ios/DerivedData/
+ios/App/.build/
+*.xcuserstate
+xcuserdata/
+.build/
