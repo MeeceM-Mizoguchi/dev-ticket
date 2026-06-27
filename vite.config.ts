@@ -38,7 +38,15 @@ function openChromePlugin() {
       server.httpServer?.once('listening', () => {
         const address = server.httpServer?.address()
         const port = typeof address === 'object' && address ? address.port : 5173
-        exec(`start chrome http://localhost:${port}`)
+        const url = `http://localhost:${port}`
+        // OS ごとに Chrome を開くコマンドを切り替える
+        const command =
+          process.platform === 'darwin'
+            ? `open -a "Google Chrome" ${url}`
+            : process.platform === 'win32'
+              ? `start chrome ${url}`
+              : `google-chrome ${url}`
+        exec(command)
       })
     },
   }
