@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Plus, X, Trash2 } from "lucide-react";
+import { Plus, X, Trash2, Check } from "lucide-react";
 import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
@@ -77,6 +77,12 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [titleError, setTitleError] = useState(false);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
+  // --- ラベル（プレフィックス）---
+  const [prefixes, setPrefixes] = useState<string[]>([]);
+  const [allProjectPrefixLabels, setAllProjectPrefixLabels] = useState<string[]>([]);
+  const [showPrefixInput, setShowPrefixInput] = useState(false);
+  const [prefixInputValue, setPrefixInputValue] = useState("");
+  const prefixInputRef = useRef<HTMLInputElement>(null);
 
   const effectiveSprintId = sprintId || selectedSprintId;
   const effectiveProjectId = projectId || selectedProjectId;
@@ -103,6 +109,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         if (draft.estimatedHours) setEstimatedHours(draft.estimatedHours);
         if (draft.description) setDescription(draft.description);
         if (draft.images) setImages(draft.images);
+        if (Array.isArray(draft.prefixes)) setPrefixes(draft.prefixes);
         if (needsSelection && draft.selectedProjectId) {
           setSelectedProjectId(draft.selectedProjectId);
         }
@@ -139,6 +146,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       estimatedHours,
       description,
       images,
+      prefixes,
       selectedProjectId,
       selectedSprintId
     };
@@ -147,7 +155,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     } catch (e) {
       console.error("Failed to update form draft:", e);
     }
-  }, [title, status, priority, categoryId, assignee, startDate, dueDate, estimatedHours, description, images, selectedProjectId, selectedSprintId, contextKey, saving]);
+  }, [title, status, priority, categoryId, assignee, startDate, dueDate, estimatedHours, description, images, prefixes, selectedProjectId, selectedSprintId, contextKey, saving]);
 
   const handleInterceptClose = useCallback(() => {
     setShowCloseConfirm(true);
@@ -238,10 +246,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", effectiveProjectId);
       if (!sprintData?.length) return;
       const { data } = await supabase!.from("sprint_tickets")
-        .select("wbs, title")
+        .select("wbs, title, prefixes")
         .in("sprint_id", sprintData.map((s: { id: string }) => s.id))
         .order("wbs");
-      if (data) setProjectTickets(data as { wbs: string; title: string }[]);
+      if (data) {
+        setProjectTickets(data as { wbs: string; title: string }[]);
+        const labels = [...new Set((data as { prefixes?: string[] }[]).flatMap(r => r.prefixes ?? []))].sort();
+        setAllProjectPrefixLabels(labels);
+      }
     })();
     supabase!.from("backlog_items").select("id, title").eq("project_id", effectiveProjectId).order("id")
       .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
@@ -447,6 +459,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               created_by: userName || null,
               images: images.length ? images : [],
               parent_id: parentTicketId,
+              prefixes,
             });
             if (!insErr) {
               if (finalAssignee && effectiveProjectSlug) {
@@ -500,6 +513,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         created_by: userName || null,
         images: images.length ? images : [],
         parent_id: parentTicketId || null,
+        prefixes,
       });
       if (!insErr2) {
         if (finalAssignee && effectiveProjectSlug) {
@@ -670,6 +684,154 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 return correctIdFormat;
               }}
             />
+          </div>
+
+          {/* ラベル（プレフィックス）: 最大3つ。チケット詳細画面と同じ操作感 */}
+          <div>
+            <label className={labelCls}>ラベル（最大3つ）</label>
+            {(() => {
+              const PREFIX_COLORS = [
+                { color: "#4F46E5", bg: "#EEF2FF" },
+                { color: "#059669", bg: "#ECFDF5" },
+                { color: "#D97706", bg: "#FFFBEB" },
+              ];
+              const filteredSuggestions = allProjectPrefixLabels.filter(
+                l => l.toLowerCase().includes(prefixInputValue.toLowerCase())
+              );
+              const addPrefix = (v: string) => {
+                const trimmed = v.trim();
+                if (!trimmed || prefixes.length >= 3 || prefixes.includes(trimmed)) return;
+                const next = [...prefixes, trimmed];
+                setPrefixes(next);
+                if (!allProjectPrefixLabels.includes(trimmed)) {
+                  setAllProjectPrefixLabels(prev => [...prev, trimmed].sort());
+                }
+              };
+              return (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {prefixes.map((p, i) => {
+                    const { color, bg } = PREFIX_COLORS[i % PREFIX_COLORS.length];
+                    return (
+                      <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: bg, color, border: `1px solid ${color}22` }}>
+                        {p}
+                        <button
+                          type="button"
+                          onClick={() => setPrefixes(prefixes.filter((_, j) => j !== i))}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", border: "none", background: "transparent", cursor: "pointer", color, padding: 0, lineHeight: 1, fontSize: 13, fontWeight: 700 }}
+                          title="削除"
+                        >×</button>
+                      </span>
+                    );
+                  })}
+                  {showPrefixInput ? (() => {
+                    const trimmed = prefixInputValue.trim();
+                    const showDropdown = trimmed.length > 0;
+                    const exactExists = allProjectPrefixLabels.some(l => l.toLowerCase() === trimmed.toLowerCase());
+                    const alreadyAdded = prefixes.some(p => p.toLowerCase() === trimmed.toLowerCase());
+                    const canCreate = trimmed.length > 0 && !exactExists && !alreadyAdded;
+                    return (
+                      <div style={{ position: "relative" }}>
+                        <input
+                          ref={prefixInputRef}
+                          autoFocus
+                          value={prefixInputValue}
+                          onChange={e => setPrefixInputValue(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              const addable = filteredSuggestions.find(l => !prefixes.includes(l));
+                              if (addable && !trimmed) {
+                                addPrefix(addable);
+                              } else {
+                                addPrefix(prefixInputValue);
+                              }
+                              setShowPrefixInput(false);
+                              setPrefixInputValue("");
+                            } else if (e.key === "Escape") {
+                              setShowPrefixInput(false);
+                              setPrefixInputValue("");
+                            }
+                          }}
+                          onBlur={() => {
+                            setTimeout(() => {
+                              setShowPrefixInput(false);
+                              setPrefixInputValue("");
+                            }, 150);
+                          }}
+                          placeholder="ラベル名"
+                          style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 20, border: "1px solid #4F46E5", outline: "none", background: "#EEF2FF", color: "#4F46E5", width: 96, fontFamily: "inherit" }}
+                        />
+                        {showDropdown && (() => {
+                          const rect = prefixInputRef.current?.getBoundingClientRect();
+                          if (filteredSuggestions.length === 0 && !canCreate) return null;
+                          return (
+                            <div style={{ position: "fixed", top: rect ? rect.bottom + 4 : 0, left: rect ? rect.left : 0, background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: zIndexBase + 10, minWidth: 168, maxHeight: 200, overflowY: "auto" }}>
+                              {filteredSuggestions.map(label => {
+                                const isUsed = prefixes.includes(label);
+                                return (
+                                  <button
+                                    type="button"
+                                    key={label}
+                                    onMouseDown={e => {
+                                      e.preventDefault();
+                                      if (!isUsed) {
+                                        addPrefix(label);
+                                        setShowPrefixInput(false);
+                                        setPrefixInputValue("");
+                                      }
+                                    }}
+                                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", textAlign: "left", padding: "7px 12px", fontSize: 12, fontWeight: 600, color: isUsed ? "#B0A9A4" : "#1A1714", background: "transparent", border: "none", cursor: isUsed ? "default" : "pointer", fontFamily: "inherit" }}
+                                    onMouseEnter={e => { if (!isUsed) (e.currentTarget as HTMLElement).style.background = "#F5F3F0"; }}
+                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                                  >
+                                    <span>{label}</span>
+                                    {isUsed && <Check style={{ width: 12, height: 12, color: "#059669", flexShrink: 0 }} />}
+                                  </button>
+                                );
+                              })}
+                              {canCreate && (
+                                <button
+                                  type="button"
+                                  onMouseDown={e => {
+                                    e.preventDefault();
+                                    addPrefix(trimmed);
+                                    setShowPrefixInput(false);
+                                    setPrefixInputValue("");
+                                  }}
+                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left", padding: "7px 12px", fontSize: 12, fontWeight: 600, color: "#4F46E5", background: "transparent", border: "none", borderTop: filteredSuggestions.length > 0 ? "1px solid rgba(26,23,20,0.08)" : "none", cursor: "pointer", fontFamily: "inherit" }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF2FF"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                                >
+                                  <Plus style={{ width: 11, height: 11, flexShrink: 0 }} />
+                                  「{trimmed}」を追加
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    );
+                  })() : (prefixes.length < 3 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPrefixInput(true)}
+                      title="ラベルを追加（最大3つ）"
+                      style={{
+                        display: "flex", alignItems: "center", gap: 3,
+                        padding: "3px 8px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
+                        border: "1px dashed rgba(26,23,20,0.20)",
+                        background: "transparent", color: "#A09690", transition: "all 0.15s"
+                      }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "#4F46E5"; (e.currentTarget as HTMLElement).style.color = "#4F46E5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.20)"; (e.currentTarget as HTMLElement).style.color = "#A09690"; }}
+                    >
+                      <Plus style={{ width: 10, height: 10 }} />
+                      ラベル
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
 
           <div>
