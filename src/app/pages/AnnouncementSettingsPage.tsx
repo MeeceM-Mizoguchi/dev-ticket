@@ -7,9 +7,15 @@ import { AnnouncementModal } from "@/app/components/announcements/AnnouncementMo
 import type { Announcement, AnnouncementItem } from "@/app/types";
 
 const MAX_ITEMS = 3;
+const DRAFT_KEY = "announcement_settings_draft";
 
 function emptyItem(): AnnouncementItem {
   return { imageUrl: "", description: "" };
+}
+
+function formatAutoSaveTime(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 async function uploadAnnouncementImage(file: File): Promise<string> {
@@ -37,32 +43,110 @@ export function AnnouncementSettingsPage() {
   const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [focusedSlotIdx, setFocusedSlotIdx] = useState<number | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [lastAutoSaved, setLastAutoSaved] = useState<string | null>(null);
   const fileInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const itemsRef = useRef<AnnouncementItem[]>(items);
   const focusedIdxRef = useRef<number | null>(null);
+  // 保存済み（DB）内容のスナップショット。これと差分があるときだけ下書きを退避する
+  const savedSnapshotRef = useRef<{ title: string; items: AnnouncementItem[] } | null>(null);
+  // 初回ロード＋下書き復元が完了するまで自動退避を抑止するフラグ
+  const hydratedRef = useRef(false);
   itemsRef.current = items;
   focusedIdxRef.current = focusedSlotIdx;
 
   const loadAnnouncement = useCallback(async () => {
-    if (!isSupabaseEnabled) { setLoading(false); return; }
-    const { data } = await supabase!
-      .from("announcements")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (data) {
-      setAnnouncementId(data.id);
-      setTitle(data.title ?? "");
-      const rawItems: AnnouncementItem[] = Array.isArray(data.items)
-        ? data.items.map((r: Record<string, string>) => ({ imageUrl: r.image_url ?? "", description: r.description ?? "" }))
-        : [];
-      setItems(rawItems.length > 0 ? rawItems : [emptyItem()]);
+    // まずDBの保存済み内容を取得
+    let dbTitle = "";
+    let dbItems: AnnouncementItem[] = [emptyItem()];
+    if (isSupabaseEnabled) {
+      const { data } = await supabase!
+        .from("announcements")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        setAnnouncementId(data.id);
+        dbTitle = data.title ?? "";
+        const rawItems: AnnouncementItem[] = Array.isArray(data.items)
+          ? data.items.map((r: Record<string, string>) => ({ imageUrl: r.image_url ?? "", description: r.description ?? "" }))
+          : [];
+        if (rawItems.length > 0) dbItems = rawItems;
+      }
     }
+    savedSnapshotRef.current = { title: dbTitle, items: dbItems };
+
+    // 自動保存された下書きがあり、かつ保存済み内容と差分があれば復元する
+    let restored = false;
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        const draftTitle = typeof draft.title === "string" ? draft.title : "";
+        const draftItems: AnnouncementItem[] = Array.isArray(draft.items)
+          ? draft.items.map((r: Partial<AnnouncementItem>) => ({ imageUrl: r.imageUrl ?? "", description: r.description ?? "" }))
+          : [];
+        const hasContent = draftTitle.trim() !== "" || draftItems.some(it => it.imageUrl || it.description);
+        const differsFromSaved = draftTitle !== dbTitle || JSON.stringify(draftItems) !== JSON.stringify(dbItems);
+        if (hasContent && differsFromSaved) {
+          setTitle(draftTitle);
+          setItems(draftItems.length > 0 ? draftItems : [emptyItem()]);
+          if (typeof draft.savedAt === "string") setLastAutoSaved(draft.savedAt);
+          restored = true;
+        } else if (!differsFromSaved) {
+          // 既に保存済みの内容と同じ下書きは不要なので掃除
+          localStorage.removeItem(DRAFT_KEY);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to restore announcement draft:", e);
+    }
+
+    if (!restored) {
+      setTitle(dbTitle);
+      setItems(dbItems);
+    }
+    setDraftRestored(restored);
     setLoading(false);
+    hydratedRef.current = true;
   }, []);
 
   useEffect(() => { loadAnnouncement(); }, [loadAnnouncement]);
+
+  // 入力変更時にローカルストレージへ自動退避（保存済み内容と一致したら掃除）
+  useEffect(() => {
+    if (!hydratedRef.current || loading || saving) return;
+    const snap = savedSnapshotRef.current;
+    const differsFromSaved = !snap
+      || title !== snap.title
+      || JSON.stringify(items) !== JSON.stringify(snap.items);
+    try {
+      if (!differsFromSaved) {
+        localStorage.removeItem(DRAFT_KEY);
+        setDraftRestored(false);
+        setLastAutoSaved(null);
+        return;
+      }
+      const savedAt = new Date().toISOString();
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ title, items, savedAt }));
+      setLastAutoSaved(savedAt);
+    } catch (e) {
+      console.error("Failed to autosave announcement draft:", e);
+    }
+  }, [title, items, loading, saving]);
+
+  // 下書きを破棄して保存済み内容に戻す
+  const discardDraft = useCallback(() => {
+    const snap = savedSnapshotRef.current;
+    if (snap) {
+      setTitle(snap.title);
+      setItems(snap.items.length > 0 ? snap.items : [emptyItem()]);
+    }
+    try { localStorage.removeItem(DRAFT_KEY); } catch { /* noop */ }
+    setDraftRestored(false);
+    setLastAutoSaved(null);
+  }, []);
 
   const handleImageUpload = useCallback(async (idx: number, file: File) => {
     setUploadingIdx(idx);
@@ -105,6 +189,9 @@ export function AnnouncementSettingsPage() {
         if (data) setAnnouncementId(data.id);
       }
     }
+    // 保存に成功したので、この内容を「保存済みスナップショット」として記録。
+    // これにより自動退避エフェクトが下書きを不要と判断して掃除する。
+    savedSnapshotRef.current = { title, items };
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
@@ -144,7 +231,12 @@ export function AnnouncementSettingsPage() {
             <p style={{ fontSize: 11, color: "#9CA3AF", margin: 0 }}>共通ヘッダーのリリースお知らせを管理します（全ユーザー向け）</p>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {lastAutoSaved && (
+            <span style={{ fontSize: 11, color: "#9CA3AF", marginRight: 2, whiteSpace: "nowrap" as const }}>
+              自動保存済み {formatAutoSaveTime(lastAutoSaved)}
+            </span>
+          )}
           <button
             onClick={() => previewAnnouncement.items.length > 0 && setShowPreview(true)}
             disabled={previewAnnouncement.items.length === 0}
@@ -164,6 +256,23 @@ export function AnnouncementSettingsPage() {
           </button>
         </div>
       </div>
+
+      {/* ── 下書き復元バナー ── */}
+      {draftRestored && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, padding: "8px 12px", background: "rgba(5,150,105,0.06)", border: "1px solid rgba(5,150,105,0.25)", borderRadius: 9, flexShrink: 0 }}>
+          <span style={{ fontSize: 12, color: "#047857", fontWeight: 500 }}>
+            前回の編集途中の内容（自動保存された下書き）を復元しました。保存するまで反映されません。
+          </span>
+          <button
+            onClick={discardDraft}
+            style={{ flexShrink: 0, padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.3)", background: "#fff", color: "#047857", cursor: "pointer", whiteSpace: "nowrap" as const }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(5,150,105,0.08)"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}
+          >
+            下書きを破棄
+          </button>
+        </div>
+      )}
 
       {/* ── タイトル ── */}
       <div style={{ marginBottom: 14, flexShrink: 0 }}>
