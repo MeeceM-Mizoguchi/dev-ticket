@@ -18,7 +18,7 @@ const DEFAULT_PERMS: UserPermissions = {
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
   canAccessAdminSettings: false, canUpdateAnnouncement: false,
   canAccessWiki: false, canAccessBacklog: false, canAccessMinutes: false,
-  canAccessOrganization: false,
+  canAccessOrganization: false, canAccessReports: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
 };
 
@@ -28,6 +28,7 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; mee
   { key: "canAccessRoles",         label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
   { key: "canAccessGroups",        label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
   { key: "canAccessAdminSettings", label: "通知管理",         desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
+  { key: "canAccessReports",       label: "レポート管理",     desc: "レポート管理画面へのアクセスが可能（進捗・予定・生産性レポートの閲覧/出力）" },
   { key: "canUpdateAnnouncement",  label: "お知らせ更新",     desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
 ];
 

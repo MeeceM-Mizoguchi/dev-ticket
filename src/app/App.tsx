@@ -23,6 +23,7 @@ import { RolesPage } from "@/app/pages/RolesPage";
 import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 import { MyActionsPage } from "@/app/pages/MyActionsPage";
 import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
+import { ReportsPage } from "@/app/pages/ReportsPage";
 import { BacklogPage } from "@/app/pages/BacklogPage";
 import { BugReportsPage } from "@/app/pages/BugReportsPage";
 import { WikiPage } from "@/app/pages/WikiPage";
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="/announcement-settings" element={<AnnouncementSettingsPage />} />
               <Route path="/my-actions" element={<MyActionsPage />} />
               <Route path="/release-notes" element={<ReleaseNotesPage />} />
+              <Route path="/reports" element={<ReportsPage />} />
               <Route path="/bug-reports" element={<BugReportsPage />} />
               <Route path="/organization" element={<OrganizationPage />} />
               {/* Sprint list */}

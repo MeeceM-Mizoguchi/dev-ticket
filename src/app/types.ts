@@ -1,4 +1,4 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization" | "announcement-settings";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization" | "announcement-settings" | "reports";
 
 export interface AnnouncementItem {
   imageUrl: string;
@@ -252,6 +252,7 @@ export interface UserPermissions {
   canAccessMinutes: boolean;
   canAccessOrganization: boolean;
   canUpdateAnnouncement: boolean;
+  canAccessReports: boolean;
   wikiPermission: AccessLevel;
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
