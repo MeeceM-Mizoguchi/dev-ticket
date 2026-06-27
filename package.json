@@ -87,8 +87,10 @@
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
     "@types/node": "^25.9.1",
+    "@vercel/node": "^5.8.21",
     "@vitejs/plugin-react": "4.7.0",
     "tailwindcss": "4.1.12",
+    "typescript": "^6.0.3",
     "vite": "6.3.5"
   },
   "peerDependencies": {
