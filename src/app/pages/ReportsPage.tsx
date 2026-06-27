@@ -619,8 +619,8 @@ export function ReportsPage() {
           {/* §2 進捗：終わった？終わってない？ */}
           <section style={cardStyle}>
             <SectionHead icon={CheckCircle2} color="#059669" title="② 進捗：終わった？終わってない？" desc="完了・進行中・未着手の内訳と完了チケット" />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-              <div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 20 }}>
+              <div style={{ minWidth: 0 }}>
                 <p style={subHeadStyle}>ステータス内訳</p>
                 {report.statusBreakdown.length === 0 ? <Muted>データがありません</Muted> : (
                   <ResponsiveContainer width="100%" height={250}>
@@ -636,9 +636,9 @@ export function ReportsPage() {
                   </ResponsiveContainer>
                 )}
               </div>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <p style={subHeadStyle}>完了したチケット（{report.completed.length}件）</p>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 250, overflow: "auto" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 250, overflowY: "auto", overflowX: "hidden" }}>
                   {report.completed.length === 0 && <Muted>この期間に完了したチケットはありません</Muted>}
                   {report.completed.slice(0, 40).map(t => (
                     <TicketRow key={t.id} t={t} right={STATUS_META[t.status]?.label} rightColor={STATUS_META[t.status]?.color} onClick={() => setSelectedTicket(t)} />
@@ -696,7 +696,7 @@ export function ReportsPage() {
           {/* §5 遅れ（リスク） */}
           <section style={cardStyle}>
             <SectionHead icon={AlertTriangle} color="#DC2626" title="⑤ 遅れ（リスク）" desc="期限超過・期限間近のチケット" />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 20 }}>
               <div>
                 <p style={subHeadStyle}>期限超過（{report.overdue.length}件）</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 300, overflow: "auto" }}>
@@ -727,7 +727,7 @@ export function ReportsPage() {
           {/* §7 今後の予定 */}
           <section style={cardStyle}>
             <SectionHead icon={Rocket} color="#2563EB" title="⑦ 今後の予定" desc="来期に期限を迎えるチケットとリリース予定" />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 20 }}>
               <div>
                 <p style={subHeadStyle}>来期に期限を迎える（{report.upcoming.length}件）</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflow: "auto" }}>
@@ -945,7 +945,7 @@ function TicketRow({ t, right, rightColor, alert, onClick }: { t: RepTicket; rig
     <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: alert ? "#FEF2F2" : "#F9FAFB", borderRadius: 8, border: alert ? "1px solid #FEE2E2" : "1px solid transparent", cursor: onClick ? "pointer" : "default" }}>
       {alert && <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0 }} />}
       <span style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", fontFamily: "monospace", flexShrink: 0 }}>{t.wbs || "—"}</span>
-      <span style={{ fontSize: 12, color: "#374151", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+      <span style={{ fontSize: 12, color: "#374151", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
       <span style={{ fontSize: 11, color: "#B0A9A4", flexShrink: 0, maxWidth: 90, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.assignee || ""}</span>
       {right && <span style={{ fontSize: 11, fontWeight: 600, color: rightColor || "#6B7280", flexShrink: 0 }}>{right}</span>}
     </div>
