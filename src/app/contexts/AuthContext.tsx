@@ -30,6 +30,7 @@ interface AuthCtxType {
   userRole: Role;
   userId: string;
   userOrgId: string | null;
+  isSystemAdmin: boolean;        // 所属組織が「システム管理会社(Meece)」か
   userPermissions: UserPermissions;
   login: (email: string, password: string) => Promise<string | null>;
   loginWithBiometric: () => Promise<string | null>;
@@ -37,7 +38,7 @@ interface AuthCtxType {
 }
 
 export const AuthContext = createContext<AuthCtxType>({
-  userName: "", userRole: "developer", userId: "", userOrgId: null,
+  userName: "", userRole: "developer", userId: "", userOrgId: null, isSystemAdmin: false,
   userPermissions: { ...DEFAULT_PERMISSIONS },
   login: async () => null, loginWithBiometric: async () => null, logout: async () => {},
 });
@@ -83,6 +84,18 @@ async function fetchProfile(uid: string) {
   return data ?? null;
 }
 
+// 所属組織が「システム管理会社(Meece)」か判定。
+// profiles.organization_id は FK 無しの TEXT のため埋め込み join は使えない。
+// security definer 関数 is_system_admin() を RPC で呼ぶ（supabase/add_app_version.sql）。
+async function fetchIsSystemAdmin(): Promise<boolean> {
+  try {
+    const { data } = await supabase!.rpc("is_system_admin");
+    return data === true;
+  } catch {
+    return false; // 関数未作成（SQL未適用）でもログインは継続させる
+  }
+}
+
 async function activateIfInvited(uid: string, status: string) {
   if (status === "invited") {
     await supabase!.from("profiles").update({ status: "active" }).eq("id", uid);
@@ -94,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userRole, setUserRole] = useState<Role>("developer");
   const [userId, setUserId] = useState("");
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
+  const [isSystemAdmin, setIsSystemAdmin] = useState(false);
   const [userPermissions, setUserPermissions] = useState<UserPermissions>({ ...DEFAULT_PERMISSIONS });
   const [authReady, setAuthReady] = useState(!isSupabaseEnabled);
 
@@ -103,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUserRole(sessionStorage.getItem("userRole") || "developer");
       setUserId(sessionStorage.getItem("userId") || "");
       setUserOrgId(sessionStorage.getItem("userOrgId") || null);
+      setIsSystemAdmin(sessionStorage.getItem("isSystemAdmin") === "true");
       const savedPerms = sessionStorage.getItem("userPermissions");
       if (savedPerms) {
         try { setUserPermissions(JSON.parse(savedPerms)); } catch { /* ignore */ }
@@ -119,14 +134,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const role = p.role as Role;
           const basePerms = await fetchRoleBasePermissions(role);
           const perms = resolvePermissions(basePerms);
+          const sysAdmin = await fetchIsSystemAdmin();
           setUserName(p.name); setUserRole(role); setUserId(session.user.id);
           setUserOrgId(p.organization_id ?? null);
+          setIsSystemAdmin(sysAdmin);
           setUserPermissions(perms);
           sessionStorage.setItem("isLoggedIn", "true");
           sessionStorage.setItem("userName", p.name);
           sessionStorage.setItem("userRole", p.role);
           sessionStorage.setItem("userId", session.user.id);
           sessionStorage.setItem("userOrgId", p.organization_id ?? "");
+          sessionStorage.setItem("isSystemAdmin", String(sysAdmin));
           sessionStorage.setItem("userPermissions", JSON.stringify(perms));
         }
       }
@@ -141,24 +159,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const role = p.role as Role;
             const basePerms = await fetchRoleBasePermissions(role);
             const perms = resolvePermissions(basePerms);
+            const sysAdmin = await fetchIsSystemAdmin();
             setUserName(p.name); setUserRole(role); setUserId(session.user.id);
             setUserOrgId(p.organization_id ?? null);
+            setIsSystemAdmin(sysAdmin);
             setUserPermissions(perms);
             sessionStorage.setItem("userName", p.name);
             sessionStorage.setItem("userRole", p.role);
             sessionStorage.setItem("userId", session.user.id);
             sessionStorage.setItem("userOrgId", p.organization_id ?? "");
+            sessionStorage.setItem("isSystemAdmin", String(sysAdmin));
             sessionStorage.setItem("userPermissions", JSON.stringify(perms));
           }
         });
       } else {
         setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
+        setIsSystemAdmin(false);
         setUserPermissions({ ...DEFAULT_PERMISSIONS });
         sessionStorage.removeItem("isLoggedIn");
         sessionStorage.removeItem("userName");
         sessionStorage.removeItem("userRole");
         sessionStorage.removeItem("userId");
         sessionStorage.removeItem("userOrgId");
+        sessionStorage.removeItem("isSystemAdmin");
         sessionStorage.removeItem("userPermissions");
       }
     });
@@ -201,12 +224,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     if (isSupabaseEnabled) await supabase!.auth.signOut();
     setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
+    setIsSystemAdmin(false);
     setUserPermissions({ ...DEFAULT_PERMISSIONS });
     sessionStorage.removeItem("isLoggedIn");
     sessionStorage.removeItem("userName");
     sessionStorage.removeItem("userRole");
     sessionStorage.removeItem("userId");
     sessionStorage.removeItem("userOrgId");
+    sessionStorage.removeItem("isSystemAdmin");
     sessionStorage.removeItem("userPermissions");
   };
 
@@ -257,7 +282,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ userName, userRole, userId, userOrgId, userPermissions, login, loginWithBiometric, logout }}>
+    <AuthContext.Provider value={{ userName, userRole, userId, userOrgId, isSystemAdmin, userPermissions, login, loginWithBiometric, logout }}>
       {children}
     </AuthContext.Provider>
   );

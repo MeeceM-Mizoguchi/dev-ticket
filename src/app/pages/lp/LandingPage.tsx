@@ -532,9 +532,9 @@ export function LandingPage() {
       </nav>
 
       {/* Hero Section */}
-      <section className="min-h-screen lg:h-screen flex flex-col pt-16 overflow-x-hidden px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto w-full flex-1 flex items-center lg:items-stretch py-8 lg:py-8">
-          <div className="w-full grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-12 items-center lg:items-stretch">
+      <section className="pt-16 overflow-x-hidden px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto w-full flex items-center py-10 lg:py-16">
+          <div className="w-full grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-12 items-center">
             <div className="flex flex-col justify-center">
               <Badge className="mb-3 sm:mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100 w-fit">
                 チームの生産性を最大化
@@ -569,8 +569,9 @@ export function LandingPage() {
                 </div>
               </div>
             </div>
-            <div className="hidden md:block relative lg:h-full">
-              <div className="relative rounded-2xl overflow-hidden border border-slate-200 aspect-video lg:aspect-auto lg:h-full" style={{ boxShadow: '0 8px 48px rgba(0,0,0,0.07)' }}>
+            <div className="hidden md:block relative">
+              {/* PCモニター比率(5:4)。中段グラフがゆったり収まる高さ */}
+              <div className="relative w-full rounded-2xl overflow-hidden border border-slate-200 aspect-[5/4]" style={{ boxShadow: '0 8px 48px rgba(0,0,0,0.07)' }}>
                 <MockDashboard fillHeight />
               </div>
             </div>

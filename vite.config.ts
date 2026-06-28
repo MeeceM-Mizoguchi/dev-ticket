@@ -18,6 +18,18 @@ function figmaAssetResolver() {
   }
 }
 
+// ビルドのたびに「ビルド日時(JST)」から自動採番したバージョンを1回だけ生成する。
+// この1つの値を define（バンドルへ焼込み）/ build-info.json / publish-version.mjs(DB)
+// の3か所で共有することで、稼働中の画面のバージョンとDB記録が必ず一致する。
+function genAppBuild(): { version: string; buildTime: string } {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000); // UTC+9
+  const p = (n: number) => String(n).padStart(2, '0');
+  const version = `v${jst.getUTCFullYear()}.${p(jst.getUTCMonth() + 1)}.${p(jst.getUTCDate())}.${p(jst.getUTCHours())}${p(jst.getUTCMinutes())}`;
+  return { version, buildTime: now.getTime().toString() };
+}
+const APP_BUILD = genAppBuild();
+
 function buildInfoPlugin(): Plugin {
   return {
     name: 'build-info',
@@ -25,7 +37,7 @@ function buildInfoPlugin(): Plugin {
       this.emitFile({
         type: 'asset',
         fileName: 'build-info.json',
-        source: JSON.stringify({ buildTime: Date.now().toString() }),
+        source: JSON.stringify({ buildTime: APP_BUILD.buildTime, version: APP_BUILD.version }),
       });
     },
   };
@@ -62,6 +74,11 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  // 稼働中バージョンをバンドルへ焼込む（src/lib/version.ts が参照）
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_BUILD.version),
+  },
+
   resolve: {
     alias: {
       // Alias @ to the src directory

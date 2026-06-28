@@ -5,6 +5,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { mapBugReport } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
+import { APP_VERSION } from "@/lib/version";
 import type { BugCategory, BugSeverity, BugReport } from "@/app/types";
 
 const CATEGORY_OPTIONS: { value: BugCategory; label: string }[] = [
@@ -142,7 +143,7 @@ export function BugReportModal({ onClose }: Props) {
           user_id: userId || null, user_name: userName, user_email: userEmail,
           category, severity, title: title.trim(), steps: steps.trim(),
           actual: actual.trim(), expected: expected.trim(), url: url.trim(),
-          images, status: "open",
+          images, status: "open", app_version: APP_VERSION,
         })
         .select("id").single();
 
@@ -173,7 +174,7 @@ export function BugReportModal({ onClose }: Props) {
             ...(url.trim() ? [`<p></p>`, `<p><strong>【発生URL】</strong></p>`, `<p>${url.trim()}</p>`] : []),
             ...(consoleLog.trim() ? [`<p></p>`, `<p><strong>【コンソールログ】</strong></p>`, `<pre style="background:#f4f5f6; padding:8px; border-radius:6px; font-family:monospace; font-size:11px; white-space:pre-wrap;">${consoleLog.replace(/</g, "&lt;").replace(/>/g, "&gt;").trim()}</pre>`] : []),
             `<p></p>`,
-            `<p><strong>【報告者】</strong>${userName}</p>`,
+            `<p><strong>【報告者】</strong>${userName} <strong>【ご利用バージョン】</strong>${APP_VERSION}</p>`,
           ].join("");
 
           const { data: backlogData } = await supabase!.from("backlog_items").insert({
@@ -446,6 +447,13 @@ export function BugReportModal({ onClose }: Props) {
                         </button>
                       ))}
                     </div>
+                  </div>
+
+                  {/* ご利用バージョン（自動送信・読み取り専用） */}
+                  <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px", background:"#F4F5F6", borderRadius:8, fontSize:12 }}>
+                    <span style={{ color:"#6B6458", fontWeight:600 }}>ご利用バージョン</span>
+                    <span style={{ color:"#1A1714", fontWeight:700, fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>{APP_VERSION}</span>
+                    <span style={{ marginLeft:"auto", color:"#A09790", fontSize:11 }}>お問い合わせに自動で添付されます</span>
                   </div>
 
                   {/* バグ概要 */}
