@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
 import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -657,12 +658,11 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
       "【チケット詳細】",
       descriptionText,
     ].join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(text)) {
       setCopiedContent(true);
       setTimeout(() => setCopiedContent(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy ticket content:", err);
+    } else {
+      console.error("Failed to copy ticket content");
     }
   }, [ticket, title, categoryId, categories, description]);
 
@@ -1860,7 +1860,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                   <button
                     onClick={async () => {
                       const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-                      try { await navigator.clipboard.writeText(ticketUrl); setCopiedLink(true); setTimeout(() => setCopiedLink(false), 2000); } catch (err) { console.error("Failed to copy ticket URL:", err); }
+                      if (await copyText(ticketUrl)) { setCopiedLink(true); setTimeout(() => setCopiedLink(false), 2000); } else { console.error("Failed to copy ticket URL"); }
                     }}
                     title="チケットリンクをコピー"
                     style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}

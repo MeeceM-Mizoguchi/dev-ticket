@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
 import { Toggle } from "@/app/components/shared/Toggle";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { labelCls, inputCls } from "@/app/lib/helpers";
@@ -103,11 +104,11 @@ export function SlackNotificationSetting({ isAdminOrPM, connectedProjectId, orgI
     setDisconnecting(false);
   };
 
-  const handleCopyInvite = () => {
-    navigator.clipboard.writeText(inviteCommand).then(() => {
+  const handleCopyInvite = async () => {
+    if (await copyText(inviteCommand)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }
   };
 
   const handleSave = async () => {
