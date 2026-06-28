@@ -4,6 +4,9 @@ import { X, ClipboardList, BookOpen, FileText, FolderOpen, ChevronRight, Externa
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { RichEditor } from "./RichEditor";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+// LinkPreviewPanel は TabProvider の外側(App.tsx 直下)に描画されるため、
+// useTabs() ではなくモジュールレベルのブリッジでアクティブタブを操作する。
+import { navigateInActiveTab, getActiveTabPath } from "@/app/contexts/TabContext";
 
 interface BacklogPreview {
   id: string; title: string; status: string; priority: string;
@@ -143,9 +146,10 @@ export function LinkPreviewPanel() {
   const [loading, setLoading] = useState(false);
   const prevId = useRef<string | null>(null);
 
-  const projectSlug = typeof window !== "undefined"
-    ? window.location.pathname.split("/").filter(Boolean)[0] ?? ""
-    : "";
+  // タブモードではアクティブタブの現在地、Web/iPhone では実URLを基準にする。
+  const basePath = getActiveTabPath()
+    ?? (typeof window !== "undefined" ? window.location.pathname : "");
+  const projectSlug = basePath.split("?")[0].split("/").filter(Boolean)[0] ?? "";
 
   // マウント/アンマウントアニメーション
   useEffect(() => {
@@ -244,7 +248,7 @@ export function LinkPreviewPanel() {
             <button
               onClick={() => {
                 const url = buildNavUrl(target.type, target.id, projectSlug, data);
-                if (url) { close(); navigate(url); }
+                if (url) { close(); if (!navigateInActiveTab(url)) navigate(url); }
               }}
               style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, color: "#4B4540", cursor: "pointer", whiteSpace: "nowrap" as const }}>
               <ExternalLink style={{ width: 12, height: 12 }} />

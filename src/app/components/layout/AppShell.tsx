@@ -1,8 +1,10 @@
 import { Navigate, Outlet } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
+import { TabbedShell } from "./TabbedShell";
 import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
+import { isNativeTabletApp } from "@/app/lib/platform";
 
 export function AppShell() {
   useVersionCheck();
@@ -22,5 +24,7 @@ export function AppShell() {
 
 export function ProtectedShell() {
   if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
+  // Mac/iPad 版のみタブUIを使う。Web/iPhone は従来どおり。
+  if (isNativeTabletApp()) return <TabbedShell />;
   return <AppShell />;
 }

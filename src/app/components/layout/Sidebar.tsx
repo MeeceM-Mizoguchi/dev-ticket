@@ -4,6 +4,7 @@ import { useLocation } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
+import { useTabs } from "@/app/contexts/TabContext";
 import { escStack } from "@/app/lib/escStack";
 
 const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; permission?: keyof UserPermissions }[] = [
@@ -25,6 +26,9 @@ export function Sidebar() {
   const { userRole, userPermissions, logout } = useAuth();
   const { plan } = usePlan();
   const location = useLocation();
+  // Mac/iPad のタブモードでは、実URLではなくアクティブタブの現在地で
+  // ハイライト・遷移を行う(Web/iPhone では tabs は null)。
+  const tabs = useTabs();
   const [hoveredNav, setHoveredNav] = useState<string | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
@@ -37,7 +41,7 @@ export function Sidebar() {
 
   // 🌟【修正ポイント】動的なプロジェクトパス（/:slug や /:slug/:wbs）を正しく「プロジェクト」として検知させるロジックに変更
   const getActivePage = (): Exclude<Page, "login"> => {
-    const p = location.pathname;
+    const p = (tabs ? tabs.activePath : location.pathname).split("?")[0];
 
     // 完全にダッシュボード（ルート）の時
     if (p === "/" || p === "/dashboard") return "dashboard";
@@ -89,7 +93,18 @@ export function Sidebar() {
       <div style={{ position: "relative" }}
         onMouseEnter={() => setHoveredNav(id)}
         onMouseLeave={() => setHoveredNav(null)}>
-        <button onClick={() => { window.location.href = `/${id}`; }}
+        <button
+          onClick={(e) => {
+            const path = `/${id}`;
+            if (tabs) {
+              // ⌘/Ctrl+クリックは新規タブ、通常クリックはアクティブタブ内で遷移
+              if (e.metaKey || e.ctrlKey) tabs.openTab(path);
+              else tabs.navigateActive(path);
+            } else {
+              window.location.href = path;
+            }
+          }}
+          onContextMenu={tabs ? (e) => { e.preventDefault(); tabs.openTab(`/${id}`); } : undefined}
           style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: "11px 0", position: "relative", border: "none", background: "transparent", cursor: "pointer" }}>
           {active && <div style={{ position: "absolute", left: 0, top: 8, bottom: 8, width: 3, borderRadius: "0 99px 99px 0", background: "#059669" }} />}
           <div style={{ width: 40, height: 40, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", background: active ? "#ECFDF5" : "transparent", border: active ? "1px solid rgba(5,150,105,0.18)" : "1px solid transparent", transition: "all 0.15s" }}

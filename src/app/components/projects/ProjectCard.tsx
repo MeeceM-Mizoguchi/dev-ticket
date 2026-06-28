@@ -9,10 +9,13 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
 export function ProjectCard({
-  project, onNavigate, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo,
+  project, onNavigate, onOpenNewTab, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo,
 }: {
   project: Project;
   onNavigate: () => void;
+  // Mac/iPad のタブモードでのみ渡される。⌘/中/右クリック・長押しで新規タブを開く。
+  // 未指定(Web/iPhone)のときは従来どおり通常クリックのみ。
+  onOpenNewTab?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
   onCategorySettings?: () => void;
@@ -21,6 +24,8 @@ export function ProjectCard({
   onEnvMemo?: () => void;
 }) {
   const { plan } = usePlan();
+  const lpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressedRef = useRef(false);
   const progress = calcProgress(project.done, project.inProgress, project.todo);
   const total = project.done + project.inProgress + project.todo;
   const sm = getStatusMeta(project.status);
@@ -42,7 +47,22 @@ export function ProjectCard({
   const projectTags = Array.isArray(project.tags) ? project.tags : [];
 
   return (
-    <div onClick={onNavigate} style={{ background: "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}
+    <div
+      onClick={(e) => {
+        if (longPressedRef.current) { longPressedRef.current = false; return; }
+        if ((e.metaKey || e.ctrlKey) && onOpenNewTab) onOpenNewTab();
+        else onNavigate();
+      }}
+      onAuxClick={onOpenNewTab ? (e) => { if (e.button === 1) { e.preventDefault(); onOpenNewTab(); } } : undefined}
+      onContextMenu={onOpenNewTab ? (e) => { e.preventDefault(); onOpenNewTab(); } : undefined}
+      onTouchStart={onOpenNewTab ? () => {
+        longPressedRef.current = false;
+        if (lpTimer.current) clearTimeout(lpTimer.current);
+        lpTimer.current = setTimeout(() => { longPressedRef.current = true; onOpenNewTab(); }, 500);
+      } : undefined}
+      onTouchEnd={onOpenNewTab ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
+      onTouchMove={onOpenNewTab ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
+      style={{ background: "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
       <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)`, borderRadius: "16px 16px 0 0" }} />
