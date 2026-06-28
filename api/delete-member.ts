@@ -26,7 +26,8 @@ export default async function handler(req: any, res: any) {
   }
 
   // 3. Delete from auth.users — cascades to profiles via FK
-  const { error } = await sb.auth.admin.deleteUser(userId);
+  // @vercel/node + pnpm では auth.admin の継承型が解決されないため型のみ緩める（実行時は有効）
+  const { error } = await (sb.auth as any).admin.deleteUser(userId);
   if (error) return res.status(400).json({ error: error.message });
 
   res.json({ success: true });

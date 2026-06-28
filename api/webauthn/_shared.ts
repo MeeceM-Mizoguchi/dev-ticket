@@ -15,6 +15,21 @@ export function getServiceClient(): SupabaseClient {
   return createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
+// @vercel/node の関数型チェックは pnpm 配下の @supabase/auth-js(GoTrueClient) の
+// 継承型を解決できず、auth.admin / auth.getUser を「存在しない」と誤検出する。
+// 実行時には存在するメソッドなので、ここで型だけ明示的に緩めてアクセスする。
+type AdminAuth = {
+  getUser: (jwt?: string) => Promise<{ data: { user: any }; error: any }>;
+  admin: {
+    getUserById: (id: string) => Promise<{ data: { user: any } | null; error: any }>;
+    generateLink: (params: any) => Promise<{ data: any; error: any }>;
+    deleteUser: (id: string) => Promise<{ error: any }>;
+  };
+};
+export function adminAuth(sb: SupabaseClient): AdminAuth {
+  return sb.auth as unknown as AdminAuth;
+}
+
 // リクエスト元のオリジンから rpID(ホスト名) と expectedOrigin を導出する。
 // 環境変数 WEBAUTHN_RP_ID で上書き可能（カスタムドメイン運用時）。
 export function getRP(req: any): { rpID: string; origin: string; rpName: string } {
@@ -30,7 +45,7 @@ export async function getBearerUser(sb: SupabaseClient, req: any) {
   const auth: string = req.headers?.authorization || req.headers?.Authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token) return null;
-  const { data, error } = await sb.auth.getUser(token);
+  const { data, error } = await adminAuth(sb).getUser(token);
   if (error || !data?.user) return null;
   return data.user;
 }
@@ -74,10 +89,11 @@ export function hashSecret(secret: string): string {
 
 // magiclink の token_hash を発行（生体認証成功後のセッション確立に使う）
 export async function issueMagiclinkTokenHash(sb: SupabaseClient, userId: string): Promise<{ email: string; tokenHash: string } | { error: string }> {
-  const { data: userRes, error: userErr } = await sb.auth.admin.getUserById(userId);
+  const auth = adminAuth(sb);
+  const { data: userRes, error: userErr } = await auth.admin.getUserById(userId);
   if (userErr || !userRes?.user?.email) return { error: "ユーザー情報を取得できませんでした" };
-  const email = userRes.user.email;
-  const { data: linkData, error: linkErr } = await sb.auth.admin.generateLink({ type: "magiclink", email });
+  const email = userRes.user.email as string;
+  const { data: linkData, error: linkErr } = await auth.admin.generateLink({ type: "magiclink", email });
   if (linkErr || !linkData?.properties?.hashed_token) return { error: linkErr?.message || "セッションの発行に失敗しました" };
   return { email, tokenHash: linkData.properties.hashed_token };
 }
