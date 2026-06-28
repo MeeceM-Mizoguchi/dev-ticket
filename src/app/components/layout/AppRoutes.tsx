@@ -21,9 +21,9 @@ import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
 
 // 保護下(ログイン後)ページの単一定義。
 // Web版は App.tsx のネストルート(<Outlet/>)配下で、
-// Mac/iPad版はタブごとの MemoryRouter 配下で、同じ定義を再利用する。
+// Mac/iPad版は TabPane の <Routes location> 配下で、同じ定義を再利用する。
 // ※パスは絶対パス。Web のネスト(pathless レイアウトルート配下)でも、
-//   ネイティブのタブ内トップレベル MemoryRouter 配下でも、どちらも絶対パスで動作する。
+//   タブの <Routes location> でも、どちらも絶対パスで動作する。
 export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/dashboard", element: <Dashboard /> },
   { path: "/projects", element: <ProjectsPage /> },
@@ -51,11 +51,15 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/:segment", element: <SprintDetailPage /> },
 ];
 
-// Mac/iPad のタブ(MemoryRouter)配下で使う Routes。
-// 各タブが独立した履歴を持ち、未知パスはダッシュボードへフォールバックする。
-export function ProtectedRoutes() {
+// Mac/iPad のタブ配下で使う Routes。
+// react-router 7 は Router の入れ子を禁止するため、タブごとに MemoryRouter は
+// 作らず、単一の BrowserRouter 内で <Routes location> によりタブ固有の
+// ロケーションを描画する。
+//  - アクティブタブ: location 未指定 → 実ルーターの現在地で描画(遷移が効く)
+//  - 非アクティブタブ: location 指定 → そのパスに固定して keep-alive(状態保持)
+export function ProtectedRoutes({ location }: { location?: string }) {
   return (
-    <Routes>
+    <Routes location={location}>
       {PROTECTED_ROUTES.map((r) => (
         <Route key={r.path} path={r.path} element={r.element} />
       ))}

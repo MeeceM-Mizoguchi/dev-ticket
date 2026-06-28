@@ -1,9 +1,13 @@
 import { createContext, useContext, useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 
 // アプリ内タブ(Mac/iPad版のみ)の状態管理。
-// 各タブは TabPane 内の MemoryRouter で独立した履歴を持つため、
-// ここでは「どんなタブが何枚あり、どれがアクティブか」と、
-// アクティブタブの MemoryRouter へナビゲーションを橋渡しする仕組みのみを持つ。
+//
+// react-router 7 は Router の入れ子を禁止するため、タブごとに MemoryRouter は
+// 作れない。代わりに単一の BrowserRouter を使い、
+//   - アクティブタブ … 実ルーターの現在地で描画(遷移が効く)
+//   - 非アクティブタブ … <Routes location> でパスを固定して keep-alive(状態保持)
+// とする。タブ切替時は「アクティブタブの保存パス」へ実ルーターを navigate する。
+// よってナビゲーションは TabPane ごとではなく、単一の navigate を共有する。
 
 export type Tab = { id: string; title: string; path: string };
 
@@ -19,13 +23,12 @@ type TabContextValue = {
   closeTab: (id: string) => void;
   /** 指定タブをアクティブ化する */
   activateTab: (id: string) => void;
-  /** アクティブタブの中で遷移する(MemoryRouter へ橋渡し) */
+  /** アクティブタブの中で遷移する(共有 navigate を呼ぶ) */
   navigateActive: (path: string) => void;
-  /** 各 TabPane が自分の現在地を報告して見出し・復元パスを最新化する */
+  /** アクティブタブが現在地を報告して見出し・復元パスを最新化する */
   setTabMeta: (id: string, meta: { path: string }) => void;
-  /** TabPane 内の useNavigate を登録/解除(クロスルーター遷移用) */
-  registerNavigator: (id: string, fn: NavFn) => void;
-  unregisterNavigator: (id: string) => void;
+  /** TabbedShell が単一 BrowserRouter の navigate を登録する */
+  setNavigate: (fn: NavFn) => void;
 };
 
 const TabContext = createContext<TabContextValue | null>(null);
@@ -56,7 +59,7 @@ export function getActiveTabPath(): string | null {
   return globalActivePath;
 }
 
-// 同時に開けるタブの上限(複数 MemoryRouter 常時マウントの負荷対策)。
+// 同時に開けるタブの上限(全タブ常時マウントの負荷対策)。
 export const MAX_TABS = 8;
 
 const PAGE_TITLES: Record<string, string> = {
@@ -94,7 +97,7 @@ export function titleForPath(path: string): string {
 
 export function TabProvider({ children }: { children: ReactNode }) {
   const idCounter = useRef(0);
-  const navigators = useRef<Map<string, NavFn>>(new Map());
+  const navRef = useRef<NavFn | null>(null);
 
   const makeTab = useCallback((path: string): Tab => {
     idCounter.current += 1;
@@ -108,11 +111,19 @@ export function TabProvider({ children }: { children: ReactNode }) {
   const [tabs, setTabs] = useState<Tab[]>([initial.current]);
   const [activeId, setActiveId] = useState<string>(initial.current.id);
 
+  // 最新の tabs を effect から参照するための ref。
+  const tabsRef = useRef<Tab[]>(tabs);
+  tabsRef.current = tabs;
+
+  const setNavigate = useCallback((fn: NavFn) => {
+    navRef.current = fn;
+  }, []);
+
   const openTab = useCallback((path: string) => {
     setTabs((prev) => {
       if (prev.length >= MAX_TABS) return prev; // 上限超過時は開かない
       const tab = makeTab(path);
-      setActiveId(tab.id);
+      setActiveId(tab.id); // activeId 変化 → 同期 effect が navigate(path) する
       return [...prev, tab];
     });
   }, [makeTab]);
@@ -123,7 +134,6 @@ export function TabProvider({ children }: { children: ReactNode }) {
       const idx = prev.findIndex((t) => t.id === id);
       if (idx === -1) return prev;
       const next = prev.filter((t) => t.id !== id);
-      navigators.current.delete(id);
       // 閉じたのがアクティブタブなら、隣(右優先、なければ左)へ移す
       setActiveId((curActive) => {
         if (curActive !== id) return curActive;
@@ -139,27 +149,25 @@ export function TabProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const navigateActive = useCallback((path: string) => {
-    setActiveId((curActive) => {
-      const nav = navigators.current.get(curActive);
-      if (nav) nav(path);
-      return curActive;
-    });
+    navRef.current?.(path);
   }, []);
 
   const setTabMeta = useCallback((id: string, meta: { path: string }) => {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === id ? { ...t, path: meta.path, title: titleForPath(meta.path) } : t,
-      ),
-    );
+    setTabs((prev) => {
+      const t = prev.find((x) => x.id === id);
+      if (!t || t.path === meta.path) return prev; // 変化なしなら据え置き
+      return prev.map((x) =>
+        x.id === id ? { ...x, path: meta.path, title: titleForPath(meta.path) } : x,
+      );
+    });
   }, []);
 
-  const registerNavigator = useCallback((id: string, fn: NavFn) => {
-    navigators.current.set(id, fn);
-  }, []);
-  const unregisterNavigator = useCallback((id: string) => {
-    navigators.current.delete(id);
-  }, []);
+  // アクティブタブが変わったら、そのタブの保存パスへ実ルーターを移動する。
+  // (在タブ内の遷移は activeId を変えないのでここは発火せず、二重 navigate しない)
+  useEffect(() => {
+    const t = tabsRef.current.find((x) => x.id === activeId);
+    if (t) navRef.current?.(t.path);
+  }, [activeId]);
 
   const activePath = tabs.find((t) => t.id === activeId)?.path ?? "/dashboard";
 
@@ -187,8 +195,7 @@ export function TabProvider({ children }: { children: ReactNode }) {
     activateTab,
     navigateActive,
     setTabMeta,
-    registerNavigator,
-    unregisterNavigator,
+    setNavigate,
   };
 
   return <TabContext.Provider value={value}>{children}</TabContext.Provider>;
