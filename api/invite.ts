@@ -131,9 +131,11 @@ export default async function handler(req: any, res: any) {
   if (!resendKey) return res.status(500).json({ error: "Resend API key not configured" });
 
   const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
+  // @vercel/node + pnpm では auth.admin の継承型が解決されないため型のみ緩める（実行時は有効）
+  const authAdmin = (sb.auth as any).admin;
 
   // Generate invite link (does NOT send Supabase's default email)
-  let { data, error } = await sb.auth.admin.generateLink({
+  let { data, error } = await authAdmin.generateLink({
     type: "invite",
     email,
     options: {
@@ -144,7 +146,7 @@ export default async function handler(req: any, res: any) {
 
   // Fall back to magic link if user is already registered in Supabase Auth
   if (error?.message?.toLowerCase().includes("already been registered") || error?.message?.toLowerCase().includes("already registered")) {
-    const mlResult = await sb.auth.admin.generateLink({
+    const mlResult = await authAdmin.generateLink({
       type: "magiclink",
       email,
       options: { redirectTo: `${publicUrl}/accept-invite` },

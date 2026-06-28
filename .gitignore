@@ -1,5 +1,11 @@
 node_modules/
 dist/
+
+# Package manager: このプロジェクトは pnpm を使用（pnpm-lock.yaml が正）。
+# npm/yarn の lock は混入させない（CIの frozen-lockfile を壊すため）。
+package-lock.json
+yarn.lock
+
 .env
 .env.local
 *.local
