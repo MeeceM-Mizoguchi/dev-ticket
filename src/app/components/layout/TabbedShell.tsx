@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TabPane } from "./TabPane";
@@ -7,7 +8,8 @@ import { usePushNotifications } from "@/app/hooks/usePushNotifications";
 import { TabProvider, useTabs } from "@/app/contexts/TabContext";
 
 // Mac/iPad 版のシェル。Sidebar と TabBar は全タブで共有し、
-// ページ本体(Topbar + ルーティング)はタブごとの MemoryRouter で描画する。
+// ページ本体(Topbar + ルーティング)は単一 BrowserRouter 上で
+// タブごとに <Routes location> を keep-alive 描画する(TabPane 参照)。
 // Web/iPhone では使わず、従来の AppShell をそのまま使う(App.tsx で分岐)。
 export function TabbedShell() {
   return (
@@ -23,6 +25,13 @@ function TabbedShellInner() {
   useVersionCheck();
   usePushNotifications();
   const tabs = useTabs()!;
+
+  // 単一 BrowserRouter の navigate を TabContext に渡す。
+  // タブ切替・新規タブ・サイドバー遷移はすべてこの navigate 経由で実ルーターを動かす。
+  const navigate = useNavigate();
+  useEffect(() => {
+    tabs.setNavigate((path) => navigate(path));
+  }, [navigate, tabs]);
 
   // ⌘T / ⌘W / ⌘1〜9 のキーボードショートカット(Phase4)。
   useEffect(() => {
