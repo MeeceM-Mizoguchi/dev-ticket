@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router";
 import { Search, Plus, FolderKanban, ChevronDown, X, Check } from "lucide-react";
+import { useTabNavigation } from "@/app/hooks/useTabNavigation";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useOrg } from "@/app/contexts/OrgContext";
@@ -29,6 +30,8 @@ export function ProjectsPage() {
   const { selectedOrgId } = useOrg();
   const { plan } = usePlan();
   const navigate = useNavigate();
+  // Mac/iPad のタブモードでは ⌘/中/右クリック・長押しで新規タブを開ける。
+  const { isTabMode, openNewTab } = useTabNavigation();
   const [search, setSearch] = useState("");
   
   // 更新維持用の各種フィルターステート
@@ -385,6 +388,7 @@ export function ProjectsPage() {
           {filtered.map(p => (
             <ProjectCard key={p.id} project={p}
               onNavigate={() => navigate(p.slug ? `/${p.slug}` : `/${p.id}`)}
+              onOpenNewTab={isTabMode ? () => openNewTab(p.slug ? `/${p.slug}` : `/${p.id}`) : undefined}
               onEdit={canManage ? () => setEditTarget(p) : undefined}
               onDelete={canManage ? () => setDeleteTarget(p) : undefined}
               onCategorySettings={canManage ? () => setCategoryTarget(p) : undefined}

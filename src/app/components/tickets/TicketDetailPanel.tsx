@@ -11,6 +11,8 @@ import { useAlert } from "@/app/contexts/AlertContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { navigateInActiveTab } from "@/app/contexts/TabContext";
+import { subscribeTicket, emitTicketUpdate } from "@/app/lib/ticketSync";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory } from "@/app/lib/mappers";
@@ -254,6 +256,12 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
   const notifiedMentionsRef = useRef(new Map<string, Set<string>>());
   const memberNamesRef = useRef<string[]>([]);
   const anchorScrolledRef = useRef<string | null>(null);
+  // このパネルインスタンスの識別子。ticketSync で自分発の更新を無視するのに使う。
+  const instanceIdRef = useRef<string>(`tdp-${Math.random().toString(36).slice(2)}`);
+  // 自分が更新したことを、同じチケットを開いている他タブのパネルへ通知する。
+  const emitMine = useCallback(() => {
+    if (ticket?.id) emitTicketUpdate(ticket.id, instanceIdRef.current);
+  }, [ticket?.id]);
 
   const loadChildTickets = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
@@ -278,6 +286,38 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
   const loadRelated = useCallback(async (ticketId: string) => {
     await Promise.all([loadCommentFiles(ticketId), loadChildTickets(ticketId)]);
   }, [loadCommentFiles, loadChildTickets]);
+
+  // サーバから最新のチケット本体を取得してフィールド state を更新する。
+  // 初回ロードと、他タブからの ticketSync 通知時の再取得で共用する。
+  const reloadTicketFields = useCallback((ticketId: string) => {
+    if (!ticketId || !isSupabaseEnabled) return;
+    supabase!.from("sprint_tickets").select("*").eq("id", ticketId).single()
+      .then(({ data }) => {
+        if (!data) return;
+        const t = mapSprintTicket(data);
+        setTitle(t.title);
+        setStatus(t.status as any);
+        setPriority(t.priority);
+        setAssignee(t.assignee ?? "");
+        setStartDate(t.startDate ?? "");
+        setDueDate(t.dueDate ?? "");
+        setEstimatedH(t.estimatedHours);
+        setProgress(t.progress);
+        setDescription(t.description ?? "");
+        setReviewerName(t.reviewerName ?? "");
+        setReviewRound(t.reviewRound ?? 0);
+        const freshImages = t.images ?? [];
+        setTicketImages(freshImages);
+        ticketImagesRef.current = freshImages;
+        setCategoryId(t.categoryId ?? null);
+        setCreatedBy(t.createdBy ?? "");
+        setCreatedAt(t.createdAt ?? "");
+        setReleaseDate(t.releaseDate ?? "");
+        setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
+        setIsOperationVerified(t.isOperationVerified ?? false);
+        setPrefixes(t.prefixes ?? []);
+      });
+  }, []);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -428,32 +468,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     setPrefixInputValue("");
 
     if (ticket.id && isSupabaseEnabled) {
-      supabase!.from("sprint_tickets").select("*").eq("id", ticket.id).single()
-        .then(({ data }) => {
-          if (!data) return;
-          const t = mapSprintTicket(data);
-          setTitle(t.title);
-          setStatus(t.status as any);
-          setPriority(t.priority);
-          setAssignee(t.assignee ?? "");
-          setStartDate(t.startDate ?? "");
-          setDueDate(t.dueDate ?? "");
-          setEstimatedH(t.estimatedHours);
-          setProgress(t.progress);
-          setDescription(t.description ?? "");
-          setReviewerName(t.reviewerName ?? "");
-          setReviewRound(t.reviewRound ?? 0);
-          const freshImages = t.images ?? [];
-          setTicketImages(freshImages);
-          ticketImagesRef.current = freshImages;
-          setCategoryId(t.categoryId ?? null);
-          setCreatedBy(t.createdBy ?? "");
-          setCreatedAt(t.createdAt ?? "");
-          setReleaseDate(t.releaseDate ?? "");
-          setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
-          setIsOperationVerified(t.isOperationVerified ?? false);
-          setPrefixes(t.prefixes ?? []);
-        });
+      reloadTicketFields(ticket.id);
     }
 
     if (isSupabaseEnabled) {
@@ -487,7 +502,22 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     }
 
     if (ticket.id) loadRelated(ticket.id);
-  }, [ticket?.id, projectId, sprintId, loadRelated]);
+  }, [ticket?.id, projectId, sprintId, loadRelated, reloadTicketFields]);
+
+  // ticketSync: 同じチケットを別タブで開いている他パネルが更新したら、
+  // 自分のローカル state をサーバ最新値で再取得する(自分発は無視)。
+  // アプリ内タブ(同一ランタイム)前提のローカル同期。Web/iPhone でも
+  // 害はない(同一チケットを複数箇所で開けば同様に同期される)。
+  useEffect(() => {
+    const id = ticket?.id;
+    if (!id) return;
+    const unsub = subscribeTicket(id, (sourceId) => {
+      if (sourceId === instanceIdRef.current) return; // 自分発は無視
+      reloadTicketFields(id);
+      loadCommentFiles(id);
+    });
+    return unsub;
+  }, [ticket?.id, reloadTicketFields, loadCommentFiles]);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -566,7 +596,8 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     if (!ticket || !isSupabaseEnabled) return;
     await supabase!.from("sprint_tickets").update(fields).eq("id", ticket.id);
     onUpdated?.();
-  }, [ticket?.id]);
+    emitMine();
+  }, [ticket?.id, emitMine]);
 
   const saveDebounced = useCallback((fields: Record<string, unknown>) => {
     clearTimeout(timerRef.current);
@@ -579,6 +610,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
       if (!ticket || !isSupabaseEnabled) return;
       await supabase!.from("sprint_tickets").update({ description: v }).eq("id", ticket.id);
       onUpdated?.();
+      emitMine();
       const stripped = v.replace(/<[^>]*>/g, " ");
       const prevStripped = prevDescRef.current.replace(/<[^>]*>/g, " ");
       const ctx = "description";
@@ -702,6 +734,15 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     });
   }, [uploadImageToStorage]);
 
+  // D: 配列列(images)のロストアップデート防御。
+  // 別タブで同じチケットを開いて画像を追加/削除していると、ローカル配列を
+  // そのまま上書きすると相手の変更が消える。書き込み直前にサーバ最新の
+  // images を取得し、その上に「追加/削除」を適用してから保存する。
+  const fetchServerImages = useCallback(async (ticketId: string): Promise<string[]> => {
+    const { data } = await supabase!.from("sprint_tickets").select("images").eq("id", ticketId).single();
+    return Array.isArray(data?.images) ? (data!.images as string[]) : [];
+  }, []);
+
   const addTicketImages = useCallback(async (files: FileList | File[]) => {
     if (!ticket) return;
     for (const f of Array.from(files)) {
@@ -709,26 +750,41 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
       if (plan.maxImagesPerItem !== null && ticketImagesRef.current.length >= plan.maxImagesPerItem) break;
       const url = await uploadImageToStorage(f, `tickets/${ticket.id}/detail`);
       if (!url) continue;
-      const next = [...ticketImagesRef.current, url];
-      ticketImagesRef.current = next;
-      setTicketImages(next);
       if (isSupabaseEnabled) {
+        // サーバ最新値に追加(他タブの追加分を保持)
+        const server = await fetchServerImages(ticket.id);
+        const next = server.includes(url) ? server : [...server, url];
+        ticketImagesRef.current = next;
+        setTicketImages(next);
         const { error } = await supabase!.from("sprint_tickets").update({ images: next }).eq("id", ticket.id);
         if (error) console.error("[images] DB save failed:", error.message);
+        else emitMine();
+      } else {
+        const next = [...ticketImagesRef.current, url];
+        ticketImagesRef.current = next;
+        setTicketImages(next);
       }
     }
-  }, [ticket?.id, uploadImageToStorage, plan.maxImagesPerItem]);
+  }, [ticket?.id, uploadImageToStorage, plan.maxImagesPerItem, fetchServerImages, emitMine]);
 
   const removeTicketImage = useCallback(async (idx: number) => {
     if (!ticket) return;
-    const next = ticketImagesRef.current.filter((_, j) => j !== idx);
-    ticketImagesRef.current = next;
-    setTicketImages(next);
+    // 削除対象はインデックスではなくURL値で特定(サーバ側の並びズレに強い)
+    const target = ticketImagesRef.current[idx];
     if (isSupabaseEnabled) {
+      const server = await fetchServerImages(ticket.id);
+      const next = server.filter(u => u !== target);
+      ticketImagesRef.current = next;
+      setTicketImages(next);
       const { error } = await supabase!.from("sprint_tickets").update({ images: next }).eq("id", ticket.id);
       if (error) console.error("[images] DB delete failed:", error.message);
+      else emitMine();
+    } else {
+      const next = ticketImagesRef.current.filter((_, j) => j !== idx);
+      ticketImagesRef.current = next;
+      setTicketImages(next);
     }
-  }, [ticket?.id]);
+  }, [ticket?.id, fetchServerImages, emitMine]);
 
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
@@ -993,6 +1049,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("comment insert failed:", error); return; }
       await loadCommentFiles(ticket.id);
+      emitMine(); // 他タブの同一チケットへコメント追加/ステータス変更を即時反映
       await notifyMentions(content, ticket, `comment:${row.id}`);
     } else {
       setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
@@ -1012,6 +1069,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
       const { error } = await supabase!.from("ticket_comments").insert(row);
       if (error) { console.error("reply insert failed:", error); return; }
       await loadCommentFiles(ticket.id);
+      emitMine(); // 他タブの同一チケットへ返信を即時反映
       await notifyMentions(content, ticket, `comment:${id}`);
       if (parentComment.userName !== userName && projectSlug) {
         supabase!.from("notifications").insert({
@@ -1554,13 +1612,13 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
         <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
 
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600, color: "#9E9690", marginBottom: 12, flexWrap: "wrap" }}>
-            <a href="/projects" onClick={(e) => { e.preventDefault(); window.location.href = "/projects"; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
+            <a href="/projects" onClick={(e) => { e.preventDefault(); if (!navigateInActiveTab("/projects")) window.location.href = "/projects"; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
               プロジェクト一覧
             </a>
             {breadcrumbProjName && (
               <>
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
-                <a href={`/${projectSlug}`} onClick={(e) => { e.preventDefault(); if (ticket?.wbs) sessionStorage.setItem('hl_wbs', ticket.wbs); window.location.href = `/${projectSlug}`; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
+                <a href={`/${projectSlug}`} onClick={(e) => { e.preventDefault(); if (ticket?.wbs) sessionStorage.setItem('hl_wbs', ticket.wbs); const u = `/${projectSlug}`; if (!navigateInActiveTab(u)) window.location.href = u; }} style={{ color: "#9E9690", textDecoration: "none", transition: "color 0.15s" }} onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"} onMouseLeave={ev => ev.currentTarget.style.color = "#9E9690"}>
                   {breadcrumbProjName}
                 </a>
               </>
@@ -1574,7 +1632,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                     onClick={(e) => {
                       e.preventDefault();
                       if (ticket?.wbs) sessionStorage.setItem('hl_wbs', ticket.wbs);
-                      window.location.href = `/${projectSlug}/${sprintSlug || breadcrumbSprintIdentifier}`;
+                      { const u = `/${projectSlug}/${sprintSlug || breadcrumbSprintIdentifier}`; if (!navigateInActiveTab(u)) window.location.href = u; }
                     }}
                     style={{ color: breadcrumbParentTicket ? "#9E9690" : "#6B6458", fontWeight: 700, textDecoration: "none", transition: "color 0.15s" }}
                     onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"}
