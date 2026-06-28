@@ -11,6 +11,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
 import { TICKETS, PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapSprintTicket } from "@/app/lib/mappers";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -467,10 +468,9 @@ export function ReportsPage() {
     const head = `【業務レポート】${scopeName} / ${fmtDate(report.start)}〜${fmtDate(new Date(report.end.getTime() - 1))}`;
     const kpi = `■ サマリー\n・完了: ${report.completed.length}件（前期比 ${deltaLabel(report.completed.length, report.completedPrev.length)}）\n・進行中: ${report.inProgress.length}件 / 未着手: ${report.todo.length}件\n・完了率: ${report.completionRate}%\n・平均サイクルタイム: ${report.cycleTime}日 / リードタイム: ${report.leadTime}日`;
     const body = `■ 所感\n${report.sentences.map(s => `・${s}`).join("\n")}`;
-    try {
-      await navigator.clipboard.writeText(`${head}\n\n${kpi}\n\n${body}`);
+    if (await copyText(`${head}\n\n${kpi}\n\n${body}`)) {
       toast("報告文をコピーしました");
-    } catch {
+    } else {
       toast("コピーに失敗しました", "error");
     }
   };
