@@ -26,6 +26,7 @@ export interface Organization {
   address?: string;
   industry?: string;
   description?: string;
+  isSystemAdmin?: boolean;   // システム管理会社(Meece)フラグ
 }
 export type ActionMemoCategory = "todo" | "review" | "test" | "memo";
 export interface ActionMemo {

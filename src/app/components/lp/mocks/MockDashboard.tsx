@@ -82,7 +82,7 @@ export function MockDashboard({ fillHeight }: { fillHeight?: boolean } = {}) {
                 ))}
               </div>
             </div>
-            <div style={s({ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly' })}>
+            <div style={s({ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly', gap: 6 })}>
               {projectBars.map(p => {
                 const total = p.done + p.inProgress + p.todo;
                 return (

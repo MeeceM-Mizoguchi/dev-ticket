@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Search, UserPlus, Globe, Users, ArrowLeft } from "lucide-react";
+import { Search, UserPlus, Globe, Users, ArrowLeft, Sparkles } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -17,7 +17,7 @@ import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 
 export function MembersPage() {
-  const { userRole, userId } = useAuth();
+  const { userRole, userId, isSystemAdmin } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -187,7 +187,14 @@ export function MembersPage() {
       <div style={{ padding: "20px 24px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
           <div>
-            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>メンバー管理</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>メンバー管理</h1>
+              {isSystemAdmin && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: "#047857", background: "#D1FAE5", padding: "3px 9px", borderRadius: 999 }}>
+                  <Sparkles style={{ width: 11, height: 11 }} />システム管理会社
+                </span>
+              )}
+            </div>
             <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>総数 {visibleMembers.length} 名 · アクティブ {activeCount} 名</p>
           </div>
           {canAdd && (() => {

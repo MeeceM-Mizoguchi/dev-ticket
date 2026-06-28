@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X } from "lucide-react";
 import { useNavigate } from "react-router";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -10,6 +10,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
 import { BugReportModal } from "@/app/components/bug-report/BugReportModal";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
+import { APP_VERSION } from "@/lib/version";
+import { copyText } from "@/lib/clipboard";
 import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
 
 function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
@@ -33,7 +35,7 @@ function formatRelative(ts: string): string {
 const NOTIF_VIEWED_KEY = "notif_last_viewed_at";
 
 export function Topbar() {
-  const { userName } = useAuth();
+  const { userName, isSystemAdmin } = useAuth();
   const navigate = useNavigate();
   const [showBugReport, setShowBugReport] = useState(false);
   const closeBugReport = useCallback(() => setShowBugReport(false), []);
@@ -49,6 +51,31 @@ export function Topbar() {
   const [bioRegistered, setBioRegistered] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
   const [bioToast, setBioToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  // バージョン情報ポップアップ
+  const [showVersion, setShowVersion] = useState(false);
+  const [versionCopied, setVersionCopied] = useState(false);
+  // Meece（システム管理会社）のみ取得するデプロイ履歴
+  const [versionHistory, setVersionHistory] = useState<{ version: string; released_at: string }[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const openVersion = useCallback(() => {
+    setShowUserMenu(false);
+    setVersionCopied(false);
+    setShowVersion(true);
+    // 履歴はシステム管理会社の組織だけが閲覧可能（RLSでも制限済み）
+    if (isSystemAdmin && isSupabaseEnabled) {
+      setHistoryLoading(true);
+      setVersionHistory(null);
+      supabase!.from("app_version").select("version, released_at").order("released_at", { ascending: false }).limit(50)
+        .then(({ data }) => { setVersionHistory(data ?? []); setHistoryLoading(false); });
+    }
+  }, [isSystemAdmin]);
+
+  const handleCopyVersion = useCallback(async () => {
+    const ok = await copyText(APP_VERSION);
+    if (ok) { setVersionCopied(true); setTimeout(() => setVersionCopied(false), 1800); }
+  }, []);
 
   const refreshBioState = useCallback(async () => {
     try {
@@ -493,7 +520,7 @@ export function Topbar() {
           {showUserMenu && (
             <>
               <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setShowUserMenu(false)} />
-              <div style={{ position: "absolute", top: 40, right: 0, width: 230, background: "#fff", borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.08)", zIndex: 50, overflow: "hidden", padding: 6 }}>
+              <div style={{ position: "absolute", top: 40, right: 0, width: 264, background: "#fff", borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.08)", zIndex: 50, overflow: "hidden", padding: 6 }}>
                 {!bioSupported ? (
                   <div style={{ padding: "12px 12px", fontSize: 12, color: "#A09790", lineHeight: 1.5 }}>
                     この端末では生体認証を利用できません。
@@ -519,11 +546,91 @@ export function Topbar() {
                     <span style={{ fontSize: 13, fontWeight: 600, color: "#EF4444" }}>{bioBusy ? "処理中…" : "生体データを削除"}</span>
                   </button>
                 )}
+
+                {/* 区切り線 */}
+                <div style={{ height: 1, background: "rgba(26,23,20,0.06)", margin: "4px 4px" }} />
+
+                {/* バージョン情報（全ユーザー） */}
+                <button
+                  onClick={openVersion}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", transition: "background 0.12s" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                  <Info style={{ width: 16, height: 16, color: "#6B6458", flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}>バージョン情報</span>
+                  <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 600, color: "#A09790", whiteSpace: "nowrap", flexShrink: 0 }}>{APP_VERSION}</span>
+                </button>
               </div>
             </>
           )}
         </div>
       </div>
+
+      {/* バージョン情報ポップアップ */}
+      {showVersion && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(26,23,20,0.32)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowVersion(false)}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ width: isSystemAdmin ? 460 : 360, maxWidth: "100%", maxHeight: "80vh", display: "flex", flexDirection: "column", background: "#fff", borderRadius: 16, boxShadow: "0 16px 48px rgba(0,0,0,0.24)", overflow: "hidden" }}>
+            {/* ヘッダー */}
+            <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "16px 18px", borderBottom: "1px solid rgba(26,23,20,0.07)" }}>
+              <Info style={{ width: 18, height: 18, color: "#059669" }} />
+              <span style={{ fontSize: 15, fontWeight: 800, color: "#1A1714" }}>バージョン情報</span>
+              <button onClick={() => setShowVersion(false)} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "#A09790", lineHeight: 0, padding: 4 }}>
+                <X style={{ width: 18, height: 18 }} />
+              </button>
+            </div>
+
+            <div style={{ padding: "18px", overflowY: "auto" }}>
+              {/* 現在のバージョン */}
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#6B6458", marginBottom: 6 }}>現在のバージョン</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.01em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{APP_VERSION}</span>
+                <button
+                  onClick={handleCopyVersion}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: versionCopied ? "#ECFDF5" : "#fff", cursor: "pointer", transition: "background 0.12s" }}>
+                  {versionCopied
+                    ? <Check style={{ width: 13, height: 13, color: "#059669" }} />
+                    : <Copy style={{ width: 13, height: 13, color: "#6B6458" }} />}
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: versionCopied ? "#047857" : "#6B6458" }}>{versionCopied ? "コピーしました" : "コピー"}</span>
+                </button>
+              </div>
+              <p style={{ fontSize: 11.5, color: "#A09790", lineHeight: 1.6, margin: "12px 0 0" }}>
+                お問い合わせの際は、このバージョンをお伝えください。
+              </p>
+
+              {/* システム管理会社のみ: デプロイ履歴 */}
+              {isSystemAdmin && (
+                <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(26,23,20,0.07)" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#6B6458", marginBottom: 10 }}>デプロイ履歴（新しい順）</div>
+                  {historyLoading ? (
+                    <div style={{ fontSize: 12, color: "#A09790", padding: "8px 0" }}>読み込み中…</div>
+                  ) : !versionHistory || versionHistory.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#A09790", padding: "8px 0" }}>履歴がありません（次回デプロイ以降に記録されます）。</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {versionHistory.map((h, i) => {
+                        const isCurrent = h.version === APP_VERSION;
+                        const isLatest = i === 0;
+                        return (
+                          <div key={h.version} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: isCurrent ? "#ECFDF5" : "transparent" }}>
+                            <span style={{ fontSize: 13, fontWeight: isCurrent ? 800 : 600, color: "#1A1714", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{h.version}</span>
+                            {isLatest && <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#D1FAE5", padding: "1px 6px", borderRadius: 999 }}>最新</span>}
+                            {isCurrent && <span style={{ fontSize: 10, fontWeight: 700, color: "#047857" }}>🟢 表示中</span>}
+                            <span style={{ marginLeft: "auto", fontSize: 11, color: "#A09790" }}>{h.released_at ? new Date(h.released_at).toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {bioToast && (
         <div style={{ position: "fixed", top: 64, right: 20, zIndex: 60, display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 10, background: bioToast.kind === "success" ? "#ECFDF5" : "#FEF2F2", border: `1px solid ${bioToast.kind === "success" ? "rgba(5,150,105,0.25)" : "rgba(239,68,68,0.25)"}`, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>

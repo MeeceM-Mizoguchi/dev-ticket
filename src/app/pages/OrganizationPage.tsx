@@ -440,6 +440,7 @@ function OrgFormDialog({ org, plans, onClose, onSaved }: { org?: OrgWithStats; p
   const [industry,           setIndustry]           = useState(org?.industry           ?? "");
   const [description,        setDescription]        = useState(org?.description        ?? "");
   const [planId,             setPlanId]             = useState<string>(org?.planId ?? "");
+  const [isSystemAdmin,      setIsSystemAdmin]      = useState(org?.isSystemAdmin ?? false);
   const [saving, setSaving] = useState(false);
   const [planErr, setPlanErr] = useState(false);
 
@@ -460,6 +461,7 @@ function OrgFormDialog({ org, plans, onClose, onSaved }: { org?: OrgWithStats; p
       industry,
       description,
       plan_id:             (planId && planId !== "system-unlimited") ? planId : null,
+      is_system_admin:     isSystemAdmin,
     };
     if (isSupabaseEnabled) {
       if (org) {
@@ -507,6 +509,21 @@ function OrgFormDialog({ org, plans, onClose, onSaved }: { org?: OrgWithStats; p
       </div>
 
       <FieldTextarea label="概要・備考" placeholder="組織の概要や備考を入力..." value={description} onChange={setDescription} />
+
+      {/* システム管理会社フラグ（Meece）。ONにした組織のメンバーだけがバージョン履歴を閲覧できる */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", background: isSystemAdmin ? "#ECFDF5" : "#F8F8F7", border: `1px solid ${isSystemAdmin ? "rgba(5,150,105,0.25)" : "rgba(26,23,20,0.08)"}`, borderRadius: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column" as const, gap: 2 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
+            <Sparkles style={{ width: 13, height: 13, color: "#059669" }} />
+            システム管理会社
+          </span>
+          <span style={{ fontSize: 11, color: "#6B6458", lineHeight: 1.5 }}>ONにすると、この組織のメンバーがバージョン履歴を閲覧できます（Meece株式会社のみONにしてください）。</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: isSystemAdmin ? "#059669" : "#9E9690", fontWeight: 600 }}>{isSystemAdmin ? "ON" : "OFF"}</span>
+          <Toggle value={isSystemAdmin} onChange={setIsSystemAdmin} />
+        </div>
+      </div>
 
       {/* プラン選択 */}
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
@@ -575,7 +592,14 @@ function OrgCard({
               <Globe style={{ width: 22, height: 22, color: hovered ? "#FFFFFF" : "#059669", transition: "color 0.20s" }} />
             </div>
             <div>
-              <p style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0, letterSpacing: "-0.01em" }}>{org.name}</p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <p style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>{org.name}</p>
+                {org.isSystemAdmin && (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 700, color: "#047857", background: "#D1FAE5", padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
+                    <Sparkles style={{ width: 10, height: 10, flexShrink: 0 }} />システム管理会社
+                  </span>
+                )}
+              </div>
               <p style={{ fontSize: 11, color: "#A09790", margin: "4px 0 0" }}>作成日 {formatDate(org.createdAt)}</p>
               <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
                 <CreditCard style={{ width: 10, height: 10, color: "#6B6458" }} />
@@ -697,7 +721,7 @@ export function OrganizationPage() {
   const fetchOrgs = async (planMap: Map<string, string>) => {
     const { data: orgsData } = await supabase!
       .from("organizations")
-      .select("id, name, created_at, representative_name, contact_name, phone, website_url, address, industry, description, plan_id")
+      .select("id, name, created_at, representative_name, contact_name, phone, website_url, address, industry, description, plan_id, is_system_admin")
       .order("created_at");
     if (!orgsData) return;
 
@@ -731,6 +755,7 @@ export function OrganizationPage() {
         address: (r.address as string) || "",
         industry: (r.industry as string) || "",
         description: (r.description as string) || "",
+        isSystemAdmin: (r.is_system_admin as boolean) ?? false,
         memberCount: profiles.length,
         activeCount: profiles.filter(p => p.status === "active").length,
         memberPreviews: profiles.slice(0, 5).map(p => ({ id: p.id, name: p.name })),
