@@ -27,10 +27,15 @@ export function LoginPage() {
 
   const runBioLogin = useCallback(async () => {
     setBioLoading(true); setError("");
-    const err = await loginWithBiometric();
-    setBioLoading(false);
-    if (err) setError(err);
-    else navigate("/dashboard");
+    try {
+      const err = await loginWithBiometric();
+      if (err) setError(err);
+      else navigate("/dashboard");
+    } catch (e: any) {
+      setError(e?.message || "生体認証ログインに失敗しました。");
+    } finally {
+      setBioLoading(false);
+    }
   }, [loginWithBiometric, navigate]);
 
   useEffect(() => {

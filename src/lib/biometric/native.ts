@@ -2,6 +2,11 @@
 // 生体認証はローカルゲートとして使い、端末固有シークレットをKeychainに保存。
 // サーバ照合に成功したら magiclink でセッション確立する（Webと同じ経路）。
 // チケット: ENHA2-013
+//
+// 注意: ネイティブは capacitor://localhost で動くため、相対 fetch("/api/..") は
+// サーバに届かない（SPAのindex.htmlが返り固まる）。そのため API 呼び出しは
+// CapacitorHttp（ネイティブHTTP＝CORS回避）＋絶対URLで行う。
+import { CapacitorHttp } from "@capacitor/core";
 import { BiometricAuth, BiometryErrorType, type BiometryError } from "@aparajita/capacitor-biometric-auth";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -9,15 +14,35 @@ import type { BiometricProvider, BiometricResult } from "../biometricAuth";
 
 const SECRET_KEY = "dt_biometric_secret";
 
+// ネイティブアプリの API 向き先（本番）。必要なら VITE_API_BASE_URL で上書き。
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) || "https://dv-ticket.com";
+
+type ApiResult = { ok: boolean; status: number; data: any; error?: string };
+
+// CapacitorHttp 経由の POST。例外は投げず必ず ApiResult を返す（UIが固まらないように）。
+async function apiPost(path: string, opts: { token?: string; body?: any }): Promise<ApiResult> {
+  try {
+    const res = await CapacitorHttp.post({
+      url: `${API_BASE}${path}`,
+      headers: {
+        "Content-Type": "application/json",
+        ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
+      },
+      data: opts.body ?? {},
+    });
+    let data = res.data;
+    if (typeof data === "string") { try { data = JSON.parse(data); } catch { /* 文字列のまま */ } }
+    const ok = res.status >= 200 && res.status < 300;
+    return { ok, status: res.status, data, error: ok ? undefined : (data?.error || `通信に失敗しました (${res.status})`) };
+  } catch (e: any) {
+    return { ok: false, status: 0, data: null, error: e?.message || "サーバに接続できませんでした。" };
+  }
+}
+
 async function accessToken(): Promise<string | null> {
   if (!supabase) return null;
   const { data } = await supabase.auth.getSession();
   return data.session?.access_token ?? null;
-}
-
-async function readError(res: Response): Promise<string> {
-  try { const j = await res.json(); return j?.error || "通信に失敗しました"; }
-  catch { return "通信に失敗しました"; }
 }
 
 async function readSecret(): Promise<string | null> {
@@ -64,13 +89,12 @@ export const nativeProvider: BiometricProvider = {
     const bioErr = await promptBiometry("生体認証を登録します");
     if (bioErr) return { ok: false, error: bioErr };
 
-    const res = await fetch("/api/webauthn/native-register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ deviceLabel: navigator.userAgent.slice(0, 120) }),
+    const r = await apiPost("/api/webauthn/native-register", {
+      token,
+      body: { deviceLabel: navigator.userAgent.slice(0, 120) },
     });
-    if (!res.ok) return { ok: false, error: await readError(res) };
-    const { secret } = await res.json();
+    if (!r.ok) return { ok: false, error: r.error };
+    const secret = r.data?.secret;
     if (!secret) return { ok: false, error: "登録に失敗しました。" };
 
     try { await SecureStorage.setItem(SECRET_KEY, secret); }
@@ -87,17 +111,14 @@ export const nativeProvider: BiometricProvider = {
     const bioErr = await promptBiometry("生体認証でログインします");
     if (bioErr) return { ok: false, error: bioErr };
 
-    const res = await fetch("/api/webauthn/native-login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret }),
-    });
-    if (!res.ok) {
+    const r = await apiPost("/api/webauthn/native-login", { body: { secret } });
+    if (!r.ok) {
       // 端末がサーバ側で失効している場合はローカルのシークレットも掃除
-      if (res.status === 404) { try { await SecureStorage.remove(SECRET_KEY); } catch { /* noop */ } }
-      return { ok: false, error: await readError(res) };
+      if (r.status === 404) { try { await SecureStorage.remove(SECRET_KEY); } catch { /* noop */ } }
+      return { ok: false, error: r.error };
     }
-    const { tokenHash } = await res.json();
+    const tokenHash = r.data?.tokenHash;
+    if (!tokenHash) return { ok: false, error: "ログインに失敗しました。" };
 
     const { error } = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: tokenHash });
     if (error) return { ok: false, error: error.message };
@@ -108,11 +129,8 @@ export const nativeProvider: BiometricProvider = {
     const token = await accessToken();
     const secret = await readSecret();
     if (token && secret) {
-      await fetch("/api/webauthn/delete-credential", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ nativeSecret: secret }),
-      }).catch(() => { /* ローカル削除は続行 */ });
+      // 失敗してもローカル削除は続行
+      await apiPost("/api/webauthn/delete-credential", { token, body: { nativeSecret: secret } });
     }
     try { await SecureStorage.remove(SECRET_KEY); } catch { /* noop */ }
     return { ok: true };
