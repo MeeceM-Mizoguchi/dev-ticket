@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff } from "lucide-react";
 import { useNavigate } from "react-router";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { biometricAuth } from "@/lib/biometricAuth";
 import { GlobalSearch } from "@/app/components/layout/GlobalSearch";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
@@ -41,6 +42,58 @@ export function Topbar() {
   const [existingActionNotifIds, setExistingActionNotifIds] = useState<Set<string>>(new Set());
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
   const [hoveredActionBtnId, setHoveredActionBtnId] = useState<string | null>(null);
+
+  // 生体認証メニュー
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [bioSupported, setBioSupported] = useState(false);
+  const [bioRegistered, setBioRegistered] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
+  const [bioToast, setBioToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const refreshBioState = useCallback(async () => {
+    try {
+      const [supported, registered] = await Promise.all([
+        biometricAuth.isSupported(),
+        biometricAuth.isRegisteredOnThisDevice(),
+      ]);
+      setBioSupported(supported);
+      setBioRegistered(registered);
+    } catch { /* noop */ }
+  }, []);
+
+  useEffect(() => { void refreshBioState(); }, [refreshBioState]);
+
+  useEffect(() => {
+    if (!bioToast) return;
+    const t = setTimeout(() => setBioToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [bioToast]);
+
+  const handleRegisterBio = useCallback(async () => {
+    setBioBusy(true);
+    const r = await biometricAuth.register();
+    setBioBusy(false);
+    if (r.ok) {
+      setBioRegistered(true);
+      setBioToast({ kind: "success", text: "生体認証を登録しました。" });
+    } else {
+      setBioToast({ kind: "error", text: r.error || "生体認証の登録に失敗しました。" });
+    }
+    setShowUserMenu(false);
+  }, []);
+
+  const handleRemoveBio = useCallback(async () => {
+    setBioBusy(true);
+    const r = await biometricAuth.removeCredential();
+    setBioBusy(false);
+    if (r.ok) {
+      setBioRegistered(false);
+      setBioToast({ kind: "success", text: "生体データを削除しました。" });
+    } else {
+      setBioToast({ kind: "error", text: r.error || "削除に失敗しました。" });
+    }
+    setShowUserMenu(false);
+  }, []);
 
   const [notifications, setNotifications] = useState<AppNotification[]>(
     !isSupabaseEnabled ? MOCK_NOTIFICATIONS : []
@@ -417,11 +470,59 @@ export function Topbar() {
           )}
         </div>
         <div style={{ width: 1, height: 18, background: "rgba(26,23,20,0.08)", margin: "0 4px" }} />
-        <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px 4px 5px", borderRadius: 9999, background: "#F4F5F6", cursor: "default" }}>
-          <Avatar name={userName} size="xs" />
-          <span style={{ fontSize: 12, fontWeight: 600, color: "#3D3732" }}>{userName}</span>
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => { if (showUserMenu) setShowUserMenu(false); else { void refreshBioState(); setShowUserMenu(true); } }}
+            style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px 4px 5px", borderRadius: 9999, background: showUserMenu ? "#ECECEC" : "#F4F5F6", border: "none", cursor: "pointer", transition: "background 0.15s" }}
+            onMouseEnter={e => { if (!showUserMenu) (e.currentTarget as HTMLElement).style.background = "#ECECEC"; }}
+            onMouseLeave={e => { if (!showUserMenu) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
+            <Avatar name={userName} size="xs" />
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#3D3732" }}>{userName}</span>
+          </button>
+
+          {showUserMenu && (
+            <>
+              <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setShowUserMenu(false)} />
+              <div style={{ position: "absolute", top: 40, right: 0, width: 230, background: "#fff", borderRadius: 14, boxShadow: "0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)", border: "1px solid rgba(26,23,20,0.08)", zIndex: 50, overflow: "hidden", padding: 6 }}>
+                {!bioSupported ? (
+                  <div style={{ padding: "12px 12px", fontSize: 12, color: "#A09790", lineHeight: 1.5 }}>
+                    この端末では生体認証を利用できません。
+                  </div>
+                ) : !bioRegistered ? (
+                  <button
+                    onClick={handleRegisterBio}
+                    disabled={bioBusy}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 9, border: "none", background: "transparent", cursor: bioBusy ? "default" : "pointer", textAlign: "left", opacity: bioBusy ? 0.6 : 1, transition: "background 0.12s" }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                    <Fingerprint style={{ width: 16, height: 16, color: "#059669", flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{bioBusy ? "処理中…" : "生体認証を登録"}</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleRemoveBio}
+                    disabled={bioBusy}
+                    style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 9, border: "none", background: "transparent", cursor: bioBusy ? "default" : "pointer", textAlign: "left", opacity: bioBusy ? 0.6 : 1, transition: "background 0.12s" }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                    <ShieldOff style={{ width: 16, height: 16, color: "#EF4444", flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#EF4444" }}>{bioBusy ? "処理中…" : "生体データを削除"}</span>
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
+
+      {bioToast && (
+        <div style={{ position: "fixed", top: 64, right: 20, zIndex: 60, display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 10, background: bioToast.kind === "success" ? "#ECFDF5" : "#FEF2F2", border: `1px solid ${bioToast.kind === "success" ? "rgba(5,150,105,0.25)" : "rgba(239,68,68,0.25)"}`, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
+          {bioToast.kind === "success"
+            ? <Check style={{ width: 15, height: 15, color: "#059669" }} />
+            : <ShieldOff style={{ width: 15, height: 15, color: "#EF4444" }} />}
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: bioToast.kind === "success" ? "#047857" : "#DC2626" }}>{bioToast.text}</span>
+        </div>
+      )}
     </header>
     </>
   );

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import type { Role, UserPermissions } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { biometricAuth } from "@/lib/biometricAuth";
 import { MEMBERS } from "@/app/data/mock";
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
@@ -31,13 +32,14 @@ interface AuthCtxType {
   userOrgId: string | null;
   userPermissions: UserPermissions;
   login: (email: string, password: string) => Promise<string | null>;
+  loginWithBiometric: () => Promise<string | null>;
   logout: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthCtxType>({
   userName: "", userRole: "developer", userId: "", userOrgId: null,
   userPermissions: { ...DEFAULT_PERMISSIONS },
-  login: async () => null, logout: async () => {},
+  login: async () => null, loginWithBiometric: async () => null, logout: async () => {},
 });
 
 export function useAuth() { return useContext(AuthContext); }
@@ -187,6 +189,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   };
 
+  // 生体認証ログイン。成功時はセッションが確立され onAuthStateChange が
+  // プロフィール/権限を反映する。ここでは isLoggedIn フラグのみ立てる。
+  const loginWithBiometric = async (): Promise<string | null> => {
+    const r = await biometricAuth.loginWithBiometric();
+    if (!r.ok) return r.error || "生体認証に失敗しました。";
+    sessionStorage.setItem("isLoggedIn", "true");
+    return null;
+  };
+
   const logout = async () => {
     if (isSupabaseEnabled) await supabase!.auth.signOut();
     setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
@@ -246,7 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ userName, userRole, userId, userOrgId, userPermissions, login, logout }}>
+    <AuthContext.Provider value={{ userName, userRole, userId, userOrgId, userPermissions, login, loginWithBiometric, logout }}>
       {children}
     </AuthContext.Provider>
   );

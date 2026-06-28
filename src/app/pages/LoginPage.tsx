@@ -1,13 +1,14 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, useCallback, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { Ticket, AlertTriangle, ArrowRight } from "lucide-react";
+import { Ticket, AlertTriangle, ArrowRight, Fingerprint } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { biometricAuth } from "@/lib/biometricAuth";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 
 const RECENT_USERS_KEY = "dt_recent_users";
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, loginWithBiometric } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,6 +20,36 @@ export function LoginPage() {
     try { return JSON.parse(localStorage.getItem(RECENT_USERS_KEY) || "[]"); }
     catch { return []; }
   });
+
+  // 生体認証ログイン（この端末で登録済みの場合のみ表示）
+  const [bioAvailable, setBioAvailable] = useState(false);
+  const [bioLoading, setBioLoading] = useState(false);
+
+  const runBioLogin = useCallback(async () => {
+    setBioLoading(true); setError("");
+    const err = await loginWithBiometric();
+    setBioLoading(false);
+    if (err) setError(err);
+    else navigate("/dashboard");
+  }, [loginWithBiometric, navigate]);
+
+  useEffect(() => {
+    if (sessionStorage.getItem("isLoggedIn") === "true") return;
+    let cancelled = false;
+    (async () => {
+      const [supported, registered] = await Promise.all([
+        biometricAuth.isSupported(),
+        biometricAuth.isRegisteredOnThisDevice(),
+      ]);
+      if (cancelled) return;
+      const available = supported && registered;
+      setBioAvailable(available);
+      // Mac/iPadアプリ: 登録済み端末ならログイン画面到達時に自動でプロンプト表示。
+      // 未登録端末では出さない（初回端末でいきなり求めない）。
+      if (available && biometricAuth.isNative()) void runBioLogin();
+    })();
+    return () => { cancelled = true; };
+  }, [runBioLogin]);
 
   if (sessionStorage.getItem("isLoggedIn") === "true") return <Navigate to="/dashboard" replace />;
 
@@ -104,6 +135,22 @@ export function LoginPage() {
                   : <>ログイン <ArrowRight className="w-4 h-4" /></>}
               </button>
             </form>
+
+            {bioAvailable && (
+              <>
+                <div className="flex items-center gap-3 my-5">
+                  <div className="flex-1 h-px bg-stone-200" />
+                  <span className="text-xs text-stone-400">または</span>
+                  <div className="flex-1 h-px bg-stone-200" />
+                </div>
+                <button type="button" onClick={runBioLogin} disabled={bioLoading || loading}
+                  className="w-full bg-white hover:bg-emerald-50 disabled:opacity-60 text-emerald-700 font-semibold py-3 px-4 rounded-xl transition-colors text-sm flex items-center justify-center gap-2 border border-emerald-200">
+                  {bioLoading
+                    ? <><div className="w-4 h-4 border-2 border-emerald-200 border-t-emerald-600 rounded-full animate-spin" />認証中...</>
+                    : <><Fingerprint className="w-4 h-4" />生体認証でログイン</>}
+                </button>
+              </>
+            )}
           </div>
           {recentUsers.length > 0 && (
             <div className="mt-4 p-4 bg-white rounded-xl border border-stone-200">
