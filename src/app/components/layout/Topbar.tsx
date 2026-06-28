@@ -71,28 +71,38 @@ export function Topbar() {
 
   const handleRegisterBio = useCallback(async () => {
     setBioBusy(true);
-    const r = await biometricAuth.register();
-    setBioBusy(false);
-    if (r.ok) {
-      setBioRegistered(true);
-      setBioToast({ kind: "success", text: "生体認証を登録しました。" });
-    } else {
-      setBioToast({ kind: "error", text: r.error || "生体認証の登録に失敗しました。" });
+    try {
+      const r = await biometricAuth.register();
+      if (r.ok) {
+        setBioRegistered(true);
+        setBioToast({ kind: "success", text: "生体認証を登録しました。" });
+      } else {
+        setBioToast({ kind: "error", text: r.error || "生体認証の登録に失敗しました。" });
+      }
+    } catch (e: any) {
+      setBioToast({ kind: "error", text: e?.message || "生体認証の登録に失敗しました。" });
+    } finally {
+      setBioBusy(false);
+      setShowUserMenu(false);
     }
-    setShowUserMenu(false);
   }, []);
 
   const handleRemoveBio = useCallback(async () => {
     setBioBusy(true);
-    const r = await biometricAuth.removeCredential();
-    setBioBusy(false);
-    if (r.ok) {
-      setBioRegistered(false);
-      setBioToast({ kind: "success", text: "生体データを削除しました。" });
-    } else {
-      setBioToast({ kind: "error", text: r.error || "削除に失敗しました。" });
+    try {
+      const r = await biometricAuth.removeCredential();
+      if (r.ok) {
+        setBioRegistered(false);
+        setBioToast({ kind: "success", text: "生体データを削除しました。" });
+      } else {
+        setBioToast({ kind: "error", text: r.error || "削除に失敗しました。" });
+      }
+    } catch (e: any) {
+      setBioToast({ kind: "error", text: e?.message || "削除に失敗しました。" });
+    } finally {
+      setBioBusy(false);
+      setShowUserMenu(false);
     }
-    setShowUserMenu(false);
   }, []);
 
   const [notifications, setNotifications] = useState<AppNotification[]>(
