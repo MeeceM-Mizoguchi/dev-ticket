@@ -6,7 +6,7 @@ import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 export function AppShell() {
   useVersionCheck();
   return (
-    <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#F5F6F8", paddingTop:"env(safe-area-inset-top)" }}>
+    <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#F5F6F8", paddingTop:"var(--app-safe-top, env(safe-area-inset-top))" }}>
       <Sidebar />
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
         <Topbar />

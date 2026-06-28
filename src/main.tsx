@@ -29,6 +29,19 @@ function normalizeNativeViewport() {
 }
 normalizeNativeViewport();
 
+// Mac(Catalyst, タッチなし)はネイティブのタイトルバーが別にあるため、
+// 上部のセーフエリア余白(env(safe-area-inset-top))が二重になり謎の空白になる。
+// CSS変数 --app-safe-top を 0 にして上余白を消す。
+// iPad/iPhone(タッチあり)はステータスバー回避のため既定(env)を維持。
+function adjustNativeSafeTop() {
+  if (!Capacitor.isNativePlatform()) return;
+  const isTouchDevice = navigator.maxTouchPoints > 0;
+  if (!isTouchDevice) {
+    document.documentElement.style.setProperty("--app-safe-top", "0px");
+  }
+}
+adjustNativeSafeTop();
+
 createRoot(document.getElementById("root")!).render(
   <BrowserRouter>
     <App />
