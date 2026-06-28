@@ -96,7 +96,7 @@ export function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex bg-white" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+    <div className="min-h-screen flex bg-white" style={{ paddingTop: "var(--app-safe-top, env(safe-area-inset-top))" }}>
       <div className="hidden lg:flex w-[42%] bg-teal-700 flex-col justify-between p-12 relative overflow-hidden"
         style={{ backgroundImage: "radial-gradient(circle at 70% 30%, rgba(255,255,255,0.07) 0%, transparent 60%), radial-gradient(circle at 20% 80%, rgba(0,0,0,0.1) 0%, transparent 50%)" }}>
         <div className="absolute inset-0 opacity-20" style={{ backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.6) 1px, transparent 1px)", backgroundSize: "28px 28px" }} />
