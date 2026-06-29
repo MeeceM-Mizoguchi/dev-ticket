@@ -9,6 +9,8 @@ import Mention from "@tiptap/extension-mention";
 import { Extension } from "@tiptap/core";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
+// 🌟 追加: URLを自動でクリック可能なリンクに変換するエクステンション
+import Link from "@tiptap/extension-link";
 // 🌟 修正: ゴミ箱アイコン (Trash2) を lucide-react から追加インポート
 import { Copy, X, CheckCheck, Trash2 } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -124,7 +126,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
-      if (event.key === "ArrowUp")   { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
         const item = items[sel];
@@ -165,8 +167,8 @@ interface LinkMentionListProps {
 
 const TYPE_STYLE: Record<LinkMentionOption["type"], { bg: string; color: string; label: string }> = {
   backlog: { bg: "#EDE9FE", color: "#6D28D9", label: "バックログ" },
-  wiki:    { bg: "#E0F2FE", color: "#0284C7", label: "Wiki" },
-  minute:  { bg: "#D1FAE5", color: "#059669", label: "議事録" },
+  wiki: { bg: "#E0F2FE", color: "#0284C7", label: "Wiki" },
+  minute: { bg: "#D1FAE5", color: "#059669", label: "議事録" },
 };
 
 const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ items, command }, ref) => {
@@ -181,7 +183,7 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
-      if (event.key === "ArrowUp")   { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
         const item = items[sel];
@@ -253,7 +255,7 @@ const TicketMentionList = forwardRef<MentionListHandle, TicketMentionListProps>(
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
-      if (event.key === "ArrowUp")   { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
         const item = items[sel];
@@ -401,6 +403,15 @@ export function RichEditor({
     extensions: [
       StarterKit,
       CustomImage,
+      // 🌟 追加: URLを検知して別タブリンク(target="_blank")に自動変換する設定
+      Link.configure({
+        openOnClick: true,
+        autolink: true,
+        HTMLAttributes: {
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+      }),
       Table.configure({ resizable: false }),
       TableRow, TableCell, TableHeader,
       SuggestionStore,
@@ -448,9 +459,9 @@ export function RichEditor({
               const q = query.toLowerCase();
               return q
                 ? t.filter(ticket =>
-                    ticket.wbs.toLowerCase().includes(q) ||
-                    ticket.title.toLowerCase().includes(q)
-                  )
+                  ticket.wbs.toLowerCase().includes(q) ||
+                  ticket.title.toLowerCase().includes(q)
+                )
                 : t;
             },
             render: makeSuggestionPopup(TicketMentionList, 300),
@@ -706,6 +717,9 @@ export function RichEditor({
         .tiptap h2 { font-size: 15px; font-weight: 700; margin: 8px 0 4px; }
         .tiptap h3 { font-size: 13px; font-weight: 700; margin: 6px 0 4px; }
         .tiptap p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: #C9C4BB; pointer-events: none; float: left; height: 0; }
+        /* 🌟 追加: リンク(aタグ)のスタイル（青色、ホバーで下線＋ポインター） */
+        .tiptap a { color: #2563EB; cursor: pointer; text-decoration: none; }
+        .tiptap a:hover { text-decoration: underline; }
         .tiptap .mention { color: #059669; font-weight: 700; background: #ECFDF5; padding: 1px 4px; border-radius: 4px; }
         .tiptap .ticket-mention { color: #2563EB; font-weight: 700; background: #DBEAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .ticket-mention:hover { background: #BFDBFE; }
@@ -734,7 +748,7 @@ export function RichEditor({
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>表</button>
-          
+
           {/* 🌟 修正: エディタ内に表のデータ(hasTableInContent)が存在していれば、どこを触っていてもツールバーを表示 */}
           {hasTableInContent && (
             <>
@@ -749,10 +763,10 @@ export function RichEditor({
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().deleteRow().run()} title="行を削除">行削除</button>
               <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
               {/* 🌟 追加: 現在選択（またはカーソルが乗っている）している表を丸ごと一発で削除するボタン */}
-              <button 
-                type="button" 
-                style={{ ...btnStyle(), color: "#DC2626" }} 
-                onClick={() => editor.chain().focus().deleteTable().run()} 
+              <button
+                type="button"
+                style={{ ...btnStyle(), color: "#DC2626" }}
+                onClick={() => editor.chain().focus().deleteTable().run()}
                 title="表を丸ごと削除"
               >
                 <Trash2 style={{ width: 11, height: 11, display: "inline-block", marginRight: 3, verticalAlign: "-1px" }} />
