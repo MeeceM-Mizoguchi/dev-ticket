@@ -349,7 +349,7 @@ export function DemoVideoPage({ onClose, onInteractive }: Props) {
         <div className="flex items-center gap-2">
           <button onClick={onInteractive}
             className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-500 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
-            デモのご予約 <ChevronRight className="w-4 h-4" />
+            商談のご予約 <ChevronRight className="w-4 h-4" />
           </button>
           <button onClick={onClose}
             className="p-2 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition-colors">

@@ -216,7 +216,7 @@ export function DemoBookingPage() {
       {step === 'form' && (
         <main className="flex-1 flex flex-col justify-start sm:justify-center max-w-4xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
           <div className="text-center mb-4 sm:mb-8">
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">デモのご予約</h1>
+            <h1 className="text-2xl font-bold text-slate-900 mb-1">商談のご予約</h1>
             <p className="text-slate-500 text-sm">お客様情報をご入力ください</p>
           </div>
 
@@ -443,7 +443,7 @@ export function DemoBookingPage() {
             </div>
 
             <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 sm:mb-4 tracking-tight">
-              デモ予約のリクエストを<br className="sm:hidden" />完了しました
+              商談予約のリクエストを<br className="sm:hidden" />完了しました
             </h1>
 
             <p className="text-slate-600 mb-8 text-base leading-relaxed max-w-md mx-auto">
