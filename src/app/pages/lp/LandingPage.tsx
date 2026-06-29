@@ -1,9 +1,9 @@
-﻿import { useState, useEffect } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router';
 import { Button } from '@/app/components/ui/button';
 import { Card, CardContent } from '@/app/components/ui/card';
 import { Badge } from '@/app/components/ui/badge';
-import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X } from 'lucide-react';
+import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X, Fingerprint, AppWindow, Monitor, Tablet, Smartphone } from 'lucide-react';
 import { MockDashboard } from '@/app/components/lp/mocks/MockDashboard';
 import { MockSprintList } from '@/app/components/lp/mocks/MockSprintList';
 import { MockSprintBoard } from '@/app/components/lp/mocks/MockSprintBoard';
@@ -27,6 +27,60 @@ function StoryBrowser({ url, children }: { url: string; children: React.ReactNod
         </div>
       </div>
       <div className="bg-white">{children}</div>
+    </div>
+  );
+}
+// ─── Native app section: MacBook / iPad device frames ──────────────────────
+// 固定px設計(1180幅)のダッシュボードを transform:scale で枠幅に縮小し、
+// 実スクショを縮小したような見た目にする（直接埋め込むと文字が巨大化して崩れる）。
+function ScaledDashboard() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setW(el.clientWidth));
+    ro.observe(el);
+    setW(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  const DW = 1180, DH = Math.round((DW * 9) / 16); // 設計解像度（16:9）
+  const scale = w / DW;
+  return (
+    <div ref={ref} style={{ width: '100%', aspectRatio: '16 / 9', overflow: 'hidden', background: '#F4F5F6' }}>
+      <div style={{ width: DW, height: DH, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+        <MockDashboard fillHeight />
+      </div>
+    </div>
+  );
+}
+function MacBookFrame() {
+  return (
+    <div style={{ width: '100%' }}>
+      {/* 画面（液晶パネル + ベゼル） */}
+      <div style={{ position: 'relative', background: 'linear-gradient(180deg,#2b2c30,#141416)', borderRadius: '14px 14px 4px 4px', padding: '12px 12px 13px', boxShadow: '0 30px 64px rgba(0,0,0,0.5)' }}>
+        {/* インカメラ */}
+        <div style={{ position: 'absolute', top: 5, left: '50%', transform: 'translateX(-50%)', width: 5, height: 5, borderRadius: '50%', background: '#0b0b0d', border: '1px solid #2c2c2e' }} />
+        <div style={{ borderRadius: 4, overflow: 'hidden' }}>
+          <ScaledDashboard />
+        </div>
+      </div>
+      {/* ヒンジ・底面（画面より少し広い） */}
+      <div style={{ position: 'relative', width: '112%', marginLeft: '-6%', height: 15, background: 'linear-gradient(180deg,#dadde2,#a6aab1)', borderRadius: '0 0 11px 11px', boxShadow: '0 20px 28px rgba(0,0,0,0.4)' }}>
+        {/* ノッチ（開閉用くぼみ） */}
+        <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: '22%', height: 7, background: 'linear-gradient(180deg,#8d9198,#c2c6cc)', borderRadius: '0 0 8px 8px' }} />
+      </div>
+    </div>
+  );
+}
+function IPadFrame() {
+  return (
+    <div style={{ width: '100%', position: 'relative', background: 'linear-gradient(150deg,#3a3b3f,#141416)', borderRadius: 20, padding: 10, boxShadow: '0 28px 56px rgba(0,0,0,0.55)' }}>
+      {/* インカメラ（横向き時：上辺中央） */}
+      <div style={{ position: 'absolute', top: 4, left: '50%', transform: 'translateX(-50%)', width: 4, height: 4, borderRadius: '50%', background: '#0b0b0d' }} />
+      <div style={{ borderRadius: 10, overflow: 'hidden' }}>
+        <ScaledDashboard />
+      </div>
     </div>
   );
 }
@@ -498,7 +552,7 @@ export function LandingPage() {
               <button onClick={() => scrollToSection('benefits')} className="text-slate-600 hover:text-teal-600 transition-colors">特徴</button>
               <button onClick={() => scrollToSection('pricing')} className="text-slate-600 hover:text-teal-600 transition-colors">料金</button>
               <Button onClick={() => navigate('/book-demo')} className="bg-teal-600 hover:bg-teal-700 text-white">
-                デモのご予約
+                商談のご予約
               </Button>
               <Button onClick={() => navigate("/login")} variant="outline" className="border-slate-300 hover:border-teal-600 hover:text-teal-600">
                 ログイン
@@ -523,7 +577,7 @@ export function LandingPage() {
               <button onClick={() => { scrollToSection('benefits'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">特徴</button>
               <button onClick={() => { scrollToSection('pricing'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">料金</button>
               <div className="flex flex-col gap-2 mt-2 pt-3 border-t border-slate-100">
-                <Button onClick={() => { navigate('/book-demo'); setMobileMenuOpen(false); }} className="bg-teal-600 hover:bg-teal-700 text-white w-full">デモのご予約</Button>
+                <Button onClick={() => { navigate('/book-demo'); setMobileMenuOpen(false); }} className="bg-teal-600 hover:bg-teal-700 text-white w-full">商談のご予約</Button>
                 <Button onClick={() => { navigate('/login'); setMobileMenuOpen(false); }} variant="outline" className="w-full border-slate-300 hover:border-teal-600 hover:text-teal-600">ログイン</Button>
               </div>
             </div>
@@ -531,40 +585,40 @@ export function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero Section */}
-      <section className="pt-16 overflow-x-hidden px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto w-full flex items-center py-10 lg:py-16">
-          <div className="w-full grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-12 items-center">
+      {/* Hero Section（メインビジュアル：ビューポート高さにフィットさせワンビュー表示） */}
+      <section className="min-h-[100svh] flex flex-col pt-16 overflow-x-hidden px-4 sm:px-6 lg:px-8 border-b border-slate-200">
+        <div className="max-w-7xl mx-auto w-full flex-1 flex items-center py-10">
+          <div className="w-full grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-14 items-center">
             <div className="flex flex-col justify-center">
-              <Badge className="mb-3 sm:mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100 w-fit">
+              <Badge className="mb-4 sm:mb-5 bg-teal-100 text-teal-700 hover:bg-teal-100 w-fit text-sm sm:text-base px-3 py-1">
                 チームの生産性を最大化
               </Badge>
-              <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-slate-900 mb-4 sm:mb-6 leading-tight">
+              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-slate-900 mb-5 sm:mb-7 leading-tight">
                 プロジェクトを、<br />
                 <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-600 to-emerald-600">
                   スマートに。
                 </span>
               </h1>
-              <p className="text-base sm:text-xl text-slate-600 mb-8 leading-relaxed">
+              <p className="text-lg sm:text-xl lg:text-2xl text-slate-600 mb-9 sm:mb-10 leading-relaxed">
                 チケット・スプリント・メンバーを一元管理。<br />
                 チームの生産性を最大化するツール。
               </p>
               <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-                <Button size="lg" onClick={() => navigate('/book-demo')} className="bg-teal-600 hover:bg-teal-700 text-white text-base sm:text-lg px-6 sm:px-8 py-4 sm:py-6">
+                <Button size="lg" onClick={() => navigate('/book-demo')} className="bg-teal-600 hover:bg-teal-700 text-white text-lg sm:text-xl px-8 sm:px-10 py-5 sm:py-7">
                   今すぐ無料で始める
-                  <ArrowRight className="ml-2 w-5 h-5" />
+                  <ArrowRight className="ml-2 w-5 h-5 sm:w-6 sm:h-6" />
                 </Button>
-                <Button size="lg" variant="outline" onClick={() => setDemoMode('video')} className="text-base sm:text-lg px-6 sm:px-8 py-4 sm:py-6 border-slate-300 hover:border-teal-600 hover:text-teal-600">
+                <Button size="lg" variant="outline" onClick={() => setDemoMode('video')} className="text-lg sm:text-xl px-8 sm:px-10 py-5 sm:py-7 border-slate-300 hover:border-teal-600 hover:text-teal-600">
                   デモを見る
                 </Button>
               </div>
-              <div className="mt-6 sm:mt-8 flex items-center gap-4 sm:gap-6 text-sm text-slate-600">
+              <div className="mt-7 sm:mt-9 flex items-center gap-5 sm:gap-7 text-base sm:text-lg text-slate-600">
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 text-teal-600" />
-                  <span>デモ予約可能</span>
+                  <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-600" />
+                  <span>商談予約可能</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 text-teal-600" />
+                  <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-600" />
                   <span>すぐに利用開始</span>
                 </div>
               </div>
@@ -902,6 +956,80 @@ export function LandingPage() {
                 <div>
                   <p className="text-sm font-semibold text-slate-800">チケット移動</p>
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">チケットを別スプリントへシームレスに移動</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Native App Section（Mac/iPadアプリ 開発中） */}
+      <section className="py-12 sm:py-20 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(160deg, #0f172a 0%, #134e4a 55%, #115e59 100%)' }}>
+        {/* 背景デコ */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full" style={{ background: 'radial-gradient(circle, rgba(52,211,153,0.16) 0%, transparent 65%)' }} />
+          <div className="absolute bottom-0 left-1/3 w-80 h-80 rounded-full" style={{ background: 'radial-gradient(circle, rgba(20,184,166,0.12) 0%, transparent 65%)' }} />
+        </div>
+        <div className="max-w-7xl mx-auto relative z-10">
+          <div className="grid lg:grid-cols-2 gap-10 lg:gap-12 items-center">
+            {/* 左: 説明 + 実装済み機能 */}
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-bold mb-5 w-fit" style={{ background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#FCD34D' }}>
+                <Rocket className="w-3.5 h-3.5" />
+                開発中 — まもなく登場
+              </div>
+              <h2 className="text-white font-black leading-tight mb-4 text-3xl sm:text-4xl">
+                Dev Ticketを<br /><span style={{ color: '#34D399' }}>Mac・iPad</span>アプリで
+              </h2>
+              <p className="text-sm sm:text-base leading-relaxed mb-6" style={{ color: 'rgba(255,255,255,0.72)' }}>
+                Capacitorで構築するネイティブアプリを開発中。ブラウザを開かずに起動でき、デスクトップ／タブレットに最適化したUIを提供します。
+              </p>
+              {/* 実装済み機能 */}
+              <div className="rounded-2xl p-5 mb-5 max-w-md" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                <p className="text-xs font-black mb-3.5 flex items-center gap-1.5" style={{ color: '#6EE7B7' }}>
+                  <CheckCheck className="w-3.5 h-3.5" />実装済みの機能
+                </p>
+                <div className="space-y-3">
+                  {[
+                    { icon: Fingerprint, t: 'Face ID / Touch ID ログイン' },
+                    { icon: BellRing, t: 'プッシュ通知（APNs）' },
+                    { icon: AppWindow, t: 'マルチタブUI（⌘T / ⌘W / ⌘1〜9）' },
+                    { icon: Rocket, t: 'アプリアイコン・起動画面' },
+                  ].map(({ icon: Icon, t }) => (
+                    <div key={t} className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(52,211,153,0.15)' }}>
+                        <Icon className="w-4 h-4" style={{ color: '#34D399' }} />
+                      </div>
+                      <span className="text-sm font-medium leading-tight" style={{ color: 'rgba(255,255,255,0.9)' }}>{t}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 pt-4 flex items-center gap-2" style={{ borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                  <Clock className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#FCD34D' }} />
+                  <span className="text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>開発中：実機検証・App Store配信準備を進行中</span>
+                </div>
+              </div>
+              {/* 対応プラットフォーム */}
+              <div className="flex flex-wrap items-center gap-2">
+                {[
+                  { icon: Monitor, label: 'macOS', ok: true },
+                  { icon: Tablet, label: 'iPadOS', ok: true },
+                  { icon: Smartphone, label: 'iPhone 対象外', ok: false },
+                ].map(({ icon: Icon, label, ok }) => (
+                  <div key={label} className="flex items-center gap-1.5 rounded-lg px-3 py-2" style={{ background: ok ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.05)', border: `1px solid ${ok ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.1)'}` }}>
+                    <Icon className="w-4 h-4" style={{ color: ok ? '#34D399' : 'rgba(255,255,255,0.4)' }} />
+                    <span className="text-xs font-bold" style={{ color: ok ? '#fff' : 'rgba(255,255,255,0.5)' }}>{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* 右: MacBook + iPad 実機イラスト */}
+            <div className="flex items-center justify-center lg:justify-end">
+              <div style={{ position: 'relative', width: '100%', maxWidth: 520 }}>
+                <MacBookFrame />
+                {/* iPad を手前右下にオーバーラップ */}
+                <div className="hidden sm:block" style={{ position: 'absolute', right: '-9%', bottom: '-6%', width: '50%' }}>
+                  <IPadFrame />
                 </div>
               </div>
             </div>
