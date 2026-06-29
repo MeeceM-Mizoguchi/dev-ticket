@@ -9,10 +9,10 @@ import Mention from "@tiptap/extension-mention";
 import { Extension } from "@tiptap/core";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
-// 🌟 追加: URLを自動でクリック可能なリンクに変換するエクステンション
-import Link from "@tiptap/extension-link";
 // 🌟 修正: ゴミ箱アイコン (Trash2) を lucide-react から追加インポート
 import { Copy, X, CheckCheck, Trash2 } from "lucide-react";
+// 🌟 追加: 外部リンクを開く共通ヘルパー（ネイティブはアプリ内ブラウザ、Webは別タブ）
+import { openExternalUrl } from "@/lib/openExternal";
 import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
@@ -401,17 +401,21 @@ export function RichEditor({
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
-      CustomImage,
-      // 🌟 追加: URLを検知して別タブリンク(target="_blank")に自動変換する設定
-      Link.configure({
-        openOnClick: true,
-        autolink: true,
-        HTMLAttributes: {
-          target: "_blank",
-          rel: "noopener noreferrer",
+      // 🌟 修正: StarterKit(v3)にLinkが内蔵されているため、別パッケージを追加せず
+      //   StarterKit経由で設定する。URLを検知してリンク(aタグ)に自動変換。
+      //   クリック時の遷移は openOnClick:false にして下のクリックハンドラで一元処理する
+      //   （ネイティブ=アプリ内ブラウザ / Web=別タブ）。
+      StarterKit.configure({
+        link: {
+          openOnClick: false,
+          autolink: true,
+          HTMLAttributes: {
+            target: "_blank",
+            rel: "noopener noreferrer",
+          },
         },
       }),
+      CustomImage,
       Table.configure({ resizable: false }),
       TableRow, TableCell, TableHeader,
       SuggestionStore,
@@ -694,8 +698,22 @@ export function RichEditor({
   // 🌟 修正: コメントエリア内にテーブルタグが実在しており、かつ空のテーブルでないことを厳密に判定
   const hasTableInContent = editor.getHTML().includes("<table") && editor.getHTML().includes("</table>");
 
+  // 🌟 追加: リンク(aタグ)クリックを一元処理する。
+  //   ネイティブ(Mac/iPad)はアプリ内ブラウザ、Webは別タブで開く。
+  //   readOnly表示時は通常クリックで、編集時は ⌘/Ctrl+クリックで開く（カーソル操作を妨げない）。
+  const handleLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const anchor = (e.target as HTMLElement).closest("a");
+    if (!anchor) return;
+    const href = anchor.getAttribute("href");
+    if (!href) return;
+    if (!readOnly && !(e.metaKey || e.ctrlKey)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void openExternalUrl(href);
+  };
+
   return (
-    <div id={id} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF", display: "flex", flexDirection: "column", ...style }}>
+    <div id={id} onClickCapture={handleLinkClick} style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, overflow: "hidden", background: readOnly ? "#FAFAF8" : "#FFF", display: "flex", flexDirection: "column", ...style }}>
       <style>{`
         .tiptap { outline: none; padding: 12px 14px; min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`}; font-size: 13px; line-height: 1.7; color: #1A1714; flex: 1; }
         #${id} .tiptap { min-height: ${typeof minHeight === "string" ? minHeight : `${minHeight}px`};${maxHeight ? ` max-height: ${typeof maxHeight === "string" ? maxHeight : `${maxHeight}px`}; overflow-y: auto;` : ""} }
