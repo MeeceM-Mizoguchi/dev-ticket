@@ -617,7 +617,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           const isExp = expanded.has(sprint.id);
           const sm = getSprintStatusMeta(computeSprintStatus(sprint));
           const progress = sprintProgress(sprint);
-          const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
+          // 🌟 修正: "done", "closed", "waiting-release", "released" のいずれか、または progress が -2（取下）の場合を完了件数としてカウント
+          const terminalStatuses = ["done", "closed", "waiting-release", "released"];
+          const done = sprint.tickets.filter(t => terminalStatuses.includes(t.status) || t.progress === -2).length;
           const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
           const actualHours = Math.round(sprint.tickets.reduce((s, t) => s + calcTicketActualHours(t), 0) * 10) / 10;
 
