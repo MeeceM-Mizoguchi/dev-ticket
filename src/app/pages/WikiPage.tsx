@@ -37,10 +37,11 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelect, onAddChild, onDelete, onMoveNode, onOpenMoveModal, onRename, canEdit,
+  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onDelete, onMoveNode, onOpenMoveModal, onRename, canEdit,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelectPage: (id: string) => void;
+  onSelectFolder: (id: string) => void;
   onAddChild: (parentId: string, isFolder: boolean) => void;
   onDelete: (node: WikiPageType) => void;
   onMoveNode: (draggedId: string, targetParentId: string | null) => Promise<void>;
@@ -59,7 +60,6 @@ function TreeItem({
   const isFolder = node.isFolder;
   const isSelected = selectedId === node.id;
 
-  // node.title が親側の再読み込みなどで変わった場合に追従させる
   useEffect(() => {
     setEditTitle(node.title);
   }, [node.title]);
@@ -75,8 +75,9 @@ function TreeItem({
     if (isEditing) return;
     if (isFolder) {
       setExpanded(v => !v);
+      onSelectFolder(node.id);
     } else {
-      onSelect(node.id);
+      onSelectPage(node.id);
     }
   };
 
@@ -90,11 +91,8 @@ function TreeItem({
     if (!canEdit || !isFolder) return;
     e.preventDefault();
     e.stopPropagation();
-
     const draggedId = e.dataTransfer.types.includes("text/plain") ? "valid" : "";
-    if (draggedId) {
-      setIsDragOver(true);
-    }
+    if (draggedId) setIsDragOver(true);
   };
 
   const handleDragLeave = () => {
@@ -106,10 +104,8 @@ function TreeItem({
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-
     const draggedId = e.dataTransfer.getData("text/plain");
     if (!draggedId || draggedId === node.id) return;
-
     await onMoveNode(draggedId, node.id);
   };
 
@@ -138,11 +134,7 @@ function TreeItem({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      style={{
-        background: isDragOver ? "rgba(5,150,105,0.08)" : "transparent",
-        borderRadius: 8,
-        transition: "background 0.15s"
-      }}
+      style={{ background: isDragOver ? "rgba(5,150,105,0.08)" : "transparent", borderRadius: 8, transition: "background 0.15s" }}
     >
       <div
         draggable={canEdit}
@@ -219,10 +211,7 @@ function TreeItem({
                   onDragStart={handleDragStart}
                   onClick={e => { e.stopPropagation(); onOpenMoveModal(node); }}
                   title={isFolder ? "フォルダを移動 (クリックで一覧から選択)" : "ページを移動 (クリックで一覧から選択)"}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: "pointer", color: isFolder ? "#F59E0B" : "#0284C7", padding: 2, flexShrink: 0
-                  }}
+                  style={{ display: "flex", alignItems: "center", justifySelf: "center", cursor: "pointer", color: isFolder ? "#F59E0B" : "#0284C7", padding: 2, flexShrink: 0 }}
                 >
                   <GripVertical style={{ width: 12, height: 12 }} />
                 </div>
@@ -247,14 +236,14 @@ function TreeItem({
       </div>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelect={onSelect} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} canEdit={canEdit} />
+          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} canEdit={canEdit} />
       ))}
     </div>
   );
 }
 
 export function WikiPage() {
-  const { projectSlug, "*": wikiPath } = useParams<{ projectSlug: string; "*"?: string }>();
+  const { projectSlug, folderId, pageId, "*": wikiPath } = useParams<{ projectSlug: string; folderId?: string; pageId?: string; "*"?: string }>();
   const navigate = useNavigate();
   const { userName, userRole, userId } = useAuth();
   const { plan } = usePlan();
@@ -284,8 +273,23 @@ export function WikiPage() {
   const canEdit = effectiveWikiPerm === "edit";
   const { open: openPreview } = usePreviewPanel();
 
+  // URLからUUIDを確実に抜き出す共通関数
+  const getUUIDFromURL = useCallback(() => {
+    if (pageId) return pageId;
+    if (folderId) return folderId;
+    if (wikiPath) {
+      const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+      const match = wikiPath.match(uuidRegex);
+      if (match) return match[0];
+    }
+    return null;
+  }, [pageId, folderId, wikiPath]);
+
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // ロード開始時にloadingを確実にtrueにする（リロード対策）
+    setLoading(true);
+    
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
@@ -295,7 +299,9 @@ export function WikiPage() {
       isAdminRole ? Promise.resolve({ data: null }) :
         supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
     ]);
-    setPages((data ?? []).map(mapWikiPage));
+    
+    const mappedPages = (data ?? []).map(mapWikiPage);
+    setPages(mappedPages);
 
     if (isAdminRole) {
       setEffectiveWikiPerm("edit");
@@ -308,71 +314,71 @@ export function WikiPage() {
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
     }
     setPermsLoaded(true);
-    setLoading(false);
-  }, [projectSlug, userId, isAdminRole]);
+
+    // データ読み込みが100%完了した時点で、URLのIDに該当するデータを最優先でインライン展開
+    const activeId = getUUIDFromURL();
+    if (activeId) {
+      const currentActiveNode = mappedPages.find(page => page.id.toLowerCase() === activeId.toLowerCase());
+      if (currentActiveNode) {
+        setSelectedId(currentActiveNode.id);
+        setTitle(currentActiveNode.title);
+        setContent(currentActiveNode.content ?? "");
+        setImages(currentActiveNode.images ?? []);
+      }
+    }
+
+    setLoading(false); // 全同期が安全に終わってからローディングロックを解除
+  }, [projectSlug, userId, isAdminRole, getUUIDFromURL]);
 
   useEffect(() => { load(); }, [load]);
 
   const tree = useMemo(() => buildTree(pages), [pages]);
   const selected = useMemo(() => pages.find(p => p.id === selectedId) ?? null, [pages, selectedId]);
 
+  // URLパラメータのリアルタイム監視
   useEffect(() => {
-    if (!wikiPath || pages.length === 0) return;
-    const parts = wikiPath.split("/").filter(Boolean);
-    if (parts.length === 0) return;
-
-    const firstPart = decodeURIComponent(parts[0]);
-    // UUID形式かどうかを判定（IDベースの新形式URL）
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(firstPart);
-
-    let found: WikiPageType | undefined;
-    if (isUUID) {
-      // IDで直接引く（タイトル重複による誤選択を防ぐ）
-      found = pages.find(p => p.id === firstPart && !p.isFolder);
-    } else {
-      // タイトルベースの旧URL形式（後方互換）
-      const decodedParts = parts.map(s => decodeURIComponent(s));
-      if (decodedParts.length === 1) {
-        found = pages.find(p => !p.isFolder && p.title === decodedParts[0] && !p.parentId);
-        if (!found) found = pages.find(p => !p.isFolder && p.title === decodedParts[0]);
-      } else {
-        const folderTitle = decodedParts[decodedParts.length - 2];
-        const pageTitle = decodedParts[decodedParts.length - 1];
-        const folder = pages.find(p => p.isFolder && p.title === folderTitle);
-        if (folder) found = pages.find(p => !p.isFolder && p.title === pageTitle && p.parentId === folder.id);
-        if (!found) found = pages.find(p => !p.isFolder && p.title === pageTitle);
+    if (pages.length === 0 || loading) return; // 🌟 修正: 通信中(loading=true)の空上書きを絶対に阻止するガード
+    const activeId = getUUIDFromURL();
+    if (activeId) {
+      const found = pages.find(p => p.id.toLowerCase() === activeId.toLowerCase());
+      if (found) {
+        setSelectedId(found.id);
+        return;
       }
     }
-
-    if (found && found.id !== selectedId) setSelectedId(found.id);
-  }, [wikiPath, pages]);
-
-  const handleSelectPage = useCallback((pageId: string) => {
-    const page = pages.find(p => p.id === pageId);
-    if (!page || page.isFolder) return;
-    // Flush any pending auto-save for the current page before navigating
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-      if (selectedId && isSupabaseEnabled) {
-        supabase!.from("wiki_pages").update({
-          title, content, updated_by: userName || null, updated_at: new Date().toISOString(),
-        }).eq("id", selectedId);
-        setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title, content } : p));
+    
+    if (wikiPath && !activeId) {
+      const parts = wikiPath.split("/").filter(Boolean);
+      if (parts.length > 0) {
+        const lastPart = decodeURIComponent(parts[parts.length - 1]);
+        const foundByTitle = pages.find(p => p.title === lastPart);
+        if (foundByTitle) setSelectedId(foundByTitle.id);
       }
     }
+  }, [getUUIDFromURL, wikiPath, pages, loading]);
+
+  // 選択データ切り替え時の同期
+  useEffect(() => {
+    if (loading) return; // 🌟 修正: 通信中の初期ステートの時は上書き同期をスキップ
+    if (selected) {
+      setTitle(selected.title);
+      setContent(selected.content ?? "");
+      setImages(selected.images ?? []);
+    }
+  }, [selectedId, selected, loading]);
+
+  const handleSelectPage = useCallback((targetPageId: string) => {
     const slug = projectSlug ?? "";
-    navigate(`/${slug}/wiki/${pageId}`);
-  }, [pages, projectSlug, navigate, selectedId, title, content, userName]);
+    navigate(`/${slug}/wiki/pages/${targetPageId}`);
+  }, [projectSlug, navigate]);
 
-  useEffect(() => {
-    setTitle(selected?.title ?? "");
-    setContent(selected?.content ?? "");
-    setImages(selected?.images ?? []);
-  }, [selected?.id]);
+  const handleSelectFolder = useCallback((targetFolderId: string) => {
+    const slug = projectSlug ?? "";
+    navigate(`/${slug}/wiki/folders/${targetFolderId}`);
+  }, [projectSlug, navigate]);
 
   const scheduleSave = useCallback((nextTitle: string, nextContent: string) => {
-    if (!selectedId) return;
+    if (!selectedId || loading) return; // 🌟 修正: 読み込み完了前は自動保存をガード
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       await supabase!.from("wiki_pages").update({
@@ -380,13 +386,14 @@ export function WikiPage() {
       }).eq("id", selectedId);
       setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title: nextTitle, content: nextContent } : p));
     }, 600);
-  }, [selectedId, userName]);
+  }, [selectedId, userName, loading]);
 
   const handleTreeItemRename = useCallback(async (id: string, nextTitle: string) => {
     setPages(prev => prev.map(p => p.id === id ? { ...p, title: nextTitle } : p));
     if (id === selectedId) {
       setTitle(nextTitle);
     }
+    
     if (isSupabaseEnabled) {
       const { error } = await supabase!
         .from("wiki_pages")
@@ -397,9 +404,14 @@ export function WikiPage() {
         console.error("[WikiPage] rename error:", error);
         toast("名前の変更に失敗しました", "error");
         load();
+      } else {
+        const { data: freshData } = await supabase!.from("wiki_pages").select("*").eq("project_id", project?.id).order("sort_order");
+        if (freshData) {
+          setPages(freshData.map(mapWikiPage));
+        }
       }
     }
-  }, [selectedId, userName, load, toast]);
+  }, [selectedId, userName, project?.id, load, toast]);
 
   const handleImagesChange = useCallback(async (next: string[]) => {
     if (!selectedId) return;
@@ -460,12 +472,15 @@ export function WikiPage() {
       return;
     }
     await load();
-    if (!isFolder) setSelectedId(id);
+    if (!isFolder) handleSelectPage(id);
   };
 
   const handleDelete = async (page: WikiPageType) => {
     await supabase!.from("wiki_pages").delete().eq("id", page.id);
-    if (selectedId === page.id) setSelectedId(null);
+    if (selectedId === page.id) {
+      setSelectedId(null);
+      navigate(`/${projectSlug}/wiki`);
+    }
     toast(`「${page.title || (page.isFolder ? "無題のフォルダ" : "無題のページ")}」を削除しました`);
     load();
   };
@@ -582,7 +597,8 @@ export function WikiPage() {
             </div>
           ) : tree.map(node => (
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
-              onSelect={handleSelectPage}
+              onSelectPage={handleSelectPage}
+              onSelectFolder={handleSelectFolder}
               onAddChild={canEdit ? handleAddItem : () => {}}
               onDelete={canEdit ? setDeleteTarget : () => {}}
               onMoveNode={handleMoveNode}
@@ -594,7 +610,12 @@ export function WikiPage() {
         </div>
 
         <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
-          {!selected ? (
+          {loading ? (
+            // 🌟 修正: 通信中に「ページを選択してください」等が一瞬表示されてステートが狂うのを防ぐローダー
+            <div style={{ padding: "60px 0", textAlign: "center" }}>
+              <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>読み込み中...</p>
+            </div>
+          ) : !selected ? (
             <div style={{ padding: "60px 0", textAlign: "center" }}>
               <BookOpen style={{ width: 32, height: 32, color: "#D4CEC8", margin: "0 auto 10px" }} />
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>左のツリーからページを選択するか、新規ページを作成してください</p>
@@ -705,7 +726,7 @@ function GoogleDriveMoveModal({
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(2px)" }} />
       <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: "400px", background: "#FFFFFF", borderRadius: "14px", padding: "20px", zIndex: 401, boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifySelf: "space-between", marginBottom: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <FolderTree style={{ width: 16, height: 16, color: "#059669" }} />
             <h3 style={{ fontSize: "15px", fontWeight: 700, color: "#1A1714" }}>移動先フォルダーの選択</h3>
