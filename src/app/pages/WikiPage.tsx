@@ -134,7 +134,7 @@ function TreeItem({
   const iconColor = isFolder ? "#F59E0B" : (isSelected ? "#059669" : "#B0A9A4");
 
   return (
-    <div 
+    <div
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -165,7 +165,7 @@ function TreeItem({
           )}
         </span>
         <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
-        
+
         {isEditing ? (
           <input
             ref={inputRef}
@@ -274,7 +274,7 @@ export function WikiPage() {
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
-  
+
   const [movingNodeTarget, setMovingNodeTarget] = useState<WikiPageType | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
 
@@ -316,6 +316,39 @@ export function WikiPage() {
   const tree = useMemo(() => buildTree(pages), [pages]);
   const selected = useMemo(() => pages.find(p => p.id === selectedId) ?? null, [pages, selectedId]);
 
+  const ancestors = useMemo(() => {
+    if (!selected) return [];
+    const list: WikiPageType[] = [];
+    let current = selected;
+    while (current.parentId) {
+      const parent = pages.find(p => p.id === current.parentId);
+      if (!parent) break;
+      list.unshift(parent);
+      current = parent;
+    }
+    return list;
+  }, [selected, pages]);
+
+  const handleSelectFolder = useCallback((folderId: string | null) => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      if (selectedId && isSupabaseEnabled) {
+        supabase!.from("wiki_pages").update({
+          title, content, updated_by: userName || null, updated_at: new Date().toISOString(),
+        }).eq("id", selectedId);
+        setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title, content } : p));
+      }
+    }
+    setSelectedId(folderId);
+    const slug = projectSlug ?? "";
+    if (folderId) {
+      navigate(`/${slug}/wiki/${folderId}`);
+    } else {
+      navigate(`/${slug}/wiki`);
+    }
+  }, [projectSlug, navigate, selectedId, title, content, userName]);
+
   useEffect(() => {
     if (!wikiPath || pages.length === 0) return;
     const parts = wikiPath.split("/").filter(Boolean);
@@ -328,7 +361,7 @@ export function WikiPage() {
     let found: WikiPageType | undefined;
     if (isUUID) {
       // IDで直接引く（タイトル重複による誤選択を防ぐ）
-      found = pages.find(p => p.id === firstPart && !p.isFolder);
+      found = pages.find(p => p.id === firstPart);
     } else {
       // タイトルベースの旧URL形式（後方互換）
       const decodedParts = parts.map(s => decodeURIComponent(s));
@@ -583,8 +616,8 @@ export function WikiPage() {
           ) : tree.map(node => (
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
               onSelect={handleSelectPage}
-              onAddChild={canEdit ? handleAddItem : () => {}}
-              onDelete={canEdit ? setDeleteTarget : () => {}}
+              onAddChild={canEdit ? handleAddItem : () => { }}
+              onDelete={canEdit ? setDeleteTarget : () => { }}
               onMoveNode={handleMoveNode}
               onOpenMoveModal={setMovingNodeTarget}
               onRename={handleTreeItemRename}
@@ -610,6 +643,19 @@ export function WikiPage() {
           ) : (
             <>
               <div style={{ padding: "20px 20px 12px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#9E9690", marginBottom: 8, flexWrap: "wrap" }}>
+                  <span onClick={() => handleSelectFolder(null)} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>Wikiホーム</span>
+                  {ancestors.map(folder => (
+                    <div key={folder.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span>&gt;</span>
+                      <span onClick={() => handleSelectFolder(folder.id)} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>
+                        {folder.title || "無題のフォルダ"}
+                      </span>
+                    </div>
+                  ))}
+                  <span>&gt;</span>
+                  <span style={{ color: "#9E9690" }}>{selected.title || "無題のページ"}</span>
+                </div>
                 <input
                   value={title} disabled={!canEdit}
                   onChange={e => { setTitle(e.target.value); scheduleSave(e.target.value, content); }}
@@ -653,10 +699,10 @@ export function WikiPage() {
 
       {/* Googleドライブ風のフォルダ階層一覧選択移動モーダル */}
       {movingNodeTarget && (
-        <GoogleDriveMoveModal 
-          node={movingNodeTarget} 
-          pages={pages} 
-          onClose={() => setMovingNodeTarget(null)} 
+        <GoogleDriveMoveModal
+          node={movingNodeTarget}
+          pages={pages}
+          onClose={() => setMovingNodeTarget(null)}
           onConfirm={async (targetParentId) => {
             await handleMoveNode(movingNodeTarget.id, targetParentId);
             setMovingNodeTarget(null);
