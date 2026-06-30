@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Check, Plus } from "lucide-react";
 
 export interface SelectOption {
@@ -15,11 +16,14 @@ interface Props {
   placeholder?: string;
   // 新規項目をバックエンドに追加するための関数
   onAddOption?: (newLabel: string) => Promise<string | null>;
+  // 🌟 追加: 展開方向を制御するオプション
+  placement?: "top" | "bottom";
 }
 
 export function CustomSelect({ value, options, onChange, placeholder = "選択してください", onAddOption }: Props) {
   const [open, setOpen] = useState(false);
-  const [dropPos, setDropPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  // 🌟 修正: topだけでなく、上方向に展開する場合のbottomも持てるように型を変更
+  const [dropPos, setDropPos] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -34,7 +38,14 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
   const handleToggle = () => {
     if (!open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
-      setDropPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      const spaceBelow = window.innerHeight - rect.bottom;
+
+      // 🌟 修正: 画面下部に十分なスペースがない（250px未満）場合は自動検知して上方向に展開する
+      if (spaceBelow < 250) {
+        setDropPos({ bottom: window.innerHeight - rect.top + 4, left: rect.left, width: rect.width });
+      } else {
+        setDropPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      }
       setIsInputMode(false);
       setInputValue("");
     }
@@ -70,7 +81,7 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // 注意点: IME入力中の変換確定 Enterの時は発火させない
     if (e.nativeEvent.isComposing || e.key !== "Enter") return;
-    
+
     e.preventDefault();
     handleAddSubmit();
   };
@@ -150,12 +161,14 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
         }} />
       </button>
 
-      {open && dropPos && (
+      {open && dropPos && createPortal(
         <div
           ref={dropdownRef}
           style={{
             position: "fixed",
-            top: dropPos.top,
+            // 🌟 修正: top/bottom を動的に切り替え
+            ...(dropPos.top !== undefined ? { top: dropPos.top } : {}),
+            ...(dropPos.bottom !== undefined ? { bottom: dropPos.bottom } : {}),
             left: dropPos.left,
             width: dropPos.width,
             zIndex: 9999,
@@ -207,75 +220,76 @@ export function CustomSelect({ value, options, onChange, placeholder = "選択�
 
           {/* 最下部の固定配置追加エリア（その場追加を行う onAddOption を渡したプルダウンのみ表示） */}
           {onAddOption && (
-          <div style={{ borderTop: "1px solid rgba(26,23,20,0.08)", background: "#FAFAF9", padding: "4px", flexShrink: 0 }}>
-            {isInputMode ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px" }}>
-                <input
-                  ref={inputRef}
-                  type="text"
-                  placeholder="新しい項目名..."
-                  value={inputValue}
-                  onChange={e => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  disabled={isAdding}
-                  style={{
-                    flex: 1,
-                    padding: "6px 10px",
-                    fontSize: "13px",
-                    border: "1.5px solid rgba(5,150,105,0.5)",
-                    borderRadius: "6px",
-                    outline: "none",
-                    background: "#FFF",
-                  }}
-                />
+            <div style={{ borderTop: "1px solid rgba(26,23,20,0.08)", background: "#FAFAF9", padding: "4px", flexShrink: 0 }}>
+              {isInputMode ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px" }}>
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    placeholder="新しい項目名..."
+                    value={inputValue}
+                    onChange={e => setInputValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    disabled={isAdding}
+                    style={{
+                      flex: 1,
+                      padding: "6px 10px",
+                      fontSize: "13px",
+                      border: "1.5px solid rgba(5,150,105,0.5)",
+                      borderRadius: "6px",
+                      outline: "none",
+                      background: "#FFF",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddSubmit}
+                    disabled={!inputValue.trim() || isAdding}
+                    style={{
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      background: inputValue.trim() ? "#059669" : "#E6E4E0",
+                      color: inputValue.trim() ? "#FFF" : "#A09790",
+                      border: "none",
+                      borderRadius: "6px",
+                      cursor: inputValue.trim() ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    {isAdding ? "..." : "追加"}
+                  </button>
+                </div>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleAddSubmit}
-                  disabled={!inputValue.trim() || isAdding}
+                  onClick={() => setIsInputMode(true)}
                   style={{
-                    padding: "6px 10px",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    background: inputValue.trim() ? "#059669" : "#E6E4E0",
-                    color: inputValue.trim() ? "#FFF" : "#A09790",
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "flex-start",
+                    gap: 8,
+                    padding: "9px 12px",
+                    fontSize: "13px",
+                    fontWeight: 500,
+                    color: "#6B6458",
+                    background: "transparent",
                     border: "none",
                     borderRadius: "6px",
-                    cursor: inputValue.trim() ? "pointer" : "not-allowed",
+                    cursor: "pointer",
+                    transition: "all 0.1s",
                   }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.color = "#1A1714"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
                 >
-                  {isAdding ? "..." : "追加"}
+                  <Plus style={{ width: 14, height: 14, color: "#6B6458", flexShrink: 0 }} />
+                  新しく追加する
                 </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setIsInputMode(true)}
-                style={{
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "flex-start",
-                  gap: 8,
-                  padding: "9px 12px",
-                  fontSize: "13px",
-                  fontWeight: 500,
-                  color: "#6B6458",
-                  background: "transparent",
-                  border: "none",
-                  borderRadius: "6px",
-                  cursor: "pointer",
-                  transition: "all 0.1s",
-                }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.color = "#1A1714"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
-              >
-                <Plus style={{ width: 14, height: 14, color: "#6B6458", flexShrink: 0 }} />
-                新しく追加する
-              </button>
-            )}
-          </div>
+              )}
+            </div>
           )}
-        </div>
+        </div>,
+        document.body // 🌟 修正: 親要素のoverflow:hiddenを回避し、最前面に確実に出すためのPortal
       )}
     </div>
   );
