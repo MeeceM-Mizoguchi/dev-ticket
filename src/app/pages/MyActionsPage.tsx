@@ -1287,14 +1287,15 @@ export function MyActionsPage() {
   const closedA = filter(closedAssigned);
   const closedR = filter(closedReview);
 
-  const todo = assignedTickets.filter(t => t.status === "todo");
-  const inProgress = assignedTickets.filter(t => t.status === "in-progress");
-  const inReview = assignedTickets.filter(t => t.status === "in-review");
-  const testing = assignedTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
+  // 🌟 修正: progress が -1(保留) または -2(取下) のチケットはアクションリストに表示しないように除外
+  const todo = assignedTickets.filter(t => t.status === "todo" && t.progress >= 0);
+  const inProgress = assignedTickets.filter(t => t.status === "in-progress" && t.progress >= 0);
+  const inReview = assignedTickets.filter(t => t.status === "in-review" && t.progress >= 0);
+  const testing = assignedTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status) && t.progress >= 0);
 
-  const pendingReview = reviewTickets.filter(t => t.status === "in-review");
-  const revisionRequested = reviewTickets.filter(t => t.status === "in-progress" && (t.reviewRound ?? 0) > 0);
-  const approved = reviewTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status));
+  const pendingReview = reviewTickets.filter(t => t.status === "in-review" && t.progress >= 0);
+  const revisionRequested = reviewTickets.filter(t => t.status === "in-progress" && (t.reviewRound ?? 0) > 0 && t.progress >= 0);
+  const approved = reviewTickets.filter(t => ["review-done", "stg-test", "uat"].includes(t.status) && t.progress >= 0);
 
   const assignedActiveCount = todo.length + inProgress.length + inReview.length + testing.length;
   const reviewActiveCount = pendingReview.length + revisionRequested.length + approved.length;
