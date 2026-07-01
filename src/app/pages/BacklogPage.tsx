@@ -7,6 +7,7 @@ import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapBacklogItem, mapTicketCategory } from "@/app/lib/mappers";
+import { getDefaultProgressForStatus } from "@/app/lib/helpers";
 import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions } from "@/app/types";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -89,7 +90,7 @@ function ConvertToTicketModal({
       const { error: insErr } = await supabase!.from("sprint_tickets").insert({
         id: ticketId, sprint_id: sprintId, wbs, title: item.title, status: "todo",
         priority: item.priority, assignee: item.assignee || "", estimated_hours: item.estimatedHours || 0,
-        progress: 0, description: item.description || "", created_by: userName || null,
+        progress: getDefaultProgressForStatus("todo"), description: item.description || "", created_by: userName || null,
         images: item.images?.length ? item.images : [],
       });
       if (insErr) { toast("チケット作成に失敗しました", "error"); setSaving(false); return; }

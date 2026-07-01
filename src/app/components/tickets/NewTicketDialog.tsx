@@ -3,7 +3,7 @@ import { Plus, X, Trash2, Check } from "lucide-react";
 import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
-import { labelCls, inputCls, TICKET_STATUSES } from "@/app/lib/helpers";
+import { labelCls, inputCls, TICKET_STATUSES, getDefaultProgressForStatus } from "@/app/lib/helpers";
 import { mapTicketCategory } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
@@ -453,7 +453,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               id: ticketId.current, sprint_id: parentRow.sprint_id, wbs,
               title, status, priority, assignee: finalAssignee,
               start_date: startDate || null, due_date: dueDate || null,
-              estimated_hours: estimatedHours || 0, progress: 0,
+              estimated_hours: estimatedHours || 0, progress: getDefaultProgressForStatus(status),
               description: description || null,
               category_id: categoryId || null,
               created_by: userName || null,
@@ -507,7 +507,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         id: ticketId.current, sprint_id: effectiveSprintId, wbs,
         title, status, priority, assignee: finalAssignee,
         start_date: startDate || null, due_date: dueDate || null,
-        estimated_hours: estimatedHours || 0, progress: 0,
+        estimated_hours: estimatedHours || 0, progress: getDefaultProgressForStatus(status),
         description: description || null,
         category_id: categoryId || null,
         created_by: userName || null,

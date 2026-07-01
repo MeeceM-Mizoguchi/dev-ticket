@@ -151,6 +151,24 @@ export function calcProgress(done: number, ip: number, todo: number) {
   const t = done + ip + todo; return t === 0 ? 0 : Math.round((done / t) * 100);
 }
 
+const STATUS_PROGRESS_MAP: Record<string, number> = {
+  todo: 0,
+  "in-progress": 10,
+  "in-review": 30,
+  "review-done": 50,
+  "stg-test": 70,
+  uat: 90,
+  done: 100,
+  closed: 100,
+  pending: 0,
+  "waiting-release": 100,
+  released: 100,
+};
+
+export function getDefaultProgressForStatus(status?: string | null) {
+  return STATUS_PROGRESS_MAP[status ?? ""] ?? 0;
+}
+
 export function getInitials(n: string) { return (n || "?").replace(/\s/g, "").slice(0, 2); }
 
 export function truncateName(name: string | null | undefined, maxWidth = 14): string {
