@@ -102,6 +102,18 @@ function computeRawSegments(t: {
   ];
 }
 
+// 返信元コメントへスクロールし、そのテキストボックスの枠線をふわっとパルス表示する
+function pointToComment(targetEl: HTMLElement) {
+  targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  // 名前・日時を含む外枠ではなく、内側のテキストボックスだけを対象にする
+  const box = (targetEl.querySelector("[data-comment-box]") as HTMLElement) ?? targetEl;
+  // クラスを付け直してアニメーションを再生（連続クリックにも対応）
+  box.classList.remove("comment-ring-pulse");
+  void box.offsetWidth;
+  box.classList.add("comment-ring-pulse");
+  window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
+}
+
 export function TicketDetailPanel({
   ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
 }: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
@@ -1550,7 +1562,7 @@ export function TicketDetailPanel({
           onCreated={() => { setShowCreateChild(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
-      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes flashHighlight{0%{background-color:rgba(245,158,11,0.25)}100%{background-color:transparent}}.comment-flash-highlight{animation:flashHighlight 2s ease-out forwards; border-radius:12px; padding:4px; margin:-4px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
+      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes commentRingPulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0)}22%{box-shadow:0 0 0 4px rgba(249,115,22,0.55),0 0 18px 3px rgba(249,115,22,0.35)}50%{box-shadow:0 0 0 2px rgba(249,115,22,0.28),0 0 9px 2px rgba(249,115,22,0.18)}74%{box-shadow:0 0 0 4px rgba(249,115,22,0.50),0 0 18px 3px rgba(249,115,22,0.32)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}.comment-ring-pulse{animation:commentRingPulse 2s ease-out; border-radius:8px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
 
       {/* Image preview modal */}
       {previewImage && (
@@ -2794,7 +2806,7 @@ export function TicketDetailPanel({
                             </div>
                           ) : (
                             (c.content || c.images?.length > 0) && (
-                              <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                              <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
                                 {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
                                 {c.images?.length > 0 && (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
@@ -2912,13 +2924,11 @@ export function TicketDetailPanel({
                                         const targetId = quoteId ? `panel-comment-${quoteId}` : `panel-comment-${fallbackId}`;
                                         const targetEl = document.getElementById(targetId);
                                         if (targetEl) {
-                                          targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
-                                          targetEl.classList.remove("comment-flash-highlight");
-                                          void targetEl.offsetWidth;
-                                          targetEl.classList.add("comment-flash-highlight");
+                                          pointToComment(targetEl);
                                         }
                                       }
                                     }}
+                                    data-comment-box
                                     style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
                                   >
                                     <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
@@ -3120,7 +3130,7 @@ export function TicketDetailPanel({
                           </div>
                         ) : (
                           (c.content || c.images?.length > 0) && (
-                            <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
+                            <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
                               {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
                               {c.images?.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
@@ -3253,13 +3263,11 @@ export function TicketDetailPanel({
                                       const targetId = quoteId ? `panel-comment-${quoteId}` : `panel-comment-${fallbackId}`;
                                       const targetEl = document.getElementById(targetId);
                                       if (targetEl) {
-                                        targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
-                                        targetEl.classList.remove("comment-flash-highlight");
-                                        void targetEl.offsetWidth;
-                                        targetEl.classList.add("comment-flash-highlight");
+                                        pointToComment(targetEl);
                                       }
                                     }
                                   }}
+                                  data-comment-box
                                   style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
                                 >
                                   <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
