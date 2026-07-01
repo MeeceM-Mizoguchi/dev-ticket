@@ -2019,7 +2019,9 @@ export function TicketDetailPanel({
 
           {(() => {
             // 🌟 修正: 保留時（-1）や取下時（-2）はバーの表示上は 0% とみなす
-            const displayProgress = progress < 0 ? 0 : (status === "done" || status === "closed") ? 100 : progress;
+            // クローズ、完了、リリース済み等のステータスは無条件で 100% として扱う
+            const isCompletedStatus = ["done", "closed", "waiting-release", "released"].includes(status);
+            const displayProgress = progress < 0 ? 0 : isCompletedStatus ? 100 : progress;
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
                 <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
