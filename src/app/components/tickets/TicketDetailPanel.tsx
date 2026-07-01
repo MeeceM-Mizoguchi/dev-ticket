@@ -102,6 +102,18 @@ function computeRawSegments(t: {
   ];
 }
 
+// 返信元コメントへスクロールし、そのテキストボックスの枠線をふわっとパルス表示する
+function pointToComment(targetEl: HTMLElement) {
+  targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  // 名前・日時を含む外枠ではなく、内側のテキストボックスだけを対象にする
+  const box = (targetEl.querySelector("[data-comment-box]") as HTMLElement) ?? targetEl;
+  // クラスを付け直してアニメーションを再生（連続クリックにも対応）
+  box.classList.remove("comment-ring-pulse");
+  void box.offsetWidth;
+  box.classList.add("comment-ring-pulse");
+  window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
+}
+
 export function TicketDetailPanel({
   ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
 }: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
@@ -1575,7 +1587,7 @@ export function TicketDetailPanel({
           onCreated={() => { setShowCreateChild(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
-      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes flashHighlight{0%{background-color:#FEF08A;box-shadow:0 0 0 4px #FEF08A;border-radius:8px;}100%{background-color:transparent;box-shadow:0 0 0 0px transparent;border-radius:8px;}}`}</style>
+      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes commentRingPulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0)}22%{box-shadow:0 0 0 4px rgba(249,115,22,0.55),0 0 18px 3px rgba(249,115,22,0.35)}50%{box-shadow:0 0 0 2px rgba(249,115,22,0.28),0 0 9px 2px rgba(249,115,22,0.18)}74%{box-shadow:0 0 0 4px rgba(249,115,22,0.50),0 0 18px 3px rgba(249,115,22,0.32)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}.comment-ring-pulse{animation:commentRingPulse 2s ease-out; border-radius:8px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
 
       {/* Image preview modal */}
       {previewImage && (
@@ -2745,101 +2757,103 @@ export function TicketDetailPanel({
                   const isLatestReviewReq = isReviewReq && c.id === latestReviewReqId;
                   const showReviewForm = isLatestReviewReq && canReview && status === "in-review" && editingId !== c.id;
                   return (
-                    <div key={c.id} id={`panel-comment-${c.id}`} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                    <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                       <Avatar name={c.userName} size="xs" />
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" as const }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, flexShrink: 0 }}>{sysLabel}</span>
-                          <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                          <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                            {isOwn && editingId !== c.id && (
-                              <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                                <Pencil style={{ width: 11, height: 11 }} />
-                              </button>
-                            )}
-                            {isOwn && (
-                              <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                                <Trash2 style={{ width: 11, height: 11 }} />
-                              </button>
-                            )}
-                            <button onClick={() => { setReplyingToId(replyingToId === c.id ? null : c.id); setReplyText(""); setReplyImages([]); }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
-                              title="返信">
-                              <CornerDownRight style={{ width: 11, height: 11 }} />
-                            </button>
-                          </div>
-                        </div>
-                        {editingId === c.id ? (
-                          <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                            <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                            {editImages.length > 0 && (
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                                {editImages.map((img, i) => (
-                                  <div key={i} style={{ position: "relative" }}>
-                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                      style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                    <button onClick={() => copyImageToClipboard(img)}
-                                      style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                      title="画像をコピー">
-                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                    </button>
-                                    <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
-                                      style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                      <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                              <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                                <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                                <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                                  onChange={async e => {
-                                    for (const f of Array.from(e.target.files || [])) {
-                                      if (!f.type.startsWith("image/")) continue;
-                                      const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                      if (url) setEditImages(prev => [...prev, url]);
-                                    }
-                                    e.target.value = "";
-                                  }} />
-                              </label>
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                                  <Check style={{ width: 11, height: 11 }} />保存
+                        <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" as const }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, flexShrink: 0 }}>{sysLabel}</span>
+                            <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                            <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                              {isOwn && editingId !== c.id && (
+                                <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                  <Pencil style={{ width: 11, height: 11 }} />
                                 </button>
-                                <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
-                              </div>
+                              )}
+                              {isOwn && (
+                                <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                  <Trash2 style={{ width: 11, height: 11 }} />
+                                </button>
+                              )}
+                              <button onClick={() => { setReplyingToId(replyingToId === c.id ? null : c.id); setReplyText(""); setReplyImages([]); }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
+                                title="返信">
+                                <CornerDownRight style={{ width: 11, height: 11 }} />
+                              </button>
                             </div>
                           </div>
-                        ) : (
-                          (c.content || c.images?.length > 0) && (
-                            <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
-                              {c.images?.length > 0 && (
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
-                                  {c.images.map((img, i) => (
+                          {editingId === c.id ? (
+                            <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
+                              <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                              {editImages.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                                  {editImages.map((img, i) => (
                                     <div key={i} style={{ position: "relative" }}>
                                       <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                        style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                        style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                       <button onClick={() => copyImageToClipboard(img)}
-                                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                        style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
                                         title="画像をコピー">
-                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                      </button>
+                                      <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
+                                        style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                        <X style={{ width: 8, height: 8, color: "#FFF" }} />
                                       </button>
                                     </div>
                                   ))}
                                 </div>
                               )}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                                  <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                                  <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                    onChange={async e => {
+                                      for (const f of Array.from(e.target.files || [])) {
+                                        if (!f.type.startsWith("image/")) continue;
+                                        const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                        if (url) setEditImages(prev => [...prev, url]);
+                                      }
+                                      e.target.value = "";
+                                    }} />
+                                </label>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                                    <Check style={{ width: 11, height: 11 }} />保存
+                                  </button>
+                                  <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                                </div>
+                              </div>
                             </div>
-                          )
-                        )}
+                          ) : (
+                            (c.content || c.images?.length > 0) && (
+                              <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                                {c.images?.length > 0 && (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
+                                    {c.images.map((img, i) => (
+                                      <div key={i} style={{ position: "relative" }}>
+                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                          style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                        <button onClick={() => copyImageToClipboard(img)}
+                                          style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                          title="画像をコピー">
+                                          {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          )}
+                        </div>
                         {/* Replies */}
                         {(repliesByParent.get(c.id) ?? []).map(reply => {
                           const isOwnReply = reply.userName === userName;
@@ -2907,7 +2921,43 @@ export function TicketDetailPanel({
                                     </div>
                                   </div>
                                 ) : (
-                                  <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
+                                  <div
+                                    className="reply-comment-wrapper"
+                                    onClick={(e) => {
+                                      const target = e.target as HTMLElement;
+                                      const bq = target.closest("blockquote");
+                                      if (bq) {
+                                        e.preventDefault();
+                                        let quoteId = bq.getAttribute("data-quote-id");
+                                        if (!quoteId) {
+                                          const match = bq.textContent?.match(/\[(CMT-[\w-]+)\]/);
+                                          if (match) quoteId = match[1];
+                                        }
+                                        if (!quoteId) {
+                                          // 過去のコメント用：自身より過去のコメントからテキスト一致で検索（同名コメント対策）
+                                          const bqText = (bq.textContent || "").replace(/\s+/g, "");
+                                          const currentIndex = comments.findIndex(x => x.id === reply.id);
+                                          const searchPool = currentIndex >= 0 ? comments.slice(0, currentIndex) : comments.slice();
+                                          const matched = searchPool.reverse().find(tc => {
+                                            const tempDiv = document.createElement("div");
+                                            tempDiv.innerHTML = tc.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '');
+                                            const cleanTc = (tempDiv.textContent || "").replace(/\s+/g, "");
+                                            if (!cleanTc) return false;
+                                            return bqText.includes(cleanTc.slice(0, 20)) && bqText.includes(tc.userName.replace(/\s+/g, ""));
+                                          });
+                                          if (matched) quoteId = matched.id;
+                                        }
+                                        const fallbackId = reply.replyTo || c.id;
+                                        const targetId = quoteId ? `panel-comment-${quoteId}` : `panel-comment-${fallbackId}`;
+                                        const targetEl = document.getElementById(targetId);
+                                        if (targetEl) {
+                                          pointToComment(targetEl);
+                                        }
+                                      }
+                                    }}
+                                    data-comment-box
+                                    style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
+                                  >
                                     <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
                                     {reply.images.length > 0 && (
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
@@ -3023,118 +3073,111 @@ export function TicketDetailPanel({
 
                 // normal comment
                 return (
-                  <div key={c.id} id={`panel-comment-${c.id}`} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                  <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
                     <Avatar name={c.userName} size="xs" />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
-                        <StatusBadge status={c.ticketStatus} />
-                        <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                          {isOwn && editingId !== c.id && (
-                            <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                              <Pencil style={{ width: 11, height: 11 }} />
-                            </button>
-                          )}
-                          {isOwn && (
-                            <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                              <Trash2 style={{ width: 11, height: 11 }} />
-                            </button>
-                          )}
-                          <button onClick={() => {
-                            setReplyingToId(replyingToId === c.id ? null : c.id);
-                            // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
-                            const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
-                            // 左線ではなく全体を囲うボーダースタイルに変更
-                            setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
-                            setReplyImages([]);
-                            setTimeout(() => {
-                              const el = document.getElementById(`reply-form-inner-${c.id}`);
-                              if (el) {
-                                el.scrollIntoView({ behavior: "smooth", block: "center" });
-                                el.style.animation = "none";
-                                el.offsetHeight; // アニメーションを確実にリセット
-                                el.style.animation = "flashHighlight 1.5s ease-out";
-                              }
-                            }, 150);
-                          }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
-                            title="返信">
-                            <CornerDownRight style={{ width: 11, height: 11 }} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {editingId === c.id ? (
-                        <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                          {editImages.length > 0 && (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                              {editImages.map((img, i) => (
-                                <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                  <button onClick={() => copyImageToClipboard(img)}
-                                    style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                    title="画像をコピー">
-                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                  </button>
-                                  <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
-                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                              <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                              <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                                onChange={async e => {
-                                  for (const f of Array.from(e.target.files || [])) {
-                                    if (!f.type.startsWith("image/")) continue;
-                                    const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                    if (url) setEditImages(prev => [...prev, url]);
-                                  }
-                                  e.target.value = "";
-                                }} />
-                            </label>
-                            <div style={{ display: "flex", gap: 6 }}>
-                              <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                                <Check style={{ width: 11, height: 11 }} />保存
+                      <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                          <StatusBadge status={c.ticketStatus} />
+                          <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                          <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                            {isOwn && editingId !== c.id && (
+                              <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                <Pencil style={{ width: 11, height: 11 }} />
                               </button>
-                              <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
-                            </div>
+                            )}
+                            {isOwn && (
+                              <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                <Trash2 style={{ width: 11, height: 11 }} />
+                              </button>
+                            )}
+                            <button onClick={() => {
+                              setReplyingToId(replyingToId === c.id ? null : c.id);
+                              // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
+                              const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
+                              // 左線ではなく全体を囲うボーダースタイルに変更
+                              setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${c.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                              setReplyImages([]);
+                            }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
+                              title="返信">
+                              <CornerDownRight style={{ width: 11, height: 11 }} />
+                            </button>
                           </div>
                         </div>
-                      ) : (
-                        (c.content || c.images?.length > 0) && (
-                          <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
-                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
-                            {c.images?.length > 0 && (
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
-                                {c.images.map((img, i) => (
+
+                        {editingId === c.id ? (
+                          <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
+                            <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                            {editImages.length > 0 && (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                                {editImages.map((img, i) => (
                                   <div key={i} style={{ position: "relative" }}>
                                     <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                      style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                      style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                     <button onClick={() => copyImageToClipboard(img)}
-                                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                      style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
                                       title="画像をコピー">
-                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                    </button>
+                                    <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
+                                      style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                      <X style={{ width: 8, height: 8, color: "#FFF" }} />
                                     </button>
                                   </div>
                                 ))}
                               </div>
                             )}
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                              <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                                <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                                <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                  onChange={async e => {
+                                    for (const f of Array.from(e.target.files || [])) {
+                                      if (!f.type.startsWith("image/")) continue;
+                                      const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                      if (url) setEditImages(prev => [...prev, url]);
+                                    }
+                                    e.target.value = "";
+                                  }} />
+                              </label>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                                  <Check style={{ width: 11, height: 11 }} />保存
+                                </button>
+                                <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                              </div>
+                            </div>
                           </div>
-                        )
-                      )}
+                        ) : (
+                          (c.content || c.images?.length > 0) && (
+                            <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
+                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                              {c.images?.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
+                                  {c.images.map((img, i) => (
+                                    <div key={i} style={{ position: "relative" }}>
+                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                        style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                      <button onClick={() => copyImageToClipboard(img)}
+                                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                        title="画像をコピー">
+                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        )}
+                      </div>
                       {/* Replies */}
                       {(repliesByParent.get(c.id) ?? []).map(reply => {
                         const isOwnReply = reply.userName === userName;
@@ -3168,17 +3211,8 @@ export function TicketDetailPanel({
                                     // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
                                     const cleanContent = truncateQuoteHtml(reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                                     // 左線ではなく全体を囲うボーダースタイルに変更
-                                    setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
+                                    setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${reply.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
                                     setReplyImages([]);
-                                    setTimeout(() => {
-                                      const el = document.getElementById(`reply-form-inner-${c.id}`);
-                                      if (el) {
-                                        el.scrollIntoView({ behavior: "smooth", block: "center" });
-                                        el.style.animation = "none";
-                                        el.offsetHeight; // アニメーションを確実にリセット
-                                        el.style.animation = "flashHighlight 1.5s ease-out";
-                                      }
-                                    }, 150);
                                   }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
                                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
@@ -3227,7 +3261,42 @@ export function TicketDetailPanel({
                                   </div>
                                 </div>
                               ) : (
-                                <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
+                                <div
+                                  className="reply-comment-wrapper"
+                                  onClick={(e) => {
+                                    const target = e.target as HTMLElement;
+                                    const bq = target.closest("blockquote");
+                                    if (bq) {
+                                      e.preventDefault();
+                                      let quoteId = null;
+                                      const match = bq.textContent?.match(/\[(CMT-[\w-]+)\]/);
+                                      if (match) quoteId = match[1];
+
+                                      if (!quoteId) {
+                                        // 過去のコメント用：自身より過去のコメントからテキスト一致で検索（同名コメント対策）
+                                        const bqText = (bq.textContent || "").replace(/\s+/g, "");
+                                        const currentIndex = comments.findIndex(x => x.id === reply.id);
+                                        const searchPool = currentIndex >= 0 ? comments.slice(0, currentIndex) : comments.slice();
+                                        const matched = searchPool.reverse().find(tc => {
+                                          const tempDiv = document.createElement("div");
+                                          tempDiv.innerHTML = tc.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '');
+                                          const cleanTc = (tempDiv.textContent || "").replace(/\s+/g, "");
+                                          if (!cleanTc) return false;
+                                          return bqText.includes(cleanTc.slice(0, 20)) && bqText.includes(tc.userName.replace(/\s+/g, ""));
+                                        });
+                                        if (matched) quoteId = matched.id;
+                                      }
+                                      const fallbackId = reply.replyTo || c.id;
+                                      const targetId = quoteId ? `panel-comment-${quoteId}` : `panel-comment-${fallbackId}`;
+                                      const targetEl = document.getElementById(targetId);
+                                      if (targetEl) {
+                                        pointToComment(targetEl);
+                                      }
+                                    }
+                                  }}
+                                  data-comment-box
+                                  style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
+                                >
                                   <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
                                   {reply.images.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
@@ -3247,11 +3316,11 @@ export function TicketDetailPanel({
                           </div>
                         );
                       })}
-                      {/* Reply form (スレッド共通・最下部) */}
+                      {/* Reply form */}
                       {replyingToId === c.id && (
-                        <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                        <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                           <Avatar name={userName} size="xs" />
-                          <div id={`reply-form-inner-${c.id}`} style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
                             <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
                             {replyImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
