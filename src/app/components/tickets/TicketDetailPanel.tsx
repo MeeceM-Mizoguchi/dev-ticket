@@ -4,7 +4,7 @@ import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check,
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
-import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -15,7 +15,7 @@ import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { subscribeTicket, emitTicketUpdate } from "@/app/lib/ticketSync";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
-import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory } from "@/app/lib/mappers";
+import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -1299,15 +1299,45 @@ export function TicketDetailPanel({
 
   const openMoveModal = async () => {
     if (!ticket || !isSupabaseEnabled || !projectId) return;
+
+    // 🌟 修正: sprints を先に取得し、その sprint_id のリストを使って sprint_tickets を取得する
+    // （sprint_tickets テーブルには project_id カラムが存在しないため）
     const [{ data: ticketRow }, { data: sprintsData }] = await Promise.all([
       supabase!.from("sprint_tickets").select("sprint_id").eq("id", ticket.id).single(),
-      supabase!.from("sprints").select("id, name, status, start_date, end_date, identifier").eq("project_id", projectId).order("start_date"),
+      supabase!.from("sprints").select("*").eq("project_id", projectId).order("start_date")
     ]);
+
+    const sprintIds = sprintsData?.map(s => s.id) || [];
+
+    const { data: allTicketsData } = sprintIds.length > 0
+      ? await supabase!.from("sprint_tickets").select("*").in("sprint_id", sprintIds)
+      : { data: [] };
+
     const currentSprintId = ticketRow?.sprint_id ?? null;
+
     setAvailableSprints(
       (sprintsData ?? [])
         .filter(s => s.id !== currentSprintId)
-        .map(s => ({ id: s.id, name: s.name, status: s.status, startDate: s.start_date ?? "", endDate: s.end_date ?? "", identifier: s.identifier ?? null }))
+        .map(s => {
+          // 生のチケットデータをスプリントオブジェクトに結合（mappers.ts の mapSprint が要求する形）
+          const rawTickets = (allTicketsData ?? []).filter(t => t.sprint_id === s.id);
+          const rawSprint = { ...s, sprint_tickets: rawTickets };
+
+          // 🌟 一覧画面と全く同じデータ変換を適用
+          const mappedSprint = mapSprint(rawSprint);
+
+          // 🌟 共通ロジックでステータスを再計算
+          const computedStatus = computeSprintStatus(mappedSprint);
+
+          return {
+            id: mappedSprint.id,
+            name: mappedSprint.name,
+            status: computedStatus, // 計算済みのステータスをセット
+            startDate: mappedSprint.startDate ?? "",
+            endDate: mappedSprint.endDate ?? "",
+            identifier: mappedSprint.identifier ?? null
+          };
+        })
     );
     setMoveTargetSprintId(null);
     setShowMoveModal(true);
@@ -1508,13 +1538,8 @@ export function TicketDetailPanel({
             {availableSprints.length === 0 ? (
               <p style={{ fontSize: 13, color: "#A09790", textAlign: "center", padding: "24px 0" }}>移動先のスプリントがありません</p>
             ) : availableSprints.map(s => {
-              const statusMeta: Record<string, { label: string; color: string; bg: string }> = {
-                planning: { label: "計画中", color: "#4F46E5", bg: "#EEF2FF" },
-                active: { label: "進行中", color: "#059669", bg: "#ECFDF5" },
-                completed: { label: "完了", color: "#6B7280", bg: "#F3F4F6" },
-                delayed: { label: "遅延", color: "#DC2626", bg: "#FEF2F2" },
-              };
-              const sm = statusMeta[s.status] ?? { label: s.status, color: "#6B7280", bg: "#F3F4F6" };
+              // 🌟 修正: 個別の色定義を削除し、一覧画面と共通の getSprintStatusMeta を利用してデザインを統一
+              const sm = getSprintStatusMeta(s.status as any) ?? { label: s.status, color: "#6B7280", bg: "#F3F4F6" };
               const isSelected = moveTargetSprintId === s.id;
               return (
                 <label key={s.id}
