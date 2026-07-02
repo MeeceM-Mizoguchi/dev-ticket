@@ -218,6 +218,17 @@ export function TicketDetailPanel({
   const [replyText, setReplyText] = useState("");
   const [replyImages, setReplyImages] = useState<string[]>([]);
 
+  // 返信アイコン押下時：返信が多く積み重なっていても、その場に開くインライン入力欄まで
+  // 自動スクロールし、手動で下までスクロールせずすぐ入力できるようにする（BRU4-041）
+  useEffect(() => {
+    if (!replyingToId) return;
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(`reply-form-${replyingToId}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [replyingToId]);
+
   // 子チケット
   const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
   const [showCreateChild, setShowCreateChild] = useState(false);
@@ -2979,7 +2990,7 @@ export function TicketDetailPanel({
                         })}
                         {/* Reply form */}
                         {replyingToId === c.id && (
-                          <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                          <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                             <Avatar name={userName} size="xs" />
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
@@ -3318,7 +3329,7 @@ export function TicketDetailPanel({
                       })}
                       {/* Reply form */}
                       {replyingToId === c.id && (
-                        <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                        <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                           <Avatar name={userName} size="xs" />
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
