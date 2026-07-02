@@ -7,6 +7,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, MEMBERS } from "@/app/data/mock";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { escStack } from "@/app/lib/escStack";
+import { getDefaultProgressForStatus } from "@/app/lib/helpers";
 
 registerAllModules();
 
@@ -1069,7 +1070,7 @@ export function BulkTicketCreateDialog({
           assignee: row.assignee || null,
           start_date: toDbDate(row.startDate),
           due_date: toDbDate(row.dueDate),
-          estimated_hours: eh, progress: 0,
+          estimated_hours: eh, progress: getDefaultProgressForStatus(STATUS_MAP[row.status] ?? "todo"),
           description: row.description ? textToHtml(row.description) : null,
           created_by: userName || null,
           images: [], parent_id: null,

@@ -57,7 +57,6 @@ export function SprintPage() {
     return v;
   });
   const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
-  const { toast: _toast } = useToast();
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
@@ -98,7 +97,7 @@ export function SprintPage() {
     if (isParentNav) {
       setIsParentNav(false);
     }
-  }, [selectedTicketWbs]);
+  }, [selectedTicketWbs, isParentNav]);
 
   const refreshSprints = () => {
     if (!isSupabaseEnabled || !projectId) return;
@@ -167,11 +166,6 @@ export function SprintPage() {
     [createForSprintId, sprints]
   );
 
-  const handleDeleteSprint = async (sprint: Sprint) => {
-    if (isSupabaseEnabled) await supabase!.from("sprints").delete().eq("id", sprint.id);
-    setSprints(prev => prev.filter(s => s.id !== sprint.id));
-  };
-
   const otherSprints = useMemo(
     () => deleteTarget ? sprints.filter(s => s.id !== deleteTarget.id) : [],
     [deleteTarget, sprints]
@@ -218,6 +212,8 @@ export function SprintPage() {
     { mode: "gantt", label: "ガントチャート", Icon: BarChart2 },
   ];
 
+  const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
+
   return (
     <div style={{ padding: "24px", minWidth: 1100 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
@@ -231,7 +227,7 @@ export function SprintPage() {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>スプリント管理</h1>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>スプリント管理</h1>
             {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
             <button onClick={() => setShowEditIdentifiers(true)} title="識別子を編集"
               style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center" }}
@@ -285,6 +281,7 @@ export function SprintPage() {
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} currentSprintCount={sprints.length} />}
+      
       {bulkCreateForSprintId && (() => {
         const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
         return (
@@ -300,6 +297,7 @@ export function SprintPage() {
           />
         );
       })()}
+
       {createForSprintId && createForSprint && (
         <NewTicketDialog
           sprintId={createForSprintId}
@@ -312,6 +310,7 @@ export function SprintPage() {
           currentTicketCount={createForSprint.tickets.length}
         />
       )}
+
       {editTarget && (
         <EditSprintDialog
           sprint={editTarget}
@@ -319,6 +318,7 @@ export function SprintPage() {
           onClose={() => setEditTarget(null)}
           onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
       )}
+
       {showEditIdentifiers && project && (
         <ProjectSettingsDialog
           project={project}
@@ -328,6 +328,7 @@ export function SprintPage() {
             navigate(`/${newSlug}`);
           }} />
       )}
+
       {deleteTarget && (
         <DeleteSprintDialog
           sprint={deleteTarget}
@@ -354,76 +355,71 @@ export function SprintPage() {
         />
       )}
 
-      {(() => {
-        const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
-        return (
-          <TicketDetailPanel
-            ticket={selectedTicket}
-            projectId={projectId ?? undefined}
-            sprintId={ticketSprint?.id}
-            sprintSlug={ticketSprint?.identifier || undefined}
-            projectSlug={projectSlug}
-            anchor={anchor}
-            onClose={() => {
-              const currentTicketWbs = selectedTicketWbs;
-              const parentWbsToRestore = backgroundParentWbs;
+      <TicketDetailPanel
+        ticket={selectedTicket}
+        projectId={projectId ?? undefined}
+        sprintId={ticketSprint?.id}
+        sprintSlug={ticketSprint?.identifier || undefined}
+        projectSlug={projectSlug}
+        anchor={anchor}
+        onClose={() => {
+          const currentTicketWbs = selectedTicketWbs;
+          const parentWbsToRestore = backgroundParentWbs;
 
-              setClosedHighlightWbs(currentTicketWbs);
+          setClosedHighlightWbs(currentTicketWbs);
+          setBackgroundParentWbs(null);
+
+          if (parentWbsToRestore) {
+            window.history.pushState(null, '', `/${projectSlug}/${parentWbsToRestore}`);
+            setSelectedTicketWbs(parentWbsToRestore);
+            setIsParentNav(true);
+          } else {
+            window.history.pushState(null, '', `/${projectSlug}`);
+            setSelectedTicketWbs(null);
+          }
+          if (currentTicketWbs) {
+            requestAnimationFrame(() => {
+              document.querySelector(`[data-wbs="${currentTicketWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+          }
+        }}
+        onUpdated={refreshSprints}
+        onDeleted={() => {
+          setClosedHighlightWbs(null);
+          setBackgroundParentWbs(null);
+          window.history.pushState(null, '', `/${projectSlug}`);
+          setSelectedTicketWbs(null);
+          refreshSprints();
+        }}
+        onSelectTicket={t => {
+          if (t.wbs) {
+            const prevWbs = selectedTicketWbs;
+            window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
+            if (t.wbs === backgroundParentWbs) {
               setBackgroundParentWbs(null);
-
-              if (parentWbsToRestore) {
-                window.history.pushState(null, '', `/${projectSlug}/${parentWbsToRestore}`);
-                setSelectedTicketWbs(parentWbsToRestore);
-                setIsParentNav(true);
-              } else {
-                window.history.pushState(null, '', `/${projectSlug}`);
-                setSelectedTicketWbs(null);
-              }
-              if (currentTicketWbs) {
+              setIsParentNav(true);
+              setClosedHighlightWbs(prevWbs);
+              if (prevWbs) {
                 requestAnimationFrame(() => {
-                  document.querySelector(`[data-wbs="${currentTicketWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  document.querySelector(`[data-wbs="${prevWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 });
               }
-            }}
-            onUpdated={refreshSprints}
-            onDeleted={() => {
+            } else if (selectedTicket && t.parentId === selectedTicket.id) {
+              setBackgroundParentWbs(selectedTicketWbs);
+              setIsParentNav(false);
               setClosedHighlightWbs(null);
+            } else {
               setBackgroundParentWbs(null);
-              window.history.pushState(null, '', `/${projectSlug}`);
-              setSelectedTicketWbs(null);
-              refreshSprints();
-            }}
-            onSelectTicket={t => {
-              if (t.wbs) {
-                const prevWbs = selectedTicketWbs;
-                window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
-                if (t.wbs === backgroundParentWbs) {
-                  setBackgroundParentWbs(null);
-                  setIsParentNav(true);
-                  setClosedHighlightWbs(prevWbs);
-                  if (prevWbs) {
-                    requestAnimationFrame(() => {
-                      document.querySelector(`[data-wbs="${prevWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    });
-                  }
-                } else if (selectedTicket && t.parentId === selectedTicket.id) {
-                  setBackgroundParentWbs(selectedTicketWbs);
-                  setIsParentNav(false);
-                  setClosedHighlightWbs(null);
-                } else {
-                  setBackgroundParentWbs(null);
-                  setIsParentNav(false);
-                  setClosedHighlightWbs(null);
-                }
-                setSelectedTicketWbs(t.wbs);
-              }
-            }}
-            showParentBackground={!!backgroundParentWbs}
-            projectPermissions={projectPermissions ?? undefined}
-            forceNoAnim={isParentNav}
-          />
-        );
-      })()}
+              setIsParentNav(false);
+              setClosedHighlightWbs(null);
+            }
+            setSelectedTicketWbs(t.wbs);
+          }
+        }}
+        showParentBackground={!!backgroundParentWbs}
+        projectPermissions={projectPermissions ?? undefined}
+        forceNoAnim={isParentNav}
+      />
     </div>
   );
 }

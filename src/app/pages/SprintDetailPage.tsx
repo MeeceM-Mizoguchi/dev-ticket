@@ -281,6 +281,15 @@ export function SprintDetailPage() {
     }
   }, [ticketWbs]);
 
+  useEffect(() => {
+    if (!sprint || !ticketWbs || !backgroundParentWbs) return;
+    const nextTicket = sprint.tickets.find(t => t.wbs === ticketWbs);
+    if (!nextTicket) return;
+    if (nextTicket.parentId !== backgroundParentWbs) {
+      setBackgroundParentWbs(null);
+    }
+  }, [ticketWbs, sprint, backgroundParentWbs]);
+
   // データ読み込み完了後、sessionStorage由来のハイライト行へスクロール
   useEffect(() => {
     if (loading || !lastOpenedWbs) return;
@@ -296,9 +305,16 @@ export function SprintDetailPage() {
 
   const selectTicket = (wbs: string | null) => {
     if (wbs) {
+      // 新規作成チケットなど parentId がないチケットを選択時は背景親パネルをクリア
+      const ticket = sprint?.tickets.find(t => t.wbs === wbs);
+      if (ticket && !ticket.parentId) {
+        setBackgroundParentWbs(null);
+      }
       navigate(`/${projectSlug}/${wbs}`, { replace: false });
     } else {
+      setBackgroundParentWbs(null);
       navigate(`/${projectSlug}/${sprintIdentifier}`);
+
     }
   };
 
@@ -393,7 +409,7 @@ export function SprintDetailPage() {
   const selectedTicket = ticketWbs
     ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null)
     : null;
-  const showParentBackground = !!backgroundParentWbs;
+  const showParentBackground = !!backgroundParentWbs && !!selectedTicket?.parentId;
   const done = sprint.tickets.filter(t => t.status === "done" || t.status === "closed").length;
   const inProg = sprint.tickets.filter(t => t.status === "in-progress").length;
   const progress = sprintProgress(sprint);
