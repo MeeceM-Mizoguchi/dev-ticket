@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -7,10 +7,6 @@ import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
 import { TabProvider, useTabs } from "@/app/contexts/TabContext";
 
-// Mac/iPad 版のシェル。Sidebar と TabBar は全タブで共有し、
-// ページ本体(Topbar + ルーティング)は単一 BrowserRouter 上で
-// タブごとに <Routes location> を keep-alive 描画する(TabPane 参照)。
-// Web/iPhone では使わず、従来の AppShell をそのまま使う(App.tsx で分岐)。
 export function TabbedShell() {
   return (
     <TabProvider>
@@ -20,36 +16,50 @@ export function TabbedShell() {
 }
 
 function TabbedShellInner() {
-  // バージョンチェック・プッシュ通知登録はアプリ全体で1回だけ
-  // (各タブの Topbar では実行せず、ここでまとめて呼ぶ)。
   useVersionCheck();
   usePushNotifications();
   const tabs = useTabs()!;
-
-  // 単一 BrowserRouter の navigate を TabContext に渡す。
-  // タブ切替・新規タブ・サイドバー遷移はすべてこの navigate 経由で実ルーターを動かす。
   const navigate = useNavigate();
+  const tabbedOuterRef = useRef<HTMLDivElement>(null);
+
+  // 🌟 鉄壁の画面ブレ防止（TabbedShell版）:
+  // タブシェル環境下においても、裏で発生するあらゆる不意の突き上げスクロールを
+  // 完全に検知・遮断し、画面の最上部位置をミリ単位で死守します。
+  useEffect(() => {
+    const el = tabbedOuterRef.current;
+    if (!el) return;
+
+    const resetTabbedScroll = () => {
+      if (el.scrollTop !== 0) el.scrollTop = 0;
+      if (el.scrollLeft !== 0) el.scrollLeft = 0;
+    };
+
+    el.addEventListener("scroll", resetTabbedScroll, { passive: true });
+    document.addEventListener("focusin", resetTabbedScroll, { passive: true });
+
+    return () => {
+      el.removeEventListener("scroll", resetTabbedScroll);
+      document.removeEventListener("focusin", resetTabbedScroll);
+    };
+  }, []);
+
   useEffect(() => {
     tabs.setNavigate((path) => navigate(path));
   }, [navigate, tabs]);
 
-  // ⌘T / ⌘W / ⌘1〜9 のキーボードショートカット(Phase4)。
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      // 新規タブ
       if (e.key === "t" || e.key === "T") {
         e.preventDefault();
         tabs.openTab("/dashboard");
         return;
       }
-      // タブを閉じる
       if (e.key === "w" || e.key === "W") {
         e.preventDefault();
         tabs.closeTab(tabs.activeId);
         return;
       }
-      // ⌘1〜9 で n 番目のタブへ
       if (e.key >= "1" && e.key <= "9") {
         const idx = Number(e.key) - 1;
         const target = tabs.tabs[idx];
@@ -65,16 +75,19 @@ function TabbedShellInner() {
 
   return (
     <div
+      ref={tabbedOuterRef}
       style={{
         display: "flex",
         height: "100vh",
+        width: "100vw",
         overflow: "hidden",
         background: "#F5F6F8",
         paddingTop: "var(--app-safe-top, env(safe-area-inset-top))",
+        position: "relative"
       }}
     >
       <Sidebar />
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         <TabBar />
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
           {tabs.tabs.map((t) => (
