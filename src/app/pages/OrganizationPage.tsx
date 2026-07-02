@@ -59,7 +59,7 @@ function DatePickerInput({ value, onChange, disabled = false }: { value: string;
 
   useEffect(() => {
     if (!open) return;
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const h = (e: MouseEvent) => { const t = e.target; if (t instanceof Node && ref.current && !ref.current.contains(t)) setOpen(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [open]);
