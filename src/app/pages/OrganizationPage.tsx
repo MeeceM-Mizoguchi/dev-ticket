@@ -439,7 +439,9 @@ function OrgFormDialog({ org, plans, onClose, onSaved }: { org?: OrgWithStats; p
   const [address,            setAddress]            = useState(org?.address            ?? "");
   const [industry,           setIndustry]           = useState(org?.industry           ?? "");
   const [description,        setDescription]        = useState(org?.description        ?? "");
-  const [planId,             setPlanId]             = useState<string>(org?.planId ?? "");
+  // 既存組織の plan_id が null＝無制限プラン。再編集時にプルダウンが空にならないよう system-unlimited を選択済みにする。
+  // 新規作成時は "" のままにして必須バリデーションを効かせる。
+  const [planId,             setPlanId]             = useState<string>(org ? (org.planId ?? "system-unlimited") : "");
   const [isSystemAdmin,      setIsSystemAdmin]      = useState(org?.isSystemAdmin ?? false);
   const [saving, setSaving] = useState(false);
   const [planErr, setPlanErr] = useState(false);
@@ -587,13 +589,13 @@ function OrgCard({
 
       <div style={{ padding: "22px 24px 20px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 18 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
             <div style={{ width: 48, height: 48, borderRadius: 14, background: hovered ? "linear-gradient(135deg, #059669, #047857)" : "linear-gradient(135deg, #ECFDF5, #D1FAE5)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: hovered ? "none" : "1px solid rgba(5,150,105,0.12)", transition: "all 0.20s" }}>
               <Globe style={{ width: 22, height: 22, color: hovered ? "#FFFFFF" : "#059669", transition: "color 0.20s" }} />
             </div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <p style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0, letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>{org.name}</p>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <p style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0, letterSpacing: "-0.01em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }} title={org.name}>{org.name}</p>
                 {org.isSystemAdmin && (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 700, color: "#047857", background: "#D1FAE5", padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
                     <Sparkles style={{ width: 10, height: 10, flexShrink: 0 }} />システム管理会社
@@ -608,7 +610,7 @@ function OrgCard({
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 12 }}>
             <button onClick={e => { e.stopPropagation(); onEdit(); }} title="編集"
               style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid rgba(26,23,20,0.09)", background: "#FAFAF9", cursor: "pointer", color: "#9E9690", transition: "all 0.15s", flexShrink: 0 }}
               onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#ECFDF5"; el.style.color = "#059669"; el.style.borderColor = "rgba(5,150,105,0.25)"; }}
