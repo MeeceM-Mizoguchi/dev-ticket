@@ -4,7 +4,7 @@ import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check,
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
-import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -15,7 +15,7 @@ import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { subscribeTicket, emitTicketUpdate } from "@/app/lib/ticketSync";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
-import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory } from "@/app/lib/mappers";
+import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -100,6 +100,18 @@ function computeRawSegments(t: {
     rawSegmentHour(t.stgCompletedAt, t.uatCompletedAt),
     rawSegmentHour(t.uatCompletedAt, t.releasedAt),
   ];
+}
+
+// 返信元コメントへスクロールし、そのテキストボックスの枠線をふわっとパルス表示する
+function pointToComment(targetEl: HTMLElement) {
+  targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  // 名前・日時を含む外枠ではなく、内側のテキストボックスだけを対象にする
+  const box = (targetEl.querySelector("[data-comment-box]") as HTMLElement) ?? targetEl;
+  // クラスを付け直してアニメーションを再生（連続クリックにも対応）
+  box.classList.remove("comment-ring-pulse");
+  void box.offsetWidth;
+  box.classList.add("comment-ring-pulse");
+  window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
 }
 
 export function TicketDetailPanel({
@@ -234,7 +246,7 @@ export function TicketDetailPanel({
     ticket?.status === "waiting-release" && (ticket?.actualWorkHours == null)
   );
 
-const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実績の打ち直し（修正モード）フラグ
+  const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実績の打ち直し（修正モード）フラグ
 
   // レビューフロー アコーディオン
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
@@ -551,19 +563,19 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     let q = supabase!.from("profiles").select("name, role, permissions").order("name");
     if (userOrgId) q = (q as any).or(`organization_id.eq.${userOrgId},role.eq.owner`);
     q.then(({ data }) => {
-        if (!data) return;
-        setMemberNames(data.map((r: { name: string }) => r.name));
-        const eligible = data
-          .filter((r: { name: string; role: string; permissions?: Record<string, boolean> | null }) =>
-            r.role === "admin" || r.role === "owner" || r.role === "project-manager" || r.permissions?.canReview === true
-          )
-          .map((r: { name: string }) => r.name);
-        setReviewerEligibleNames(eligible);
-        const admins = data
-          .filter((r: { name: string; role: string }) => r.role === "admin")
-          .map((r: { name: string }) => r.name);
-        setAdminMemberNames(admins);
-      });
+      if (!data) return;
+      setMemberNames(data.map((r: { name: string }) => r.name));
+      const eligible = data
+        .filter((r: { name: string; role: string; permissions?: Record<string, boolean> | null }) =>
+          r.role === "admin" || r.role === "owner" || r.role === "project-manager" || r.permissions?.canReview === true
+        )
+        .map((r: { name: string }) => r.name);
+      setReviewerEligibleNames(eligible);
+      const admins = data
+        .filter((r: { name: string; role: string }) => r.role === "admin")
+        .map((r: { name: string }) => r.name);
+      setAdminMemberNames(admins);
+    });
   }, [userOrgId]);
 
   useEffect(() => { memberNamesRef.current = memberNames; }, [memberNames]);
@@ -589,8 +601,8 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
 
   const { open: openPreview } = usePreviewPanel();
   const handleBacklogMentionClick = useCallback((id: string) => { openPreview("backlog", id); }, [openPreview]);
-  const handleWikiMentionClick    = useCallback((id: string) => { openPreview("wiki",    id); }, [openPreview]);
-  const handleMinuteMentionClick  = useCallback((id: string) => { openPreview("minute",  id); }, [openPreview]);
+  const handleWikiMentionClick = useCallback((id: string) => { openPreview("wiki", id); }, [openPreview]);
+  const handleMinuteMentionClick = useCallback((id: string) => { openPreview("minute", id); }, [openPreview]);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
@@ -897,17 +909,17 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
     onUpdated?.();
   };
 
- const handleSaveActualWorkHours = async (hours: number, segmentHours?: string[]) => {
-   if (!ticket || !isSupabaseEnabled) return;
-   // 工程別の内訳を専用カラムへ保存し、実績モニタ／修正モーダルで入力値を100%再現できるようにする
-   const patch: Record<string, unknown> = { actual_work_hours: hours };
-   if (segmentHours) patch.actual_work_hours_breakdown = segmentHours.map(v => v === "" ? "0" : v);
-   await supabase!.from("sprint_tickets").update(patch).eq("id", ticket.id);
-   setActualWorkHours(hours);
-   setShowHoursInputMode(false);
-   setIsEditingActualHours(false); // 🌟 追加：保存が完了したら自動的に修正モードを終了してロックする
-   onUpdated?.();
- };
+  const handleSaveActualWorkHours = async (hours: number, segmentHours?: string[]) => {
+    if (!ticket || !isSupabaseEnabled) return;
+    // 工程別の内訳を専用カラムへ保存し、実績モニタ／修正モーダルで入力値を100%再現できるようにする
+    const patch: Record<string, unknown> = { actual_work_hours: hours };
+    if (segmentHours) patch.actual_work_hours_breakdown = segmentHours.map(v => v === "" ? "0" : v);
+    await supabase!.from("sprint_tickets").update(patch).eq("id", ticket.id);
+    setActualWorkHours(hours);
+    setShowHoursInputMode(false);
+    setIsEditingActualHours(false); // 🌟 追加：保存が完了したら自動的に修正モードを終了してロックする
+    onUpdated?.();
+  };
 
   const handleAddToReleaseNotes = () => {
     if (!ticket) return;
@@ -1299,15 +1311,45 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
 
   const openMoveModal = async () => {
     if (!ticket || !isSupabaseEnabled || !projectId) return;
+
+    // 🌟 修正: sprints を先に取得し、その sprint_id のリストを使って sprint_tickets を取得する
+    // （sprint_tickets テーブルには project_id カラムが存在しないため）
     const [{ data: ticketRow }, { data: sprintsData }] = await Promise.all([
       supabase!.from("sprint_tickets").select("sprint_id").eq("id", ticket.id).single(),
-      supabase!.from("sprints").select("id, name, status, start_date, end_date, identifier").eq("project_id", projectId).order("start_date"),
+      supabase!.from("sprints").select("*").eq("project_id", projectId).order("start_date")
     ]);
+
+    const sprintIds = sprintsData?.map(s => s.id) || [];
+
+    const { data: allTicketsData } = sprintIds.length > 0
+      ? await supabase!.from("sprint_tickets").select("*").in("sprint_id", sprintIds)
+      : { data: [] };
+
     const currentSprintId = ticketRow?.sprint_id ?? null;
+
     setAvailableSprints(
       (sprintsData ?? [])
         .filter(s => s.id !== currentSprintId)
-        .map(s => ({ id: s.id, name: s.name, status: s.status, startDate: s.start_date ?? "", endDate: s.end_date ?? "", identifier: s.identifier ?? null }))
+        .map(s => {
+          // 生のチケットデータをスプリントオブジェクトに結合（mappers.ts の mapSprint が要求する形）
+          const rawTickets = (allTicketsData ?? []).filter(t => t.sprint_id === s.id);
+          const rawSprint = { ...s, sprint_tickets: rawTickets };
+
+          // 🌟 一覧画面と全く同じデータ変換を適用
+          const mappedSprint = mapSprint(rawSprint);
+
+          // 🌟 共通ロジックでステータスを再計算
+          const computedStatus = computeSprintStatus(mappedSprint);
+
+          return {
+            id: mappedSprint.id,
+            name: mappedSprint.name,
+            status: computedStatus, // 計算済みのステータスをセット
+            startDate: mappedSprint.startDate ?? "",
+            endDate: mappedSprint.endDate ?? "",
+            identifier: mappedSprint.identifier ?? null
+          };
+        })
     );
     setMoveTargetSprintId(null);
     setShowMoveModal(true);
@@ -1508,13 +1550,8 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
             {availableSprints.length === 0 ? (
               <p style={{ fontSize: 13, color: "#A09790", textAlign: "center", padding: "24px 0" }}>移動先のスプリントがありません</p>
             ) : availableSprints.map(s => {
-              const statusMeta: Record<string, { label: string; color: string; bg: string }> = {
-                planning: { label: "計画中", color: "#4F46E5", bg: "#EEF2FF" },
-                active: { label: "進行中", color: "#059669", bg: "#ECFDF5" },
-                completed: { label: "完了", color: "#6B7280", bg: "#F3F4F6" },
-                delayed: { label: "遅延", color: "#DC2626", bg: "#FEF2F2" },
-              };
-              const sm = statusMeta[s.status] ?? { label: s.status, color: "#6B7280", bg: "#F3F4F6" };
+              // 🌟 修正: 個別の色定義を削除し、一覧画面と共通の getSprintStatusMeta を利用してデザインを統一
+              const sm = getSprintStatusMeta(s.status as any) ?? { label: s.status, color: "#6B7280", bg: "#F3F4F6" };
               const isSelected = moveTargetSprintId === s.id;
               return (
                 <label key={s.id}
@@ -1550,7 +1587,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
           onCreated={() => { setShowCreateChild(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
-      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}`}</style>
+      <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes commentRingPulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0)}22%{box-shadow:0 0 0 4px rgba(249,115,22,0.55),0 0 18px 3px rgba(249,115,22,0.35)}50%{box-shadow:0 0 0 2px rgba(249,115,22,0.28),0 0 9px 2px rgba(249,115,22,0.18)}74%{box-shadow:0 0 0 4px rgba(249,115,22,0.50),0 0 18px 3px rgba(249,115,22,0.32)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}.comment-ring-pulse{animation:commentRingPulse 2s ease-out; border-radius:8px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
 
       {/* Image preview modal */}
       {previewImage && (
@@ -1595,12 +1632,12 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
             title={`${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}`}
           >
             <ChevronLeft size={14} color="#A09690" strokeWidth={2.5} />
-            <span style={{ 
-              writingMode: "vertical-rl", 
+            <span style={{
+              writingMode: "vertical-rl",
               textOrientation: "upright",  // 日本語が横に倒れず、真っ直ぐ正位置で並ぶ設定
-              fontSize: 11, 
-              fontWeight: 700, 
-              color: "#A09690", 
+              fontSize: 11,
+              fontWeight: 700,
+              color: "#A09690",
               letterSpacing: "0.15em"      // 縦書きの文字の隙間をきれいにあける
             }}>
               親チケットに戻る
@@ -1994,7 +2031,9 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
 
           {(() => {
             // 🌟 修正: 保留時（-1）や取下時（-2）はバーの表示上は 0% とみなす
-            const displayProgress = progress < 0 ? 0 : (status === "done" || status === "closed") ? 100 : progress;
+            // クローズ、完了、リリース済み等のステータスは無条件で 100% として扱う
+            const isCompletedStatus = ["done", "closed", "waiting-release", "released"].includes(status);
+            const displayProgress = progress < 0 ? 0 : isCompletedStatus ? 100 : progress;
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
                 <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
@@ -2086,362 +2125,1043 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
 
           <>
 
-          {/* Metadata */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {/* ステータス | 優先度 */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
-                <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }}>{progress === -1 ? "保留中" : progress === -2 ? "取下" : smeta?.label}</span>
+            {/* Metadata */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {/* ステータス | 優先度 */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }}>{progress === -1 ? "保留中" : progress === -2 ? "取下" : smeta?.label}</span>
+                  </div>
+                  {status === "released" && progress !== -2 && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み{releaseDate ? ` ${releaseDate.replace(/-/g, "/")}` : ""}</span>
+                  )}
+                  {status === "waiting-release" && actualWorkHours != null && (
+                    <div style={{ marginTop: 5 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#ECFDF5", borderRadius: 4, padding: "1px 7px", display: "inline-block" }}>
+                        実績 {actualWorkHours}h
+                      </span>
+                    </div>
+                  )}
+                  {status === "waiting-release" && actualWorkHours == null && (
+                    <div style={{ marginTop: 6 }}>
+                      <p style={{ fontSize: 10, fontWeight: 700, color: "#EF4444", margin: "0 0 6px" }}>⚠ 対応工数が未入力です</p>
+                      <button
+                        onClick={() => setShowHoursInputMode(true)}
+                        style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 6, border: "none", cursor: "pointer", background: "#059669", color: "#FFF" }}>
+                        工数を入力する
+                      </button>
+                    </div>
+                  )}
+                  {status === "waiting-release" && (
+                    <div style={{ marginTop: 6 }}>
+                      {isReleaseDateUndecided ? (
+                        <span style={{ fontSize: 11, color: "#9E9690" }}>リリース日未定</span>
+                      ) : releaseDate ? (
+                        <span style={{ fontSize: 11, color: "#6B7280" }}>予定: {releaseDate.replace(/-/g, "/")}</span>
+                      ) : null}
+                      <button
+                        onClick={() => setShowChangeDatePicker(v => !v)}
+                        style={{ display: "block", marginTop: 4, fontSize: 10, color: "#7C3AED", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
+                        リリース日変更
+                      </button>
+                      {showChangeDatePicker && (
+                        <div style={{ marginTop: 8 }}>
+                          <DatePicker
+                            value={releaseDate}
+                            onChange={v => { if (v) { setPendingReleaseDate(v); setShowChangeDatePicker(false); } }}
+                            placeholder="新しいリリース日"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                {status === "released" && progress !== -2 && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み{releaseDate ? ` ${releaseDate.replace(/-/g, "/")}` : ""}</span>
-                )}
-                {status === "waiting-release" && actualWorkHours != null && (
-                  <div style={{ marginTop: 5 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#ECFDF5", borderRadius: 4, padding: "1px 7px", display: "inline-block" }}>
-                      実績 {actualWorkHours}h
-                    </span>
-                  </div>
-                )}
-                {status === "waiting-release" && actualWorkHours == null && (
-                  <div style={{ marginTop: 6 }}>
-                    <p style={{ fontSize: 10, fontWeight: 700, color: "#EF4444", margin: "0 0 6px" }}>⚠ 対応工数が未入力です</p>
-                    <button
-                      onClick={() => setShowHoursInputMode(true)}
-                      style={{ padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 6, border: "none", cursor: "pointer", background: "#059669", color: "#FFF" }}>
-                      工数を入力する
-                    </button>
-                  </div>
-                )}
-                {status === "waiting-release" && (
-                  <div style={{ marginTop: 6 }}>
-                    {isReleaseDateUndecided ? (
-                      <span style={{ fontSize: 11, color: "#9E9690" }}>リリース日未定</span>
-                    ) : releaseDate ? (
-                      <span style={{ fontSize: 11, color: "#6B7280" }}>予定: {releaseDate.replace(/-/g, "/")}</span>
-                    ) : null}
-                    <button
-                      onClick={() => setShowChangeDatePicker(v => !v)}
-                      style={{ display: "block", marginTop: 4, fontSize: 10, color: "#7C3AED", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
-                      リリース日変更
-                    </button>
-                    {showChangeDatePicker && (
-                      <div style={{ marginTop: 8 }}>
-                        <DatePicker
-                          value={releaseDate}
-                          onChange={v => { if (v) { setPendingReleaseDate(v); setShowChangeDatePicker(false); } }}
-                          placeholder="新しいリリース日"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
+                <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
+                  <CustomSelect
+                    value={priority}
+                    options={PRIORITY_OPTIONS}
+                    onChange={v => { setPriority(v as Priority); save({ priority: v }); }}
+                  />
+                </div>
               </div>
+
+              {/* 分類 */}
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>分類</p>
                 <CustomSelect
-                  value={priority}
-                  options={PRIORITY_OPTIONS}
-                  onChange={v => { setPriority(v as Priority); save({ priority: v }); }}
+                  value={categoryId ?? ""}
+                  options={[
+                    { value: "", label: "分類なし" },
+                    ...categories.map(c => ({ value: c.id, label: c.name })),
+                  ]}
+                  onChange={v => { const val = v || null; setCategoryId(val); save({ category_id: val }); }}
+                  placeholder="分類なし"
+                  // 🌟 修正: プロジェクト画面(CategorySettingsModal)と完全に同一のIDフォーマットを生成
+                  onAddOption={async (newLabel) => {
+                    if (!isSupabaseEnabled || !projectId) return null;
+
+                    // 💡 プロジェクト画面の「CAT-タイムスタンプ」という正解の命名規則をそのまま再現します
+                    const correctIdFormat = `CAT-${Date.now()}`;
+
+                    const { error } = await supabase!
+                      .from("ticket_categories")
+                      .insert({
+                        id: correctIdFormat, // 🌟 これでプロジェクト画面と全く同じ形式になり、制約を突破できます
+                        project_id: projectId,
+                        name: newLabel.trim()
+                      });
+
+                    if (error) {
+                      console.error("カテゴリーの追加に失敗しました:", error.message);
+                      return null;
+                    }
+
+                    // 親のステート（categories）を再取得してプルダウンの選択肢を更新
+                    await refreshCategories();
+
+                    // 生成したIDをプルダウンに返して、自動的にその項目を選択状態にする
+                    return correctIdFormat;
+                  }}
                 />
               </div>
-            </div>
 
-            {/* 分類 */}
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>分類</p>
-              <CustomSelect
-                value={categoryId ?? ""}
-                options={[
-                  { value: "", label: "分類なし" },
-                  ...categories.map(c => ({ value: c.id, label: c.name })),
-                ]}
-                onChange={v => { const val = v || null; setCategoryId(val); save({ category_id: val }); }}
-                placeholder="分類なし"
-                // 🌟 修正: プロジェクト画面(CategorySettingsModal)と完全に同一のIDフォーマットを生成
-                onAddOption={async (newLabel) => {
-                  if (!isSupabaseEnabled || !projectId) return null;
-                  
-                  // 💡 プロジェクト画面の「CAT-タイムスタンプ」という正解の命名規則をそのまま再現します
-                  const correctIdFormat = `CAT-${Date.now()}`;
-                  
-                  const { error } = await supabase!
-                    .from("ticket_categories")
-                    .insert({ 
-                      id: correctIdFormat, // 🌟 これでプロジェクト画面と全く同じ形式になり、制約を突破できます
-                      project_id: projectId, 
-                      name: newLabel.trim() 
-                    });
-                  
-                  if (error) {
-                    console.error("カテゴリーの追加に失敗しました:", error.message);
-                    return null;
-                  }
-                  
-                  // 親のステート（categories）を再取得してプルダウンの選択肢を更新
-                  await refreshCategories();
-                  
-                  // 生成したIDをプルダウンに返して、自動的にその項目を選択状態にする
-                  return correctIdFormat; 
-                }}
-              />
-            </div>
-
-            {/* 担当者 */}
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
-              <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
-              <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
-                style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
-                <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneeOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-              </button>
-              {assigneeOpen && (
-                <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", marginTop: 4 }}>
-                  {projectMemberNames.length === 0
-                    ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
-                    : projectMemberNames.map(n => (
-                      <button key={n} onClick={() => { saveAssignee(n); setAssigneeOpen(false); }}
-                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.1s", textAlign: "left" }}
-                        onMouseEnter={e => { const target = e.currentTarget as HTMLElement; if (assignee !== n) target.style.background = "#F4F5F6"; }}
-                        onMouseLeave={e => { const target = e.currentTarget as HTMLElement; target.style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
-                        <Avatar name={n} size="xs" />
-                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1 }}>{n}</span>
-                        {assignee === n && <Check style={{ width: 12, height: 12, color: "#059669", marginLeft: "auto" }} />}
+              {/* 担当者 */}
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
+                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
+                <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
+                  style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
+                  <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneeOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                </button>
+                {assigneeOpen && (
+                  <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", marginTop: 4 }}>
+                    {projectMemberNames.length === 0
+                      ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
+                      : projectMemberNames.map(n => (
+                        <button key={n} onClick={() => { saveAssignee(n); setAssigneeOpen(false); }}
+                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.1s", textAlign: "left" }}
+                          onMouseEnter={e => { const target = e.currentTarget as HTMLElement; if (assignee !== n) target.style.background = "#F4F5F6"; }}
+                          onMouseLeave={e => { const target = e.currentTarget as HTMLElement; target.style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
+                          <Avatar name={n} size="xs" />
+                          <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1 }}>{n}</span>
+                          {assignee === n && <Check style={{ width: 12, height: 12, color: "#059669", marginLeft: "auto" }} />}
+                        </button>
+                      ))}
+                    <div style={{ padding: "6px 12px", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
+                      <button onClick={() => { saveAssignee(""); setAssigneeOpen(false); }}
+                        style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                        割り当て解除
                       </button>
-                    ))}
-                  <div style={{ padding: "6px 12px", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
-                    <button onClick={() => { saveAssignee(""); setAssigneeOpen(false); }}
-                      style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                      割り当て解除
-                    </button>
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-
-            {/* 開始日 | 期限日 */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" />
-              <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" />
-            </div>
-
-            {/* 見積工数 (全幅) */}
-            <div>
-              <label className={labelCls}>見積工数（開始・終了日から自動計算）</label>
-              <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#6B6458" }}>
-                <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}</span>
-                <span style={{ marginLeft: 2 }}> h</span>
-                {estimatedH === 0 && <span style={{ fontSize: 11, color: "#C9C4BB", marginLeft: 8 }}>（開始日・終了日を入力すると自動計算されます）</span>}
-              </div>
-            </div>
-
-            {/* 起票者 | 起票日 */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 12px" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 4 }}>起票者</p>
-                <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{createdBy || "—"}</p>
-              </div>
-              <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 12px" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 4 }}>起票日</p>
-                <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{formatTs(createdAt) || "—"}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* 子チケット一覧 */}
-          {!ticket.parentId && (
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 12, padding: "14px 16px" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
-                  <GitBranch style={{ width: 12, height: 12, color: "#059669" }} />
-                  子チケット
-                  <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({childTickets.length}件)</span>
-                </p>
-                {plan.featureChildTickets ? (
-                  <button onClick={() => setShowCreateChild(true)}
-                    style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                    <Plus style={{ width: 11, height: 11 }} />子チケット作成
-                  </button>
-                ) : (
-                  <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
-                    <button style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#F4F5F6", color: "#C9C4BB", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "not-allowed", opacity: 0.6 }}>
-                      <Plus style={{ width: 11, height: 11 }} />子チケット作成
-                    </button>
-                  </PlanTooltip>
                 )}
               </div>
-              {childTickets.length === 0 ? (
-                <div style={{ padding: "12px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>
-                  子チケットはありません
+
+              {/* 開始日 | 期限日 */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" />
+                <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" />
+              </div>
+
+              {/* 見積工数 (全幅) */}
+              <div>
+                <label className={labelCls}>見積工数（開始・終了日から自動計算）</label>
+                <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#6B6458" }}>
+                  <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{estimatedH}</span>
+                  <span style={{ marginLeft: 2 }}> h</span>
+                  {estimatedH === 0 && <span style={{ fontSize: 11, color: "#C9C4BB", marginLeft: 8 }}>（開始日・終了日を入力すると自動計算されます）</span>}
                 </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {childTickets.map(child => {
-                    const ctsm = getTicketStatusMeta(child.status, child.progress);
-                    const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
-                    const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
-                    const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
-                    return (
-                      <div key={child.id}
-                        onClick={() => onSelectTicket?.(child)}
-                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: "#FAFAF8", cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
-                        onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FAFAF8"; }}>
-                        <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
-                        <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, flexShrink: 0 }}>{cPriLabel}</span>
-                      </div>
-                    );
-                  })}
+              </div>
+
+              {/* 起票者 | 起票日 */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 12px" }}>
+                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 4 }}>起票者</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{createdBy || "—"}</p>
+                </div>
+                <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 12px" }}>
+                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 4 }}>起票日</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }}>{formatTs(createdAt) || "—"}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* 子チケット一覧 */}
+            {!ticket.parentId && (
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 12, padding: "14px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
+                    <GitBranch style={{ width: 12, height: 12, color: "#059669" }} />
+                    子チケット
+                    <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({childTickets.length}件)</span>
+                  </p>
+                  {plan.featureChildTickets ? (
+                    <button onClick={() => setShowCreateChild(true)}
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <Plus style={{ width: 11, height: 11 }} />子チケット作成
+                    </button>
+                  ) : (
+                    <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
+                      <button style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#F4F5F6", color: "#C9C4BB", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "not-allowed", opacity: 0.6 }}>
+                        <Plus style={{ width: 11, height: 11 }} />子チケット作成
+                      </button>
+                    </PlanTooltip>
+                  )}
+                </div>
+                {childTickets.length === 0 ? (
+                  <div style={{ padding: "12px 0", textAlign: "center" as const, color: "#C9C4BB", fontSize: 12, border: "1.5px dashed rgba(26,23,20,0.10)", borderRadius: 8 }}>
+                    子チケットはありません
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {childTickets.map(child => {
+                      const ctsm = getTicketStatusMeta(child.status, child.progress);
+                      const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
+                      const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
+                      const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                      return (
+                        <div key={child.id}
+                          onClick={() => onSelectTicket?.(child)}
+                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: "#FAFAF8", cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
+                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FAFAF8"; }}>
+                          <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
+                          <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
+                          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, flexShrink: 0 }}>{cPriLabel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 詳細 + 画像 */}
+            <div
+              onPaste={e => {
+                const items = Array.from(e.clipboardData?.items ?? []);
+                const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
+                if (imgFiles.length === 0) return;
+                e.preventDefault();
+                addTicketImages(imgFiles);
+              }}
+              onDragOver={e => { e.preventDefault(); setImageDragOver(true); }}
+              onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
+              onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
+            >
+              <div style={{ marginBottom: 7 }}>
+                <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
+              </div>
+              <div id="panel-description-section">
+                <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
+                <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
+                <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
+                  {imageDragOver ? "ドロップして追加" : "クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ"}
+                </span>
+                <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                  onChange={e => { addTicketImages(e.target.files || []); e.target.value = ""; }} />
+              </label>
+              {ticketImages.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  {ticketImages.map((img, i) => (
+                    <div key={i} style={{ position: "relative" }}>
+                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                        style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                      <button onClick={() => copyImageToClipboard(img)}
+                        style={{ position: "absolute", top: -5, right: 15, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                        title="画像をコピー">
+                        {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                      </button>
+                      <button onClick={() => removeTicketImage(i)}
+                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <X style={{ width: 9, height: 9, color: "#FFF" }} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
-          )}
 
-          {/* 詳細 + 画像 */}
-          <div
-            onPaste={e => {
-              const items = Array.from(e.clipboardData?.items ?? []);
-              const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
-              if (imgFiles.length === 0) return;
-              e.preventDefault();
-              addTicketImages(imgFiles);
-            }}
-            onDragOver={e => { e.preventDefault(); setImageDragOver(true); }}
-            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
-            onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
-          >
-            <div style={{ marginBottom: 7 }}>
-              <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
-            </div>
-            <div id="panel-description-section">
-              <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-            </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
-              <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
-              <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
-                {imageDragOver ? "ドロップして追加" : "クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ"}
-              </span>
-              <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                onChange={e => { addTicketImages(e.target.files || []); e.target.value = ""; }} />
-            </label>
-            {ticketImages.length > 0 && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                {ticketImages.map((img, i) => (
-                  <div key={i} style={{ position: "relative" }}>
-                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                      style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                    <button onClick={() => copyImageToClipboard(img)}
-                      style={{ position: "absolute", top: -5, right: 15, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                      title="画像をコピー">
-                      {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
-                    </button>
-                    <button onClick={() => removeTicketImage(i)}
-                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <X style={{ width: 9, height: 9, color: "#FFF" }} />
-                    </button>
+            {/* ── Review flow + Source files ── */}
+            {(reviewRequestComments.length > 0 || isAssignee || userName === reviewerName) && (
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
+                  レビューフロー
+                  {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
+                  {hasBeenApproved && status !== "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", marginLeft: 8 }}>承認済み</span>}
+                </p>
+
+                {reviewRequestComments.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+                    {reviewRequestComments.map((reqComment, idx) => {
+                      const round = idx + 1;
+                      const outcome = roundOutcomes[idx];
+                      const roundFiles = filesByRound[round] ?? [];
+                      const color = outcome === "approved" ? "#059669" : outcome === "revision" ? "#D97706" : outcome === "withdrawn" ? "#6B7280" : "#7C3AED";
+                      const bg = outcome === "approved" ? "#ECFDF5" : outcome === "revision" ? "#FFF7ED" : outcome === "withdrawn" ? "#F4F5F6" : "#F5F3FF";
+                      const border = outcome === "approved" ? "rgba(5,150,105,0.15)" : outcome === "revision" ? "rgba(217,119,6,0.15)" : outcome === "withdrawn" ? "rgba(107,114,128,0.15)" : "rgba(124,58,237,0.15)";
+                      const label = outcome === "approved" ? "✅ レビュー承認" : outcome === "revision" ? "⚠️ 修正依頼" : outcome === "withdrawn" ? "↩ 取り下げ" : "🔄 審査中";
+
+                      const isExpanded = expandedRounds.has(idx);
+                      const reqIdx = comments.findIndex(c => c.id === reqComment.id);
+                      const nextReqIdx = idx + 1 < reviewRequestComments.length
+                        ? comments.findIndex(c => c.id === reviewRequestComments[idx + 1].id)
+                        : comments.length;
+                      const roundReviewComments = comments.slice(reqIdx + 1, nextReqIdx).filter(
+                        c => c.commentType === "revision_request" || c.commentType === "review_approved" || c.commentType === "review_withdrawn"
+                      );
+                      const roundImages = [
+                        ...(reqComment.images ?? []),
+                        ...roundReviewComments.flatMap(c => c.images ?? []),
+                      ];
+                      const fileCount = roundFiles.length;
+                      const imgCount = roundImages.length;
+
+                      return (
+                        <div key={idx} style={{ borderRadius: 8, border: `1px solid ${border}`, overflow: "hidden" }}>
+                          <button
+                            onClick={() => setExpandedRounds(prev => {
+                              const next = new Set(prev);
+                              if (next.has(idx)) next.delete(idx); else next.add(idx);
+                              return next;
+                            })}
+                            style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", background: bg, border: "none", cursor: "pointer", textAlign: "left" as const }}
+                          >
+                            <span style={{ fontSize: 11, fontWeight: 700, color }}>第{round}回</span>
+                            {reviewerName && (
+                              <span style={{ fontSize: 10, color: color, opacity: 0.7 }}>→ {reviewerName}</span>
+                            )}
+                            <span style={{ fontSize: 10, color }}>{label}</span>
+                            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+                              {(fileCount > 0 || imgCount > 0) && (
+                                <span style={{ fontSize: 9, color, opacity: 0.75 }}>
+                                  {[fileCount > 0 && `${fileCount}ファイル`, imgCount > 0 && `${imgCount}画像`].filter(Boolean).join(" · ")}
+                                </span>
+                              )}
+                              <ChevronDown style={{ width: 13, height: 13, color, transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                            </div>
+                          </button>
+
+                          {isExpanded && (
+                            <div style={{ padding: "10px 12px", background: "#FAFAF8", borderTop: `1px solid ${border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+                              {roundFiles.length > 0 && (
+                                <div>
+                                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>ソースファイル</p>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                    {roundFiles.map(f => (
+                                      <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                        <FileCode2 style={{ width: 11, height: 11, color: "#059669", flexShrink: 0 }} />
+                                        {f.fileUrl
+                                          ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ flex: 1, fontSize: 11, color: "#059669", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</a>
+                                          : <span style={{ flex: 1, fontSize: 11, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</span>}
+                                        {isAssignee && (
+                                          <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB", flexShrink: 0 }}
+                                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                            <Trash2 style={{ width: 11, height: 11 }} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {roundImages.length > 0 && (
+                                <div>
+                                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>添付画像</p>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                    {roundImages.map((img, i) => (
+                                      <div key={i} style={{ position: "relative" }}>
+                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                          style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                        <button onClick={() => copyImageToClipboard(img)}
+                                          style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                          title="画像をコピー">
+                                          {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {roundReviewComments.length > 0 && (
+                                <div>
+                                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>レビューコメント</p>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                    {roundReviewComments.map(c => {
+                                      const isRevision = c.commentType === "revision_request";
+                                      const cColor = isRevision ? "#D97706" : "#059669";
+                                      const cBg = isRevision ? "#FFF7ED" : "#ECFDF5";
+                                      const cBorder = isRevision ? "rgba(217,119,6,0.15)" : "rgba(5,150,105,0.15)";
+                                      const cLabel = isRevision ? "⚠️ 修正依頼" : "✅ 承認";
+                                      return (
+                                        <div key={c.id} style={{ display: "flex", gap: 7 }}>
+                                          <Avatar name={c.userName} size="xs" />
+                                          <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, flexWrap: "wrap" as const }}>
+                                              <span style={{ fontSize: 11, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                                              <span style={{ fontSize: 9, fontWeight: 700, color: cColor, background: cBg, padding: "1px 6px", borderRadius: 20, border: `1px solid ${cBorder}` }}>{cLabel}</span>
+                                              <span style={{ fontSize: 9, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                                            </div>
+                                            {(c.content || (c.images?.length ?? 0) > 0) && (
+                                              <div style={{ background: cBg, border: `1px solid ${cBorder}`, borderRadius: 7, padding: "8px 10px" }}>
+                                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                                                {(c.images?.length ?? 0) > 0 && (
+                                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
+                                                    {(c.images ?? []).map((img, i) => (
+                                                      <div key={i} style={{ position: "relative" }}>
+                                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                                          style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                                        <button onClick={() => copyImageToClipboard(img)}
+                                                          style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                                          title="画像をコピー">
+                                                          {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                                        </button>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {roundFiles.length === 0 && roundImages.length === 0 && roundReviewComments.length === 0 && (
+                                <p style={{ fontSize: 11, color: "#C9C4BB", textAlign: "center" as const }}>添付ファイル・コメントなし</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                )}
+
+                {isAssignee && (
+                  status === "todo" ? (
+                    <div style={{ padding: "16px", background: "#FFF7ED", borderRadius: 9, border: "1px solid rgba(217,119,6,0.20)", textAlign: "center" as const }}>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: "#D97706", marginBottom: 4 }}>まず着手を開始してください</p>
+                      <p style={{ fontSize: 12, color: "#9E9690" }}>「着手開始」ボタンを押してから<br />レビュー依頼を送信できます</p>
+                    </div>
+                  ) : (hasBeenApproved && !showReReviewForm && (status === "review-done" || status === "stg-test" || status === "uat")) ? (
+                    <div style={{ padding: "12px 14px", background: "#ECFDF5", borderRadius: 9, border: "1px solid rgba(5,150,105,0.20)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <div>
+                          <p style={{ fontSize: 12, fontWeight: 700, color: "#059669" }}>✅ レビューが承認されています</p>
+                          <p style={{ fontSize: 11, color: "#9E9690", marginTop: 3 }}>再度レビューを依頼できます</p>
+                        </div>
+                        <button
+                          onClick={() => setShowReReviewForm(true)}
+                          style={{ flexShrink: 0, padding: "6px 14px", background: "#7C3AED", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer", whiteSpace: "nowrap" as const }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#6D28D9"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#7C3AED"; }}
+                        >
+                          再レビュー依頼
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      onPaste={e => pasteImage(e, setReviewImages, `tickets/${ticket.id}/comments`)}
+                      onDragOver={e => { e.preventDefault(); setFileDragOver(true); }}
+                      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileDragOver(false); }}
+                      onDrop={async e => {
+                        e.preventDefault();
+                        setFileDragOver(false);
+                        if (!e.dataTransfer.files.length) return;
+                        Array.from(e.dataTransfer.files).forEach(f => {
+                          if (f.type.startsWith("image/")) {
+                            uploadImageToStorage(f, `tickets/${ticket.id}/comments`).then(url => { if (url) setReviewImages(prev => [...prev, url]); });
+                          } else {
+                            setReviewFiles(prev => [...prev, { name: f.name, file: f }]);
+                          }
+                        });
+                      }}
+                    >
+                      <div style={{ marginBottom: 10 }}>
+                        <label className={labelCls}>レビュアー</label>
+                        <div ref={reviewerDropRef} style={{ position: "relative" }}>
+                          <button onClick={() => { if (status !== "in-review") setReviewerOpen(o => !o); }}
+                            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: status === "in-review" ? "#F4F5F6" : reviewerOpen ? "#FFF" : "#F7F8F9", border: `1px solid ${reviewerOpen ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, color: reviewerName ? "#1A1714" : "#B0A9A4", cursor: status === "in-review" ? "default" : "pointer", outline: "none", opacity: status === "in-review" ? 0.7 : 1, boxShadow: reviewerOpen ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", transition: "all 0.15s", textAlign: "left" as const }}>
+                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{reviewerName || "レビュアーを選択..."}</span>
+                            <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: reviewerOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                          </button>
+                          {reviewerOpen && (
+                            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden" }}>
+                              <button onClick={() => { setReviewerName(""); setReviewerOpen(false); }}
+                                style={{ width: "100%", padding: "8px 12px", textAlign: "left" as const, background: !reviewerName ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "#B0A9A4" }}
+                                onMouseEnter={e => { if (reviewerName) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
+                                レビュアーを選択...
+                              </button>
+                              {[...new Set([
+                                ...(isAssignee && userName ? [userName] : []),
+                                ...reviewerEligibleNames.filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n)),
+                              ])].map(n => (
+                                <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
+                                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
+                                  onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = reviewerName === n ? "#ECFDF5" : "transparent"; }}>
+                                  <Avatar name={n} size="xs" />
+                                  <span style={{ flex: 1 }}>{n}</span>
+                                  {reviewerName === n && <Check style={{ width: 11, height: 11, color: "#059669", marginLeft: "auto" }} />}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ marginBottom: 10 }}>
+                        <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
+                        <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                          <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                        </div>
+                      </div>
+                      {fileDragOver && (
+                        <div style={{ border: "2px dashed rgba(5,150,105,0.5)", borderRadius: 8, padding: "10px", textAlign: "center", color: "#059669", fontSize: 11, fontWeight: 600, background: "rgba(5,150,105,0.04)", marginBottom: 8 }}>
+                          ドロップしてファイルを追加
+                        </div>
+                      )}
+                      {reviewFiles.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                          {reviewFiles.map((rf, i) => (
+                            <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
+                              <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
+                              <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {reviewImages.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                          {reviewImages.map((img, i) => (
+                            <div key={i} style={{ position: "relative" }}>
+                              <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                              <button onClick={() => copyImageToClipboard(img)}
+                                style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                title="画像をコピー">
+                                {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                              </button>
+                              <button onClick={() => setReviewImages(prev => prev.filter((_, j) => j !== i))}
+                                style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                          <ImageIcon style={{ width: 12, height: 12 }} />画像添付（Ctrl+V 可）
+                          <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                            onChange={async e => {
+                              for (const f of Array.from(e.target.files || [])) {
+                                if (!f.type.startsWith("image/")) continue;
+                                const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                if (url) setReviewImages(prev => [...prev, url]);
+                              }
+                              e.target.value = "";
+                            }} />
+                        </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
+                          <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
+                          <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
+                        </label>
+                        {showReReviewForm && (
+                          <button
+                            onClick={() => { setShowReReviewForm(false); setReviewContent(""); setReviewFiles([]); setReviewImages([]); }}
+                            style={{ padding: "7px 12px", background: "#F4F5F6", color: "#6B7280", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(107,114,128,0.25)", cursor: "pointer", flexShrink: 0 }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E9EAEB"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                          >
+                            キャンセル
+                          </button>
+                        )}
+                        <button onClick={handleReviewRequest} disabled={!canSendReview}
+                          style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
+                          {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
+                        </button>
+                      </div>
+                      {status === "in-review" && (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                          <p style={{ fontSize: 10, color: "#7C3AED" }}>修正依頼を受けてから再度送信できます</p>
+                          {canWithdrawReview && (
+                            <button
+                              onClick={handleWithdrawReview}
+                              style={{ padding: "5px 12px", background: "#F4F5F6", color: "#6B7280", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(107,114,128,0.25)", cursor: "pointer" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E9EAEB"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                            >
+                              ↩ レビュー取り下げ
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                )}
               </div>
             )}
-          </div>
 
-          {/* ── Review flow + Source files ── */}
-          {(reviewRequestComments.length > 0 || isAssignee || userName === reviewerName) && (
-            <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
-              <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", marginBottom: 12 }}>
-                レビューフロー
-                {status === "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#F5F3FF", color: "#7C3AED", marginLeft: 8 }}>審査中</span>}
-                {hasBeenApproved && status !== "in-review" && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", marginLeft: 8 }}>承認済み</span>}
-              </p>
+            {/* Comments */}
+            <div>
+              <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>コメント ({comments.length})</p>
 
-              {reviewRequestComments.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
-                  {reviewRequestComments.map((reqComment, idx) => {
-                    const round = idx + 1;
-                    const outcome = roundOutcomes[idx];
-                    const roundFiles = filesByRound[round] ?? [];
-                    const color = outcome === "approved" ? "#059669" : outcome === "revision" ? "#D97706" : outcome === "withdrawn" ? "#6B7280" : "#7C3AED";
-                    const bg = outcome === "approved" ? "#ECFDF5" : outcome === "revision" ? "#FFF7ED" : outcome === "withdrawn" ? "#F4F5F6" : "#F5F3FF";
-                    const border = outcome === "approved" ? "rgba(5,150,105,0.15)" : outcome === "revision" ? "rgba(217,119,6,0.15)" : outcome === "withdrawn" ? "rgba(107,114,128,0.15)" : "rgba(124,58,237,0.15)";
-                    const label = outcome === "approved" ? "✅ レビュー承認" : outcome === "revision" ? "⚠️ 修正依頼" : outcome === "withdrawn" ? "↩ 取り下げ" : "🔄 審査中";
+              {topLevelComments.map(c => {
+                const isOwn = c.userName === userName;
+                const isReviewReq = c.commentType === "review_request";
+                const isRevisionReq = c.commentType === "revision_request";
+                const isApproved = c.commentType === "review_approved";
+                const isWithdrawn = c.commentType === "review_withdrawn";
+                const isStatusChange = c.commentType === "status_change";
+                const isSystem = isReviewReq || isRevisionReq || isApproved || isWithdrawn || isStatusChange;
 
-                    const isExpanded = expandedRounds.has(idx);
-                    const reqIdx = comments.findIndex(c => c.id === reqComment.id);
-                    const nextReqIdx = idx + 1 < reviewRequestComments.length
-                      ? comments.findIndex(c => c.id === reviewRequestComments[idx + 1].id)
-                      : comments.length;
-                    const roundReviewComments = comments.slice(reqIdx + 1, nextReqIdx).filter(
-                      c => c.commentType === "revision_request" || c.commentType === "review_approved" || c.commentType === "review_withdrawn"
-                    );
-                    const roundImages = [
-                      ...(reqComment.images ?? []),
-                      ...roundReviewComments.flatMap(c => c.images ?? []),
-                    ];
-                    const fileCount = roundFiles.length;
-                    const imgCount = roundImages.length;
+                const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : isWithdrawn ? "#6B7280" : "#6B7280";
+                const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : isWithdrawn ? "#F4F5F6" : "#F4F5F6";
+                const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : isWithdrawn ? "rgba(107,114,128,0.15)" : "rgba(26,23,20,0.08)";
+                const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : isWithdrawn ? "↩ 取り下げ" : "";
 
-                    return (
-                      <div key={idx} style={{ borderRadius: 8, border: `1px solid ${border}`, overflow: "hidden" }}>
-                        <button
-                          onClick={() => setExpandedRounds(prev => {
-                            const next = new Set(prev);
-                            if (next.has(idx)) next.delete(idx); else next.add(idx);
-                            return next;
-                          })}
-                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", background: bg, border: "none", cursor: "pointer", textAlign: "left" as const }}
-                        >
-                          <span style={{ fontSize: 11, fontWeight: 700, color }}>第{round}回</span>
-                          {reviewerName && (
-                            <span style={{ fontSize: 10, color: color, opacity: 0.7 }}>→ {reviewerName}</span>
-                          )}
-                          <span style={{ fontSize: 10, color }}>{label}</span>
-                          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-                            {(fileCount > 0 || imgCount > 0) && (
-                              <span style={{ fontSize: 9, color, opacity: 0.75 }}>
-                                {[fileCount > 0 && `${fileCount}ファイル`, imgCount > 0 && `${imgCount}画像`].filter(Boolean).join(" · ")}
-                              </span>
-                            )}
-                            <ChevronDown style={{ width: 13, height: 13, color, transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                if (isStatusChange) {
+                  return (
+                    <div key={c.id} style={{ margin: "6px 0" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ flex: 1, height: 1, background: "rgba(26,23,20,0.06)" }} />
+                        <Avatar name={c.userName} size="xs" />
+                        <span style={{ fontSize: 10, fontWeight: 600, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.userName}</span>
+                        <span style={{ fontSize: 10, color: "#C9C4BB", whiteSpace: "nowrap" as const }}>{formatTs(c.createdAt)}</span>
+                        <span style={{ fontSize: 10, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()}</span>
+                        <div style={{ flex: 1, height: 1, background: "rgba(26,23,20,0.06)" }} />
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (isSystem) {
+                  const isLatestReviewReq = isReviewReq && c.id === latestReviewReqId;
+                  const showReviewForm = isLatestReviewReq && canReview && status === "in-review" && editingId !== c.id;
+                  return (
+                    <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                      <Avatar name={c.userName} size="xs" />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" as const }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, flexShrink: 0 }}>{sysLabel}</span>
+                            <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                            <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                              {isOwn && editingId !== c.id && (
+                                <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                  <Pencil style={{ width: 11, height: 11 }} />
+                                </button>
+                              )}
+                              {isOwn && (
+                                <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                  <Trash2 style={{ width: 11, height: 11 }} />
+                                </button>
+                              )}
+                              <button onClick={() => { setReplyingToId(replyingToId === c.id ? null : c.id); setReplyText(""); setReplyImages([]); }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
+                                title="返信">
+                                <CornerDownRight style={{ width: 11, height: 11 }} />
+                              </button>
+                            </div>
                           </div>
-                        </button>
-
-                        {isExpanded && (
-                          <div style={{ padding: "10px 12px", background: "#FAFAF8", borderTop: `1px solid ${border}`, display: "flex", flexDirection: "column", gap: 10 }}>
-                            {roundFiles.length > 0 && (
-                              <div>
-                                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>ソースファイル</p>
-                                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                                  {roundFiles.map(f => (
-                                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                      <FileCode2 style={{ width: 11, height: 11, color: "#059669", flexShrink: 0 }} />
-                                      {f.fileUrl
-                                        ? <a href={f.fileUrl} target="_blank" rel="noreferrer" style={{ flex: 1, fontSize: 11, color: "#059669", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</a>
-                                        : <span style={{ flex: 1, fontSize: 11, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{f.fileName}</span>}
-                                      {isAssignee && (
-                                        <button onClick={() => handleDeleteSourceFile(f.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB", flexShrink: 0 }}
-                                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                                          <Trash2 style={{ width: 11, height: 11 }} />
-                                        </button>
-                                      )}
+                          {editingId === c.id ? (
+                            <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
+                              <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                              {editImages.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                                  {editImages.map((img, i) => (
+                                    <div key={i} style={{ position: "relative" }}>
+                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                        style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                      <button onClick={() => copyImageToClipboard(img)}
+                                        style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                        title="画像をコピー">
+                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                      </button>
+                                      <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
+                                        style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                        <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                      </button>
                                     </div>
                                   ))}
                                 </div>
+                              )}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                                  <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                                  <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                    onChange={async e => {
+                                      for (const f of Array.from(e.target.files || [])) {
+                                        if (!f.type.startsWith("image/")) continue;
+                                        const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                        if (url) setEditImages(prev => [...prev, url]);
+                                      }
+                                      e.target.value = "";
+                                    }} />
+                                </label>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                                    <Check style={{ width: 11, height: 11 }} />保存
+                                  </button>
+                                  <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            (c.content || c.images?.length > 0) && (
+                              <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
+                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                                {c.images?.length > 0 && (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
+                                    {c.images.map((img, i) => (
+                                      <div key={i} style={{ position: "relative" }}>
+                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                          style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                        <button onClick={() => copyImageToClipboard(img)}
+                                          style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                          title="画像をコピー">
+                                          {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          )}
+                        </div>
+                        {/* Replies */}
+                        {(repliesByParent.get(c.id) ?? []).map(reply => {
+                          const isOwnReply = reply.userName === userName;
+                          return (
+                            <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                              <Avatar name={reply.userName} size="xs" />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                                  <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{reply.userName}</span>
+                                  <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(reply.createdAt)}</span>
+                                  <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                                    {isOwnReply && editingId !== reply.id && (
+                                      <button onClick={() => handleEditComment(reply)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                        <Pencil style={{ width: 11, height: 11 }} />
+                                      </button>
+                                    )}
+                                    {isOwnReply && (
+                                      <button onClick={() => handleDeleteComment(reply.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                        <Trash2 style={{ width: 11, height: 11 }} />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                                {editingId === reply.id ? (
+                                  <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
+                                    <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                                    {editImages.length > 0 && (
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                                        {editImages.map((img, i) => (
+                                          <div key={i} style={{ position: "relative" }}>
+                                            <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                            <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
+                                              {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                            </button>
+                                            <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))} style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                              <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                            </button>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                                        <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                                        <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                          onChange={async e => {
+                                            for (const f of Array.from(e.target.files || [])) {
+                                              if (!f.type.startsWith("image/")) continue;
+                                              const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                              if (url) setEditImages(prev => [...prev, url]);
+                                            }
+                                            e.target.value = "";
+                                          }} />
+                                      </label>
+                                      <div style={{ display: "flex", gap: 6 }}>
+                                        <button onClick={() => handleSaveEdit(reply.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                                          <Check style={{ width: 11, height: 11 }} />保存
+                                        </button>
+                                        <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div
+                                    className="reply-comment-wrapper"
+                                    onClick={(e) => {
+                                      const target = e.target as HTMLElement;
+                                      const bq = target.closest("blockquote");
+                                      if (bq) {
+                                        e.preventDefault();
+                                        let quoteId = bq.getAttribute("data-quote-id");
+                                        if (!quoteId) {
+                                          const match = bq.textContent?.match(/\[(CMT-[\w-]+)\]/);
+                                          if (match) quoteId = match[1];
+                                        }
+                                        if (!quoteId) {
+                                          // 過去のコメント用：自身より過去のコメントからテキスト一致で検索（同名コメント対策）
+                                          const bqText = (bq.textContent || "").replace(/\s+/g, "");
+                                          const currentIndex = comments.findIndex(x => x.id === reply.id);
+                                          const searchPool = currentIndex >= 0 ? comments.slice(0, currentIndex) : comments.slice();
+                                          const matched = searchPool.reverse().find(tc => {
+                                            const tempDiv = document.createElement("div");
+                                            tempDiv.innerHTML = tc.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '');
+                                            const cleanTc = (tempDiv.textContent || "").replace(/\s+/g, "");
+                                            if (!cleanTc) return false;
+                                            return bqText.includes(cleanTc.slice(0, 20)) && bqText.includes(tc.userName.replace(/\s+/g, ""));
+                                          });
+                                          if (matched) quoteId = matched.id;
+                                        }
+                                        const fallbackId = reply.replyTo || c.id;
+                                        const targetId = quoteId ? `panel-comment-${quoteId}` : `panel-comment-${fallbackId}`;
+                                        const targetEl = document.getElementById(targetId);
+                                        if (targetEl) {
+                                          pointToComment(targetEl);
+                                        }
+                                      }
+                                    }}
+                                    data-comment-box
+                                    style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
+                                  >
+                                    <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                                    {reply.images.length > 0 && (
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                                        {reply.images.map((img, i) => (
+                                          <div key={i} style={{ position: "relative" }}>
+                                            <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                            <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
+                                              {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
+                                            </button>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {/* Reply form */}
+                        {replyingToId === c.id && (
+                          <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
+                            <Avatar name={userName} size="xs" />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                              {replyImages.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                                  {replyImages.map((img, i) => (
+                                    <div key={i} style={{ position: "relative" }}>
+                                      <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6 }} />
+                                      <button onClick={() => setReplyImages(prev => prev.filter((_, j) => j !== i))} style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                        <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
+                                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                                  <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                                  <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                    onChange={async e => {
+                                      for (const f of Array.from(e.target.files || [])) {
+                                        if (!f.type.startsWith("image/")) continue;
+                                        const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                        if (url) setReplyImages(prev => [...prev, url]);
+                                      }
+                                      e.target.value = "";
+                                    }} />
+                                </label>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <button onClick={async () => { await addReply(c, replyText, replyImages); setReplyingToId(null); setReplyText(""); setReplyImages([]); }} disabled={!replyText.trim()}
+                                    style={{ padding: "6px 12px", background: !replyText.trim() ? "#F4F5F6" : "#0284C7", color: !replyText.trim() ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: !replyText.trim() ? "not-allowed" : "pointer" }}>
+                                    返信
+                                  </button>
+                                  <button onClick={() => { setReplyingToId(null); setReplyText(""); setReplyImages([]); }} style={{ padding: "6px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {showReviewForm && (
+                          <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
+                            <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
+                            <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                            {revisionImages.length > 0 && (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                                {revisionImages.map((img, i) => (
+                                  <div key={i} style={{ position: "relative" }}>
+                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                      style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                    <button onClick={() => copyImageToClipboard(img)}
+                                      style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                      title="画像をコピー">
+                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                    </button>
+                                    <button onClick={() => setRevisionImages(prev => prev.filter((_, j) => j !== i))}
+                                      style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                      <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                    </button>
+                                  </div>
+                                ))}
                               </div>
                             )}
+                            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4", marginTop: 8 }}>
+                              <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                              <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                onChange={async e => {
+                                  for (const f of Array.from(e.target.files || [])) {
+                                    if (!f.type.startsWith("image/")) continue;
+                                    const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                    if (url) setRevisionImages(prev => [...prev, url]);
+                                  }
+                                  e.target.value = "";
+                                }} />
+                            </label>
+                            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                              <button onClick={() => handleRevisionRequest(revisionInput)}
+                                style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
+                                修正依頼（差戻し）
+                              </button>
+                              <button onClick={() => handleReviewApproval(revisionInput)}
+                                style={{ flex: 1, padding: "8px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
+                                ✅ レビュー承認
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
 
-                            {roundImages.length > 0 && (
-                              <div>
-                                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>添付画像</p>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                                  {roundImages.map((img, i) => (
+                // normal comment
+                return (
+                  <div key={c.id} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                    <Avatar name={c.userName} size="xs" />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div id={`panel-comment-${c.id}`} style={{ borderRadius: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
+                          <StatusBadge status={c.ticketStatus} />
+                          <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
+                          <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                            {isOwn && editingId !== c.id && (
+                              <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                <Pencil style={{ width: 11, height: 11 }} />
+                              </button>
+                            )}
+                            {isOwn && (
+                              <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
+                                <Trash2 style={{ width: 11, height: 11 }} />
+                              </button>
+                            )}
+                            <button onClick={() => {
+                              setReplyingToId(replyingToId === c.id ? null : c.id);
+                              // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
+                              const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
+                              // 左線ではなく全体を囲うボーダースタイルに変更
+                              setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${c.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                              setReplyImages([]);
+                            }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
+                              title="返信">
+                              <CornerDownRight style={{ width: 11, height: 11 }} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {editingId === c.id ? (
+                          <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
+                            <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                            {editImages.length > 0 && (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                                {editImages.map((img, i) => (
+                                  <div key={i} style={{ position: "relative" }}>
+                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                      style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                    <button onClick={() => copyImageToClipboard(img)}
+                                      style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                                      title="画像をコピー">
+                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
+                                    </button>
+                                    <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
+                                      style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                      <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                              <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                                <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                                <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                                  onChange={async e => {
+                                    for (const f of Array.from(e.target.files || [])) {
+                                      if (!f.type.startsWith("image/")) continue;
+                                      const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                                      if (url) setEditImages(prev => [...prev, url]);
+                                    }
+                                    e.target.value = "";
+                                  }} />
+                              </label>
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                                  <Check style={{ width: 11, height: 11 }} />保存
+                                </button>
+                                <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          (c.content || c.images?.length > 0) && (
+                            <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
+                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                              {c.images?.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
+                                  {c.images.map((img, i) => (
                                     <div key={i} style={{ position: "relative" }}>
                                       <img src={img} alt="" onClick={() => setPreviewImage(img)}
                                         style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
@@ -2453,366 +3173,11 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                                     </div>
                                   ))}
                                 </div>
-                              </div>
-                            )}
-
-                            {roundReviewComments.length > 0 && (
-                              <div>
-                                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 5 }}>レビューコメント</p>
-                                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                  {roundReviewComments.map(c => {
-                                    const isRevision = c.commentType === "revision_request";
-                                    const cColor = isRevision ? "#D97706" : "#059669";
-                                    const cBg = isRevision ? "#FFF7ED" : "#ECFDF5";
-                                    const cBorder = isRevision ? "rgba(217,119,6,0.15)" : "rgba(5,150,105,0.15)";
-                                    const cLabel = isRevision ? "⚠️ 修正依頼" : "✅ 承認";
-                                    return (
-                                      <div key={c.id} style={{ display: "flex", gap: 7 }}>
-                                        <Avatar name={c.userName} size="xs" />
-                                        <div style={{ flex: 1, minWidth: 0 }}>
-                                          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4, flexWrap: "wrap" as const }}>
-                                            <span style={{ fontSize: 11, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
-                                            <span style={{ fontSize: 9, fontWeight: 700, color: cColor, background: cBg, padding: "1px 6px", borderRadius: 20, border: `1px solid ${cBorder}` }}>{cLabel}</span>
-                                            <span style={{ fontSize: 9, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                                          </div>
-                                          {(c.content || (c.images?.length ?? 0) > 0) && (
-                                            <div style={{ background: cBg, border: `1px solid ${cBorder}`, borderRadius: 7, padding: "8px 10px" }}>
-                                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
-                                              {(c.images?.length ?? 0) > 0 && (
-                                                <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
-                                                  {(c.images ?? []).map((img, i) => (
-                                                    <div key={i} style={{ position: "relative" }}>
-                                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                                        style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                                      <button onClick={() => copyImageToClipboard(img)}
-                                                        style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                                        title="画像をコピー">
-                                                        {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                                      </button>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-
-                            {roundFiles.length === 0 && roundImages.length === 0 && roundReviewComments.length === 0 && (
-                              <p style={{ fontSize: 11, color: "#C9C4BB", textAlign: "center" as const }}>添付ファイル・コメントなし</p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {isAssignee && (
-                status === "todo" ? (
-                  <div style={{ padding: "16px", background: "#FFF7ED", borderRadius: 9, border: "1px solid rgba(217,119,6,0.20)", textAlign: "center" as const }}>
-                    <p style={{ fontSize: 13, fontWeight: 700, color: "#D97706", marginBottom: 4 }}>まず着手を開始してください</p>
-                    <p style={{ fontSize: 12, color: "#9E9690" }}>「着手開始」ボタンを押してから<br />レビュー依頼を送信できます</p>
-                  </div>
-                ) : (hasBeenApproved && !showReReviewForm && (status === "review-done" || status === "stg-test" || status === "uat")) ? (
-                  <div style={{ padding: "12px 14px", background: "#ECFDF5", borderRadius: 9, border: "1px solid rgba(5,150,105,0.20)" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div>
-                        <p style={{ fontSize: 12, fontWeight: 700, color: "#059669" }}>✅ レビューが承認されています</p>
-                        <p style={{ fontSize: 11, color: "#9E9690", marginTop: 3 }}>再度レビューを依頼できます</p>
-                      </div>
-                      <button
-                        onClick={() => setShowReReviewForm(true)}
-                        style={{ flexShrink: 0, padding: "6px 14px", background: "#7C3AED", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer", whiteSpace: "nowrap" as const }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#6D28D9"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#7C3AED"; }}
-                      >
-                        再レビュー依頼
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    onPaste={e => pasteImage(e, setReviewImages, `tickets/${ticket.id}/comments`)}
-                    onDragOver={e => { e.preventDefault(); setFileDragOver(true); }}
-                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setFileDragOver(false); }}
-                    onDrop={async e => {
-                      e.preventDefault();
-                      setFileDragOver(false);
-                      if (!e.dataTransfer.files.length) return;
-                      Array.from(e.dataTransfer.files).forEach(f => {
-                        if (f.type.startsWith("image/")) {
-                          uploadImageToStorage(f, `tickets/${ticket.id}/comments`).then(url => { if (url) setReviewImages(prev => [...prev, url]); });
-                        } else {
-                          setReviewFiles(prev => [...prev, { name: f.name, file: f }]);
-                        }
-                      });
-                    }}
-                  >
-                    <div style={{ marginBottom: 10 }}>
-                      <label className={labelCls}>レビュアー</label>
-                      <div ref={reviewerDropRef} style={{ position: "relative" }}>
-                        <button onClick={() => { if (status !== "in-review") setReviewerOpen(o => !o); }}
-                          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: status === "in-review" ? "#F4F5F6" : reviewerOpen ? "#FFF" : "#F7F8F9", border: `1px solid ${reviewerOpen ? "#059669" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, padding: "9px 12px", fontSize: 13, color: reviewerName ? "#1A1714" : "#B0A9A4", cursor: status === "in-review" ? "default" : "pointer", outline: "none", opacity: status === "in-review" ? 0.7 : 1, boxShadow: reviewerOpen ? "0 0 0 3px rgba(5,150,105,0.08)" : "none", transition: "all 0.15s", textAlign: "left" as const }}>
-                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{reviewerName || "レビュアーを選択..."}</span>
-                          <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: reviewerOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-                        </button>
-                        {reviewerOpen && (
-                          <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden" }}>
-                            <button onClick={() => { setReviewerName(""); setReviewerOpen(false); }}
-                              style={{ width: "100%", padding: "8px 12px", textAlign: "left" as const, background: !reviewerName ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "#B0A9A4" }}
-                              onMouseEnter={e => { if (reviewerName) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = !reviewerName ? "#ECFDF5" : "transparent"; }}>
-                              レビュアーを選択...
-                            </button>
-                            {[...new Set([
-                              ...(isAssignee && userName ? [userName] : []),
-                              ...reviewerEligibleNames.filter(n => projectMemberNames.length === 0 || projectMemberNames.includes(n)),
-                            ])].map(n => (
-                              <button key={n} onClick={() => { setReviewerName(n); setReviewerOpen(false); }}
-                                style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: reviewerName === n ? "#ECFDF5" : "transparent", border: "none", cursor: "pointer", fontSize: 12, color: reviewerName === n ? "#059669" : "#1A1714", textAlign: "left" as const, transition: "background 0.1s" }}
-                                onMouseEnter={e => { if (reviewerName !== n) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = reviewerName === n ? "#ECFDF5" : "transparent"; }}>
-                                <Avatar name={n} size="xs" />
-                                <span style={{ flex: 1 }}>{n}</span>
-                                {reviewerName === n && <Check style={{ width: 11, height: 11, color: "#059669", marginLeft: "auto" }} />}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{ marginBottom: 10 }}>
-                      <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
-                      <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                      </div>
-                    </div>
-                    {fileDragOver && (
-                      <div style={{ border: "2px dashed rgba(5,150,105,0.5)", borderRadius: 8, padding: "10px", textAlign: "center", color: "#059669", fontSize: 11, fontWeight: 600, background: "rgba(5,150,105,0.04)", marginBottom: 8 }}>
-                        ドロップしてファイルを追加
-                      </div>
-                    )}
-                    {reviewFiles.length > 0 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
-                        {reviewFiles.map((rf, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, background: "#F4F5F6", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#6B6458" }}>
-                            <FileCode2 style={{ width: 11, height: 11, color: "#059669" }} />{rf.name}
-                            <button onClick={() => setReviewFiles(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 0 }}>×</button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {reviewImages.length > 0 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-                        {reviewImages.map((img, i) => (
-                          <div key={i} style={{ position: "relative" }}>
-                            <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                              style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                            <button onClick={() => copyImageToClipboard(img)}
-                              style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                              title="画像をコピー">
-                              {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                            </button>
-                            <button onClick={() => setReviewImages(prev => prev.filter((_, j) => j !== i))}
-                              style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                              <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <ImageIcon style={{ width: 12, height: 12 }} />画像添付（Ctrl+V 可）
-                        <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                          onChange={async e => {
-                            for (const f of Array.from(e.target.files || [])) {
-                              if (!f.type.startsWith("image/")) continue;
-                              const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                              if (url) setReviewImages(prev => [...prev, url]);
-                            }
-                            e.target.value = "";
-                          }} />
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, fontWeight: 600, borderRadius: 8, cursor: "pointer", border: "1px solid rgba(26,23,20,0.10)", flexShrink: 0, opacity: status === "in-review" ? 0.5 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                        <Paperclip style={{ width: 12, height: 12 }} />ファイル添付
-                        <input type="file" multiple style={{ display: "none" }} onChange={e => { Array.from(e.target.files || []).forEach(f => setReviewFiles(prev => [...prev, { name: f.name, file: f }])); e.target.value = ""; }} />
-                      </label>
-                      {showReReviewForm && (
-                        <button
-                          onClick={() => { setShowReReviewForm(false); setReviewContent(""); setReviewFiles([]); setReviewImages([]); }}
-                          style={{ padding: "7px 12px", background: "#F4F5F6", color: "#6B7280", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(107,114,128,0.25)", cursor: "pointer", flexShrink: 0 }}
-                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E9EAEB"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                        >
-                          キャンセル
-                        </button>
-                      )}
-                      <button onClick={handleReviewRequest} disabled={!canSendReview}
-                        style={{ flex: 1, padding: "7px 14px", background: canSendReview ? "#7C3AED" : "#F4F5F6", color: canSendReview ? "#FFF" : "#B0A9A4", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: canSendReview ? "pointer" : "not-allowed" }}>
-                        {status === "in-review" ? "レビュー依頼中..." : "レビュー依頼を送信"}
-                      </button>
-                    </div>
-                    {status === "in-review" && (
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                        <p style={{ fontSize: 10, color: "#7C3AED" }}>修正依頼を受けてから再度送信できます</p>
-                        {canWithdrawReview && (
-                          <button
-                            onClick={handleWithdrawReview}
-                            style={{ padding: "5px 12px", background: "#F4F5F6", color: "#6B7280", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(107,114,128,0.25)", cursor: "pointer" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E9EAEB"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                          >
-                            ↩ レビュー取り下げ
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              )}
-            </div>
-          )}
-
-          {/* Comments */}
-          <div>
-            <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>コメント ({comments.length})</p>
-
-            {topLevelComments.map(c => {
-              const isOwn = c.userName === userName;
-              const isReviewReq = c.commentType === "review_request";
-              const isRevisionReq = c.commentType === "revision_request";
-              const isApproved = c.commentType === "review_approved";
-              const isWithdrawn = c.commentType === "review_withdrawn";
-              const isStatusChange = c.commentType === "status_change";
-              const isSystem = isReviewReq || isRevisionReq || isApproved || isWithdrawn || isStatusChange;
-
-              const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : isWithdrawn ? "#6B7280" : "#6B7280";
-              const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : isWithdrawn ? "#F4F5F6" : "#F4F5F6";
-              const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : isWithdrawn ? "rgba(107,114,128,0.15)" : "rgba(26,23,20,0.08)";
-              const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : isWithdrawn ? "↩ 取り下げ" : "";
-
-              if (isStatusChange) {
-                return (
-                  <div key={c.id} style={{ margin: "6px 0" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <div style={{ flex: 1, height: 1, background: "rgba(26,23,20,0.06)" }} />
-                      <Avatar name={c.userName} size="xs" />
-                      <span style={{ fontSize: 10, fontWeight: 600, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.userName}</span>
-                      <span style={{ fontSize: 10, color: "#C9C4BB", whiteSpace: "nowrap" as const }}>{formatTs(c.createdAt)}</span>
-                      <span style={{ fontSize: 10, color: "#9E9690", whiteSpace: "nowrap" as const }}>{c.content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()}</span>
-                      <div style={{ flex: 1, height: 1, background: "rgba(26,23,20,0.06)" }} />
-                    </div>
-                  </div>
-                );
-              }
-
-              if (isSystem) {
-                const isLatestReviewReq = isReviewReq && c.id === latestReviewReqId;
-                const showReviewForm = isLatestReviewReq && canReview && status === "in-review" && editingId !== c.id;
-                return (
-                  <div key={c.id} id={`panel-comment-${c.id}`} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-                    <Avatar name={c.userName} size="xs" />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" as const }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
-                        <span style={{ fontSize: 10, fontWeight: 700, color: sysColor, background: sysBg, padding: "2px 8px", borderRadius: 20, border: `1px solid ${sysBorder}`, flexShrink: 0 }}>{sysLabel}</span>
-                        <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                          {isOwn && editingId !== c.id && (
-                            <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                              <Pencil style={{ width: 11, height: 11 }} />
-                            </button>
-                          )}
-                          {isOwn && (
-                            <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                              <Trash2 style={{ width: 11, height: 11 }} />
-                            </button>
-                          )}
-                          <button onClick={() => { setReplyingToId(replyingToId === c.id ? null : c.id); setReplyText(""); setReplyImages([]); }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
-                            title="返信">
-                            <CornerDownRight style={{ width: 11, height: 11 }} />
-                          </button>
-                        </div>
-                      </div>
-                      {editingId === c.id ? (
-                        <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                          <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                          {editImages.length > 0 && (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                              {editImages.map((img, i) => (
-                                <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                  <button onClick={() => copyImageToClipboard(img)}
-                                    style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                    title="画像をコピー">
-                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                  </button>
-                                  <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
-                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                  </button>
-                                </div>
-                              ))}
+                              )}
                             </div>
-                          )}
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                              <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                              <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                                onChange={async e => {
-                                  for (const f of Array.from(e.target.files || [])) {
-                                    if (!f.type.startsWith("image/")) continue;
-                                    const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                    if (url) setEditImages(prev => [...prev, url]);
-                                  }
-                                  e.target.value = "";
-                                }} />
-                            </label>
-                            <div style={{ display: "flex", gap: 6 }}>
-                              <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                                <Check style={{ width: 11, height: 11 }} />保存
-                              </button>
-                              <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        (c.content || c.images?.length > 0) && (
-                          <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                            {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
-                            {c.images?.length > 0 && (
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
-                                {c.images.map((img, i) => (
-                                  <div key={i} style={{ position: "relative" }}>
-                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                      style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                    <button onClick={() => copyImageToClipboard(img)}
-                                      style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                      title="画像をコピー">
-                                      {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      )}
+                          )
+                        )}
+                      </div>
                       {/* Replies */}
                       {(repliesByParent.get(c.id) ?? []).map(reply => {
                         const isOwnReply = reply.userName === userName;
@@ -2824,6 +3189,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                                 <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{reply.userName}</span>
                                 <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(reply.createdAt)}</span>
                                 <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                                  {/* 1. 編集ボタン */}
                                   {isOwnReply && editingId !== reply.id && (
                                     <button onClick={() => handleEditComment(reply)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
@@ -2831,6 +3197,7 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                                       <Pencil style={{ width: 11, height: 11 }} />
                                     </button>
                                   )}
+                                  {/* 2. 削除ボタン */}
                                   {isOwnReply && (
                                     <button onClick={() => handleDeleteComment(reply.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
                                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
@@ -2838,6 +3205,20 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                                       <Trash2 style={{ width: 11, height: 11 }} />
                                     </button>
                                   )}
+                                  {/* 3. 返信ボタン（直前のコメントのみを枠で囲って引用） */}
+                                  <button onClick={() => {
+                                    setReplyingToId(replyingToId === c.id ? null : c.id);
+                                    // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
+                                    const cleanContent = truncateQuoteHtml(reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
+                                    // 左線ではなく全体を囲うボーダースタイルに変更
+                                    setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${reply.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                                    setReplyImages([]);
+                                  }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
+                                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
+                                    title="返信">
+                                    <CornerDownRight style={{ width: 11, height: 11 }} />
+                                  </button>
                                 </div>
                               </div>
                               {editingId === reply.id ? (
@@ -2880,7 +3261,42 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                                   </div>
                                 </div>
                               ) : (
-                                <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
+                                <div
+                                  className="reply-comment-wrapper"
+                                  onClick={(e) => {
+                                    const target = e.target as HTMLElement;
+                                    const bq = target.closest("blockquote");
+                                    if (bq) {
+                                      e.preventDefault();
+                                      let quoteId = null;
+                                      const match = bq.textContent?.match(/\[(CMT-[\w-]+)\]/);
+                                      if (match) quoteId = match[1];
+
+                                      if (!quoteId) {
+                                        // 過去のコメント用：自身より過去のコメントからテキスト一致で検索（同名コメント対策）
+                                        const bqText = (bq.textContent || "").replace(/\s+/g, "");
+                                        const currentIndex = comments.findIndex(x => x.id === reply.id);
+                                        const searchPool = currentIndex >= 0 ? comments.slice(0, currentIndex) : comments.slice();
+                                        const matched = searchPool.reverse().find(tc => {
+                                          const tempDiv = document.createElement("div");
+                                          tempDiv.innerHTML = tc.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '');
+                                          const cleanTc = (tempDiv.textContent || "").replace(/\s+/g, "");
+                                          if (!cleanTc) return false;
+                                          return bqText.includes(cleanTc.slice(0, 20)) && bqText.includes(tc.userName.replace(/\s+/g, ""));
+                                        });
+                                        if (matched) quoteId = matched.id;
+                                      }
+                                      const fallbackId = reply.replyTo || c.id;
+                                      const targetId = quoteId ? `panel-comment-${quoteId}` : `panel-comment-${fallbackId}`;
+                                      const targetEl = document.getElementById(targetId);
+                                      if (targetEl) {
+                                        pointToComment(targetEl);
+                                      }
+                                    }
+                                  }}
+                                  data-comment-box
+                                  style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
+                                >
                                   <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
                                   {reply.images.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
@@ -2942,376 +3358,74 @@ const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実�
                           </div>
                         </div>
                       )}
-                      {showReviewForm && (
-                        <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
-                          <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                          <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
-                          {revisionImages.length > 0 && (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                              {revisionImages.map((img, i) => (
-                                <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                  <button onClick={() => copyImageToClipboard(img)}
-                                    style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                    title="画像をコピー">
-                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                  </button>
-                                  <button onClick={() => setRevisionImages(prev => prev.filter((_, j) => j !== i))}
-                                    style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4", marginTop: 8 }}>
-                            <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                            <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                              onChange={async e => {
-                                for (const f of Array.from(e.target.files || [])) {
-                                  if (!f.type.startsWith("image/")) continue;
-                                  const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                  if (url) setRevisionImages(prev => [...prev, url]);
-                                }
-                                e.target.value = "";
-                              }} />
-                          </label>
-                          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                            <button onClick={() => handleRevisionRequest(revisionInput)}
-                              style={{ flex: 1, padding: "8px 0", background: "#FFF7ED", color: "#D97706", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(217,119,6,0.25)", cursor: "pointer" }}>
-                              修正依頼（差戻し）
-                            </button>
-                            <button onClick={() => handleReviewApproval(revisionInput)}
-                              style={{ flex: 1, padding: "8px 0", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 700, borderRadius: 8, border: "1px solid rgba(5,150,105,0.25)", cursor: "pointer" }}>
-                              ✅ レビュー承認
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
-              }
+              })}
 
-              // normal comment
-              return (
-                <div key={c.id} id={`panel-comment-${c.id}`} style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-                  <Avatar name={c.userName} size="xs" />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{c.userName}</span>
-                      <StatusBadge status={c.ticketStatus} />
-                      <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(c.createdAt)}</span>
-                      <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                        {isOwn && editingId !== c.id && (
-                          <button onClick={() => handleEditComment(c)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                            <Pencil style={{ width: 11, height: 11 }} />
-                          </button>
-                        )}
-                        {isOwn && (
-                          <button onClick={() => handleDeleteComment(c.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                            <Trash2 style={{ width: 11, height: 11 }} />
-                          </button>
-                        )}
-                        <button onClick={() => {
-                          setReplyingToId(replyingToId === c.id ? null : c.id);
-                          // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
-                          const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
-                          // 左線ではなく全体を囲うボーダースタイルに変更
-                          setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
-                          setReplyImages([]);
-                        }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
-                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
-                          title="返信">
-                          <CornerDownRight style={{ width: 11, height: 11 }} />
-                        </button>
-                      </div>
-                    </div>
-
-                    {editingId === c.id ? (
-                      <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                        <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                        {editImages.length > 0 && (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                            {editImages.map((img, i) => (
-                              <div key={i} style={{ position: "relative" }}>
-                                <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                  style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                <button onClick={() => copyImageToClipboard(img)}
-                                  style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                  title="画像をコピー">
-                                  {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                </button>
-                                <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))}
-                                  style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                  <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                            <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                            <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                              onChange={async e => {
-                                for (const f of Array.from(e.target.files || [])) {
-                                  if (!f.type.startsWith("image/")) continue;
-                                  const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                  if (url) setEditImages(prev => [...prev, url]);
-                                }
-                                e.target.value = "";
-                              }} />
-                          </label>
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <button onClick={() => handleSaveEdit(c.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                              <Check style={{ width: 11, height: 11 }} />保存
-                            </button>
-                            <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      (c.content || c.images?.length > 0) && (
-                        <div style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
-                          {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
-                          {c.images?.length > 0 && (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
-                              {c.images.map((img, i) => (
-                                <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" onClick={() => setPreviewImage(img)}
-                                    style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                  <button onClick={() => copyImageToClipboard(img)}
-                                    style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                                    title="画像をコピー">
-                                    {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    )}
-                    {/* Replies */}
-                    {(repliesByParent.get(c.id) ?? []).map(reply => {
-                      const isOwnReply = reply.userName === userName;
-                      return (
-                        <div key={reply.id} id={`panel-comment-${reply.id}`} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
-                          <Avatar name={reply.userName} size="xs" />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
-                              <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{reply.userName}</span>
-                              <span style={{ fontSize: 10, color: "#C9C4BB" }}>{formatTs(reply.createdAt)}</span>
-                              <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                                {/* 1. 編集ボタン */}
-                                {isOwnReply && editingId !== reply.id && (
-                                  <button onClick={() => handleEditComment(reply)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                                    <Pencil style={{ width: 11, height: 11 }} />
-                                  </button>
-                                )}
-                                {/* 2. 削除ボタン */}
-                                {isOwnReply && (
-                                  <button onClick={() => handleDeleteComment(reply.id)} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: "#D5D0CB" }}
-                                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
-                                    <Trash2 style={{ width: 11, height: 11 }} />
-                                  </button>
-                                )}
-                                {/* 3. 返信ボタン（直前のコメントのみを枠で囲って引用） */}
-                                <button onClick={() => {
-                                  setReplyingToId(replyingToId === c.id ? null : c.id);
-                                  // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
-                                  const cleanContent = truncateQuoteHtml(reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
-                                  // 左線ではなく全体を囲うボーダースタイルに変更
-                                  setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
-                                  setReplyImages([]);
-                                }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
-                                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
-                                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = replyingToId === c.id ? "#0284C7" : "#D5D0CB"; }}
-                                  title="返信">
-                                  <CornerDownRight style={{ width: 11, height: 11 }} />
-                                </button>
-                              </div>
-                            </div>
-                            {editingId === reply.id ? (
-                              <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                                {editImages.length > 0 && (
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                                    {editImages.map((img, i) => (
-                                      <div key={i} style={{ position: "relative" }}>
-                                        <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                        <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
-                                          {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
-                                        </button>
-                                        <button onClick={() => setEditImages(prev => prev.filter((_, j) => j !== i))} style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                          <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                                  <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                                    <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                                    <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                                      onChange={async e => {
-                                        for (const f of Array.from(e.target.files || [])) {
-                                          if (!f.type.startsWith("image/")) continue;
-                                          const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                          if (url) setEditImages(prev => [...prev, url]);
-                                        }
-                                        e.target.value = "";
-                                      }} />
-                                  </label>
-                                  <div style={{ display: "flex", gap: 6 }}>
-                                    <button onClick={() => handleSaveEdit(reply.id)} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                                      <Check style={{ width: 11, height: 11 }} />保存
-                                    </button>
-                                    <button onClick={() => { setEditingId(null); setEditImages([]); }} style={{ padding: "5px 10px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : (
-                              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}>
-                                <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                                {reply.images.length > 0 && (
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                                    {reply.images.map((img, i) => (
-                                      <div key={i} style={{ position: "relative" }}>
-                                        <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
-                                        <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
-                                          {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {/* Reply form */}
-                    {replyingToId === c.id && (
-                      <div onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
-                        <Avatar name={userName} size="xs" />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-                          {replyImages.length > 0 && (
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                              {replyImages.map((img, i) => (
-                                <div key={i} style={{ position: "relative" }}>
-                                  <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6 }} />
-                                  <button onClick={() => setReplyImages(prev => prev.filter((_, j) => j !== i))} style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                    <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                              <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                              <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                                onChange={async e => {
-                                  for (const f of Array.from(e.target.files || [])) {
-                                    if (!f.type.startsWith("image/")) continue;
-                                    const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                                    if (url) setReplyImages(prev => [...prev, url]);
-                                  }
-                                  e.target.value = "";
-                                }} />
-                            </label>
-                            <div style={{ display: "flex", gap: 6 }}>
-                              <button onClick={async () => { await addReply(c, replyText, replyImages); setReplyingToId(null); setReplyText(""); setReplyImages([]); }} disabled={!replyText.trim()}
-                                style={{ padding: "6px 12px", background: !replyText.trim() ? "#F4F5F6" : "#0284C7", color: !replyText.trim() ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: !replyText.trim() ? "not-allowed" : "pointer" }}>
-                                返信
-                              </button>
-                              <button onClick={() => { setReplyingToId(null); setReplyText(""); setReplyImages([]); }} style={{ padding: "6px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
+              {/* Add comment */}
+              <div onPaste={e => pasteImage(e, setCommentImages, `tickets/${ticket.id}/comments`)} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <Avatar name={userName} size="xs" />
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714" }}>{userName}</span>
+                    <StatusBadge status={status} />
                   </div>
                 </div>
-              );
-            })}
-
-            {/* Add comment */}
-            <div onPaste={e => pasteImage(e, setCommentImages, `tickets/${ticket.id}/comments`)} style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 14px" }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <Avatar name={userName} size="xs" />
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714" }}>{userName}</span>
-                  <StatusBadge status={status} />
+                <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                {commentImages.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+                    {commentImages.map((img, i) => (
+                      <div key={i} style={{ position: "relative" }}>
+                        <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6 }} />
+                        <button onClick={() => setCommentImages(prev => prev.filter((_, j) => j !== i))}
+                          style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <X style={{ width: 8, height: 8, color: "#FFF" }} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
+                    <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
+                    <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                      onChange={async e => {
+                        for (const f of Array.from(e.target.files || [])) {
+                          if (!f.type.startsWith("image/")) continue;
+                          const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
+                          if (url) setCommentImages(prev => [...prev, url]);
+                        }
+                        e.target.value = "";
+                      }} />
+                  </label>
+                  <button onClick={handleAddComment} disabled={!commentText.trim()}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: !commentText.trim() ? "#F4F5F6" : "#059669", color: !commentText.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !commentText.trim() ? "not-allowed" : "pointer" }}>
+                    投稿
+                  </button>
                 </div>
-              </div>
-              <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
-              {commentImages.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
-                  {commentImages.map((img, i) => (
-                    <div key={i} style={{ position: "relative" }}>
-                      <img src={img} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6 }} />
-                      <button onClick={() => setCommentImages(prev => prev.filter((_, j) => j !== i))}
-                        style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <X style={{ width: 8, height: 8, color: "#FFF" }} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 11, color: "#B0A9A4" }}>
-                  <ImageIcon style={{ width: 13, height: 13 }} />画像（Ctrl+V 貼り付け可）
-                  <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                    onChange={async e => {
-                      for (const f of Array.from(e.target.files || [])) {
-                        if (!f.type.startsWith("image/")) continue;
-                        const url = await uploadImageToStorage(f, `tickets/${ticket.id}/comments`);
-                        if (url) setCommentImages(prev => [...prev, url]);
-                      }
-                      e.target.value = "";
-                    }} />
-                </label>
-                <button onClick={handleAddComment} disabled={!commentText.trim()}
-                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: !commentText.trim() ? "#F4F5F6" : "#059669", color: !commentText.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !commentText.trim() ? "not-allowed" : "pointer" }}>
-                  投稿
-                </button>
               </div>
             </div>
-          </div>
           </>
         </div>
-    {showCompletionOverlay && ticket && (
-      <CompletionOverlay
-        ticketTitle={title}
-        initialSegmentHours={completionSegmentHours}
-        onSave={handleSaveActualWorkHours}
-        onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
-      />
-    )}
-    {showHoursInputMode && !showCompletionOverlay && ticket && (
-      <CompletionOverlay
-        ticketTitle={title}
-        initialSegmentHours={computeRawSegments(ticket)}
-        skipAnimation
-        onSave={handleSaveActualWorkHours}
-        onClose={() => setShowHoursInputMode(false)}
-      />
-    )}
-  </div>
-</>
+        {showCompletionOverlay && ticket && (
+          <CompletionOverlay
+            ticketTitle={title}
+            initialSegmentHours={completionSegmentHours}
+            onSave={handleSaveActualWorkHours}
+            onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
+          />
+        )}
+        {showHoursInputMode && !showCompletionOverlay && ticket && (
+          <CompletionOverlay
+            ticketTitle={title}
+            initialSegmentHours={computeRawSegments(ticket)}
+            skipAnimation
+            onSave={handleSaveActualWorkHours}
+            onClose={() => setShowHoursInputMode(false)}
+          />
+        )}
+      </div>
+    </>
   );
 }

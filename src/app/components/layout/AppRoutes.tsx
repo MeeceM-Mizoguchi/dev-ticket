@@ -20,10 +20,6 @@ import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
 
 // 保護下(ログイン後)ページの単一定義。
-// Web版は App.tsx のネストルート(<Outlet/>)配下で、
-// Mac/iPad版は TabPane の <Routes location> 配下で、同じ定義を再利用する。
-// ※パスは絶対パス。Web のネスト(pathless レイアウトルート配下)でも、
-//   タブの <Routes location> でも、どちらも絶対パスで動作する。
 export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/dashboard", element: <Dashboard /> },
   { path: "/projects", element: <ProjectsPage /> },
@@ -43,20 +39,19 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug", element: <SprintPage /> },
   { path: "/:projectSlug/backlog", element: <BacklogPage /> },
   { path: "/:projectSlug/backlog/:itemId", element: <BacklogPage /> },
+  
+  // 🌟 修正: Wikiの動的パスパラメータを明示的にマッピング
   { path: "/:projectSlug/wiki", element: <WikiPage /> },
+  { path: "/:projectSlug/wiki/folders/:folderId", element: <WikiPage /> },
+  { path: "/:projectSlug/wiki/pages/:pageId", element: <WikiPage /> },
   { path: "/:projectSlug/wiki/*", element: <WikiPage /> },
+  
   { path: "/:projectSlug/minutes", element: <MinutesPage /> },
   { path: "/:projectSlug/minutes/:minuteId", element: <MinutesPage /> },
   // Sprint detail (チケット一覧) with optional ticket open
   { path: "/:projectSlug/:segment", element: <SprintDetailPage /> },
 ];
 
-// Mac/iPad のタブ配下で使う Routes。
-// react-router 7 は Router の入れ子を禁止するため、タブごとに MemoryRouter は
-// 作らず、単一の BrowserRouter 内で <Routes location> によりタブ固有の
-// ロケーションを描画する。
-//  - アクティブタブ: location 未指定 → 実ルーターの現在地で描画(遷移が効く)
-//  - 非アクティブタブ: location 指定 → そのパスに固定して keep-alive(状態保持)
 export function ProtectedRoutes({ location }: { location?: string }) {
   return (
     <Routes location={location}>
