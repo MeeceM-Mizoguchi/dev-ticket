@@ -1,23 +1,48 @@
-// ボードを全画面表示するトグルボタン（Fullscreen API）。
-import { useEffect, useState } from "react";
+// ボードを全画面表示するトグル。
+// Mac/PC: ネイティブ Fullscreen API。iPad(WKWebView)などFS非対応環境: CSS疑似全画面にフォールバック。
+import { useEffect } from "react";
 import { Maximize, Minimize } from "lucide-react";
 
-export function FullscreenButton({ targetRef }: { targetRef: React.RefObject<HTMLDivElement | null> }) {
-  const [isFull, setIsFull] = useState(false);
+interface Props {
+  targetRef: React.RefObject<HTMLDivElement | null>;
+  pseudoFull: boolean;
+  setPseudoFull: (v: boolean) => void;
+}
 
+// ネイティブ全画面が使えるか（iPadのWKWebViewでは false になる）
+function nativeFullscreenSupported(el: HTMLElement | null): boolean {
+  if (typeof document === "undefined") return false;
+  const anyDoc = document as any;
+  const enabled = document.fullscreenEnabled ?? anyDoc.webkitFullscreenEnabled ?? false;
+  const canReq = !!(el && (el.requestFullscreen || (el as any).webkitRequestFullscreen));
+  return !!enabled && canReq;
+}
+
+export function FullscreenButton({ targetRef, pseudoFull, setPseudoFull }: Props) {
+  const native = nativeFullscreenSupported(targetRef.current);
+  const isFull = (typeof document !== "undefined" && !!document.fullscreenElement) || pseudoFull;
+
+  // ネイティブ全画面の状態変化に追従（疑似全画面は自前state）
   useEffect(() => {
-    const onChange = () => setIsFull(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+    if (native) return;
+    // 疑似全画面中は Esc で解除
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && pseudoFull) setPseudoFull(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [native, pseudoFull, setPseudoFull]);
 
   const toggle = () => {
     const el = targetRef.current;
     if (!el) return;
-    if (document.fullscreenElement) {
-      void document.exitFullscreen();
+    if (native) {
+      const anyDoc = document as any;
+      if (document.fullscreenElement || anyDoc.webkitFullscreenElement) {
+        (document.exitFullscreen || anyDoc.webkitExitFullscreen)?.call(document);
+      } else {
+        (el.requestFullscreen || (el as any).webkitRequestFullscreen)?.call(el);
+      }
     } else {
-      void el.requestFullscreen?.();
+      setPseudoFull(!pseudoFull);
     }
   };
 
