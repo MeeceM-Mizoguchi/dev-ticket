@@ -55,15 +55,22 @@ export function Topbar() {
   // バージョン情報ポップアップ
   const [showVersion, setShowVersion] = useState(false);
   const [versionCopied, setVersionCopied] = useState(false);
-  // Meece（システム管理会社）のみ取得するデプロイ履歴
   const [versionHistory, setVersionHistory] = useState<{ version: string; released_at: string }[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  // お知らせ
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
+  const [showAnnouncement, setShowAnnouncement] = useState(false);
+  const [announcementAnchorX, setAnnouncementAnchorX] = useState(0);
+  const announcementBtnRef = useRef<HTMLButtonElement>(null);
+  
+  // お知らせの未読状態（光らせるフラグ）
+  const [hasUnreadAnnounce, setHasUnreadAnnounce] = useState(false);
 
   const openVersion = useCallback(() => {
     setShowUserMenu(false);
     setVersionCopied(false);
     setShowVersion(true);
-    // 履歴はシステム管理会社の組織だけが閲覧可能（RLSでも制限済み）
     if (isSystemAdmin && isSupabaseEnabled) {
       setHistoryLoading(true);
       setVersionHistory(null);
@@ -139,12 +146,6 @@ export function Topbar() {
     () => localStorage.getItem(NOTIF_VIEWED_KEY) ?? ""
   );
 
-  // お知らせ
-  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
-  const [showAnnouncement, setShowAnnouncement] = useState(false);
-  const [announcementAnchorX, setAnnouncementAnchorX] = useState(0);
-  const announcementBtnRef = useRef<HTMLButtonElement>(null);
-
   const loadAnnouncement = useCallback(async () => {
     if (!isSupabaseEnabled) return;
     const { data } = await supabase!
@@ -158,11 +159,21 @@ export function Topbar() {
       const items: AnnouncementItem[] = Array.isArray(data.items)
         ? data.items.map((r: Record<string, string>) => ({ imageUrl: r.image_url ?? "", description: r.description ?? "" }))
         : [];
+      
       setAnnouncement({ id: data.id, orgId: data.org_id, title: data.title ?? "", items, isActive: data.is_active ?? true, createdAt: data.created_at ?? "", updatedAt: data.updated_at ?? "" });
+      
+      const storageKey = `last_viewed_announcement_id_${userName || "guest"}`;
+      const lastViewedId = localStorage.getItem(storageKey);
+      
+      if (!lastViewedId || lastViewedId !== `${data.id}_${data.updated_at || data.created_at}`) {
+        setHasUnreadAnnounce(true);
+      } else {
+        setHasUnreadAnnounce(false);
+      }
     } else {
       setAnnouncement(null);
     }
-  }, []);
+  }, [userName]);
 
   useEffect(() => { loadAnnouncement(); }, [loadAnnouncement]);
 
@@ -173,7 +184,7 @@ export function Topbar() {
 
   const loadNotifications = async () => {
     if (!isSupabaseEnabled || !userName) return;
-    const { data, error } = await supabase!
+    const { data, error = null } = await supabase!
       .from("notifications")
       .select("*")
       .eq("user_name", userName)
@@ -196,7 +207,7 @@ export function Topbar() {
 
   const loadExistingActionIds = async () => {
     if (!isSupabaseEnabled || !userName) return;
-    const { data, error } = await supabase!
+    const { data, error = null } = await supabase!
       .from("action_memos")
       .select("source_notification_id")
       .eq("user_name", userName)
@@ -206,7 +217,6 @@ export function Topbar() {
       return;
     }
     if (data) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setExistingActionNotifIds(new Set(data.map((r: any) => r.source_notification_id).filter(Boolean)));
     }
   };
@@ -278,15 +288,35 @@ export function Topbar() {
     }
   };
 
+  const handleMarkAsReadAndClose = useCallback(() => {
+    setShowAnnouncement(false);
+    if (announcement) {
+      const storageKey = `last_viewed_announcement_id_${userName || "guest"}`;
+      localStorage.setItem(storageKey, `${announcement.id}_${announcement.updatedAt || announcement.createdAt}`);
+      setHasUnreadAnnounce(false);
+    }
+  }, [announcement, userName]);
+
   return (
     <>
     {showBugReport && <BugReportModal onClose={closeBugReport} />}
     {showAnnouncement && announcement && (
-      <AnnouncementModal announcement={announcement} onClose={() => setShowAnnouncement(false)} anchorX={announcementAnchorX} />
+      <AnnouncementModal announcement={announcement} onClose={handleMarkAsReadAndClose} anchorX={announcementAnchorX} />
     )}
     <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 10, flexShrink: 0 }}>
       <style>{`
         @keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }
+        @keyframes announcementPulse {
+          0% { box-shadow: 0 2px 8px rgba(5,150,105,0.35), 0 0 0 0 rgba(5,150,105,0.5), inset 0 1px 0 rgba(255,255,255,0.22); }
+          50% { box-shadow: 0 4px 14px rgba(5,150,105,0.50), 0 0 0 8px rgba(5,150,105,0), inset 0 1px 0 rgba(255,255,255,0.22); }
+          100% { box-shadow: 0 2px 8px rgba(5,150,105,0.35), 0 0 0 0 rgba(5,150,105,0), inset 0 1px 0 rgba(255,255,255,0.22); }
+        }
+        /* 🌟 追加: バッジがピコピコと元気に飛び跳ねるアニメーション */
+        @keyframes badgeBounce {
+          0%, 100%, 20%, 50%, 80% { transform: translateY(0); }
+          40% { transform: translateY(-5px); }
+          60% { transform: translateY(-2.5px); }
+        }
       `}</style>
       <GlobalSearch />
 
@@ -295,41 +325,58 @@ export function Topbar() {
         <button
           ref={announcementBtnRef}
           onClick={() => {
-            if (announcement.items.length > 0) {
-              if (announcementBtnRef.current) {
-                const rect = announcementBtnRef.current.getBoundingClientRect();
-                setAnnouncementAnchorX(Math.round(rect.left + rect.width / 2));
-              }
-              setShowAnnouncement(true);
+            if (announcementBtnRef.current) {
+              const rect = announcementBtnRef.current.getBoundingClientRect();
+              setAnnouncementAnchorX(Math.round(rect.left + rect.width / 2));
             }
+            setShowAnnouncement(true);
           }}
           style={{
             display: "flex",
             alignItems: "center",
             gap: 7,
-            padding: "0 13px 0 9px",
+            padding: hasUnreadAnnounce ? "0 13px 0 6px" : "0 13px 0 9px", // バッジの有無で左パディングを微調整
             height: 34,
             borderRadius: 10,
             border: "none",
             background: "linear-gradient(135deg, #34D399 0%, #059669 100%)",
-            boxShadow: "0 2px 8px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.22)",
-            cursor: announcement.items.length > 0 ? "pointer" : "default",
+            cursor: "pointer",
             flexShrink: 0,
             maxWidth: 360,
             transition: "opacity 0.15s, box-shadow 0.15s",
+            animation: hasUnreadAnnounce ? "announcementPulse 2s infinite ease-in-out" : "none",
+            boxShadow: hasUnreadAnnounce ? "none" : "0 2px 8px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.22)"
           }}
           onMouseEnter={e => {
-            if (announcement.items.length > 0) {
-              (e.currentTarget as HTMLElement).style.opacity = "0.88";
-              (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 14px rgba(5,150,105,0.40), inset 0 1px 0 rgba(255,255,255,0.22)";
-            }
+            if (!hasUnreadAnnounce) e.currentTarget.style.boxShadow = "0 4px 14px rgba(5,150,105,0.45), inset 0 1px 0 rgba(255,255,255,0.22)";
           }}
           onMouseLeave={e => {
-            (e.currentTarget as HTMLElement).style.opacity = "1";
-            (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 8px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.22)";
+            if (!hasUnreadAnnounce) e.currentTarget.style.boxShadow = "0 2px 8px rgba(5,150,105,0.30), inset 0 1px 0 rgba(255,255,255,0.22)";
           }}
         >
-          <Megaphone style={{ width: 14, height: 14, color: "rgba(255,255,255,0.88)", flexShrink: 0 }} />
+          {/* 🌟 改善: 未読のときだけ、左側にピコピコ跳ねる赤い「NEW」バッジを出現させる */}
+          {hasUnreadAnnounce ? (
+            <span style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "#EF4444",
+              color: "#FFFFFF",
+              fontSize: "9px",
+              fontWeight: 900,
+              padding: "1px 5px",
+              borderRadius: "6px",
+              height: "16px",
+              boxShadow: "0 2px 4px rgba(239,68,68,0.3)",
+              animation: "badgeBounce 2.5s infinite ease-in-out",
+              flexShrink: 0
+            }}>
+              NEW
+            </span>
+          ) : (
+            <Megaphone style={{ width: 14, height: 14, color: "rgba(255,255,255,0.88)", flexShrink: 0 }} />
+          )}
+
           <span style={{
             fontSize: 13, fontWeight: 700, color: "#fff",
             whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis",
@@ -346,7 +393,7 @@ export function Topbar() {
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
         {/* バグ報告ボタン */}
         <button
-          onClick={() => setShowBugReport(true)}
+          onClick={() => { setShowBugReport(true); }}
           title="バグ・不具合を報告する"
           style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", transition: "background 0.15s" }}
           onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}
@@ -385,7 +432,6 @@ export function Topbar() {
                     const isJustAdded = justAddedId === notif.id;
                     const isActionBtnHovered = hoveredActionBtnId === notif.id;
 
-                    // アクションボタンの色をstate管理で決定（onMouseEnterCapture は使わない）
                     const actionIconColor = isJustAdded
                       ? "#059669"
                       : isAlreadyAdded
@@ -408,9 +454,7 @@ export function Topbar() {
                             <span style={{ fontSize: 10, color: "#C9C4BB", fontFamily: "var(--font-mono)" }}>{formatRelative(notif.createdAt)}</span>
                           </div>
 
-                          {/* アクションボタン群 */}
                           <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0, marginTop: 1, opacity: hoveredNotifId === notif.id ? 1 : 0, transition: "opacity 0.15s" }}>
-                            {/* アクションリスト追加ボタン */}
                             <div style={{ position: "relative" }}>
                               <button
                                 onClick={isAlreadyAdded ? e => e.stopPropagation() : e => handleAddToActionList(e, notif)}
@@ -431,7 +475,6 @@ export function Topbar() {
                                 {isAlreadyAdded ? <Check style={{ width: 13, height: 13 }} /> : <ClipboardList style={{ width: 13, height: 13 }} />}
                               </button>
 
-                              {/* 追加済みツールチップ */}
                               {isAlreadyAdded && !isJustAdded && isActionBtnHovered && (
                                 <div style={{
                                   position: "absolute", right: "calc(100% + 8px)", top: "50%",
@@ -448,7 +491,6 @@ export function Topbar() {
                                 </div>
                               )}
 
-                              {/* 追加直後バルーン */}
                               {isJustAdded && (
                                 <div style={{
                                   position: "absolute", right: "calc(100% + 8px)", top: "50%",
@@ -466,7 +508,6 @@ export function Topbar() {
                               )}
                             </div>
 
-                            {/* 削除ボタン */}
                             <button
                               onClick={e => handleDeleteNotif(e, notif.id)}
                               style={{ background: "none", border: "none", cursor: "pointer", padding: 4, borderRadius: 6, color: "#C9C4BB", transition: "color 0.15s", lineHeight: 0, display: "block" }}
@@ -547,10 +588,8 @@ export function Topbar() {
                   </button>
                 )}
 
-                {/* 区切り線 */}
                 <div style={{ height: 1, background: "rgba(26,23,20,0.06)", margin: "4px 4px" }} />
 
-                {/* バージョン情報（全ユーザー） */}
                 <button
                   onClick={openVersion}
                   style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", textAlign: "left", transition: "background 0.12s" }}
@@ -566,74 +605,27 @@ export function Topbar() {
         </div>
       </div>
 
-      {/* バージョン情報ポップアップ */}
-      {showVersion && (
-        <div
-          style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(26,23,20,0.32)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={() => setShowVersion(false)}>
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{ width: isSystemAdmin ? 460 : 360, maxWidth: "100%", maxHeight: "80vh", display: "flex", flexDirection: "column", background: "#fff", borderRadius: 16, boxShadow: "0 16px 48px rgba(0,0,0,0.24)", overflow: "hidden" }}>
-            {/* ヘッダー */}
-            <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "16px 18px", borderBottom: "1px solid rgba(26,23,20,0.07)" }}>
-              <Info style={{ width: 18, height: 18, color: "#059669" }} />
-              <span style={{ fontSize: 15, fontWeight: 800, color: "#1A1714" }}>バージョン情報</span>
-              <button onClick={() => setShowVersion(false)} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "#A09790", lineHeight: 0, padding: 4 }}>
-                <X style={{ width: 18, height: 18 }} />
-              </button>
-            </div>
+      {/* 不具合・要望報告用モーダル */}
+      {showBugReport && <BugReportModal onClose={closeBugReport} />}
 
-            <div style={{ padding: "18px", overflowY: "auto" }}>
-              {/* 現在のバージョン */}
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#6B6458", marginBottom: 6 }}>現在のバージョン</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.01em", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{APP_VERSION}</span>
-                <button
-                  onClick={handleCopyVersion}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: versionCopied ? "#ECFDF5" : "#fff", cursor: "pointer", transition: "background 0.12s" }}>
-                  {versionCopied
-                    ? <Check style={{ width: 13, height: 13, color: "#059669" }} />
-                    : <Copy style={{ width: 13, height: 13, color: "#6B6458" }} />}
-                  <span style={{ fontSize: 11.5, fontWeight: 600, color: versionCopied ? "#047857" : "#6B6458" }}>{versionCopied ? "コピーしました" : "コピー"}</span>
-                </button>
-              </div>
-              <p style={{ fontSize: 11.5, color: "#A09790", lineHeight: 1.6, margin: "12px 0 0" }}>
-                お問い合わせの際は、このバージョンをお伝えください。
-              </p>
-
-              {/* システム管理会社のみ: デプロイ履歴 */}
-              {isSystemAdmin && (
-                <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid rgba(26,23,20,0.07)" }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#6B6458", marginBottom: 10 }}>デプロイ履歴（新しい順）</div>
-                  {historyLoading ? (
-                    <div style={{ fontSize: 12, color: "#A09790", padding: "8px 0" }}>読み込み中…</div>
-                  ) : !versionHistory || versionHistory.length === 0 ? (
-                    <div style={{ fontSize: 12, color: "#A09790", padding: "8px 0" }}>履歴がありません（次回デプロイ以降に記録されます）。</div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      {versionHistory.map((h, i) => {
-                        const isCurrent = h.version === APP_VERSION;
-                        const isLatest = i === 0;
-                        return (
-                          <div key={h.version} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: isCurrent ? "#ECFDF5" : "transparent" }}>
-                            <span style={{ fontSize: 13, fontWeight: isCurrent ? 800 : 600, color: "#1A1714", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{h.version}</span>
-                            {isLatest && <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", background: "#D1FAE5", padding: "1px 6px", borderRadius: 999 }}>最新</span>}
-                            {isCurrent && <span style={{ fontSize: 10, fontWeight: 700, color: "#047857" }}>🟢 表示中</span>}
-                            <span style={{ marginLeft: "auto", fontSize: 11, color: "#A09790" }}>{h.released_at ? new Date(h.released_at).toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* リリース告知用モーダル */}
+      {showAnnouncement && (
+        <AnnouncementModal
+          onClose={handleMarkAsReadAndClose}
+          announcement={announcement}
+        />
       )}
 
+      {/* 生体認証用トースト */}
       {bioToast && (
-        <div style={{ position: "fixed", top: 64, right: 20, zIndex: 60, display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 10, background: bioToast.kind === "success" ? "#ECFDF5" : "#FEF2F2", border: `1px solid ${bioToast.kind === "success" ? "rgba(5,150,105,0.25)" : "rgba(239,68,68,0.25)"}`, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
+        <div style={{ 
+          position: "fixed", top: 64, right: 20, zIndex: 60, 
+          display: "flex", alignItems: "center", gap: 8, 
+          padding: "10px 14px", borderRadius: 10, 
+          background: bioToast.kind === "success" ? "#ECFDF5" : "#FEF2F2", 
+          border: `1px solid ${bioToast.kind === "success" ? "rgba(5,150,105,0.25)" : "rgba(239,68,68,0.25)"}`, 
+          boxShadow: "0 8px 24px rgba(0,0,0,0.12)" 
+        }}>
           {bioToast.kind === "success"
             ? <Check style={{ width: 15, height: 15, color: "#059669" }} />
             : <ShieldOff style={{ width: 15, height: 15, color: "#EF4444" }} />}
