@@ -27,6 +27,7 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   canAccessAdminSettings: false, canAccessWiki: false, canAccessBacklog: false,
   canAccessMinutes: false, canAccessOrganization: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
+  whiteboardPermission: "none",
 };
 
 type AccessLevel = "none" | "view" | "edit";
@@ -37,10 +38,11 @@ const ACCESS_LEVEL_OPTIONS: { value: AccessLevel; label: string }[] = [
   { value: "edit", label: "編集（追加・編集・削除）" },
 ];
 
-const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission"; label: string; color: string }[] = [
-  { key: "backlogPermission", label: "バックログ", color: "#6D28D9" },
-  { key: "wikiPermission",    label: "Wiki",       color: "#0284C7" },
-  { key: "minutesPermission", label: "議事録",     color: "#059669" },
+const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission" | "whiteboardPermission"; label: string; color: string }[] = [
+  { key: "backlogPermission",    label: "バックログ",     color: "#6D28D9" },
+  { key: "wikiPermission",       label: "Wiki",           color: "#0284C7" },
+  { key: "minutesPermission",    label: "議事録",         color: "#059669" },
+  { key: "whiteboardPermission", label: "ホワイトボード", color: "#F59E0B" },
 ];
 
 // Drag payload type identifier

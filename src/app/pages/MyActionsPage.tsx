@@ -6,7 +6,6 @@ import { escStack } from "@/app/lib/escStack";
 import { mapSprintTicket, mapActionMemo } from "@/app/lib/mappers";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
-import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
@@ -1440,7 +1439,6 @@ export function MyActionsPage() {
 
           {/* Controls */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <OrgSelector />
             {/* アクションメモ追加ボタン: 通知から追加タブでのみ表示 */}
             {tab === "from_notification" && (
               <button

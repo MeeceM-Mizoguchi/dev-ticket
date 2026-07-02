@@ -20,6 +20,7 @@ const DEFAULT_PERMS: UserPermissions = {
   canAccessWiki: false, canAccessBacklog: false, canAccessMinutes: false,
   canAccessOrganization: false, canAccessReports: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
+  whiteboardPermission: "none",
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; meeceOnly?: boolean }[] = [
