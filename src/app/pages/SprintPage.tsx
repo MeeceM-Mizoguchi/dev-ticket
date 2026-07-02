@@ -249,6 +249,7 @@ export function SprintPage() {
           wikiPerm={isAdmin ? "edit" : ((projectPermissions?.wikiPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
           backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
           minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+          whiteboardPerm={isAdmin ? "edit" : ((projectPermissions?.whiteboardPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
         />
       </div>
 

@@ -261,6 +261,7 @@ export function WikiPage() {
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
+  const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("view");
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
 
@@ -307,11 +308,13 @@ export function WikiPage() {
       setEffectiveWikiPerm("edit");
       setEffectiveBacklogPerm("edit");
       setEffectiveMinutesPerm("edit");
+      setEffectiveWhiteboardPerm("edit");
     } else {
       const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveWhiteboardPerm((perms?.whiteboardPermission as AccessLevel | undefined) ?? "none");
     }
     setPermsLoaded(true);
 
@@ -524,7 +527,7 @@ export function WikiPage() {
           {permsLoaded && effectiveWikiPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
-          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} minutesPerm={effectiveMinutesPerm} />
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} minutesPerm={effectiveMinutesPerm} whiteboardPerm={effectiveWhiteboardPerm} />
         </div>
       </div>
 

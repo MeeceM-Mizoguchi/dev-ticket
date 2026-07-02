@@ -213,6 +213,10 @@ export interface MeetingMinute {
   images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
+export interface Whiteboard {
+  id: string; projectId: string; title: string;
+  createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
+}
 export interface TicketItem {
   id: string; title: string; project: string; status: TicketStatus;
   priority: Priority; assignee: string; dueDate: string;
@@ -257,4 +261,5 @@ export interface UserPermissions {
   wikiPermission: AccessLevel;
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
+  whiteboardPermission: AccessLevel;
 }

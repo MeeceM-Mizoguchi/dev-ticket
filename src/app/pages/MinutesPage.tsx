@@ -134,6 +134,7 @@ export function MinutesPage() {
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
+  const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("view");
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -172,11 +173,13 @@ export function MinutesPage() {
       setEffectiveMinutesPerm("edit");
       setEffectiveWikiPerm("edit");
       setEffectiveBacklogPerm("edit");
+      setEffectiveWhiteboardPerm("edit");
     } else {
       const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveWhiteboardPerm((perms?.whiteboardPermission as AccessLevel | undefined) ?? "none");
     }
     setPermsLoaded(true);
     setLoading(false);
@@ -273,7 +276,7 @@ export function MinutesPage() {
           {permsLoaded && effectiveMinutesPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
-          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} />
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} />
         </div>
       </div>
 

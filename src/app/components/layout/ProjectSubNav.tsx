@@ -1,15 +1,16 @@
 import type { ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText } from "lucide-react";
+import { Layers, ClipboardList, BookOpen, FileText, PenTool } from "lucide-react";
 import type { AccessLevel } from "@/app/types";
 
-type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes";
+type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard";
 
-const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" }[] = [
-  { id: "sprints",  label: "スプリント管理", icon: Layers,       path: "" },
-  { id: "backlog",  label: "バックログ",     icon: ClipboardList, path: "/backlog",  permKey: "backlog" },
-  { id: "wiki",     label: "Wiki",           icon: BookOpen,      path: "/wiki",     permKey: "wiki" },
-  { id: "minutes",  label: "議事録",         icon: FileText,      path: "/minutes",  permKey: "minutes" },
+const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" }[] = [
+  { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
+  { id: "backlog",    label: "バックログ",     icon: ClipboardList, path: "/backlog",    permKey: "backlog" },
+  { id: "wiki",       label: "Wiki",           icon: BookOpen,      path: "/wiki",       permKey: "wiki" },
+  { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
+  { id: "whiteboard", label: "ホワイトボード", icon: PenTool,       path: "/whiteboard", permKey: "whiteboard" },
 ];
 
 interface ProjectSubNavProps {
@@ -19,13 +20,14 @@ interface ProjectSubNavProps {
   wikiPerm?: AccessLevel;
   backlogPerm?: AccessLevel;
   minutesPerm?: AccessLevel;
+  whiteboardPerm?: AccessLevel;
 }
 
-export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm }: ProjectSubNavProps) {
+export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm }: ProjectSubNavProps) {
   const navigate = useNavigate();
 
   const permMap: Record<string, AccessLevel | undefined> = {
-    wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm,
+    wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm,
   };
 
   const visibleItems = ITEMS.filter(item => {
