@@ -46,6 +46,7 @@ const CURSOR_THROTTLE_MS = 30;
 export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [api, setApi] = useState<any>(null);
+  const [pseudoFull, setPseudoFull] = useState(false); // iPad等でネイティブFS非対応時のCSS全画面
   const lastCursor = useRef(0);
   const uploadedFiles = useRef<Set<string>>(new Set());
   const addedRemoteFiles = useRef<Set<string>>(new Set());
@@ -110,7 +111,12 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   }, [setCursor]);
 
   return (
-    <div ref={containerRef} style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div
+      ref={containerRef}
+      style={pseudoFull
+        ? { position: "fixed", inset: 0, zIndex: 3000, background: "#fff", width: "100vw", height: "100vh", overscrollBehavior: "contain", touchAction: "none" }
+        : { position: "relative", width: "100%", height: "100%", overscrollBehavior: "contain", touchAction: "none" }}
+    >
       <style>{HIDE_EXCALIDRAW_CHROME}</style>
       <Excalidraw
         excalidrawAPI={(a: any) => { setApi(a); registerApi(a); }}
@@ -125,7 +131,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <HelpButton api={api} />
             <WhiteboardExportMenu api={api} title={title} />
-            <FullscreenButton targetRef={containerRef} />
+            <FullscreenButton targetRef={containerRef} pseudoFull={pseudoFull} setPseudoFull={setPseudoFull} />
           </div>
         ) : null)}
       />
