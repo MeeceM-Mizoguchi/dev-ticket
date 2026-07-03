@@ -33,6 +33,76 @@ const distToBox = (p: Pt, b: { x: number; y: number; w: number; h: number }) => 
   return Math.hypot(dx, dy);
 };
 
+/**
+ * 三角形の“点編集”を無効化する（BRU4-051 の根本対策）。
+ *
+ * 三角形は塗りを出すために頂点(上・中央)を先頭点＝末尾点として二重に持つ4点の閉じた line。
+ * Excalidraw 標準の点編集で頂点をドラッグすると二重の点の片方だけが動き、
+ * テッペンが二股（台形）に割れてしまう。三角形は「図形」として扱いたいので、
+ * 点編集UI（selectedLinearElement / editingLinearElement）が三角形に付いたら即座に外す。
+ * バウンディングボックス（リサイズハンドル）は points.length>2 の間は残るため、
+ * 移動・リサイズは従来どおり可能。
+ */
+export function suppressTrianglePointEditing(api: any, elements: readonly any[], appState: any): void {
+  const selId = appState?.selectedLinearElement?.elementId;
+  const editId = appState?.editingLinearElement?.elementId;
+  if (!selId && !editId) return;
+  const isTriId = (id: string | undefined) => !!id && isTriangle(elements.find((e) => e.id === id));
+  const patch: any = {};
+  if (isTriId(selId)) patch.selectedLinearElement = null;
+  if (isTriId(editId)) patch.editingLinearElement = null;
+  if (patch.selectedLinearElement === undefined && patch.editingLinearElement === undefined) return;
+  api.updateScene({ appState: patch });
+}
+
+/**
+ * 三角形（閉じた line）の“塗りが透明になってしまう”バグの修復（BRU4-051）。
+ *
+ * 三角形は内部的に頂点(上・中央)を先頭点と末尾点として二重に持つ「閉じた折れ線」で、
+ * Excalidraw はこの先頭点≈末尾点（isPathALoop）が成立している間だけ塗りを描く。
+ * 標準の点編集（緑の＋ハンドル等）で頂点をドラッグするとループが開き、
+ * 塗りが描かれず＝透明に見えてしまう（リサイズ自体ではループは開かないことを検証済み）。
+ *
+ * ここではループが開いた三角形を検出し、現在の頂点群の外接矩形から
+ * “きれいな三角形”へ作り直してループを閉じ直す（位置・大きさは維持）。
+ * 操作中（選択/点編集/描画中）は触らず、解除後のフレームで修復する。
+ * @returns updateScene で反映したら true
+ */
+export function repairOpenTriangles(api: any, elements: readonly any[], appState: any): boolean {
+  const selected = appState?.selectedElementIds ?? {};
+  const editId = appState?.editingLinearElement?.elementId;
+  const newId = appState?.newElement?.id;
+  const CLOSE_TOL = 1; // 頂点(先頭/末尾)のズレがこの距離を超えたら「ループが開いた」とみなす
+  let changed = false;
+  const fixed = elements.map((el) => {
+    if (el.isDeleted || !isTriangle(el)) return el;
+    if (selected[el.id] || el.id === editId || el.id === newId) return el; // 操作中は触らない
+    const pts = el.points;
+    if (!Array.isArray(pts) || pts.length < 3) return el;
+    const p0 = pts[0], pL = pts[pts.length - 1];
+    if (Math.hypot(p0[0] - pL[0], p0[1] - pL[1]) <= CLOSE_TOL) return el; // 閉じている＝正常
+
+    // 現在の頂点群の外接矩形(scene座標)から、頂点(上・中央)を原点にした正しい三角形へ作り直す
+    const xs = pts.map((p: number[]) => el.x + p[0]);
+    const ys = pts.map((p: number[]) => el.y + p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const w = maxX - minX, h = maxY - minY;
+    if (w < 1 || h < 1) return el; // 潰れすぎ：作り直せないので触らない
+    changed = true;
+    return {
+      ...el,
+      x: minX + w / 2, y: minY, // element.x=頂点(上・中央), element.y=上端
+      points: [[0, 0], [w / 2, h], [-w / 2, h], [0, 0]],
+      width: w, height: h,
+      version: (el.version ?? 1) + 1, versionNonce: rand(),
+    };
+  });
+  if (!changed) return false;
+  api.updateScene({ elements: fixed });
+  return true;
+}
+
 // 図形の外周ポリライン(scene座標, 非回転bbox基準)。端点の射影・ハイライト描画に使う。
 export const shapeOutline = (el: any): Pt[] => {
   if (isTriangle(el)) return (Array.isArray(el.points) ? el.points : []).map((p: number[]) => ({ x: el.x + p[0], y: el.y + p[1] }));

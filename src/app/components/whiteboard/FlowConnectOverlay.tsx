@@ -42,7 +42,7 @@ function makeTriangle(x: number, y: number, w: number, h: number): any {
       id: `wb_tri_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       x, y,
       points: [[w / 2, 0], [w, h], [0, h], [w / 2, 0]],
-      roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "transparent",
+      roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "#ffffff",
     } as any,
   ], { regenerateIds: false }) as any[];
   els.forEach((e) => { if (e.type === "line") normalizeLinear(e); });
@@ -126,11 +126,11 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
       ? makeTriangle(nx, ny, w, h)
       : (convertToExcalidrawElements([
           { type: spawnType, id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            x: nx, y: ny, width: w, height: h, roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK } as any,
+            x: nx, y: ny, width: w, height: h, roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "#ffffff" } as any,
         ]) as any[])[0];
     const arrow = (convertToExcalidrawElements([
       { type: "arrow", x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]],
-        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK } as any,
+        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, endArrowhead: "triangle" } as any,
     ]) as any[])[0];
     normalizeLinear(arrow);
     api.updateScene({ elements: [...api.getSceneElements(), shape, arrow] });

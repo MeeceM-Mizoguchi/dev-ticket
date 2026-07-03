@@ -6,7 +6,7 @@ import { Excalidraw } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
-import { autoConnectLines, followTriangleConnections } from "@/app/lib/whiteboardAutoConnect";
+import { autoConnectLines, followTriangleConnections, repairOpenTriangles, suppressTrianglePointEditing } from "@/app/lib/whiteboardAutoConnect";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
@@ -37,6 +37,10 @@ const CLEAN_DEFAULTS = {
     currentItemFontFamily: 2,    // 2 = Helvetica（通常フォント）。5=Excalifont(手書き)を避ける
     currentItemStrokeWidth: 1,   // 1 = 細（矢じりも線幅に比例して小さくなる）
     currentItemStrokeColor: SOFT_BLACK,
+    // 図形の既定背景色は白（透明だと重なった図形が透けるため、既定で不透明の白に）
+    currentItemBackgroundColor: "#ffffff",
+    // 既定の矢じりを小さめの塗り三角に（"arrow"=固定25に対し "triangle"=15でコンパクト・BRU4-051）
+    currentItemEndArrowhead: "triangle",
     // 図形ガイド（ENHA2-022）: 他図形に近づくと整列ガイド線を表示し、
     // 多少の手ブレを吸収してエッジ/中心にスナップさせる。上下左右で発動。
     // updateScene は elements/collaborators のみ渡すため、このフラグはリモート更新で消えない。
@@ -116,9 +120,13 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     const remote = bridgeRef.current?.isApplyingRemote?.() ?? false;
     try {
       if (api) {
-        const connected = remote ? false : autoConnectLines(api, elements, appState, processedLines.current);
-        // 三角形コネクトの追従（ステートレス）。remote中やautoConnect反映直後はスキップ
-        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !connected);
+        // 三角形は「図形」扱い：標準の点編集UIが付いたら外す（テッペン二股化の根本防止・BRU4-051）
+        suppressTrianglePointEditing(api, elements, appState);
+        // 塗りが透明になるバグの保険的修復（BRU4-051）。万一ループが開いた三角形を閉じ直す。
+        const repaired = remote ? false : repairOpenTriangles(api, elements, appState);
+        const connected = remote || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current);
+        // 三角形コネクトの追従（ステートレス）。remote中やautoConnect/修復反映直後はスキップ
+        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !connected && !repaired);
       }
     } catch { /* noop */ }
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
