@@ -204,7 +204,7 @@ export function TriangleToolButton({ api, containerRef }: { api: any; containerR
         id: `wb_tri_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         x, y,
         points: [[w / 2, 0], [w, h], [0, h], [w / 2, 0]],
-        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "transparent",
+        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "#ffffff",
       } as any,
     ], { regenerateIds: false }) as any[]; // wb_tri_ の id を保持（三角形判定のため）
     els.forEach((el) => { if (el.type === "line") normalizeLinear(el); });
