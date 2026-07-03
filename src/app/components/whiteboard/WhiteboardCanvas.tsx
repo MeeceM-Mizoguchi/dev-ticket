@@ -6,12 +6,16 @@ import { Excalidraw } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
-import { autoConnectLines } from "@/app/lib/whiteboardAutoConnect";
+import { autoConnectLines, followTriangleConnections } from "@/app/lib/whiteboardAutoConnect";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
 import { WhiteboardToolbar } from "./WhiteboardToolbar";
 import { TriangleToolButton } from "./TriangleToolButton";
+import { SnapGuideLayer } from "./SnapGuideLayer";
+import { TriangleBindHint } from "./TriangleBindHint";
+import { FrameDecorLayer } from "./FrameDecorLayer";
+import { FrameFormatPanel } from "./FrameFormatPanel";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
 
@@ -33,6 +37,13 @@ const CLEAN_DEFAULTS = {
     currentItemFontFamily: 2,    // 2 = Helvetica（通常フォント）。5=Excalifont(手書き)を避ける
     currentItemStrokeWidth: 1,   // 1 = 細（矢じりも線幅に比例して小さくなる）
     currentItemStrokeColor: SOFT_BLACK,
+    // 図形ガイド（ENHA2-022）: 他図形に近づくと整列ガイド線を表示し、
+    // 多少の手ブレを吸収してエッジ/中心にスナップさせる。上下左右で発動。
+    // updateScene は elements/collaborators のみ渡すため、このフラグはリモート更新で消えない。
+    objectsSnapModeEnabled: true,
+    // フレーム書式の背景色を“内容の背面”に描くため、Excalidrawの背景は透明にする
+    // （コンテナ側を白にして見た目は白ボードのまま。背景描画は FrameDecorLayer が下層canvasで行う）。
+    viewBackgroundColor: "transparent",
   },
 };
 
@@ -97,10 +108,19 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   }, [api, docRef]);
 
   const processedLines = useRef<Set<string>>(new Set());
+  const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const onChange = useCallback((elements: readonly any[], appState?: any) => {
     if (!canEdit) return;
     // onChange内で例外を投げるとExcalidrawのドラッグ/複製処理が壊れるため必ずcatchする
-    try { if (api) autoConnectLines(api, elements, appState, processedLines.current); } catch { /* noop */ }
+    // リモート反映(updateScene)由来のonChangeでは自動接続/追従を実行しない（二重適用防止）
+    const remote = bridgeRef.current?.isApplyingRemote?.() ?? false;
+    try {
+      if (api) {
+        const connected = remote ? false : autoConnectLines(api, elements, appState, processedLines.current);
+        // 三角形コネクトの追従（ステートレス）。remote中やautoConnect反映直後はスキップ
+        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !connected);
+      }
+    } catch { /* noop */ }
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
     try { void syncLocalImages(); } catch { /* noop */ }
   }, [canEdit, api, bridgeRef, syncLocalImages]);
@@ -116,8 +136,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     <div
       ref={containerRef}
       style={pseudoFull
-        ? { position: "fixed", inset: 0, zIndex: 3000, background: "#fff", width: "100vw", height: "100vh", overscrollBehavior: "contain", touchAction: "none" }
-        : { position: "relative", width: "100%", height: "100%", overscrollBehavior: "contain", touchAction: "none" }}
+        ? { position: "fixed", inset: 0, zIndex: 3000, isolation: "isolate", background: "#fff", width: "100vw", height: "100vh", overscrollBehavior: "contain", touchAction: "none" }
+        : { position: "relative", width: "100%", height: "100%", isolation: "isolate", background: "#fff", overscrollBehavior: "contain", touchAction: "none" }}
     >
       <style>{HIDE_EXCALIDRAW_CHROME}</style>
       <Excalidraw
@@ -139,6 +159,10 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       />
       {api && (
         <>
+          <FrameDecorLayer api={api} containerRef={containerRef} />
+          {canEdit && <FrameFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <SnapGuideLayer api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <TriangleBindHint api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <WhiteboardToolbar api={api} />}
           {canEdit && <TriangleToolButton api={api} containerRef={containerRef} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />

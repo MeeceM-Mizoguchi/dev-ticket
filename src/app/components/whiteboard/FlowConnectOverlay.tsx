@@ -2,6 +2,7 @@
 // クリックすると矢印が伸び、その先に同種（またはセレクタで選んだ形）の図形が接続される。
 import { useEffect, useRef, useState } from "react";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
+import { elementBBox, isTriangle } from "@/app/lib/whiteboardSnap";
 
 type Dir = "up" | "down" | "left" | "right";
 type SpawnType = "rectangle" | "diamond" | "ellipse";
@@ -33,6 +34,22 @@ function normalizeLinear(el: any) {
   el.height = Math.max(...ys) - Math.min(...ys);
 }
 
+// 三角形要素を生成（TriangleToolButton と同型。line + wbTriangle 印）。
+function makeTriangle(x: number, y: number, w: number, h: number): any {
+  const els = convertToExcalidrawElements([
+    {
+      type: "line",
+      id: `wb_tri_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      x, y,
+      points: [[w / 2, 0], [w, h], [0, h], [w / 2, 0]],
+      roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "transparent",
+    } as any,
+  ], { regenerateIds: false }) as any[];
+  els.forEach((e) => { if (e.type === "line") normalizeLinear(e); });
+  if (els[0]) els[0].customData = { ...(els[0].customData ?? {}), wbTriangle: true };
+  return els[0];
+}
+
 function sceneToLocal(api: any, containerRef: React.RefObject<HTMLDivElement | null>, sx: number, sy: number) {
   const st = api.getAppState();
   const rect = containerRef.current?.getBoundingClientRect();
@@ -56,17 +73,21 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
         const st = api.getAppState();
         const sel = st.selectedElementIds || {};
         const ids = Object.keys(sel).filter((id) => sel[id]);
-        // 新規描画/リサイズ/テキスト編集/範囲選択中はボタンを出さない（操作の邪魔をしない）
-        const interacting = !!(st.newElement || st.resizingElement || st.editingTextElement || st.selectionElement);
+        // 新規描画/リサイズ/テキスト編集/範囲選択/点編集中はボタンを出さない（操作の邪魔をしない）
+        const interacting = !!(st.newElement || st.resizingElement || st.editingTextElement || st.selectionElement || st.editingLinearElement);
         const el = ids.length === 1 && !interacting
           ? api.getSceneElements().find((e: any) => e.id === ids[0] && !e.isDeleted)
           : null;
-        if (el && (el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse")) {
-          const sig = `${el.id}:${el.x}:${el.y}:${el.width}:${el.height}:${el.type}:${st.zoom?.value}:${st.scrollX}:${st.scrollY}`;
+        const isShape = el && (el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse");
+        const isTri = el && isTriangle(el);
+        if (isShape || isTri) {
+          // 三角形は element.x/y が bbox 左上でないため elementBBox を使う
+          const bb = isTri ? elementBBox(el) : { x: el.x, y: el.y, w: el.width, h: el.height };
+          const sig = `${el.id}:${bb.x}:${bb.y}:${bb.w}:${bb.h}:${el.type}:${st.zoom?.value}:${st.scrollX}:${st.scrollY}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
-            const tl = sceneToLocal(api, containerRef, el.x, el.y);
-            const br = sceneToLocal(api, containerRef, el.x + el.width, el.y + el.height);
+            const tl = sceneToLocal(api, containerRef, bb.x, bb.y);
+            const br = sceneToLocal(api, containerRef, bb.x + bb.w, bb.y + bb.h);
             setBox({ x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y, el });
           }
         } else if (sigRef.current !== "") {
@@ -83,37 +104,36 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
   const connect = (dir: Dir) => {
     const src = box?.el;
     if (!src) return;
-    const w = src.width, h = src.height;
-    let nx = src.x, ny = src.y;
-    if (dir === "right") { nx = src.x + w + GAP; ny = src.y; }
-    if (dir === "left") { nx = src.x - w - GAP; ny = src.y; }
-    if (dir === "down") { ny = src.y + h + GAP; nx = src.x; }
-    if (dir === "up") { ny = src.y - h - GAP; nx = src.x; }
+    const srcTri = isTriangle(src);
+    // 三角形は element.x/y が bbox 左上でないため elementBBox で寸法を取る
+    const sb = srcTri ? elementBBox(src) : { x: src.x, y: src.y, w: src.width, h: src.height };
+    const w = sb.w, h = sb.h;
+    let nx = sb.x, ny = sb.y;
+    if (dir === "right") { nx = sb.x + w + GAP; ny = sb.y; }
+    if (dir === "left") { nx = sb.x - w - GAP; ny = sb.y; }
+    if (dir === "down") { ny = sb.y + h + GAP; nx = sb.x; }
+    if (dir === "up") { ny = sb.y - h - GAP; nx = sb.x; }
 
     // 始点＝元図形のエッジ中点、終点＝新図形の対向エッジ中点
-    let sx = src.x, sy = src.y, ex = nx, ey = ny;
-    if (dir === "right") { sx = src.x + w; sy = src.y + h / 2; ex = nx; ey = ny + h / 2; }
-    if (dir === "left") { sx = src.x; sy = src.y + h / 2; ex = nx + w; ey = ny + h / 2; }
-    if (dir === "down") { sx = src.x + w / 2; sy = src.y + h; ex = nx + w / 2; ey = ny; }
-    if (dir === "up") { sx = src.x + w / 2; sy = src.y; ex = nx + w / 2; ey = ny + h; }
+    let sx = sb.x, sy = sb.y, ex = nx, ey = ny;
+    if (dir === "right") { sx = sb.x + w; sy = sb.y + h / 2; ex = nx; ey = ny + h / 2; }
+    if (dir === "left") { sx = sb.x; sy = sb.y + h / 2; ex = nx + w; ey = ny + h / 2; }
+    if (dir === "down") { sx = sb.x + w / 2; sy = sb.y + h; ex = nx + w / 2; ey = ny; }
+    if (dir === "up") { sx = sb.x + w / 2; sy = sb.y; ex = nx + w / 2; ey = ny + h; }
 
-    // 新図形＋矢印を1バッチで生成。終点は新図形へ in-batch バインド（追従）。
-    const newId = `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const created = convertToExcalidrawElements([
-      { type: spawnType, id: newId, x: nx, y: ny, width: w, height: h,
-        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK } as any,
+    // 新図形（元と同種）＋素の矢印を生成。両端の接続(customData)・固定・追従は autoConnect/follow に任せる。
+    const shape = srcTri
+      ? makeTriangle(nx, ny, w, h)
+      : (convertToExcalidrawElements([
+          { type: spawnType, id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            x: nx, y: ny, width: w, height: h, roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK } as any,
+        ]) as any[])[0];
+    const arrow = (convertToExcalidrawElements([
       { type: "arrow", x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]],
-        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, end: { id: newId } } as any,
-    ]) as any[];
-    const shape = created.find((e) => e.id === newId);
-    const arrow = created.find((e) => e.type === "arrow");
-    normalizeLinear(arrow); // ★points[0]を[0,0]に正規化（convertのズレを補正）
-    // 始点を元図形へバインド（両端追従）。正規化済みなので座標破壊は起きない。
-    if (arrow) arrow.startBinding = { elementId: src.id, focus: 0, gap: 1 };
-    const elements = api.getSceneElements().map((e: any) =>
-      e.id === src.id ? { ...e, boundElements: [...(e.boundElements ?? []), { id: arrow.id, type: "arrow" }] } : e,
-    );
-    api.updateScene({ elements: [...elements, ...created] });
+        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK } as any,
+    ]) as any[])[0];
+    normalizeLinear(arrow);
+    api.updateScene({ elements: [...api.getSceneElements(), shape, arrow] });
     if (shape) api.updateScene({ appState: { selectedElementIds: { [shape.id]: true } } });
   };
 
@@ -131,12 +151,14 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
   };
 
   if (!box) return null;
+  const srcTri = isTriangle(box.el);
+  const spawnLabel = srcTri ? "△ 三角形" : SHAPE_LABEL[spawnType];
   const btn = (dir: Dir, left: number, top: number) => (
     <button
       key={dir}
       onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.stopPropagation(); connect(dir); }}
-      title={`${SHAPE_LABEL[spawnType]}を${{ up: "上", down: "下", left: "左", right: "右" }[dir]}に接続`}
+      title={`${spawnLabel}を${{ up: "上", down: "下", left: "左", right: "右" }[dir]}に接続`}
       style={{
         position: "absolute", left, top, width: 22, height: 22, transform: "translate(-50%,-50%)",
         display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "auto",
@@ -154,7 +176,8 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
       {btn("down", cx, box.y + box.h + off)}
       {btn("left", box.x - off, cy)}
       {btn("right", box.x + box.w + off, cy)}
-      {/* 図形の種類セレクタ（選択中の図形を変換 ＋ 追加する図形の既定） */}
+      {/* 図形の種類セレクタ（選択中の図形を変換 ＋ 追加する図形の既定）。三角形には出さない */}
+      {!srcTri && (
       <div style={{ position: "absolute", left: box.x, top: box.y - 40, display: "flex", gap: 4, pointerEvents: "auto" }}>
         {FLOW_TYPES.map((t) => {
           const activeType = box.el.type === t;
@@ -169,6 +192,7 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
           );
         })}
       </div>
+      )}
     </div>
   );
 }

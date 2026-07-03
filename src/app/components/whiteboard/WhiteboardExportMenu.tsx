@@ -19,7 +19,9 @@ export function WhiteboardExportMenu({ api, title }: Props) {
 
   const scene = () => ({
     elements: api.getSceneElements(),
-    appState: { ...api.getAppState(), exportBackground: true },
+    // 画面はviewBackgroundColorを透明にしている（フレーム背景を内容の背面に描くため）。
+    // エクスポートは従来どおり白背景で書き出す。
+    appState: { ...api.getAppState(), exportBackground: true, viewBackgroundColor: "#ffffff" },
     files: api.getFiles(),
   });
   const safe = (title || "whiteboard").replace(/[\\/:*?"<>|]/g, "_");

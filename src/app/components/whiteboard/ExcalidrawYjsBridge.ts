@@ -59,6 +59,9 @@ export class ExcalidrawYjsBridge {
 
   setApi(api: ExcalidrawAPI) { this.api = api; }
 
+  /** リモート反映（updateScene）由来のonChange中かどうか。自動接続/追従の二重適用を防ぐのに使う。 */
+  isApplyingRemote(): boolean { return this.applyingRemote; }
+
   /** Excalidraw.onChange → Yjs（ローカル編集の伝播） */
   syncFromExcalidraw(elements: readonly El[]) {
     if (this.applyingRemote) return; // updateScene由来のonChangeは書き戻さない
