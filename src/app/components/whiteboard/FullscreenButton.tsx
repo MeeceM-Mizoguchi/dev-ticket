@@ -49,7 +49,7 @@ export function FullscreenButton({ targetRef, pseudoFull, setPseudoFull }: Props
   return (
     <button onClick={toggle} title={isFull ? "全画面を解除" : "全画面表示"}
       style={{
-        display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32,
+        display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, flexShrink: 0,
         color: "#6B6458", background: "#fff", border: "1px solid rgba(0,0,0,0.08)", borderRadius: 8,
         cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
       }}>
