@@ -5,8 +5,10 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
+import { TableMap } from "@tiptap/pm/tables";
 import Mention from "@tiptap/extension-mention";
 import { Extension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
 // 🌟 修正: ゴミ箱アイコン (Trash2) を lucide-react から追加インポート
@@ -15,6 +17,169 @@ import { Copy, X, CheckCheck, Trash2 } from "lucide-react";
 import { openExternalUrl } from "@/lib/openExternal";
 import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+
+// 🌟 BRU4-049: 表の列幅暴走(横スクロール)対策。
+//   prosemirror-tables は「先頭行のセルの colwidth」だけで表幅を決め、全列に幅があれば
+//   table 実寸(px)を指定して左寄せに、1列でも欠けると width:100% にフォールバックし、
+//   幅未指定の列が残り幅を全部吸って異常に広がる（＝partial状態が暴走の原因）。
+//   ドラッグ・列追加・既存表など、あらゆる経路で partial になり得るため、doc変更のたびに
+//   「一部だけ幅がある表」を検出して未指定セルを既定幅(150px)で補完し、暴走を根本から防ぐ。
+const TABLE_DEFAULT_COL_WIDTH = 150;
+const NormalizeTableWidths = Extension.create({
+  name: "normalizeTableWidths",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey("normalizeTableWidths"),
+        appendTransaction: (transactions, _oldState, newState) => {
+          if (!transactions.some((t) => t.docChanged)) return null;
+          let tr: any = null;
+          newState.doc.descendants((node: any, pos: number) => {
+            if (node.type.name !== "table") return;
+            const firstRow = node.firstChild;
+            if (!firstRow) return false;
+            // 先頭行が「一部だけ幅あり」= partial のときだけ補完（全指定/全未指定は触らない）
+            let hasSized = false;
+            let hasUnsized = false;
+            firstRow.forEach((cell: any) => {
+              const colspan: number = cell.attrs.colspan || 1;
+              const cw: (number | null)[] | null = cell.attrs.colwidth;
+              if (cw && cw.length === colspan && cw.every((w) => !!w)) hasSized = true;
+              else hasUnsized = true;
+            });
+            if (!(hasSized && hasUnsized)) return false;
+            const tableStart = pos + 1;
+            node.forEach((rowNode: any, rowOffset: number) => {
+              let cellPos = tableStart + rowOffset + 1;
+              rowNode.forEach((cellNode: any) => {
+                const colspan: number = cellNode.attrs.colspan || 1;
+                const cw: (number | null)[] | null = cellNode.attrs.colwidth;
+                if (!cw || cw.length !== colspan || cw.some((w) => !w)) {
+                  const filled = Array.from({ length: colspan }, (_, i) => (cw && cw[i]) || TABLE_DEFAULT_COL_WIDTH);
+                  if (!tr) tr = newState.tr;
+                  tr.setNodeMarkup(cellPos, null, { ...cellNode.attrs, colwidth: filled });
+                }
+                cellPos += cellNode.nodeSize;
+              });
+            });
+            return false;
+          });
+          if (tr) tr.setMeta("addToHistory", false);
+          return tr;
+        },
+      }),
+      // 🌟 BRU4-049: 表がエディタ幅を超えないようにするクランプ。列幅の合計が利用可能幅(=表ラッパーの
+      //   実幅)を超えたら、全列を比例縮小してフィットさせ横スクロールを抑止する。合計が幅未満のときは
+      //   何もしないので「左寄せ・内容幅」は維持される。DOM実測が要るので view プラグインで実装し、
+      //   コンテナのリサイズにも ResizeObserver で追従する。
+      new Plugin({
+        key: new PluginKey("clampTableWidths"),
+        view: (editorView) => {
+          const run = () => {
+            const view = editorView;
+            if (!view || !view.dom || !view.dom.isConnected) return;
+            let tr: any = null;
+            view.state.doc.descendants((node: any, pos: number) => {
+              if (node.type.name !== "table") return;
+              const firstRow = node.firstChild;
+              if (!firstRow) return false;
+              // 先頭行の colwidth 合計（全列に幅がある表のみ対象。partは normalize が先に補完）
+              let total = 0;
+              let allSized = true;
+              firstRow.forEach((cell: any) => {
+                const colspan: number = cell.attrs.colspan || 1;
+                const cw: (number | null)[] | null = cell.attrs.colwidth;
+                for (let j = 0; j < colspan; j++) {
+                  const w = cw && cw[j];
+                  if (!w) allSized = false;
+                  total += w || 60;
+                }
+              });
+              if (!allSized) return false;
+              const dom = view.nodeDOM(pos);
+              if (!(dom instanceof HTMLElement)) return false;
+              const avail = dom.clientWidth; // 表ラッパーの表示幅（横スクロールバーは高さ側なので影響なし）
+              if (avail < 80 || total <= avail) return false; // 未レイアウト or 収まっている
+              const scale = (avail - 2) / total;
+              const tableStart = pos + 1;
+              node.forEach((rowNode: any, rowOffset: number) => {
+                let cellPos = tableStart + rowOffset + 1;
+                rowNode.forEach((cellNode: any) => {
+                  const cw: (number | null)[] | null = cellNode.attrs.colwidth;
+                  if (cw) {
+                    const scaled = cw.map((w) => (w ? Math.max(60, Math.floor(w * scale)) : w));
+                    if (scaled.some((w, i) => w !== cw[i])) {
+                      if (!tr) tr = view.state.tr;
+                      tr.setNodeMarkup(cellPos, null, { ...cellNode.attrs, colwidth: scaled });
+                    }
+                  }
+                  cellPos += cellNode.nodeSize;
+                });
+              });
+              return false;
+            });
+            if (tr) {
+              tr.setMeta("addToHistory", false);
+              view.dispatch(tr);
+            }
+          };
+          // ドラッグ中は prosemirror-tables が DOM を直接広げる（トランザクション未発火）ため、
+          // 上の run() では間に合わず一瞬枠を超える。そこで毎フレーム DOM を直接キャップして
+          // 描画前にフィットさせ、ドラッグ中も横スクロールを一切出さない（確定時の run() と同じ比例縮小）。
+          const dragCapDom = () => {
+            const view = editorView;
+            if (!view || !view.dom || !view.dom.isConnected) return;
+            const wrappers = view.dom.querySelectorAll(".tableWrapper");
+            wrappers.forEach((wrapper: any) => {
+              const table = wrapper.querySelector("table");
+              const colgroup = table && table.firstChild;
+              if (!table || !colgroup || !colgroup.children.length) return;
+              const cols = colgroup.children;
+              let total = 0;
+              for (let i = 0; i < cols.length; i++) total += parseFloat(cols[i].style.width) || 0;
+              const avail = wrapper.clientWidth;
+              if (!total || avail < 80 || total <= avail) return;
+              const scale = (avail - 2) / total;
+              let newTotal = 0;
+              const widths: number[] = [];
+              for (let i = 0; i < cols.length; i++) {
+                const w = parseFloat(cols[i].style.width) || 0;
+                const nw = w ? Math.max(60, Math.floor(w * scale)) : 0;
+                widths.push(nw);
+                newTotal += nw;
+              }
+              for (let i = 0; i < cols.length; i++) cols[i].style.width = widths[i] + "px";
+              table.style.width = newTotal + "px";
+              table.style.minWidth = "";
+            });
+          };
+          let raf = 0;
+          const loop = () => { dragCapDom(); raf = requestAnimationFrame(loop); };
+          const onDown = () => { if (!raf) raf = requestAnimationFrame(loop); };
+          const onUp = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } dragCapDom(); };
+          editorView.dom.addEventListener("mousedown", onDown);
+          window.addEventListener("mouseup", onUp);
+
+          let ro: ResizeObserver | null = null;
+          if (typeof ResizeObserver !== "undefined") {
+            ro = new ResizeObserver(() => run());
+            ro.observe(editorView.dom);
+          }
+          run();
+          return {
+            update: (v: any, prev: any) => { if (v.state.doc !== prev.doc) run(); },
+            destroy: () => {
+              if (ro) ro.disconnect();
+              if (raf) cancelAnimationFrame(raf);
+              editorView.dom.removeEventListener("mousedown", onDown);
+              window.removeEventListener("mouseup", onUp);
+            },
+          };
+        },
+      }),
+    ];
+  },
+});
 
 // ---- インライン画像 NodeView（ホバーでコピー/削除、クリックで拡大表示） ----
 function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
@@ -416,8 +581,10 @@ export function RichEditor({
         },
       }),
       CustomImage,
-      Table.configure({ resizable: false }),
+      // 🌟 BRU4-049: 列幅ドラッグ可変。両端固定はやめ、表は左寄せで右方向へ伸縮。最小列幅60px。
+      Table.configure({ resizable: true, cellMinWidth: 60 }),
       TableRow, TableCell, TableHeader,
+      NormalizeTableWidths,
       SuggestionStore,
       Mention.configure({
         HTMLAttributes: {},
@@ -506,7 +673,8 @@ export function RichEditor({
     ],
     content: value || "",
     editable: !readOnly,
-    onUpdate: ({ editor }) => { onChange?.(editor.getHTML()); },
+    // 🌟 BRU4-049: 読取専用では列幅補完(appendTransaction)による onChange を発火させない
+    onUpdate: ({ editor }) => { if (!editor.isEditable) return; onChange?.(editor.getHTML()); },
     editorProps: {
       handlePaste: onImageUpload ? (_view, event) => {
         const items = Array.from(event.clipboardData?.items ?? []);
@@ -693,6 +861,88 @@ export function RichEditor({
     return () => dom.removeEventListener("click", handler);
   }, [editor, onBacklogClick, onWikiClick, onMinuteClick]);
 
+  // 🌟 BRU4-049: 縦罫線をダブルクリックで、その列の最長1行の自然幅に自動フィット
+  useEffect(() => {
+    if (!editor || readOnly) return;
+    const dom = editor.view.dom;
+
+    // 列内の全セルを計測し、最長1行の自然幅（+左右padding）を返す。下限は最小列幅60px。
+    const measureColWidth = (tableDom: HTMLTableElement, colIndex: number): number => {
+      const m = document.createElement("div");
+      m.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:0;padding:0;margin:0;";
+      document.body.appendChild(m);
+      let max = 0;
+      try {
+        for (const row of Array.from(tableDom.rows)) {
+          const cell = row.cells[colIndex];
+          if (!cell) continue;
+          const cs = getComputedStyle(cell);
+          m.style.fontFamily = cs.fontFamily;
+          m.style.fontSize = cs.fontSize;
+          m.style.fontWeight = cs.fontWeight;
+          m.style.fontStyle = cs.fontStyle;
+          m.style.letterSpacing = cs.letterSpacing;
+          for (const line of (cell.innerText || "").split("\n")) {
+            m.textContent = line || " ";
+            if (m.scrollWidth > max) max = m.scrollWidth;
+          }
+        }
+      } finally {
+        document.body.removeChild(m);
+      }
+      // padding(10px*2) + 罫線 + わずかな余白
+      return Math.max(60, Math.ceil(max) + 24);
+    };
+
+    // 指定列の全行セルに colwidth をセットする（アプリ内の表はセル結合なし前提でDOM列index=マップ列index）
+    const setColumnWidth = (cellDomInCol: HTMLElement, colIndex: number, width: number) => {
+      const view = editor.view;
+      const $pos = view.state.doc.resolve(view.posAtDOM(cellDomInCol, 0));
+      let d = $pos.depth;
+      while (d > 0 && $pos.node(d).type.name !== "table") d--;
+      if (d === 0) return;
+      const table = $pos.node(d);
+      const tableStart = $pos.start(d);
+      const map = TableMap.get(table);
+      const tr = view.state.tr;
+      const seen = new Set<number>();
+      for (let r = 0; r < map.height; r++) {
+        const cellRel = map.map[r * map.width + colIndex];
+        if (seen.has(cellRel)) continue;
+        seen.add(cellRel);
+        const cellNode = table.nodeAt(cellRel);
+        if (!cellNode) continue;
+        tr.setNodeMarkup(tableStart + cellRel, null, { ...cellNode.attrs, colwidth: [width] });
+      }
+      if (tr.docChanged) view.dispatch(tr);
+    };
+
+    const handler = (e: MouseEvent) => {
+      const cell = (e.target as HTMLElement).closest("td, th") as HTMLTableCellElement | null;
+      if (!cell || !cell.parentElement) return;
+      const rect = cell.getBoundingClientRect();
+      const nearRight = Math.abs(e.clientX - rect.right) <= 6;
+      const nearLeft = Math.abs(e.clientX - rect.left) <= 6;
+      if (!nearRight && !nearLeft) return; // 縦罫線の近傍以外は通常のダブルクリック（単語選択など）に委ねる
+      const row = cell.parentElement as HTMLTableRowElement;
+      let targetCell: HTMLTableCellElement = cell;
+      let colIndex = Array.from(row.cells).indexOf(cell);
+      // 右罫線でなく左罫線をダブルクリックした場合は、左隣の列を対象にする（Excel的挙動）
+      if (nearLeft && !nearRight) {
+        const prev = cell.previousElementSibling as HTMLTableCellElement | null;
+        if (prev) { targetCell = prev; colIndex -= 1; }
+      }
+      const tableDom = cell.closest("table") as HTMLTableElement | null;
+      if (!tableDom || colIndex < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setColumnWidth(targetCell, colIndex, measureColWidth(tableDom, colIndex));
+    };
+
+    dom.addEventListener("dblclick", handler);
+    return () => dom.removeEventListener("dblclick", handler);
+  }, [editor, readOnly]);
+
   if (!editor) return null;
 
   // 🌟 修正: コメントエリア内にテーブルタグが実在しており、かつ空のテーブルでないことを厳密に判定
@@ -701,6 +951,38 @@ export function RichEditor({
   // 🌟 追加: リンク(aタグ)クリックを一元処理する。
   //   ネイティブ(Mac/iPad)はアプリ内ブラウザ、Webは別タブで開く。
   //   readOnly表示時は通常クリックで、編集時は ⌘/Ctrl+クリックで開く（カーソル操作を妨げない）。
+  // 🌟 BRU4-049: カーソルがある表の「幅未指定の列」に既定幅(150px)を補完する。
+  //   全列に幅が付くと TipTap が table 実寸(px)をインライン指定し、内容幅で左寄せになる。
+  //   （幅が1つでも欠けると width:100% にフォールバックして全幅になるため、列追加時などに補う）
+  const ensureColWidths = () => {
+    const view = editor.view;
+    const { $from } = view.state.selection;
+    let d = $from.depth;
+    while (d > 0 && $from.node(d).type.name !== "table") d--;
+    if (d === 0) return;
+    const table = $from.node(d);
+    const tableStart = $from.start(d);
+    const tr = view.state.tr;
+    table.forEach((rowNode, rowOffset) => {
+      let cellPos = tableStart + rowOffset + 1;
+      rowNode.forEach((cellNode) => {
+        const colspan: number = cellNode.attrs.colspan || 1;
+        const cw: (number | null)[] | null = cellNode.attrs.colwidth;
+        if (!cw || cw.length !== colspan || cw.some((w) => !w)) {
+          const filled = Array.from({ length: colspan }, (_, i) => (cw && cw[i]) || 150);
+          tr.setNodeMarkup(cellPos, null, { ...cellNode.attrs, colwidth: filled });
+        }
+        cellPos += cellNode.nodeSize;
+      });
+    });
+    if (tr.docChanged) view.dispatch(tr);
+  };
+
+  const handleInsertTable = () => {
+    editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+    ensureColWidths();
+  };
+
   const handleLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest("a");
     if (!anchor) return;
@@ -727,9 +1009,15 @@ export function RichEditor({
         .tiptap code { background: #F4F5F6; padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; color: #D97706; }
         .tiptap pre { background: #1A1714; color: #F4F5F6; padding: 12px 14px; border-radius: 8px; margin: 8px 0; overflow-x: auto; }
         .tiptap pre code { background: none; color: inherit; padding: 0; font-size: 12px; }
-        .tiptap table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-        .tiptap th, .tiptap td { border: 1px solid rgba(26,23,20,0.12); padding: 6px 10px; font-size: 12px; }
+        /* 🌟 BRU4-049: 列幅リサイズ対応。表は左寄せ・内容幅(width:auto)。合計がエディタ幅を超えたら
+           clampプラグインが全列を比例縮小してフィットさせるので、横スクロールは基本発生しない。
+           (列数が多く最小幅60pxでも収まらない極端なケースのみラッパーで横スクロール) */
+        .tiptap .tableWrapper { overflow-x: auto; max-width: 100%; }
+        .tiptap table { border-collapse: collapse; table-layout: fixed; width: auto; max-width: 100%; margin: 8px 0; }
+        .tiptap th, .tiptap td { border: 1px solid rgba(26,23,20,0.12); padding: 6px 10px; font-size: 12px; position: relative; }
         .tiptap th { background: #F4F5F6; font-weight: 700; }
+        .tiptap .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0; width: 4px; background: #059669; pointer-events: none; z-index: 5; }
+        .tiptap.resize-cursor { cursor: col-resize; }
         .tiptap blockquote { border-left: 3px solid #059669; padding-left: 12px; margin: 8px 0; color: #6B6458; font-style: italic; }
         .tiptap h1 { font-size: 18px; font-weight: 800; margin: 10px 0 6px; }
         .tiptap h2 { font-size: 15px; font-weight: 700; margin: 8px 0 4px; }
@@ -765,15 +1053,15 @@ export function RichEditor({
           <button type="button" style={btnStyle(editor.isActive("codeBlock"))} onClick={() => editor.chain().focus().toggleCodeBlock().run()}>コード</button>
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
-          <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>表</button>
+          <button type="button" style={btnStyle()} onClick={handleInsertTable}>表</button>
 
           {/* 🌟 修正: エディタ内に表のデータ(hasTableInContent)が存在していれば、どこを触っていてもツールバーを表示 */}
           {hasTableInContent && (
             <>
               <span style={{ width: "100%", height: 0 }} />
               <span style={{ fontSize: 11, color: "rgba(26,23,20,0.45)", alignSelf: "center", paddingRight: 2 }}>表編集:</span>
-              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addColumnBefore().run()} title="左に列を挿入">左列+</button>
-              <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addColumnAfter().run()} title="右に列を挿入">右列+</button>
+              <button type="button" style={btnStyle()} onClick={() => { editor.chain().focus().addColumnBefore().run(); ensureColWidths(); }} title="左に列を挿入">左列+</button>
+              <button type="button" style={btnStyle()} onClick={() => { editor.chain().focus().addColumnAfter().run(); ensureColWidths(); }} title="右に列を挿入">右列+</button>
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().deleteColumn().run()} title="列を削除">列削除</button>
               <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowBefore().run()} title="上に行を挿入">上行+</button>
