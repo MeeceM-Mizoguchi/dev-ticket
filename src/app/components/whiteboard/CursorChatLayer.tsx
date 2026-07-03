@@ -126,11 +126,11 @@ export function CursorChatLayer({ api, containerRef, remoteChats, setChat, canEd
         </div>
       )}
 
-      {/* 他メンバーのバブル */}
+      {/* 他メンバーのバブル（Excalidrawの名前ラベルに被らないよう下へオフセット） */}
       {remoteChats.map((c) => {
         const p = sceneToLocal(api, containerRef, c.x, c.y);
         return (
-          <div key={c.userId} style={{ position: "absolute", left: p.x + 14, top: p.y + 14, zIndex: 29, pointerEvents: "none" }}>
+          <div key={c.userId} style={{ position: "absolute", left: p.x + 16, top: p.y + 38, zIndex: 29, pointerEvents: "none" }}>
             <div style={{
               maxWidth: 240, padding: "5px 11px", fontSize: 13, color: "#fff", whiteSpace: "pre-wrap",
               background: c.color, borderRadius: 999, boxShadow: "0 4px 14px rgba(0,0,0,0.25)",

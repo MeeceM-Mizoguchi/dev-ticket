@@ -52,7 +52,7 @@ export function WhiteboardExportMenu({ api, title }: Props) {
       <button onClick={() => setOpen((o) => !o)}
         style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12, fontWeight: 600,
           color: "#059669", background: "#fff", border: "1px solid rgba(5,150,105,0.25)", borderRadius: 8,
-          cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+          cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.08)", whiteSpace: "nowrap", flexShrink: 0 }}>
         {copied ? <Check style={{ width: 13, height: 13 }} /> : <Download style={{ width: 13, height: 13 }} />}
         {copied ? "コピーしました" : "エクスポート"}
       </button>

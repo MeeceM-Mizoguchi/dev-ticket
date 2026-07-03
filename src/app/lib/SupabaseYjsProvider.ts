@@ -21,6 +21,8 @@ export class SupabaseYjsProvider {
   private ready = false;
   onSynced?: () => void;
   private syncedFired = false;
+  // このプロバイダ固有の送信者ID。self:false が効かない環境でも自分のエコーを確実に無視する。
+  private readonly senderId = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   constructor(client: SupabaseClient, channelName: string, doc: Y.Doc, awareness: Awareness) {
     this.doc = doc;
@@ -34,15 +36,18 @@ export class SupabaseYjsProvider {
 
     this.channel
       .on("broadcast", { event: "y-update" }, ({ payload }) => {
+        if ((payload as any).s === this.senderId) return; // 自分のエコーは無視
         Y.applyUpdate(this.doc, base64ToBytes((payload as any).u), REMOTE_ORIGIN);
       })
       .on("broadcast", { event: "y-sync-req" }, ({ payload }) => {
+        if ((payload as any).s === this.senderId) return;
         // 相手のstate vectorに対する差分を返す（後入り参加者の復元）
         const diff = Y.encodeStateAsUpdate(this.doc, base64ToBytes((payload as any).sv));
         this._broadcast("y-update", { u: bytesToBase64(diff) });
         this._sendFullAwareness();
       })
       .on("broadcast", { event: "y-awareness" }, ({ payload }) => {
+        if ((payload as any).s === this.senderId) return;
         applyAwarenessUpdate(this.awareness, base64ToBytes((payload as any).a), REMOTE_ORIGIN);
       })
       .subscribe((status) => {
@@ -58,7 +63,7 @@ export class SupabaseYjsProvider {
 
   private _broadcast(event: string, payload: Record<string, unknown>) {
     if (!this.ready) return;
-    void this.channel.send({ type: "broadcast", event, payload });
+    void this.channel.send({ type: "broadcast", event, payload: { ...payload, s: this.senderId } });
   }
 
   private _onDocUpdate(update: Uint8Array, origin: unknown) {

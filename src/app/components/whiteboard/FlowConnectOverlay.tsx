@@ -18,6 +18,21 @@ interface Props {
 
 interface Box { x: number; y: number; w: number; h: number; el: any }
 
+// convertToExcalidrawElements は線形要素の points[0] を [0,0] にしない（例: [0.5,0]）ことがあり、
+// Excalidrawの「正規化」要件を満たさず not normalized エラー/座標破壊を招く。生成後に再正規化する。
+function normalizeLinear(el: any) {
+  if (!el || !Array.isArray(el.points) || el.points.length === 0) return;
+  const [ox, oy] = el.points[0];
+  if (ox === 0 && oy === 0) return;
+  el.points = el.points.map(([px, py]: number[]) => [px - ox, py - oy]);
+  el.x += ox;
+  el.y += oy;
+  const xs = el.points.map((p: number[]) => p[0]);
+  const ys = el.points.map((p: number[]) => p[1]);
+  el.width = Math.max(...xs) - Math.min(...xs);
+  el.height = Math.max(...ys) - Math.min(...ys);
+}
+
 function sceneToLocal(api: any, containerRef: React.RefObject<HTMLDivElement | null>, sx: number, sy: number) {
   const st = api.getAppState();
   const rect = containerRef.current?.getBoundingClientRect();
@@ -75,42 +90,31 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
     if (dir === "down") { ny = src.y + h + GAP; nx = src.x; }
     if (dir === "up") { ny = src.y - h - GAP; nx = src.x; }
 
-    // 新図形を生成（FigJam風のクリーンなスタイル）
-    const [shape] = convertToExcalidrawElements([
-      { type: spawnType, id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, x: nx, y: ny, width: w, height: h,
-        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, fontFamily: 2 } as any,
-    ]) as any[];
-    shape.roughness = 0;
-
-    // 矢印はエッジ発着（図形の中心ではなく境界の中点から出す）
+    // 始点＝元図形のエッジ中点、終点＝新図形の対向エッジ中点
     let sx = src.x, sy = src.y, ex = nx, ey = ny;
     if (dir === "right") { sx = src.x + w; sy = src.y + h / 2; ex = nx; ey = ny + h / 2; }
     if (dir === "left") { sx = src.x; sy = src.y + h / 2; ex = nx + w; ey = ny + h / 2; }
     if (dir === "down") { sx = src.x + w / 2; sy = src.y + h; ex = nx + w / 2; ey = ny; }
     if (dir === "up") { sx = src.x + w / 2; sy = src.y; ex = nx + w / 2; ey = ny + h; }
 
-    const [arrow] = convertToExcalidrawElements([
-      {
-        type: "arrow",
-        id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        x: sx, y: sy,
-        width: ex - sx, height: ey - sy,
-        points: [[0, 0], [ex - sx, ey - sy]],
-        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK,
-      } as any,
+    // 新図形＋矢印を1バッチで生成。終点は新図形へ in-batch バインド（追従）。
+    const newId = `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const created = convertToExcalidrawElements([
+      { type: spawnType, id: newId, x: nx, y: ny, width: w, height: h,
+        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK } as any,
+      { type: "arrow", x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]],
+        roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, end: { id: newId } } as any,
     ]) as any[];
-    arrow.roughness = 0;
-    arrow.startBinding = { elementId: src.id, focus: 0, gap: 4 };
-    arrow.endBinding = { elementId: shape.id, focus: 0, gap: 4 };
-    shape.boundElements = [{ id: arrow.id, type: "arrow" }];
-
-    // 既存図形（src）に矢印参照を追加
+    const shape = created.find((e) => e.id === newId);
+    const arrow = created.find((e) => e.type === "arrow");
+    normalizeLinear(arrow); // ★points[0]を[0,0]に正規化（convertのズレを補正）
+    // 始点を元図形へバインド（両端追従）。正規化済みなので座標破壊は起きない。
+    if (arrow) arrow.startBinding = { elementId: src.id, focus: 0, gap: 1 };
     const elements = api.getSceneElements().map((e: any) =>
       e.id === src.id ? { ...e, boundElements: [...(e.boundElements ?? []), { id: arrow.id, type: "arrow" }] } : e,
     );
-    api.updateScene({ elements: [...elements, shape, arrow] });
-    // 新図形を選択
-    api.updateScene({ appState: { selectedElementIds: { [shape.id]: true } } });
+    api.updateScene({ elements: [...elements, ...created] });
+    if (shape) api.updateScene({ appState: { selectedElementIds: { [shape.id]: true } } });
   };
 
   // 選択中の図形の種類を変更（四角/ひし形/楕円は同構造なので type 差し替えで変換）

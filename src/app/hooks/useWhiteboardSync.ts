@@ -19,8 +19,10 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
   const apiRef = useRef<{ updateScene: (d: any) => void } | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const [synced, setSynced] = useState(false);
-  const [collaborators, setCollaborators] = useState<Map<string, any>>(new Map());
   const [remoteChats, setRemoteChats] = useState<RemoteChat[]>([]);
+  // カーソル(collaborators)は命令的にupdateSceneへ流す（Reactの再レンダーを起こさない＝ドラッグ/複製を妨げない）
+  const localPointerDownRef = useRef(false);
+  const pendingCollabRef = useRef<Map<string, any> | null>(null);
 
   // 最新の user を参照するための ref（依存配列に入れず再購読を避ける）
   const userRef = useRef(user);
@@ -35,6 +37,7 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
     const awareness = new Awareness(doc);
     awareness.setLocalStateField("user", userRef.current);
     const bridge = new ExcalidrawYjsBridge(doc);
+    bridge.deferCheck = () => localPointerDownRef.current; // ローカル操作中は外部反映を保留
     bridgeRef.current = bridge;
     awarenessRef.current = awareness;
     docRef.current = doc;
@@ -87,16 +90,39 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
             chats.push({ userId: u.id, name: u.name, color: u.color, x: st.cursor.x, y: st.cursor.y, text: st.chat.text ?? "" });
           }
         });
+        // カーソルは命令的に反映（再レンダーなし）。ローカルでドラッグ中は保留し、離してから反映。
         const collabSig = JSON.stringify(Array.from(collab.entries()).map(([k, v]) => [k, v.pointer?.x, v.pointer?.y, v.username]));
-        if (collabSig !== prevCollabSig) { prevCollabSig = collabSig; setCollaborators(collab); }
+        if (collabSig !== prevCollabSig) {
+          prevCollabSig = collabSig;
+          if (localPointerDownRef.current) pendingCollabRef.current = collab;
+          else apiRef.current?.updateScene({ collaborators: collab });
+        }
+        // チャットバブルはReact描画が必要（頻度は低い）。内容が変わった時だけ更新。
         const chatSig = JSON.stringify(chats);
         if (chatSig !== prevChatSig) { prevChatSig = chatSig; setRemoteChats(chats); }
       };
       awareness.on("change", onAwareness);
 
+      // ローカルのドラッグ検知（押下中はカーソル反映を保留し、離した時にまとめて反映）
+      const onDown = () => { localPointerDownRef.current = true; };
+      const onUp = () => {
+        localPointerDownRef.current = false;
+        // Excalidrawのpointerup処理（複製確定など）が完全に終わってから反映する（割り込み防止）
+        setTimeout(() => {
+          bridgeRef.current?.flushPending();
+          if (pendingCollabRef.current) { apiRef.current?.updateScene({ collaborators: pendingCollabRef.current }); pendingCollabRef.current = null; }
+        }, 0);
+      };
+      window.addEventListener("pointerdown", onDown); // バブル段階
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+
       dispose = () => {
         awareness.off("change", onAwareness);
         doc.off("update", onDocUpdate);
+        window.removeEventListener("pointerdown", onDown);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
         if (saveTimer) clearTimeout(saveTimer);
         provider.destroy();
         doc.destroy();
@@ -110,8 +136,9 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       bridgeRef.current = null;
       awarenessRef.current = null;
       docRef.current = null;
+      pendingCollabRef.current = null;
+      localPointerDownRef.current = false;
       setSynced(false);
-      setCollaborators(new Map());
       setRemoteChats([]);
     };
   }, [boardId]);
@@ -131,5 +158,5 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
     if (b) { b.setApi(api); b.applyInitial(); }
   }, []);
 
-  return { bridgeRef, docRef, registerApi, synced, collaborators, remoteChats, setCursor, setChat };
+  return { bridgeRef, docRef, registerApi, synced, remoteChats, setCursor, setChat };
 }

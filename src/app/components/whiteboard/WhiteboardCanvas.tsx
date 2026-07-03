@@ -6,10 +6,12 @@ import { Excalidraw } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
+import { autoConnectLines } from "@/app/lib/whiteboardAutoConnect";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
 import { WhiteboardToolbar } from "./WhiteboardToolbar";
+import { TriangleToolButton } from "./TriangleToolButton";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
 
@@ -51,12 +53,9 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const uploadedFiles = useRef<Set<string>>(new Set());
   const addedRemoteFiles = useRef<Set<string>>(new Set());
 
-  const { bridgeRef, docRef, registerApi, collaborators, remoteChats, setCursor, setChat } = useWhiteboardSync(boardId, user);
-
-  // 他メンバーのカーソルをシーンへ流し込む
-  useEffect(() => {
-    if (api) api.updateScene({ collaborators });
-  }, [api, collaborators]);
+  const { bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat } = useWhiteboardSync(boardId, user);
+  // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
+  //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
 
   // 画像ファイルの共有（ローカル→Storage→Yjs files map）
   const syncLocalImages = useCallback(async () => {
@@ -97,11 +96,14 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     return () => fmap.unobserve(resolve);
   }, [api, docRef]);
 
-  const onChange = useCallback((elements: readonly any[]) => {
+  const processedLines = useRef<Set<string>>(new Set());
+  const onChange = useCallback((elements: readonly any[], appState?: any) => {
     if (!canEdit) return;
-    bridgeRef.current?.syncFromExcalidraw(elements);
-    void syncLocalImages();
-  }, [canEdit, bridgeRef, syncLocalImages]);
+    // onChange内で例外を投げるとExcalidrawのドラッグ/複製処理が壊れるため必ずcatchする
+    try { if (api) autoConnectLines(api, elements, appState, processedLines.current); } catch { /* noop */ }
+    try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
+    try { void syncLocalImages(); } catch { /* noop */ }
+  }, [canEdit, api, bridgeRef, syncLocalImages]);
 
   const onPointerUpdate = useCallback((payload: any) => {
     const now = Date.now();
@@ -128,7 +130,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         UIOptions={{ canvasActions: { toggleTheme: false } }}
         renderTopRightUI={() => (api ? (
           // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: ヘルプ · エクスポート · 全画面
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
             <HelpButton api={api} />
             <WhiteboardExportMenu api={api} title={title} />
             <FullscreenButton targetRef={containerRef} pseudoFull={pseudoFull} setPseudoFull={setPseudoFull} />
@@ -138,6 +140,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       {api && (
         <>
           {canEdit && <WhiteboardToolbar api={api} />}
+          {canEdit && <TriangleToolButton api={api} containerRef={containerRef} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
         </>
