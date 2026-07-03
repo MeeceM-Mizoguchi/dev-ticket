@@ -1767,7 +1767,7 @@ export function TicketDetailPanel({
                         value={prefixInputValue}
                         onChange={e => setPrefixInputValue(e.target.value)}
                         onKeyDown={e => {
-                          if (e.key === "Enter") {
+                          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                             const addable = filteredSuggestions.find(l => !prefixes.includes(l));
                             if (addable && !trimmed) {
                               addPrefix(addable);

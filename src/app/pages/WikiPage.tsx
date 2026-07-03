@@ -165,7 +165,7 @@ function TreeItem({
             onChange={e => setEditTitle(e.target.value)}
             onBlur={handleSaveRename}
             onKeyDown={e => {
-              if (e.key === "Enter") handleSaveRename();
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSaveRename();
               if (e.key === "Escape") {
                 setEditTitle(node.title);
                 setIsEditing(false);

@@ -96,7 +96,7 @@ export function CategorySettingsModal({
                         autoFocus
                         value={editName}
                         onChange={e => setEditName(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") handleEdit(cat.id); if (e.key === "Escape") setEditingId(null); }}
+                        onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleEdit(cat.id); if (e.key === "Escape") setEditingId(null); }}
                         style={{ flex: 1, fontSize: 13, border: "1.5px solid #059669", borderRadius: 7, padding: "5px 8px", outline: "none", background: "#FFF" }}
                       />
                       <button onClick={() => handleEdit(cat.id)}
@@ -137,7 +137,7 @@ export function CategorySettingsModal({
             <input
               value={newName}
               onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") handleAdd(); }}
+              onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleAdd(); }}
               placeholder="新しい分類名を入力"
               style={{ flex: 1, fontSize: 13, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 9, padding: "8px 12px", outline: "none", background: "#F9F8F6", transition: "border-color 0.15s" }}
               onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = "#059669"; }}

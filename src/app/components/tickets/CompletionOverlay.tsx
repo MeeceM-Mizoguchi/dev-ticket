@@ -222,7 +222,7 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
                   step="0.5"
                   value={segmentValues[i]}
                   onChange={e => updateSegment(i, e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") handleSave(); }}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSave(); }}
                   placeholder="0"
                   style={{
                     width: 72, padding: "6px 8px", fontSize: 14, fontWeight: 700,

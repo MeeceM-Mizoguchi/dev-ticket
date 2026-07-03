@@ -97,7 +97,7 @@ function ActionItemsPanel({
       {canEdit && (
         <div style={{ display: "flex", gap: 6 }}>
           <input value={text} onChange={e => setText(e.target.value)} placeholder="アクション項目を入力..."
-            onKeyDown={e => { if (e.key === "Enter") handleAdd(); }}
+            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleAdd(); }}
             style={{ flex: 1, padding: "7px 10px", fontSize: 12, border: "1.5px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", fontFamily: "inherit" }} />
           <div style={{ width: 140 }}>
             <CustomSelect value={assignee} onChange={setAssignee} options={members.map(m => ({ value: m, label: m }))} />
@@ -407,7 +407,7 @@ export function MinutesPage() {
                             value={externalInput}
                             onChange={e => setExternalInput(e.target.value)}
                             onKeyDown={e => {
-                              if (e.key === "Enter" && externalInput.trim()) {
+                              if (e.key === "Enter" && !e.nativeEvent.isComposing && externalInput.trim()) {
                                 const name = externalInput.trim();
                                 if (!attendees.includes(name)) {
                                   const next = [...attendees, name];

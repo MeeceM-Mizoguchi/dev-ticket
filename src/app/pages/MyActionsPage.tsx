@@ -1005,7 +1005,7 @@ function AddMemoModal({
           ref={titleRef}
           value={title}
           onChange={e => setTitle(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSave(); } }}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleSave(); } }}
           placeholder="タイトルを入力..."
           style={{
             width: "100%", boxSizing: "border-box" as const,
