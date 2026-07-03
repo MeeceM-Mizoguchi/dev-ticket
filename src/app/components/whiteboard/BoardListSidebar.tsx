@@ -58,7 +58,7 @@ export function BoardListSidebar({ boards, selectedId, canEdit, onSelect, onCrea
               <PenTool style={{ width: 12, height: 12, color: active ? "#059669" : "#C9C4BB", flexShrink: 0 }} />
               {editingId === b.id ? (
                 <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
-                  onBlur={() => commitRename(b.id)} onKeyDown={(e) => { if (e.key === "Enter") commitRename(b.id); if (e.key === "Escape") setEditingId(null); }}
+                  onBlur={() => commitRename(b.id)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) commitRename(b.id); if (e.key === "Escape") setEditingId(null); }}
                   onClick={(e) => e.stopPropagation()}
                   style={{ flex: 1, fontSize: 12, border: "1px solid rgba(5,150,105,0.3)", borderRadius: 5, padding: "2px 5px", outline: "none", fontFamily: "inherit" }} />
               ) : (

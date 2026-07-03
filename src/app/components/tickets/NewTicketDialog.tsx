@@ -737,7 +737,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                           value={prefixInputValue}
                           onChange={e => setPrefixInputValue(e.target.value)}
                           onKeyDown={e => {
-                            if (e.key === "Enter") {
+                            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                               e.preventDefault();
                               const addable = filteredSuggestions.find(l => !prefixes.includes(l));
                               if (addable && !trimmed) {
