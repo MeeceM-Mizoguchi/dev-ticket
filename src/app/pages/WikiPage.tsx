@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search, MoreVertical, Download } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { ArticleExportButton } from "@/app/components/shared/ArticleExportButton";
+import { exportWikiArticle, exportWikiFolder, type ExportFormat } from "@/app/lib/articleExport";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
+} from "@/app/components/ui/dropdown-menu";
+import {
+  ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
+  ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent,
+} from "@/app/components/ui/context-menu";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { mapProject, mapWikiPage } from "@/app/lib/mappers";
@@ -37,7 +47,7 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onDelete, onMoveNode, onOpenMoveModal, onRename, canEdit,
+  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onDelete, onMoveNode, onOpenMoveModal, onRename, onExport, canEdit,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
   onSelectPage: (id: string) => void;
@@ -47,6 +57,7 @@ function TreeItem({
   onMoveNode: (draggedId: string, targetParentId: string | null) => Promise<void>;
   onOpenMoveModal: (node: WikiPageType) => void;
   onRename: (id: string, newTitle: string) => Promise<void>;
+  onExport: (node: WikiPageType, format: ExportFormat) => void;
   canEdit: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -79,6 +90,14 @@ function TreeItem({
     } else {
       onSelectPage(node.id);
     }
+  };
+
+  // 右クリック(コンテキストメニュー)時に対象を選択状態にする（開閉トグルはしない）。
+  // どの項目へのメニューか分かるように、選択ハイライトを右クリック対象へ移す。
+  const selectNode = () => {
+    if (isEditing) return;
+    if (isFolder) onSelectFolder(node.id);
+    else onSelectPage(node.id);
   };
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -128,6 +147,39 @@ function TreeItem({
   const FolderIcon = expanded ? FolderOpen : Folder;
   const ItemIcon = isFolder ? FolderIcon : FileText;
   const iconColor = isFolder ? "#F59E0B" : (isSelected ? "#059669" : "#B0A9A4");
+  const menuIconStyle = { width: 14, height: 14 };
+
+  // 3点リーダー(DropdownMenu)と右クリック(ContextMenu)で共通のメニュー項目を描画する。
+  // Radix の Dropdown/Context は別プリミティブなので、同名APIを持つコンポーネント群を差し替えて再利用する。
+  const renderMenuItems = (P: {
+    Item: React.ElementType; Separator: React.ElementType;
+    Sub: React.ElementType; SubTrigger: React.ElementType; SubContent: React.ElementType;
+  }) => (
+    <>
+      {canEdit && (
+        <>
+          <P.Item onSelect={() => onAddChild(node.id, false)}><Plus style={menuIconStyle} />サブページを追加</P.Item>
+          <P.Item onSelect={() => onAddChild(node.id, true)}><FolderPlus style={menuIconStyle} />サブフォルダを追加</P.Item>
+          <P.Item onSelect={() => onOpenMoveModal(node)}><FolderTree style={menuIconStyle} />移動</P.Item>
+          <P.Item onSelect={() => setIsEditing(true)}><Pencil style={menuIconStyle} />名前を変更</P.Item>
+        </>
+      )}
+      <P.Sub>
+        <P.SubTrigger><Download style={menuIconStyle} />エクスポート</P.SubTrigger>
+        <P.SubContent>
+          <P.Item onSelect={() => onExport(node, "xlsx")}>Excel (.xlsx)</P.Item>
+          <P.Item onSelect={() => onExport(node, "docx")}>Word (.docx)</P.Item>
+          <P.Item onSelect={() => onExport(node, "pdf")}>PDF (.pdf)</P.Item>
+        </P.SubContent>
+      </P.Sub>
+      {canEdit && <P.Separator />}
+      {canEdit && (
+        <P.Item onSelect={() => onDelete(node)} className="text-red-600 focus:text-red-600">
+          <Trash2 style={menuIconStyle} />削除
+        </P.Item>
+      )}
+    </>
+  );
 
   return (
     <div
@@ -136,107 +188,94 @@ function TreeItem({
       onDrop={handleDrop}
       style={{ background: isDragOver ? "rgba(5,150,105,0.08)" : "transparent", borderRadius: 8, transition: "background 0.15s" }}
     >
-      <div
-        draggable={canEdit}
-        onDragStart={handleDragStart}
-        onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
-        onClick={handleRowClick}
-        onDoubleClick={handleDoubleClick}
-        style={{
-          display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
-          borderRadius: 7, cursor: "pointer",
-          background: isSelected ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent"),
-        }}>
-        <span
-          onClick={e => { e.stopPropagation(); if (hasChildren || isFolder) setExpanded(v => !v); }}
-          style={{ width: 14, flexShrink: 0, display: "flex" }}>
-          {(isFolder || hasChildren) && (
-            expanded
-              ? <ChevronDown style={{ width: 11, height: 11, color: "#9E9690" }} />
-              : <ChevronRight style={{ width: 11, height: 11, color: "#9E9690" }} />
-          )}
-        </span>
-        <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
-
-        {isEditing ? (
-          <input
-            ref={inputRef}
-            value={editTitle}
-            onChange={e => setEditTitle(e.target.value)}
-            onBlur={handleSaveRename}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSaveRename();
-              if (e.key === "Escape") {
-                setEditTitle(node.title);
-                setIsEditing(false);
-              }
-            }}
-            onClick={e => e.stopPropagation()}
-            onDoubleClick={e => e.stopPropagation()}
+      <ContextMenu onOpenChange={open => { if (open) selectNode(); }}>
+        <ContextMenuTrigger asChild>
+          <div
+            draggable={canEdit}
+            onDragStart={handleDragStart}
+            onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+            onClick={handleRowClick}
+            onDoubleClick={handleDoubleClick}
             style={{
-              flex: 1, minWidth: 0, fontSize: 12, padding: "1px 4px",
-              border: "1px solid #059669", borderRadius: 4, outline: "none",
-              color: "#1A1714", background: "#FFFFFF", height: "18px"
-            }}
-          />
-        ) : (
-          <span style={{
-            flex: 1, minWidth: 0, fontSize: 12,
-            fontWeight: isSelected ? 700 : 500,
-            color: isSelected ? "#059669" : "#1A1714",
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          }}>
-            {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
-          </span>
-        )}
+              display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
+              borderRadius: 7, cursor: "pointer",
+              background: isSelected ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent"),
+            }}>
+            <span
+              onClick={e => { e.stopPropagation(); if (hasChildren || isFolder) setExpanded(v => !v); }}
+              style={{ width: 14, flexShrink: 0, display: "flex" }}>
+              {(isFolder || hasChildren) && (
+                expanded
+                  ? <ChevronDown style={{ width: 11, height: 11, color: "#9E9690" }} />
+                  : <ChevronRight style={{ width: 11, height: 11, color: "#9E9690" }} />
+              )}
+            </span>
+            <ItemIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
 
-        {hovered && !isEditing && (
-          <>
-            {canEdit && (
-              <>
-                <button
-                  onClick={e => { e.stopPropagation(); onAddChild(node.id, false); }}
-                  title="サブページを追加"
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-                  <Plus style={{ width: 12, height: 12 }} />
-                </button>
-                <button
-                  onClick={e => { e.stopPropagation(); onAddChild(node.id, true); }}
-                  title="サブフォルダを追加"
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-                  <FolderPlus style={{ width: 12, height: 12 }} />
-                </button>
-                <div
-                  draggable
-                  onDragStart={handleDragStart}
-                  onClick={e => { e.stopPropagation(); onOpenMoveModal(node); }}
-                  title={isFolder ? "フォルダを移動 (クリックで一覧から選択)" : "ページを移動 (クリックで一覧から選択)"}
-                  style={{ display: "flex", alignItems: "center", justifySelf: "center", cursor: "pointer", color: isFolder ? "#F59E0B" : "#0284C7", padding: 2, flexShrink: 0 }}
-                >
-                  <GripVertical style={{ width: 12, height: 12 }} />
-                </div>
-                <button
-                  onClick={e => { e.stopPropagation(); setIsEditing(true); }}
-                  title="名前を変更"
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-                  <Pencil style={{ width: 11, height: 11 }} />
-                </button>
-              </>
+            {isEditing ? (
+              <input
+                ref={inputRef}
+                value={editTitle}
+                onChange={e => setEditTitle(e.target.value)}
+                onBlur={handleSaveRename}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSaveRename();
+                  if (e.key === "Escape") {
+                    setEditTitle(node.title);
+                    setIsEditing(false);
+                  }
+                }}
+                onClick={e => e.stopPropagation()}
+                onDoubleClick={e => e.stopPropagation()}
+                style={{
+                  flex: 1, minWidth: 0, fontSize: 12, padding: "1px 4px",
+                  border: "1px solid #059669", borderRadius: 4, outline: "none",
+                  color: "#1A1714", background: "#FFFFFF", height: "18px"
+                }}
+              />
+            ) : (
+              <span style={{
+                flex: 1, minWidth: 0, fontSize: 12,
+                fontWeight: isSelected ? 700 : 500,
+                color: isSelected ? "#059669" : "#1A1714",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
+              </span>
             )}
-            {canEdit && (
-              <button
-                onClick={e => { e.stopPropagation(); onDelete(node); }}
-                title="削除"
-                style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0 }}>
-                <Trash2 style={{ width: 12, height: 12 }} />
-              </button>
+
+            {!isEditing && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    onClick={e => e.stopPropagation()}
+                    onPointerDown={e => e.stopPropagation()}
+                    onDoubleClick={e => e.stopPropagation()}
+                    title="メニュー"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0, display: "flex", opacity: hovered ? 1 : 0.5 }}>
+                    <MoreVertical style={{ width: 14, height: 14 }} />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" onClick={e => e.stopPropagation()}>
+                  {renderMenuItems({
+                    Item: DropdownMenuItem, Separator: DropdownMenuSeparator,
+                    Sub: DropdownMenuSub, SubTrigger: DropdownMenuSubTrigger, SubContent: DropdownMenuSubContent,
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          {renderMenuItems({
+            Item: ContextMenuItem, Separator: ContextMenuSeparator,
+            Sub: ContextMenuSub, SubTrigger: ContextMenuSubTrigger, SubContent: ContextMenuSubContent,
+          })}
+        </ContextMenuContent>
+      </ContextMenu>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} canEdit={canEdit} />
+          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} onExport={onExport} canEdit={canEdit} />
       ))}
     </div>
   );
@@ -351,6 +390,29 @@ export function WikiPage() {
     }
     return list;
   }, [selected, pages]);
+
+  // ツリーのメニュー(3点/右クリック)からのエクスポート。
+  // フォルダ→配下全ページを一括、ページ→単一（祖先フォルダ名をパンくずとして付与）。
+  const handleTreeExport = useCallback(async (node: WikiPageType, format: ExportFormat) => {
+    try {
+      if (node.isFolder) {
+        await exportWikiFolder(node, pages, format);
+      } else {
+        const path: string[] = [];
+        let cur = node;
+        while (cur.parentId) {
+          const parent = pages.find(p => p.id === cur.parentId);
+          if (!parent) break;
+          path.unshift(parent.title || "無題のフォルダ");
+          cur = parent;
+        }
+        await exportWikiArticle(node, path, format);
+      }
+    } catch (e) {
+      console.error("[articleExport]", e);
+      toast("エクスポートに失敗しました", "error");
+    }
+  }, [pages, toast]);
 
   // URLパラメータのリアルタイム監視
   useEffect(() => {
@@ -621,6 +683,7 @@ export function WikiPage() {
               onMoveNode={handleMoveNode}
               onOpenMoveModal={setMovingNodeTarget}
               onRename={handleTreeItemRename}
+              onExport={handleTreeExport}
               canEdit={canEdit}
             />
           ))}
@@ -641,9 +704,13 @@ export function WikiPage() {
             <div style={{ padding: "60px 0", textAlign: "center" }}>
               <FolderOpen style={{ width: 32, height: 32, color: "#FCD34D", margin: "0 auto 10px" }} />
               <p style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: "0 0 6px" }}>{selected.title || "無題のフォルダ"}</p>
-              <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>
+              <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
                 {pages.filter(p => p.parentId === selected.id).length} 件のアイテム
               </p>
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                <ArticleExportButton onExport={f => exportWikiFolder(selected, pages, f)} />
+              </div>
+              <p style={{ fontSize: 11, color: "#C9C4BB", margin: "10px 0 0" }}>フォルダ内の全ページ（子・孫フォルダ含む）をまとめて出力します</p>
             </div>
           ) : (
             <>
@@ -661,11 +728,14 @@ export function WikiPage() {
                   <span>&gt;</span>
                   <span style={{ color: "#9E9690" }}>{selected.title || "無題のページ"}</span>
                 </div>
-                <input
-                  value={title} disabled={!canEdit}
-                  onChange={e => { setTitle(e.target.value); scheduleSave(e.target.value, content); }}
-                  placeholder="ページタイトル"
-                  style={{ width: "100%", boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <input
+                    value={title} disabled={!canEdit}
+                    onChange={e => { setTitle(e.target.value); scheduleSave(e.target.value, content); }}
+                    placeholder="ページタイトル"
+                    style={{ flex: 1, minWidth: 0, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                  <ArticleExportButton onExport={f => exportWikiArticle(selected, ancestors.map(a => a.title || "無題のフォルダ"), f)} />
+                </div>
               </div>
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "12px 20px 16px", display: "flex", flexDirection: "column" }}>
                 <RichEditor value={content} readOnly={!canEdit}

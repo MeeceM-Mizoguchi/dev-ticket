@@ -11,6 +11,8 @@ import { FolderKanban, ChevronRight, Plus, FileText, Trash2, Users, Check, X, Se
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { ArticleExportButton } from "@/app/components/shared/ArticleExportButton";
+import { exportMinuteArticle } from "@/app/lib/articleExport";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { mapProject, mapMeetingMinute, mapActionMemo } from "@/app/lib/mappers";
@@ -350,6 +352,7 @@ export function MinutesPage() {
                     onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value, meetingDate, attendees, content }); }}
                     placeholder="議事録タイトル"
                     style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                  <ArticleExportButton onExport={f => exportMinuteArticle(selected, f)} />
                   {canEdit && (
                     <button onClick={() => setDeleteTarget(selected)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
                       <Trash2 style={{ width: 14, height: 14 }} />

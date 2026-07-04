@@ -5,6 +5,7 @@ import { AlertProvider } from "@/app/contexts/AlertContext";
 import { AuthProvider } from "@/app/contexts/AuthContext";
 import { PreviewPanelProvider } from "@/app/contexts/PreviewPanelContext";
 import { LinkPreviewPanel } from "@/app/components/shared/LinkPreviewPanel";
+import { ExportProgressOverlay } from "@/app/components/shared/ExportProgressOverlay";
 import { ProtectedShell } from "@/app/components/layout/AppShell";
 import { PROTECTED_ROUTES } from "@/app/components/layout/AppRoutes";
 import { LoginPage } from "@/app/pages/LoginPage";
@@ -37,6 +38,7 @@ export default function App() {
         <AuthProvider>
           <PreviewPanelProvider>
           <LinkPreviewPanel />
+          <ExportProgressOverlay />
           <Routes>
             <Route path="/" element={<RootRoute />} />
             <Route path="/book-demo" element={<DemoBookingPage />} />
