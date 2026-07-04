@@ -14,6 +14,8 @@ import { DemoBookingPage } from "@/app/pages/lp/DemoBookingPage";
 import { DemoPreviewPage } from "@/app/pages/lp/DemoPreviewPage";
 import { PrivacyPolicyPage } from "@/app/pages/lp/PrivacyPolicyPage";
 import { TermsOfServicePage } from "@/app/pages/lp/TermsOfServicePage";
+import { NewsListPage } from "@/app/pages/lp/news/NewsListPage";
+import { NewsArticlePage } from "@/app/pages/lp/news/NewsArticlePage";
 import { OrgProvider } from "@/app/contexts/OrgContext";
 import { PlanProvider } from "@/app/contexts/PlanContext";
 
@@ -41,6 +43,8 @@ export default function App() {
             <Route path="/demo-preview" element={<DemoPreviewPage />} />
             <Route path="/privacy" element={<PrivacyPolicyPage />} />
             <Route path="/terms" element={<TermsOfServicePage />} />
+            <Route path="/news" element={<NewsListPage />} />
+            <Route path="/news/:slug" element={<NewsArticlePage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/accept-invite" element={<AcceptInvitePage />} />
             <Route element={<OrgProvider><PlanProvider><ProtectedShell /></PlanProvider></OrgProvider>}>
