@@ -160,7 +160,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: ヘルプ · エクスポート · 全画面
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
             <HelpButton api={api} />
-            <WhiteboardExportMenu api={api} title={title} />
+            <WhiteboardExportMenu api={api} title={title} containerRef={containerRef} />
             <FullscreenButton targetRef={containerRef} pseudoFull={pseudoFull} setPseudoFull={setPseudoFull} />
           </div>
         ) : null)}
