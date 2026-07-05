@@ -141,6 +141,8 @@ export function TicketDetailPanel({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 🌟 追加: 取下の確認モーダル表示用ステート
   const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
+  // 🌟 追加(BRU4-059): 親未開始の子チケットを着手する際の「親も開始しますか？」確認モーダル
+  const [showParentStartConfirm, setShowParentStartConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   // 🌟 修正: isUpdating だと名前が被る可能性があるため、専用の名前に変更
   const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
@@ -894,7 +896,8 @@ export function TicketDetailPanel({
     }
   };
 
-  const handleChildStart = async () => {
+  // 子チケット本体を「対応中」に開始する実処理
+  const startChildSelf = async () => {
     if (!ticket) return;
     const newStatus: TicketStatus = "in-progress";
     const p = STATUS_PROGRESS[newStatus];
@@ -905,6 +908,46 @@ export function TicketDetailPanel({
     }
     await addComment(`<p>着手開始しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+  };
+
+  // 🌟 追加(BRU4-059): 子チケット着手に伴い、裏で親チケットも「対応中」に開始する実処理
+  const startParentTicket = async () => {
+    const parent = breadcrumbParentTicket;
+    if (!parent) return;
+    const newStatus: TicketStatus = "in-progress";
+    const p = STATUS_PROGRESS[newStatus];
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", parent.id);
+      // 親チケット側にもステータス変更コメントを残し、履歴を子チケットと一致させる
+      await supabase!.from("ticket_comments").insert({
+        id: `CMT-${Date.now()}`, ticket_id: parent.id, user_name: userName,
+        content: `<p>子チケット着手に伴い、ステータスを「対応中」に変更しました</p>`,
+        ticket_status: newStatus, comment_type: "status_change", images: [],
+      });
+    }
+    recordMilestoneFromTicketStatus(parent.id, newStatus);
+    // ローカルの親情報も開始済みへ更新（同一セッションで再度ダイアログが出ないように）
+    setBreadcrumbParentTicket({ ...parent, status: newStatus, progress: p });
+    onUpdated?.();
+  };
+
+  // 🌟 修正(BRU4-059): 親が未開始(todo)なら「親も開始しますか？」の確認を挟む
+  const handleChildStart = async () => {
+    if (!ticket) return;
+    const parent = breadcrumbParentTicket;
+    if (parent && parent.status === "todo") {
+      setShowParentStartConfirm(true);
+      return;
+    }
+    // 親が既に開始済み（またはparent情報未取得）の場合は従来通りそのまま着手
+    await startChildSelf();
+  };
+
+  // 🌟 追加(BRU4-059): 確認ダイアログで「親も開始する」を選んだ時の処理
+  const handleConfirmParentStart = async () => {
+    // 子チケットの画面に戻った状態で子を開始済みにし、裏で親も開始する
+    await startChildSelf();
+    await startParentTicket();
   };
 
   const handleChildComplete = async () => {
@@ -1531,6 +1574,20 @@ export function TicketDetailPanel({
           hasWarningText={false}
           onConfirm={executeWithdraw}
           onClose={() => setShowWithdrawConfirm(false)}
+        />
+      )}
+      {/* 🌟 追加(BRU4-059): 親未開始の子チケット着手時に、親も開始するか確認するモーダル */}
+      {showParentStartConfirm && (
+        <ConfirmDialog
+          title="親チケットの開始確認"
+          message={breadcrumbParentTicket
+            ? `親チケット「${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}」がまだ開始されていません。\n親チケットのステータスも「対応中」に開始しますか？`
+            : `親チケットのステータスも「対応中」に開始しますか？`}
+          confirmLabel="親も開始して着手する"
+          confirmColor="#D97706"
+          hasWarningText={false}
+          onConfirm={handleConfirmParentStart}
+          onClose={() => setShowParentStartConfirm(false)}
         />
       )}
       {pendingReleaseDate !== null && (
