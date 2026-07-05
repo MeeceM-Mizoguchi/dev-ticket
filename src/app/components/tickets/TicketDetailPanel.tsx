@@ -293,9 +293,18 @@ export function TicketDetailPanel({
     const { data } = await supabase!
       .from("sprint_tickets")
       .select("id,wbs,title,status,priority,progress,parent_id")
-      .eq("parent_id", ticketId)
-      .order("wbs");
-    if (data) setChildTickets(data.map(mapSprintTicket));
+      .eq("parent_id", ticketId);
+    if (data) {
+      // 🌟 修正(BRU4-057): 子チケットのwbsはゼロ埋め無しのため、DBの文字列ソート(order by wbs)だと
+      // "…-10" が "…-2" より前に並んでしまう。末尾の枝番を数値として昇順に並べ替える。
+      const childNum = (wbs: string) => {
+        const s = String(wbs);
+        const n = parseInt(s.slice(s.lastIndexOf("-") + 1), 10);
+        return Number.isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
+      };
+      const sorted = [...data].sort((a, b) => childNum(a.wbs) - childNum(b.wbs));
+      setChildTickets(sorted.map(mapSprintTicket));
+    }
   }, []);
 
   const loadCommentFiles = useCallback(async (ticketId: string) => {
