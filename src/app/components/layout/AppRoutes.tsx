@@ -19,6 +19,7 @@ import { MinutesPage } from "@/app/pages/MinutesPage";
 import { WhiteboardPage } from "@/app/pages/WhiteboardPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
+import { ManualPage } from "@/app/pages/manual/ManualPage";
 
 // 保護下(ログイン後)ページの単一定義。
 export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
@@ -36,6 +37,9 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/reports", element: <ReportsPage /> },
   { path: "/bug-reports", element: <BugReportsPage /> },
   { path: "/organization", element: <OrganizationPage /> },
+  // マニュアル（全ユーザー・章は権限で出し分け）。動的PJパスより前に定義する。
+  { path: "/manual", element: <ManualPage /> },
+  { path: "/manual/:chapterSlug", element: <ManualPage /> },
   // Sprint list
   { path: "/:projectSlug", element: <SprintPage /> },
   { path: "/:projectSlug/backlog", element: <BacklogPage /> },
