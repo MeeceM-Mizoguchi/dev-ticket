@@ -431,18 +431,21 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (isSupabaseEnabled) {
       let wbs: string;
       if (isChildMode && parentTicketId && parentWbs) {
-        const { data: maxChildRow } = await supabase!
+        // 🌟 修正(BRU4-058): 子チケットの枝番はゼロ埋めしていないため、DB側の
+        // 文字列ソート(order by wbs)だと "…-9" > "…-10" と誤判定され、子が10個を
+        // 超えると連番が10で頭打ちになり重複していた。全子チケットを取得して
+        // メモリ上で枝番を数値比較し、最大値+1を次の番号とする。
+        const { data: childRows } = await supabase!
           .from("sprint_tickets")
           .select("wbs")
           .eq("parent_id", parentTicketId)
-          .like("wbs", `${parentWbs}-%`)
-          .order("wbs", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+          .like("wbs", `${parentWbs}-%`);
 
-        const nextNum = maxChildRow?.wbs
-          ? (parseInt(maxChildRow.wbs.slice(parentWbs.length + 1), 10) || 0) + 1
-          : 1;
+        const maxChildNum = (childRows ?? []).reduce((max, row) => {
+          const n = parseInt(String(row.wbs).slice(parentWbs.length + 1), 10);
+          return Number.isNaN(n) ? max : Math.max(max, n);
+        }, 0);
+        const nextNum = maxChildNum + 1;
 
         wbs = `${parentWbs}-${nextNum}`;
         if (!effectiveSprintId) {
