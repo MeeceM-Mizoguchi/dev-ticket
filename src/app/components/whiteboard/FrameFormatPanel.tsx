@@ -17,19 +17,8 @@ const LINE_COLORS = ["#343a40", "#e5484d", "#1971c2", "#2f9e44", "#f08c00", "#ae
 const isFrame = (e: any) => e?.type === "frame" || e?.type === "magicframe";
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 
-function sceneToLocal(api: any, containerRef: React.RefObject<HTMLDivElement | null>, sx: number, sy: number) {
-  const st = api.getAppState();
-  const rect = containerRef.current?.getBoundingClientRect();
-  const zoom = st.zoom?.value ?? 1;
-  return {
-    x: sx * zoom + st.scrollX * zoom + (st.offsetLeft ?? 0) - (rect?.left ?? 0),
-    y: sy * zoom + st.scrollY * zoom + (st.offsetTop ?? 0) - (rect?.top ?? 0),
-  };
-}
-
 export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
   const [frame, setFrame] = useState<any | null>(null);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
   const raf = useRef<number>(0);
   const sigRef = useRef<string>("");
 
@@ -47,13 +36,12 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
         if (el) {
           const fmt = el.customData?.wbFrame ?? {};
           // 子要素数も署名に含める。グループ解除で子のframeIdが変わってもフレーム自体の
-          // 座標/書式は不変なため、これが無いとボタン表示(件数)が再描画されない（BRU4-054）。
+          // 書式は不変なため、これが無いとボタン表示(件数)が再描画されない（BRU4-054）。
+          // パネルは左側固定なので座標/ズームは署名に含めない（タイトルに重ならないよう常時左ドック）。
           const childCount = api.getSceneElements().filter((e: any) => e.frameId === el.id && !e.isDeleted).length;
-          const sig = `${el.id}:${el.x}:${el.y}:${el.width}:${st.zoom?.value}:${st.scrollX}:${st.scrollY}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${childCount}`;
+          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${childCount}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
-            const p = sceneToLocal(api, containerRef, el.x, el.y);
-            setPos({ x: p.x, y: p.y });
             setFrame(el);
           }
         } else if (sigRef.current !== "") {
@@ -131,45 +119,56 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
   const bgIsCustom = !!fmt.bg && !BG_COLORS.includes(fmt.bg);
   const borderIsCustom = !!fmt.borderColor && !LINE_COLORS.includes(fmt.borderColor);
 
+  // セクション見出し（画像2の図形パネルに合わせた淡いグレーのラベル）
+  const heading = (label: string) => (
+    <span style={{ fontSize: 11, fontWeight: 600, color: "#868e96" }}>{label}</span>
+  );
+
   return (
     <div style={{ position: "absolute", inset: 0, zIndex: 21, pointerEvents: "none" }}>
+      {/* 四角/三角などの図形パネルと同じく、フレームのタイトルに重ならないよう左端に固定して縦並びで集約する */}
       <div
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          position: "absolute", left: pos.x, top: pos.y - 96, pointerEvents: "auto",
-          background: "#fff", border: "1px solid rgba(0,0,0,0.12)", borderRadius: 10,
-          boxShadow: "0 6px 20px rgba(0,0,0,0.15)", padding: "8px 10px",
-          display: "flex", flexDirection: "column", gap: 6, fontSize: 11, color: "#444",
+          position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "auto",
+          background: "#fff", border: "1px solid rgba(0,0,0,0.12)", borderRadius: 12,
+          boxShadow: "0 6px 20px rgba(0,0,0,0.15)", padding: "14px 16px",
+          display: "flex", flexDirection: "column", gap: 14, fontSize: 11, color: "#444",
+          width: 200, maxHeight: "calc(100% - 24px)", overflowY: "auto",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 34 }}>背景</span>
-          {BG_COLORS.map((c) => swatch(c, (fmt.bg ?? "") === c, () => update({ bg: c || undefined }), c === ""))}
-          {picker(fmt.bg, (c) => update({ bg: c }), bgIsCustom)}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("背景")}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {BG_COLORS.map((c) => swatch(c, (fmt.bg ?? "") === c, () => update({ bg: c || undefined }), c === ""))}
+            {picker(fmt.bg, (c) => update({ bg: c }), bgIsCustom)}
+          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 34 }}>枠線</span>
-          <button
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => update({ border: !fmt.border })}
-            style={{
-              padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
-              border: "1px solid rgba(0,0,0,0.15)",
-              background: fmt.border ? "#1971c2" : "#fff", color: fmt.border ? "#fff" : "#444",
-            }}
-          >{fmt.border ? "あり" : "なし"}</button>
-          {fmt.border && LINE_COLORS.map((c) => swatch(c, (fmt.borderColor ?? "#343a40") === c, () => update({ borderColor: c })))}
-          {fmt.border && picker(fmt.borderColor ?? "#343a40", (c) => update({ borderColor: c }), borderIsCustom)}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("枠線")}
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => update({ border: !fmt.border })}
+              style={{
+                padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+                border: "1px solid rgba(0,0,0,0.15)",
+                background: fmt.border ? "#1971c2" : "#fff", color: fmt.border ? "#fff" : "#444",
+              }}
+            >{fmt.border ? "あり" : "なし"}</button>
+            {fmt.border && LINE_COLORS.map((c) => swatch(c, (fmt.borderColor ?? "#343a40") === c, () => update({ borderColor: c })))}
+            {fmt.border && picker(fmt.borderColor ?? "#343a40", (c) => update({ borderColor: c }), borderIsCustom)}
+          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 34 }}>グループ</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("グループ")}
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={ungroup}
             disabled={childCount === 0}
             title={childCount === 0 ? "このフレームに含まれる図形はありません" : "フレーム内の図形のグループを解除し、フレームを動かしても追従しないようにします"}
             style={{
-              padding: "2px 10px", borderRadius: 6, fontSize: 11,
+              padding: "2px 10px", borderRadius: 6, fontSize: 11, alignSelf: "flex-start",
               border: "1px solid rgba(0,0,0,0.15)",
               background: childCount === 0 ? "#f1f3f5" : "#fff",
               color: childCount === 0 ? "#adb5bd" : "#e5484d",
