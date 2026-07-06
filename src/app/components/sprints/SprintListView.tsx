@@ -252,7 +252,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -262,6 +262,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
+  targetSprintId?: string | null;
 }) {
   const { userId } = useAuth();
   const { plan } = usePlan();
@@ -367,6 +368,21 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   }, [targetTicketWbs, expanded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 作成直後のスプリントまでスクロール&一時強調（BRU5-034）。スプリント見出しは常に描画されるので展開不要。
+  const scrolledForSprint = useRef<string | null>(null);
+  const [flashSprintId, setFlashSprintId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!targetSprintId) { scrolledForSprint.current = null; return; }
+    if (scrolledForSprint.current === targetSprintId) return;
+    const el = document.querySelector(`[data-sprint-id="${targetSprintId}"]`);
+    if (!el) return; // まだDOMにない（refreshSprints反映待ち）
+    scrolledForSprint.current = targetSprintId;
+    requestAnimationFrame(() => { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+    setFlashSprintId(targetSprintId);
+    const t = setTimeout(() => setFlashSprintId(null), 2500);
+    return () => clearTimeout(t);
+  }, [targetSprintId, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
@@ -630,7 +646,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           const sprintSort = sprintSorts[sprint.id] || { col: "", dir: "asc" };
 
           return (
-            <div key={sprint.id} style={{ borderRadius: 12, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+            <div key={sprint.id} data-sprint-id={sprint.id} style={{ borderRadius: 12, border: flashSprintId === sprint.id ? "1px solid #F59E0B" : "1px solid rgba(26,23,20,0.08)", boxShadow: flashSprintId === sprint.id ? "0 0 0 3px rgba(245,158,11,0.35)" : "0 1px 2px rgba(0,0,0,0.04)", transition: "box-shadow 0.3s, border-color 0.3s" }}>
               {/* Sticky: sprint header + column headers */}
               <div style={{ position: "sticky", top: 0, zIndex: openCol.startsWith(`${sprint.id}:`) ? 100 : 10 }}>
                 {/* Sprint header */}

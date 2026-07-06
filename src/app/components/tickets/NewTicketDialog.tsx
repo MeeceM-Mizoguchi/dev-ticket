@@ -29,7 +29,7 @@ const PRIORITY_OPTIONS: SelectOption[] = [
 const CACHE_KEY_PREFIX = "new_ticket_draft_";
 
 export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200, currentTicketCount }: {
-  sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
+  sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: (wbs?: string) => void;
   sprintStartDate?: string; sprintEndDate?: string;
   parentTicketId?: string; parentWbs?: string;
   zIndexBase?: number;
@@ -427,6 +427,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     };
 
     setSaving(true);
+    let createdWbs: string | undefined; // 作成成功したチケットのWBS（作成後の一覧スクロール&強調用・BRU5-034）
 
     if (isSupabaseEnabled) {
       let wbs: string;
@@ -481,7 +482,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             try { localStorage.removeItem(contextKey); } catch (e) { }
             savedSprintIdRef.current = "";
             setSaving(false);
-            onCreated?.();
+            onCreated?.(wbs);
             onClose();
             return;
           }
@@ -506,6 +507,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
         wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
       }
+      createdWbs = wbs; // 作成後スクロール&強調のため親へ返す（BRU5-034）
       const { error: insErr2 } = await supabase!.from("sprint_tickets").insert({
         id: ticketId.current, sprint_id: effectiveSprintId, wbs,
         title, status, priority, assignee: finalAssignee,
@@ -540,7 +542,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       savedSprintIdRef.current = "";
       setSaving(false);
     }
-    onCreated?.();
+    onCreated?.(createdWbs);
     onClose();
   };
 
