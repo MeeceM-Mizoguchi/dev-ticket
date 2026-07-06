@@ -4,7 +4,7 @@ import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check,
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
-import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -112,6 +112,27 @@ function pointToComment(targetEl: HTMLElement) {
   void box.offsetWidth;
   box.classList.add("comment-ring-pulse");
   window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
+}
+
+// 子チケットの実績工数バッジ（BRU5-028）。0Hのときは自前ツールチップで理由を表示する。
+// native title は表示が不安定なため、hoverで確実に出す自前実装にする。
+function ChildHoursBadge({ hours }: { hours: number }) {
+  const [hover, setHover] = useState(false);
+  const measured = hours > 0;
+  return (
+    <span
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ position: "relative", fontSize: 10, fontWeight: 700, color: measured ? "#6B6458" : "#B0A9A4", fontFamily: "var(--font-mono)", flexShrink: 0, cursor: "default" }}
+    >
+      {hours}H
+      {hover && !measured && (
+        <span style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, whiteSpace: "nowrap", background: "#1A1714", color: "#fff", fontSize: 10, fontWeight: 600, padding: "5px 9px", borderRadius: 6, boxShadow: "0 4px 14px rgba(0,0,0,0.22)", zIndex: 60, pointerEvents: "none" }}>
+          着手開始から1分未満の場合は計測されません
+        </span>
+      )}
+    </span>
+  );
 }
 
 export function TicketDetailPanel({
@@ -292,7 +313,7 @@ export function TicketDetailPanel({
     if (!isSupabaseEnabled) return;
     const { data } = await supabase!
       .from("sprint_tickets")
-      .select("id,wbs,title,status,priority,progress,parent_id")
+      .select("id,wbs,title,status,priority,progress,parent_id,actual_work_hours,started_at,review_requested_at,review_approved_at,stg_completed_at,uat_completed_at,released_at")
       .eq("parent_id", ticketId);
     if (data) {
       // 🌟 修正(BRU4-057): 子チケットのwbsはゼロ埋め無しのため、DBの文字列ソート(order by wbs)だと
@@ -913,7 +934,8 @@ export function TicketDetailPanel({
     setStatus(newStatus);
     setProgress(p);
     if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+      // 子チケットの着手時刻を記録（対応完了時に稼働時間を算出するため・BRU5-028）
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p, started_at: new Date().toISOString() }).eq("id", ticket.id);
     }
     await addComment(`<p>着手開始しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
@@ -966,7 +988,18 @@ export function TicketDetailPanel({
     setStatus(newStatus);
     setProgress(p);
     if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+      // 着手時刻を取得し、着手→完了の稼働時間(営業時間ベース)を実績工数として保存（BRU5-028）。
+      // すでに実績が手入力されている場合は上書きしない。
+      const { data: row } = await supabase!.from("sprint_tickets").select("started_at, actual_work_hours").eq("id", ticket.id).single();
+      const patch: Record<string, unknown> = { status: newStatus, progress: p };
+      if (row?.actual_work_hours == null && row?.started_at) {
+        const startedMs = new Date(row.started_at).getTime();
+        // 着手から1分以上経過した場合のみ計測（誤操作・即完了は計測しない）
+        if (Date.now() - startedMs >= 60_000) {
+          patch.actual_work_hours = Math.round(calcWorkingHours(startedMs, Date.now()) * 10) / 10;
+        }
+      }
+      await supabase!.from("sprint_tickets").update(patch).eq("id", ticket.id);
     }
     await addComment(`<p>対応完了しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
@@ -2402,6 +2435,8 @@ export function TicketDetailPanel({
                       const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                       const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                       const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                      // 子チケットの実績工数（モニター用・BRU5-028）。集計はしないが各子の所要時間を帯に表示する。
+                      const childHours = Math.round(calcTicketActualHours(child) * 10) / 10;
                       return (
                         <div key={child.id}
                           onClick={() => onSelectTicket?.(child)}
@@ -2410,6 +2445,7 @@ export function TicketDetailPanel({
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FAFAF8"; }}>
                           <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
                           <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                          <ChildHoursBadge hours={childHours} />
                           <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
                           <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, flexShrink: 0 }}>{cPriLabel}</span>
                         </div>
