@@ -57,6 +57,10 @@ export function SprintPage() {
     return v;
   });
   const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
+  // 作成直後のチケットへスクロール&強調するための対象WBS（詳細は開かず一覧で強調のみ・BRU5-034）
+  const [createdHighlightWbs, setCreatedHighlightWbs] = useState<string | null>(null);
+  // 作成直後のスプリントへスクロール&強調するための対象スプリントID（BRU5-034）
+  const [createdHighlightSprintId, setCreatedHighlightSprintId] = useState<string | null>(null);
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
@@ -277,11 +281,11 @@ export function SprintPage() {
         })()}
       </div>
 
-      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
+      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} onOpenMyFilter={setMyFilterSprintId} />}
       {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
       {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
 
-      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} currentSprintCount={sprints.length} />}
+      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
       
       {bulkCreateForSprintId && (() => {
         const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
@@ -305,7 +309,7 @@ export function SprintPage() {
           projectId={projectId ?? undefined}
           projectSlug={projectSlug}
           onClose={() => setCreateForSprintId(null)}
-          onCreated={() => { refreshSprints(); setCreateForSprintId(null); }}
+          onCreated={(createdWbs) => { refreshSprints(); if (createdWbs) setCreatedHighlightWbs(createdWbs); setCreateForSprintId(null); }}
           sprintStartDate={createForSprint.startDate || undefined}
           sprintEndDate={createForSprint.endDate || undefined}
           currentTicketCount={createForSprint.tickets.length}
