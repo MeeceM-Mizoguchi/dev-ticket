@@ -46,7 +46,10 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
           : null;
         if (el) {
           const fmt = el.customData?.wbFrame ?? {};
-          const sig = `${el.id}:${el.x}:${el.y}:${el.width}:${st.zoom?.value}:${st.scrollX}:${st.scrollY}:${fmt.bg}:${fmt.border}:${fmt.borderColor}`;
+          // 子要素数も署名に含める。グループ解除で子のframeIdが変わってもフレーム自体の
+          // 座標/書式は不変なため、これが無いとボタン表示(件数)が再描画されない（BRU4-054）。
+          const childCount = api.getSceneElements().filter((e: any) => e.frameId === el.id && !e.isDeleted).length;
+          const sig = `${el.id}:${el.x}:${el.y}:${el.width}:${st.zoom?.value}:${st.scrollX}:${st.scrollY}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${childCount}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
             const p = sceneToLocal(api, containerRef, el.x, el.y);
@@ -72,6 +75,19 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
     const els = api.getSceneElements().map((e: any) =>
       e.id === frame.id
         ? { ...e, customData: { ...(e.customData ?? {}), wbFrame: next }, version: (e.version ?? 1) + 1, versionNonce: rand() }
+        : e,
+    );
+    api.updateScene({ elements: els });
+  };
+
+  // このフレームに属する子要素数（グループ解除ボタンの活性判定・表示用）
+  const childCount = api.getSceneElements().filter((e: any) => e.frameId === frame.id && !e.isDeleted).length;
+
+  // グループ解除: 子要素の frameId を外し、以後フレームを動かしても追従しないようにする（BRU4-054）。
+  const ungroup = () => {
+    const els = api.getSceneElements().map((e: any) =>
+      e.frameId === frame.id && !e.isDeleted
+        ? { ...e, frameId: null, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
     api.updateScene({ elements: els });
@@ -144,6 +160,22 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
           >{fmt.border ? "あり" : "なし"}</button>
           {fmt.border && LINE_COLORS.map((c) => swatch(c, (fmt.borderColor ?? "#343a40") === c, () => update({ borderColor: c })))}
           {fmt.border && picker(fmt.borderColor ?? "#343a40", (c) => update({ borderColor: c }), borderIsCustom)}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 34 }}>グループ</span>
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={ungroup}
+            disabled={childCount === 0}
+            title={childCount === 0 ? "このフレームに含まれる図形はありません" : "フレーム内の図形のグループを解除し、フレームを動かしても追従しないようにします"}
+            style={{
+              padding: "2px 10px", borderRadius: 6, fontSize: 11,
+              border: "1px solid rgba(0,0,0,0.15)",
+              background: childCount === 0 ? "#f1f3f5" : "#fff",
+              color: childCount === 0 ? "#adb5bd" : "#e5484d",
+              cursor: childCount === 0 ? "not-allowed" : "pointer",
+            }}
+          >グループ解除{childCount > 0 ? `（${childCount}）` : ""}</button>
         </div>
       </div>
     </div>
