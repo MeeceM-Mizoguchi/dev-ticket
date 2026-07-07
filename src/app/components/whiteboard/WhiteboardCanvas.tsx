@@ -73,7 +73,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const uploadedFiles = useRef<Set<string>>(new Set());
   const addedRemoteFiles = useRef<Set<string>>(new Set());
 
-  const { bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat } = useWhiteboardSync(boardId, user);
+  const { bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat, docLoaded } = useWhiteboardSync(boardId, user);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
 
@@ -174,13 +174,21 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         : { position: "relative", width: "100%", height: "100%", isolation: "isolate", background: "#fff", overscrollBehavior: "contain", touchAction: "none" }}
     >
       <style>{HIDE_EXCALIDRAW_CHROME}</style>
+      {/* 永続stateのロード完了後にマウントし、初期要素を initialData で直接描画させる。
+          マウント直後の updateScene が Excalidraw の initialData コミットで上書きされ、
+          “初回だけ空表示・リロードで表示”になるレースを防ぐ（BRU5-045）。 */}
+      {!docLoaded ? (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>
+          ホワイトボードを読み込み中…
+        </div>
+      ) : (
       <Excalidraw
         excalidrawAPI={(a: any) => { setApi(a); registerApi(a); }}
         onChange={onChange}
         onPointerUpdate={onPointerUpdate}
         viewModeEnabled={!canEdit}
         langCode="ja-JP"
-        initialData={CLEAN_DEFAULTS}
+        initialData={{ ...CLEAN_DEFAULTS, elements: bridgeRef.current?.currentElements() ?? [] }}
         UIOptions={{ canvasActions: { toggleTheme: false } }}
         renderTopRightUI={() => (api ? (
           // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: ヘルプ · エクスポート · 全画面
@@ -191,6 +199,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           </div>
         ) : null)}
       />
+      )}
       {api && (
         <>
           <FrameDecorLayer api={api} containerRef={containerRef} />

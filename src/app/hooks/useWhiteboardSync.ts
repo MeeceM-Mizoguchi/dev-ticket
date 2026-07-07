@@ -19,6 +19,10 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
   const apiRef = useRef<{ updateScene: (d: any) => void } | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const [synced, setSynced] = useState(false);
+  // 永続stateのロード完了フラグ。true になってから Excalidraw をマウントし、初期要素を
+  // initialData.elements として渡す（マウント直後の updateScene が Excalidraw の initialData
+  // コミットで上書きされ“初回だけ空表示”になるレースを避けるため・BRU5-045）。
+  const [docLoaded, setDocLoaded] = useState(false);
   const [remoteChats, setRemoteChats] = useState<RemoteChat[]>([]);
   // カーソル(collaborators)は命令的にupdateSceneへ流す（Reactの再レンダーを起こさない＝ドラッグ/複製を妨げない）
   const localPointerDownRef = useRef(false);
@@ -47,6 +51,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       const b64 = await loadDocState(boardId);
       if (disposed) { doc.destroy(); return; }
       if (b64) Y.applyUpdate(doc, base64ToBytes(b64));
+      // ロード完了 → Excalidraw をマウントさせる（初期要素は initialData で渡す）
+      setDocLoaded(true);
 
       // 2) Broadcastプロバイダ接続 → 後入りは sync-req で差分同期
       const provider = new SupabaseYjsProvider(supabase!, `wb:${boardId}`, doc, awareness);
@@ -146,6 +152,7 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       pendingCollabRef.current = null;
       localPointerDownRef.current = false;
       setSynced(false);
+      setDocLoaded(false);
       setRemoteChats([]);
     };
   }, [boardId]);
@@ -165,5 +172,5 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
     if (b) { b.setApi(api); b.applyInitial(); }
   }, []);
 
-  return { bridgeRef, docRef, registerApi, synced, remoteChats, setCursor, setChat };
+  return { bridgeRef, docRef, registerApi, synced, docLoaded, remoteChats, setCursor, setChat };
 }
