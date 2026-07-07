@@ -252,7 +252,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, stickyTop }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -263,6 +263,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
   targetSprintId?: string | null;
+  // 🌟 BRU5-043: 上部固定バー(パンくず〜ビュー切替)の高さ分だけ、各スプリントの sticky ヘッダーを下げるオフセット
+  stickyTop?: number;
 }) {
   const { userId } = useAuth();
   const { plan } = usePlan();
@@ -648,7 +650,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           return (
             <div key={sprint.id} data-sprint-id={sprint.id} style={{ borderRadius: 12, border: flashSprintId === sprint.id ? "1px solid #F59E0B" : "1px solid rgba(26,23,20,0.08)", boxShadow: flashSprintId === sprint.id ? "0 0 0 3px rgba(245,158,11,0.35)" : "0 1px 2px rgba(0,0,0,0.04)", transition: "box-shadow 0.3s, border-color 0.3s" }}>
               {/* Sticky: sprint header + column headers */}
-              <div style={{ position: "sticky", top: 0, zIndex: openCol.startsWith(`${sprint.id}:`) ? 100 : 10 }}>
+              <div style={{ position: "sticky", top: stickyTop ?? 0, zIndex: openCol.startsWith(`${sprint.id}:`) ? 100 : 10 }}>
                 {/* Sprint header */}
                 <div
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none", borderRadius: isExp ? "12px 12px 0 0" : 12 }}

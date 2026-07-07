@@ -178,7 +178,7 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
   );
 }
 
-function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate }: {
+function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, stickyTop }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -186,6 +186,8 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string) => void;
+  // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
+  stickyTop?: number;
 }) {
   const { userName, userPermissions, userOrgId } = useAuth();
   const canCreateTicket = userPermissions.canCreateTicket;
@@ -412,7 +414,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
       {currentSprint && (
         <div style={{ overflowX: "auto", overflowY: "clip" }}>
           {/* Sticky status header row — overflow-y:clip doesn't create a scroll container, so sticky still works relative to the window */}
-          <div style={{ position: "sticky", top: 0, zIndex: 10, background: "#F5F6F8", marginBottom: 4, minWidth: "fit-content" }}>
+          <div style={{ position: "sticky", top: stickyTop ?? 0, zIndex: 10, background: "#F5F6F8", marginBottom: 4, minWidth: "fit-content" }}>
             <div style={{ display: "flex", gap: 8 }}>
               {TICKET_STATUSES.map(col => {
                 const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
@@ -583,6 +585,8 @@ export default function SprintBoardView(props: {
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string) => void;
+  // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
+  stickyTop?: number;
 }) {
   return (
     <DndProvider backend={HTML5Backend}>
