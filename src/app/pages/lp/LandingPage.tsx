@@ -13,6 +13,7 @@ import { MockMembers } from '@/app/components/lp/mocks/MockMembers';
 import { DemoVideoPage } from '@/app/pages/lp/DemoVideoPage';
 import { DemoInteractivePage } from '@/app/pages/lp/DemoInteractivePage';
 import { FeaturePreviewModal } from '@/app/components/lp/FeaturePreviewModal';
+import { NEWS, NewsCategoryBadge } from '@/app/pages/lp/news/newsRegistry';
 
 // ─── Storyboard: browser/app chrome wrappers ───────────────────────────────
 function StoryBrowser({ url, children }: { url: string; children: React.ReactNode }) {
@@ -543,6 +544,7 @@ export function LandingPage() {
               <span className="text-xl font-bold text-slate-900">Dev Ticket</span>
             </div>
             <div className="hidden md:flex items-center gap-8">
+              <button onClick={() => scrollToSection('news')} className="text-slate-600 hover:text-teal-600 transition-colors">お知らせ</button>
               <button onClick={() => scrollToSection('features')} className="text-slate-600 hover:text-teal-600 transition-colors">機能</button>
               <button onClick={() => scrollToSection('resources')} className="flex items-center gap-1.5 text-slate-600 hover:text-teal-600 transition-colors">
                 リソース調達
@@ -568,6 +570,7 @@ export function LandingPage() {
           </div>
           {mobileMenuOpen && (
             <div className="md:hidden border-t border-slate-100 py-3 flex flex-col gap-1">
+              <button onClick={() => { scrollToSection('news'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">お知らせ</button>
               <button onClick={() => { scrollToSection('features'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">機能</button>
               <button onClick={() => { scrollToSection('resources'); setMobileMenuOpen(false); }} className="flex items-center gap-2 text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">
                 リソース調達
@@ -629,6 +632,62 @@ export function LandingPage() {
                 <MockDashboard fillHeight />
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* News Section（メインビジュアル直下：最新のお知らせ3件） */}
+      <section id="news" className="relative py-16 sm:py-24 px-4 sm:px-6 lg:px-8 overflow-hidden bg-gradient-to-b from-white to-slate-50 border-b border-slate-200">
+        {/* 背景装飾（淡いグラデーションのぼかし） */}
+        <div className="pointer-events-none absolute -top-24 -right-24 w-[28rem] h-[28rem] rounded-full bg-teal-100/40 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-32 -left-24 w-[28rem] h-[28rem] rounded-full bg-emerald-100/40 blur-3xl" />
+
+        <div className="relative max-w-6xl mx-auto">
+          {/* ヘッダー */}
+          <div className="mb-10 sm:mb-14">
+            <Badge className="mb-4 bg-teal-100 text-teal-700 hover:bg-teal-100">NEWS</Badge>
+            <div className="flex items-center gap-3">
+              <span className="w-1.5 h-8 sm:h-9 rounded-full bg-gradient-to-b from-teal-500 to-emerald-600" />
+              <h2 className="text-3xl sm:text-4xl font-bold text-slate-900">お知らせ</h2>
+            </div>
+            <p className="mt-3 text-base sm:text-lg text-slate-500">最新のリリース情報・お知らせをお届けします。</p>
+          </div>
+
+          {/* カードグリッド：台帳(newsRegistry)の先頭から最新3件を自動表示 */}
+          <div className="grid md:grid-cols-3 gap-5 sm:gap-6">
+            {NEWS.slice(0, 3).map((n) => (
+              <Link key={n.slug} to={`/news/${n.slug}`} className="group">
+                <Card className="h-full border-slate-200 bg-white/80 backdrop-blur-sm transition-all hover:border-teal-400 hover:shadow-xl hover:shadow-teal-500/10 hover:-translate-y-1">
+                  <CardContent className="p-6 flex flex-col h-full">
+                    <div className="flex items-center justify-between mb-4">
+                      <NewsCategoryBadge category={n.category} />
+                      <span className="text-xs text-slate-400 font-mono">{n.date}</span>
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900 leading-snug mb-3 line-clamp-2 group-hover:text-teal-600 transition-colors">
+                      {n.title}
+                    </h3>
+                    <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 flex-1">
+                      {n.excerpt}
+                    </p>
+                    <div className="mt-5 pt-4 border-t border-slate-100 flex items-center text-sm font-semibold text-slate-400 group-hover:text-teal-600 transition-colors">
+                      詳しく見る
+                      <ArrowRight className="w-4 h-4 ml-1.5 group-hover:translate-x-1 transition-transform" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </Link>
+            ))}
+          </div>
+
+          {/* 右下：すべてのニュース（ticket準拠） */}
+          <div className="mt-10 flex justify-end">
+            <Link
+              to="/news"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-full border border-slate-300 bg-white text-sm font-semibold text-slate-700 shadow-sm transition-all hover:bg-teal-600 hover:border-teal-600 hover:text-white hover:shadow-md hover:shadow-teal-500/20"
+            >
+              すべてのニュース
+              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+            </Link>
           </div>
         </div>
       </section>
