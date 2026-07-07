@@ -144,6 +144,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
     meshRef.current?.setRoster(others.map((m) => m.id));
     if (others.length > 0) {
       everActiveRef.current = true;
+      // 相手が応答して通話が繋がったら発信/着信の呼び出し音を止める
+      stopRingtone();
+      if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
       for (const m of others) pendingInviteRef.current.delete(m.id);
     }
 
