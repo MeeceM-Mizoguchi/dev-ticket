@@ -9,6 +9,7 @@ import { GlobalSearch } from "@/app/components/layout/GlobalSearch";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
 import { BugReportModal } from "@/app/components/bug-report/BugReportModal";
+import { CallButton } from "@/app/components/call/CallButton";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
 import { APP_VERSION } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
@@ -391,6 +392,9 @@ export function Topbar() {
       )}
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+        {/* 音声通話ボタン */}
+        <CallButton />
+
         {/* バグ報告ボタン */}
         <button
           onClick={() => { setShowBugReport(true); }}

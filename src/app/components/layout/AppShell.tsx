@@ -6,6 +6,8 @@ import { TabbedShell } from "./TabbedShell";
 import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
 import { isNativeTabletApp } from "@/app/lib/platform";
+import { CallProvider } from "@/app/contexts/CallContext";
+import { CallLayer } from "@/app/components/call/CallLayer";
 
 export function AppShell() {
   useVersionCheck();
@@ -60,6 +62,10 @@ export function AppShell() {
 
 export function ProtectedShell() {
   if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
-  if (isNativeTabletApp()) return <TabbedShell />;
-  return <AppShell />;
+  return (
+    <CallProvider>
+      {isNativeTabletApp() ? <TabbedShell /> : <AppShell />}
+      <CallLayer />
+    </CallProvider>
+  );
 }
