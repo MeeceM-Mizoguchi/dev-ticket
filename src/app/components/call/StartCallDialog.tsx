@@ -5,6 +5,7 @@ import { X, Phone, Search, Check, Users } from "lucide-react";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useOrg } from "@/app/contexts/OrgContext";
 import { useCall } from "@/app/contexts/CallContext";
 import { fetchProjectCallMembers } from "@/app/lib/callService";
 import { MAX_PARTICIPANTS, type CallMember } from "@/app/lib/callConstants";
@@ -13,9 +14,14 @@ interface Proj { id: string; name: string }
 
 export function StartCallDialog({ onClose }: { onClose: () => void }) {
   const { userId, userName, userRole } = useAuth();
+  const { orgs, selectedOrgId } = useOrg();
   const { online, startCall, call } = useCall();
-  const isAdmin = userRole === "owner" || userRole === "admin";
+  const isOwner = userRole === "owner";
+  const isAdmin = isOwner || userRole === "admin";
 
+  // オーナーのみ、モーダル内で組織を選択する(グローバルの組織フィルタとは連動させない)。
+  // 初期値はグローバルで選択中の組織を流用する。
+  const [orgId, setOrgId] = useState<string>(() => (isOwner ? selectedOrgId ?? "" : ""));
   const [projects, setProjects] = useState<Proj[]>([]);
   const [projectId, setProjectId] = useState<string>("");
   const [members, setMembers] = useState<CallMember[]>([]);
@@ -23,10 +29,15 @@ export function StartCallDialog({ onClose }: { onClose: () => void }) {
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [query, setQuery] = useState("");
 
-  // 自分がアサインされているプロジェクト(adminは全件)
+  // 自分がアサインされているプロジェクト。
+  // オーナー: 選択中の組織のPJのみ / admin: 全件 / 一般: 自分がアサインされたPJ
   useEffect(() => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("projects").select("id, name, members").order("name").then(({ data }) => {
+    // オーナーは組織未選択なら取得しない
+    if (isOwner && !orgId) { setProjects([]); return; }
+    let q = supabase!.from("projects").select("id, name, members, organization_id");
+    if (isOwner) q = q.eq("organization_id", orgId);
+    q.order("name").then(({ data }) => {
       if (!data) return;
       const accessible = data.filter((p: { members?: unknown[] }) => {
         if (isAdmin) return true;
@@ -35,7 +46,14 @@ export function StartCallDialog({ onClose }: { onClose: () => void }) {
       });
       setProjects(accessible.map((p: { id: string; name: string }) => ({ id: p.id, name: p.name })));
     });
-  }, [isAdmin, userName]);
+  }, [isOwner, isAdmin, userName, orgId]);
+
+  // 組織を切り替えたらプロジェクト以降の選択をリセット
+  useEffect(() => {
+    setProjectId("");
+    setMembers([]);
+    setSelected(new Set());
+  }, [orgId]);
 
   // プロジェクト選択でメンバー取得
   useEffect(() => {
@@ -84,13 +102,27 @@ export function StartCallDialog({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "#A09790" }}><X style={{ width: 18, height: 18 }} /></button>
         </div>
 
+        {isOwner && (
+          <div style={{ padding: "14px 18px 0" }}>
+            <label style={{ fontSize: 11.5, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6 }}>組織</label>
+            <select
+              value={orgId}
+              onChange={(e) => setOrgId(e.target.value)}
+              style={{ width: "100%", height: 40, borderRadius: 10, border: "1px solid rgba(26,23,20,0.14)", padding: "0 12px", fontSize: 13, color: "#1A1714", background: "#fff", cursor: "pointer" }}>
+              <option value="">組織を選択…</option>
+              {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </div>
+        )}
+
         <div style={{ padding: "14px 18px 6px" }}>
           <label style={{ fontSize: 11.5, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6 }}>プロジェクト</label>
           <select
             value={projectId}
             onChange={(e) => setProjectId(e.target.value)}
-            style={{ width: "100%", height: 40, borderRadius: 10, border: "1px solid rgba(26,23,20,0.14)", padding: "0 12px", fontSize: 13, color: "#1A1714", background: "#fff", cursor: "pointer" }}>
-            <option value="">プロジェクトを選択…</option>
+            disabled={isOwner && !orgId}
+            style={{ width: "100%", height: 40, borderRadius: 10, border: "1px solid rgba(26,23,20,0.14)", padding: "0 12px", fontSize: 13, color: "#1A1714", background: isOwner && !orgId ? "#F5F4F2" : "#fff", cursor: isOwner && !orgId ? "not-allowed" : "pointer" }}>
+            <option value="">{isOwner && !orgId ? "先に組織を選択してください" : "プロジェクトを選択…"}</option>
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>
