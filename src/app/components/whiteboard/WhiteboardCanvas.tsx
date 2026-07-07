@@ -7,7 +7,7 @@ import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
 import { autoConnectLines, followTriangleConnections, repairOpenTriangles, suppressTrianglePointEditing } from "@/app/lib/whiteboardAutoConnect";
-import { captureFrameChildren } from "@/app/lib/whiteboardFrames";
+import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
@@ -137,6 +137,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const processedLines = useRef<Set<string>>(new Set());
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const prevFrameSig = useRef<Map<string, string>>(new Map()); // 前回のフレーム矩形署名（グループ化の新規/リサイズ判定用・BRU4-054）
+  const prevFramePos = useRef<Map<string, { x: number; y: number }>>(new Map()); // 前回のフレーム位置（移動追従の判定用・BRU5-040）
+  const wasDragging = useRef(false); // 前tickでドラッグ中だったか（ドラッグ確定=所属再判定の契機・BRU5-040）
   const onChange = useCallback((elements: readonly any[], appState?: any) => {
     if (!canEdit) return;
     // onChange内で例外を投げるとExcalidrawのドラッグ/複製処理が壊れるため必ずcatchする
@@ -146,13 +148,23 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       if (api) {
         // 三角形は「図形」扱い：標準の点編集UIが付いたら外す（テッペン二股化の根本防止・BRU4-051）
         suppressTrianglePointEditing(api, elements, appState);
-        // フレームで囲った図形をフレームに frameId で所属させる（BRU4-054）。作成/リサイズ時に反映。
-        const framed = remote ? false : captureFrameChildren(api, elements, appState, prevFrameSig.current);
+        // フレーム移動時に子（図形・入れ子フレーム）を同じデルタで追従させる（BRU5-040）。
+        // remote/リサイズ/新規描画時は追従せず、位置スナップショットのみ更新する。
+        const followed = followFrameMoves(api, elements, appState, prevFramePos.current, remote);
+        // フレーム新規作成/リサイズ時に内包要素を wbParent で所属させる（BRU4-054 / BRU5-040）。
+        const framed = (remote || followed) ? false : captureFrameChildren(api, elements, appState, prevFrameSig.current);
+        // ドラッグ確定時に、動かした要素の所属を再判定（枠へ入れた/出した/入れ子にした・BRU5-040）。
+        // 最新シーンから取り直すため、同tickで followed が updateScene 済みでも安全に上書きできる。
+        const dragging = !!appState?.selectedElementsAreBeingDragged;
+        const reparented = (!remote && wasDragging.current && !dragging)
+          ? reparentDraggedElements(api, appState) : false;
+        wasDragging.current = dragging;
+        const busy = followed || framed || reparented;
         // 塗りが透明になるバグの保険的修復（BRU4-051）。万一ループが開いた三角形を閉じ直す。
-        const repaired = remote || framed ? false : repairOpenTriangles(api, elements, appState);
-        const connected = remote || framed || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current);
+        const repaired = remote || busy ? false : repairOpenTriangles(api, elements, appState);
+        const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ
-        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !framed && !connected && !repaired);
+        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired);
       }
     } catch { /* noop */ }
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }

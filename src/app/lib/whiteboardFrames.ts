@@ -1,35 +1,114 @@
-// フレームで囲った図形をフレームに「グループ化」する仕組み（BRU4-054）。
+// フレームで囲った図形／フレームを親フレームに「グループ化」する仕組み（BRU4-054 / BRU5-040）。
 //
-// ホワイトボードは Excalidraw 標準の frame 要素(type:"frame")を使っているが、
-// この統合ではフレームを描いても内包図形へ frameId が自動付与されず、
-// 結果フレームを動かしても中身が付いてこない（＝所属していないため）。
+// 所属関係は Excalidraw ネイティブの frameId ではなく、自前の customData.wbParent
+// （親フレームの id）で表す。理由:
+//  - ネイティブ frameId は Excalidraw の z-order 再整列で剥がれることがあり、
+//    「何かの操作で一定確率でグループが解ける」不具合の原因になっていた（BRU5-040）。
+//    customData は z-order ロジックの対象外で、要素まるごと Yjs 同期されるため剥がれない。
+//  - frameId はフレームの入れ子（frame-in-frame）を表現できない。wbParent なら任意段数の
+//    ネストを表現でき、親フレーム移動時の追従も自前のデルタ平行移動（followFrameMoves）で
+//    図形・入れ子フレームともに一元化できる。
 //
-// ここでフレームの新規作成/リサイズを検知し、その矩形に完全内包される図形へ
-// frameId を付与する。frameId さえ付けば「フレーム移動時に子要素も一緒に動く」のは
-// Excalidraw 標準機能が担い、その版数(version)更新が Yjs 同期にも正しく乗る。
+// 所属の確定は次の2契機で行う:
+//  - フレームの新規作成/リサイズ時（captureFrameChildren）
+//  - 要素のドラッグ確定時（reparentDraggedElements）… 枠へ入れた/出した/入れ子にした を反映
 //
-// 注意: 移動(x/yのみ変化)では再キャプチャしない。移動時に矩形内包で再判定すると、
-// 枠外へ出た瞬間に所属解除され、逆に中身が置いていかれてしまうため。所属は
-// 「作成/リサイズ時に確定」し、以降の追従は frameId ベースの標準挙動に委ねる。
+// 既存データ（旧 frameId）は読み込み時に ExcalidrawYjsBridge.migrateNativeFrames() が
+// wbParent へ移し frameId を外すため、ここでは wbParent のみを所属根拠とする。
 
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 const isFrame = (e: any) => e?.type === "frame" || e?.type === "magicframe";
 
-// 要素 el がフレーム矩形 f に完全内包されるか（非回転bbox基準）。
+// 要素の所属親フレーム id（無所属は null）。
+export function resolveParent(el: any): string | null {
+  const p = el?.customData?.wbParent;
+  return typeof p === "string" && p ? p : null;
+}
+
+// フレーム矩形を正規化（ドラッグ方向で width/height が負になり得る）。
+function normRect(f: any): { x: number; y: number; width: number; height: number } {
+  const x = Math.min(f.x, f.x + f.width);
+  const y = Math.min(f.y, f.y + f.height);
+  return { x, y, width: Math.abs(f.width), height: Math.abs(f.height) };
+}
+
+// 要素 el がフレーム f に完全内包されるか（非回転bbox基準）。
 function isInsideFrame(el: any, f: any): boolean {
+  const r = normRect(f);
   return (
-    el.x >= f.x &&
-    el.y >= f.y &&
-    el.x + el.width <= f.x + f.width &&
-    el.y + el.height <= f.y + f.height
+    el.x >= r.x &&
+    el.y >= r.y &&
+    el.x + el.width <= r.x + r.width &&
+    el.y + el.height <= r.y + r.height
   );
 }
 
+// id -> 親フレームid のマップ（親が実在する非削除フレームの時だけ張る＝孤児は無所属扱い）。
+function buildParentMap(elements: readonly any[]): Map<string, string> {
+  const frameIds = new Set(elements.filter((e) => isFrame(e) && !e.isDeleted).map((e) => e.id));
+  const m = new Map<string, string>();
+  for (const el of elements) {
+    if (el.isDeleted) continue;
+    const p = resolveParent(el);
+    if (p && frameIds.has(p) && p !== el.id) m.set(el.id, p);
+  }
+  return m;
+}
+
+// elId が ancId の子孫か（wbParent 鎖を上へ辿る・循環/深すぎは打ち切り）。
+function isDescendantOf(elId: string, ancId: string, parentMap: Map<string, string>): boolean {
+  let cur: string | undefined = parentMap.get(elId);
+  let guard = 0;
+  while (cur && guard++ < 64) {
+    if (cur === ancId) return true;
+    cur = parentMap.get(cur);
+  }
+  return false;
+}
+
+// el を最小内包するフレームの id（無ければ null）。
+// el 自身・el の子孫フレームは除外（フレームを自分の子孫の中へ入れる循環を防ぐ）。
+function computeParentFor(el: any, frames: readonly any[], parentMap: Map<string, string>): string | null {
+  let bestId: string | null = null;
+  let bestArea = Infinity;
+  for (const f of frames) {
+    if (f.id === el.id) continue;
+    if (isDescendantOf(f.id, el.id, parentMap)) continue;
+    if (!isInsideFrame(el, f)) continue;
+    const r = normRect(f);
+    const area = r.width * r.height;
+    if (area < bestArea) { bestArea = area; bestId = f.id; }
+  }
+  return bestId;
+}
+
+// wbParent を書き換えた要素だけを更新して updateScene（version を上げ Yjs 同期に乗せる）。
+// あわせてネイティブ frameId を外し、所属根拠を wbParent 一本に統一する。
+function applyParents(api: any, elements: readonly any[], nextParent: Map<string, string | null>): boolean {
+  let changed = false;
+  const updated = elements.map((el) => {
+    if (!nextParent.has(el.id)) return el;
+    const np = nextParent.get(el.id) ?? null;
+    if (resolveParent(el) === np) return el;
+    changed = true;
+    return {
+      ...el,
+      frameId: null,
+      customData: { ...(el.customData ?? {}), wbParent: np },
+      version: (el.version ?? 1) + 1,
+      versionNonce: rand(),
+    };
+  });
+  if (!changed) return false;
+  api.updateScene({ elements: updated });
+  return true;
+}
+
 /**
- * フレームの新規作成/リサイズを検知し、内包する図形へ frameId を付与する。
+ * フレームの新規作成/リサイズを検知し、内包する要素（図形・入れ子フレーム）へ wbParent を付与する。
+ * 各要素は「最小内包フレーム」に所属させるため、内側フレームの子を外側フレームが奪わない。
  *
  * @param frameSig 前回見たフレーム矩形の署名(id -> "x,y,w,h")。新規/リサイズ判定に使う。
- *                 本関数が（remote以外で）呼ばれるたびに最新へ更新する。
  * @returns updateScene で反映したら true（呼び出し側で他ヘルパーの二重適用を避けるのに使う）
  */
 export function captureFrameChildren(
@@ -45,43 +124,186 @@ export function captureFrameChildren(
     return false;
   }
 
-  // 「新規作成 or リサイズ」されたフレームだけを対象に選ぶ
+  // 「新規作成 or リサイズ」されたフレームだけを対象に選ぶ（移動は追従に委ねる）
   const targets: any[] = [];
   const nextSig = new Map<string, string>();
   for (const f of frames) {
-    if (f.id === draftId) continue; // 描画確定前は記録も対象化もしない（確定時に新規として拾う）
-    const sig = `${f.x},${f.y},${f.width},${f.height}`;
+    if (f.id === draftId) continue;
+    const r = normRect(f);
+    const sig = `${r.x},${r.y},${r.width},${r.height}`;
     const prev = frameSig.get(f.id);
     nextSig.set(f.id, sig);
-    if (prev === undefined) {
-      targets.push(f); // 新規（または確定直後・ロード直後）
-      continue;
-    }
+    if (prev === undefined) { targets.push(f); continue; }
     const parts = prev.split(",").map(Number);
-    const pw = parts[2], ph = parts[3];
-    if (pw !== f.width || ph !== f.height) targets.push(f); // リサイズ（移動は標準に委ねる）
+    if (parts[2] !== r.width || parts[3] !== r.height) targets.push(f); // リサイズ
   }
-
-  // 次回比較用に署名を最新化（削除されたフレームは nextSig に無いので消える）
   frameSig.clear();
   nextSig.forEach((v, k) => frameSig.set(k, v));
-
   if (targets.length === 0) return false;
+
+  const parentMap = buildParentMap(elements);
+  // 候補 = 変更フレームの矩形に内包される要素 ＋ 変更フレーム自身（入れ子確定用）
+  const isCandidate = (el: any) =>
+    targets.some((t) => t.id === el.id || isInsideFrame(el, t));
+
+  const nextParent = new Map<string, string | null>();
+  for (const el of elements) {
+    if (el.isDeleted || el.id === draftId || !isCandidate(el)) continue;
+    const np = computeParentFor(el, frames, parentMap);
+    if (np !== resolveParent(el)) nextParent.set(el.id, np);
+  }
+  return applyParents(api, elements, nextParent);
+}
+
+/**
+ * ドラッグ確定時に、ユーザーが動かした（選択中の）要素の所属を幾何的内包で再判定する。
+ * 図形をフレームへ入れた/出した、フレームを別フレームへ入れ子にした/出した、を反映する。
+ * 動かした要素“自身”のみ再判定し、その子（フレームごと運ばれた中身）は再判定しない。
+ * 最新シーンから要素を取り直すため、同tickで followFrameMoves が先に updateScene しても
+ * その結果を踏まえて上書きせずに適用できる。
+ *
+ * @returns updateScene で反映したら true
+ */
+export function reparentDraggedElements(api: any, appState: any): boolean {
+  const sel = appState?.selectedElementIds || {};
+  const ids = Object.keys(sel).filter((id) => sel[id]);
+  if (ids.length === 0) return false;
+  const elements = api.getSceneElements();
+  const frames = elements.filter((e: any) => isFrame(e) && !e.isDeleted);
+  const parentMap = buildParentMap(elements);
+  const byId = new Map<string, any>(elements.map((e: any) => [e.id, e]));
+
+  const nextParent = new Map<string, string | null>();
+  for (const id of ids) {
+    const el = byId.get(id);
+    if (!el || el.isDeleted) continue;
+    const np = computeParentFor(el, frames, parentMap);
+    if (np !== resolveParent(el)) nextParent.set(id, np);
+  }
+  return applyParents(api, elements, nextParent);
+}
+
+/**
+ * フレーム移動時に、その子孫（入れ子フレーム＋各フレームの中身）を同じデルタで平行移動する。
+ * ネイティブ frameId を使わないため追従は標準機能に頼らず、ここで一元的に行う。
+ *
+ *  - 動いたフレーム自身: ユーザー操作で Excalidraw が既に動かしたので対象外
+ *  - 選択中の要素: 一緒にドラッグされ Excalidraw が動かしたので対象外（二重移動防止）
+ *  - それ以外は「最寄りの“動いた祖先フレーム”のデルタ」で1回だけ平行移動
+ *
+ * リサイズ/新規描画/リモート反映中は追従しない（位置スナップショットのみ更新して抜ける）。
+ *
+ * @param prevPos 前回のフレーム位置(id -> {x,y})。移動検知に使い、毎回最新へ更新する。
+ * @returns updateScene で反映したら true
+ */
+export function followFrameMoves(
+  api: any,
+  elements: readonly any[],
+  appState: any,
+  prevPos: Map<string, { x: number; y: number }>,
+  remote: boolean,
+): boolean {
+  const draftId = appState?.newElement?.id;
+  const frames = elements.filter((e) => isFrame(e) && !e.isDeleted);
+
+  const nextPos = new Map<string, { x: number; y: number }>();
+  for (const f of frames) {
+    if (f.id === draftId) continue;
+    nextPos.set(f.id, { x: f.x, y: f.y });
+  }
+  const commitPos = (map: Map<string, { x: number; y: number }>) => {
+    prevPos.clear();
+    map.forEach((v, k) => prevPos.set(k, v));
+  };
+
+  // リサイズ/新規描画/リモート反映では追従しない。位置だけ最新化して抜ける
+  // （後続の純移動で誤って大きなデルタを検出しないため）。
+  if (remote || appState?.resizingElement || appState?.newElement) {
+    commitPos(nextPos);
+    return false;
+  }
+
+  // 前回位置と比べて動いたフレーム（ユーザー操作による移動）を検出
+  const moved = new Map<string, { dx: number; dy: number }>();
+  for (const [id, pos] of nextPos) {
+    const prev = prevPos.get(id);
+    if (prev && (prev.x !== pos.x || prev.y !== pos.y)) {
+      moved.set(id, { dx: pos.x - prev.x, dy: pos.y - prev.y });
+    }
+  }
+  if (moved.size === 0) { commitPos(nextPos); return false; }
+
+  const parentMap = buildParentMap(elements);
+  const sel = appState?.selectedElementIds || {};
+  const nearestMovedDelta = (id: string): { dx: number; dy: number } | null => {
+    let cur: string | undefined = parentMap.get(id);
+    let guard = 0;
+    while (cur && guard++ < 64) {
+      const d = moved.get(cur);
+      if (d) return d;
+      cur = parentMap.get(cur);
+    }
+    return null;
+  };
 
   let changed = false;
   const updated = elements.map((el) => {
-    if (isFrame(el) || el.isDeleted || el.id === draftId) return el;
-    for (const f of targets) {
-      if (isInsideFrame(el, f)) {
-        if (el.frameId === f.id) return el; // 既に所属済み
-        changed = true;
-        return { ...el, frameId: f.id, version: (el.version ?? 1) + 1, versionNonce: rand() };
-      }
-    }
-    return el;
+    if (el.isDeleted) return el;
+    if (isFrame(el) && moved.has(el.id)) return el; // 自身は移動済み
+    if (sel[el.id]) return el;                      // 共ドラッグ済み
+    const d = nearestMovedDelta(el.id);
+    if (!d) return el;
+    changed = true;
+    return { ...el, x: el.x + d.dx, y: el.y + d.dy, version: (el.version ?? 1) + 1, versionNonce: rand() };
   });
 
-  if (!changed) return false;
+  if (!changed) { commitPos(nextPos); return false; }
   api.updateScene({ elements: updated });
+
+  // 追従後のフレーム位置で prevPos を更新（このupdateScene由来の次tickを移動と誤検知しない）
+  const afterPos = new Map<string, { x: number; y: number }>();
+  for (const el of updated) {
+    if (isFrame(el) && !el.isDeleted && el.id !== draftId) afterPos.set(el.id, { x: el.x, y: el.y });
+  }
+  commitPos(afterPos);
   return true;
+}
+
+/**
+ * フレームが自分の子孫より背面に来るよう並べ替える。
+ * ネイティブ frameId を使わないため「配列順 = z-order（フレームは中身の背面）」を
+ * こちらで保証する。同じ親の兄弟内は元の index 順を保持し、全クライアントで決定的に揃える。
+ *
+ * @param sorted fractional index 昇順で整列済みの要素配列
+ */
+export function orderFramesBehindChildren(sorted: readonly any[]): any[] {
+  const frameIds = new Set(sorted.filter((e) => isFrame(e) && !e.isDeleted).map((e) => e.id));
+  const parentOf = (el: any): string | null => {
+    const p = resolveParent(el);
+    return p && frameIds.has(p) && p !== el.id ? p : null;
+  };
+  const childrenOf = new Map<string, any[]>();
+  for (const el of sorted) {
+    const p = parentOf(el);
+    if (!p) continue;
+    const arr = childrenOf.get(p) ?? [];
+    arr.push(el);
+    childrenOf.set(p, arr);
+  }
+  const out: any[] = [];
+  const emitted = new Set<string>();
+  const emit = (el: any, depth: number) => {
+    if (emitted.has(el.id) || depth > 64) return;
+    emitted.add(el.id);
+    out.push(el);
+    const kids = childrenOf.get(el.id);
+    if (kids) for (const k of kids) emit(k, depth + 1);
+  };
+  for (const el of sorted) {
+    if (parentOf(el)) continue; // 子は親の下で emit される
+    emit(el, 0);
+  }
+  // 取りこぼし（循環など）は元順で末尾に付ける
+  for (const el of sorted) if (!emitted.has(el.id)) { emitted.add(el.id); out.push(el); }
+  return out;
 }
