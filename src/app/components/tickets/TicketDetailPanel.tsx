@@ -261,6 +261,7 @@ export function TicketDetailPanel({
   const [isReleaseDateUndecided, setIsReleaseDateUndecided] = useState(ticket?.isReleaseDateUndecided ?? false);
   const [showChangeDatePicker, setShowChangeDatePicker] = useState(false);
   const [pendingReleaseDate, setPendingReleaseDate] = useState<string | null>(null);
+  const [showUndecidedConfirm, setShowUndecidedConfirm] = useState(false);
 
   // 対応工数
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(ticket?.actualWorkHours ?? null);
@@ -1066,6 +1067,21 @@ export function TicketDetailPanel({
     onUpdated?.();
   };
 
+  const handleSetReleaseDateUndecided = async () => {
+    if (!ticket) return;
+    setReleaseDate("");
+    setIsReleaseDateUndecided(true);
+    setShowChangeDatePicker(false);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({
+        release_date: null,
+        is_release_date_undecided: true,
+      }).eq("id", ticket.id);
+    }
+    await addComment(`<p>リリース日を未定に変更しました</p>`, "status_change", []);
+    onUpdated?.();
+  };
+
   const saveAssignee = (name: string) => {
     const prevAssignee = assignee;
     setAssignee(name);
@@ -1641,6 +1657,17 @@ export function TicketDetailPanel({
           hasWarningText={false}
           onConfirm={async () => { await handleSaveReleaseDate(pendingReleaseDate); setPendingReleaseDate(null); }}
           onClose={() => setPendingReleaseDate(null)}
+        />
+      )}
+      {showUndecidedConfirm && (
+        <ConfirmDialog
+          title="リリース日未定にする"
+          message="リリース日を未定に戻しますか？リリースノートの日程指定が解除されます。"
+          confirmLabel="未定にする"
+          confirmColor="#6B7280"
+          hasWarningText={false}
+          onConfirm={async () => { await handleSetReleaseDateUndecided(); setShowUndecidedConfirm(false); }}
+          onClose={() => setShowUndecidedConfirm(false)}
         />
       )}
       {showMoveModal && (
@@ -2272,11 +2299,24 @@ export function TicketDetailPanel({
                       ) : releaseDate ? (
                         <span style={{ fontSize: 11, color: "#6B7280" }}>予定: {releaseDate.replace(/-/g, "/")}</span>
                       ) : null}
-                      <button
-                        onClick={() => setShowChangeDatePicker(v => !v)}
-                        style={{ display: "block", marginTop: 4, fontSize: 10, color: "#7C3AED", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
-                        リリース日変更
-                      </button>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                        <button
+                          onClick={() => setShowChangeDatePicker(v => !v)}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, lineHeight: 1, color: showChangeDatePicker ? "#FFF" : "#7C3AED", background: showChangeDatePicker ? "#7C3AED" : "rgba(124,58,237,0.08)", border: `1px solid ${showChangeDatePicker ? "#7C3AED" : "rgba(124,58,237,0.22)"}`, borderRadius: 999, padding: "5px 11px", cursor: "pointer", transition: "background 0.15s, color 0.15s, border-color 0.15s" }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+                          日付を変更
+                        </button>
+                        {!isReleaseDateUndecided && (
+                          <button
+                            onClick={() => setShowUndecidedConfirm(true)}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, lineHeight: 1, color: "#8A827C", background: "rgba(26,23,20,0.04)", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 999, padding: "5px 11px", cursor: "pointer", transition: "background 0.15s, color 0.15s, border-color 0.15s" }}
+                            onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,23,20,0.07)"; e.currentTarget.style.color = "#57504A"; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = "rgba(26,23,20,0.04)"; e.currentTarget.style.color = "#8A827C"; }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /></svg>
+                            未定にする
+                          </button>
+                        )}
+                      </div>
                       {showChangeDatePicker && (
                         <div style={{ marginTop: 8 }}>
                           <DatePicker
