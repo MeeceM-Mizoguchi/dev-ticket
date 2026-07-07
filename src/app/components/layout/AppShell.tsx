@@ -5,6 +5,7 @@ import { Topbar } from "./Topbar";
 import { TabbedShell } from "./TabbedShell";
 import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
+import { useAutoLogout } from "@/app/hooks/useAutoLogout";
 import { isNativeTabletApp } from "@/app/lib/platform";
 import { CallProvider } from "@/app/contexts/CallContext";
 import { CallLayer } from "@/app/components/call/CallLayer";
@@ -61,6 +62,9 @@ export function AppShell() {
 }
 
 export function ProtectedShell() {
+  // 自動ログアウト(ENHA2-027)。Web/ネイティブ両シェルの親で常時マウントする
+  // (早期returnより前にフックを呼ぶ。未ログイン時は内部で no-op)。
+  useAutoLogout();
   if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
   return (
     <CallProvider>
