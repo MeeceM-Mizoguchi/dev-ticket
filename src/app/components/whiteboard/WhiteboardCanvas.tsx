@@ -116,6 +116,24 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     return () => fmap.unobserve(resolve);
   }, [api, docRef]);
 
+  // IME変換確定のEnterでフレーム名/テキスト編集が終わってしまう問題の対策。
+  // Excalidrawのフレーム名エディタ等は Enter を commit として扱うが、日本語変換の確定Enterは
+  // keydown の isComposing=true（環境により keyCode=229）で来る。編集中の入力欄に対する“確定Enter”は
+  // キャプチャ段階で Excalidraw に届く前に止める（IMEの確定自体は composition イベントで行われるため影響なし）。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onKeyDownCapture = (e: KeyboardEvent) => {
+      if (e.key !== "Enter") return;
+      if (!e.isComposing && (e as any).keyCode !== 229) return;
+      const t = e.target as HTMLElement | null;
+      const editable = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+      if (editable) e.stopPropagation(); // Excalidrawの commit ハンドラへ渡さない
+    };
+    el.addEventListener("keydown", onKeyDownCapture, true); // キャプチャ段階
+    return () => el.removeEventListener("keydown", onKeyDownCapture, true);
+  }, []);
+
   const processedLines = useRef<Set<string>>(new Set());
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const prevFrameSig = useRef<Map<string, string>>(new Map()); // 前回のフレーム矩形署名（グループ化の新規/リサイズ判定用・BRU4-054）

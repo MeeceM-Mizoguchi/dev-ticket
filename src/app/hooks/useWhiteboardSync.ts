@@ -113,9 +113,14 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
           if (pendingCollabRef.current) { apiRef.current?.updateScene({ collaborators: pendingCollabRef.current }); pendingCollabRef.current = null; }
         }, 0);
       };
+      // ウィンドウ外でpointerupすると up が届かず、フラグが true のまま残って
+      // 以後リモート反映が止まる/割り込む。blur・タブ非表示でも「操作終了」とみなして復帰させる。
+      const onLeave = () => { if (localPointerDownRef.current) onUp(); };
       window.addEventListener("pointerdown", onDown); // バブル段階
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
+      window.addEventListener("blur", onLeave);
+      document.addEventListener("visibilitychange", onLeave);
 
       dispose = () => {
         awareness.off("change", onAwareness);
@@ -123,6 +128,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
         window.removeEventListener("pointerdown", onDown);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+        window.removeEventListener("blur", onLeave);
+        document.removeEventListener("visibilitychange", onLeave);
         if (saveTimer) clearTimeout(saveTimer);
         provider.destroy();
         doc.destroy();
