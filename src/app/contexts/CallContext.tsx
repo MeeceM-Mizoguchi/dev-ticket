@@ -8,7 +8,8 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { MeshConnection } from "@/app/lib/MeshConnection";
 import { CallSignaling, type RosterMember } from "@/app/lib/CallSignaling";
 import { monitorSpeaking } from "@/app/lib/audioLevel";
-import { startRingtone, stopRingtone } from "@/app/lib/ringtone";
+import { startRingtone, stopRingtone, playHangupTone } from "@/app/lib/ringtone";
+import { useToast } from "@/app/contexts/ToastContext";
 import {
   SIGNAL, audioConstraints, userCallChannel, ONLINE_PRESENCE_CHANNEL,
   RING_TIMEOUT_MS, MAX_PARTICIPANTS,
@@ -51,6 +52,7 @@ export function useCall() { return useContext(CallContext); }
 
 export function CallProvider({ children }: { children: ReactNode }) {
   const { userId, userName } = useAuth();
+  const { toast } = useToast();
   const [incoming, setIncoming] = useState<InvitePayload | null>(null);
   const [call, setCall] = useState<CallState | null>(null);
   const [online, setOnline] = useState<Set<string>>(new Set());
@@ -70,10 +72,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const callRef = useRef<CallState | null>(null);
   const incomingRef = useRef<InvitePayload | null>(null);
   const selfRef = useRef({ id: userId, name: userName });
+  const endingRef = useRef(false); // 終了処理の二重発火ガード(bye/roster/connState が同時に来ても1回だけ)
+  const connLossTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 接続断フォールバックのデバウンス
+  const toastRef = useRef(toast); // toast は毎レンダー再生成されるため ref 経由で参照(useCallback を安定させる)
 
   useEffect(() => { callRef.current = call; }, [call]);
   useEffect(() => { incomingRef.current = incoming; }, [incoming]);
   useEffect(() => { selfRef.current = { id: userId, name: userName || "匿名" }; }, [userId, userName]);
+  useEffect(() => { toastRef.current = toast; });
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -105,25 +111,54 @@ export function CallProvider({ children }: { children: ReactNode }) {
     localStreamRef.current = null;
     streamMapRef.current.clear();
     connStateRef.current.clear();
+    for (const t of connLossTimersRef.current.values()) clearTimeout(t);
+    connLossTimersRef.current.clear();
     everActiveRef.current = false;
     pendingInviteRef.current.clear();
     inviteTargetsRef.current = [];
   }, []);
 
+  // 自分から通話を切る
   const hangup = useCallback(() => {
     const cur = callRef.current;
     if (!cur) return;
-    // 応答前の発信を切る場合は招待先の呼び鈴を止める
+    if (endingRef.current) return;
+    endingRef.current = true;
     if (cur.role === "caller" && cur.status === "outgoing") {
+      // 応答前の発信を切る場合は招待先の呼び鈴を止める
       for (const t of inviteTargetsRef.current) {
         void sendToUser(t.id, SIGNAL.cancel, { sessionId: cur.sessionId, from: selfRef.current.id });
+      }
+    } else {
+      // 通話確立後の切断: 残りの参加者へ即時に切断を通知する(presence untrack の取りこぼし対策)
+      for (const p of cur.participants) {
+        if (p.connState === "self") continue;
+        void sendToUser(p.id, SIGNAL.bye, { sessionId: cur.sessionId, from: selfRef.current.id });
       }
     }
     void recordParticipantLeft(cur.sessionId, selfRef.current.id);
     if (cur.role === "caller") void recordCallEnded(cur.sessionId, !everActiveRef.current);
+    stopRingtone();
+    playHangupTone();
     teardown();
     setCall(null);
   }, [sendToUser, teardown]);
+
+  // 相手起点で通話が終了したとき(bye受信 / roster全員退出 / 接続断)の共通処理。
+  // 自分は通知を送らず、アクション通知と切断音を鳴らして後片付けする。
+  const endCallAsRemote = useCallback(() => {
+    const cur = callRef.current;
+    if (!cur) return;
+    if (endingRef.current) return;
+    endingRef.current = true;
+    void recordParticipantLeft(cur.sessionId, selfRef.current.id);
+    if (cur.role === "caller") void recordCallEnded(cur.sessionId, !everActiveRef.current);
+    stopRingtone();
+    playHangupTone();
+    teardown();
+    setCall(null);
+    toastRef.current("通話が終了しました", "info");
+  }, [teardown]);
 
   // 相手の発話監視を開始
   const startSpeakingMonitor = useCallback((id: string, stream: MediaStream) => {
@@ -171,11 +206,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
       return { ...prev, participants, status };
     });
 
-    // 全員が退出したら(一度でも繋がっていれば)通話終了
+    // 全員が退出したら(一度でも繋がっていれば)相手切断として通話終了
     if (everActiveRef.current && others.length === 0 && callRef.current) {
-      hangup();
+      endCallAsRemote();
     }
-  }, [hangup]);
+  }, [endCallAsRemote]);
 
   // ── セッションチャンネルからのシグナル受信 → mesh へ ──
   const handleSignal = useCallback((event: string, payload: Record<string, unknown>) => {
@@ -214,6 +249,25 @@ export function CallProvider({ children }: { children: ReactNode }) {
         setCall((prev) => prev ? {
           ...prev, participants: prev.participants.map((p) => p.id === id ? { ...p, connState: state } : p),
         } : prev);
+        // フォールバック: bye も presence も届かないネットワーク断の検知。
+        // 短時間の揺れ(ICE再接続)で誤終了しないよう数秒デバウンスしてから判定する。
+        const timers = connLossTimersRef.current;
+        if (state === "connected") {
+          const t = timers.get(id);
+          if (t) { clearTimeout(t); timers.delete(id); }
+        } else if (state === "disconnected" || state === "failed" || state === "closed") {
+          if (!timers.has(id)) {
+            timers.set(id, setTimeout(() => {
+              timers.delete(id);
+              if (connStateRef.current.get(id) === "connected") return;
+              const cur = callRef.current;
+              if (!cur) return;
+              // 他に生存中(connected)の相手がいなければ相手切断として終了
+              const aliveOther = cur.participants.some((p) => p.connState !== "self" && p.id !== id && p.connState === "connected");
+              if (!aliveOther) endCallAsRemote();
+            }, 6000));
+          }
+        }
       },
       sendSignal: (ev, to, data) => {
         if (ev === "ice") signaling.send(SIGNAL.ice, { to, candidate: data });
@@ -222,7 +276,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     });
     signalingRef.current = signaling;
     meshRef.current = mesh;
-  }, [handleRoster, handleSignal, startSpeakingMonitor]);
+  }, [handleRoster, handleSignal, startSpeakingMonitor, endCallAsRemote]);
 
   const acquireMic = useCallback(async (): Promise<MediaStream | null> => {
     try {
@@ -243,6 +297,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
     const stream = await acquireMic();
     if (!stream) return;
+    endingRef.current = false;
     localStreamRef.current = stream;
     const self = selfRef.current;
     const sessionId = crypto.randomUUID();
@@ -278,6 +333,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     if (!inv || callRef.current) return;
     const stream = await acquireMic();
     if (!stream) return;
+    endingRef.current = false;
     localStreamRef.current = stream;
     stopRingtone();
     setIncoming(null);
@@ -353,9 +409,18 @@ export function CallProvider({ children }: { children: ReactNode }) {
       // まだ誰も参加しておらず、全員が拒否したら発信を終了
       if (!everActiveRef.current && pendingInviteRef.current.size === 0) hangup();
     });
+    ch.on("broadcast", { event: SIGNAL.bye }, ({ payload }) => {
+      const p = payload as { sessionId: string; from: string };
+      const cur = callRef.current;
+      if (!cur || cur.sessionId !== p.sessionId) return;
+      // 切断した相手を除いて他に残っていなければ通話終了(アクション通知+切断音)。
+      // 複数人残っている場合は presence roster がその相手だけを外す。
+      const remaining = cur.participants.filter((x) => x.connState !== "self" && x.id !== p.from);
+      if (remaining.length === 0) endCallAsRemote();
+    });
     ch.subscribe();
     return () => { void supabase!.removeChannel(ch); };
-  }, [userId, sendToUser, hangup]);
+  }, [userId, sendToUser, hangup, endCallAsRemote]);
 
   // ── オンライン在席presence ──
   useEffect(() => {

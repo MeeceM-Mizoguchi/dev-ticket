@@ -56,3 +56,12 @@ export function stopRingtone() {
     timer = null;
   }
 }
+
+// 通話終了時のワンショット効果音(下降する2音)。繰り返さない。
+export function playHangupTone() {
+  const c = ensureCtx();
+  if (!c) return;
+  const t = c.currentTime;
+  beep(480, t, 0.14, 0.1);
+  beep(360, t + 0.16, 0.2, 0.1);
+}

@@ -38,6 +38,7 @@ export const SIGNAL = {
   invite: "signal-invite", // 着信
   cancel: "signal-cancel", // 発信者が応答前にキャンセル
   decline: "signal-decline", // 着信拒否(発信者へ通知)
+  bye: "signal-bye", // 通話確立後の切断(相手へ即時通知)
   // セッションチャンネル宛(WebRTC交渉)
   offer: "signal-offer",
   answer: "signal-answer",
