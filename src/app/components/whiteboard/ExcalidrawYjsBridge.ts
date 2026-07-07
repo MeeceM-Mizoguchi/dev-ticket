@@ -3,6 +3,7 @@
 // 無限ループさせないこと。要素の version / versionNonce 比較で遮断する。
 import * as Y from "yjs";
 import { REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvider";
+import { orderFramesBehindChildren } from "@/app/lib/whiteboardFrames";
 
 // Excalidraw の型は版で import パスが揺れるため緩く扱う。
 type El = any; // ExcalidrawElement（version, versionNonce, isDeleted, index を持つ）
@@ -87,17 +88,20 @@ export class ExcalidrawYjsBridge {
    *  重要: Y.Map の反復順は「そのキーを最初に受信した順」で、CRDT のためクライアント毎・
    *  同期タイミング毎に変わり得る。一方 Excalidraw は渡された配列の順＝重なり順(z-order)と解釈し、
    *  順が index と食い違うと index を配列順に上書きする(replaceAllElements→syncInvalidIndices)。
-   *  そのまま渡すと各人で重なり順が乖離し、白図形が背面化して“透明化”、フレームの子が枠の裏へ
-   *  回って frameId が剥がれ“グループ解除/追従しない”、余計な version 更新で同期が荒れる。
-   *  → fractional index(文字列)で必ず整列し、全クライアントで決定論的な z-order に揃える。 */
+   *  そのまま渡すと各人で重なり順が乖離し、白図形が背面化して“透明化”、余計な version 更新で
+   *  同期が荒れる。→ fractional index(文字列)で必ず整列し、決定論的な z-order に揃える。
+   *
+   *  さらに所属は wbParent(customData) で管理し frameId には依存しないため、フレームが自分の
+   *  子孫より背面に来る並び順も orderFramesBehindChildren で保証する（全クライアントで決定的）。 */
   currentElements(): El[] {
-    return Array.from(this.yElements.values())
+    const sorted = Array.from(this.yElements.values())
       .filter(isValidEl)
       .map((el) => clone(el))
       .sort((a, b) => {
         const ai = a.index ?? "", bi = b.index ?? "";
         return ai < bi ? -1 : ai > bi ? 1 : 0;
       });
+    return orderFramesBehindChildren(sorted);
   }
 
   /** 壊れた要素（不正な座標/寸法）をY.Mapから削除。既存の汚染をクリーンにする。 */
@@ -109,8 +113,31 @@ export class ExcalidrawYjsBridge {
     }
   }
 
-  /** 永続stateロード後の初回反映（先に汚染を除去） */
-  applyInitial() { this.sanitize(); this.applyToExcalidraw(); }
+  /** 旧データの移行: ネイティブ frameId を customData.wbParent へ移し、frameId を外す（BRU5-040）。
+   *  以後の所属は wbParent 一本に統一し、z-order 再整列で所属が剥がれる不具合を根絶する。
+   *  冪等（frameId が無ければ何もしない）なので applyInitial から何度呼んでも安全。 */
+  private migrateNativeFrames() {
+    const ids: string[] = [];
+    this.yElements.forEach((el, id) => { if (el && el.frameId) ids.push(id); });
+    if (!ids.length) return;
+    this.doc.transact(() => {
+      for (const id of ids) {
+        const cur = this.yElements.get(id) as El | undefined;
+        if (!cur || !cur.frameId) continue;
+        const wbParent = cur.customData?.wbParent ?? cur.frameId;
+        this.yElements.set(id, {
+          ...cur,
+          frameId: null,
+          customData: { ...(cur.customData ?? {}), wbParent },
+          version: (cur.version ?? 1) + 1,
+          versionNonce: Math.floor(Math.random() * 0x7fffffff),
+        });
+      }
+    }, LOCAL_ORIGIN);
+  }
+
+  /** 永続stateロード後の初回反映（先に汚染を除去し、旧frameIdをwbParentへ移行） */
+  applyInitial() { this.sanitize(); this.migrateNativeFrames(); this.applyToExcalidraw(); }
 
   /** ローカル操作終了時に呼ぶ：保留していた反映を実行 */
   flushPending() {

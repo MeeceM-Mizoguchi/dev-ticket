@@ -2,6 +2,7 @@
 // 書式は frame.customData.wbFrame に保存する（要素なのでYjs同期される）。描画は FrameDecorLayer。
 import { useEffect, useRef, useState } from "react";
 import type { WbFrameFormat } from "./FrameDecorLayer";
+import { resolveParent } from "@/app/lib/whiteboardFrames";
 
 interface Props {
   api: any;
@@ -35,10 +36,10 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
           : null;
         if (el) {
           const fmt = el.customData?.wbFrame ?? {};
-          // 子要素数も署名に含める。グループ解除で子のframeIdが変わってもフレーム自体の
+          // 子要素数も署名に含める。グループ解除で子の所属(wbParent)が変わってもフレーム自体の
           // 書式は不変なため、これが無いとボタン表示(件数)が再描画されない（BRU4-054）。
           // パネルは左側固定なので座標/ズームは署名に含めない（タイトルに重ならないよう常時左ドック）。
-          const childCount = api.getSceneElements().filter((e: any) => e.frameId === el.id && !e.isDeleted).length;
+          const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === el.id && !e.isDeleted).length;
           const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${childCount}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
@@ -69,13 +70,14 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
   };
 
   // このフレームに属する子要素数（グループ解除ボタンの活性判定・表示用）
-  const childCount = api.getSceneElements().filter((e: any) => e.frameId === frame.id && !e.isDeleted).length;
+  const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === frame.id && !e.isDeleted).length;
 
-  // グループ解除: 子要素の frameId を外し、以後フレームを動かしても追従しないようにする（BRU4-054）。
+  // グループ解除: 直下の子要素の所属(wbParent)を外し、以後フレームを動かしても追従しないようにする
+  // （BRU4-054 / BRU5-040）。入れ子フレームは無所属化され独立したフレームに戻る。
   const ungroup = () => {
     const els = api.getSceneElements().map((e: any) =>
-      e.frameId === frame.id && !e.isDeleted
-        ? { ...e, frameId: null, version: (e.version ?? 1) + 1, versionNonce: rand() }
+      resolveParent(e) === frame.id && !e.isDeleted
+        ? { ...e, frameId: null, customData: { ...(e.customData ?? {}), wbParent: null }, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
     api.updateScene({ elements: els });
