@@ -95,6 +95,20 @@ export function SprintPage() {
   const [isParentNav, setIsParentNav] = useState(false);
   const deletedIdsRef = useRef<Set<string>>(new Set());
 
+  // 🌟 BRU5-043: 上部ブロック(パンくず〜ビュー切替)を画面上部に固定し、その実高さを測って
+  //             各ビューの sticky ヘッダーへオフセットとして渡す。高さは環境メモ折返し等で可変のため測定する。
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerH, setHeaderH] = useState(0);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const update = () => setHeaderH(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const projectId = project?.id ?? null;
 
   useEffect(() => {
@@ -219,7 +233,11 @@ export function SprintPage() {
   const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
 
   return (
-    <div style={{ padding: "24px", minWidth: 1100 }}>
+    <div style={{ minWidth: 1100 }}>
+      {/* 🌟 BRU5-043: パンくず〜ビュー切替までを画面上部に固定。下へスクロールしても
+          バックログ/ホワイトボード等のタブとビュー切替へ常時アクセスできるようにする。
+          headerRef の実高さ(headerH)を各ビューの sticky ヘッダーへオフセットとして渡し段重ねする。 */}
+      <div ref={headerRef} style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", padding: "24px 24px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -257,7 +275,7 @@ export function SprintPage() {
         />
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 0 }}>
         <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3 }}>
           {viewBtns.map(({ mode, label, Icon }) => (
             <button key={mode} onClick={() => setViewMode(mode)}
@@ -280,10 +298,13 @@ export function SprintPage() {
           );
         })()}
       </div>
+      </div>{/* 🌟 BRU5-043: 固定バー(headerRef)ここまで */}
 
-      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} onOpenMyFilter={setMyFilterSprintId} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
+      {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
+      <div style={{ padding: "0 24px 24px" }}>
+      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} stickyTop={headerH} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} stickyTop={headerH} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
       
@@ -425,6 +446,7 @@ export function SprintPage() {
         projectPermissions={projectPermissions ?? undefined}
         forceNoAnim={isParentNav}
       />
+      </div>{/* 🌟 BRU5-043: 通常スクロール領域ここまで */}
     </div>
   );
 }

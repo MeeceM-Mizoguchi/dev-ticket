@@ -5,8 +5,10 @@ import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, getTicket
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
-export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate }: {
+export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate, stickyTop }: {
   sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void; onBulkCreate?: (sprintId: string) => void;
+  // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
+  stickyTop?: number;
 }) {
   const { plan } = usePlan();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
@@ -85,7 +87,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
     <div style={{ background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", overflow: "clip" as React.CSSProperties["overflow"] }}>
 
       {/* ヘッダー（sticky固定） — 縦スクロールでここまで来たら固定、上に戻ったら解除 */}
-      <div style={{ position: "sticky", top: 0, zIndex: 20, display: "flex", boxShadow: "0 1px 0 rgba(26,23,20,0.07)" }}>
+      <div style={{ position: "sticky", top: stickyTop ?? 0, zIndex: 20, display: "flex", boxShadow: "0 1px 0 rgba(26,23,20,0.07)" }}>
         {/* 左パネルヘッダー */}
         <div style={{ width: LEFT_W, flexShrink: 0, borderRight: "1px solid rgba(26,23,20,0.07)", height: YEAR_H + MON_H + DAY_H, background: "#F4F5F6", display: "flex", alignItems: "center", padding: "0 14px" }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>スプリント</span>
