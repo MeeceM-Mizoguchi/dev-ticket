@@ -64,7 +64,9 @@ export class ExcalidrawYjsBridge {
 
   /** Excalidraw.onChange → Yjs（ローカル編集の伝播） */
   syncFromExcalidraw(elements: readonly El[]) {
-    if (this.applyingRemote) return; // updateScene由来のonChangeは書き戻さない
+    // updateScene由来のonChangeは書き戻さない。適用時にExcalidrawがindex正規化等でversionを
+    // 上げることがあり、version比較だけでは弾けず“書き戻し→再配信”の無限ループになるため必須。
+    if (this.applyingRemote) return;
     this.doc.transact(() => {
       for (const el of elements) {
         if (!isValidEl(el)) continue; // 壊れた要素は保存しない（汚染の伝播防止）
@@ -80,9 +82,22 @@ export class ExcalidrawYjsBridge {
     }, LOCAL_ORIGIN);
   }
 
-  /** Y.Map の全要素を配列化（壊れた要素は除外）。適用時も独立コピーを渡す。 */
+  /** Y.Map の全要素を配列化（壊れた要素は除外）。適用時も独立コピーを渡す。
+   *
+   *  重要: Y.Map の反復順は「そのキーを最初に受信した順」で、CRDT のためクライアント毎・
+   *  同期タイミング毎に変わり得る。一方 Excalidraw は渡された配列の順＝重なり順(z-order)と解釈し、
+   *  順が index と食い違うと index を配列順に上書きする(replaceAllElements→syncInvalidIndices)。
+   *  そのまま渡すと各人で重なり順が乖離し、白図形が背面化して“透明化”、フレームの子が枠の裏へ
+   *  回って frameId が剥がれ“グループ解除/追従しない”、余計な version 更新で同期が荒れる。
+   *  → fractional index(文字列)で必ず整列し、全クライアントで決定論的な z-order に揃える。 */
   currentElements(): El[] {
-    return Array.from(this.yElements.values()).filter(isValidEl).map((el) => clone(el));
+    return Array.from(this.yElements.values())
+      .filter(isValidEl)
+      .map((el) => clone(el))
+      .sort((a, b) => {
+        const ai = a.index ?? "", bi = b.index ?? "";
+        return ai < bi ? -1 : ai > bi ? 1 : 0;
+      });
   }
 
   /** 壊れた要素（不正な座標/寸法）をY.Mapから削除。既存の汚染をクリーンにする。 */
@@ -112,7 +127,7 @@ export class ExcalidrawYjsBridge {
       this.api.updateScene({ elements });
       this.onRemoteElements?.(elements);
     } finally {
-      // updateScene直後のonChange1回分をスキップ
+      // updateScene直後のonChange1回分をスキップ（エコー抑制）
       requestAnimationFrame(() => { this.applyingRemote = false; });
     }
   }
