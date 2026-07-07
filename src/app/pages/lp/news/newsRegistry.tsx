@@ -3,8 +3,9 @@ import { Rocket, Megaphone, type LucideIcon } from 'lucide-react';
 
 // ── 記事本文コンポーネント（articles/ 配下・本文のみを記述） ──
 import OfficialRelease from './articles/20260624-official-release';
-import SprintUpdate from './articles/20260701-sprint-update';
-import SummerHoliday from './articles/20260704-summer-holiday';
+import ReportManagement from './articles/20260627-report-management';
+import BiometricLogin from './articles/20260628-biometric-login';
+import Whiteboard from './articles/20260706-whiteboard';
 
 /**
  * ============================================================
@@ -23,7 +24,7 @@ import SummerHoliday from './articles/20260704-summer-holiday';
 export type NewsCategory = 'リリース' | 'お知らせ';
 
 export interface NewsEntry {
-  /** URL スラッグ。/news/:slug で使用。ファイル名と揃える（例: 20260704-summer-holiday） */
+  /** URL スラッグ。/news/:slug で使用。ファイル名と揃える（例: 20260706-whiteboard） */
   slug: string;
   /** 表示日付 'YYYY.MM.DD' */
   date: string;
@@ -56,26 +57,34 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
   {
-    slug: '20260704-summer-holiday',
-    date: '2026.07.04',
-    category: 'お知らせ',
-    title: '夏季休業期間のお知らせ',
-    excerpt: '2026年8月13日（木）〜8月15日（土）を夏季休業とさせていただきます。期間中のお問い合わせ対応についてご案内します。',
-    Component: SummerHoliday,
+    slug: '20260706-whiteboard',
+    date: '2026.07.06',
+    category: 'リリース',
+    title: 'ホワイトボード機能を実装しました',
+    excerpt: '付箋・図形・手描きで自由に描けるキャンバスをリアルタイム共同編集で。アイデア出しや設計の共有がチームでスムーズに行えます。',
+    Component: Whiteboard,
   },
   {
-    slug: '20260701-sprint-update',
-    date: '2026.07.01',
+    slug: '20260628-biometric-login',
+    date: '2026.06.28',
     category: 'リリース',
-    title: 'スプリント管理をアップデートしました',
-    excerpt: 'スプリントボードのドラッグ操作とガントチャート表示を刷新。チームの進捗がよりひと目で把握できるようになりました。',
-    Component: SprintUpdate,
+    title: '生体認証ログインに対応しました',
+    excerpt: 'Face ID / Touch ID を使ったパスワード不要のログインに対応。毎日のサインインがよりすばやく安全になりました。',
+    Component: BiometricLogin,
+  },
+  {
+    slug: '20260627-report-management',
+    date: '2026.06.27',
+    category: 'リリース',
+    title: 'レポート管理機能を実装しました',
+    excerpt: 'チケットやスプリントのデータを集計し、チームの生産性をグラフで可視化。期間やメンバーごとの状況をひと目で把握できます。',
+    Component: ReportManagement,
   },
   {
     slug: '20260624-official-release',
     date: '2026.06.24',
     category: 'リリース',
-    title: '開発チケット管理ツール「Dev Ticket」を正式リリースしました',
+    title: '開発チケット管理ツール「Dev Ticket」をファーストリリースしました',
     excerpt: 'チケット・スプリント・メンバー管理を一元化する Dev Ticket を正式公開。チームの生産性を最大化する7つのコア機能を搭載しています。',
     Component: OfficialRelease,
   },
