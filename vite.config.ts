@@ -89,10 +89,10 @@ export default defineConfig({
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 
-  // PDF出力で動的import するライブラリを事前バンドルしておく
+  // 記事エクスポート(PDF/Word/Excel)で動的import するライブラリを事前バンドルしておく
   // （未指定だと dev サーバーが初回 import 時に再最適化→リロードが走り、
-  //  「Failed to fetch dynamically imported module」エラーになるため）
+  //  1回目のダウンロードが空振り／「Failed to fetch dynamically imported module」になるため）
   optimizeDeps: {
-    include: ['@react-pdf/renderer'],
+    include: ['@react-pdf/renderer', 'docx', 'exceljs', 'buffer'],
   },
 })

@@ -6,6 +6,8 @@ import OfficialRelease from './articles/20260624-official-release';
 import ReportManagement from './articles/20260627-report-management';
 import BiometricLogin from './articles/20260628-biometric-login';
 import Whiteboard from './articles/20260706-whiteboard';
+import SprintUpdate from './articles/20260701-sprint-update';
+import SummerHoliday from './articles/20260704-summer-holiday';
 
 /**
  * ============================================================
@@ -63,6 +65,22 @@ export const NEWS: NewsEntry[] = [
     title: 'ホワイトボード機能を実装しました',
     excerpt: '付箋・図形・手描きで自由に描けるキャンバスをリアルタイム共同編集で。アイデア出しや設計の共有がチームでスムーズに行えます。',
     Component: Whiteboard,
+  },
+  {
+    slug: '20260704-summer-holiday',
+    date: '2026.07.04',
+    category: 'お知らせ',
+    title: '夏季休業期間のお知らせ',
+    excerpt: '2026年8月13日（木）〜8月15日（土）を夏季休業とさせていただきます。期間中のお問い合わせ対応についてご案内します。',
+    Component: SummerHoliday,
+  },
+  {
+    slug: '20260701-sprint-update',
+    date: '2026.07.01',
+    category: 'リリース',
+    title: 'スプリント管理をアップデートしました',
+    excerpt: 'スプリントボードのドラッグ操作とガントチャート表示を刷新。チームの進捗がよりひと目で把握できるようになりました。',
+    Component: SprintUpdate,
   },
   {
     slug: '20260628-biometric-login',
