@@ -18,7 +18,7 @@ export function NewsListPage() {
 
   return (
     <NewsChrome>
-      <div className="max-w-4xl mx-auto px-5 sm:px-6 lg:px-8">
+      <div className="max-w-6xl mx-auto px-5 sm:px-6 lg:px-8">
         {/* ヘッダー */}
         <header className="pt-16 sm:pt-24 pb-10">
           <p className="text-xs font-semibold tracking-[0.2em] text-teal-600 mb-3">NEWS</p>
@@ -54,7 +54,7 @@ export function NewsListPage() {
               <li key={n.slug}>
                 <Link
                   to={`/news/${n.slug}`}
-                  className="group -mx-4 grid items-baseline gap-x-6 gap-y-2.5 rounded-2xl border-b border-slate-100 px-4 py-7 transition-colors hover:bg-slate-50 sm:grid-cols-[9.5rem_1fr]"
+                  className="group -mx-4 grid items-baseline gap-x-8 gap-y-2.5 rounded-2xl border-b border-slate-100 px-4 py-7 transition-colors hover:bg-slate-50 sm:grid-cols-[10rem_1fr]"
                 >
                   {/* メタ列（日付＋カテゴリ） */}
                   <div className="flex items-center gap-3 sm:flex-col sm:items-start sm:gap-2.5 sm:pt-1">
@@ -62,15 +62,17 @@ export function NewsListPage() {
                     <NewsCategoryBadge category={n.category} />
                   </div>
 
-                  {/* コンテンツ */}
-                  <div className="min-w-0">
-                    <div className="flex items-start gap-3">
-                      <h2 className="flex-1 text-lg font-bold leading-snug text-slate-900 transition-colors group-hover:text-teal-600">
-                        {n.title}
-                      </h2>
-                      <ArrowRight className="mt-1 h-5 w-5 shrink-0 text-slate-300 transition-all group-hover:translate-x-0.5 group-hover:text-teal-500" />
+                  {/* コンテンツ：PC では見出しと抜粋を横並びにして横幅を活かす */}
+                  <div className="min-w-0 lg:grid lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.35fr)] lg:items-baseline lg:gap-10">
+                    <h2 className="text-lg font-bold leading-snug text-slate-900 transition-colors group-hover:text-teal-600">
+                      {n.title}
+                    </h2>
+                    <div className="mt-2 flex items-start gap-3 lg:mt-0">
+                      <p className="min-w-0 flex-1 text-sm leading-relaxed text-slate-500 line-clamp-2 lg:line-clamp-3">
+                        {n.excerpt}
+                      </p>
+                      <ArrowRight className="mt-0.5 h-5 w-5 shrink-0 text-slate-300 transition-all group-hover:translate-x-0.5 group-hover:text-teal-500" />
                     </div>
-                    <p className="mt-2 text-sm leading-relaxed text-slate-500 line-clamp-2">{n.excerpt}</p>
                   </div>
                 </Link>
               </li>
