@@ -26,7 +26,7 @@ const PROSE =
 export function NewsArticleLayout({ entry, children }: { entry: NewsEntry; children: ReactNode }) {
   return (
     <NewsChrome>
-      <article className="max-w-2xl mx-auto px-5 sm:px-6 lg:px-8 pt-10 sm:pt-14 pb-20 sm:pb-28">
+      <article className="max-w-6xl mx-auto px-5 sm:px-6 lg:px-8 pt-10 sm:pt-14 pb-20 sm:pb-28">
         {/* 戻る */}
         <Link
           to="/news"
@@ -36,32 +36,38 @@ export function NewsArticleLayout({ entry, children }: { entry: NewsEntry; child
           ニュース一覧へ
         </Link>
 
-        {/* 記事ヘッダー（キッカー → タイトル → リード文） */}
-        <header className="mt-8">
-          <div className="flex items-center gap-3 mb-4">
-            <NewsCategoryBadge category={entry.category} />
-            <time className="text-sm text-slate-400 font-mono">{entry.date}</time>
+        {/* PC ではメタ情報を左サイドに固定し、本文を右の広いカラムに配置して横幅を活かす */}
+        <div className="mt-8 lg:grid lg:grid-cols-[19rem_minmax(0,1fr)] lg:gap-16 xl:gap-20">
+          {/* 記事ヘッダー（キッカー → タイトル → リード文） */}
+          <header className="lg:sticky lg:top-24 lg:self-start">
+            <div className="flex items-center gap-3 mb-4">
+              <NewsCategoryBadge category={entry.category} />
+              <time className="text-sm text-slate-400 font-mono">{entry.date}</time>
+            </div>
+            <h1 className="text-2xl sm:text-[1.75rem] lg:text-3xl font-bold text-slate-900 leading-[1.35] tracking-tight">
+              {entry.title}
+            </h1>
+            <p className="mt-4 text-lg text-slate-500 leading-relaxed">{entry.excerpt}</p>
+          </header>
+
+          {/* 本文カラム */}
+          <div className="min-w-0">
+            <hr className="my-8 sm:my-10 border-slate-200 lg:hidden" />
+
+            {/* 本文 */}
+            <div className={PROSE}>{children}</div>
+
+            {/* フッター */}
+            <div className="mt-14 pt-8 border-t border-slate-200">
+              <Link
+                to="/news"
+                className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                ニュース一覧に戻る
+              </Link>
+            </div>
           </div>
-          <h1 className="text-2xl sm:text-[1.75rem] font-bold text-slate-900 leading-[1.35] tracking-tight">
-            {entry.title}
-          </h1>
-          <p className="mt-4 text-lg text-slate-500 leading-relaxed">{entry.excerpt}</p>
-        </header>
-
-        <hr className="my-8 sm:my-10 border-slate-200" />
-
-        {/* 本文 */}
-        <div className={PROSE}>{children}</div>
-
-        {/* フッター */}
-        <div className="mt-14 pt-8 border-t border-slate-200">
-          <Link
-            to="/news"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            ニュース一覧に戻る
-          </Link>
         </div>
       </article>
     </NewsChrome>
