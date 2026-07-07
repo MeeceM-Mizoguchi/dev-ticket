@@ -3,6 +3,7 @@ import type { Role, UserPermissions } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { biometricAuth } from "@/lib/biometricAuth";
 import { MEMBERS } from "@/app/data/mock";
+import { recordLoginAt, recordLoginAtIfMissing, clearLoginAt, shouldLogout } from "@/app/lib/autoLogout";
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
   canCreateTicket: false,
@@ -131,6 +132,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase!.auth.getSession().then(async ({ data: { session } }) => {
       clearTimeout(authTimer);
       if (session) {
+        // 自動ログアウト(ENHA2-027): 閉/スリープ中に夜中3時を跨いでいたら
+        // セッションを復元せずサインアウトする(ダッシュボードの一瞬の表示も防ぐ)。
+        if (shouldLogout()) {
+          await supabase!.auth.signOut();
+          clearLoginAt();
+          setAuthReady(true);
+          return;
+        }
         const p = await fetchProfile(session.user.id);
         if (p) {
           await activateIfInvited(session.user.id, p.status);
@@ -154,8 +163,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAuthReady(true);
     }).catch(() => { clearTimeout(authTimer); setAuthReady(true); });
 
-    const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase!.auth.onAuthStateChange((event, session) => {
       if (session) {
+        // 自動ログアウト(ENHA2-027): 明示的なサインイン時のみログイン時刻を記録する。
+        // TOKEN_REFRESHED では更新しない(更新するとトークン自動更新のたびに起点が
+        // ずれて夜中3時を跨げなくなる)。record は既存値を上書きしない。
+        if (event === "SIGNED_IN") recordLoginAtIfMissing();
+        // 何らかの経路でセッション復元時に既に3時を跨いでいたらサインアウト。
+        if (shouldLogout()) { void supabase!.auth.signOut(); clearLoginAt(); return; }
         fetchProfile(session.user.id).then(async p => {
           if (p) {
             await activateIfInvited(session.user.id, p.status);
@@ -176,6 +191,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         });
       } else {
+        clearLoginAt();
         setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
         setIsSystemAdmin(false);
         setUserPermissions({ ...DEFAULT_PERMISSIONS });
@@ -200,6 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const perms = resolvePermissions({ ...DEFAULT_PERMISSIONS });
         setUserName(member.name); setUserRole(role); setUserId(member.id);
         setUserPermissions(perms);
+        recordLoginAt();
         sessionStorage.setItem("isLoggedIn", "true");
         sessionStorage.setItem("userName", member.name);
         sessionStorage.setItem("userRole", member.role);
@@ -211,7 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const { data, error } = await supabase!.auth.signInWithPassword({ email, password });
     if (error) return error.message;
-    if (data.session) sessionStorage.setItem("isLoggedIn", "true");
+    if (data.session) { recordLoginAt(); sessionStorage.setItem("isLoggedIn", "true"); }
     return null;
   };
 
@@ -220,11 +237,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithBiometric = async (): Promise<string | null> => {
     const r = await biometricAuth.loginWithBiometric();
     if (!r.ok) return r.error || "生体認証に失敗しました。";
+    recordLoginAt();
     sessionStorage.setItem("isLoggedIn", "true");
     return null;
   };
 
   const logout = async () => {
+    clearLoginAt();
     if (isSupabaseEnabled) await supabase!.auth.signOut();
     setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
     setIsSystemAdmin(false);
