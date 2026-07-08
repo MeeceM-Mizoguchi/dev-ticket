@@ -8,13 +8,14 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { MeshConnection } from "@/app/lib/MeshConnection";
 import { CallSignaling, type RosterMember } from "@/app/lib/CallSignaling";
 import { ScreenSharePeers } from "@/app/lib/ScreenSharePeers";
+import { CallTabCoordination } from "@/app/lib/callTabCoordination";
 import { monitorSpeaking } from "@/app/lib/audioLevel";
 import { startRingtone, stopRingtone, playHangupTone } from "@/app/lib/ringtone";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
   SIGNAL, audioConstraints, displayMediaConstraints, isScreenShareSupported,
   userCallChannel, ONLINE_PRESENCE_CHANNEL,
-  RING_TIMEOUT_MS, RECONNECT_GRACE_MS, ICE_RESTART_ATTEMPTS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS,
+  RING_TIMEOUT_MS, RECONNECT_GRACE_MS, ICE_RESTART_ATTEMPTS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS, TAB_BUSY_QUERY_MS,
   type CallMember, type InvitePayload, type Participant, type CallStatus,
   type ScreenShareState, type Annotation, type AnnotationInput,
 } from "@/app/lib/callConstants";
@@ -90,6 +91,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const iceRestartAttemptsRef = useRef<Map<string, number>>(new Map()); // 相手ごとのICE restart試行回数
   const rosterEmptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // roster一時空(Realtime再接続)での誤終了デバウンス
   const toastRef = useRef(toast); // toast は毎レンダー再生成されるため ref 経由で参照(useCallback を安定させる)
+  // ── 複数タブ調整(同一ユーザー・同一ブラウザ) ──
+  const tabCoordRef = useRef<CallTabCoordination | null>(null);
+  const tabIdRef = useRef<string>("");
+  if (!tabIdRef.current) tabIdRef.current = crypto.randomUUID();
   // ── ENHA2-030 画面共有 ──
   const screenPeersRef = useRef<ScreenSharePeers | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null); // 共有者の getDisplayMedia ストリーム
@@ -504,6 +509,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const acceptIncoming = useCallback(async () => {
     const inv = incomingRef.current;
     if (!inv || callRef.current) return;
+    // 別タブでも同じ着信が鳴っているので、この端末で応答したことを通知して鳴り止ませる。
+    tabCoordRef.current?.claim(inv.sessionId);
     // 応答した瞬間に着信音を止める(マイク許可ダイアログ待ちの間も鳴り続けないように await 前で停止)。
     stopRingtone();
     if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
@@ -526,6 +533,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const declineIncoming = useCallback(() => {
     const inv = incomingRef.current;
     if (!inv) return;
+    // 別タブでも鳴っている同じ着信を止める(片方で拒否したら全タブで鳴り止む)。
+    tabCoordRef.current?.claim(inv.sessionId);
     void sendToUser(inv.from, SIGNAL.decline, { sessionId: inv.sessionId, from: selfRef.current.id });
     void recordParticipantOutcome(inv.sessionId, selfRef.current.id, "declined");
     stopRingtone();
@@ -605,19 +614,49 @@ export function CallProvider({ children }: { children: ReactNode }) {
     signalingRef.current?.send(SIGNAL.annotate, { annotation: full });
   }, [addAnnotation]);
 
+  // ── 複数タブ調整: 別タブで応答したら鳴り止ませる / 別タブ通話中は鳴らさない ──
+  useEffect(() => {
+    if (!userId) return;
+    const coord = new CallTabCoordination(userId, tabIdRef.current, {
+      onClaimed: (sessionId) => {
+        // 別タブが同じ着信を応答/拒否した。自タブが鳴らしていれば止める。
+        if (incomingRef.current?.sessionId === sessionId) {
+          stopRingtone();
+          if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
+          setIncoming(null);
+        }
+      },
+    });
+    tabCoordRef.current = coord;
+    return () => { coord.destroy(); tabCoordRef.current = null; };
+  }, [userId]);
+
+  // 通話状態(発信/着信応答/通話中)を別タブへ共有し、他タブの新規着信を抑止する。
+  useEffect(() => { tabCoordRef.current?.setBusy(!!call); }, [call]);
+
   // ── 個人着信チャンネル(呼び鈴)の常時購読 ──
   useEffect(() => {
     if (!isSupabaseEnabled || !userId) return;
     const ch: RealtimeChannel = supabase!.channel(userCallChannel(userId), {
       config: { broadcast: { self: false } },
     });
-    ch.on("broadcast", { event: SIGNAL.invite }, ({ payload }) => {
+    ch.on("broadcast", { event: SIGNAL.invite }, async ({ payload }) => {
       const inv = payload as InvitePayload;
       // 通話中/着信中は取り込まない(自動拒否)
       if (callRef.current || incomingRef.current) {
         void sendToUser(inv.from, SIGNAL.decline, { sessionId: inv.sessionId, from: userId });
         return;
       }
+      // 別タブで通話中なら、この端末では鳴らさず自動拒否する(単一通話・取りこぼし防止)。
+      // busy が残った誤検知を避けるため、疑いがあるときだけ生存確認してから確定する。
+      const coord = tabCoordRef.current;
+      if (coord?.hasBusySibling() && await coord.verifyBusySibling(TAB_BUSY_QUERY_MS)) {
+        if (callRef.current || incomingRef.current) return; // 待機中に状況が変わっていたら何もしない
+        void sendToUser(inv.from, SIGNAL.decline, { sessionId: inv.sessionId, from: userId });
+        return;
+      }
+      // 生存確認の待機中に自タブが通話開始/別着信を受けていたら中断する。
+      if (callRef.current || incomingRef.current) return;
       setIncoming(inv);
       startRingtone("incoming");
       if (ringTimerRef.current) clearTimeout(ringTimerRef.current);
