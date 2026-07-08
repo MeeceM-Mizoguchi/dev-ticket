@@ -18,6 +18,22 @@ export const audioConstraints: MediaStreamConstraints = {
   video: false,
 };
 
+// ENHA2-030 画面共有: getDisplayMedia の制約。ブラウザ純正ピッカーが「画面全体/ウィンドウ/タブ」の
+// 選択を担う。フレームレートは上り帯域を抑えるため控えめに。音声は取得しない(音声は既存メッシュで流す)。
+export const displayMediaConstraints = {
+  video: { frameRate: { ideal: 15, max: 30 } },
+  audio: false,
+};
+
+// 画面共有が使える環境か(getDisplayMedia の有無で判定)。iPad等の WKWebView は非対応。
+export const isScreenShareSupported = () =>
+  typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia;
+
+// アノテーション(視聴者の手書き/テキスト)は確定から5秒で消滅する。
+export const ANNOTATION_TTL_MS = 5_000;
+// ポインター送信のスロットル(ミリ秒)。共有者のマウス追従を間引いて Broadcast 負荷を抑える。
+export const POINTER_THROTTLE_MS = 40;
+
 // メッシュの上限人数(自分を含む)。6人以上は音声メッシュの品質が落ちるため発信を禁止する。
 export const MAX_PARTICIPANTS = 5;
 
@@ -44,6 +60,14 @@ export const SIGNAL = {
   answer: "signal-answer",
   ice: "signal-ice",
   mute: "signal-mute", // ミュート状態のUI同期
+  // ── ENHA2-030 画面共有(セッションチャンネル宛) ──
+  screenStart: "signal-screen-start", // 共有開始の告知(映像PC確立前にステージを開く)
+  screenStop: "signal-screen-stop", // 共有停止
+  screenOffer: "signal-screen-offer", // 画面映像PCの offer(to 指定・共有者→視聴者)
+  screenAnswer: "signal-screen-answer", // 画面映像PCの answer(to 指定)
+  screenIce: "signal-screen-ice", // 画面映像PCの ICE(to 指定)
+  pointer: "signal-pointer", // ポインター位置(共有者のみ送信)
+  annotate: "signal-annotate", // アノテーション(視聴者のみ送信)
 } as const;
 
 // ── 型 ───────────────────────────────────────────────────────
@@ -73,3 +97,48 @@ export interface Participant {
 }
 
 export type CallStatus = "outgoing" | "incoming" | "connecting" | "active";
+
+// ── ENHA2-030 画面共有の型 ───────────────────────────────────
+// ポインター(共有者のみ)。座標は共有映像フレーム基準の正規化値[0,1]。
+export interface PointerState {
+  nx: number;
+  ny: number;
+  name: string; // 共有者名(ラベル表示用)
+}
+
+// アノテーション(視聴者のみ)。座標はすべて正規化値[0,1]。
+export interface StrokeAnnotation {
+  id: string;
+  from: string;
+  fromName: string;
+  kind: "stroke";
+  color: string;
+  points: { nx: number; ny: number }[];
+  at: number; // 最終更新時刻(TTL起点)
+}
+export interface TextAnnotation {
+  id: string;
+  from: string;
+  fromName: string;
+  kind: "text";
+  color: string;
+  nx: number;
+  ny: number;
+  text: string;
+  at: number;
+}
+export type Annotation = StrokeAnnotation | TextAnnotation;
+// UI から送るときの入力(from/fromName/at はコンテキスト側で付与)。
+export type AnnotationInput =
+  | Pick<StrokeAnnotation, "id" | "kind" | "color" | "points">
+  | Pick<TextAnnotation, "id" | "kind" | "color" | "nx" | "ny" | "text">;
+
+// 画面共有の状態。共有中のみ非null。共有者/視聴者どちらの端末でも同じ形。
+export interface ScreenShareState {
+  presenterId: string;
+  presenterName: string;
+  isSelf: boolean; // 自分が共有者か
+  stream?: MediaStream; // 自己プレビュー(共有者) or 受信映像(視聴者)
+  pointer: PointerState | null;
+  annotations: Annotation[];
+}

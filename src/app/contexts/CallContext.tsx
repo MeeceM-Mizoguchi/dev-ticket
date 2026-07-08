@@ -7,13 +7,16 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { MeshConnection } from "@/app/lib/MeshConnection";
 import { CallSignaling, type RosterMember } from "@/app/lib/CallSignaling";
+import { ScreenSharePeers } from "@/app/lib/ScreenSharePeers";
 import { monitorSpeaking } from "@/app/lib/audioLevel";
 import { startRingtone, stopRingtone, playHangupTone } from "@/app/lib/ringtone";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
-  SIGNAL, audioConstraints, userCallChannel, ONLINE_PRESENCE_CHANNEL,
-  RING_TIMEOUT_MS, MAX_PARTICIPANTS,
+  SIGNAL, audioConstraints, displayMediaConstraints, isScreenShareSupported,
+  userCallChannel, ONLINE_PRESENCE_CHANNEL,
+  RING_TIMEOUT_MS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS,
   type CallMember, type InvitePayload, type Participant, type CallStatus,
+  type ScreenShareState, type Annotation, type AnnotationInput,
 } from "@/app/lib/callConstants";
 import {
   recordCallStart, recordParticipantOutcome, recordParticipantLeft, recordCallEnded,
@@ -34,18 +37,27 @@ interface CallCtxType {
   call: CallState | null;
   online: Set<string>;
   error: string | null;
+  screenShare: ScreenShareState | null;
+  screenShareSupported: boolean;
   startCall: (project: { id: string; name: string }, targets: CallMember[]) => Promise<void>;
   acceptIncoming: () => Promise<void>;
   declineIncoming: () => void;
   hangup: () => void;
   toggleMute: () => void;
   clearError: () => void;
+  // ── ENHA2-030 画面共有 ──
+  startScreenShare: () => Promise<void>;
+  stopScreenShare: () => void;
+  sendPointer: (nx: number, ny: number, visible: boolean) => void;
+  sendAnnotation: (ann: AnnotationInput) => void;
 }
 
 const CallContext = createContext<CallCtxType>({
   incoming: null, call: null, online: new Set(), error: null,
+  screenShare: null, screenShareSupported: false,
   startCall: async () => {}, acceptIncoming: async () => {}, declineIncoming: () => {},
   hangup: () => {}, toggleMute: () => {}, clearError: () => {},
+  startScreenShare: async () => {}, stopScreenShare: () => {}, sendPointer: () => {}, sendAnnotation: () => {},
 });
 
 export function useCall() { return useContext(CallContext); }
@@ -57,6 +69,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [call, setCall] = useState<CallState | null>(null);
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [screenShare, setScreenShare] = useState<ScreenShareState | null>(null); // ENHA2-030
 
   // ライフサイクルを跨ぐ参照
   const meshRef = useRef<MeshConnection | null>(null);
@@ -75,13 +88,47 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const endingRef = useRef(false); // 終了処理の二重発火ガード(bye/roster/connState が同時に来ても1回だけ)
   const connLossTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 接続断フォールバックのデバウンス
   const toastRef = useRef(toast); // toast は毎レンダー再生成されるため ref 経由で参照(useCallback を安定させる)
+  // ── ENHA2-030 画面共有 ──
+  const screenPeersRef = useRef<ScreenSharePeers | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null); // 共有者の getDisplayMedia ストリーム
+  const screenShareRef = useRef<ScreenShareState | null>(null);
+  const annotationTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // アノテーションの5秒TTL
+  const pointerThrottleRef = useRef(0);
 
   useEffect(() => { callRef.current = call; }, [call]);
   useEffect(() => { incomingRef.current = incoming; }, [incoming]);
+  useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
   useEffect(() => { selfRef.current = { id: userId, name: userName || "匿名" }; }, [userId, userName]);
   useEffect(() => { toastRef.current = toast; });
 
   const clearError = useCallback(() => setError(null), []);
+
+  // ── ENHA2-030 画面共有: 参照のみの後始末(setState はしない=teardownから安全に呼べる) ──
+  const disposeScreenRefs = useCallback(() => {
+    screenPeersRef.current?.destroy();
+    screenPeersRef.current = null;
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    for (const t of annotationTimersRef.current.values()) clearTimeout(t);
+    annotationTimersRef.current.clear();
+    pointerThrottleRef.current = 0;
+  }, []);
+
+  // アノテーションを受信/追加し、確定から5秒後に自動消滅させる(共有者の描画は無効=視聴者のみ)。
+  const addAnnotation = useCallback((ann: Annotation) => {
+    setScreenShare((prev) => {
+      if (!prev || prev.presenterId === ann.from) return prev;
+      const rest = prev.annotations.filter((a) => a.id !== ann.id);
+      return { ...prev, annotations: [...rest, ann] };
+    });
+    const timers = annotationTimersRef.current;
+    const existing = timers.get(ann.id);
+    if (existing) clearTimeout(existing);
+    timers.set(ann.id, setTimeout(() => {
+      timers.delete(ann.id);
+      setScreenShare((prev) => prev ? { ...prev, annotations: prev.annotations.filter((a) => a.id !== ann.id) } : prev);
+    }, ANNOTATION_TTL_MS));
+  }, []);
 
   // ── 個人着信チャンネル宛にワンショット送信(相手の呼び鈴を鳴らす) ──
   const sendToUser = useCallback(async (targetId: string, event: string, payload: Record<string, unknown>) => {
@@ -113,10 +160,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     connStateRef.current.clear();
     for (const t of connLossTimersRef.current.values()) clearTimeout(t);
     connLossTimersRef.current.clear();
+    disposeScreenRefs();
     everActiveRef.current = false;
     pendingInviteRef.current.clear();
     inviteTargetsRef.current = [];
-  }, []);
+  }, [disposeScreenRefs]);
 
   // 自分から通話を切る
   const hangup = useCallback(() => {
@@ -136,12 +184,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
         void sendToUser(p.id, SIGNAL.bye, { sessionId: cur.sessionId, from: selfRef.current.id });
       }
     }
+    // 自分が画面共有中なら、退出前に視聴者へ停止を通知(セッションチャンネルはteardownで閉じる)
+    if (screenShareRef.current?.isSelf) signalingRef.current?.send(SIGNAL.screenStop, {});
     void recordParticipantLeft(cur.sessionId, selfRef.current.id);
     if (cur.role === "caller") void recordCallEnded(cur.sessionId, !everActiveRef.current);
     stopRingtone();
     playHangupTone();
     teardown();
     setCall(null);
+    setScreenShare(null);
   }, [sendToUser, teardown]);
 
   // 相手起点で通話が終了したとき(bye受信 / roster全員退出 / 接続断)の共通処理。
@@ -157,6 +208,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     playHangupTone();
     teardown();
     setCall(null);
+    setScreenShare(null);
     toastRef.current("通話が終了しました", "info");
   }, [teardown]);
 
@@ -177,6 +229,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const self = selfRef.current;
     const others = members.filter((m) => m.id !== self.id);
     meshRef.current?.setRoster(others.map((m) => m.id));
+    // 画面共有中に視聴者が増減したら配信先を追従(共有者のみ)
+    if (screenShareRef.current?.isSelf) screenPeersRef.current?.setViewers(others.map((m) => m.id));
     if (others.length > 0) {
       everActiveRef.current = true;
       // 相手が応答して通話が繋がったら発信/着信の呼び出し音を止める
@@ -227,7 +281,44 @@ export function CallProvider({ children }: { children: ReactNode }) {
         ...prev, participants: prev.participants.map((p) => p.id === from ? { ...p, muted } : p),
       } : prev);
     }
-  }, []);
+    // ── ENHA2-030 画面共有 ──
+    else if (event === SIGNAL.screenStart) {
+      const name = (payload.fromName as string)
+        || callRef.current?.participants.find((p) => p.id === from)?.name || "参加者";
+      setScreenShare((prev) => {
+        // 既に別の共有者がいる場合は先勝ちで無視
+        if (prev && prev.presenterId !== from) return prev;
+        return { presenterId: from, presenterName: name, isSelf: false, stream: prev?.stream, pointer: null, annotations: [] };
+      });
+    }
+    else if (event === SIGNAL.screenStop) {
+      if (screenShareRef.current?.presenterId === from) {
+        screenPeersRef.current?.stop();
+        for (const t of annotationTimersRef.current.values()) clearTimeout(t);
+        annotationTimersRef.current.clear();
+        setScreenShare(null);
+      }
+    }
+    else if (event === SIGNAL.screenOffer) void screenPeersRef.current?.onOffer(from, payload.sdp as RTCSessionDescriptionInit);
+    else if (event === SIGNAL.screenAnswer) void screenPeersRef.current?.onAnswer(from, payload.sdp as RTCSessionDescriptionInit);
+    else if (event === SIGNAL.screenIce) void screenPeersRef.current?.onIce(from, payload.candidate as RTCIceCandidateInit);
+    else if (event === SIGNAL.pointer) {
+      const nx = payload.nx as number, ny = payload.ny as number, visible = !!payload.visible;
+      setScreenShare((prev) => prev && prev.presenterId === from
+        ? { ...prev, pointer: visible ? { nx, ny, name: prev.presenterName } : null }
+        : prev);
+    }
+    else if (event === SIGNAL.annotate) {
+      addAnnotation(payload.annotation as Annotation);
+    }
+    // セッションチャンネル経由の即時切断(タブを閉じた等)。個人チャンネルより確実・低遅延。
+    else if (event === SIGNAL.bye) {
+      const cur = callRef.current;
+      if (!cur) return;
+      const remaining = cur.participants.filter((x) => x.connState !== "self" && x.id !== from);
+      if (remaining.length === 0) endCallAsRemote();
+    }
+  }, [addAnnotation, endCallAsRemote]);
 
   // ── mesh を構築(共通) ──
   const buildMesh = useCallback((sessionId: string, stream: MediaStream) => {
@@ -240,8 +331,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
       onRemoteStream: (id, remoteStream) => {
         streamMapRef.current.set(id, remoteStream);
         startSpeakingMonitor(id, remoteStream);
+        // 相手の音声が実際に届いた＝繋がった。呼び出し音を確実に止める(最も早く確実な信号)。
+        everActiveRef.current = true;
+        stopRingtone();
+        if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
         setCall((prev) => prev ? {
-          ...prev, participants: prev.participants.map((p) => p.id === id ? { ...p, stream: remoteStream } : p),
+          ...prev,
+          status: (prev.status === "outgoing" || prev.status === "connecting") ? "active" : prev.status,
+          participants: prev.participants.map((p) => p.id === id ? { ...p, stream: remoteStream } : p),
         } : prev);
       },
       onPeerStateChange: (id, state) => {
@@ -255,6 +352,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (state === "connected") {
           const t = timers.get(id);
           if (t) { clearTimeout(t); timers.delete(id); }
+          // 音声が実際に繋がったら呼び出し音を止める(presence roster の遅延/取りこぼし対策)。
+          // roster より確実な「接続された」信号。発信/着信どちらの呼び出し音もここで確実に消える。
+          everActiveRef.current = true;
+          stopRingtone();
+          if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
+          setCall((prev) => prev && (prev.status === "outgoing" || prev.status === "connecting")
+            ? { ...prev, status: "active" } : prev);
         } else if (state === "disconnected" || state === "failed" || state === "closed") {
           if (!timers.has(id)) {
             timers.set(id, setTimeout(() => {
@@ -274,8 +378,32 @@ export function CallProvider({ children }: { children: ReactNode }) {
         else signaling.send(ev === "offer" ? SIGNAL.offer : SIGNAL.answer, { to, sdp: data });
       },
     });
+    // ── ENHA2-030 画面共有: 音声とは別建ての一方向映像PC群 ──
+    const screenPeers = new ScreenSharePeers(self.id, {
+      onRemoteVideo: (presenterId, remoteStream) => {
+        setScreenShare((prev) => {
+          if (prev && prev.presenterId !== presenterId) return prev; // 別共有者がいれば無視
+          if (prev && prev.presenterId === presenterId) return { ...prev, stream: remoteStream };
+          // screenStart 未受信の late-join 等でも映像到達で開く
+          const name = callRef.current?.participants.find((p) => p.id === presenterId)?.name || "参加者";
+          return { presenterId, presenterName: name, isSelf: false, stream: remoteStream, pointer: null, annotations: [] };
+        });
+      },
+      onPeerStateChange: (id, state) => {
+        // 視聴中に共有者との映像接続が切れたらステージを閉じる(共有者離脱の保険)
+        if ((state === "failed" || state === "closed") && screenShareRef.current?.presenterId === id && !screenShareRef.current.isSelf) {
+          screenPeersRef.current?.stop();
+          setScreenShare(null);
+        }
+      },
+      sendSignal: (ev, to, data) => {
+        if (ev === "ice") signaling.send(SIGNAL.screenIce, { to, candidate: data });
+        else signaling.send(ev === "offer" ? SIGNAL.screenOffer : SIGNAL.screenAnswer, { to, sdp: data });
+      },
+    });
     signalingRef.current = signaling;
     meshRef.current = mesh;
+    screenPeersRef.current = screenPeers;
   }, [handleRoster, handleSignal, startSpeakingMonitor, endCallAsRemote]);
 
   const acquireMic = useCallback(async (): Promise<MediaStream | null> => {
@@ -331,11 +459,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const acceptIncoming = useCallback(async () => {
     const inv = incomingRef.current;
     if (!inv || callRef.current) return;
+    // 応答した瞬間に着信音を止める(マイク許可ダイアログ待ちの間も鳴り続けないように await 前で停止)。
+    stopRingtone();
+    if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
     const stream = await acquireMic();
     if (!stream) return;
     endingRef.current = false;
     localStreamRef.current = stream;
-    stopRingtone();
     setIncoming(null);
     const self = selfRef.current;
     buildMesh(inv.sessionId, stream);
@@ -369,6 +499,66 @@ export function CallProvider({ children }: { children: ReactNode }) {
       participants: prev.participants.map((p) => p.connState === "self" ? { ...p, muted } : p),
     } : prev);
   }, []);
+
+  // ── ENHA2-030 画面共有を停止(共有者のみ) ──
+  const stopScreenShare = useCallback(() => {
+    const ss = screenShareRef.current;
+    if (!ss || !ss.isSelf) return; // 他者の共有は止められない
+    signalingRef.current?.send(SIGNAL.screenStop, {});
+    screenPeersRef.current?.stop();
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    for (const t of annotationTimersRef.current.values()) clearTimeout(t);
+    annotationTimersRef.current.clear();
+    setScreenShare(null);
+  }, []);
+
+  // ── ENHA2-030 画面共有を開始 ──
+  const startScreenShare = useCallback(async () => {
+    const cur = callRef.current;
+    if (!cur || !isScreenShareSupported()) return;
+    if (screenShareRef.current) { setError("すでに画面共有が行われています。"); return; }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia(displayMediaConstraints);
+    } catch {
+      // ユーザーがピッカーをキャンセル/拒否した場合は静かに何もしない
+      return;
+    }
+    // 取得〜許可の間に通話が終わっていたら破棄
+    if (!callRef.current || screenShareRef.current) { stream.getTracks().forEach((t) => t.stop()); return; }
+    screenStreamRef.current = stream;
+    const self = selfRef.current;
+    const viewers = cur.participants.filter((p) => p.connState !== "self").map((p) => p.id);
+    screenPeersRef.current?.start(viewers, stream);
+    setScreenShare({ presenterId: self.id, presenterName: self.name, isSelf: true, stream, pointer: null, annotations: [] });
+    signalingRef.current?.send(SIGNAL.screenStart, { fromName: self.name });
+    // ブラウザ標準の「共有を停止」バー押下にも追従
+    const track = stream.getVideoTracks()[0];
+    if (track) track.onended = () => stopScreenShare();
+  }, [stopScreenShare]);
+
+  // ── ポインター位置を送信(共有者のみ・スロットル) ──
+  const sendPointer = useCallback((nx: number, ny: number, visible: boolean) => {
+    const ss = screenShareRef.current;
+    if (!ss || !ss.isSelf) return;
+    const now = performance.now();
+    if (visible && now - pointerThrottleRef.current < POINTER_THROTTLE_MS) return;
+    pointerThrottleRef.current = now;
+    const self = selfRef.current;
+    setScreenShare((prev) => prev ? { ...prev, pointer: visible ? { nx, ny, name: self.name } : null } : prev);
+    signalingRef.current?.send(SIGNAL.pointer, { nx, ny, visible });
+  }, []);
+
+  // ── アノテーションを送信(視聴者のみ・自端末にも即反映) ──
+  const sendAnnotation = useCallback((input: AnnotationInput) => {
+    const ss = screenShareRef.current;
+    if (!ss || ss.isSelf) return; // 視聴者のみ
+    const self = selfRef.current;
+    const full = { ...input, from: self.id, fromName: self.name, at: Date.now() } as Annotation;
+    addAnnotation(full);
+    signalingRef.current?.send(SIGNAL.annotate, { annotation: full });
+  }, [addAnnotation]);
 
   // ── 個人着信チャンネル(呼び鈴)の常時購読 ──
   useEffect(() => {
@@ -436,11 +626,40 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => { void supabase!.removeChannel(ch); };
   }, [userId]);
 
+  // 呼び出し音の保険: 通話が active か、いずれかの相手が connected になったら必ず止める。
+  // 個別の停止経路(roster/connected/onRemoteStream/accept)を取りこぼしても、状態変化のたびに確実に消す。
+  useEffect(() => {
+    if (!call) return;
+    if (call.status === "active" || call.participants.some((p) => p.connState === "connected")) {
+      stopRingtone();
+    }
+  }, [call]);
+
+  // タブを閉じた/離脱したら即座に相手へ切断通知(購読済みセッションチャンネルへ bye をブロードキャスト)。
+  // presence の離脱検知や接続断フォールバック(数秒)を待たずに、相手側でほぼ即時に通話が終わる。
+  useEffect(() => {
+    const onLeave = () => {
+      const cur = callRef.current;
+      if (!cur) return;
+      try { signalingRef.current?.send(SIGNAL.bye, { sessionId: cur.sessionId }); } catch { /* noop */ }
+    };
+    window.addEventListener("pagehide", onLeave);
+    window.addEventListener("beforeunload", onLeave);
+    return () => {
+      window.removeEventListener("pagehide", onLeave);
+      window.removeEventListener("beforeunload", onLeave);
+    };
+  }, []);
+
   // アンマウント時に通話を破棄
   useEffect(() => () => teardown(), [teardown]);
 
   return (
-    <CallContext.Provider value={{ incoming, call, online, error, startCall, acceptIncoming, declineIncoming, hangup, toggleMute, clearError }}>
+    <CallContext.Provider value={{
+      incoming, call, online, error, screenShare, screenShareSupported: isScreenShareSupported(),
+      startCall, acceptIncoming, declineIncoming, hangup, toggleMute, clearError,
+      startScreenShare, stopScreenShare, sendPointer, sendAnnotation,
+    }}>
       {children}
     </CallContext.Provider>
   );

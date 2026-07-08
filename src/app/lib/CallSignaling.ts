@@ -46,8 +46,13 @@ export class CallSignaling {
       handlers.onRoster([...byId.values()]);
     });
 
-    // WebRTC 交渉 & ミュート
-    for (const ev of [SIGNAL.offer, SIGNAL.answer, SIGNAL.ice, SIGNAL.mute]) {
+    // WebRTC 交渉 & ミュート & 画面共有(ENHA2-030)。to 指定つきは自分宛のみ、
+    // to 無し(screenStart/Stop/pointer/annotate)は全員に配られ onSignal へ流れる。
+    for (const ev of [
+      SIGNAL.offer, SIGNAL.answer, SIGNAL.ice, SIGNAL.mute, SIGNAL.bye,
+      SIGNAL.screenStart, SIGNAL.screenStop, SIGNAL.screenOffer, SIGNAL.screenAnswer, SIGNAL.screenIce,
+      SIGNAL.pointer, SIGNAL.annotate,
+    ]) {
       this.channel.on("broadcast", { event: ev }, ({ payload }) => {
         const p = payload as Record<string, unknown>;
         // 宛先指定がある場合、自分宛以外は無視
