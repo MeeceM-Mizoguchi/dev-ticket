@@ -44,6 +44,11 @@ export const RING_TIMEOUT_MS = 45_000;
 // 本当の相手切断と誤判定しないための猶予(ミリ秒)。この間に復帰すれば通話は継続する。
 export const RECONNECT_GRACE_MS = 6_000;
 
+// ICEが切れたときに経路を張り直す(ICE restart)最大リトライ回数。
+// これを出し切っても復旧しなければ相手切断として通話を終了する。
+// 猶予 RECONNECT_GRACE_MS × (この回数 + 1) ぶん(≒18秒)は復旧を試みる。
+export const ICE_RESTART_ATTEMPTS = 2;
+
 // ── チャンネル名 ─────────────────────────────────────────────
 // 個人着信チャンネル: 全ログインユーザーが常時1本購読する「呼び鈴」。
 export const userCallChannel = (userId: string) => `call-user:${userId}`;

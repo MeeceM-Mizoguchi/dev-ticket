@@ -14,7 +14,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   SIGNAL, audioConstraints, displayMediaConstraints, isScreenShareSupported,
   userCallChannel, ONLINE_PRESENCE_CHANNEL,
-  RING_TIMEOUT_MS, RECONNECT_GRACE_MS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS,
+  RING_TIMEOUT_MS, RECONNECT_GRACE_MS, ICE_RESTART_ATTEMPTS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS,
   type CallMember, type InvitePayload, type Participant, type CallStatus,
   type ScreenShareState, type Annotation, type AnnotationInput,
 } from "@/app/lib/callConstants";
@@ -87,6 +87,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const selfRef = useRef({ id: userId, name: userName });
   const endingRef = useRef(false); // 終了処理の二重発火ガード(bye/roster/connState が同時に来ても1回だけ)
   const connLossTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 接続断フォールバックのデバウンス
+  const iceRestartAttemptsRef = useRef<Map<string, number>>(new Map()); // 相手ごとのICE restart試行回数
   const rosterEmptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // roster一時空(Realtime再接続)での誤終了デバウンス
   const toastRef = useRef(toast); // toast は毎レンダー再生成されるため ref 経由で参照(useCallback を安定させる)
   // ── ENHA2-030 画面共有 ──
@@ -161,6 +162,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     connStateRef.current.clear();
     for (const t of connLossTimersRef.current.values()) clearTimeout(t);
     connLossTimersRef.current.clear();
+    iceRestartAttemptsRef.current.clear();
     if (rosterEmptyTimerRef.current) { clearTimeout(rosterEmptyTimerRef.current); rosterEmptyTimerRef.current = null; }
     disposeScreenRefs();
     everActiveRef.current = false;
@@ -377,11 +379,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
           ...prev, participants: prev.participants.map((p) => p.id === id ? { ...p, connState: state } : p),
         } : prev);
         // フォールバック: bye も presence も届かないネットワーク断の検知。
-        // 短時間の揺れ(ICE再接続)で誤終了しないよう数秒デバウンスしてから判定する。
+        // 短時間の揺れは即終了せず、ICE restart で経路を張り直して自己修復を試みる。
+        // 数回張り直しても復帰しなければ相手切断として終了する。
         const timers = connLossTimersRef.current;
         if (state === "connected") {
           const t = timers.get(id);
           if (t) { clearTimeout(t); timers.delete(id); }
+          iceRestartAttemptsRef.current.delete(id); // 復旧成功: 試行回数をリセット
           // 音声が実際に繋がったら呼び出し音を止める(presence roster の遅延/取りこぼし対策)。
           // roster より確実な「接続された」信号。発信/着信どちらの呼び出し音もここで確実に消える。
           everActiveRef.current = true;
@@ -390,16 +394,27 @@ export function CallProvider({ children }: { children: ReactNode }) {
           setCall((prev) => prev && (prev.status === "outgoing" || prev.status === "connecting")
             ? { ...prev, status: "active" } : prev);
         } else if (state === "disconnected" || state === "failed" || state === "closed") {
+          // "failed" は経路断確定: すぐ張り直す。"disconnected" は自己回復も多いので猶予後に張り直す。
+          if (state === "failed") meshRef.current?.restartIce(id);
           if (!timers.has(id)) {
-            timers.set(id, setTimeout(() => {
+            const attempt = () => {
               timers.delete(id);
-              if (connStateRef.current.get(id) === "connected") return;
+              if (connStateRef.current.get(id) === "connected") { iceRestartAttemptsRef.current.delete(id); return; }
               const cur = callRef.current;
               if (!cur) return;
-              // 他に生存中(connected)の相手がいなければ相手切断として終了
+              const tries = iceRestartAttemptsRef.current.get(id) ?? 0;
+              if (tries < ICE_RESTART_ATTEMPTS) {
+                iceRestartAttemptsRef.current.set(id, tries + 1);
+                meshRef.current?.restartIce(id); // 経路を張り直してもう一度待つ
+                timers.set(id, setTimeout(attempt, RECONNECT_GRACE_MS));
+                return;
+              }
+              // 復旧を試し切った: 他に生存中(connected)の相手がいなければ相手切断として終了
+              iceRestartAttemptsRef.current.delete(id);
               const aliveOther = cur.participants.some((p) => p.connState !== "self" && p.id !== id && p.connState === "connected");
               if (!aliveOther) endCallAsRemote();
-            }, RECONNECT_GRACE_MS));
+            };
+            timers.set(id, setTimeout(attempt, RECONNECT_GRACE_MS));
           }
         }
       },
