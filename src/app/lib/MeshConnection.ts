@@ -41,6 +41,20 @@ export class MeshConnection {
     }
   }
 
+  // 経路が切れた相手との接続を張り直す(ICE restart)。
+  // glare 回避のため初期交渉と同じく offer 側(selfId < remoteId)だけが再 offer を送る。
+  // answer 側は相手からの再 offer を onOffer で受けて応答するだけでよい。
+  restartIce(remoteId: string) {
+    if (this.closed) return;
+    const entry = this.peers.get(remoteId);
+    if (!entry) return;
+    if (this.selfId < remoteId) {
+      // 再 offer の反映(onAnswer)までに来る新世代 ICE は待避してから適用する。
+      entry.remoteSet = false;
+      void this.createOffer(remoteId, entry, { iceRestart: true });
+    }
+  }
+
   private addPeer(remoteId: string): PeerEntry {
     const pc = new RTCPeerConnection(rtcConfig);
     const entry: PeerEntry = { pc, remoteSet: false, pendingCandidates: [] };
@@ -66,9 +80,9 @@ export class MeshConnection {
     return entry;
   }
 
-  private async createOffer(remoteId: string, entry: PeerEntry) {
+  private async createOffer(remoteId: string, entry: PeerEntry, opts?: { iceRestart?: boolean }) {
     try {
-      const offer = await entry.pc.createOffer();
+      const offer = await entry.pc.createOffer(opts?.iceRestart ? { iceRestart: true } : undefined);
       await entry.pc.setLocalDescription(offer);
       this.cb.sendSignal("offer", remoteId, entry.pc.localDescription);
     } catch (e) {
