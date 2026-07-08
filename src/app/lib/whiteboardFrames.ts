@@ -189,7 +189,12 @@ export function reparentDraggedElements(api: any, appState: any): boolean {
  *
  *  - 動いたフレーム自身: ユーザー操作で Excalidraw が既に動かしたので対象外
  *  - 選択中の要素: 一緒にドラッグされ Excalidraw が動かしたので対象外（二重移動防止）
- *  - それ以外は「最寄りの“動いた祖先フレーム”のデルタ」で1回だけ平行移動
+ *  - 所属(wbParent)が「最寄りの動いたフレーム」に繋がる要素: そのデルタで平行移動
+ *  - 所属未付与の要素: フレームの“移動前矩形”に内包されるものを幾何判定で救済（この機に所属も補完）
+ *  - 図形内テキスト(containerId): 親図形が動くなら必ず追従（バウンドテキストの置き去り防止）
+ *
+ * 所属付与はフレーム作成/リサイズ時とドラッグ確定時にしか起きないため、あとから追加した図形や
+ * 図形に紐づくテキストは所属漏れになりがち。それらを「移動前矩形の内包」で拾って取りこぼしを防ぐ。
  *
  * リサイズ/新規描画/リモート反映中は追従しない（位置スナップショットのみ更新して抜ける）。
  *
@@ -235,6 +240,7 @@ export function followFrameMoves(
 
   const parentMap = buildParentMap(elements);
   const sel = appState?.selectedElementIds || {};
+  const byId = new Map<string, any>(elements.map((e) => [e.id, e]));
   const nearestMovedDelta = (id: string): { dx: number; dy: number } | null => {
     let cur: string | undefined = parentMap.get(id);
     let guard = 0;
@@ -246,15 +252,56 @@ export function followFrameMoves(
     return null;
   };
 
+  // 動いたフレームの「移動前の矩形」（prevPos の位置 ＋ 移動で変わらない現在の幅高）。
+  // 所属(wbParent)が未付与の要素（あとから追加した図形・図形内のバウンドテキスト等）を
+  // 取りこぼさないため、この矩形に内包される要素も追従させる。小さいフレーム優先で選ぶ。
+  const movedRects: { id: string; rect: any; d: { dx: number; dy: number }; area: number }[] = [];
+  for (const [id, d] of moved) {
+    const f = byId.get(id);
+    const prev = prevPos.get(id);
+    if (!f || !prev) continue;
+    const rect = normRect({ x: prev.x, y: prev.y, width: f.width, height: f.height });
+    movedRects.push({ id, rect, d, area: rect.width * rect.height });
+  }
+  movedRects.sort((a, b) => a.area - b.area);
+  // 所属が実在フレームに繋がっていない要素だけ幾何内包で救済する（別フレーム所属の要素を奪わない）。
+  const geoDeltaFor = (el: any): { dx: number; dy: number } | null => {
+    if (parentMap.has(el.id)) return null;
+    for (const mr of movedRects) {
+      if (mr.id === el.id) continue;
+      if (isInsideFrame(el, mr.rect)) return mr.d;
+    }
+    return null;
+  };
+
+  // 各要素の移動デルタを決定。優先: 所属チェーン → 幾何内包 → バウンドテキスト（親図形に追従）。
+  const deltaById = new Map<string, { dx: number; dy: number }>();
+  for (const el of elements) {
+    if (el.isDeleted || sel[el.id]) continue;         // 削除／共ドラッグ済みは対象外
+    if (isFrame(el) && moved.has(el.id)) continue;    // 動いたフレーム自身は移動済み
+    const d = nearestMovedDelta(el.id) ?? geoDeltaFor(el);
+    if (d) deltaById.set(el.id, d);
+  }
+  // 図形内テキスト（containerId）は単独ドラッグされず所属も付きにくいので、親図形が動くなら必ず追従。
+  for (const el of elements) {
+    if (el.isDeleted || sel[el.id] || deltaById.has(el.id)) continue;
+    const cid = el.containerId;
+    if (cid && deltaById.has(cid)) deltaById.set(el.id, deltaById.get(cid)!);
+  }
+
   let changed = false;
   const updated = elements.map((el) => {
-    if (el.isDeleted) return el;
-    if (isFrame(el) && moved.has(el.id)) return el; // 自身は移動済み
-    if (sel[el.id]) return el;                      // 共ドラッグ済み
-    const d = nearestMovedDelta(el.id);
+    const d = deltaById.get(el.id);
     if (!d) return el;
     changed = true;
-    return { ...el, x: el.x + d.dx, y: el.y + d.dy, version: (el.version ?? 1) + 1, versionNonce: rand() };
+    const base: any = { ...el, x: el.x + d.dx, y: el.y + d.dy, version: (el.version ?? 1) + 1, versionNonce: rand() };
+    // 所属が未付与のまま追従した要素は、この機に正しい所属フレームへ紐付けて以後を安定させる
+    // （z-order・所属再判定・次回の追従が「幾何救済頼み」から「所属チェーン」に乗る）。
+    if (!parentMap.has(el.id)) {
+      const np = computeParentFor(el, frames, parentMap);
+      if (np && np !== resolveParent(el)) base.customData = { ...(el.customData ?? {}), wbParent: np };
+    }
+    return base;
   });
 
   if (!changed) { commitPos(nextPos); return false; }
