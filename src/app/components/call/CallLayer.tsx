@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { IncomingCallModal } from "./IncomingCallModal";
 import { CallWidget } from "./CallWidget";
+import { ScreenShareStage } from "./ScreenShareStage";
 import { useCall } from "@/app/contexts/CallContext";
 
 export function CallLayer() {
@@ -18,6 +19,7 @@ export function CallLayer() {
   return (
     <>
       <IncomingCallModal />
+      <ScreenShareStage />
       <CallWidget />
       {error && (
         <div style={{ position: "fixed", top: 64, left: "50%", transform: "translateX(-50%)", zIndex: 10001, display: "flex", alignItems: "center", gap: 9, padding: "10px 14px", borderRadius: 11, background: "#FEF2F2", border: "1px solid rgba(239,68,68,0.28)", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", maxWidth: 420 }}>
