@@ -609,17 +609,6 @@ export function Topbar() {
         </div>
       </div>
 
-      {/* 不具合・要望報告用モーダル */}
-      {showBugReport && <BugReportModal onClose={closeBugReport} />}
-
-      {/* リリース告知用モーダル */}
-      {showAnnouncement && (
-        <AnnouncementModal
-          onClose={handleMarkAsReadAndClose}
-          announcement={announcement}
-        />
-      )}
-
       {/* 生体認証用トースト */}
       {bioToast && (
         <div style={{ 
