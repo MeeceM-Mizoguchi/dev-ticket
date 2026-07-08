@@ -9,6 +9,14 @@ import type { Participant } from "@/app/lib/callConstants";
 
 const DRAG_MARGIN = 8; // 画面端との最小余白
 
+// 経過秒数を 時:分:秒 形式（例 0:05:23）に整形する（BRU5-057-4）
+function formatDuration(totalSec: number) {
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 // リモート音声の再生専用要素
 function RemoteAudio({ stream }: { stream: MediaStream }) {
   const ref = useRef<HTMLAudioElement>(null);
@@ -56,6 +64,26 @@ export function CallWidget() {
   const [minimized, setMinimized] = useState(false);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<{ dx: number; dy: number; w: number; h: number } | null>(null);
+  // 非対応端末（iPad/iPhone）で画面共有ボタンをタップした際に表示する説明ツールチップ
+  const [showShareTip, setShowShareTip] = useState(false);
+  const shareTipTimer = useRef<number | null>(null);
+  const flashShareTip = useCallback(() => {
+    setShowShareTip(true);
+    if (shareTipTimer.current) window.clearTimeout(shareTipTimer.current);
+    shareTipTimer.current = window.setTimeout(() => setShowShareTip(false), 2800);
+  }, []);
+  useEffect(() => () => { if (shareTipTimer.current) window.clearTimeout(shareTipTimer.current); }, []);
+
+  // 通話時間の計測: 接続(active)した時刻から1秒ごとに経過秒を更新する（BRU5-057-4）
+  const startedAt = call?.startedAt;
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!startedAt) { setElapsed(0); return; }
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
 
   // 画面端を超えないように座標を丸める
   const clamp = useCallback((x: number, y: number, w: number, h: number) => ({
@@ -113,7 +141,9 @@ export function CallWidget() {
   const otherSharing = !!screenShare && !screenShare.isSelf;
   // iPad/Safari 等は getDisplayMedia 非対応で画面共有を開始できない。ボタンは出すが無効化して理由を示す。
   const shareUnsupported = !screenShareSupported;
-  const shareDisabled = shareUnsupported || otherSharing || others.length === 0;
+  // 非対応端末のときはタップでツールチップを出したいので disabled にはせず、それ以外の理由でのみ無効化する。
+  const shareOtherDisabled = otherSharing || others.length === 0;
+  const shareDisabled = shareUnsupported || shareOtherDisabled;
   const shareTitle = shareUnsupported ? "この端末（iPad / Safari など）は画面共有に対応していません"
     : iAmSharing ? "画面共有を停止"
     : otherSharing ? `${screenShare!.presenterName}さんが画面共有中`
@@ -134,7 +164,9 @@ export function CallWidget() {
         <div {...dragHandlers} style={{ display: "flex", alignItems: "center", gap: 8, cursor: dragging ? "grabbing" : "grab", flex: 1, minWidth: 0, touchAction: "none" }}>
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: call.status === "outgoing" ? "#D97706" : "#059669", flexShrink: 0, animation: "callPulse 1.4s ease-in-out infinite" }} />
           <span style={{ fontSize: 12.5, fontWeight: 800, color: "#047857", whiteSpace: "nowrap" }}>{title}</span>
-          {others.length > 0 && <span style={{ fontSize: 11, color: "#A09790", whiteSpace: "nowrap" }}>{call.participants.length}人</span>}
+          {startedAt
+            ? <span style={{ fontSize: 11, fontWeight: 700, color: "#059669", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{formatDuration(elapsed)}</span>
+            : others.length > 0 && <span style={{ fontSize: 11, color: "#A09790", whiteSpace: "nowrap" }}>{call.participants.length}人</span>}
         </div>
         <button onClick={() => setMinimized(false)} onPointerDown={stopDrag} title="元のサイズに戻す"
           style={{ width: 30, height: 30, borderRadius: "50%", border: "none", cursor: "pointer", background: "#F4F5F6", color: "#3D3732", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -154,7 +186,12 @@ export function CallWidget() {
       <style>{`@keyframes callSpin { to { transform: rotate(360deg) } }`}</style>
       <div {...dragHandlers} style={{ padding: "12px 16px 10px", background: "linear-gradient(145deg,#ECFDF5,#F0FDF8)", borderBottom: "1px solid rgba(5,150,105,0.1)", cursor: dragging ? "grabbing" : "grab", touchAction: "none", display: "flex", alignItems: "flex-start", gap: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#047857" }}>{title}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#047857" }}>{title}</div>
+            {startedAt && (
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#059669", fontVariantNumeric: "tabular-nums" }}>{formatDuration(elapsed)}</span>
+            )}
+          </div>
           <div style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>{call.projectName}</div>
           {screenShare && (
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#2563EB" }}>
@@ -185,13 +222,21 @@ export function CallWidget() {
           {call.muted ? <MicOff style={{ width: 16, height: 16 }} /> : <Mic style={{ width: 16, height: 16 }} />}
           {call.muted ? "ミュート中" : "ミュート"}
         </button>
-        <button
-          onClick={iAmSharing ? stopScreenShare : startScreenShare}
-          disabled={!iAmSharing && shareDisabled}
-          title={shareTitle}
-          style={{ width: 52, height: 42, borderRadius: 12, border: "none", cursor: !iAmSharing && shareDisabled ? "not-allowed" : "pointer", background: iAmSharing ? "#EFF6FF" : "#F4F5F6", color: iAmSharing ? "#2563EB" : "#3D3732", opacity: !iAmSharing && shareDisabled ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {iAmSharing ? <ScreenShareOff style={{ width: 17, height: 17 }} /> : <ScreenShare style={{ width: 17, height: 17 }} />}
-        </button>
+        <div style={{ position: "relative", display: "flex" }}>
+          {showShareTip && (
+            <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", width: 150, background: "#1A1714", color: "#fff", fontSize: 11, fontWeight: 600, lineHeight: 1.4, padding: "6px 9px", borderRadius: 8, textAlign: "center", boxShadow: "0 4px 14px rgba(0,0,0,0.25)", zIndex: 10, pointerEvents: "none" }}>
+              iPad・iPhone端末ではご利用いただけません
+              <span style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid #1A1714" }} />
+            </div>
+          )}
+          <button
+            onClick={iAmSharing ? stopScreenShare : shareUnsupported ? flashShareTip : shareOtherDisabled ? undefined : startScreenShare}
+            disabled={!iAmSharing && shareOtherDisabled}
+            title={shareTitle}
+            style={{ width: 52, height: 42, borderRadius: 12, border: "none", cursor: !iAmSharing && shareDisabled ? "not-allowed" : "pointer", background: iAmSharing ? "#EFF6FF" : "#F4F5F6", color: iAmSharing ? "#2563EB" : "#3D3732", opacity: !iAmSharing && shareDisabled ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {iAmSharing ? <ScreenShareOff style={{ width: 17, height: 17 }} /> : <ScreenShare style={{ width: 17, height: 17 }} />}
+          </button>
+        </div>
         <button
           onClick={hangup}
           title="退出"
