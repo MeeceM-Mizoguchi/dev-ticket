@@ -18,6 +18,8 @@ import { TriangleBindHint } from "./TriangleBindHint";
 import { FrameDecorLayer } from "./FrameDecorLayer";
 import { FrameHighlightLayer } from "./FrameHighlightLayer";
 import { FrameFormatPanel } from "./FrameFormatPanel";
+import { TextBoxDecorLayer } from "./TextBoxDecorLayer";
+import { TextBoxFormatPanel } from "./TextBoxFormatPanel";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
 
@@ -215,8 +217,10 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       {api && (
         <>
           <FrameDecorLayer api={api} containerRef={containerRef} />
+          <TextBoxDecorLayer api={api} containerRef={containerRef} />
           {canEdit && <FrameHighlightLayer api={api} containerRef={containerRef} />}
           {canEdit && <FrameFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <TextBoxFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <SnapGuideLayer api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TriangleBindHint api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <WhiteboardToolbar api={api} />}
