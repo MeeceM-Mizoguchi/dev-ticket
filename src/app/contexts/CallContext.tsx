@@ -31,6 +31,7 @@ export interface CallState {
   status: CallStatus;
   muted: boolean;
   participants: Participant[];
+  startedAt?: number; // 通話が接続(active)した時刻。通話時間計測の起点(BRU5-057-4)。
 }
 
 interface CallCtxType {
@@ -718,6 +719,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
       stopRingtone();
     }
   }, [call]);
+
+  // 通話が接続(active)した時刻を一度だけ記録する(通話時間計測の起点 BRU5-057-4)。
+  useEffect(() => {
+    if (call?.status === "active" && !call.startedAt) {
+      setCall((prev) => (prev && prev.status === "active" && !prev.startedAt ? { ...prev, startedAt: Date.now() } : prev));
+    }
+  }, [call?.status, call?.startedAt]);
 
   // タブを閉じた/離脱したら即座に相手へ切断通知(購読済みセッションチャンネルへ bye をブロードキャスト)。
   // presence の離脱検知や接続断フォールバック(数秒)を待たずに、相手側でほぼ即時に通話が終わる。

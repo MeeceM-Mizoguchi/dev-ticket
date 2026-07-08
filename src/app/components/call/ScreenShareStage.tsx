@@ -52,6 +52,10 @@ function StagePanel({
   const win = inPip ? (typeof globalThis !== "undefined" ? globalThis : undefined) : (typeof window !== "undefined" ? window : undefined);
   const [pos, setPos] = useState(() => ({ x: Math.max(12, ((win?.innerWidth ?? 1200) / 2) - 440), y: 76 }));
   const [size, setSize] = useState(() => ({ w: Math.min(880, (win?.innerWidth ?? 900) * 0.92), h: Math.min(560, (win?.innerHeight ?? 700) * 0.72) }));
+  // ヘッダーのダブルクリック/ダブルタップで画面いっぱいに最大化⇄元のサイズをトグルする(ページ内のみ)
+  const [maximized, setMaximized] = useState(false);
+  const lastTapRef = useRef(0);
+  const toggleMaximize = useCallback(() => { if (!inPip) setMaximized((v) => !v); }, [inPip]);
 
   const recompute = useCallback(() => {
     const v = videoRef.current;
@@ -130,11 +134,22 @@ function StagePanel({
   };
   const onHeaderMove = (e: ReactPointerEvent) => {
     const d = dragRef.current;
-    if (!d) return;
+    if (!d || maximized) return; // 最大化中は移動しない
     const w = win ?? window;
     setPos({ x: Math.min(Math.max(0, d.ox + (e.clientX - d.sx)), w.innerWidth - 120), y: Math.min(Math.max(0, d.oy + (e.clientY - d.sy)), w.innerHeight - 48) });
   };
-  const onHeaderUp = (e: ReactPointerEvent) => { dragRef.current = null; try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ } };
+  const onHeaderUp = (e: ReactPointerEvent) => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    if (!d) return;
+    // ほぼ動いていない=タップ。350ms以内の連続タップ(ダブルクリック/ダブルタップ)で最大化をトグル。
+    if (Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) < 6) {
+      const now = (win ?? window).performance.now();
+      if (now - lastTapRef.current < 350) { toggleMaximize(); lastTapRef.current = 0; }
+      else lastTapRef.current = now;
+    }
+  };
 
   const resizeRef = useRef<{ sx: number; sy: number; ow: number; oh: number } | null>(null);
   const onResizeDown = (e: ReactPointerEvent) => { e.stopPropagation(); resizeRef.current = { sx: e.clientX, sy: e.clientY, ow: size.w, oh: size.h }; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); };
@@ -149,13 +164,16 @@ function StagePanel({
   return (
     <div style={inPip
       ? { display: "flex", flexDirection: "column", width: "100%", height: "100vh", background: "#0B0F17", overflow: "hidden" }
+      : maximized
+      ? { position: "fixed", inset: 0, width: "100vw", height: "100vh", zIndex: 9990, display: "flex", flexDirection: "column", background: "#0B0F17", overflow: "hidden" }
       : { position: "fixed", left: pos.x, top: pos.y, width: size.w, height: size.h, minWidth: 360, minHeight: 240, zIndex: 9990, display: "flex", flexDirection: "column", background: "#0B0F17", borderRadius: 14, boxShadow: "0 20px 60px rgba(0,0,0,0.45)", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
       <style>{KEYFRAMES}</style>
 
       {/* ヘッダ(ドラッグ移動ハンドル) */}
       <div
         onPointerDown={onHeaderDown} onPointerMove={onHeaderMove} onPointerUp={onHeaderUp}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: inPip ? "default" : "move", flexShrink: 0, userSelect: "none" }}>
+        title={inPip ? undefined : "ダブルクリックで全画面表示 / 元に戻す"}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: inPip || maximized ? "default" : "move", flexShrink: 0, userSelect: "none" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, color: "#E5E7EB" }}>
           <ScreenShare style={{ width: 15, height: 15, color: "#60A5FA" }} />
           {isSelf ? "あなたの画面を共有中" : `${screenShare.presenterName}さんの画面`}
@@ -265,7 +283,7 @@ function StagePanel({
         )}
       </div>
 
-      {!inPip && (
+      {!inPip && !maximized && (
         <div
           onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeUp}
           title="サイズ変更"
