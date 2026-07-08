@@ -40,6 +40,10 @@ export const MAX_PARTICIPANTS = 5;
 // 着信の自動タイムアウト(ミリ秒)。着信側モーダルと発信側の呼び出しの両方で使う。
 export const RING_TIMEOUT_MS = 45_000;
 
+// 通話中の一時的な切断(ICEの揺れ / Realtime ソケット再接続による roster の一瞬の空振り)を
+// 本当の相手切断と誤判定しないための猶予(ミリ秒)。この間に復帰すれば通話は継続する。
+export const RECONNECT_GRACE_MS = 6_000;
+
 // ── チャンネル名 ─────────────────────────────────────────────
 // 個人着信チャンネル: 全ログインユーザーが常時1本購読する「呼び鈴」。
 export const userCallChannel = (userId: string) => `call-user:${userId}`;
