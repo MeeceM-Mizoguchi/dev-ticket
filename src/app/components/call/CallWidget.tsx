@@ -1,10 +1,13 @@
 // 通話中フローティングUI。画面右下に固定表示され、ページ遷移しても通話は継続する。
-// 各参加者の音声は非表示の <audio> で再生する。
-import { useEffect, useRef } from "react";
-import { Mic, MicOff, PhoneOff, Loader2, ScreenShare, ScreenShareOff } from "lucide-react";
+// ヘッダーを掴んでドラッグ移動でき、最小化・復帰もできる。
+// 各参加者の音声は非表示の <audio> で再生する（最小化中も再生を継続）。
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Mic, MicOff, PhoneOff, Loader2, ScreenShare, ScreenShareOff, Minus, Maximize2 } from "lucide-react";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useCall } from "@/app/contexts/CallContext";
 import type { Participant } from "@/app/lib/callConstants";
+
+const DRAG_MARGIN = 8; // 画面端との最小余白
 
 // リモート音声の再生専用要素
 function RemoteAudio({ stream }: { stream: MediaStream }) {
@@ -46,6 +49,59 @@ function ParticipantRow({ p, isSelf }: { p: Participant; isSelf: boolean }) {
 
 export function CallWidget() {
   const { call, hangup, toggleMute, screenShare, screenShareSupported, startScreenShare, stopScreenShare } = useCall();
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  // pos=null のときは既定の右下配置。ドラッグすると left/top 座標で固定する。
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const [minimized, setMinimized] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ dx: number; dy: number; w: number; h: number } | null>(null);
+
+  // 画面端を超えないように座標を丸める
+  const clamp = useCallback((x: number, y: number, w: number, h: number) => ({
+    x: Math.max(DRAG_MARGIN, Math.min(x, window.innerWidth - w - DRAG_MARGIN)),
+    y: Math.max(DRAG_MARGIN, Math.min(y, window.innerHeight - h - DRAG_MARGIN)),
+  }), []);
+
+  const onDragStart = useCallback((e: React.PointerEvent) => {
+    const el = containerRef.current;
+    if (!el || e.button !== 0) return;
+    const rect = el.getBoundingClientRect();
+    dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, w: rect.width, h: rect.height };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setDragging(true);
+  }, []);
+
+  const onDragMove = useCallback((e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    setPos(clamp(e.clientX - d.dx, e.clientY - d.dy, d.w, d.h));
+  }, [clamp]);
+
+  const onDragEnd = useCallback((e: React.PointerEvent) => {
+    if (dragRef.current) {
+      dragRef.current = null;
+      setDragging(false);
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    }
+  }, []);
+
+  // ウィンドウリサイズ・最小化切替時に画面外へはみ出さないよう再クランプ
+  useEffect(() => {
+    const reclamp = () => {
+      const el = containerRef.current;
+      if (!el) return;
+      setPos((prev) => {
+        if (!prev) return prev;
+        const rect = el.getBoundingClientRect();
+        return clamp(prev.x, prev.y, rect.width, rect.height);
+      });
+    };
+    reclamp();
+    window.addEventListener("resize", reclamp);
+    return () => window.removeEventListener("resize", reclamp);
+  }, [clamp, minimized]);
+
   if (!call) return null;
 
   const others = call.participants.filter((p) => p.connState !== "self");
@@ -61,18 +117,53 @@ export function CallWidget() {
     : others.length === 0 ? "相手が参加すると共有できます"
     : "画面を共有";
 
+  const posStyle = pos ? { left: pos.x, top: pos.y } : { right: 20, bottom: 20 };
+  const dragHandlers = { onPointerDown: onDragStart, onPointerMove: onDragMove, onPointerUp: onDragEnd, onPointerCancel: onDragEnd };
+  const stopDrag = (e: React.PointerEvent) => e.stopPropagation(); // ボタン操作でドラッグを開始させない
+
+  // 最小化中も音声を鳴らし続けるための非表示 <audio>
+  const hiddenAudios = others.map((p) => p.stream && <RemoteAudio key={p.id} stream={p.stream} />);
+
+  if (minimized) {
+    return (
+      <div ref={containerRef} style={{ position: "fixed", ...posStyle, zIndex: 9998, background: "#fff", borderRadius: 999, boxShadow: "0 12px 40px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.08)", border: "1px solid rgba(26,23,20,0.08)", display: "flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 12px", touchAction: "none" }}>
+        <style>{`@keyframes callSpin { to { transform: rotate(360deg) } } @keyframes callPulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }`}</style>
+        <div {...dragHandlers} style={{ display: "flex", alignItems: "center", gap: 8, cursor: dragging ? "grabbing" : "grab", flex: 1, minWidth: 0, touchAction: "none" }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: call.status === "outgoing" ? "#D97706" : "#059669", flexShrink: 0, animation: "callPulse 1.4s ease-in-out infinite" }} />
+          <span style={{ fontSize: 12.5, fontWeight: 800, color: "#047857", whiteSpace: "nowrap" }}>{title}</span>
+          {others.length > 0 && <span style={{ fontSize: 11, color: "#A09790", whiteSpace: "nowrap" }}>{call.participants.length}人</span>}
+        </div>
+        <button onClick={() => setMinimized(false)} onPointerDown={stopDrag} title="元のサイズに戻す"
+          style={{ width: 30, height: 30, borderRadius: "50%", border: "none", cursor: "pointer", background: "#F4F5F6", color: "#3D3732", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Maximize2 style={{ width: 14, height: 14 }} />
+        </button>
+        <button onClick={hangup} onPointerDown={stopDrag} title="退出"
+          style={{ width: 30, height: 30, borderRadius: "50%", border: "none", cursor: "pointer", background: "#DC2626", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <PhoneOff style={{ width: 14, height: 14 }} />
+        </button>
+        {hiddenAudios}
+      </div>
+    );
+  }
+
   return (
-    <div style={{ position: "fixed", right: 20, bottom: 20, zIndex: 9998, width: 268, background: "#fff", borderRadius: 16, boxShadow: "0 12px 40px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.08)", border: "1px solid rgba(26,23,20,0.08)", overflow: "hidden" }}>
+    <div ref={containerRef} style={{ position: "fixed", ...posStyle, zIndex: 9998, width: 268, background: "#fff", borderRadius: 16, boxShadow: "0 12px 40px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.08)", border: "1px solid rgba(26,23,20,0.08)", overflow: "hidden" }}>
       <style>{`@keyframes callSpin { to { transform: rotate(360deg) } }`}</style>
-      <div style={{ padding: "12px 16px 10px", background: "linear-gradient(145deg,#ECFDF5,#F0FDF8)", borderBottom: "1px solid rgba(5,150,105,0.1)" }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "#047857" }}>{title}</div>
-        <div style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>{call.projectName}</div>
-        {screenShare && (
-          <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#2563EB" }}>
-            <ScreenShare style={{ width: 12, height: 12 }} />
-            {iAmSharing ? "あなたが画面共有中" : `${screenShare.presenterName}さんが画面共有中`}
-          </div>
-        )}
+      <div {...dragHandlers} style={{ padding: "12px 16px 10px", background: "linear-gradient(145deg,#ECFDF5,#F0FDF8)", borderBottom: "1px solid rgba(5,150,105,0.1)", cursor: dragging ? "grabbing" : "grab", touchAction: "none", display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#047857" }}>{title}</div>
+          <div style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>{call.projectName}</div>
+          {screenShare && (
+            <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#2563EB" }}>
+              <ScreenShare style={{ width: 12, height: 12 }} />
+              {iAmSharing ? "あなたが画面共有中" : `${screenShare.presenterName}さんが画面共有中`}
+            </div>
+          )}
+        </div>
+        <button onClick={() => setMinimized(true)} onPointerDown={stopDrag} title="最小化"
+          style={{ width: 26, height: 26, borderRadius: 8, border: "none", cursor: "pointer", background: "rgba(5,150,105,0.08)", color: "#047857", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: -2 }}>
+          <Minus style={{ width: 15, height: 15 }} />
+        </button>
       </div>
 
       <div style={{ padding: "6px 12px", maxHeight: 220, overflowY: "auto" }}>
