@@ -14,7 +14,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   SIGNAL, audioConstraints, displayMediaConstraints, isScreenShareSupported,
   userCallChannel, ONLINE_PRESENCE_CHANNEL,
-  RING_TIMEOUT_MS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS,
+  RING_TIMEOUT_MS, RECONNECT_GRACE_MS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS,
   type CallMember, type InvitePayload, type Participant, type CallStatus,
   type ScreenShareState, type Annotation, type AnnotationInput,
 } from "@/app/lib/callConstants";
@@ -87,6 +87,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const selfRef = useRef({ id: userId, name: userName });
   const endingRef = useRef(false); // 終了処理の二重発火ガード(bye/roster/connState が同時に来ても1回だけ)
   const connLossTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 接続断フォールバックのデバウンス
+  const rosterEmptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // roster一時空(Realtime再接続)での誤終了デバウンス
   const toastRef = useRef(toast); // toast は毎レンダー再生成されるため ref 経由で参照(useCallback を安定させる)
   // ── ENHA2-030 画面共有 ──
   const screenPeersRef = useRef<ScreenSharePeers | null>(null);
@@ -160,6 +161,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     connStateRef.current.clear();
     for (const t of connLossTimersRef.current.values()) clearTimeout(t);
     connLossTimersRef.current.clear();
+    if (rosterEmptyTimerRef.current) { clearTimeout(rosterEmptyTimerRef.current); rosterEmptyTimerRef.current = null; }
     disposeScreenRefs();
     everActiveRef.current = false;
     pendingInviteRef.current.clear();
@@ -228,6 +230,39 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const handleRoster = useCallback((members: RosterMember[]) => {
     const self = selfRef.current;
     const others = members.filter((m) => m.id !== self.id);
+
+    // roster が一瞬空になるのは Realtime のソケット再接続時によく起きる(再購読直後は
+    // 自分だけ先に track され、相手の presence が返ってくるまで others が空に見える)。
+    // このとき相手とのP2P音声はまだ生きている(connState==="connected")ことが多いので、
+    // 即 setRoster([]) で PC を閉じたり endCallAsRemote すると健全な通話を数分ごとに落として
+    // しまう。生きた相手がいる間は roster空を無視し、数秒デバウンスして再確認する。
+    const hasLivePeer = () => {
+      for (const [id, st] of connStateRef.current) {
+        if (id !== self.id && st === "connected") return true;
+      }
+      return false;
+    };
+    if (everActiveRef.current && others.length === 0 && callRef.current) {
+      if (hasLivePeer()) {
+        // 一時的な空振り: PC も participants もそのままに保ち、猶予後に再確認する。
+        if (!rosterEmptyTimerRef.current) {
+          rosterEmptyTimerRef.current = setTimeout(() => {
+            rosterEmptyTimerRef.current = null;
+            if (!callRef.current) return;
+            if (hasLivePeer()) return; // 相手が生きている→通話継続
+            endCallAsRemote();          // 本当に全員退出していたら相手切断として終了
+          }, RECONNECT_GRACE_MS);
+        }
+        return;
+      }
+      // 生きた相手もいない=本当に全員退出。従来どおり即終了する。
+      meshRef.current?.setRoster([]);
+      endCallAsRemote();
+      return;
+    }
+    // 他者が居る(または未 active の)通常ケース。保留中の空roster判定は解除する。
+    if (rosterEmptyTimerRef.current) { clearTimeout(rosterEmptyTimerRef.current); rosterEmptyTimerRef.current = null; }
+
     meshRef.current?.setRoster(others.map((m) => m.id));
     // 画面共有中に視聴者が増減したら配信先を追従(共有者のみ)
     if (screenShareRef.current?.isSelf) screenPeersRef.current?.setViewers(others.map((m) => m.id));
@@ -259,11 +294,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
       if (others.length > 0 && (status === "outgoing" || status === "connecting")) status = "active";
       return { ...prev, participants, status };
     });
-
-    // 全員が退出したら(一度でも繋がっていれば)相手切断として通話終了
-    if (everActiveRef.current && others.length === 0 && callRef.current) {
-      endCallAsRemote();
-    }
   }, [endCallAsRemote]);
 
   // ── セッションチャンネルからのシグナル受信 → mesh へ ──
@@ -369,7 +399,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
               // 他に生存中(connected)の相手がいなければ相手切断として終了
               const aliveOther = cur.participants.some((p) => p.connState !== "self" && p.id !== id && p.connState === "connected");
               if (!aliveOther) endCallAsRemote();
-            }, 6000));
+            }, RECONNECT_GRACE_MS));
           }
         }
       },
