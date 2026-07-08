@@ -111,8 +111,11 @@ export function CallWidget() {
   // 画面共有ボタンの状態
   const iAmSharing = !!screenShare?.isSelf;
   const otherSharing = !!screenShare && !screenShare.isSelf;
-  const shareDisabled = otherSharing || others.length === 0;
-  const shareTitle = iAmSharing ? "画面共有を停止"
+  // iPad/Safari 等は getDisplayMedia 非対応で画面共有を開始できない。ボタンは出すが無効化して理由を示す。
+  const shareUnsupported = !screenShareSupported;
+  const shareDisabled = shareUnsupported || otherSharing || others.length === 0;
+  const shareTitle = shareUnsupported ? "この端末（iPad / Safari など）は画面共有に対応していません"
+    : iAmSharing ? "画面共有を停止"
     : otherSharing ? `${screenShare!.presenterName}さんが画面共有中`
     : others.length === 0 ? "相手が参加すると共有できます"
     : "画面を共有";
@@ -182,15 +185,13 @@ export function CallWidget() {
           {call.muted ? <MicOff style={{ width: 16, height: 16 }} /> : <Mic style={{ width: 16, height: 16 }} />}
           {call.muted ? "ミュート中" : "ミュート"}
         </button>
-        {screenShareSupported && (
-          <button
-            onClick={iAmSharing ? stopScreenShare : startScreenShare}
-            disabled={!iAmSharing && shareDisabled}
-            title={shareTitle}
-            style={{ width: 52, height: 42, borderRadius: 12, border: "none", cursor: !iAmSharing && shareDisabled ? "not-allowed" : "pointer", background: iAmSharing ? "#EFF6FF" : "#F4F5F6", color: iAmSharing ? "#2563EB" : "#3D3732", opacity: !iAmSharing && shareDisabled ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {iAmSharing ? <ScreenShareOff style={{ width: 17, height: 17 }} /> : <ScreenShare style={{ width: 17, height: 17 }} />}
-          </button>
-        )}
+        <button
+          onClick={iAmSharing ? stopScreenShare : startScreenShare}
+          disabled={!iAmSharing && shareDisabled}
+          title={shareTitle}
+          style={{ width: 52, height: 42, borderRadius: 12, border: "none", cursor: !iAmSharing && shareDisabled ? "not-allowed" : "pointer", background: iAmSharing ? "#EFF6FF" : "#F4F5F6", color: iAmSharing ? "#2563EB" : "#3D3732", opacity: !iAmSharing && shareDisabled ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {iAmSharing ? <ScreenShareOff style={{ width: 17, height: 17 }} /> : <ScreenShare style={{ width: 17, height: 17 }} />}
+        </button>
         <button
           onClick={hangup}
           title="退出"

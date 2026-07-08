@@ -1,6 +1,6 @@
 import { useState, useEffect, type ElementType } from "react";
 import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText, Globe, Megaphone, FileBarChart2 } from "lucide-react";
-import { useLocation } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -26,6 +26,7 @@ export function Sidebar() {
   const { userRole, userPermissions, logout } = useAuth();
   const { plan } = usePlan();
   const location = useLocation();
+  const navigate = useNavigate();
   // Mac/iPad のタブモードでは、実URLではなくアクティブタブの現在地で
   // ハイライト・遷移を行う(Web/iPhone では tabs は null)。
   const tabs = useTabs();
@@ -101,7 +102,9 @@ export function Sidebar() {
               if (e.metaKey || e.ctrlKey) tabs.openTab(path);
               else tabs.navigateActive(path);
             } else {
-              window.location.href = path;
+              // Web版は SPA 遷移(フルリロードだと通話中に CallProvider が
+              // アンマウントされ通話が切れるため、window.location は使わない)。
+              navigate(path);
             }
           }}
           onContextMenu={tabs ? (e) => { e.preventDefault(); tabs.openTab(`/${id}`); } : undefined}
