@@ -1,5 +1,9 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(node -e \"require\\('esbuild'\\).buildSync\\({entryPoints:['src/app/lib/whiteboardFrames.ts'],write:false,logLevel:'info'}\\); console.log\\('ESBUILD_TRANSPILE_OK'\\)\")"
+    ],
     "additionalDirectories": [
       "/Users/mizoguchi/Desktop/システム開発/dev-ticット/src/app/pages/lp/news/articles"
     ]

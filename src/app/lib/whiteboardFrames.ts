@@ -211,10 +211,16 @@ export function followFrameMoves(
   const draftId = appState?.newElement?.id;
   const frames = elements.filter((e) => isFrame(e) && !e.isDeleted);
 
-  const nextPos = new Map<string, { x: number; y: number }>();
-  for (const f of frames) {
-    if (f.id === draftId) continue;
-    nextPos.set(f.id, { x: f.x, y: f.y });
+  // 全非削除要素の現在位置スナップショット。フレーム移動検知に加え、子が「この tick で
+  // 既にフレームと同じデルタだけ動いたか」（undo/redo でフレームごと戻った/進んだ）の判定にも使う。
+  // 追従は子を updateScene(既定=EVENTUALLY) で動かすため、フレーム移動と同一の履歴増分にまとまる。
+  // よって undo/redo では Excalidraw がフレームと子を一緒に戻す。ここでその戻りを「新たな移動」と
+  // 誤検知して子へ逆デルタを再適用すると二重移動で位置がズレる（BRU5-060）。それを防ぐため、
+  // フレームのみでなく全要素の前回位置を保持し、既に一緒に動いた子は追従対象から除外する。
+  const curPos = new Map<string, { x: number; y: number }>();
+  for (const el of elements) {
+    if (el.isDeleted || el.id === draftId) continue;
+    curPos.set(el.id, { x: el.x, y: el.y });
   }
   const commitPos = (map: Map<string, { x: number; y: number }>) => {
     prevPos.clear();
@@ -224,19 +230,20 @@ export function followFrameMoves(
   // リサイズ/新規描画/リモート反映では追従しない。位置だけ最新化して抜ける
   // （後続の純移動で誤って大きなデルタを検出しないため）。
   if (remote || appState?.resizingElement || appState?.newElement) {
-    commitPos(nextPos);
+    commitPos(curPos);
     return false;
   }
 
   // 前回位置と比べて動いたフレーム（ユーザー操作による移動）を検出
   const moved = new Map<string, { dx: number; dy: number }>();
-  for (const [id, pos] of nextPos) {
-    const prev = prevPos.get(id);
-    if (prev && (prev.x !== pos.x || prev.y !== pos.y)) {
-      moved.set(id, { dx: pos.x - prev.x, dy: pos.y - prev.y });
+  for (const f of frames) {
+    if (f.id === draftId) continue;
+    const prev = prevPos.get(f.id);
+    if (prev && (prev.x !== f.x || prev.y !== f.y)) {
+      moved.set(f.id, { dx: f.x - prev.x, dy: f.y - prev.y });
     }
   }
-  if (moved.size === 0) { commitPos(nextPos); return false; }
+  if (moved.size === 0) { commitPos(curPos); return false; }
 
   const parentMap = buildParentMap(elements);
   const sel = appState?.selectedElementIds || {};
@@ -274,19 +281,32 @@ export function followFrameMoves(
     return null;
   };
 
+  // 要素 el がこの tick で既にデルタ d ぶん動いているか。undo/redo ではフレームと子が同一の
+  // 履歴増分で一緒に戻る/進むため、子は既に d ぶん移動済み。これを再度動かすと二重移動になるので除外する（BRU5-060）。
+  // ドラッグ/矢印キー移動では子はまだ動いていない（selfDelta≈0）ため、この判定に引っかからず従来どおり追従する。
+  const MOVE_EPS = 0.01;
+  const alreadyMoved = (el: any, d: { dx: number; dy: number }): boolean => {
+    const prev = prevPos.get(el.id);
+    if (!prev) return false;
+    return Math.abs((el.x - prev.x) - d.dx) < MOVE_EPS && Math.abs((el.y - prev.y) - d.dy) < MOVE_EPS;
+  };
+
   // 各要素の移動デルタを決定。優先: 所属チェーン → 幾何内包 → バウンドテキスト（親図形に追従）。
   const deltaById = new Map<string, { dx: number; dy: number }>();
   for (const el of elements) {
     if (el.isDeleted || sel[el.id]) continue;         // 削除／共ドラッグ済みは対象外
     if (isFrame(el) && moved.has(el.id)) continue;    // 動いたフレーム自身は移動済み
     const d = nearestMovedDelta(el.id) ?? geoDeltaFor(el);
-    if (d) deltaById.set(el.id, d);
+    if (d && !alreadyMoved(el, d)) deltaById.set(el.id, d); // undo/redo で一緒に動いた子は除外
   }
   // 図形内テキスト（containerId）は単独ドラッグされず所属も付きにくいので、親図形が動くなら必ず追従。
   for (const el of elements) {
     if (el.isDeleted || sel[el.id] || deltaById.has(el.id)) continue;
     const cid = el.containerId;
-    if (cid && deltaById.has(cid)) deltaById.set(el.id, deltaById.get(cid)!);
+    if (cid && deltaById.has(cid)) {
+      const d = deltaById.get(cid)!;
+      if (!alreadyMoved(el, d)) deltaById.set(el.id, d);
+    }
   }
 
   let changed = false;
@@ -304,13 +324,15 @@ export function followFrameMoves(
     return base;
   });
 
-  if (!changed) { commitPos(nextPos); return false; }
+  if (!changed) { commitPos(curPos); return false; }
   api.updateScene({ elements: updated });
 
-  // 追従後のフレーム位置で prevPos を更新（このupdateScene由来の次tickを移動と誤検知しない）
+  // 追従後の全要素位置で prevPos を更新（このupdateScene由来の次tickを移動と誤検知しない／
+  // 子の「既に動いたか」判定が次tickで正しく効くよう、フレーム以外も含めて最新化する）。
   const afterPos = new Map<string, { x: number; y: number }>();
   for (const el of updated) {
-    if (isFrame(el) && !el.isDeleted && el.id !== draftId) afterPos.set(el.id, { x: el.x, y: el.y });
+    if (el.isDeleted || el.id === draftId) continue;
+    afterPos.set(el.id, { x: el.x, y: el.y });
   }
   commitPos(afterPos);
   return true;
