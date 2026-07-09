@@ -5,10 +5,11 @@
 // 標準パネル（.App-menu__left .panelColumn）の“先頭セクション（線）の直後”へ差し込み、
 // 「背景」が図形と同じ位置（2番目）に来るようにする。DOMへ実ノードを挿入して React portal で中身を描く。
 // legend/fieldset は .panelColumn の子孫スタイルが自動適用されるので標準セクションと同じ体裁になる。
-// 書式は text.customData.wbTextBox に保存（要素なのでYjs同期される）。描画は TextBoxDecorLayer。
+// 書式は text.customData.wbTextBox に保存（要素なのでYjs同期される）。描画は whiteboardTextBoxBg
+// の影矩形(rectangle)で行う（旧オーバーレイ TextBoxDecorLayer は BRU5-062 で廃止）。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { isPlainTextBox, type WbTextBoxFormat } from "./TextBoxDecorLayer";
+import { isPlainTextBox, type WbTextBoxFormat } from "@/app/lib/whiteboardTextBoxBg";
 
 interface Props {
   api: any;

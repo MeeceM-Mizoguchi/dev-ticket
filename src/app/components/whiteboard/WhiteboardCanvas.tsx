@@ -8,6 +8,7 @@ import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
 import { autoConnectLines, followTriangleConnections, reconnectDraggedConnectors, repairOpenTriangles, suppressTrianglePointEditing } from "@/app/lib/whiteboardAutoConnect";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
+import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
@@ -19,7 +20,6 @@ import { TriangleBindHint } from "./TriangleBindHint";
 import { FrameDecorLayer } from "./FrameDecorLayer";
 import { FrameHighlightLayer } from "./FrameHighlightLayer";
 import { FrameFormatPanel } from "./FrameFormatPanel";
-import { TextBoxDecorLayer } from "./TextBoxDecorLayer";
 import { TextBoxFormatPanel } from "./TextBoxFormatPanel";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
@@ -174,6 +174,11 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ
         followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired);
+        // テキストボックスの背景/枠線を描く「影の背景板(rectangle)」を生成・追従・削除する（BRU5-062）。
+        // 画像の上でも背景が透けないよう、DOMオーバーレイでなく実要素でネイティブに背面へ敷く。
+        // 他ヘルパーが updateScene 済みの tick はスキップし（1tick遅れて追従・単一updateScene維持）、
+        // 最新シーンを内部で取り直して安全に反映する。
+        if (!remote && !busy && !connected && !repaired) syncTextBoxBgRects(api, appState, remote);
       }
     } catch { /* noop */ }
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
@@ -224,7 +229,6 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       {api && (
         <>
           <FrameDecorLayer api={api} containerRef={containerRef} />
-          <TextBoxDecorLayer api={api} containerRef={containerRef} />
           {canEdit && <FrameHighlightLayer api={api} containerRef={containerRef} />}
           {canEdit && <FrameFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TextBoxFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
