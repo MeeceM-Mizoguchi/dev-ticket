@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import { mapActionMemo } from "@/app/lib/mappers";
 import { htmlToBlocks } from "./htmlToDoc";
 import { collectImageUrls, loadImages } from "./imageLoader";
+import { renderMermaid, mermaidSvgToPngDataUrl } from "@/app/lib/mermaid";
 import { downloadBlob, safeFileName, dateStamp } from "./download";
 import { startExport, reportImages, reportRender, finishExport } from "./exportProgress";
 import type { ActionItemRow, ArticleDoc, Block, ExportFormat, MetaField } from "./types";
@@ -29,7 +30,34 @@ function fmtDate(ymd: string | undefined | null): string {
   return ymd.replace(/-/g, "/");
 }
 
+// Mermaid ブロックを SVG→PNG(dataURL) 化して ImageBlock に置き換える。
+// 画像化後は既存の画像パイプライン(collectImageUrls→loadImages→各レンダラー)にそのまま乗る。
+// mermaid はグローバル状態を持つため直列(逐次 await)で変換する。失敗時はコードブロックにフォールバック。
+async function rasterizeMermaidBlocks(blocks: Block[]): Promise<Block[]> {
+  const out: Block[] = [];
+  for (const b of blocks) {
+    if (b.type === "mermaid") {
+      const res = await renderMermaid(b.code, { forRaster: true });
+      if ("svg" in res) {
+        try {
+          const dataUrl = await mermaidSvgToPngDataUrl(res.svg);
+          out.push({ type: "image", url: dataUrl, alt: "Mermaid図" });
+          continue;
+        } catch { /* ラスタライズ失敗 → 下でコードブロックにフォールバック */ }
+      }
+      out.push({ type: "codeblock", text: b.code });
+    } else if (b.type === "blockquote") {
+      out.push({ type: "blockquote", blocks: await rasterizeMermaidBlocks(b.blocks) });
+    } else {
+      out.push(b);
+    }
+  }
+  return out;
+}
+
 async function render(doc: ArticleDoc, format: ExportFormat): Promise<Blob> {
+  const blocks = await rasterizeMermaidBlocks(doc.blocks);
+  doc = { ...doc, blocks };
   const urls = collectImageUrls(doc.blocks as any);
   const images = await loadImages(urls, reportImages);
   reportRender();

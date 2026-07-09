@@ -28,10 +28,17 @@ function okNum(n: any): boolean {
   return typeof n === "number" && Number.isFinite(n) && Math.abs(n) < 1e7;
 }
 function isValidEl(el: any): boolean {
-  if (!el || !okNum(el.x) || !okNum(el.y) || !okNum(el.width) || !okNum(el.height)) return false;
+  if (!el || !okNum(el.x) || !okNum(el.y) || !okNum(el.width) || !okNum(el.height)) {
+    // 診断: mermaid由来要素が「不正な寸法」でYjsから落とされる（＝消える）ケースを可視化する。
+    if (el?.customData?.wbMermaid) console.warn("[WB診断] mermaid要素の寸法が不正→除外:", el?.id, el?.type, { x: el?.x, y: el?.y, width: el?.width, height: el?.height });
+    return false;
+  }
   if (Array.isArray(el.points)) {
     for (const p of el.points) {
-      if (!Array.isArray(p) || !okNum(p[0]) || !okNum(p[1])) return false;
+      if (!Array.isArray(p) || !okNum(p[0]) || !okNum(p[1])) {
+        if (el?.customData?.wbMermaid) console.warn("[WB診断] mermaid要素の点が不正→除外:", el?.id, el?.type, el?.points);
+        return false;
+      }
     }
   }
   return true;

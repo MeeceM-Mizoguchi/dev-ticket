@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(node -e ' *)",
-      "Bash(node -e \"require\\('esbuild'\\).buildSync\\({entryPoints:['src/app/lib/whiteboardFrames.ts'],write:false,logLevel:'info'}\\); console.log\\('ESBUILD_TRANSPILE_OK'\\)\")"
+      "Bash(node -e \"require\\('esbuild'\\).buildSync\\({entryPoints:['src/app/lib/whiteboardFrames.ts'],write:false,logLevel:'info'}\\); console.log\\('ESBUILD_TRANSPILE_OK'\\)\")",
+      "Bash(node -e \"const p=require\\('./node_modules/@excalidraw/mermaid-to-excalidraw/package.json'\\); console.log\\('main:',p.main,'module:',p.module,'types:',p.types\\); console.log\\('exports:',JSON.stringify\\(p.exports,null,1\\)\\)\")",
+      "Bash(tee /private/tmp/claude-501/-Users-mizoguchi-Desktop--------dev-ticket/b38db668-e636-4ac3-a81c-0c91e0cf7f08/scratchpad/tsc.out)",
+      "Bash(node -e \"try{require.resolve\\('jsdom'\\);console.log\\('jsdom: available'\\)}catch\\(e\\){console.log\\('jsdom: NOT available'\\)}\")"
     ],
     "additionalDirectories": [
       "/Users/mizoguchi/Desktop/システム開発/dev-ticット/src/app/pages/lp/news/articles"

@@ -41,6 +41,9 @@ importers:
       '@excalidraw/excalidraw':
         specifier: ^0.18.1
         version: 0.18.1(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@excalidraw/mermaid-to-excalidraw':
+        specifier: ^2.2.2
+        version: 2.2.2
       '@handsontable/react':
         specifier: 14.6.1
         version: 14.6.1(handsontable@14.6.1)
@@ -146,6 +149,9 @@ importers:
       '@tiptap/core':
         specifier: ^3.24.0
         version: 3.26.0(@tiptap/pm@3.23.6)
+      '@tiptap/extension-code-block':
+        specifier: ^3.23.6
+        version: 3.23.6(@tiptap/core@3.26.0(@tiptap/pm@3.23.6))(@tiptap/pm@3.23.6)
       '@tiptap/extension-image':
         specifier: ^3.23.6
         version: 3.26.1(@tiptap/core@3.26.0(@tiptap/pm@3.23.6))
@@ -212,6 +218,9 @@ importers:
       lucide-react:
         specifier: 0.487.0
         version: 0.487.0(react@18.3.1)
+      mermaid:
+        specifier: ^11.12.1
+        version: 11.16.0
       motion:
         specifier: 12.23.24
         version: 12.23.24(@emotion/is-prop-valid@1.4.0)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -6944,6 +6953,11 @@ snapshots:
   '@tiptap/extension-code-block@3.23.6(@tiptap/core@3.23.6(@tiptap/pm@3.23.6))(@tiptap/pm@3.23.6)':
     dependencies:
       '@tiptap/core': 3.23.6(@tiptap/pm@3.23.6)
+      '@tiptap/pm': 3.23.6
+
+  '@tiptap/extension-code-block@3.23.6(@tiptap/core@3.26.0(@tiptap/pm@3.23.6))(@tiptap/pm@3.23.6)':
+    dependencies:
+      '@tiptap/core': 3.26.0(@tiptap/pm@3.23.6)
       '@tiptap/pm': 3.23.6
 
   '@tiptap/extension-code@3.23.6(@tiptap/core@3.23.6(@tiptap/pm@3.23.6))':

@@ -14,6 +14,8 @@ export const isLinearEl = (el: El): boolean => el?.type === "line" || el?.type =
 // customData/idが失われても検出できるよう、幾何形状（閉じた3頂点の折れ線）でもフォールバック判定する。
 export const isTriangle = (el: El): boolean => {
   if (el?.type !== "line") return false;
+  // mermaid 生成要素は三角形判定・修復の対象外（closed 4点lineと誤判定して崩さないため）
+  if (el?.customData?.wbMermaid === true) return false;
   if (el?.customData?.wbTriangle === true) return true;
   if (typeof el?.id === "string" && el.id.startsWith("wb_tri_")) return true;
   const p = el?.points;
