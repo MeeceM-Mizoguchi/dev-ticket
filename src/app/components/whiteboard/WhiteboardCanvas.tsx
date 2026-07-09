@@ -6,7 +6,7 @@ import { Excalidraw } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
-import { autoConnectLines, followTriangleConnections, repairOpenTriangles, suppressTrianglePointEditing } from "@/app/lib/whiteboardAutoConnect";
+import { autoConnectLines, followTriangleConnections, reconnectDraggedConnectors, repairOpenTriangles, suppressTrianglePointEditing } from "@/app/lib/whiteboardAutoConnect";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
@@ -32,6 +32,10 @@ const HIDE_EXCALIDRAW_CHROME = `
 .excalidraw .collab-button,
 .excalidraw .default-sidebar-trigger,
 .excalidraw .help-icon { display: none !important; }
+/* HelpDialog(キーボードショートカット一覧)ヘッダーの外部リンク
+   （ドキュメント/公式ブログ/不具合報告(GitHub)/YouTube）を非表示にする（BRU5-061）。
+   ショートカット一覧本体は残す。 */
+.excalidraw .HelpDialog__header { display: none !important; }
 /* Excalidraw標準UI(layer-ui, 既定z-index:4)を、フレーム枠線canvas(z-index:4)や
    ハイライト(5)より前面へ。標準プロパティパネル等が枠線の裏に隠れるのを防ぐ(BRU4-054)。 */
 .excalidraw .layer-ui__wrapper { z-index: 6 !important; }
@@ -140,7 +144,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const processedLines = useRef<Set<string>>(new Set());
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const prevFrameSig = useRef<Map<string, string>>(new Map()); // 前回のフレーム矩形署名（グループ化の新規/リサイズ判定用・BRU4-054）
-  const prevFramePos = useRef<Map<string, { x: number; y: number }>>(new Map()); // 前回のフレーム位置（移動追従の判定用・BRU5-040）
+  const prevFramePos = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map()); // 前回のフレーム位置＋サイズ（移動/リサイズ判別用・BRU5-040/BRU5-061）
   const wasDragging = useRef(false); // 前tickでドラッグ中だったか（ドラッグ確定=所属再判定の契機・BRU5-040）
   const onChange = useCallback((elements: readonly any[], appState?: any) => {
     if (!canEdit) return;
@@ -159,10 +163,12 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // ドラッグ確定時に、動かした要素の所属を再判定（枠へ入れた/出した/入れ子にした・BRU5-040）。
         // 最新シーンから取り直すため、同tickで followed が updateScene 済みでも安全に上書きできる。
         const dragging = !!appState?.selectedElementsAreBeingDragged;
-        const reparented = (!remote && wasDragging.current && !dragging)
-          ? reparentDraggedElements(api, appState) : false;
+        const dragEnded = !remote && wasDragging.current && !dragging;
+        const reparented = dragEnded ? reparentDraggedElements(api, appState) : false;
+        // ドラッグ確定時に、一緒に運んだコネクタの端点をアンカー図形へ貼り直しズレを解消（BRU5-061）。
+        const reconnected = dragEnded ? reconnectDraggedConnectors(api, appState) : false;
         wasDragging.current = dragging;
-        const busy = followed || framed || reparented;
+        const busy = followed || framed || reparented || reconnected;
         // 塗りが透明になるバグの保険的修復（BRU4-051）。万一ループが開いた三角形を閉じ直す。
         const repaired = remote || busy ? false : repairOpenTriangles(api, elements, appState);
         const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current);

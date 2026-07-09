@@ -2,8 +2,8 @@
 // 近づけたとき、その図形の外周に沿ったグレー枠を出す。接続は自前の customData 固定方式に
 // 統一したため、全図形でこの自前ハイライトを描く。見た目は Excalidraw 標準(rgba(0,0,0,.05))に合わせる。
 import { useEffect, useRef } from "react";
-import { elementBBox, linearEndpoints, type Pt } from "@/app/lib/whiteboardSnap";
-import { isConnectableShape, shapeOutline } from "@/app/lib/whiteboardAutoConnect";
+import { elementBBox, linearEndpoints, nearestPointOnPolyline, type Pt } from "@/app/lib/whiteboardSnap";
+import { isConnectableShape, pickConnectTarget, shapeOutline } from "@/app/lib/whiteboardAutoConnect";
 
 interface Props {
   api: any;
@@ -11,14 +11,13 @@ interface Props {
   canEdit: boolean;
 }
 
-const TOL = 22;                    // autoConnect と同じ接続判定距離
 const HL_COLOR = "rgba(0,0,0,0.05)"; // Excalidraw のバインドハイライトと同色
 const HL_WIDTH = 8;                // ストローク幅(画面px)
 const HL_PAD = 5;                  // 図形の外側へのはみ出し(画面px)
+const DOT_COLOR = "#059669";       // 接続予定点のドット色（緑・アクセント）
+const DOT_R = 4;                   // 接続予定点ドット半径(画面px)
 
 const isLinear = (e: any) => e?.type === "line" || e?.type === "arrow";
-const nearBox = (pt: Pt, b: { x: number; y: number; w: number; h: number }) =>
-  pt.x >= b.x - TOL && pt.x <= b.x + b.w + TOL && pt.y >= b.y - TOL && pt.y <= b.y + b.h + TOL;
 
 // 図形の外周頂点(scene座標, 回転考慮, 閉じ重複は除去)。ハイライト描画に使う。
 function shapeVertices(el: any): Pt[] {
@@ -74,28 +73,38 @@ export function TriangleBindHint({ api, containerRef, canEdit }: Props) {
       ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
     };
 
-    const draw = (tris: any[]) => {
+    // 接続予定の図形(el)の枠を薄グレーで、接続予定点(dot)を緑ドットで描く。
+    const draw = (hits: { el: any; dot?: Pt }[]) => {
       if (!ctx) return;
       clear();
       ctx.save();
-      ctx.strokeStyle = HL_COLOR;
-      ctx.lineWidth = HL_WIDTH;
       ctx.lineJoin = "round";
-      for (const t of tris) {
-        const verts = shapeVertices(t).map((v) => sceneToLocal(v.x, v.y));
-        if (verts.length < 3) continue;
-        // 重心から外側へ少しはみ出させて“辺に沿った枠”にする（四角の枠と同じ薄グレー）
-        const gx = verts.reduce((s, v) => s + v.x, 0) / verts.length;
-        const gy = verts.reduce((s, v) => s + v.y, 0) / verts.length;
-        const off = verts.map((v) => {
-          const dx = v.x - gx, dy = v.y - gy, L = Math.hypot(dx, dy) || 1;
-          return { x: v.x + (dx / L) * HL_PAD, y: v.y + (dy / L) * HL_PAD };
-        });
-        ctx.beginPath();
-        ctx.moveTo(off[0].x, off[0].y);
-        for (let i = 1; i < off.length; i++) ctx.lineTo(off[i].x, off[i].y);
-        ctx.closePath();
-        ctx.stroke();
+      for (const { el, dot } of hits) {
+        const verts = shapeVertices(el).map((v) => sceneToLocal(v.x, v.y));
+        if (verts.length >= 3) {
+          // 重心から外側へ少しはみ出させて“辺に沿った枠”にする（四角の枠と同じ薄グレー）
+          const gx = verts.reduce((s, v) => s + v.x, 0) / verts.length;
+          const gy = verts.reduce((s, v) => s + v.y, 0) / verts.length;
+          const off = verts.map((v) => {
+            const dx = v.x - gx, dy = v.y - gy, L = Math.hypot(dx, dy) || 1;
+            return { x: v.x + (dx / L) * HL_PAD, y: v.y + (dy / L) * HL_PAD };
+          });
+          ctx.strokeStyle = HL_COLOR;
+          ctx.lineWidth = HL_WIDTH;
+          ctx.beginPath();
+          ctx.moveTo(off[0].x, off[0].y);
+          for (let i = 1; i < off.length; i++) ctx.lineTo(off[i].x, off[i].y);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        if (dot) {
+          // どの点に繋がるかを明示する接続予定点（密集セルでも狙いが分かる・BRU5-061）
+          const p = sceneToLocal(dot.x, dot.y);
+          ctx.fillStyle = DOT_COLOR;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, DOT_R, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
       ctx.restore();
     };
@@ -120,8 +129,17 @@ export function TriangleBindHint({ api, containerRef, canEdit }: Props) {
 
         if (cand.length === 0) { clear(); }
         else {
-          const hits = shapes.filter((t: any) => { const b = elementBBox(t); return cand.some((pt) => nearBox(pt, b)); });
-          draw(hits);
+          // 各端点について「実際に接続される1つ」だけを選び、その図形＋接続予定点を描く。
+          // autoConnect と同一の pickConnectTarget を使うため、ハイライトと実接続が一致する（BRU5-061）。
+          const hits = new Map<string, { el: any; dot?: Pt }>();
+          for (const pt of cand) {
+            const t = pickConnectTarget(pt, shapes);
+            if (!t) continue;
+            const dot = nearestPointOnPolyline(pt, shapeOutline(t));
+            hits.set(t.id, { el: t, dot });
+          }
+          if (hits.size === 0) clear();
+          else draw([...hits.values()]);
         }
       } catch { /* noop */ }
       rafId.current = requestAnimationFrame(tick);

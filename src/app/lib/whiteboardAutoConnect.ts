@@ -9,7 +9,8 @@ interface Pt { x: number; y: number }
 // 三角形の移動・リサイズ後も「同じ相対位置＝同じ辺上の点」に端点を貼り直す。
 interface TriAnchor { id: string; fx: number; fy: number }
 
-const TOL = 22; // 端点がこの距離以内に図形があれば接続対象（ネイティブbind相当の広さ）
+export const CONNECT_TOL = 22; // 端点がこの距離以内に図形があれば接続対象（ネイティブbind相当の広さ）
+const TOL = CONNECT_TOL;
 
 // 接続元になり得る線形要素（三角形は図形扱いなので除外）。
 // mermaid から生成した矢印・線(customData.wbMermaid)は、図のレイアウトを崩さないよう自動接続の対象外にする。
@@ -33,11 +34,6 @@ const connectBBox = (el: any): { x: number; y: number; w: number; h: number } =>
   const b = elementBBox(el);
   if (!hasTextBorder(el)) return b;
   return { x: b.x - TEXT_BORDER_PAD, y: b.y - TEXT_BORDER_PAD, w: b.w + TEXT_BORDER_PAD * 2, h: b.h + TEXT_BORDER_PAD * 2 };
-};
-
-const nearBox = (pt: Pt, s: any) => {
-  const b = connectBBox(s);
-  return pt.x >= b.x - TOL && pt.x <= b.x + b.w + TOL && pt.y >= b.y - TOL && pt.y <= b.y + b.h + TOL;
 };
 
 // 図形の geometry 署名（移動/リサイズ/回転の検知用）
@@ -134,6 +130,46 @@ export const shapeOutline = (el: any): Pt[] => {
   return [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }, { x, y }]; // rectangle
 };
 
+// 点 p から図形の外周（実際の辺）までの距離。ターゲット選定のスコアに使う。
+const distToOutline = (p: Pt, shape: any): number => {
+  const q = nearestPointOnPolyline(p, shapeOutline(shape));
+  return Math.hypot(q.x - p.x, q.y - p.y);
+};
+
+/**
+ * 端点 pt に対する「最良の接続先」を1つ返す（無ければ null）。密集・積層した図形の中でも
+ * 狙った1つへ確実に繋ぐための統一ロジック（BRU5-061）。従来の shapes.find()（＝最初の一致＝最背面）
+ * を置き換え、自動接続・追従の再アンカー・ハイライトの全箇所でこれを使って挙動を一致させる。
+ *
+ * 選定規則:
+ *  1. connectBBox から TOL 以内の図形を候補にする。
+ *  2. pt を内包する図形があれば、それらだけを対象にする（セルの中に端点を落としたらそのセルへ）。
+ *     内包群は「面積が小さい順（積層/入れ子の最小セル）→ 前面(z-order)」で最良を選ぶ。
+ *  3. 内包が無ければ「外周までの距離が近い順 → 前面」で最良を選ぶ。
+ *
+ * shapes は z-order 昇順（配列後方＝前面）を前提とする。同点は配列後方＝前面を優先する。
+ */
+export function pickConnectTarget(pt: Pt, shapes: readonly any[]): any | null {
+  const containing: any[] = [];
+  const near: any[] = [];
+  for (const s of shapes) {
+    const b = connectBBox(s);
+    if (distToBox(pt, b) > TOL) continue;
+    if (pt.x >= b.x && pt.x <= b.x + b.w && pt.y >= b.y && pt.y <= b.y + b.h) containing.push(s);
+    else near.push(s);
+  }
+  if (containing.length) {
+    // 面積最小＝最も内側の小さいセル。同点(<=)は配列後方＝前面を採用。
+    const area = (s: any) => { const b = connectBBox(s); return b.w * b.h; };
+    return containing.reduce((best, s) => (area(s) <= area(best) ? s : best));
+  }
+  if (near.length) {
+    // 外周まで最短。同点(<=)は配列後方＝前面を採用。
+    return near.reduce((best, s) => (distToOutline(pt, s) <= distToOutline(pt, best) ? s : best));
+  }
+  return null;
+}
+
 // 端点を図形の外周へ射影し、bbox相対アンカー(fx,fy)と、貼り付け先の外周上の点を返す
 const connectTo = (pt: Pt, shape: any): { anchor: TriAnchor; point: Pt } => {
   const proj = nearestPointOnPolyline(pt, shapeOutline(shape));
@@ -177,8 +213,6 @@ export function autoConnectLines(
   const shapes = elements.filter(isConnectableShape);
   if (shapes.length === 0) return false;
 
-  const nearShape = (pt: Pt) => shapes.find((s) => nearBox(pt, s));
-
   let changed = false;
   const converted = elements.map((el) => {
     if (!isConnector(el) || el.isDeleted) return el;
@@ -191,8 +225,8 @@ export function autoConnectLines(
     const startPt = { x: el.x + p0[0], y: el.y + p0[1] };
     const endPt = { x: el.x + pN[0], y: el.y + pN[1] };
 
-    const sShape = nearShape(startPt);
-    const eShape = nearShape(endPt);
+    const sShape = pickConnectTarget(startPt, shapes);
+    const eShape = pickConnectTarget(endPt, shapes);
     // どこにも近くない → まだ処理済みにしない（後で図形へ近づいた時に接続できるよう毎フレーム再判定）
     if (!sShape && !eShape) return el;
 
@@ -251,7 +285,8 @@ export function followTriangleConnections(
 ): boolean {
   const shapeMap = new Map<string, any>();
   const curSig = new Map<string, string>();
-  for (const t of elements) if (isConnectableShape(t)) { shapeMap.set(t.id, t); curSig.set(t.id, shapeSig(t)); }
+  const shapeArr: any[] = []; // z-order昇順（再アンカー時のターゲット選定用・BRU5-061）
+  for (const t of elements) if (isConnectableShape(t)) { shapeMap.set(t.id, t); curSig.set(t.id, shapeSig(t)); shapeArr.push(t); }
 
   // このフレームで geometry が変わった図形（移動/リサイズ/回転）
   const movedShape = new Set<string>();
@@ -296,7 +331,8 @@ export function followTriangleConnections(
       } else {
         const tp = anchorToPoint(aS!, sShape);
         if (Math.hypot(tp.x - gp[0].x, tp.y - gp[0].y) > REANCHOR) {
-          const re = connectTo(gp[0], sShape); gp[0] = re.point; reStart = re.anchor; touched = true;
+          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（密集セルの繋ぎ替え・BRU5-061）
+          const re = connectTo(gp[0], pickConnectTarget(gp[0], shapeArr) ?? sShape); gp[0] = re.point; reStart = re.anchor; touched = true;
         }
       }
     }
@@ -309,7 +345,8 @@ export function followTriangleConnections(
       } else {
         const tp = anchorToPoint(aE!, eShape);
         if (Math.hypot(tp.x - gp[L].x, tp.y - gp[L].y) > REANCHOR) {
-          const re = connectTo(gp[L], eShape); gp[L] = re.point; reEnd = re.anchor; touched = true;
+          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（密集セルの繋ぎ替え・BRU5-061）
+          const re = connectTo(gp[L], pickConnectTarget(gp[L], shapeArr) ?? eShape); gp[L] = re.point; reEnd = re.anchor; touched = true;
         }
       }
     }
@@ -340,5 +377,65 @@ export function followTriangleConnections(
   finish();
   if (!did) return false;
   api.updateScene({ elements: moved });
+  return true;
+}
+
+/**
+ * ドラッグ確定時に、一緒に運ばれたコネクタ（線・矢印）の接続端点をアンカー図形へ貼り直す（BRU5-061）。
+ *
+ * followTriangleConnections は選択中のコネクタを追従対象から外すため、図形＋矢印をまとめて
+ * ドラッグすると、矢印全体が平行移動して「ドラッグに含めなかった静止図形側の端点」が図形から
+ * 浮いたまま固定されてしまう（＝離した後にコネクトがズレる）。ドラッグ確定フレームで一度だけ、
+ * ドラッグ選択に含まれていたコネクタの triStart/triEnd を、各アンカー図形の現在の記録位置へ
+ * 再接着して両端の接続を保つ。
+ *
+ * 端点編集(editingLinearElement)中のコネクタは対象外＝端点を意図的に動かした操作は壊さない。
+ * 選択に含まれないコネクタは通常の follow（解除/再アンカー）に委ねる。
+ *
+ * @returns updateScene で反映したら true
+ */
+export function reconnectDraggedConnectors(api: any, appState: any): boolean {
+  const sel = appState?.selectedElementIds ?? {};
+  const editId = appState?.editingLinearElement?.elementId;
+  const elements = api.getSceneElements();
+  const shapeMap = new Map<string, any>();
+  for (const e of elements) if (isConnectableShape(e)) shapeMap.set(e.id, e);
+  if (shapeMap.size === 0) return false;
+
+  const EPS = 0.01;
+  let changed = false;
+  const updated = elements.map((el: any) => {
+    if (el.isDeleted) return el;
+    if (!(el.type === "line" || el.type === "arrow") || isTriangle(el)) return el;
+    if (!sel[el.id] || el.id === editId) return el; // ドラッグされたコネクタのみ（端点編集は除外）
+    const cd = el.customData;
+    if (!cd) return el;
+    const aS = readAnchor(cd.triStart), aE = readAnchor(cd.triEnd);
+    const sShape = aS ? shapeMap.get(aS.id) : undefined;
+    const eShape = aE ? shapeMap.get(aE.id) : undefined;
+    if (!sShape && !eShape) return el;
+    if (!Array.isArray(el.points) || el.points.length < 2) return el;
+
+    const gp = el.points.map((p: number[]) => ({ x: el.x + p[0], y: el.y + p[1] }));
+    const L = gp.length - 1;
+    let touched = false;
+    if (sShape) { const tp = anchorToPoint(aS!, sShape); if (Math.hypot(tp.x - gp[0].x, tp.y - gp[0].y) > EPS) { gp[0] = tp; touched = true; } }
+    if (eShape) { const tp = anchorToPoint(aE!, eShape); if (Math.hypot(tp.x - gp[L].x, tp.y - gp[L].y) > EPS) { gp[L] = tp; touched = true; } }
+    if (!touched) return el;
+
+    const ox = gp[0].x, oy = gp[0].y;
+    const np = gp.map((p) => [p.x - ox, p.y - oy]);
+    const xs = np.map((p) => p[0]), ys = np.map((p) => p[1]);
+    changed = true;
+    return {
+      ...el, x: ox, y: oy, points: np,
+      width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys),
+      ...(cd.triStart ? { startBinding: null } : {}),
+      ...(cd.triEnd ? { endBinding: null } : {}),
+      version: (el.version ?? 1) + 1, versionNonce: rand(),
+    };
+  });
+  if (!changed) return false;
+  api.updateScene({ elements: updated });
   return true;
 }
