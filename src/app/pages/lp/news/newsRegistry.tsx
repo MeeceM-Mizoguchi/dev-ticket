@@ -6,6 +6,10 @@ import OfficialRelease from './articles/20260624-official-release';
 import ReportManagement from './articles/20260627-report-management';
 import BiometricLogin from './articles/20260628-biometric-login';
 import Whiteboard from './articles/20260706-whiteboard';
+import VoiceCall from './articles/20260707-voice-call';
+import ScreenShare from './articles/20260708-screen-share';
+import CallFixes from './articles/20260708-call-fixes';
+import WhiteboardFixes from './articles/20260708-whiteboard-fixes';
 
 /**
  * ============================================================
@@ -56,6 +60,38 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260708-screen-share',
+    date: '2026.07.08',
+    category: 'リリース',
+    title: '通話中の画面共有機能を追加しました',
+    excerpt: '音声通話をしながら、自分の画面をメンバーへ共有。ポインターや手書きで印を付けながら、認識のズレなく議論を進められます。',
+    Component: ScreenShare,
+  },
+  {
+    slug: '20260708-call-fixes',
+    date: '2026.07.08',
+    category: 'お知らせ',
+    title: 'オンライン通話の不具合を修正しました',
+    excerpt: '通話の切断や発信音、着信の終了に関する複数の不具合を修正。通話ウィンドウの最小化にも対応し、より快適にご利用いただけます。',
+    Component: CallFixes,
+  },
+  {
+    slug: '20260708-whiteboard-fixes',
+    date: '2026.07.08',
+    category: 'お知らせ',
+    title: 'ホワイトボードの不具合を修正しました',
+    excerpt: '共同編集時の同期やフレームのグループ化、初期表示など、ホワイトボードに関する複数の不具合を修正しました。',
+    Component: WhiteboardFixes,
+  },
+  {
+    slug: '20260707-voice-call',
+    date: '2026.07.07',
+    category: 'リリース',
+    title: 'オンライン音声通話機能を実装しました',
+    excerpt: 'プロジェクトのメンバーと、アプリ内でそのまま音声通話。ワンクリックで発信でき、画面を移動しても通話は途切れません。',
+    Component: VoiceCall,
+  },
   {
     slug: '20260706-whiteboard',
     date: '2026.07.06',
