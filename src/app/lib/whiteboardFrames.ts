@@ -87,6 +87,10 @@ function computeParentFor(el: any, frames: readonly any[], parentMap: Map<string
 function applyParents(api: any, elements: readonly any[], nextParent: Map<string, string | null>): boolean {
   let changed = false;
   const updated = elements.map((el) => {
+    // テキスト背景の影矩形(BRU5-062)の所属は syncTextBoxBgRects がテキストへミラーする唯一の書き手。
+    // ここで幾何判定に基づき別々に書くと、文字は枠内・影矩形(PAD分大きい)は枠外で所属が食い違い、
+    // 毎tick互いに上書きし合うチラつき(churn)になるため対象外にする。
+    if (el?.customData?.wbBgFor) return el;
     if (!nextParent.has(el.id)) return el;
     const np = nextParent.get(el.id) ?? null;
     if (resolveParent(el) === np) return el;

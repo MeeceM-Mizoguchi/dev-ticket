@@ -19,12 +19,13 @@ const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !
 // テキストボックスは矩形外周として扱い、四辺（上下左右）どこにでも端点を貼り付けられる（BRU5-054）。
 // 図形内に埋め込まれたラベルテキスト(containerId あり)は、コンテナ図形側が接続対象なので除外する。
 export const isConnectableShape = (e: any) =>
-  !e?.isDeleted && (e?.type === "rectangle" || e?.type === "diamond" || e?.type === "ellipse"
+  !e?.isDeleted && !e?.customData?.wbBgFor  // テキスト背景の影矩形(BRU5-062)は接続対象外
+    && (e?.type === "rectangle" || e?.type === "diamond" || e?.type === "ellipse"
     || (e?.type === "text" && !e?.containerId) || isTriangle(e));
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-// テキストボックスの枠線は文字bboxの外側 TEXT_BORDER_PAD(scene単位) に描かれる（TextBoxDecorLayer と一致）。
+// テキストボックスの枠線は文字bboxの外側 TEXT_BORDER_PAD(scene単位) に描かれる（whiteboardTextBoxBg の影矩形と一致）。
 // 枠線付きテキストへ接続する時は、この枠線ちょうどに端点を貼り付けたいので接続用bboxを外側へ広げる。
 // （枠線なしのテキストや他図形は素の外接矩形のまま。）
 export const TEXT_BORDER_PAD = 6;
