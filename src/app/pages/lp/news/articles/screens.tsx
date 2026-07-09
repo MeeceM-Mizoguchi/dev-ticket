@@ -21,6 +21,7 @@ import {
   Search, Plus, PenTool, StickyNote, Frame, Pencil, Trash2, Maximize, HelpCircle, Download,
   Mic, MicOff, PhoneOff, ScreenShare, Minus, MousePointer2, Type, ExternalLink,
   Phone, Check, Users, X, Bug, Bell,
+  FileText, Lock, Hand, Square, Diamond, Circle, MoveRight, Image as ImageIcon, Maximize2,
 } from 'lucide-react';
 
 /** ブラウザ／アプリのウィンドウ枠。中身を実画面らしく見せる共通シェル。 */
@@ -718,6 +719,278 @@ export function ScreenShareScreen() {
         <span className="ml-auto text-[10.5px] text-slate-400 flex items-center gap-1.5">
           <MousePointer2 className="w-3 h-3" />描いた線・文字は5秒で消えます
         </span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑦ Mermaid図（テキストから図を生成）
+ *    実機能をトレース:
+ *      ・RichEditor.tsx のツールバー「Mermaid」ボタン + btnStyle
+ *      ・MermaidEditModal.tsx / MermaidToolButton.tsx（共通の入力モーダル。
+ *        左「Mermaid定義」テキスト＋右「プレビュー」／緑の実行ボタン）
+ *      ・MermaidNode.tsx（本文はコードを見せず図だけ表示・ホバーで操作ボタン）
+ *      ・Excalidraw ツールバー末尾に注入される Mermaid ボタン（実SVGアイコン）
+ *    配色は実装のまま（テキスト #1A1714 / 補助 #6B6458 / 緑 #059669 /
+ *    枠 rgba(26,23,20,0.12) / 入力欄 #FAFAF8）。図は mermaid 既定テーマ
+ *    （ノード塗り #ECECFF・枠 #9370DB・文字 #333）を再現。
+ * ========================================================== */
+
+/** MermaidEditModal / MermaidToolButton の初期テンプレートの描画結果を、mermaid 既定テーマで再現した図。 */
+function MermaidRenderedFlow({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 300 262" className={`w-full ${className}`} role="img" aria-label="フローチャート図">
+      <defs>
+        <marker id="mm-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 Z" fill="#333333" />
+        </marker>
+      </defs>
+      {/* エッジ */}
+      <g stroke="#333333" strokeWidth="1.4" fill="none" markerEnd="url(#mm-arw)">
+        <line x1="150" y1="38" x2="150" y2="49" />
+        <line x1="121" y1="90" x2="70" y2="156" />
+        <line x1="179" y1="90" x2="230" y2="156" />
+        <line x1="66" y1="186" x2="126" y2="226" />
+        <line x1="234" y1="186" x2="174" y2="226" />
+      </g>
+      {/* エッジラベル（白背景の小片） */}
+      <g fontSize="10" fill="#333333" textAnchor="middle" fontFamily="ui-sans-serif, system-ui, sans-serif">
+        <rect x="80" y="112" width="24" height="14" fill="#ffffff" />
+        <text x="92" y="122">はい</text>
+        <rect x="192" y="112" width="34" height="14" fill="#ffffff" />
+        <text x="209" y="122">いいえ</text>
+      </g>
+      {/* ノード（mermaid 既定テーマ配色） */}
+      <g fontFamily="ui-sans-serif, system-ui, sans-serif" fontSize="12" fill="#333333" textAnchor="middle">
+        <rect x="120" y="10" width="60" height="28" rx="2" fill="#ECECFF" stroke="#9370DB" strokeWidth="1" />
+        <text x="150" y="28">開始</text>
+
+        <polygon points="150,49 187,78 150,107 113,78" fill="#ECECFF" stroke="#9370DB" strokeWidth="1" />
+        <text x="150" y="82">条件?</text>
+
+        <rect x="32" y="158" width="68" height="28" rx="2" fill="#ECECFF" stroke="#9370DB" strokeWidth="1" />
+        <text x="66" y="176">処理1</text>
+
+        <rect x="200" y="158" width="68" height="28" rx="2" fill="#ECECFF" stroke="#9370DB" strokeWidth="1" />
+        <text x="234" y="176">処理2</text>
+
+        <rect x="120" y="226" width="60" height="28" rx="2" fill="#ECECFF" stroke="#9370DB" strokeWidth="1" />
+        <text x="150" y="244">完了</text>
+      </g>
+    </svg>
+  );
+}
+
+/** RichEditor.tsx の btnStyle を再現したツールバーボタン。 */
+function EditorBtn({ children, active = false, style }: { children: ReactNode; active?: boolean; style?: React.CSSProperties }) {
+  return (
+    <span
+      style={{
+        padding: '3px 7px', fontSize: 11, fontWeight: 600, borderRadius: 5,
+        border: `1px solid ${active ? '#059669' : 'rgba(26,23,20,0.12)'}`,
+        background: active ? '#ECFDF5' : 'transparent',
+        color: active ? '#059669' : '#6B6458', lineHeight: 1.4, whiteSpace: 'nowrap',
+        ...style,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** ① RichEditor の書式ツールバー。「Mermaid」ボタンを強調。 */
+export function MermaidToolbarScreen() {
+  return (
+    <div className="bg-white p-4 text-left">
+      <div className="flex flex-wrap gap-1 items-center" style={{ padding: '8px 10px', borderBottom: '1px solid rgba(26,23,20,0.08)', background: '#F9F8F6', borderRadius: 8 }}>
+        <EditorBtn>B</EditorBtn>
+        <EditorBtn style={{ fontStyle: 'italic' }}>I</EditorBtn>
+        <EditorBtn>S̶</EditorBtn>
+        <span style={{ width: 1, height: 18, background: 'rgba(26,23,20,0.10)', margin: '0 2px' }} />
+        <EditorBtn>H1</EditorBtn>
+        <EditorBtn>H2</EditorBtn>
+        <span style={{ width: 1, height: 18, background: 'rgba(26,23,20,0.10)', margin: '0 2px' }} />
+        <EditorBtn>• リスト</EditorBtn>
+        <EditorBtn>1. リスト</EditorBtn>
+        <span style={{ width: 1, height: 18, background: 'rgba(26,23,20,0.10)', margin: '0 2px' }} />
+        <EditorBtn>{'<>'}</EditorBtn>
+        <EditorBtn>コード</EditorBtn>
+        {/* ここが Mermaid ボタン（押すと入力モーダルが開く） */}
+        <span className="relative">
+          <EditorBtn active>Mermaid</EditorBtn>
+          <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full w-2 h-2 rotate-45" style={{ background: '#059669' }} />
+        </span>
+        <EditorBtn>&quot;引用</EditorBtn>
+        <span style={{ width: 1, height: 18, background: 'rgba(26,23,20,0.10)', margin: '0 2px' }} />
+        <EditorBtn>表</EditorBtn>
+      </div>
+    </div>
+  );
+}
+
+/** ②③ 共通の入力モーダル（MermaidEditModal / MermaidToolButton）。左に定義、右にライブプレビュー。 */
+export function MermaidModalScreen({
+  title = 'Mermaid図を挿入', primaryLabel = '挿入',
+}: { title?: string; primaryLabel?: string }) {
+  return (
+    <div className="text-left" style={{ background: 'rgba(0,0,0,0.06)', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 24px 80px rgba(0,0,0,0.20)', overflow: 'hidden', maxWidth: 620, margin: '0 auto' }}>
+        {/* ヘッダー */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: '#1A1714' }}>{title}</span>
+          <span style={{ fontSize: 20, lineHeight: 1, color: '#9A938C' }}>×</span>
+        </div>
+        {/* 本体：定義 / プレビュー */}
+        <div className="flex flex-wrap" style={{ gap: 12, padding: 16 }}>
+          {/* 左：定義 */}
+          <div style={{ flex: '1 1 240px', minWidth: 220 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#6B6458', marginBottom: 6 }}>Mermaid定義</div>
+            <div style={{ minHeight: 150, padding: 10, borderRadius: 8, border: '1px solid rgba(0,0,0,0.15)', background: '#FAFAF8' }}>
+              <pre style={{ margin: 0, fontFamily: 'ui-monospace, monospace', fontSize: 11.5, lineHeight: 1.6, color: '#1A1714', whiteSpace: 'pre-wrap' }}>{`flowchart TD
+  A[開始] --> B{条件?}
+  B -->|はい| C[処理1]
+  B -->|いいえ| D[処理2]
+  C --> E[完了]
+  D --> E`}</pre>
+            </div>
+            <div style={{ fontSize: 11, color: '#B0A9A4', marginTop: 6 }}>
+              例: <code>flowchart</code> / <code>sequenceDiagram</code> / <code>classDiagram</code> / <code>gantt</code> など
+            </div>
+          </div>
+          {/* 右：プレビュー */}
+          <div style={{ flex: '1 1 240px', minWidth: 220 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#6B6458', marginBottom: 6 }}>プレビュー</div>
+            <div style={{ minHeight: 150, padding: 12, borderRadius: 8, border: '1px solid rgba(0,0,0,0.10)', background: '#fff' }}>
+              <MermaidRenderedFlow className="max-w-[200px] mx-auto" />
+            </div>
+          </div>
+        </div>
+        {/* フッター：キャンセル / 実行 */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, padding: '12px 16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+          <span style={{ padding: '7px 14px', fontSize: 13, fontWeight: 600, borderRadius: 8, border: '1px solid rgba(0,0,0,0.15)', background: '#fff', color: '#6B6458' }}>キャンセル</span>
+          <span style={{ padding: '7px 16px', fontSize: 13, fontWeight: 700, borderRadius: 8, background: '#059669', color: '#fff' }}>{primaryLabel}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** ④ 挿入後：本文にはコードではなく図だけが表示され、ホバーで操作ボタンが出る（MermaidNode）。 */
+export function MermaidInsertedScreen() {
+  const ctrl = (bg: string) => ({ width: 26, height: 26, borderRadius: 6, background: bg, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' } as React.CSSProperties);
+  return (
+    <div className="bg-white p-4 sm:p-5 text-left" style={{ color: '#1A1714' }}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>承認フロー</div>
+      <p style={{ fontSize: 12.5, lineHeight: 1.8, color: '#3F3A34', margin: '0 0 10px' }}>
+        申請から公開までの流れは次のとおりです。本文にはコードは表示されず、図だけが埋め込まれます。
+      </p>
+      {/* Mermaidノード（.mermaid-node-inner を再現） */}
+      <div style={{ position: 'relative', border: '1px solid rgba(26,23,20,0.12)', borderRadius: 8, padding: 12, background: '#fff', margin: '8px 0' }}>
+        <MermaidRenderedFlow className="max-w-[230px] mx-auto" />
+        {/* ホバー時の操作ボタン（拡大 / 編集 / 削除） */}
+        <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
+          <span style={ctrl('#1A1714')}><Maximize2 style={{ width: 13, height: 13 }} /></span>
+          <span style={ctrl('#059669')}><Pencil style={{ width: 13, height: 13 }} /></span>
+          <span style={ctrl('#DC2626')}><Trash2 style={{ width: 13, height: 13 }} /></span>
+        </div>
+      </div>
+      <p style={{ fontSize: 11, color: '#B0A9A4', margin: '4px 0 0' }}>図をクリックすると拡大表示できます。</p>
+    </div>
+  );
+}
+
+/** Excalidraw ツールバー末尾に注入される Mermaid ボタンの実アイコン。 */
+function MermaidToolIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="5" rx="1" />
+      <rect x="14" y="16" width="7" height="5" rx="1" />
+      <rect x="14" y="3" width="7" height="5" rx="1" />
+      <path d="M6.5 8v3a2 2 0 0 0 2 2h9" />
+      <path d="M17.5 8v5" />
+    </svg>
+  );
+}
+
+/** ⑤ ホワイトボード：上部ツールバー末尾の Mermaid ボタン → 生成された「編集できる図形」。 */
+export function MermaidWhiteboardScreen() {
+  const tool = (active = false) => ({
+    width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: active ? '#fff' : '#1b1b1f', background: active ? '#6965db' : 'transparent',
+  } as React.CSSProperties);
+  return (
+    <div className="relative h-[320px] bg-white bg-[radial-gradient(#e5e9ef_1px,transparent_1px)] [background-size:16px_16px] text-left overflow-hidden">
+      {/* Excalidraw 上部ツールバー（末尾に Mermaid ボタンが注入される） */}
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-0.5 bg-white rounded-xl border border-slate-200/80 shadow-lg px-1.5 py-1">
+        <span style={tool()}><Lock className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Hand className="w-[15px] h-[15px]" /></span>
+        <span style={tool(true)}><MousePointer2 className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Square className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Diamond className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Circle className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><MoveRight className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Pencil className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Type className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><ImageIcon className="w-[15px] h-[15px]" /></span>
+        <span className="w-px h-5 bg-slate-200 mx-0.5" />
+        {/* 注入された Mermaid ボタン（ここを押すと入力モーダルが開く） */}
+        <span className="relative" style={{ ...tool(), color: '#059669', background: 'rgba(5,150,105,0.10)' }}>
+          <MermaidToolIcon size={16} />
+          <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full whitespace-nowrap text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: '#059669', color: '#fff' }}>Mermaid</span>
+        </span>
+      </div>
+
+      {/* 生成された図（ネイティブ図形として配置＝生成直後は選択状態） */}
+      <div className="absolute left-1/2 top-[92px] -translate-x-1/2 w-[240px]">
+        {/* 選択バウンディングボックス（Excalidraw 風） */}
+        <div className="relative rounded-sm" style={{ outline: '1px solid #6965db', outlineOffset: 8 }}>
+          <MermaidRenderedFlow />
+          {/* 四隅ハンドル */}
+          {[
+            { t: -12, l: -12 }, { t: -12, r: -12 }, { b: -12, l: -12 }, { b: -12, r: -12 },
+          ].map((p, i) => (
+            <span key={i} className="absolute w-2 h-2 rounded-[2px] bg-white" style={{ border: '1px solid #6965db', top: p.t, bottom: p.b, left: p.l, right: p.r }} />
+          ))}
+        </div>
+        <div className="mt-4 text-center text-[10px]" style={{ color: '#6965db', fontWeight: 600 }}>
+          画像ではなく、編集できる図形として配置されます
+        </div>
+      </div>
+
+      {/* 参加者アバター（共同編集にそのまま同期） */}
+      <div className="absolute bottom-3 left-3 flex -space-x-1.5 z-10">
+        <span className="w-5 h-5 rounded-full border-2 border-white text-[8px] font-bold text-white flex items-center justify-center" style={{ background: 'hsl(160,70%,45%)' }}>M</span>
+        <span className="w-5 h-5 rounded-full border-2 border-white text-[8px] font-bold text-white flex items-center justify-center" style={{ background: 'hsl(280,70%,45%)' }}>K</span>
+      </div>
+    </div>
+  );
+}
+
+/** ⑥ エクスポート：PDF / Word / Excel でも図として埋め込まれる様子。 */
+export function MermaidExportScreen() {
+  return (
+    <div className="bg-slate-50 p-5 text-left flex flex-col items-center gap-3">
+      {/* 出力ファイル（紙面プレビュー） */}
+      <div className="w-full max-w-[300px] bg-white rounded-md shadow-lg border border-slate-200 p-4">
+        <div className="text-[12px] font-bold text-slate-800 mb-1">承認フロー設計メモ</div>
+        <div className="space-y-1 mb-2.5">
+          <span className="block h-1.5 rounded bg-slate-200 w-[92%]" />
+          <span className="block h-1.5 rounded bg-slate-200 w-[78%]" />
+        </div>
+        <div className="rounded border border-slate-100 bg-slate-50/60 p-2">
+          <MermaidRenderedFlow className="max-w-[180px] mx-auto" />
+        </div>
+        <div className="mt-2 space-y-1">
+          <span className="block h-1.5 rounded bg-slate-200 w-[85%]" />
+          <span className="block h-1.5 rounded bg-slate-200 w-[60%]" />
+        </div>
+      </div>
+      {/* 出力形式バッジ */}
+      <div className="flex items-center gap-2 text-[11px] font-semibold">
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-50 text-red-600 border border-red-100"><FileText className="w-3 h-3" />PDF</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-50 text-sky-600 border border-sky-100"><FileText className="w-3 h-3" />Word</span>
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100"><FileText className="w-3 h-3" />Excel</span>
       </div>
     </div>
   );
