@@ -205,7 +205,7 @@ export function followFrameMoves(
   api: any,
   elements: readonly any[],
   appState: any,
-  prevPos: Map<string, { x: number; y: number }>,
+  prevPos: Map<string, { x: number; y: number; w: number; h: number }>,
   remote: boolean,
 ): boolean {
   const draftId = appState?.newElement?.id;
@@ -217,12 +217,14 @@ export function followFrameMoves(
   // よって undo/redo では Excalidraw がフレームと子を一緒に戻す。ここでその戻りを「新たな移動」と
   // 誤検知して子へ逆デルタを再適用すると二重移動で位置がズレる（BRU5-060）。それを防ぐため、
   // フレームのみでなく全要素の前回位置を保持し、既に一緒に動いた子は追従対象から除外する。
-  const curPos = new Map<string, { x: number; y: number }>();
+  // 幅・高さ(w,h)も保持し、フレームの「純移動(位置変化かつサイズ不変)」と「リサイズ(サイズ変化)」を
+  // 幾何で判別する（左辺・上辺リサイズは x,y も動くため、位置差だけでは移動と誤検知する・BRU5-061）。
+  const curPos = new Map<string, { x: number; y: number; w: number; h: number }>();
   for (const el of elements) {
     if (el.isDeleted || el.id === draftId) continue;
-    curPos.set(el.id, { x: el.x, y: el.y });
+    curPos.set(el.id, { x: el.x, y: el.y, w: el.width ?? 0, h: el.height ?? 0 });
   }
-  const commitPos = (map: Map<string, { x: number; y: number }>) => {
+  const commitPos = (map: Map<string, { x: number; y: number; w: number; h: number }>) => {
     prevPos.clear();
     map.forEach((v, k) => prevPos.set(k, v));
   };
@@ -234,12 +236,14 @@ export function followFrameMoves(
     return false;
   }
 
-  // 前回位置と比べて動いたフレーム（ユーザー操作による移動）を検出
+  // 前回位置と比べて「純移動した」フレーム（ユーザー操作による平行移動）を検出。
+  // サイズ(w,h)が変わっていれば移動ではなくリサイズとみなし、子を動かさない（BRU5-061）。
   const moved = new Map<string, { dx: number; dy: number }>();
   for (const f of frames) {
     if (f.id === draftId) continue;
     const prev = prevPos.get(f.id);
-    if (prev && (prev.x !== f.x || prev.y !== f.y)) {
+    const sameSize = prev && prev.w === (f.width ?? 0) && prev.h === (f.height ?? 0);
+    if (prev && sameSize && (prev.x !== f.x || prev.y !== f.y)) {
       moved.set(f.id, { dx: f.x - prev.x, dy: f.y - prev.y });
     }
   }
@@ -329,10 +333,10 @@ export function followFrameMoves(
 
   // 追従後の全要素位置で prevPos を更新（このupdateScene由来の次tickを移動と誤検知しない／
   // 子の「既に動いたか」判定が次tickで正しく効くよう、フレーム以外も含めて最新化する）。
-  const afterPos = new Map<string, { x: number; y: number }>();
+  const afterPos = new Map<string, { x: number; y: number; w: number; h: number }>();
   for (const el of updated) {
     if (el.isDeleted || el.id === draftId) continue;
-    afterPos.set(el.id, { x: el.x, y: el.y });
+    afterPos.set(el.id, { x: el.x, y: el.y, w: el.width ?? 0, h: el.height ?? 0 });
   }
   commitPos(afterPos);
   return true;
