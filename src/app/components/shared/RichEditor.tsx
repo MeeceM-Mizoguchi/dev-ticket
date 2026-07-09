@@ -7,6 +7,8 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableMap } from "@tiptap/pm/tables";
 import Mention from "@tiptap/extension-mention";
+import { MermaidNode } from "./MermaidNode";
+import { MermaidEditModal } from "./MermaidEditModal";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { NodeViewProps } from "@tiptap/react";
@@ -563,6 +565,8 @@ export function RichEditor({
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
+  // Mermaid挿入モーダルの開閉（本文中はコードを見せず、入力はモーダルに集約する）
+  const [mermaidModalOpen, setMermaidModalOpen] = useState(false);
 
   const editor = useEditor({
     extensions: [
@@ -580,6 +584,8 @@ export function RichEditor({
           },
         },
       }),
+      // Mermaid図の専用ノード（本文中は図だけ表示、コードはモーダルで編集）。
+      MermaidNode,
       CustomImage,
       // 🌟 BRU4-049: 列幅ドラッグ可変。両端固定はやめ、表は左寄せで右方向へ伸縮。最小列幅60px。
       Table.configure({ resizable: true, cellMinWidth: 60 }),
@@ -758,7 +764,8 @@ export function RichEditor({
             const level: number = node.attrs?.level ?? 1;
             return '#'.repeat(level) + ' ' + inline(node).trim() + '\n';
           }
-          if (t === 'codeBlock') return '```\n' + (node.textContent ?? '') + '\n```\n';
+          if (t === 'codeBlock') return '```' + (node.attrs?.language ?? '') + '\n' + (node.textContent ?? '') + '\n```\n';
+          if (t === 'mermaid') return '```mermaid\n' + (node.attrs?.code ?? '') + '\n```\n';
           if (t === 'blockquote') {
             let inner = '';
             node.forEach((c: any) => { inner += block(c); });
@@ -983,6 +990,12 @@ export function RichEditor({
     ensureColWidths();
   };
 
+  // Mermaid 図を挿入（モーダルで入力 → 図ノードとして挿入。本文中はコードを見せない）。
+  const insertMermaid = (code: string) => {
+    editor.chain().focus().insertContent({ type: "mermaid", attrs: { code } }).run();
+    setMermaidModalOpen(false);
+  };
+
   const handleLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest("a");
     if (!anchor) return;
@@ -1009,6 +1022,11 @@ export function RichEditor({
         .tiptap code { background: #F4F5F6; padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; color: #D97706; }
         .tiptap pre { background: #1A1714; color: #F4F5F6; padding: 12px 14px; border-radius: 8px; margin: 8px 0; overflow-x: auto; }
         .tiptap pre code { background: none; color: inherit; padding: 0; font-size: 12px; }
+        /* 🌟 Mermaid図ノード（本文中は図だけ表示・ホバーで操作ボタン・クリックで拡大） */
+        .tiptap .mermaid-node { margin: 8px 0; }
+        .tiptap .mermaid-node-inner { position: relative; border: 1px solid rgba(26,23,20,0.12); border-radius: 8px; padding: 12px; background: #FFFFFF; }
+        .tiptap .mermaid-svg svg { max-width: 100%; height: auto; }
+        .tiptap .mermaid-node.ProseMirror-selectednode .mermaid-node-inner { outline: 2px solid #059669; outline-offset: 1px; }
         /* 🌟 BRU4-049: 列幅リサイズ対応。表は左寄せ・内容幅(width:auto)。合計がエディタ幅を超えたら
            clampプラグインが全列を比例縮小してフィットさせるので、横スクロールは基本発生しない。
            (列数が多く最小幅60pxでも収まらない極端なケースのみラッパーで横スクロール) */
@@ -1051,6 +1069,7 @@ export function RichEditor({
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle(editor.isActive("code"))} onClick={() => editor.chain().focus().toggleCode().run()}>{'<>'}</button>
           <button type="button" style={btnStyle(editor.isActive("codeBlock"))} onClick={() => editor.chain().focus().toggleCodeBlock().run()}>コード</button>
+          <button type="button" style={btnStyle(editor.isActive("mermaid"))} onClick={() => setMermaidModalOpen(true)} title="Mermaid図を挿入（フロー図・シーケンス図など）">Mermaid</button>
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={handleInsertTable}>表</button>
@@ -1089,6 +1108,15 @@ export function RichEditor({
           <style>{`.tiptap p.is-editor-empty:first-child::before { content: "${placeholder}"; }`}</style>
         )}
       </div>
+      {mermaidModalOpen && (
+        <MermaidEditModal
+          initialCode=""
+          title="Mermaid図を挿入"
+          saveLabel="挿入"
+          onSave={insertMermaid}
+          onClose={() => setMermaidModalOpen(false)}
+        />
+      )}
     </div>
   );
 }

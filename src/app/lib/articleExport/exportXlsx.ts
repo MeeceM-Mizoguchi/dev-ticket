@@ -114,6 +114,16 @@ function writeBlocks(ws: ExcelJS.Worksheet, wb: ExcelJS.Workbook, cursor: number
         row += 1;
         break;
       }
+      // 通常は render() 前に画像化されるが、変換失敗時の保険としてコード表示。
+      case "mermaid": {
+        const c = ws.getCell(row, 1);
+        c.value = b.code;
+        c.font = { name: "Consolas" };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRAY } };
+        c.alignment = { wrapText: false, vertical: "top" };
+        row += 1;
+        break;
+      }
       case "table": row = writeTable(ws, row, b); break;
       case "image": row = writeImage(ws, wb, row, b.url, images); break;
     }

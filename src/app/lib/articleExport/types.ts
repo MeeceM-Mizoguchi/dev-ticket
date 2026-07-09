@@ -19,6 +19,9 @@ export interface CodeBlock { type: "codeblock"; text: string }
 export interface TableCell { runs: Run[]; header?: boolean }
 export interface TableBlock { type: "table"; rows: TableCell[][]; colWidths?: number[] }
 export interface ImageBlock { type: "image"; url: string; alt?: string }
+// Mermaid 図。エクスポート実行時に render() が SVG→PNG(dataURL) 化して ImageBlock へ変換する。
+// 変換に失敗した場合の保険として、各レンダラーはコードブロックとしてフォールバック描画する。
+export interface MermaidBlock { type: "mermaid"; code: string }
 
 export type Block =
   | HeadingBlock
@@ -27,7 +30,8 @@ export type Block =
   | QuoteBlock
   | CodeBlock
   | TableBlock
-  | ImageBlock;
+  | ImageBlock
+  | MermaidBlock;
 
 export interface MetaField { label: string; value: string }
 

@@ -13,6 +13,7 @@ import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
 import { WhiteboardToolbar } from "./WhiteboardToolbar";
 import { TriangleToolButton } from "./TriangleToolButton";
+import { MermaidToolButton } from "./MermaidToolButton";
 import { SnapGuideLayer } from "./SnapGuideLayer";
 import { TriangleBindHint } from "./TriangleBindHint";
 import { FrameDecorLayer } from "./FrameDecorLayer";
@@ -225,6 +226,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <TriangleBindHint api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <WhiteboardToolbar api={api} />}
           {canEdit && <TriangleToolButton api={api} containerRef={containerRef} />}
+          {canEdit && <MermaidToolButton api={api} containerRef={containerRef} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
         </>

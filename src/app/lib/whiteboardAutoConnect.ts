@@ -11,8 +11,9 @@ interface TriAnchor { id: string; fx: number; fy: number }
 
 const TOL = 22; // 端点がこの距離以内に図形があれば接続対象（ネイティブbind相当の広さ）
 
-// 接続元になり得る線形要素（三角形は図形扱いなので除外）
-const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !isTriangle(e);
+// 接続元になり得る線形要素（三角形は図形扱いなので除外）。
+// mermaid から生成した矢印・線(customData.wbMermaid)は、図のレイアウトを崩さないよう自動接続の対象外にする。
+const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !isTriangle(e) && !e?.customData?.wbMermaid;
 // 接続先になれる図形（四角/ひし形/楕円/三角形/テキストボックス）。全て「辺上の相対位置を固定」する自前方式でつなぐ。
 // テキストボックスは矩形外周として扱い、四辺（上下左右）どこにでも端点を貼り付けられる（BRU5-054）。
 // 図形内に埋め込まれたラベルテキスト(containerId あり)は、コンテナ図形側が接続対象なので除外する。

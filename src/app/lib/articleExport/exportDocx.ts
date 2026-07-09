@@ -110,6 +110,12 @@ function blockToChildren(b: Block, images: Map<string, LoadedImage>): (Paragraph
         shading: { fill: "F4F5F6" },
         children: toTextRuns([{ text: b.text, code: true }]),
       })];
+    // 通常は render() 前に画像化されるが、変換失敗時の保険としてコード表示。
+    case "mermaid":
+      return [new Paragraph({
+        shading: { fill: "F4F5F6" },
+        children: toTextRuns([{ text: b.code, code: true }]),
+      })];
     case "table": return [buildTable(b)];
     case "image": { const p = imageParagraph(b.url, images); return p ? [p] : []; }
     default: return [];
