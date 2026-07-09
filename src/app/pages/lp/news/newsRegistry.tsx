@@ -10,6 +10,7 @@ import VoiceCall from './articles/20260707-voice-call';
 import ScreenShare from './articles/20260708-screen-share';
 import CallFixes from './articles/20260708-call-fixes';
 import WhiteboardFixes from './articles/20260708-whiteboard-fixes';
+import MermaidDiagram from './articles/20260709-mermaid-diagram';
 
 /**
  * ============================================================
@@ -60,6 +61,14 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260709-mermaid-diagram',
+    date: '2026.07.09',
+    category: 'リリース',
+    title: 'Mermaid図（テキストで描く図）に対応しました',
+    excerpt: 'フローチャートやシーケンス図などを、テキストで書くだけで作図。Wiki・議事録・チケットからホワイトボードまで対応し、PDF/Word/Excel でも図として出力できます。',
+    Component: MermaidDiagram,
+  },
   {
     slug: '20260708-screen-share',
     date: '2026.07.08',
