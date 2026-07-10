@@ -14,7 +14,10 @@ const TOL = CONNECT_TOL;
 
 // 接続元になり得る線形要素（三角形は図形扱いなので除外）。
 // mermaid から生成した矢印・線(customData.wbMermaid)は、図のレイアウトを崩さないよう自動接続の対象外にする。
-const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !isTriangle(e) && !e?.customData?.wbMermaid;
+// Elbow arrow(elbowed)は Excalidraw のエルボー・ルーターが中間点を直交に保つため、
+// 端点だけを書き換える自前コネクト方式とは相容れない（斜め/波打ちに崩れる・BRU5-050系）。
+// elbow はネイティブ結合＋ルーターに任せ、自前の接続/追従の対象から外す。
+const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !e?.elbowed && !isTriangle(e) && !e?.customData?.wbMermaid;
 // 接続先になれる図形（四角/ひし形/楕円/三角形/テキストボックス）。全て「辺上の相対位置を固定」する自前方式でつなぐ。
 // テキストボックスは矩形外周として扱い、四辺（上下左右）どこにでも端点を貼り付けられる（BRU5-054）。
 // 図形内に埋め込まれたラベルテキスト(containerId あり)は、コンテナ図形側が接続対象なので除外する。
@@ -302,7 +305,7 @@ export function followTriangleConnections(
   let did = false;
   const moved = elements.map((el) => {
     if (el.isDeleted || isConnectableShape(el)) return el;
-    if (!(el.type === "line" || el.type === "arrow")) return el;
+    if (!(el.type === "line" || el.type === "arrow") || el.elbowed) return el; // elbowはネイティブ結合に委ねる
     // 線自体をドラッグ/編集/描画中は触らない（操作の邪魔をしない）
     if (selected[el.id] || el.id === editId || el.id === newId) return el;
     const cd = el.customData;
@@ -407,7 +410,7 @@ export function reconnectDraggedConnectors(api: any, appState: any): boolean {
   let changed = false;
   const updated = elements.map((el: any) => {
     if (el.isDeleted) return el;
-    if (!(el.type === "line" || el.type === "arrow") || isTriangle(el)) return el;
+    if (!(el.type === "line" || el.type === "arrow") || el.elbowed || isTriangle(el)) return el; // elbowはネイティブ結合に委ねる
     if (!sel[el.id] || el.id === editId) return el; // ドラッグされたコネクタのみ（端点編集は除外）
     const cd = el.customData;
     if (!cd) return el;
