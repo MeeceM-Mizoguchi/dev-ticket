@@ -23,8 +23,6 @@ import { FrameFormatPanel } from "./FrameFormatPanel";
 import { TextBoxFormatPanel } from "./TextBoxFormatPanel";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
-import { PresenceBar } from "./PresenceBar";
-import { FollowBanner } from "./FollowBanner";
 
 // Excalidraw標準のハンバーガーメニュー/ヘルプ(?)/コラボボタンを非表示にする
 // （メニューは自前、ヘルプは右上アイコンに一本化、コラボは独自Yjs同期を使うため不要）
@@ -86,7 +84,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
 
   const {
     bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat, docLoaded,
-    setViewport, roster, followingClientId, follow, unfollow, isApplyingFollow,
+    setViewport, snapToFollowed, isApplyingFollow,
   } = useWhiteboardSync(boardId, user);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
@@ -218,27 +216,6 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     if (payload?.pointer) setCursor(payload.pointer.x, payload.pointer.y);
   }, [setCursor]);
 
-  // 追従中に自分がキャンバスを操作（ホイールズーム/パン/クリック）したら追従解除（Figma同挙動・ENHA2-031）。
-  // プレゼンスバー等の操作UI（data-follow-ui）上のイベントは対象外。
-  useEffect(() => {
-    if (!followingClientId) return;
-    const el = containerRef.current;
-    if (!el) return;
-    const onGesture = (e: Event) => {
-      const t = e.target as HTMLElement | null;
-      if (t?.closest?.("[data-follow-ui]")) return;
-      unfollow();
-    };
-    el.addEventListener("wheel", onGesture, { passive: true });
-    el.addEventListener("pointerdown", onGesture);
-    return () => {
-      el.removeEventListener("wheel", onGesture);
-      el.removeEventListener("pointerdown", onGesture);
-    };
-  }, [followingClientId, unfollow]);
-
-  const followingMember = followingClientId ? roster.find((m) => m.clientId === followingClientId) : null;
-
   return (
     <div
       ref={containerRef}
@@ -259,6 +236,9 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         excalidrawAPI={(a: any) => { setApi(a); registerApi(a); }}
         onChange={onChange}
         onPointerUpdate={onPointerUpdate}
+        // 右上コラボレーターアバターのクリックで追従開始/解除（ENHA2-031）。
+        // 開始時は即スナップ。解除/自動解除は applyFollow が appState.userToFollow を見て自然に停止する。
+        onUserFollow={(payload: any) => { if (payload?.action === "FOLLOW") snapToFollowed(); }}
         viewModeEnabled={!canEdit}
         langCode="ja-JP"
         initialData={{ ...CLEAN_DEFAULTS, elements: bridgeRef.current?.currentElements() ?? [] }}
@@ -287,18 +267,6 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
         </>
-      )}
-      {/* 参加者アバター列＋追従バナー（ENHA2-031）。api非依存でロスターから描画する。 */}
-      {docLoaded && (
-        <PresenceBar
-          roster={roster}
-          followingClientId={followingClientId}
-          onFollow={follow}
-          onUnfollow={unfollow}
-        />
-      )}
-      {followingMember && (
-        <FollowBanner name={followingMember.name} color={followingMember.color} onUnfollow={unfollow} />
       )}
     </div>
   );

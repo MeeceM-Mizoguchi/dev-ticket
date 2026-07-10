@@ -10,8 +10,6 @@ import { loadDocState, saveDocState, base64ToBytes, bytesToBase64 } from "@/app/
 
 export interface WbUser { id: string; name: string; color: string }
 export interface RemoteChat { userId: string; name: string; color: string; x: number; y: number; text: string }
-// プレゼンスバー（追従対象の選択）用。接続中メンバー1人ぶんの識別情報。
-export interface RosterMember { clientId: string; id: string; name: string; color: string; self: boolean }
 
 const SAVE_DEBOUNCE_MS = 1500;
 
@@ -30,14 +28,11 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
   const localPointerDownRef = useRef(false);
   const pendingCollabRef = useRef<Map<string, any> | null>(null);
 
-  // 追従機能（ENHA2-031）
-  const [roster, setRoster] = useState<RosterMember[]>([]);   // 接続中メンバー（プレゼンスバー用）
-  const [selfClientId, setSelfClientId] = useState("");       // 自分の Yjs clientId
-  const [followingClientId, setFollowingClientId] = useState<string | null>(null); // 追従中の相手（UI表示用）
-  const followingRef = useRef<string | null>(null);           // 同上（onAwarenessクロージャから参照）
-  const applyingFollowRef = useRef(false);                    // 追従由来の updateScene 実行中フラグ（エコー防止）
-  const appliedVpSigRef = useRef("");                         // 直近に適用したビューポート署名（再適用の抑制）
-  const onAwarenessRef = useRef<() => void>(() => {});        // 追従開始時の即時スナップ用
+  // 追従機能（ENHA2-031）。追従の「対象選択/アバター表示/解除UI/自動解除」は Excalidraw ネイティブ
+  // （右上のコラボレーターアバター＋onUserFollow）に任せ、ここでは実際のビューポート移動だけ担う。
+  const applyingFollowRef = useRef(false);             // 追従由来の updateScene 実行中フラグ（エコー防止）
+  const appliedVpSigRef = useRef("");                  // 直近に適用したビューポート署名（再適用の抑制）
+  const onAwarenessRef = useRef<() => void>(() => {});  // 追従開始時の即時スナップ用
 
   // 最新の user を参照するための ref（依存配列に入れず再購読を避ける）
   const userRef = useRef(user);
@@ -56,7 +51,6 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
     bridgeRef.current = bridge;
     awarenessRef.current = awareness;
     docRef.current = doc;
-    setSelfClientId(String(doc.clientID));
 
     (async () => {
       // 1) 永続stateを復元（プロバイダ接続前 = ブロードキャストされない）
@@ -88,30 +82,30 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       //   setState する（＝updateScene の乱発を防ぎ、ドラッグ/複製操作の中断を回避）。
       let prevCollabSig = "";
       let prevChatSig = "";
-      let prevRosterSig = "";
       const onAwareness = () => {
         const states = awareness.getStates();
         const collab = new Map<string, any>();
         const chats: RemoteChat[] = [];
-        const members: RosterMember[] = [];
         states.forEach((st: any, clientId: number) => {
+          if (clientId === doc.clientID) return; // 自分は除外（自分のアバターは出さない）
           const u = st.user;
           if (!u) return;
-          members.push({ clientId: String(clientId), id: u.id, name: u.name, color: u.color, self: clientId === doc.clientID });
-          if (clientId === doc.clientID) return; // 以降（カーソル/チャット）は自分を除外
-          if (st.cursor) {
-            collab.set(String(clientId), {
-              pointer: st.cursor,
-              username: u.name,
-              color: { background: u.color, stroke: u.color },
-              id: u.id,
-            });
-          }
+          const sid = String(clientId);
+          // カーソル未移動でも接続中メンバーは右上アバターに出したいので pointer の有無に関わらず登録。
+          // これにより collaborators=リアルタイムの在席状況となり、誰もいなければアバターは消える。
+          // socketId を入れると Excalidraw ネイティブのアバターが追従可能になる（クリックで onUserFollow 発火）。
+          collab.set(sid, {
+            socketId: sid,
+            pointer: st.cursor,          // 未移動なら undefined（アバターは出るがキャンバス上のカーソルは出ない）
+            username: u.name,
+            color: { background: u.color, stroke: u.color },
+            id: u.id,
+          });
           if (st.chat?.active && st.cursor) {
             chats.push({ userId: u.id, name: u.name, color: u.color, x: st.cursor.x, y: st.cursor.y, text: st.chat.text ?? "" });
           }
         });
-        // カーソルは命令的に反映（再レンダーなし）。ローカルでドラッグ中は保留し、離してから反映。
+        // カーソル/アバターは命令的に反映（再レンダーなし）。ローカルでドラッグ中は保留し、離してから反映。
         const collabSig = JSON.stringify(Array.from(collab.entries()).map(([k, v]) => [k, v.pointer?.x, v.pointer?.y, v.username]));
         if (collabSig !== prevCollabSig) {
           prevCollabSig = collabSig;
@@ -121,41 +115,34 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
         // チャットバブルはReact描画が必要（頻度は低い）。内容が変わった時だけ更新。
         const chatSig = JSON.stringify(chats);
         if (chatSig !== prevChatSig) { prevChatSig = chatSig; setRemoteChats(chats); }
-        // 参加者ロスター（プレゼンスバー用）。メンバーの増減/改名時のみ更新。
-        const rosterSig = members.map((m) => m.clientId + ":" + m.name).join("|");
-        if (rosterSig !== prevRosterSig) { prevRosterSig = rosterSig; setRoster(members); }
-        // 追従（ENHA2-031）: 対象のビューポートへ自分の表示を合わせる。
+        // 追従（ENHA2-031）: Excalidrawネイティブの追従対象へ自分の表示を合わせる。
         applyFollow(states);
       };
       awareness.on("change", onAwareness);
       onAwarenessRef.current = onAwareness;
 
-      // 追従対象の viewport(中心のシーン座標+ズーム) を読み、自分の scroll/zoom を合わせる。
-      // 画面中心どうしを一致させるため、画面サイズが違っても見え方が破綻しない。
+      // Excalidrawネイティブの追従対象(appState.userToFollow=クリックされたアバター)の viewport を読み、
+      // 自分の scroll/zoom を合わせる。画面中心どうしを一致させるため画面サイズが違っても破綻しない。
+      // 追従の開始/解除/自動解除/ハイライトはネイティブが管理するので、ここは移動だけに徹する。
       function applyFollow(states: Map<number, any>) {
-        const fc = followingRef.current;
-        if (!fc) return;
-        const st = states.get(Number(fc));
-        if (!st) { // 対象が退出 → 追従解除
-          followingRef.current = null;
-          appliedVpSigRef.current = "";
-          setFollowingClientId(null);
-          return;
-        }
-        const vp = st.viewport;
         const api = apiRef.current;
-        if (!vp || !api?.getAppState) return;
-        const sig = fc + ":" + vp.cx + ":" + vp.cy + ":" + vp.zoom;
+        if (!api?.getAppState) return;
+        const app = api.getAppState();
+        const target = app.userToFollow?.socketId as string | undefined;
+        if (!target) return; // 誰も追従していない
+        const st = states.get(Number(target));
+        const vp = st?.viewport;
+        if (!vp) return;
+        const sig = target + ":" + vp.cx + ":" + vp.cy + ":" + vp.zoom;
         if (sig === appliedVpSigRef.current) return; // 変化なしなら再適用しない（updateScene乱発防止）
         appliedVpSigRef.current = sig;
-        const app = api.getAppState();
         const zoom = vp.zoom || 1;
         const width = app.width ?? 0;
         const height = app.height ?? 0;
         const scrollX = width / 2 / zoom - vp.cx;
         const scrollY = height / 2 / zoom - vp.cy;
         applyingFollowRef.current = true;
-        // scroll/zoom のみ差し替え（objectsSnapMode等の他フラグを失わないよう現appStateを土台にする）
+        // scroll/zoom のみ差し替え（objectsSnapMode/userToFollow等の他フラグを失わないよう現appStateを土台にする）
         api.updateScene({ appState: { ...app, scrollX, scrollY, zoom: { value: zoom } } });
         requestAnimationFrame(() => { applyingFollowRef.current = false; });
       }
@@ -205,10 +192,6 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       setSynced(false);
       setDocLoaded(false);
       setRemoteChats([]);
-      setRoster([]);
-      setSelfClientId("");
-      setFollowingClientId(null);
-      followingRef.current = null;
       appliedVpSigRef.current = "";
       onAwarenessRef.current = () => {};
     };
@@ -224,21 +207,15 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
 
   // 自分のビューポート中心(cx,cy)とズームを配信（追従される側）。追従中は自分の視点を送らない。
   const setViewport = useCallback((cx: number, cy: number, zoom: number) => {
-    if (followingRef.current) return;
+    if (apiRef.current?.getAppState?.().userToFollow) return; // 追従中は自分の視点を配信しない
     awarenessRef.current?.setLocalStateField("viewport", { cx, cy, zoom });
   }, []);
 
-  const follow = useCallback((clientId: string) => {
-    followingRef.current = clientId;
-    appliedVpSigRef.current = "";
-    setFollowingClientId(clientId);
-    onAwarenessRef.current(); // 相手が次に動くのを待たず即スナップ
-  }, []);
-
-  const unfollow = useCallback(() => {
-    followingRef.current = null;
-    appliedVpSigRef.current = "";
-    setFollowingClientId(null);
+  // アバターをクリックして追従を開始した瞬間に即スナップさせる（相手が次に動くのを待たない）。
+  // ネイティブの setState(userToFollow) 反映を待つため rAF 経由で applyFollow を呼ぶ。
+  const snapToFollowed = useCallback(() => {
+    appliedVpSigRef.current = ""; // 同一対象・同一位置でも再適用させる
+    requestAnimationFrame(() => onAwarenessRef.current());
   }, []);
 
   // 追従由来の updateScene 実行中か（onChange側で重い自動処理/再配信をスキップするため）
@@ -253,6 +230,6 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
 
   return {
     bridgeRef, docRef, registerApi, synced, docLoaded, remoteChats, setCursor, setChat,
-    setViewport, roster, selfClientId, followingClientId, follow, unfollow, isApplyingFollow,
+    setViewport, snapToFollowed, isApplyingFollow,
   };
 }
