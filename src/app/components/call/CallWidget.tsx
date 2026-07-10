@@ -17,13 +17,21 @@ function formatDuration(totalSec: number) {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-// リモート音声の再生専用要素
+// リモート音声の再生専用要素。
+// autoPlay 属性任せにせず、srcObject 設定後に明示的に play() を呼び、失敗(自動再生ブロック)を
+// 検知して報告する。audioUnlockNonce が増えると(バナークリック=ユーザー操作)再生を再試行する。
 function RemoteAudio({ stream }: { stream: MediaStream }) {
+  const { reportAudioBlocked, audioUnlockNonce } = useCall();
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
     const el = ref.current;
-    if (el && el.srcObject !== stream) el.srcObject = stream;
-  }, [stream]);
+    if (!el) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    const p = el.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(() => reportAudioBlocked());
+    }
+  }, [stream, audioUnlockNonce, reportAudioBlocked]);
   return <audio ref={ref} autoPlay playsInline />;
 }
 

@@ -3,6 +3,7 @@ import { useLocation } from "react-router";
 import { Topbar } from "./Topbar";
 import { ProtectedRoutes } from "./AppRoutes";
 import { useTabs, type Tab } from "@/app/contexts/TabContext";
+import { useRefresh } from "@/app/contexts/RefreshContext";
 
 // アクティブタブ専用。実ルーターの現在地を TabContext へ報告し、
 // タブ見出し・復元パスを最新化する(非アクティブタブは固定パスのため不要)。
@@ -22,6 +23,7 @@ function ActiveLocationReporter({ tabId }: { tabId: string }) {
 // 親(TabbedShell)は position:relative のコンテナを用意する前提。
 export function TabPane({ tab, active }: { tab: Tab; active: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
+  const { refreshNonce } = useRefresh();
 
   // 非アクティブペインは inert にして、誤フォーカス・ESC/モーダルの
   // 誤発火を防ぐ(visibility:hidden でも操作不可)。
@@ -50,8 +52,11 @@ export function TabPane({ tab, active }: { tab: Tab; active: boolean }) {
       {active && <ActiveLocationReporter tabId={tab.id} />}
       <Topbar />
       <main style={{ flex: 1, overflow: "auto" }}>
-        {/* アクティブは location 未指定(=実ルーター現在地)、非アクティブは固定 */}
-        <ProtectedRoutes location={active ? undefined : tab.path} />
+        {/* アクティブは location 未指定(=実ルーター現在地)、非アクティブは固定。
+            refreshNonce を key にしてソフト更新時に再マウント→各ページの初期fetchを再実行する。 */}
+        <div key={refreshNonce} style={{ display: "contents" }}>
+          <ProtectedRoutes location={active ? undefined : tab.path} />
+        </div>
       </main>
     </div>
   );

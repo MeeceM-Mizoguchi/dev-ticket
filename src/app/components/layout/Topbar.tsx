@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router";
+import { useRefresh } from "@/app/contexts/RefreshContext";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -37,6 +38,7 @@ const NOTIF_VIEWED_KEY = "notif_last_viewed_at";
 
 export function Topbar() {
   const { userName, isSystemAdmin } = useAuth();
+  const { refreshNonce, refreshing, refresh } = useRefresh();
   const navigate = useNavigate();
   const [showBugReport, setShowBugReport] = useState(false);
   const closeBugReport = useCallback(() => setShowBugReport(false), []);
@@ -229,6 +231,15 @@ export function Topbar() {
     return () => clearInterval(id);
   }, [userName]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ソフト更新(ヘッダーの更新ボタン)時に、Topbar 自身が持つ通知/お知らせも再取得する。
+  // ページ本体は key 再マウントで再取得されるが、Topbar は再マウントされないためここで拾う。
+  const refreshMountedRef = useRef(false);
+  useEffect(() => {
+    if (!refreshMountedRef.current) { refreshMountedRef.current = true; return; }
+    loadNotifications();
+    loadAnnouncement();
+  }, [refreshNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleOpen = () => {
     const now = new Date().toISOString();
     setShowNotif(true);
@@ -318,6 +329,7 @@ export function Topbar() {
           40% { transform: translateY(-5px); }
           60% { transform: translateY(-2.5px); }
         }
+        @keyframes topbarRefreshSpin { to { transform: rotate(360deg); } }
       `}</style>
       <GlobalSearch />
 
@@ -394,6 +406,17 @@ export function Topbar() {
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
         {/* 音声通話ボタン */}
         <CallButton />
+
+        {/* 更新ボタン: フルリロードせず全データを再取得する(通話は切断されない) */}
+        <button
+          onClick={() => refresh()}
+          disabled={refreshing}
+          title="最新の状態に更新（通話中でも切断されません）"
+          style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: refreshing ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", transition: "background 0.15s" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+          <RefreshCw style={{ width: 15, height: 15, color: "#9E9690", animation: refreshing ? "topbarRefreshSpin 0.8s linear infinite" : "none" }} />
+        </button>
 
         {/* バグ報告ボタン */}
         <button

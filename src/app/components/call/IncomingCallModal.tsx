@@ -1,9 +1,9 @@
 // 着信モーダル。個人着信チャンネルで invite を受けたときに表示する。
-import { Phone, PhoneOff, Users } from "lucide-react";
+import { Phone, PhoneOff, Users, Loader2 } from "lucide-react";
 import { useCall } from "@/app/contexts/CallContext";
 
 export function IncomingCallModal() {
-  const { incoming, acceptIncoming, declineIncoming } = useCall();
+  const { incoming, acceptIncoming, declineIncoming, accepting } = useCall();
   if (!incoming) return null;
 
   const otherCount = Math.max(0, incoming.members.length - 1);
@@ -28,18 +28,27 @@ export function IncomingCallModal() {
           {!isGroup && otherCount > 0 && <span>1対1</span>}
         </div>
 
-        <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
-          <button
-            onClick={declineIncoming}
-            style={{ flex: 1, height: 48, borderRadius: 14, border: "none", cursor: "pointer", background: "#FEF2F2", color: "#DC2626", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <PhoneOff style={{ width: 18, height: 18 }} /> 拒否
-          </button>
-          <button
-            onClick={() => { void acceptIncoming(); }}
-            style={{ flex: 1, height: 48, borderRadius: 14, border: "none", cursor: "pointer", background: "linear-gradient(145deg,#34D399,#059669)", color: "#fff", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <Phone style={{ width: 18, height: 18 }} /> 応答
-          </button>
-        </div>
+        {/* 応答処理中(マイク取得待ち)は「接続中…」を表示し、拒否ボタンを隠して
+            「応答→即拒否」のレース(拒否したのに通話へ入ってしまう)を UI 段階で防ぐ。 */}
+        <style>{`@keyframes incomingSpin { to { transform: rotate(360deg) } }`}</style>
+        {accepting ? (
+          <div style={{ marginTop: 24, height: 48, borderRadius: 14, background: "#ECFDF5", color: "#047857", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Loader2 style={{ width: 18, height: 18, animation: "incomingSpin 1s linear infinite" }} /> 接続中…
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
+            <button
+              onClick={declineIncoming}
+              style={{ flex: 1, height: 48, borderRadius: 14, border: "none", cursor: "pointer", background: "#FEF2F2", color: "#DC2626", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <PhoneOff style={{ width: 18, height: 18 }} /> 拒否
+            </button>
+            <button
+              onClick={() => { void acceptIncoming(); }}
+              style={{ flex: 1, height: 48, borderRadius: 14, border: "none", cursor: "pointer", background: "linear-gradient(145deg,#34D399,#059669)", color: "#fff", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <Phone style={{ width: 18, height: 18 }} /> 応答
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -8,11 +8,13 @@ import { usePushNotifications } from "@/app/hooks/usePushNotifications";
 import { useAutoLogout } from "@/app/hooks/useAutoLogout";
 import { isNativeTabletApp } from "@/app/lib/platform";
 import { CallProvider } from "@/app/contexts/CallContext";
+import { RefreshProvider, useRefresh } from "@/app/contexts/RefreshContext";
 import { CallLayer } from "@/app/components/call/CallLayer";
 
 export function AppShell() {
   useVersionCheck();
   usePushNotifications();
+  const { refreshNonce } = useRefresh();
   
   const outerContainerRef = useRef<HTMLDivElement>(null);
 
@@ -54,7 +56,11 @@ export function AppShell() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         <Topbar />
         <main style={{ flex: 1, overflow: "auto", position: "relative" }}>
-          <Outlet />
+          {/* refreshNonce を key にして、ソフト更新時にページを再マウント→初期fetchを再実行する。
+              display:contents でレイアウトには影響を与えない。 */}
+          <div key={refreshNonce} style={{ display: "contents" }}>
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>
@@ -68,7 +74,9 @@ export function ProtectedShell() {
   if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
   return (
     <CallProvider>
-      {isNativeTabletApp() ? <TabbedShell /> : <AppShell />}
+      <RefreshProvider>
+        {isNativeTabletApp() ? <TabbedShell /> : <AppShell />}
+      </RefreshProvider>
       <CallLayer />
     </CallProvider>
   );
