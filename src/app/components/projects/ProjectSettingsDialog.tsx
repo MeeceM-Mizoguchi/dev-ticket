@@ -51,7 +51,7 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
     }
     setSlugError("");
 
-    const cleanedMemos = envMemos.filter(m => m.name.trim() || m.url.trim());
+    const cleanedMemos = envMemos.filter(m => m.name.trim() || m.url.trim() || (m.memo ?? "").trim());
 
     if (isSupabaseEnabled) {
       setSaving(true);
