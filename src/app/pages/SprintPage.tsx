@@ -330,7 +330,7 @@ export function SprintPage() {
           projectId={projectId ?? undefined}
           projectSlug={projectSlug}
           onClose={() => setCreateForSprintId(null)}
-          onCreated={(createdWbs) => { refreshSprints(); if (createdWbs) setCreatedHighlightWbs(createdWbs); setCreateForSprintId(null); }}
+          onCreated={(createdWbs) => { refreshSprints(); if (createdWbs) { setClosedHighlightWbs(null); setSelectedTicketWbs(null); setCreatedHighlightWbs(createdWbs); } setCreateForSprintId(null); }}
           sprintStartDate={createForSprint.startDate || undefined}
           sprintEndDate={createForSprint.endDate || undefined}
           currentTicketCount={createForSprint.tickets.length}
