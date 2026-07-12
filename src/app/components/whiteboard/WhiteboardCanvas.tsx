@@ -9,12 +9,15 @@ import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
 import { autoConnectLines, followTriangleConnections, reconnectDraggedConnectors, repairOpenTriangles, suppressTrianglePointEditing } from "@/app/lib/whiteboardAutoConnect";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
 import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
+import { reflowTables, freezeSelectedTable, setEditingTextEl } from "@/app/lib/whiteboardTable";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
 import { WhiteboardToolbar } from "./WhiteboardToolbar";
 import { TriangleToolButton } from "./TriangleToolButton";
 import { MermaidToolButton } from "./MermaidToolButton";
+import { TableToolButton } from "./TableToolButton";
+import { TableResizeOverlay } from "./TableResizeOverlay";
 import { SnapGuideLayer } from "./SnapGuideLayer";
 import { TriangleBindHint } from "./TriangleBindHint";
 import { FrameDecorLayer } from "./FrameDecorLayer";
@@ -149,12 +152,33 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     return () => el.removeEventListener("keydown", onKeyDownCapture, true);
   }, []);
 
+  // 表のセル編集中は Excalidraw の onChange が発火しない（＝シーンが確定まで凍結される）ため、
+  // onChange 駆動の再レイアウトが編集中は一度も走らず、周囲セルが編集開始時の高さのまま固まって
+  // 空白/はみ出しになる。そこで編集中(エディタ textarea が存在する間)だけ rAF で reflow を回し、
+  // 周囲セルを編集中セルの実描画高に追従させる（BRU5-042）。編集していない間は onChange 側が担当。
+  useEffect(() => {
+    if (!api || !canEdit) return;
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      if (document.querySelector(".excalidraw-wysiwyg")) {
+        try { reflowTables(api, false); } catch { /* noop */ }
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [api, canEdit]);
+
   const processedLines = useRef<Set<string>>(new Set());
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const prevFrameSig = useRef<Map<string, string>>(new Map()); // 前回のフレーム矩形署名（グループ化の新規/リサイズ判定用・BRU4-054）
   const prevFramePos = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map()); // 前回のフレーム位置＋サイズ（移動/リサイズ判別用・BRU5-040/BRU5-061）
   const wasDragging = useRef(false); // 前tickでドラッグ中だったか（ドラッグ確定=所属再判定の契機・BRU5-040）
+  const wasResizing = useRef(false); // 前tickでリサイズ中だったか（表の角リサイズ確定=サイズ焼き込みの契機・BRU5-042）
   const onChange = useCallback((elements: readonly any[], appState?: any) => {
+    // 編集中テキスト要素を表の再レイアウトへ渡す（api.getAppState()には入らないことがあるため、
+    // editingTextElementが確実に入るこのappStateで捕捉）。編集開始で set・終了(null)でクリアされる。
+    if (appState) setEditingTextEl(appState.editingTextElement ?? null);
     // 自分のビューポート中心(cx,cy)+ズームを配信（追従される側・ENHA2-031）。
     // canEditガードより前に置き、閲覧専用ユーザーの表示も追従対象にできるようにする。
     if (appState) {
@@ -206,6 +230,19 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 他ヘルパーが updateScene 済みの tick はスキップし（1tick遅れて追従・単一updateScene維持）、
         // 最新シーンを内部で取り直して安全に反映する。
         if (!remote && !busy && !connected && !repaired) syncTextBoxBgRects(api, appState, remote);
+        // 表（BRU5-042）の再レイアウト。移動/リサイズ/テキスト編集中とリモート反映中は避け、
+        // 操作確定後に整える。編集や列幅変更が終わるたびに行高・列幅を内容へフィットさせ、隙間なく
+        // タイルし直す（セルごとの独立成長で生じるズレ・空白・見切れを解消する）。
+        // 角ハンドルでのグループリサイズは isResizing で判定（resizingElement はグループだと null）。
+        const resizingNow = !!appState?.isResizing;
+        const resizeEnded = !remote && wasResizing.current && !resizingNow;
+        wasResizing.current = resizingNow;
+        // 角リサイズ確定時、拡大縮小後の寸法を手動値へ焼き込む（reflow に戻されないようにする）。
+        const frozen = resizeEnded ? freezeSelectedTable(api) : false;
+        // 移動/リサイズ中とリモート/焼き込み直後はスキップ。テキスト編集中は reflow 内部でエディタ
+        // textarea を検出して「ライブモード」で再レイアウトする（入力しながら列幅を可変に・BRU5-042）。
+        const hardInteract = !!(appState?.selectedElementsAreBeingDragged || resizingNow || appState?.draggingElement);
+        reflowTables(api, remote || hardInteract || frozen);
       }
     } catch { /* noop */ }
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
@@ -267,6 +304,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <WhiteboardToolbar api={api} />}
           {canEdit && <TriangleToolButton api={api} containerRef={containerRef} />}
           {canEdit && <MermaidToolButton api={api} containerRef={containerRef} />}
+          {canEdit && <TableToolButton api={api} containerRef={containerRef} />}
+          {canEdit && <TableResizeOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
         </>
