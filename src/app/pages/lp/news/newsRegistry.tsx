@@ -11,6 +11,8 @@ import ScreenShare from './articles/20260708-screen-share';
 import CallFixes from './articles/20260708-call-fixes';
 import WhiteboardFixes from './articles/20260708-whiteboard-fixes';
 import MermaidDiagram from './articles/20260709-mermaid-diagram';
+import WhiteboardFollow from './articles/20260713-whiteboard-follow';
+import WhiteboardTable from './articles/20260713-whiteboard-table';
 
 /**
  * ============================================================
@@ -61,6 +63,22 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260713-whiteboard-table',
+    date: '2026.07.13',
+    category: 'リリース',
+    title: 'ホワイトボードに「表」を追加できるようになりました',
+    excerpt: 'ツールバーの「表」ボタンから列×行を選ぶだけで、きれいに揃った表をキャンバスに作成。セルはダブルクリックで入力でき、内容に合わせて自動でレイアウトが整います。',
+    Component: WhiteboardTable,
+  },
+  {
+    slug: '20260713-whiteboard-follow',
+    date: '2026.07.13',
+    category: 'リリース',
+    title: 'ホワイトボードに追従機能を追加しました',
+    excerpt: '右上のメンバーアイコンをクリックするだけで、その人が見ている範囲に自分の画面が自動で追従。大きなボードでも「今どこを見ているか」がすぐに揃います。',
+    Component: WhiteboardFollow,
+  },
   {
     slug: '20260709-mermaid-diagram',
     date: '2026.07.09',
