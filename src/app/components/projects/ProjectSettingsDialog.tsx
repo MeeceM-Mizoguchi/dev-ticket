@@ -62,10 +62,16 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
         const { data: dup } = await dupQ.maybeSingle();
         if (dup) { setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。"); setSaving(false); return; }
       }
-      const { error } = await supabase!.from("projects").update({ slug: finalSlug, env_memos: cleanedMemos }).eq("id", project.id);
+      const { data, error } = await supabase!.from("projects").update({ slug: finalSlug, env_memos: cleanedMemos }).eq("id", project.id).select("id");
       setSaving(false);
-      if (error?.code === "23505") {
-        setSlugError("その識別子はすでに使用されています。別の名前を使用してください。");
+      if (error) {
+        setSlugError(error.code === "23505"
+          ? "その識別子はすでに使用されています。別の名前を使用してください。"
+          : "保存に失敗しました。時間をおいて再度お試しください。");
+        return;
+      }
+      if (!data || data.length === 0) {
+        setSlugError("保存できませんでした。編集権限をご確認ください。");
         return;
       }
     }

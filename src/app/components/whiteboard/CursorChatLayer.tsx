@@ -34,7 +34,7 @@ export function CursorChatLayer({ api, containerRef, remoteChats, setChat, canEd
   const [fading, setFading] = useState(false); // 無操作時に5秒かけてフェードアウト
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // 4秒経過→フェード開始
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null); // 7秒経過→クローズ
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const openRef = useRef(false);
   openRef.current = open;
   const mouseRef = useRef({ x: 0, y: 0 }); // 常時マウス座標を保持（/押下時に即座にそこへ出す）
@@ -104,23 +104,34 @@ export function CursorChatLayer({ api, containerRef, remoteChats, setChat, canEd
 
   useEffect(() => () => clearTimers(), []);
 
+  // 入力側も見えてる側（バブル）と同様に自動改行させる。textarea を内容に合わせて高さ自動調整。
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, open]);
+
   return (
     <>
       {/* 自分の入力ボックス（操作後4秒くっきり→3秒かけてフェードアウト） */}
       {open && (
         <div style={{ position: "absolute", left: pos.x + 14, top: pos.y + 14, zIndex: 30, pointerEvents: "auto",
           opacity: fading ? 0 : 1, transition: fading ? "opacity 3s linear" : "opacity 0.1s ease" }}>
-          <input
+          <textarea
             ref={inputRef}
             value={text}
             onChange={(e) => onInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape") close(); }}
             onBlur={close}
             placeholder="メッセージを入力…"
+            rows={1}
             style={{
-              width: 220, padding: "6px 12px", fontSize: 13, color: "#fff",
+              width: 220, padding: "6px 12px", fontSize: 13, lineHeight: 1.4, color: "#fff",
               background: "rgba(30,30,35,0.92)", border: "1px solid rgba(255,255,255,0.25)",
-              borderRadius: 999, outline: "none", boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+              borderRadius: 14, outline: "none", boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+              resize: "none", overflow: "hidden", whiteSpace: "pre-wrap", wordBreak: "break-word",
+              fontFamily: "inherit", boxSizing: "border-box", display: "block",
             }}
           />
         </div>
@@ -132,8 +143,9 @@ export function CursorChatLayer({ api, containerRef, remoteChats, setChat, canEd
         return (
           <div key={c.userId} style={{ position: "absolute", left: p.x + 16, top: p.y + 38, zIndex: 29, pointerEvents: "none" }}>
             <div style={{
-              maxWidth: 240, padding: "5px 11px", fontSize: 13, color: "#fff", whiteSpace: "pre-wrap",
-              background: c.color, borderRadius: 999, boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
+              maxWidth: 240, padding: "5px 11px", fontSize: 13, color: "#fff",
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+              background: c.color, borderRadius: 14, boxShadow: "0 4px 14px rgba(0,0,0,0.25)",
             }}>{c.text || "…"}</div>
           </div>
         );

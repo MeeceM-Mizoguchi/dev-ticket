@@ -83,6 +83,13 @@ function ganttContentHeight(rowCount: number) {
   if (rowCount <= 0) return 320;
   return 40 + (28 + rowCount * GANTT_ROW_H + 3) + 30;
 }
+// グラフエリアの表示高さ上限。行数が多くてもここでクランプし、超過分は各グラフ内でスクロール
+// させて、ダッシュボード全体が縦に伸び続けてページスクロールが大変になるのを防ぐ（BRU5-042 追従）。
+const CHART_MAX_HEIGHT = 460;
+// 横棒グラフ1行(プロジェクト1件)の高さ。行が潰れないよう自然高さを保ちボックス内で縦スクロールさせる。
+const HBAR_ROW_H = 48;
+// ガント本体(スクロール領域)の高さ上限。目盛りヘッダーは sticky で固定したまま縦スクロールさせる。
+const GANTT_MAX_BODY_H = 420;
 
 // モックデータからガント用スプリント配列を生成（開始日/終了日・ステータス・進捗）
 function buildMockGantt(): GanttSprint[] {
@@ -449,7 +456,11 @@ export function Dashboard() {
       return c > 0 ? sum + 1 + c : sum;
     }, 0);
   })();
-  const chartAreaHeight = ganttContentHeight(ganttRowCount);
+  const chartContentHeight = ganttContentHeight(ganttRowCount);
+  // 表示ボックスは上限でクランプ（超過分は各グラフ内でスクロール）。
+  const chartAreaHeight = Math.min(chartContentHeight, CHART_MAX_HEIGHT);
+  // 横棒はプロジェクト1件=1行のため、行が潰れないよう自然高さを保ちボックス内で縦スクロールさせる。
+  const horizontalContentHeight = Math.max(chartAreaHeight, assignedProjects.length * HBAR_ROW_H + 24);
 
   const renderProjectNameTick = ({ x, y, payload }: { x: number; y: number; payload: { value: string } }) => (
     <text x={2} y={y + 7} textAnchor="start" fill="#6B6458" fontSize={14} fontFamily="Inter,ui-sans-serif,system-ui,sans-serif" fontWeight={500}>
@@ -606,13 +617,14 @@ export function Dashboard() {
             </div>
           </div>
 
-          <div style={{ height: chartType === 'gantt' ? 'auto' : chartAreaHeight }}>
+          <div style={{ height: chartType === 'gantt' ? 'auto' : chartAreaHeight, overflowY: chartType === 'horizontal' ? 'auto' : 'visible' }}>
             {chartType === 'horizontal' && (
               isBarChartAllZero ? (
                 <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <span style={{ fontSize: 13, color: "#C9C4BB" }}>実績データがありません</span>
                 </div>
               ) : (
+                <div style={{ height: horizontalContentHeight }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 24, top: 8, bottom: 8 }} barCategoryGap="28%" barSize={28}>
                     <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
@@ -624,6 +636,7 @@ export function Dashboard() {
                     <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
+                </div>
               )
             )}
             {chartType === 'vertical' && (
@@ -909,10 +922,10 @@ function DashboardGantt({ projectNames, sprints, navigate }: { projectNames: str
         </div>
       </div>
 
-      <div ref={scrollRef} style={{ overflowX: "auto", overflowY: "hidden", border: "1.5px solid #E6E2D9", borderRadius: 12 }}>
+      <div ref={scrollRef} style={{ overflowX: "auto", overflowY: "auto", maxHeight: GANTT_MAX_BODY_H, border: "1.5px solid #E6E2D9", borderRadius: 12 }}>
         <div style={{ width: LABEL_W + totalWidth, position: "relative" }}>
           {/* 目盛りヘッダー */}
-          <div style={{ display: "flex", height: 28, borderBottom: "1.5px solid #E6E2D9", position: "relative" }}>
+          <div style={{ display: "flex", height: 28, borderBottom: "1.5px solid #E6E2D9", position: "sticky", top: 0, zIndex: 5, background: "#FFFFFF" }}>
             <div style={{ width: LABEL_W, flexShrink: 0, position: "sticky", left: 0, zIndex: 3, background: "#FFFFFF", display: "flex", alignItems: "center", paddingLeft: 12 }}>
               <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600 }}>プロジェクト / スプリント</span>
             </div>

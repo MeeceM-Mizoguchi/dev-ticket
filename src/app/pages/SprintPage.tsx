@@ -351,7 +351,11 @@ export function SprintPage() {
           onClose={() => setShowEditIdentifiers(false)}
           onUpdated={(newSlug) => {
             setShowEditIdentifiers(false);
-            navigate(`/${newSlug}`);
+            if (project && newSlug !== project.slug) {
+              navigate(`/${newSlug}`);
+            } else {
+              refreshSprints();
+            }
           }} />
       )}
 

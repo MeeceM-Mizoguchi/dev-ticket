@@ -4,6 +4,13 @@
 // 音声のみ・トラック固定なので再ネゴシエーションは発生しない前提。
 import { rtcConfig } from "./callConstants";
 
+// 初期交渉が「一度も connected にならない」場合の再交渉ウォッチドッグ。
+// 発信側の回線が一瞬切れて初期 offer/answer/ICE が欠落すると、PC が connecting のまま
+// 固まることがある(failed に落ちるまで数十秒かかる場合もある)。offer 側だけが上限回数まで
+// iceRestart 付きで交渉をやり直し、素早く自己修復する。
+const CONNECT_WATCHDOG_MS = 8_000;
+const CONNECT_WATCHDOG_TRIES = 3;
+
 export interface MeshCallbacks {
   // 相手の音声ストリームを受信したとき(再生用)
   onRemoteStream: (userId: string, stream: MediaStream) => void;
@@ -22,6 +29,8 @@ interface PeerEntry {
 export class MeshConnection {
   private peers = new Map<string, PeerEntry>();
   private closed = false;
+  private connectTimers = new Map<string, ReturnType<typeof setTimeout>>(); // 未接続の再交渉ウォッチドッグ
+  private connectTries = new Map<string, number>(); // 相手ごとのウォッチドッグ再交渉回数
 
   constructor(
     private readonly selfId: string,
@@ -70,14 +79,43 @@ export class MeshConnection {
       this.cb.onRemoteStream(remoteId, stream);
     };
     pc.onconnectionstatechange = () => {
+      // 接続できたらウォッチドッグを解除する。
+      if (pc.connectionState === "connected") {
+        const t = this.connectTimers.get(remoteId);
+        if (t) { clearTimeout(t); this.connectTimers.delete(remoteId); }
+        this.connectTries.delete(remoteId);
+      }
       this.cb.onPeerStateChange(remoteId, pc.connectionState);
     };
 
     // 初期交渉のイニシエータは userId が小さい方に固定(両側で一意に決まる)。
     if (this.selfId < remoteId) {
       void this.createOffer(remoteId, entry);
+      this.scheduleConnectWatchdog(remoteId); // 一定時間 connected にならなければ再交渉する
     }
     return entry;
+  }
+
+  // 未接続のまま固まった相手に対し、offer 側だけが上限回数まで iceRestart 付きで交渉をやり直す。
+  private scheduleConnectWatchdog(remoteId: string) {
+    if (this.selfId >= remoteId) return; // 応答側は主導しない(相手の再 offer を待つ)
+    const existing = this.connectTimers.get(remoteId);
+    if (existing) clearTimeout(existing);
+    this.connectTimers.set(remoteId, setTimeout(() => {
+      this.connectTimers.delete(remoteId);
+      if (this.closed) return;
+      const entry = this.peers.get(remoteId);
+      if (!entry) return;
+      const st = entry.pc.connectionState;
+      if (st === "connected" || st === "closed" || st === "failed") return; // 接続済み/別経路で処理済み
+      const tries = this.connectTries.get(remoteId) ?? 0;
+      if (tries >= CONNECT_WATCHDOG_TRIES) return; // 出し切ったら諦める(接続断フォールバックに委ねる)
+      this.connectTries.set(remoteId, tries + 1);
+      // 前の offer が宙ぶらり(have-local-offer)でも iceRestart 付き再 offer で置き換える。
+      entry.remoteSet = false;
+      void this.createOffer(remoteId, entry, { iceRestart: true });
+      this.scheduleConnectWatchdog(remoteId);
+    }, CONNECT_WATCHDOG_MS));
   }
 
   private async createOffer(remoteId: string, entry: PeerEntry, opts?: { iceRestart?: boolean }) {
@@ -151,6 +189,9 @@ export class MeshConnection {
   }
 
   private removePeer(remoteId: string) {
+    const t = this.connectTimers.get(remoteId);
+    if (t) { clearTimeout(t); this.connectTimers.delete(remoteId); }
+    this.connectTries.delete(remoteId);
     const entry = this.peers.get(remoteId);
     if (!entry) return;
     this.peers.delete(remoteId);

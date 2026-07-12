@@ -22,6 +22,7 @@ import {
   Mic, MicOff, PhoneOff, ScreenShare, Minus, MousePointer2, Type, ExternalLink,
   Phone, Check, Users, X, Bug, Bell,
   FileText, Lock, Hand, Square, Diamond, Circle, MoveRight, Image as ImageIcon, Maximize2,
+  Eye, Table as TableIcon,
 } from 'lucide-react';
 
 /** ブラウザ／アプリのウィンドウ枠。中身を実画面らしく見せる共通シェル。 */
@@ -991,6 +992,187 @@ export function MermaidExportScreen() {
         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-50 text-red-600 border border-red-100"><FileText className="w-3 h-3" />PDF</span>
         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-50 text-sky-600 border border-sky-100"><FileText className="w-3 h-3" />Word</span>
         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100"><FileText className="w-3 h-3" />Excel</span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑧ ホワイトボード追従（ENHA2-031）
+ *    実機能をトレース:
+ *      ・Excalidraw ネイティブの右上コラボレーターアバター（＝追従の入口）
+ *      ・アバターをクリックすると、その人の表示範囲(パン/ズーム)に自分の画面が追従
+ *      ・追従中は Excalidraw が相手の色で画面の縁を縁取り＋相手の名前を表示
+ *    追従相手の色は紫 hsl(280,70%,45%) で統一（WhiteboardScreen の K と揃える）。
+ * ========================================================== */
+const FOLLOW_HUE = 280;
+const FOLLOW_COLOR = `hsl(${FOLLOW_HUE},70%,45%)`;
+
+export function WhiteboardFollowScreen() {
+  return (
+    <div className="relative h-[320px] bg-white bg-[radial-gradient(#e5e9ef_1px,transparent_1px)] [background-size:15px_15px] text-left overflow-hidden">
+      {/* 追従中の縁取り（相手の色で画面全体を囲う＝Excalidraw ネイティブ） */}
+      <div className="absolute inset-0 z-20 pointer-events-none rounded-[2px]" style={{ border: `3px solid ${FOLLOW_COLOR}` }} />
+
+      {/* 上部中央：追従中バナー */}
+      <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3 py-1 rounded-full text-white text-[11px] font-bold shadow-lg" style={{ background: FOLLOW_COLOR }}>
+        <Eye className="w-3.5 h-3.5" />川口 さくら を追従中
+      </div>
+
+      {/* 右上：コラボレーターアバター（クリックで追従・追従相手を強調） */}
+      <div className="absolute top-2.5 right-3 z-30 flex items-center">
+        <div className="flex -space-x-1.5">
+          {/* 追従中の相手（紫・リング＋目印バッジ） */}
+          <span className="relative">
+            <span className="w-6 h-6 rounded-full border-2 border-white text-[9px] font-bold text-white flex items-center justify-center ring-2" style={{ background: FOLLOW_COLOR, boxShadow: `0 0 0 2px ${FOLLOW_COLOR}` }}>K</span>
+            <span className="absolute -right-1 -bottom-1 w-3.5 h-3.5 rounded-full bg-white flex items-center justify-center shadow" style={{ color: FOLLOW_COLOR }}><Eye className="w-2.5 h-2.5" /></span>
+          </span>
+          <span className="w-6 h-6 rounded-full border-2 border-white text-[9px] font-bold text-white flex items-center justify-center" style={{ background: 'hsl(30,70%,45%)' }}>Y</span>
+        </div>
+        {/* 吹き出し（下向き）：クリックで追従 */}
+        <div className="absolute top-[34px] right-1 whitespace-nowrap">
+          <span className="absolute -top-1.5 right-3 w-3 h-3 rotate-45" style={{ background: FOLLOW_COLOR }} />
+          <span className="relative block px-2.5 py-1 rounded-md text-white text-[10px] font-bold shadow-lg" style={{ background: FOLLOW_COLOR }}>アイコンをクリックで追従</span>
+        </div>
+      </div>
+
+      {/* 相手が見ている内容（付箋・フロー図） */}
+      <div className="absolute left-8 top-24 w-[74px] h-[74px] rounded-sm shadow-sm -rotate-2 p-1.5 text-[7px] leading-tight text-stone-700" style={{ background: NOTE_COLORS[3] }}>
+        画面設計
+      </div>
+      <div className="absolute left-[128px] top-[112px] flex items-center gap-0">
+        <span className="w-[70px] h-9 rounded border-[1.5px] border-slate-500 bg-white flex items-center justify-center text-[8px] text-slate-600">トップ</span>
+        <svg width="26" height="12" className="text-slate-400"><line x1="0" y1="6" x2="20" y2="6" stroke="currentColor" strokeWidth="1.5" /><path d="M20,2 L26,6 L20,10 Z" fill="currentColor" /></svg>
+        <span className="w-[70px] h-9 rounded border-[1.5px] border-slate-500 bg-white flex items-center justify-center text-[8px] text-slate-600">一覧</span>
+      </div>
+
+      {/* 追従相手のカーソル（紫・名前ラベル付き） */}
+      <div className="absolute left-[196px] top-[168px] z-10">
+        <svg width="18" height="18" viewBox="0 0 16 16" style={{ color: FOLLOW_COLOR }}><path d="M1,1 L1,12 L4,9 L6,14 L8,13 L6,8 L11,8 Z" fill="currentColor" stroke="#fff" strokeWidth="1" /></svg>
+        <span className="inline-block mt-0.5 ml-3 px-2 py-0.5 rounded text-[9px] font-bold text-white shadow" style={{ background: FOLLOW_COLOR }}>川口 さくら</span>
+      </div>
+
+      {/* 下部：説明キャプション */}
+      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white/95 rounded-lg border border-slate-200 shadow text-[10px] text-slate-500">
+        <MousePointer2 className="w-3 h-3 text-slate-400" />相手が動かすと、自分の画面も同じ範囲へ自動で移動します
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑨ ホワイトボード表機能（BRU5-042）
+ *    実機能をトレース:
+ *      ・Excalidraw 標準ツールバー末尾に注入される「表」ボタン（TableToolButton）
+ *      ・クリックで開く Google ドキュメント風グリッドピッカー（ホバーで 列×行 を選ぶ）
+ *      ・生成される表（セル=矩形・先頭行はヘッダーの薄グレー #f1f3f5・線 #343a40）
+ *      ・選択中は境界にドラッグつまみ（TableResizeOverlay）で手動リサイズ
+ * ========================================================== */
+
+/** ①-a ツールバーの「表」ボタン → グリッドピッカー（4×3 を選択中）。 */
+export function WhiteboardTablePickerScreen() {
+  const PICK_COLS = 4, PICK_ROWS = 3; // ハイライト中の選択（列×行）
+  const GRID = 6;                     // ピッカーに見せる格子サイズ
+  const tool = (active = false) => ({
+    width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: active ? '#fff' : '#1b1b1f', background: active ? '#6965db' : 'transparent',
+  } as React.CSSProperties);
+  return (
+    <div className="relative h-[320px] bg-white bg-[radial-gradient(#e5e9ef_1px,transparent_1px)] [background-size:16px_16px] text-left overflow-hidden">
+      {/* Excalidraw 上部ツールバー（末尾に「表」ボタンが注入される） */}
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-0.5 bg-white rounded-xl border border-slate-200/80 shadow-lg px-1.5 py-1">
+        <span style={tool()}><Lock className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Hand className="w-[15px] h-[15px]" /></span>
+        <span style={tool(true)}><MousePointer2 className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Square className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Diamond className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Circle className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><MoveRight className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Pencil className="w-[15px] h-[15px]" /></span>
+        <span style={tool()}><Type className="w-[15px] h-[15px]" /></span>
+        <span className="w-px h-5 bg-slate-200 mx-0.5" />
+        {/* 注入された「表」ボタン（押すとグリッドピッカーが開く） */}
+        <span className="relative" style={{ ...tool(), color: '#059669', background: 'rgba(5,150,105,0.10)' }}>
+          <TableIcon className="w-[16px] h-[16px]" />
+        </span>
+      </div>
+
+      {/* グリッドピッカー（表ボタンの直下に開く） */}
+      <div className="absolute top-[58px] left-1/2 translate-x-[70px] z-30 bg-white rounded-xl border border-slate-200 shadow-xl p-3">
+        <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${GRID}, 16px)` }}>
+          {Array.from({ length: GRID * GRID }).map((_, i) => {
+            const r = Math.floor(i / GRID), c = i % GRID;
+            const on = r < PICK_ROWS && c < PICK_COLS;
+            return (
+              <span
+                key={i}
+                className="w-4 h-4 rounded-[3px] border"
+                style={{ background: on ? '#059669' : '#F1F3F5', borderColor: on ? '#047857' : 'rgba(0,0,0,0.08)' }}
+              />
+            );
+          })}
+        </div>
+        <div className="mt-2 text-center text-[11px] font-bold text-slate-600">{PICK_COLS} × {PICK_ROWS} の表</div>
+      </div>
+    </div>
+  );
+}
+
+/** ①-b 生成された表（選択中・境界のリサイズつまみ付き）。 */
+export function WhiteboardTableScreen() {
+  const HEADER = ['担当', 'タスク', '状態'];
+  const ROWS = [
+    ['佐藤', 'ログイン設計', '完了'],
+    ['川口', 'API 実装', '進行中'],
+    ['山本', 'レビュー', '未着手'],
+  ];
+  const COL_W = [64, 118, 74];
+  const totalW = COL_W.reduce((a, b) => a + b, 0);
+  return (
+    <div className="relative h-[320px] bg-white bg-[radial-gradient(#e5e9ef_1px,transparent_1px)] [background-size:16px_16px] text-left overflow-hidden flex items-center justify-center">
+      <div className="relative">
+        {/* 選択バウンディングボックス（Excalidraw 風・紫アウトライン） */}
+        <div className="relative" style={{ outline: '1.5px solid #6965db', outlineOffset: 6 }}>
+          {/* 表本体（セル＝矩形・先頭行はヘッダー） */}
+          <div className="border-l border-t" style={{ borderColor: '#343a40' }}>
+            {/* ヘッダー行 */}
+            <div className="flex">
+              {HEADER.map((h, c) => (
+                <div key={c} className="border-r border-b flex items-center px-2 text-[11px] font-bold text-slate-700" style={{ width: COL_W[c], height: 32, borderColor: '#343a40', background: '#f1f3f5' }}>{h}</div>
+              ))}
+            </div>
+            {/* データ行 */}
+            {ROWS.map((row, r) => (
+              <div key={r} className="flex">
+                {row.map((cell, c) => (
+                  <div key={c} className="border-r border-b flex items-center px-2 text-[11px] text-slate-600" style={{ width: COL_W[c], height: 32, borderColor: '#343a40', background: '#ffffff' }}>{cell}</div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          {/* 四隅ハンドル（グループ全体リサイズ） */}
+          {[
+            { t: -9, l: -9 }, { t: -9, r: -9 }, { b: -9, l: -9 }, { b: -9, r: -9 },
+          ].map((p, i) => (
+            <span key={i} className="absolute w-2 h-2 rounded-[2px] bg-white" style={{ border: '1px solid #6965db', top: p.t, bottom: p.b, left: p.l, right: p.r }} />
+          ))}
+
+          {/* 列境界のドラッグつまみ（手動リサイズ・1本目の境界を強調） */}
+          <div className="absolute -top-1 bottom-0 z-10 flex flex-col items-center" style={{ left: COL_W[0] - 4 }}>
+            <span className="w-1.5 h-1.5 rounded-full bg-white" style={{ border: '1.5px solid #6965db' }} />
+            <span className="flex-1 w-px" style={{ background: '#6965db' }} />
+          </div>
+          {/* つまみの吹き出し */}
+          <div className="absolute z-20 whitespace-nowrap" style={{ left: COL_W[0] - 4, top: -30 }}>
+            <span className="relative block -translate-x-1/2 px-2 py-0.5 rounded text-white text-[9px] font-bold shadow" style={{ background: '#6965db' }}>← ドラッグで幅を調整 →</span>
+          </div>
+        </div>
+
+        {/* 補足キャプション */}
+        <div className="mt-5 text-center text-[10px]" style={{ color: '#6965db', fontWeight: 600, width: totalW }}>
+          セルはダブルクリックで入力。内容に合わせて自動で整います
+        </div>
       </div>
     </div>
   );

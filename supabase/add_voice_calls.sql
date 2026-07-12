@@ -28,14 +28,45 @@ create index if not exists idx_call_participants_user on call_participants(user_
 alter table call_sessions enable row level security;
 alter table call_participants enable row level security;
 
+-- ⚠️ 循環RLS対策(500の原因):
+-- call_sessions のポリシーが call_participants を、call_participants のポリシーが call_sessions を
+-- 相互に exists() で参照すると、PostgreSQL が "infinite recursion detected in policy" (42P17) を出し、
+-- PostgREST が HTTP 500 を返す(通話は Broadcast/WebRTC で成立するので音声自体は無関係だが履歴が残らない)。
+-- is_system_admin() と同じく security definer 関数で RLS を跨がせ、循環を断ち切る。
+create or replace function public.is_call_participant(sess uuid)
+  returns boolean
+  language sql
+  security definer
+  stable
+  set search_path = public
+as $$
+  select exists (
+    select 1 from call_participants
+    where session_id = sess and user_id = auth.uid()::text
+  );
+$$;
+
+create or replace function public.is_call_initiator(sess uuid)
+  returns boolean
+  language sql
+  security definer
+  stable
+  set search_path = public
+as $$
+  select exists (
+    select 1 from call_sessions
+    where id = sess and initiator_id = auth.uid()::text
+  );
+$$;
+
+grant execute on function public.is_call_participant(uuid) to anon, authenticated;
+grant execute on function public.is_call_initiator(uuid) to anon, authenticated;
+
 drop policy if exists call_sessions_select on call_sessions;
 create policy call_sessions_select on call_sessions for select
   using (
     initiator_id = auth.uid()::text
-    or exists (
-      select 1 from call_participants p
-      where p.session_id = call_sessions.id and p.user_id = auth.uid()::text
-    )
+    or public.is_call_participant(id)
   );
 
 drop policy if exists call_sessions_insert on call_sessions;
@@ -46,19 +77,13 @@ drop policy if exists call_sessions_update on call_sessions;
 create policy call_sessions_update on call_sessions for update
   using (
     initiator_id = auth.uid()::text
-    or exists (
-      select 1 from call_participants p
-      where p.session_id = call_sessions.id and p.user_id = auth.uid()::text
-    )
+    or public.is_call_participant(id)
   );
 
 drop policy if exists call_participants_all on call_participants;
 create policy call_participants_all on call_participants for all
   using (
     user_id = auth.uid()::text
-    or exists (
-      select 1 from call_sessions s
-      where s.id = call_participants.session_id and s.initiator_id = auth.uid()::text
-    )
+    or public.is_call_initiator(session_id)
   )
   with check (true);

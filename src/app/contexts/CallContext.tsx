@@ -41,6 +41,11 @@ interface CallCtxType {
   error: string | null;
   screenShare: ScreenShareState | null;
   screenShareSupported: boolean;
+  accepting: boolean;                 // 着信応答処理中(マイク取得待ち)。モーダルの二度押し/レース防止に使う。
+  audioBlocked: boolean;              // ブラウザの自動再生ポリシーで相手音声がブロックされている(要ユーザー操作)。
+  audioUnlockNonce: number;           // これが増えると全 RemoteAudio が play() を再試行する。
+  reportAudioBlocked: () => void;     // RemoteAudio が play() 失敗を報告する。
+  unlockAudio: () => void;            // バナークリック(ユーザー操作)で音声再生を解禁する。
   startCall: (project: { id: string; name: string }, targets: CallMember[]) => Promise<void>;
   acceptIncoming: () => Promise<void>;
   declineIncoming: () => void;
@@ -57,6 +62,8 @@ interface CallCtxType {
 const CallContext = createContext<CallCtxType>({
   incoming: null, call: null, online: new Set(), error: null,
   screenShare: null, screenShareSupported: false,
+  accepting: false, audioBlocked: false, audioUnlockNonce: 0,
+  reportAudioBlocked: () => {}, unlockAudio: () => {},
   startCall: async () => {}, acceptIncoming: async () => {}, declineIncoming: () => {},
   hangup: () => {}, toggleMute: () => {}, clearError: () => {},
   startScreenShare: async () => {}, stopScreenShare: () => {}, sendPointer: () => {}, sendAnnotation: () => {},
@@ -72,6 +79,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [screenShare, setScreenShare] = useState<ScreenShareState | null>(null); // ENHA2-030
+  const [accepting, setAccepting] = useState(false); // 着信応答処理中(マイク取得待ち)
+  const [audioBlocked, setAudioBlocked] = useState(false); // 相手音声が自動再生ブロックされている
+  const [audioUnlockNonce, setAudioUnlockNonce] = useState(0); // 増やすと RemoteAudio が再生を再試行する
 
   // ライフサイクルを跨ぐ参照
   const meshRef = useRef<MeshConnection | null>(null);
@@ -86,6 +96,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const inviteTargetsRef = useRef<CallMember[]>([]);
   const callRef = useRef<CallState | null>(null);
   const incomingRef = useRef<InvitePayload | null>(null);
+  const acceptingRef = useRef(false); // 応答処理の二重発火/レースガード(await 中の状態変化を検知する)
   const selfRef = useRef({ id: userId, name: userName });
   const endingRef = useRef(false); // 終了処理の二重発火ガード(bye/roster/connState が同時に来ても1回だけ)
   const connLossTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 接続断フォールバックのデバウンス
@@ -110,6 +121,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
   useEffect(() => { toastRef.current = toast; });
 
   const clearError = useCallback(() => setError(null), []);
+
+  // ── リモート音声の自動再生ブロック対策 ──
+  // RemoteAudio の play() が拒否されたら報告し、バナーを出す。
+  const reportAudioBlocked = useCallback(() => setAudioBlocked(true), []);
+  // バナークリック(ユーザー操作)で全 RemoteAudio の play() を再試行し、ブロックを解除する。
+  const unlockAudio = useCallback(() => {
+    setAudioBlocked(false);
+    setAudioUnlockNonce((n) => n + 1);
+  }, []);
 
   // ── ENHA2-030 画面共有: 参照のみの後始末(setState はしない=teardownから安全に呼べる) ──
   const disposeScreenRefs = useCallback(() => {
@@ -174,6 +194,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
     everActiveRef.current = false;
     pendingInviteRef.current.clear();
     inviteTargetsRef.current = [];
+    acceptingRef.current = false;
+    setAccepting(false);
+    setAudioBlocked(false);
   }, [disposeScreenRefs]);
 
   // 自分から通話を切る
@@ -509,14 +532,26 @@ export function CallProvider({ children }: { children: ReactNode }) {
   // ── 着信に応答 ──
   const acceptIncoming = useCallback(async () => {
     const inv = incomingRef.current;
-    if (!inv || callRef.current) return;
+    // 二度押し/レースガード: 既に応答処理中(マイク取得待ち)や通話中なら無視する。
+    if (!inv || callRef.current || acceptingRef.current) return;
+    acceptingRef.current = true;
+    setAccepting(true);
     // 別タブでも同じ着信が鳴っているので、この端末で応答したことを通知して鳴り止ませる。
     tabCoordRef.current?.claim(inv.sessionId);
     // 応答した瞬間に着信音を止める(マイク許可ダイアログ待ちの間も鳴り続けないように await 前で停止)。
     stopRingtone();
     if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
     const stream = await acquireMic();
-    if (!stream) return;
+    // マイク取得に失敗: 着信は閉じずに保持し、モーダルから再試行できるようにする(無反応にしない)。
+    if (!stream) { acceptingRef.current = false; setAccepting(false); return; }
+    // マイク取得中(許可ダイアログ表示中など)に拒否/キャンセル/別着信で状況が変わっていたら、
+    // 取得済みストリームを破棄して参加しない(拒否したのに入ってしまうゴースト参加を防ぐ)。
+    if (incomingRef.current?.sessionId !== inv.sessionId || callRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      acceptingRef.current = false;
+      setAccepting(false);
+      return;
+    }
     endingRef.current = false;
     localStreamRef.current = stream;
     setIncoming(null);
@@ -528,12 +563,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
       participants: [{ id: self.id, name: self.name, muted: false, speaking: false, connState: "self" }],
     });
     void recordParticipantOutcome(inv.sessionId, self.id, "joined");
+    acceptingRef.current = false;
+    setAccepting(false);
   }, [acquireMic, buildMesh]);
 
   // ── 着信を拒否 ──
   const declineIncoming = useCallback(() => {
     const inv = incomingRef.current;
-    if (!inv) return;
+    // 応答処理中(マイク取得待ち)は応答を優先し、拒否は無視する(モーダルも拒否ボタンを隠す)。
+    if (!inv || acceptingRef.current) return;
     // 別タブでも鳴っている同じ着信を止める(片方で拒否したら全タブで鳴り止む)。
     tabCoordRef.current?.claim(inv.sessionId);
     void sendToUser(inv.from, SIGNAL.decline, { sessionId: inv.sessionId, from: selfRef.current.id });
@@ -729,17 +767,27 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   // タブを閉じた/離脱したら即座に相手へ切断通知(購読済みセッションチャンネルへ bye をブロードキャスト)。
   // presence の離脱検知や接続断フォールバック(数秒)を待たずに、相手側でほぼ即時に通話が終わる。
+  // bye は「実際に離脱が確定した」pagehide でのみ送る。beforeunload では送らない
+  // (beforeunload で送るとリロード確認をキャンセルした場合に相手を巻き込んで切ってしまうため)。
   useEffect(() => {
-    const onLeave = () => {
+    const onPageHide = () => {
       const cur = callRef.current;
       if (!cur) return;
       try { signalingRef.current?.send(SIGNAL.bye, { sessionId: cur.sessionId }); } catch { /* noop */ }
     };
-    window.addEventListener("pagehide", onLeave);
-    window.addEventListener("beforeunload", onLeave);
+    // 通話中にリロード/離脱しようとしたら、ブラウザ標準の確認ダイアログを出して誤操作を防ぐ。
+    // (リロードすると WebRTC 通話は必ず切断される。維持したい場合はヘッダーの「更新」ボタンを使う。)
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!callRef.current) return;
+      e.preventDefault();
+      e.returnValue = ""; // Chrome は returnValue の設定でダイアログを表示する
+      return "";
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
-      window.removeEventListener("pagehide", onLeave);
-      window.removeEventListener("beforeunload", onLeave);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, []);
 
@@ -749,6 +797,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   return (
     <CallContext.Provider value={{
       incoming, call, online, error, screenShare, screenShareSupported: isScreenShareSupported(),
+      accepting, audioBlocked, audioUnlockNonce, reportAudioBlocked, unlockAudio,
       startCall, acceptIncoming, declineIncoming, hangup, toggleMute, clearError,
       startScreenShare, stopScreenShare, sendPointer, sendAnnotation,
     }}>

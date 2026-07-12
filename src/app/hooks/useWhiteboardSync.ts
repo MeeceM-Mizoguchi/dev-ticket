@@ -16,7 +16,7 @@ const SAVE_DEBOUNCE_MS = 1500;
 export function useWhiteboardSync(boardId: string | null, user: WbUser) {
   const bridgeRef = useRef<ExcalidrawYjsBridge | null>(null);
   const awarenessRef = useRef<Awareness | null>(null);
-  const apiRef = useRef<{ updateScene: (d: any) => void } | null>(null);
+  const apiRef = useRef<any>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const [synced, setSynced] = useState(false);
   // 永続stateのロード完了フラグ。true になってから Excalidraw をマウントし、初期要素を
@@ -27,6 +27,12 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
   // カーソル(collaborators)は命令的にupdateSceneへ流す（Reactの再レンダーを起こさない＝ドラッグ/複製を妨げない）
   const localPointerDownRef = useRef(false);
   const pendingCollabRef = useRef<Map<string, any> | null>(null);
+
+  // 追従機能（ENHA2-031）。追従の「対象選択/アバター表示/解除UI/自動解除」は Excalidraw ネイティブ
+  // （右上のコラボレーターアバター＋onUserFollow）に任せ、ここでは実際のビューポート移動だけ担う。
+  const applyingFollowRef = useRef(false);             // 追従由来の updateScene 実行中フラグ（エコー防止）
+  const appliedVpSigRef = useRef("");                  // 直近に適用したビューポート署名（再適用の抑制）
+  const onAwarenessRef = useRef<() => void>(() => {});  // 追従開始時の即時スナップ用
 
   // 最新の user を参照するための ref（依存配列に入れず再購読を避ける）
   const userRef = useRef(user);
@@ -81,22 +87,25 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
         const collab = new Map<string, any>();
         const chats: RemoteChat[] = [];
         states.forEach((st: any, clientId: number) => {
-          if (clientId === doc.clientID) return; // 自分は除外
+          if (clientId === doc.clientID) return; // 自分は除外（自分のアバターは出さない）
           const u = st.user;
           if (!u) return;
-          if (st.cursor) {
-            collab.set(String(clientId), {
-              pointer: st.cursor,
-              username: u.name,
-              color: { background: u.color, stroke: u.color },
-              id: u.id,
-            });
-          }
+          const sid = String(clientId);
+          // カーソル未移動でも接続中メンバーは右上アバターに出したいので pointer の有無に関わらず登録。
+          // これにより collaborators=リアルタイムの在席状況となり、誰もいなければアバターは消える。
+          // socketId を入れると Excalidraw ネイティブのアバターが追従可能になる（クリックで onUserFollow 発火）。
+          collab.set(sid, {
+            socketId: sid,
+            pointer: st.cursor,          // 未移動なら undefined（アバターは出るがキャンバス上のカーソルは出ない）
+            username: u.name,
+            color: { background: u.color, stroke: u.color },
+            id: u.id,
+          });
           if (st.chat?.active && st.cursor) {
             chats.push({ userId: u.id, name: u.name, color: u.color, x: st.cursor.x, y: st.cursor.y, text: st.chat.text ?? "" });
           }
         });
-        // カーソルは命令的に反映（再レンダーなし）。ローカルでドラッグ中は保留し、離してから反映。
+        // カーソル/アバターは命令的に反映（再レンダーなし）。ローカルでドラッグ中は保留し、離してから反映。
         const collabSig = JSON.stringify(Array.from(collab.entries()).map(([k, v]) => [k, v.pointer?.x, v.pointer?.y, v.username]));
         if (collabSig !== prevCollabSig) {
           prevCollabSig = collabSig;
@@ -106,8 +115,37 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
         // チャットバブルはReact描画が必要（頻度は低い）。内容が変わった時だけ更新。
         const chatSig = JSON.stringify(chats);
         if (chatSig !== prevChatSig) { prevChatSig = chatSig; setRemoteChats(chats); }
+        // 追従（ENHA2-031）: Excalidrawネイティブの追従対象へ自分の表示を合わせる。
+        applyFollow(states);
       };
       awareness.on("change", onAwareness);
+      onAwarenessRef.current = onAwareness;
+
+      // Excalidrawネイティブの追従対象(appState.userToFollow=クリックされたアバター)の viewport を読み、
+      // 自分の scroll/zoom を合わせる。画面中心どうしを一致させるため画面サイズが違っても破綻しない。
+      // 追従の開始/解除/自動解除/ハイライトはネイティブが管理するので、ここは移動だけに徹する。
+      function applyFollow(states: Map<number, any>) {
+        const api = apiRef.current;
+        if (!api?.getAppState) return;
+        const app = api.getAppState();
+        const target = app.userToFollow?.socketId as string | undefined;
+        if (!target) return; // 誰も追従していない
+        const st = states.get(Number(target));
+        const vp = st?.viewport;
+        if (!vp) return;
+        const sig = target + ":" + vp.cx + ":" + vp.cy + ":" + vp.zoom;
+        if (sig === appliedVpSigRef.current) return; // 変化なしなら再適用しない（updateScene乱発防止）
+        appliedVpSigRef.current = sig;
+        const zoom = vp.zoom || 1;
+        const width = app.width ?? 0;
+        const height = app.height ?? 0;
+        const scrollX = width / 2 / zoom - vp.cx;
+        const scrollY = height / 2 / zoom - vp.cy;
+        applyingFollowRef.current = true;
+        // scroll/zoom のみ差し替え（objectsSnapMode/userToFollow等の他フラグを失わないよう現appStateを土台にする）
+        api.updateScene({ appState: { ...app, scrollX, scrollY, zoom: { value: zoom } } });
+        requestAnimationFrame(() => { applyingFollowRef.current = false; });
+      }
 
       // ローカルのドラッグ検知（押下中はカーソル反映を保留し、離した時にまとめて反映）
       const onDown = () => { localPointerDownRef.current = true; };
@@ -154,6 +192,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       setSynced(false);
       setDocLoaded(false);
       setRemoteChats([]);
+      appliedVpSigRef.current = "";
+      onAwarenessRef.current = () => {};
     };
   }, [boardId]);
 
@@ -165,6 +205,22 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
     awarenessRef.current?.setLocalStateField("chat", { text, active });
   }, []);
 
+  // 自分のビューポート中心(cx,cy)とズームを配信（追従される側）。追従中は自分の視点を送らない。
+  const setViewport = useCallback((cx: number, cy: number, zoom: number) => {
+    if (apiRef.current?.getAppState?.().userToFollow) return; // 追従中は自分の視点を配信しない
+    awarenessRef.current?.setLocalStateField("viewport", { cx, cy, zoom });
+  }, []);
+
+  // アバターをクリックして追従を開始した瞬間に即スナップさせる（相手が次に動くのを待たない）。
+  // ネイティブの setState(userToFollow) 反映を待つため rAF 経由で applyFollow を呼ぶ。
+  const snapToFollowed = useCallback(() => {
+    appliedVpSigRef.current = ""; // 同一対象・同一位置でも再適用させる
+    requestAnimationFrame(() => onAwarenessRef.current());
+  }, []);
+
+  // 追従由来の updateScene 実行中か（onChange側で重い自動処理/再配信をスキップするため）
+  const isApplyingFollow = useCallback(() => applyingFollowRef.current, []);
+
   // Excalidraw の imperative API を登録（子のcallback refは親effectより先に発火するため ref 経由で確実に接続）
   const registerApi = useCallback((api: { updateScene: (d: any) => void }) => {
     apiRef.current = api;
@@ -172,5 +228,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
     if (b) { b.setApi(api); b.applyInitial(); }
   }, []);
 
-  return { bridgeRef, docRef, registerApi, synced, docLoaded, remoteChats, setCursor, setChat };
+  return {
+    bridgeRef, docRef, registerApi, synced, docLoaded, remoteChats, setCursor, setChat,
+    setViewport, snapToFollowed, isApplyingFollow,
+  };
 }
