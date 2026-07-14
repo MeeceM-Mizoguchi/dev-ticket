@@ -1,8 +1,8 @@
-// ホワイトボード補助ツールバー（下部中央）。付箋(Miro風) / フレーム(Excalidraw標準)。
+// ホワイトボード補助ツールバー（下部中央）。付箋(Miro風) / フレーム(Excalidraw標準) / 折れ矢印トグル。
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
-import { StickyNote, Frame } from "lucide-react";
+import { StickyNote, Frame, CornerDownRight } from "lucide-react";
 
-interface Props { api: any }
+interface Props { api: any; foldMode: boolean; setFoldMode: (v: boolean) => void }
 
 const NOTE_SIZE = 180;
 const NOTE_COLORS = ["#FFE066", "#FFC9C9", "#B2F2BB", "#A5D8FF", "#FFD8A8"];
@@ -17,7 +17,13 @@ function viewportCenter(api: any) {
   };
 }
 
-export function WhiteboardToolbar({ api }: Props) {
+export function WhiteboardToolbar({ api, foldMode, setFoldMode }: Props) {
+  // 折れ矢印モード: ON中に引いた矢印/線が、両端を図形の4点に繋いだ時だけ直交(カギ型)に折れる（BRU5-064）。
+  const toggleFold = () => {
+    const next = !foldMode;
+    setFoldMode(next);
+    if (next) api.setActiveTool({ type: "arrow" }); // ONにしたらそのまま矢印ツールへ
+  };
   const addStickyNote = (color: string) => {
     const { cx, cy } = viewportCenter(api);
     const x = cx - NOTE_SIZE / 2, y = cy - NOTE_SIZE / 2;
@@ -65,6 +71,14 @@ export function WhiteboardToolbar({ api }: Props) {
       {divider}
       <button onClick={addFrame} title="フレームを作成（ドラッグで範囲指定）" style={groupBtn}>
         <Frame style={{ width: 13, height: 13 }} />フレーム
+      </button>
+      {divider}
+      <button
+        onClick={toggleFold}
+        title="折れ矢印モード: ON中に引いた矢印は、両端を図形につなぐと自動でカギ型に折れます（Shiftを押しながら引いてもOK）"
+        style={{ ...groupBtn, ...(foldMode ? { color: "#fff", background: "#1971c2", border: "1px solid #1971c2" } : {}) }}
+      >
+        <CornerDownRight style={{ width: 13, height: 13 }} />折れ矢印
       </button>
     </div>
   );

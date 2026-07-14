@@ -113,7 +113,7 @@ export function WhiteboardPage() {
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
         <BoardListSidebar
-          boards={boards} selectedId={boardId ?? null} canEdit={canEdit}
+          boards={boards} selectedId={boardId ?? null} canEdit={canEdit} loading={loading}
           onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
           onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
         />

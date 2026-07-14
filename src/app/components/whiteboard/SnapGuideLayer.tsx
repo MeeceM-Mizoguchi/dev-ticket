@@ -114,7 +114,7 @@ export function SnapGuideLayer({ api, containerRef, canEdit }: Props) {
 
       const dragPts: Pt[] = linears.flatMap((el) => linearEndpoints(el));
       const anchors: Pt[] = api.getSceneElements()
-        .filter((el: any) => !ids[el.id] && !el.isDeleted && !el.customData?.wbBgFor) // 影矩形(BRU5-062)は整列対象外
+        .filter((el: any) => !ids[el.id] && !el.isDeleted && !el.customData?.wbBgFor && !el.customData?.wbFrameBg) // 影矩形(BRU5-062/063)は整列対象外
         .flatMap((el: any) => anchorPoints(el));
       if (dragPts.length === 0 || anchors.length === 0) { pending.current = null; clear(); return; }
 

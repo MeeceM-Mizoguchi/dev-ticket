@@ -3,6 +3,7 @@
 // FrameDecorLayer と同じ座標変換(scene→画面)で、対象フレーム矩形に内包される各図形の
 // 外接矩形を青い破線で囲う。作成中(appState.newElement がframe)を最優先で対象にする。
 import { useEffect, useRef } from "react";
+import { isFrameDecorRect, DEFAULT_FRAME_BORDER } from "@/app/lib/whiteboardFrameBg";
 
 interface Props {
   api: any;
@@ -85,12 +86,25 @@ export function FrameHighlightLayer({ api, containerRef }: Props) {
       const toLocalX = (sx: number) => sx * zoom + st.scrollX * zoom + (st.offsetLeft ?? 0) - rect.left;
       const toLocalY = (sy: number) => sy * zoom + st.scrollY * zoom + (st.offsetTop ?? 0) - rect.top;
 
+      // フレーム新規作成中は、まだ装飾矩形が無く標準枠線も消しているため境界が見えない（BRU5-063）。
+      // 作成中だけ枠の輪郭を既定グレーで描いて、どこまで囲うかを見えるようにする（離すと装飾矩形が引き継ぐ）。
+      if (st.newElement && isFrame(st.newElement)) {
+        ctx.save();
+        ctx.strokeStyle = DEFAULT_FRAME_BORDER;
+        ctx.lineWidth = 2;
+        const fx = toLocalX(frameRect.x), fy = toLocalY(frameRect.y);
+        roundRect(ctx, fx, fy, frameRect.width * zoom, frameRect.height * zoom, 0); // 既定は角あり
+        ctx.stroke();
+        ctx.restore();
+      }
+
       ctx.save();
       ctx.strokeStyle = HL;
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       for (const el of elements) {
         if (isFrame(el) || el.isDeleted) continue;
+        if (isFrameDecorRect(el)) continue; // フレーム装飾の影矩形(BRU5-063)はハイライトしない
         if (el.id === st.newElement?.id) continue;
         if (!isInside(el, frameRect)) continue;
         const pad = 3; // 図形の少し外側を囲う
