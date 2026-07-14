@@ -18,6 +18,8 @@ import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 
 const PRIORITY_META: Record<Priority, { label: string; color: string; bg: string }> = {
   high: { label: "高", color: "#DC2626", bg: "#FEF2F2" },
@@ -99,6 +101,8 @@ function ConvertToTicketModal({
         status: "converted", converted_ticket_id: ticketId, converted_ticket_wbs: wbs,
         updated_at: new Date().toISOString(),
       }).eq("id", item.id);
+
+      emitLinkItemsChanged(project.id, "ticket"); // 他タブの # サジェストへ即時反映
 
       toast(`${wbs} としてチケットを作成しました`);
       onConverted();
@@ -272,6 +276,10 @@ export function BacklogPage() {
   const { open: openPreview } = usePreviewPanel();
   const canCreate = userPermissions.canCreateTicket;
 
+  // $(Wiki/バックログ/議事録) / #(チケット) のサジェスト候補。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const suggest = useLinkSuggestions(project?.id);
+
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
@@ -338,6 +346,8 @@ export function BacklogPage() {
   }) => {
     if (!selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const titleChanged = patch.title !== undefined && items.find(i => i.id === selectedId)?.title !== patch.title;
+    const pid = project?.id;
     saveTimer.current = setTimeout(async () => {
       const updateData: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (patch.title !== undefined) updateData.title = patch.title;
@@ -349,8 +359,10 @@ export function BacklogPage() {
       if ("categoryId" in patch) updateData.category_id = patch.categoryId ?? null;
       await supabase!.from("backlog_items").update(updateData).eq("id", selectedId);
       setItems(prev => prev.map(i => i.id === selectedId ? { ...i, ...patch } : i));
+      // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
+      if (titleChanged) emitLinkItemsChanged(pid, "backlog");
     }, 600);
-  }, [selectedId]);
+  }, [selectedId, items, project?.id]);
 
   const handleImagesChange = useCallback(async (next: string[]) => {
     if (!selectedId) return;
@@ -408,6 +420,7 @@ export function BacklogPage() {
     });
     if (error) { toast("作成に失敗しました", "error"); return; }
     await load();
+    emitLinkItemsChanged(project.id, "backlog"); // 他タブの $ サジェストへ即時反映
     setSelectedId(id);
   };
 
@@ -432,6 +445,7 @@ export function BacklogPage() {
 
   const handleDelete = async (item: BacklogItem) => {
     await supabase!.from("backlog_items").delete().eq("id", item.id);
+    emitLinkItemsChanged(project?.id, "backlog");
     setItems(prev => prev.filter(i => i.id !== item.id));
     if (selectedId === item.id) {
       setSelectedId(null);
@@ -642,6 +656,10 @@ export function BacklogPage() {
                   members={project?.members ?? []}
                   minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
+                  tickets={suggest.tickets}
+                  backlogItems={suggest.backlogItems}
+                  wikiItems={suggest.wikiItems}
+                  minuteItems={suggest.minuteItems}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}

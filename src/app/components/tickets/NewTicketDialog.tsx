@@ -18,6 +18,8 @@ import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomS
 // 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { escStack } from "@/app/lib/escStack";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 
 // 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -52,10 +54,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [sprintError, setSprintError] = useState(false);
 
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
-  const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
-  const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectWikiItems, setProjectWikiItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectMinuteItems, setProjectMinuteItems] = useState<{ id: string; title: string }[]>([]);
 
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -90,6 +88,16 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
   const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
+
+  // メンション候補(チケット/バックログ/Wiki/議事録)。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const {
+    tickets: projectTickets,
+    backlogItems: projectBacklogItems,
+    wikiItems: projectWikiItems,
+    minuteItems: projectMinuteItems,
+    prefixLabels: fetchedPrefixLabels,
+  } = useLinkSuggestions(effectiveProjectId);
 
   const savedSprintIdRef = useRef<string>("");
 
@@ -239,29 +247,16 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   }, [needsSelection, effectiveProjectId, contextKey]);
 
-  // チケットメンション等の関連アイテムロード
+  // フックが取得したプレフィックスを取り込む。ここで入力しただけでまだ保存していない
+  // ラベルが再取得で消えないよう、置き換えではなくマージする。
   useEffect(() => {
-    if (!isSupabaseEnabled || !effectiveProjectId) { setProjectTickets([]); return; }
-    (async () => {
-      const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", effectiveProjectId);
-      if (!sprintData?.length) return;
-      const { data } = await supabase!.from("sprint_tickets")
-        .select("wbs, title, prefixes")
-        .in("sprint_id", sprintData.map((s: { id: string }) => s.id))
-        .order("wbs");
-      if (data) {
-        setProjectTickets(data as { wbs: string; title: string }[]);
-        const labels = [...new Set((data as { prefixes?: string[] }[]).flatMap(r => r.prefixes ?? []))].sort();
-        setAllProjectPrefixLabels(labels);
-      }
-    })();
-    supabase!.from("backlog_items").select("id, title").eq("project_id", effectiveProjectId).order("id")
-      .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
-    supabase!.from("wiki_pages").select("id, title").eq("project_id", effectiveProjectId).eq("is_folder", false)
-      .then(({ data }) => { if (data) setProjectWikiItems(data as { id: string; title: string }[]); });
-    supabase!.from("meeting_minutes").select("id, title").eq("project_id", effectiveProjectId).order("meeting_date", { ascending: false })
-      .then(({ data }) => { if (data) setProjectMinuteItems(data as { id: string; title: string }[]); });
-  }, [effectiveProjectId]);
+    if (!fetchedPrefixLabels.length) return;
+    setAllProjectPrefixLabels(prev => {
+      const merged = [...new Set([...prev, ...fetchedPrefixLabels])].sort();
+      const same = merged.length === prev.length && merged.every((l, i) => l === prev[i]);
+      return same ? prev : merged;
+    });
+  }, [fetchedPrefixLabels]);
 
   const calcHours = (start: string, due: string) => {
     if (!start || !due) return 0;
@@ -482,6 +477,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             try { localStorage.removeItem(contextKey); } catch (e) { }
             savedSprintIdRef.current = "";
             setSaving(false);
+            emitLinkItemsChanged(effectiveProjectId, "ticket"); // 他タブの # サジェストへ即時反映
             onCreated?.(wbs);
             onClose();
             return;
@@ -537,6 +533,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
+      emitLinkItemsChanged(effectiveProjectId, "ticket"); // 他タブの # サジェストへ即時反映
     } else {
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
