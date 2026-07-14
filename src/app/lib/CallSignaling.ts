@@ -21,6 +21,10 @@ export class CallSignaling {
   private selfId: string;
   private selfName: string;
   private muted = false;
+  // SUBSCRIBED 前の send はサーバーに届かない(realtime-js は REST へフォールバックするが
+  // 警告が出るうえセッション次第で失敗する)。購読が完了するまで積んでおき、後でまとめて流す。
+  private subscribed = false;
+  private queue: { event: string; payload: Record<string, unknown> }[] = [];
 
   constructor(
     client: SupabaseClient,
@@ -46,10 +50,11 @@ export class CallSignaling {
       handlers.onRoster([...byId.values()]);
     });
 
-    // WebRTC 交渉 & ミュート & 画面共有(ENHA2-030)。to 指定つきは自分宛のみ、
-    // to 無し(screenStart/Stop/pointer/annotate)は全員に配られ onSignal へ流れる。
+    // WebRTC 交渉 & ミュート & 参加ハンドシェイク & 画面共有(ENHA2-030)。to 指定つきは自分宛のみ、
+    // to 無し(hello/screenStart/Stop/pointer/annotate)は全員に配られ onSignal へ流れる。
     for (const ev of [
       SIGNAL.offer, SIGNAL.answer, SIGNAL.ice, SIGNAL.mute, SIGNAL.bye,
+      SIGNAL.hello, SIGNAL.helloAck,
       SIGNAL.screenStart, SIGNAL.screenStop, SIGNAL.screenOffer, SIGNAL.screenAnswer, SIGNAL.screenIce,
       SIGNAL.pointer, SIGNAL.annotate,
     ]) {
@@ -63,14 +68,35 @@ export class CallSignaling {
 
     this.channel.subscribe((status) => {
       if (status === "SUBSCRIBED") {
+        this.subscribed = true;
         void this.channel.track({ id: this.selfId, name: this.selfName, muted: this.muted });
+        // 購読前に積まれたシグナルを流してから、参加の挨拶を全員へ送る。
+        const queued = this.queue.splice(0);
+        for (const q of queued) this.push(q.event, q.payload);
+        // presence sync が欠けても相手に気付いてもらえるよう、自分の参加を明示的に告知する(BRU5-066)。
+        this.push(SIGNAL.hello, { name: this.selfName });
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        this.subscribed = false;
       }
     });
   }
 
-  // offer/answer/ice/mute を送信(from は常に自分)
+  // offer/answer/ice/mute などを送信(from は常に自分)。購読前はキューに積む。
   send(event: string, payload: Record<string, unknown>) {
+    if (!this.subscribed) {
+      this.queue.push({ event, payload });
+      return;
+    }
+    this.push(event, payload);
+  }
+
+  private push(event: string, payload: Record<string, unknown>) {
     void this.channel.send({ type: "broadcast", event, payload: { ...payload, from: this.selfId } });
+  }
+
+  // 参加の挨拶(hello)への返信。相手にだけ届けばよいので to を付ける。
+  sendHelloAck(to: string) {
+    this.send(SIGNAL.helloAck, { to, name: this.selfName });
   }
 
   // ミュート状態を presence と broadcast の両方で反映
@@ -81,6 +107,8 @@ export class CallSignaling {
   }
 
   destroy() {
+    this.subscribed = false;
+    this.queue = [];
     void this.channel.untrack();
     void this.channel.unsubscribe();
   }

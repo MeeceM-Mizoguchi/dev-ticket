@@ -3,12 +3,23 @@
 // 有料のメディアサーバは使わず、1対1はP2P、グループ(最大5人)はP2Pフルメッシュ。
 
 // ── WebRTC 設定 ──────────────────────────────────────────────
-// まずは Google の無料 STUN のみ。将来 coturn を自前ホストしたら
-// iceServers に turn: エントリを1つ足すだけで厳しいNATにも対応できる。
+// STUN だけでは Symmetric NAT(企業FW/一部モバイル回線)でホールパンチングが原理的に失敗し、
+// 一定割合の参加者がどうやっても繋がらない(BRU5-066)。TURN を環境変数で注入できるようにし、
+// 設定があれば中継経路を確保する。TURN は 443/TLS(turns:)を1本入れておくと最も通りやすい。
+//   VITE_TURN_URLS="turns:turn.example.com:443?transport=tcp,turn:turn.example.com:3478"
+//   VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL
+const turnUrls = String(import.meta.env.VITE_TURN_URLS ?? "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const turnUsername = String(import.meta.env.VITE_TURN_USERNAME ?? "");
+const turnCredential = String(import.meta.env.VITE_TURN_CREDENTIAL ?? "");
+
+// TURN が構成されているか。未構成なら STUN のみで動くが、厳しいNAT下では接続に失敗しうる。
+export const hasTurn = turnUrls.length > 0 && !!turnUsername && !!turnCredential;
+
 export const rtcConfig: RTCConfiguration = {
   iceServers: [
     { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-    // { urls: "turn:turn.example.com:3478", username: "...", credential: "..." },
+    ...(hasTurn ? [{ urls: turnUrls, username: turnUsername, credential: turnCredential }] : []),
   ],
 };
 
@@ -53,6 +64,27 @@ export const TAB_BUSY_QUERY_MS = 250;
 // 猶予 RECONNECT_GRACE_MS × (この回数 + 1) ぶん(≒18秒)は復旧を試みる。
 export const ICE_RESTART_ATTEMPTS = 2;
 
+// ── BRU5-066 グループ通話の堅牢化 ─────────────────────────────
+// presence の roster から相手が消えても、すぐには PeerConnection を閉じない猶予(ミリ秒)。
+// Supabase の presence は突き合わせ処理の途中で「一時的に一部メンバーが欠けた state」を返しうる
+// (公式ドキュメント明記)。これを即 PC 破棄のトリガにすると、健全な通話が壊れる。
+// この猶予内に相手が roster へ戻れば削除はキャンセルされる。bye を受けたときだけ即時削除する。
+export const PEER_REMOVE_GRACE_MS = 8_000;
+
+// roster と実際の PeerConnection 群の差分を定期照合する間隔(ミリ秒)。
+// presence sync を取りこぼしても、次の照合で欠けた相手への接続が張り直される。
+export const PEER_RECONCILE_MS = 10_000;
+
+// 着信に応答してセッションに入ったのに、誰も居なかった場合に諦めるまでの時間(ミリ秒)。
+// 発信者が切った直後に応答した、招待された通話が既に解散していた、といったケースで
+// 「自分ひとりだけの通話」に取り残されないようにする保険。
+export const JOIN_TIMEOUT_MS = 20_000;
+
+// ICE candidate をまとめて1メッセージで送るためのバッチ間隔(ミリ秒)。
+// candidate を1個ずつ broadcast するとメッシュ人数ぶん増え、Supabase Realtime の
+// メッセージ/秒 制限(Freeは100/秒・超過するとソケットが切断される)に近づく。
+export const ICE_BATCH_MS = 60;
+
 // ── チャンネル名 ─────────────────────────────────────────────
 // 個人着信チャンネル: 全ログインユーザーが常時1本購読する「呼び鈴」。
 export const userCallChannel = (userId: string) => `call-user:${userId}`;
@@ -73,6 +105,11 @@ export const SIGNAL = {
   answer: "signal-answer",
   ice: "signal-ice",
   mute: "signal-mute", // ミュート状態のUI同期
+  // presence に依存しない参加者ハンドシェイク(BRU5-066)。
+  // 参加者は購読完了時に hello を全体へ、受け取った既存参加者は hello-ack を本人へ返す。
+  // presence sync が欠けても、この往復だけで双方が相手を認識して接続を張れる。
+  hello: "signal-hello",
+  helloAck: "signal-hello-ack",
   // ── ENHA2-030 画面共有(セッションチャンネル宛) ──
   screenStart: "signal-screen-start", // 共有開始の告知(映像PC確立前にステージを開く)
   screenStop: "signal-screen-stop", // 共有停止
