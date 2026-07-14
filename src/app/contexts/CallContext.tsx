@@ -15,12 +15,13 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   SIGNAL, audioConstraints, displayMediaConstraints, isScreenShareSupported,
   userCallChannel, ONLINE_PRESENCE_CHANNEL,
-  RING_TIMEOUT_MS, RECONNECT_GRACE_MS, ICE_RESTART_ATTEMPTS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS, TAB_BUSY_QUERY_MS,
+  RING_TIMEOUT_MS, MAX_PARTICIPANTS, ANNOTATION_TTL_MS, POINTER_THROTTLE_MS, TAB_BUSY_QUERY_MS,
+  PEER_RECONCILE_MS, JOIN_TIMEOUT_MS,
   type CallMember, type InvitePayload, type Participant, type CallStatus,
   type ScreenShareState, type Annotation, type AnnotationInput,
 } from "@/app/lib/callConstants";
 import {
-  recordCallStart, recordParticipantOutcome, recordParticipantLeft, recordCallEnded,
+  recordCallStart, recordParticipantsInvited, recordParticipantOutcome, recordParticipantLeft, recordCallEnded,
 } from "@/app/lib/callService";
 
 export interface CallState {
@@ -31,6 +32,7 @@ export interface CallState {
   status: CallStatus;
   muted: boolean;
   participants: Participant[];
+  pending: CallMember[]; // 招待済みでまだ応答していない相手(呼び出し中)。通話中の追加招待も含む。
   startedAt?: number; // 通話が接続(active)した時刻。通話時間計測の起点(BRU5-057-4)。
 }
 
@@ -47,6 +49,7 @@ interface CallCtxType {
   reportAudioBlocked: () => void;     // RemoteAudio が play() 失敗を報告する。
   unlockAudio: () => void;            // バナークリック(ユーザー操作)で音声再生を解禁する。
   startCall: (project: { id: string; name: string }, targets: CallMember[]) => Promise<void>;
+  inviteToCall: (targets: CallMember[]) => void; // 通話中に参加者を追加で呼ぶ(BRU5-066)
   acceptIncoming: () => Promise<void>;
   declineIncoming: () => void;
   hangup: () => void;
@@ -64,7 +67,7 @@ const CallContext = createContext<CallCtxType>({
   screenShare: null, screenShareSupported: false,
   accepting: false, audioBlocked: false, audioUnlockNonce: 0,
   reportAudioBlocked: () => {}, unlockAudio: () => {},
-  startCall: async () => {}, acceptIncoming: async () => {}, declineIncoming: () => {},
+  startCall: async () => {}, inviteToCall: () => {}, acceptIncoming: async () => {}, declineIncoming: () => {},
   hangup: () => {}, toggleMute: () => {}, clearError: () => {},
   startScreenShare: async () => {}, stopScreenShare: () => {}, sendPointer: () => {}, sendAnnotation: () => {},
 });
@@ -91,17 +94,18 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const connStateRef = useRef<Map<string, RTCPeerConnectionState>>(new Map());
   const speakingStopRef = useRef<Map<string, () => void>>(new Map());
   const ringTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const joinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 応答したのに誰も居ないセッションだった場合の保険
+  const failedPeersRef = useRef<Set<string>>(new Set()); // 自己修復を試し切って接続失敗が確定した相手
   const everActiveRef = useRef(false);
-  const pendingInviteRef = useRef<Set<string>>(new Set()); // まだ参加/拒否していない招待先
-  const inviteTargetsRef = useRef<CallMember[]>([]);
+  const pendingInviteRef = useRef<Map<string, CallMember>>(new Map()); // まだ参加/拒否していない招待先
+  const inviteTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 招待ごとの応答待ちタイムアウト
+  const presenceRef = useRef<Map<string, RosterMember>>(new Map()); // 最新の presence roster(自分を除く)
+  const peerNamesRef = useRef<Map<string, string>>(new Map()); // userId -> 表示名(presence が欠けても名前を出せるように)
   const callRef = useRef<CallState | null>(null);
   const incomingRef = useRef<InvitePayload | null>(null);
   const acceptingRef = useRef(false); // 応答処理の二重発火/レースガード(await 中の状態変化を検知する)
   const selfRef = useRef({ id: userId, name: userName });
   const endingRef = useRef(false); // 終了処理の二重発火ガード(bye/roster/connState が同時に来ても1回だけ)
-  const connLossTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map()); // 接続断フォールバックのデバウンス
-  const iceRestartAttemptsRef = useRef<Map<string, number>>(new Map()); // 相手ごとのICE restart試行回数
-  const rosterEmptyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // roster一時空(Realtime再接続)での誤終了デバウンス
   const toastRef = useRef(toast); // toast は毎レンダー再生成されるため ref 経由で参照(useCallback を安定させる)
   // ── 複数タブ調整(同一ユーザー・同一ブラウザ) ──
   const tabCoordRef = useRef<CallTabCoordination | null>(null);
@@ -175,6 +179,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   // ── 通話のティアダウン ──
   const teardown = useCallback(() => {
     if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
+    if (joinTimerRef.current) { clearTimeout(joinTimerRef.current); joinTimerRef.current = null; }
+    failedPeersRef.current.clear();
     stopRingtone();
     signalingRef.current?.destroy();
     signalingRef.current = null;
@@ -186,14 +192,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
     localStreamRef.current = null;
     streamMapRef.current.clear();
     connStateRef.current.clear();
-    for (const t of connLossTimersRef.current.values()) clearTimeout(t);
-    connLossTimersRef.current.clear();
-    iceRestartAttemptsRef.current.clear();
-    if (rosterEmptyTimerRef.current) { clearTimeout(rosterEmptyTimerRef.current); rosterEmptyTimerRef.current = null; }
+    presenceRef.current.clear();
+    peerNamesRef.current.clear();
+    for (const t of inviteTimersRef.current.values()) clearTimeout(t);
+    inviteTimersRef.current.clear();
     disposeScreenRefs();
     everActiveRef.current = false;
     pendingInviteRef.current.clear();
-    inviteTargetsRef.current = [];
     acceptingRef.current = false;
     setAccepting(false);
     setAudioBlocked(false);
@@ -205,17 +210,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
     if (!cur) return;
     if (endingRef.current) return;
     endingRef.current = true;
-    if (cur.role === "caller" && cur.status === "outgoing") {
-      // 応答前の発信を切る場合は招待先の呼び鈴を止める
-      for (const t of inviteTargetsRef.current) {
-        void sendToUser(t.id, SIGNAL.cancel, { sessionId: cur.sessionId, from: selfRef.current.id });
-      }
-    } else {
-      // 通話確立後の切断: 残りの参加者へ即時に切断を通知する(presence untrack の取りこぼし対策)
-      for (const p of cur.participants) {
-        if (p.connState === "self") continue;
-        void sendToUser(p.id, SIGNAL.bye, { sessionId: cur.sessionId, from: selfRef.current.id });
-      }
+    // 通話確立後の切断: 残りの参加者へ即時に切断を通知する(presence untrack の取りこぼし対策)
+    for (const p of cur.participants) {
+      if (p.connState === "self") continue;
+      void sendToUser(p.id, SIGNAL.bye, { sessionId: cur.sessionId, from: selfRef.current.id });
+    }
+    // 自分が呼び出した相手の呼び鈴は必ず止める。呼んだ本人が抜けるのに鳴らし続けると、
+    // 相手が応答したときに「もう誰も居ない通話」に入ってしまう。
+    // (他の参加者が残っている場合は、その人が改めて呼び直せばよい)
+    for (const t of pendingInviteRef.current.values()) {
+      void sendToUser(t.id, SIGNAL.cancel, { sessionId: cur.sessionId, from: selfRef.current.id });
     }
     // 自分が画面共有中なら、退出前に視聴者へ停止を通知(セッションチャンネルはteardownで閉じる)
     if (screenShareRef.current?.isSelf) signalingRef.current?.send(SIGNAL.screenStop, {});
@@ -257,75 +261,101 @@ export function CallProvider({ children }: { children: ReactNode }) {
     speakingStopRef.current.set(id, stop);
   }, []);
 
-  // ── roster(presence)更新 → 参加者リスト再計算 & mesh接続 ──
-  const handleRoster = useCallback((members: RosterMember[]) => {
+  // ── 参加者リストの再計算(BRU5-066) ────────────────────────────
+  // 「今この通話に誰がいるか」を presence だけで決めない。
+  // Supabase の presence は突き合わせの途中で一時的に一部メンバーが欠けた state を返しうるため、
+  // presence を唯一の真実にすると、健全に繋がっている相手が一瞬消えて PC ごと壊れてしまう。
+  // そこで presence と「実際に PeerConnection を保持している相手(mesh.peerIds)」の和集合を参加者とする。
+  // mesh 側の削除は猶予付きなので、presence の揺れではリストも接続も落ちない。
+  const syncParticipants = useCallback(() => {
     const self = selfRef.current;
-    const others = members.filter((m) => m.id !== self.id);
+    const ids = new Set<string>([...presenceRef.current.keys(), ...(meshRef.current?.peerIds() ?? [])]);
+    ids.delete(self.id);
+    const others = [...ids];
 
-    // roster が一瞬空になるのは Realtime のソケット再接続時によく起きる(再購読直後は
-    // 自分だけ先に track され、相手の presence が返ってくるまで others が空に見える)。
-    // このとき相手とのP2P音声はまだ生きている(connState==="connected")ことが多いので、
-    // 即 setRoster([]) で PC を閉じたり endCallAsRemote すると健全な通話を数分ごとに落として
-    // しまう。生きた相手がいる間は roster空を無視し、数秒デバウンスして再確認する。
-    const hasLivePeer = () => {
-      for (const [id, st] of connStateRef.current) {
-        if (id !== self.id && st === "connected") return true;
+    // 参加が確認できた相手は「呼び出し中」から外す
+    for (const id of others) {
+      if (pendingInviteRef.current.delete(id)) {
+        const t = inviteTimersRef.current.get(id);
+        if (t) { clearTimeout(t); inviteTimersRef.current.delete(id); }
       }
-      return false;
-    };
-    if (everActiveRef.current && others.length === 0 && callRef.current) {
-      if (hasLivePeer()) {
-        // 一時的な空振り: PC も participants もそのままに保ち、猶予後に再確認する。
-        if (!rosterEmptyTimerRef.current) {
-          rosterEmptyTimerRef.current = setTimeout(() => {
-            rosterEmptyTimerRef.current = null;
-            if (!callRef.current) return;
-            if (hasLivePeer()) return; // 相手が生きている→通話継続
-            endCallAsRemote();          // 本当に全員退出していたら相手切断として終了
-          }, RECONNECT_GRACE_MS);
-        }
-        return;
-      }
-      // 生きた相手もいない=本当に全員退出。従来どおり即終了する。
-      meshRef.current?.setRoster([]);
-      endCallAsRemote();
-      return;
     }
-    // 他者が居る(または未 active の)通常ケース。保留中の空roster判定は解除する。
-    if (rosterEmptyTimerRef.current) { clearTimeout(rosterEmptyTimerRef.current); rosterEmptyTimerRef.current = null; }
 
-    meshRef.current?.setRoster(others.map((m) => m.id));
+    // 抜けた相手の接続状態/ストリーム/失敗マークを捨てる。残しておくと、同じ人が呼び直されて
+    // 再参加したときに古い "closed"/"failed" を引き継いでしまう
+    // (失敗マークが残ると、まだ繋がる見込みのある相手を「望みなし」と誤判定して通話を落とす)。
+    for (const id of [...connStateRef.current.keys()]) {
+      if (!ids.has(id)) connStateRef.current.delete(id);
+    }
+    for (const id of [...failedPeersRef.current]) {
+      if (!ids.has(id)) failedPeersRef.current.delete(id);
+    }
+    for (const id of [...streamMapRef.current.keys()]) {
+      if (!ids.has(id)) {
+        streamMapRef.current.delete(id);
+        speakingStopRef.current.get(id)?.();
+        speakingStopRef.current.delete(id);
+      }
+    }
+
     // 画面共有中に視聴者が増減したら配信先を追従(共有者のみ)
-    if (screenShareRef.current?.isSelf) screenPeersRef.current?.setViewers(others.map((m) => m.id));
+    if (screenShareRef.current?.isSelf) screenPeersRef.current?.setViewers(others);
+
     if (others.length > 0) {
       everActiveRef.current = true;
       // 相手が応答して通話が繋がったら発信/着信の呼び出し音を止める
       stopRingtone();
       if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
-      for (const m of others) pendingInviteRef.current.delete(m.id);
+      // 誰かが居ることが確認できたので「空のセッションだった」保険は解除する
+      if (joinTimerRef.current) { clearTimeout(joinTimerRef.current); joinTimerRef.current = null; }
     }
 
     setCall((prev) => {
       if (!prev) return prev;
-      const participants: Participant[] = members.map((m) => {
-        if (m.id === self.id) {
-          return { id: m.id, name: m.name, muted: prev.muted, speaking: false, connState: "self" };
-        }
-        const existing = prev.participants.find((p) => p.id === m.id);
-        return {
-          id: m.id,
-          name: m.name,
-          muted: m.muted,
-          speaking: existing?.speaking ?? false,
-          connState: connStateRef.current.get(m.id) ?? "connecting",
-          stream: streamMapRef.current.get(m.id) ?? existing?.stream,
-        };
-      });
+      const participants: Participant[] = [
+        { id: self.id, name: self.name, muted: prev.muted, speaking: false, connState: "self" },
+        ...others.map((id) => {
+          const existing = prev.participants.find((p) => p.id === id);
+          const pres = presenceRef.current.get(id);
+          return {
+            id,
+            name: pres?.name ?? peerNamesRef.current.get(id) ?? existing?.name ?? "参加者",
+            muted: pres?.muted ?? existing?.muted ?? false,
+            speaking: existing?.speaking ?? false,
+            connState: connStateRef.current.get(id) ?? existing?.connState ?? "connecting",
+            stream: streamMapRef.current.get(id) ?? existing?.stream,
+          } as Participant;
+        }),
+      ];
       let status = prev.status;
       if (others.length > 0 && (status === "outgoing" || status === "connecting")) status = "active";
-      return { ...prev, participants, status };
+      return { ...prev, participants, status, pending: [...pendingInviteRef.current.values()] };
     });
+  }, []);
+
+  // 全員が退出したら通話を終了する。
+  // 参加者は presence ∪ mesh peers なので、ここが空になるのは
+  // 「bye を受けた」か「猶予(8秒)を過ぎても presence に戻ってこなかった」場合だけ。
+  // presence の一瞬の揺れで健全な通話を落とすことはない。
+  const maybeEndIfEmpty = useCallback(() => {
+    if (!everActiveRef.current || !callRef.current) return;
+    if (presenceRef.current.size > 0) return;
+    if ((meshRef.current?.peerIds().length ?? 0) > 0) return;
+    if (pendingInviteRef.current.size > 0) return; // まだ呼び出し中の相手がいる
+    endCallAsRemote();
   }, [endCallAsRemote]);
+
+  // ── roster(presence)更新 → mesh接続 & 参加者リスト再計算 ──
+  const handleRoster = useCallback((members: RosterMember[]) => {
+    const self = selfRef.current;
+    const others = members.filter((m) => m.id !== self.id);
+    presenceRef.current = new Map(others.map((m) => [m.id, m]));
+    for (const m of others) peerNamesRef.current.set(m.id, m.name);
+    // 追加は即時、削除は猶予付き(MeshConnection 側で吸収する)
+    meshRef.current?.setRoster(others.map((m) => m.id));
+    syncParticipants();
+    maybeEndIfEmpty();
+  }, [syncParticipants, maybeEndIfEmpty]);
 
   // ── セッションチャンネルからのシグナル受信 → mesh へ ──
   const handleSignal = useCallback((event: string, payload: Record<string, unknown>) => {
@@ -335,7 +365,26 @@ export function CallProvider({ children }: { children: ReactNode }) {
     if (!from || from === selfRef.current.id) return;
     if (event === SIGNAL.offer) void mesh.onOffer(from, payload.sdp as RTCSessionDescriptionInit);
     else if (event === SIGNAL.answer) void mesh.onAnswer(from, payload.sdp as RTCSessionDescriptionInit);
-    else if (event === SIGNAL.ice) void mesh.onIce(from, payload.candidate as RTCIceCandidateInit);
+    else if (event === SIGNAL.ice) {
+      // ICE は配列(バッチ)で届く。単体で送ってくる旧クライアントも受け付ける。
+      const c = (payload.candidates ?? payload.candidate) as RTCIceCandidateInit | RTCIceCandidateInit[];
+      if (c) void mesh.onIce(from, c);
+    }
+    // ── 参加ハンドシェイク(BRU5-066) ──
+    // presence sync が欠けても、この往復だけで双方が相手を認識して接続を張れる。
+    else if (event === SIGNAL.hello) {
+      const name = payload.name as string | undefined;
+      if (name) peerNamesRef.current.set(from, name);
+      mesh.ensurePeer(from);
+      signalingRef.current?.sendHelloAck(from); // 新規参加者へ「自分もここに居る」と返す
+      syncParticipants();
+    }
+    else if (event === SIGNAL.helloAck) {
+      const name = payload.name as string | undefined;
+      if (name) peerNamesRef.current.set(from, name);
+      mesh.ensurePeer(from);
+      syncParticipants();
+    }
     else if (event === SIGNAL.mute) {
       const muted = !!payload.muted;
       setCall((prev) => prev ? {
@@ -374,12 +423,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
     // セッションチャンネル経由の即時切断(タブを閉じた等)。個人チャンネルより確実・低遅延。
     else if (event === SIGNAL.bye) {
-      const cur = callRef.current;
-      if (!cur) return;
-      const remaining = cur.participants.filter((x) => x.connState !== "self" && x.id !== from);
-      if (remaining.length === 0) endCallAsRemote();
+      if (!callRef.current) return;
+      // 明示的な退出なので猶予を挟まず即座に外す。残った相手とは通話を続ける。
+      presenceRef.current.delete(from);
+      pendingInviteRef.current.delete(from);
+      mesh.removePeerNow(from);
+      syncParticipants();
+      maybeEndIfEmpty();
     }
-  }, [addAnnotation, endCallAsRemote]);
+  }, [addAnnotation, syncParticipants, maybeEndIfEmpty]);
 
   // ── mesh を構築(共通) ──
   const buildMesh = useCallback((sessionId: string, stream: MediaStream) => {
@@ -407,48 +459,50 @@ export function CallProvider({ children }: { children: ReactNode }) {
         setCall((prev) => prev ? {
           ...prev, participants: prev.participants.map((p) => p.id === id ? { ...p, connState: state } : p),
         } : prev);
-        // フォールバック: bye も presence も届かないネットワーク断の検知。
-        // 短時間の揺れは即終了せず、ICE restart で経路を張り直して自己修復を試みる。
-        // 数回張り直しても復帰しなければ相手切断として終了する。
-        const timers = connLossTimersRef.current;
         if (state === "connected") {
-          const t = timers.get(id);
-          if (t) { clearTimeout(t); timers.delete(id); }
-          iceRestartAttemptsRef.current.delete(id); // 復旧成功: 試行回数をリセット
           // 音声が実際に繋がったら呼び出し音を止める(presence roster の遅延/取りこぼし対策)。
           // roster より確実な「接続された」信号。発信/着信どちらの呼び出し音もここで確実に消える。
           everActiveRef.current = true;
+          failedPeersRef.current.delete(id); // 相手側からの張り直しで復帰した
           stopRingtone();
           if (ringTimerRef.current) { clearTimeout(ringTimerRef.current); ringTimerRef.current = null; }
+          if (joinTimerRef.current) { clearTimeout(joinTimerRef.current); joinTimerRef.current = null; }
           setCall((prev) => prev && (prev.status === "outgoing" || prev.status === "connecting")
             ? { ...prev, status: "active" } : prev);
-        } else if (state === "disconnected" || state === "failed" || state === "closed") {
-          // "failed" は経路断確定: すぐ張り直す。"disconnected" は自己回復も多いので猶予後に張り直す。
-          if (state === "failed") meshRef.current?.restartIce(id);
-          if (!timers.has(id)) {
-            const attempt = () => {
-              timers.delete(id);
-              if (connStateRef.current.get(id) === "connected") { iceRestartAttemptsRef.current.delete(id); return; }
-              const cur = callRef.current;
-              if (!cur) return;
-              const tries = iceRestartAttemptsRef.current.get(id) ?? 0;
-              if (tries < ICE_RESTART_ATTEMPTS) {
-                iceRestartAttemptsRef.current.set(id, tries + 1);
-                meshRef.current?.restartIce(id); // 経路を張り直してもう一度待つ
-                timers.set(id, setTimeout(attempt, RECONNECT_GRACE_MS));
-                return;
-              }
-              // 復旧を試し切った: 他に生存中(connected)の相手がいなければ相手切断として終了
-              iceRestartAttemptsRef.current.delete(id);
-              const aliveOther = cur.participants.some((p) => p.connState !== "self" && p.id !== id && p.connState === "connected");
-              if (!aliveOther) endCallAsRemote();
-            };
-            timers.set(id, setTimeout(attempt, RECONNECT_GRACE_MS));
-          }
         }
+        // 切断・再接続の自己修復(ICE restart / offer 再送)は MeshConnection が両側から主導する。
+        // ここでは状態を映すだけにして、復旧ロジックを二重に持たない。
+      },
+      // 手を尽くしても繋がらなかった相手(BRU5-066)。
+      // 通話全体を落とさず、その人だけを「接続失敗」として扱う。
+      // 誰とも繋がっていない場合に限り、通話を終了する。
+      onPeerFailed: (id) => {
+        const cur = callRef.current;
+        if (!cur) return;
+        if (failedPeersRef.current.has(id)) return; // 同じ相手で二重に通知しない
+        failedPeersRef.current.add(id);
+        const name = cur.participants.find((p) => p.id === id)?.name
+          ?? peerNamesRef.current.get(id) ?? "相手";
+        // 「まだ望みのある相手」= 接続失敗が確定していない他の参加者。
+        // PeerConnection の一時状態(connecting/new)で判定すると、ICE restart 直後は
+        // 必ず connecting に戻るため「誰とも繋がらないのに永久に待ち続ける」ことになる。
+        const anyHope = cur.participants.some((p) =>
+          p.connState !== "self" && p.id !== id && !failedPeersRef.current.has(p.id));
+        if (anyHope || pendingInviteRef.current.size > 0) {
+          toastRef.current(`${name}さんと接続できませんでした`, "error");
+          return;
+        }
+        // 誰とも繋がらなかった。原因はほぼネットワーク(TURN未経由のNAT越え失敗)。
+        setError("相手と接続できませんでした。ネットワーク環境（企業ファイアウォール等）が原因の可能性があります。");
+        endCallAsRemote();
+      },
+      // peer 集合が変わった(猶予後の削除を含む)。参加者リストを引き直す。
+      onPeersChanged: () => {
+        syncParticipants();
+        maybeEndIfEmpty();
       },
       sendSignal: (ev, to, data) => {
-        if (ev === "ice") signaling.send(SIGNAL.ice, { to, candidate: data });
+        if (ev === "ice") signaling.send(SIGNAL.ice, { to, candidates: data });
         else signaling.send(ev === "offer" ? SIGNAL.offer : SIGNAL.answer, { to, sdp: data });
       },
     });
@@ -478,7 +532,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     signalingRef.current = signaling;
     meshRef.current = mesh;
     screenPeersRef.current = screenPeers;
-  }, [handleRoster, handleSignal, startSpeakingMonitor, endCallAsRemote]);
+  }, [handleRoster, handleSignal, startSpeakingMonitor, endCallAsRemote, syncParticipants, maybeEndIfEmpty]);
 
   const acquireMic = useCallback(async (): Promise<MediaStream | null> => {
     try {
@@ -489,6 +543,29 @@ export function CallProvider({ children }: { children: ReactNode }) {
       return null;
     }
   }, []);
+
+  // ── 招待を1件送り、「呼び出し中」として登録する ──
+  // 応答が無いまま RING_TIMEOUT_MS を過ぎたら、その相手だけを呼び出し中から外す。
+  const sendInvite = useCallback((invite: InvitePayload, target: CallMember) => {
+    peerNamesRef.current.set(target.id, target.name);
+    pendingInviteRef.current.set(target.id, target);
+    void sendToUser(target.id, SIGNAL.invite, invite as unknown as Record<string, unknown>);
+    const prev = inviteTimersRef.current.get(target.id);
+    if (prev) clearTimeout(prev);
+    inviteTimersRef.current.set(target.id, setTimeout(() => {
+      inviteTimersRef.current.delete(target.id);
+      if (!pendingInviteRef.current.delete(target.id)) return;
+      // 通話が既に成立している場合(通話中の追加招待)は、通話は続けたまま表示だけ整理する。
+      // 誰も応答しなかった初回発信の終了は、発信側の ringTimerRef が受け持つ。
+      if (everActiveRef.current && callRef.current) {
+        toastRef.current(`${target.name}さんは応答しませんでした`, "info");
+        syncParticipants();
+        // 他の参加者も既に抜けていて、この人が最後の望みだった場合は通話を閉じる
+        // (1人だけ通話に取り残されないように)
+        maybeEndIfEmpty();
+      }
+    }, RING_TIMEOUT_MS));
+  }, [sendToUser, syncParticipants, maybeEndIfEmpty]);
 
   // ── 発信 ──
   const startCall = useCallback(async (project: { id: string; name: string }, targets: CallMember[]) => {
@@ -505,14 +582,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const sessionId = crypto.randomUUID();
     const members: CallMember[] = [{ id: self.id, name: self.name }, ...targets];
 
-    inviteTargetsRef.current = targets;
-    pendingInviteRef.current = new Set(targets.map((t) => t.id));
     buildMesh(sessionId, stream);
 
     setCall({
       sessionId, projectId: project.id, projectName: project.name,
       role: "caller", status: "outgoing", muted: false,
       participants: [{ id: self.id, name: self.name, muted: false, speaking: false, connState: "self" }],
+      pending: targets,
     });
     startRingtone("outgoing");
 
@@ -520,14 +596,45 @@ export function CallProvider({ children }: { children: ReactNode }) {
       sessionId, from: self.id, fromName: self.name,
       projectId: project.id, projectName: project.name, members,
     };
-    for (const t of targets) void sendToUser(t.id, SIGNAL.invite, invite as unknown as Record<string, unknown>);
+    for (const t of targets) sendInvite(invite, t);
     void recordCallStart(sessionId, project.id, self.id, members);
 
     // 誰も応答しなければタイムアウトで終了
     ringTimerRef.current = setTimeout(() => {
       if (!everActiveRef.current) hangup();
     }, RING_TIMEOUT_MS);
-  }, [acquireMic, buildMesh, sendToUser, hangup]);
+  }, [acquireMic, buildMesh, sendInvite, hangup]);
+
+  // ── 通話中に参加者を追加で呼ぶ(BRU5-066) ──
+  // 既存セッションへの招待なので、新規発信とは違って sessionId を作り直さない。
+  // 相手には通常の着信が鳴り、応答すれば同じセッションチャンネルに合流する。
+  const inviteToCall = useCallback((targets: CallMember[]) => {
+    const cur = callRef.current;
+    if (!isSupabaseEnabled || !cur || targets.length === 0) return;
+    const self = selfRef.current;
+    const joined = new Set(cur.participants.map((p) => p.id));
+    const list = targets.filter((t) =>
+      t.id !== self.id && !joined.has(t.id) && !pendingInviteRef.current.has(t.id));
+    if (list.length === 0) return;
+    if (cur.participants.length + pendingInviteRef.current.size + list.length > MAX_PARTICIPANTS) {
+      setError(`グループ通話は最大${MAX_PARTICIPANTS}人までです。`);
+      return;
+    }
+    // members は着信側の表示用。今いる人 + 呼び出し中の人 + 今回追加する人。
+    const members: CallMember[] = [
+      ...cur.participants.map((p) => ({ id: p.id, name: p.name })),
+      ...pendingInviteRef.current.values(),
+      ...list,
+    ];
+    const invite: InvitePayload = {
+      sessionId: cur.sessionId, from: self.id, fromName: self.name,
+      projectId: cur.projectId, projectName: cur.projectName, members,
+    };
+    for (const t of list) sendInvite(invite, t);
+    void recordParticipantsInvited(cur.sessionId, list);
+    syncParticipants();
+    toastRef.current(`${list.map((t) => t.name).join("、")}さんを呼び出しています`, "info");
+  }, [sendInvite, syncParticipants]);
 
   // ── 着信に応答 ──
   const acceptIncoming = useCallback(async () => {
@@ -557,15 +664,37 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setIncoming(null);
     const self = selfRef.current;
     buildMesh(inv.sessionId, stream);
+    // 招待に含まれていた他メンバーの名前を先に控えておく(presence が届く前でも名前を出せる)
+    for (const m of inv.members) {
+      if (m.id !== self.id) peerNamesRef.current.set(m.id, m.name);
+    }
     setCall({
       sessionId: inv.sessionId, projectId: inv.projectId, projectName: inv.projectName,
       role: "callee", status: "connecting", muted: false,
       participants: [{ id: self.id, name: self.name, muted: false, speaking: false, connState: "self" }],
+      pending: [],
     });
     void recordParticipantOutcome(inv.sessionId, self.id, "joined");
     acceptingRef.current = false;
     setAccepting(false);
-  }, [acquireMic, buildMesh]);
+
+    // 応答したのに誰も居ない = 呼ばれた通話がすでに解散していた(発信者が直前に切った等)。
+    // 放置すると「自分ひとりだけの通話」に無期限で留まってしまうので、一定時間で畳む。
+    // 誰かが現れれば syncParticipants / onPeerStateChange がこのタイマーを解除する。
+    joinTimerRef.current = setTimeout(() => {
+      joinTimerRef.current = null;
+      if (!callRef.current || callRef.current.sessionId !== inv.sessionId) return;
+      if (everActiveRef.current || endingRef.current) return;
+      endingRef.current = true;
+      void recordParticipantLeft(inv.sessionId, self.id);
+      stopRingtone();
+      playHangupTone();
+      teardown();
+      setCall(null);
+      setScreenShare(null);
+      toastRef.current("通話はすでに終了していました", "info");
+    }, JOIN_TIMEOUT_MS);
+  }, [acquireMic, buildMesh, teardown]);
 
   // ── 着信を拒否 ──
   const declineIncoming = useCallback(() => {
@@ -717,23 +846,39 @@ export function CallProvider({ children }: { children: ReactNode }) {
     ch.on("broadcast", { event: SIGNAL.decline }, ({ payload }) => {
       const p = payload as { sessionId: string; from: string };
       const cur = callRef.current;
-      if (!cur || cur.sessionId !== p.sessionId || cur.role !== "caller") return;
+      // 通話中の追加招待は発信者以外も送れるので、role は問わずセッションだけで判定する。
+      if (!cur || cur.sessionId !== p.sessionId) return;
+      const target = pendingInviteRef.current.get(p.from);
+      if (!target) return;
       pendingInviteRef.current.delete(p.from);
+      const t = inviteTimersRef.current.get(p.from);
+      if (t) { clearTimeout(t); inviteTimersRef.current.delete(p.from); }
+      if (everActiveRef.current) {
+        // 通話は続いている(追加で呼んだ相手に断られただけ)
+        toastRef.current(`${target.name}さんが応答を辞退しました`, "info");
+        syncParticipants();
+        maybeEndIfEmpty(); // 他に誰も残っていなければ通話を閉じる(1人取り残し防止)
+        return;
+      }
       // まだ誰も参加しておらず、全員が拒否したら発信を終了
-      if (!everActiveRef.current && pendingInviteRef.current.size === 0) hangup();
+      if (pendingInviteRef.current.size === 0) hangup();
+      else syncParticipants();
     });
     ch.on("broadcast", { event: SIGNAL.bye }, ({ payload }) => {
       const p = payload as { sessionId: string; from: string };
       const cur = callRef.current;
       if (!cur || cur.sessionId !== p.sessionId) return;
-      // 切断した相手を除いて他に残っていなければ通話終了(アクション通知+切断音)。
-      // 複数人残っている場合は presence roster がその相手だけを外す。
-      const remaining = cur.participants.filter((x) => x.connState !== "self" && x.id !== p.from);
-      if (remaining.length === 0) endCallAsRemote();
+      // 切断した相手だけを即座に外し、残った相手とは通話を続ける。
+      // 全員居なくなった場合だけ通話終了(アクション通知+切断音)。
+      presenceRef.current.delete(p.from);
+      pendingInviteRef.current.delete(p.from);
+      meshRef.current?.removePeerNow(p.from);
+      syncParticipants();
+      maybeEndIfEmpty();
     });
     ch.subscribe();
     return () => { void supabase!.removeChannel(ch); };
-  }, [userId, sendToUser, hangup, endCallAsRemote]);
+  }, [userId, sendToUser, hangup, syncParticipants, maybeEndIfEmpty]);
 
   // ── オンライン在席presence ──
   useEffect(() => {
@@ -757,6 +902,21 @@ export function CallProvider({ children }: { children: ReactNode }) {
       stopRingtone();
     }
   }, [call]);
+
+  // presence sync を取りこぼしても接続が張られるように、roster と実 peer 群を定期照合する(BRU5-066)。
+  // 追加方向のみ(欠けている相手への接続を張り直す)。削除は roster 更新と bye に任せるので、
+  // presence が一時的に空になってもここで接続を落とすことはない。
+  const activeSessionId = call?.sessionId;
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const timer = setInterval(() => {
+      const mesh = meshRef.current;
+      if (!mesh || !callRef.current) return;
+      for (const id of presenceRef.current.keys()) mesh.ensurePeer(id);
+      syncParticipants();
+    }, PEER_RECONCILE_MS);
+    return () => clearInterval(timer);
+  }, [activeSessionId, syncParticipants]);
 
   // 通話が接続(active)した時刻を一度だけ記録する(通話時間計測の起点 BRU5-057-4)。
   useEffect(() => {
@@ -798,7 +958,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     <CallContext.Provider value={{
       incoming, call, online, error, screenShare, screenShareSupported: isScreenShareSupported(),
       accepting, audioBlocked, audioUnlockNonce, reportAudioBlocked, unlockAudio,
-      startCall, acceptIncoming, declineIncoming, hangup, toggleMute, clearError,
+      startCall, inviteToCall, acceptIncoming, declineIncoming, hangup, toggleMute, clearError,
       startScreenShare, stopScreenShare, sendPointer, sendAnnotation,
     }}>
       {children}

@@ -30,6 +30,27 @@ export async function recordCallStart(
   }
 }
 
+// 通話中の追加招待(BRU5-066): 後から呼んだメンバーの参加者行を作る。
+// 応答時の recordParticipantOutcome は update なので、行が無いと履歴が残らない。
+// 既に行がある場合(呼び直しなど)は上書きしない。
+export async function recordParticipantsInvited(
+  sessionId: string,
+  members: CallMember[],
+): Promise<void> {
+  if (!isSupabaseEnabled || members.length === 0) return;
+  try {
+    const rows = members.map((m) => ({
+      session_id: sessionId,
+      user_id: m.id,
+      outcome: "invited",
+    }));
+    await supabase!.from("call_participants")
+      .upsert(rows, { onConflict: "session_id,user_id", ignoreDuplicates: true });
+  } catch (e) {
+    console.error("[callService] recordParticipantsInvited failed", e);
+  }
+}
+
 export async function recordParticipantOutcome(
   sessionId: string,
   userId: string,
