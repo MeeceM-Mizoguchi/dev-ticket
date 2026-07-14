@@ -13,6 +13,8 @@ import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { subscribeTicket, emitTicketUpdate } from "@/app/lib/ticketSync";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
@@ -195,12 +197,18 @@ export function TicketDetailPanel({
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
-  const [projectMemberNames, setProjectMemberNames] = useState<string[]>([]);
   const [adminMemberNames, setAdminMemberNames] = useState<string[]>([]);
-  const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
-  const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectWikiItems, setProjectWikiItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectMinuteItems, setProjectMinuteItems] = useState<{ id: string; title: string }[]>([]);
+
+  // メンション候補(チケット/バックログ/Wiki/議事録/メンバー)。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const {
+    tickets: projectTickets,
+    backlogItems: projectBacklogItems,
+    wikiItems: projectWikiItems,
+    minuteItems: projectMinuteItems,
+    members: projectMemberNames,
+    prefixLabels: fetchedPrefixLabels,
+  } = useLinkSuggestions(projectId);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -578,29 +586,18 @@ export function TicketDetailPanel({
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;
     refreshCategories();
-    supabase!.from("projects").select("members").eq("id", projectId).single()
-      .then(({ data }) => { if (data?.members) setProjectMemberNames(data.members as string[]); });
-    (async () => {
-      const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", projectId);
-      if (!sprintData?.length) return;
-      const sprintIds = sprintData.map((s: { id: string }) => s.id);
-      const [{ data: ticketData }, { data: prefixData }] = await Promise.all([
-        supabase!.from("sprint_tickets").select("wbs, title").in("sprint_id", sprintIds).order("wbs"),
-        supabase!.from("sprint_tickets").select("prefixes").in("sprint_id", sprintIds),
-      ]);
-      if (ticketData) setProjectTickets(ticketData as { wbs: string; title: string }[]);
-      if (prefixData) {
-        const labels = [...new Set((prefixData as { prefixes: string[] }[]).flatMap(r => r.prefixes ?? []))].sort();
-        setAllProjectPrefixLabels(labels);
-      }
-    })();
-    supabase!.from("backlog_items").select("id, title").eq("project_id", projectId).order("id")
-      .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
-    supabase!.from("wiki_pages").select("id, title").eq("project_id", projectId).eq("is_folder", false)
-      .then(({ data }) => { if (data) setProjectWikiItems(data as { id: string; title: string }[]); });
-    supabase!.from("meeting_minutes").select("id, title").eq("project_id", projectId).order("meeting_date", { ascending: false })
-      .then(({ data }) => { if (data) setProjectMinuteItems(data as { id: string; title: string }[]); });
-  }, [projectId]);
+  }, [projectId, refreshCategories]);
+
+  // フックが取得したプレフィックスを取り込む。ここで入力しただけでまだ保存していない
+  // ラベルが再取得で消えないよう、置き換えではなくマージする。
+  useEffect(() => {
+    if (!fetchedPrefixLabels.length) return;
+    setAllProjectPrefixLabels(prev => {
+      const merged = [...new Set([...prev, ...fetchedPrefixLabels])].sort();
+      const same = merged.length === prev.length && merged.every((l, i) => l === prev[i]);
+      return same ? prev : merged;
+    });
+  }, [fetchedPrefixLabels]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -653,7 +650,9 @@ export function TicketDetailPanel({
     await supabase!.from("sprint_tickets").update(fields).eq("id", ticket.id);
     onUpdated?.();
     emitMine();
-  }, [ticket?.id, emitMine]);
+    // タイトルが変わるとメンション候補の表示名も変わるので、他タブへ再取得を促す
+    if ("title" in fields) emitLinkItemsChanged(projectId, "ticket");
+  }, [ticket?.id, emitMine, projectId]);
 
   const saveDebounced = useCallback((fields: Record<string, unknown>) => {
     clearTimeout(timerRef.current);
@@ -3175,7 +3174,7 @@ export function TicketDetailPanel({
                         {showReviewForm && (
                           <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                             <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                            <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                            <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
                             {revisionImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                                 {revisionImages.map((img, i) => (
