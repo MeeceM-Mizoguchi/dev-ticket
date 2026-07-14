@@ -109,6 +109,63 @@ export interface SprintTicket {
   isOperationVerified?: boolean;
   // チケットプレフィックス（最大3つ）
   prefixes?: string[];
+  // 開発規模。工数(時間)とは別軸の「難易度・広がり」。レコメンドの特徴量に使う。
+  devScale?: DevScale | null;
+}
+
+// ── ENHA2-034 スキル＆担当者レコメンドAI ──
+// スキルは「レイヤー(固定6種) → その配下にスキル名＋レベル1〜4」の2階層。
+export type SkillLayer = "frontend" | "backend" | "infra" | "design" | "qa" | "other";
+// レベルは所要時間・難易度ベースで定義する（既存チケットの工数と直結させ、実績から自動判定するため）。
+//   1: 簡単なものであればできる（15分〜30分）
+//   2: 少し難しいものならできる（1時間〜3時間）
+//   3: 普通（バックエンドも考慮したI/Fまでできる）
+//   4: リーダークラス（ほぼなんでもできる）
+export type SkillLevel = 1 | 2 | 3 | 4;
+export type DevScale = "S" | "M" | "L" | "XL";
+
+export interface Skill {
+  id: string;
+  organizationId: string;
+  layer: SkillLayer;
+  name: string;
+  keywords: string[];   // チケット文章からこのスキルを自動検出するための手がかり
+  sortOrder: number;
+}
+
+// レベル判定の根拠。人が納得して確認・修正できるように保持する。
+export interface SkillEvidence {
+  doneCount?: number;       // そのスキルの完了チケット数
+  avgHours?: number;        // 平均実績工数
+  maxHours?: number;        // 安定してこなせた最大工数帯
+  reviewCount?: number;     // 他人のチケットをレビュー・承認した回数（Lv4判定の決め手）
+  onTimeRate?: number;      // 納期遵守率
+}
+
+export interface MemberSkill {
+  profileId: string;
+  skillId: string;
+  level: SkillLevel;
+  source: "auto" | "manual";  // auto=①スキル分析が判定 / manual=人が設定（①は上書きしない）
+  evidence: SkillEvidence;
+  updatedAt: string;
+}
+
+export interface TicketRequiredSkill {
+  ticketId: string;
+  skillId: string;
+  importance: 1 | 2 | 3;  // 3=必須 / 2=推奨 / 1=あれば尚可
+}
+
+// 担当者レコメンドの1候補
+export interface AssigneeRecommendation {
+  profileId: string;
+  name: string;
+  score: number;          // 0〜1
+  reasons: string[];      // 「この領域12件完了・平均2.1h」など、なぜ推されたかの説明
+  skillMatch: number;     // 必要スキルの充足度 0〜1
+  workload: number;       // 現在の進行中チケット数
+  source: "model" | "baseline";  // 学習済みモデル / ルールベース（モデル未成熟時のフォールバック）
 }
 
 export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";
@@ -159,6 +216,10 @@ export interface Member {
   group: string; status: MemberStatus; projects: number; tickets: number;
   permission_group_id?: number | null;
   organizationId?: string | null;
+  // ★ONのメンバーだけ①スキル分析が member_skills を自動更新する。
+  //   OFFでも②レコメンドの対象からは外さない（手動スキル＋実績で推薦される）。
+  skillAutoUpdate?: boolean;
+  mlNoticeDismissed?: boolean;
 }
 export interface PermissionGroup {
   id: number; name: string; description: string;
