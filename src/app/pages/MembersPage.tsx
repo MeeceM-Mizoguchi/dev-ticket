@@ -1,23 +1,27 @@
 import { useEffect, useState, useRef } from "react";
-import { Search, UserPlus, Globe, Users, ArrowLeft, Sparkles } from "lucide-react";
-import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { Search, UserPlus, Globe, Users, ArrowLeft, Sparkles, Zap, Settings2 } from "lucide-react";
+import { useLocation, useNavigate, useSearchParams, Navigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { MEMBERS, GROUPS } from "@/app/data/mock";
 import { mapMember } from "@/app/lib/mappers";
-import type { Member, Organization } from "@/app/types";
+import type { Member, Organization, Skill, MemberSkill, SkillLayer } from "@/app/types";
 import { MemberCard } from "@/app/components/members/MemberCard";
 import { MemberDetailDialog } from "@/app/components/members/MemberDetailDialog";
 import { MemberEditDialog } from "@/app/components/members/MemberEditDialog";
+import { MemberSkillDialog } from "@/app/components/members/MemberSkillDialog";
+import { SkillMasterDialog } from "@/app/components/members/SkillMasterDialog";
 import { InviteDialog } from "@/app/components/members/InviteDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { PageLoader } from "@/app/components/shared/PageLoader";
+import { SKILL_LAYERS } from "@/app/lib/skills";
+import { fetchSkills, fetchMemberSkills } from "@/app/lib/skillsApi";
 
 export function MembersPage() {
-  const { userRole, userId, isSystemAdmin } = useAuth();
+  const { userRole, userId, isSystemAdmin, userPermissions } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -40,9 +44,19 @@ export function MembersPage() {
   const [myOrg, setMyOrg] = useState<(Organization & { memberCount: number }) | null>(null);
   const [effectiveOrgId, setEffectiveOrgId] = useState<string | null>(paramOrgId);
 
+  // ── ENHA2-034 スキル ──
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [memberSkills, setMemberSkills] = useState<MemberSkill[]>([]);
+  const [skillTarget, setSkillTarget] = useState<Member | null>(null);
+  const [showSkillMaster, setShowSkillMaster] = useState(false);
+  const [layerFilter, setLayerFilter] = useState<SkillLayer | "all">("all");
+
   const isOwner = userRole === "owner";
   const canAdd = isOwner || userRole === "admin" || userRole === "project-manager";
   const canEdit = isOwner || userRole === "admin" || userRole === "project-manager";
+  // ENHA2-034: スキルUI・学習のお知らせは「メンバー管理」権限を持つ人だけに見せる。
+  // 一般の開発者には何も表示しない。
+  const canManageSkills = Boolean(userPermissions.canAccessMembers) || isOwner;
 
   // ownerはorgIdなしで直接アクセスした場合は組織一覧へリダイレクト
   useEffect(() => {
@@ -101,6 +115,22 @@ export function MembersPage() {
     return () => clearInterval(id);
   }, [effectiveOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── ENHA2-034 スキルの読み込み ──
+  const refreshSkills = async (orgId: string | null = effectiveOrgId) => {
+    if (!isSupabaseEnabled || !orgId || !canManageSkills) return;
+    const [sk, ms] = await Promise.all([fetchSkills(orgId), fetchMemberSkills()]);
+    setSkills(sk);
+    setMemberSkills(ms);
+  };
+
+  // スキルの読み込み。
+  // ※ 初回セットアップ（分析の即時実行・お知らせモーダル）は MlSetupGate が
+  //   AppShell 直下で担当する。この画面を開かないと始まらない、という状態にしないため。
+  useEffect(() => {
+    if (!effectiveOrgId || !canManageSkills) return;
+    void refreshSkills(effectiveOrgId);
+  }, [effectiveOrgId, canManageSkills]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!highlightId) return;
     const timer = setTimeout(() => {
@@ -124,10 +154,27 @@ export function MembersPage() {
     toast(`「${member.name}」を削除しました`);
   };
 
+  // ENHA2-034: レイヤーで絞り込む（「フロントエンドができる人」を一覧で見たい、に直接応える）
+  const skillIdsInLayer = new Set(
+    layerFilter === "all" ? [] : skills.filter(s => s.layer === layerFilter).map(s => s.id),
+  );
+  const hasLayer = (memberId: string) =>
+    layerFilter === "all" ||
+    memberSkills.some(ms => ms.profileId === memberId && skillIdsInLayer.has(ms.skillId));
+
   const filtered = members.filter(m => {
     if (!isOwner && m.role === "owner") return false;
-    return (m.name.includes(search) || m.email.includes(search)) && (group === "すべて" || m.group === group);
+    return (m.name.includes(search) || m.email.includes(search))
+      && (group === "すべて" || m.group === group)
+      && hasLayer(m.id);
   });
+
+  // ENHA2-034: ルートガード。
+  // 他の管理画面(RolesPage/PermissionsPage等)には全てガードがあるが、
+  // MembersPage だけ抜けていて /members 直打ちで到達できた。スキル情報を載せる前に塞ぐ。
+  if (isSupabaseEnabled && !canManageSkills && !canAdd) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   if (loading) return <PageLoader />;
 
@@ -228,6 +275,27 @@ export function MembersPage() {
               </button>
             ))}
           </div>
+
+          {/* ENHA2-034 スキル絞り込み ＋ スキル管理 */}
+          {canManageSkills && (
+            <>
+              <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: "0 10px 0 9px" }}>
+                <Zap style={{ width: 12, height: 12, color: "#B0A9A4" }} />
+                <select value={layerFilter} onChange={e => setLayerFilter(e.target.value as SkillLayer | "all")}
+                  style={{ padding: "8px 4px", fontSize: 11.5, border: "none", background: "transparent", color: layerFilter === "all" ? "#6B6458" : "#059669", fontWeight: layerFilter === "all" ? 500 : 600, outline: "none", cursor: "pointer" }}>
+                  <option value="all">スキル: すべて</option>
+                  {SKILL_LAYERS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+                </select>
+              </div>
+
+              <button onClick={() => setShowSkillMaster(true)} title="スキルマスタを管理"
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.08)", background: "#FFFFFF", color: "#6B6458", cursor: "pointer" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFFFFF"; }}>
+                <Settings2 style={{ width: 12, height: 12 }} />スキル管理
+              </button>
+            </>
+          )}
         </div>
 
         {filtered.length === 0
@@ -237,10 +305,15 @@ export function MembersPage() {
                 <MemberCard key={m.id} member={m}
                   canEdit={canEdit}
                   canDelete={m.id !== userId && (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager"))}
+                  canManageSkills={canManageSkills}
+                  skills={skills}
+                  memberSkills={memberSkills}
                   highlighted={m.id === highlightId}
                   cardRef={m.id === highlightId ? highlightCardRef : undefined}
                   onDetail={() => setDetailTarget(m)}
                   onEdit={() => setEditTarget(m)}
+                  onSkills={() => setSkillTarget(m)}
+                  onAutoUpdateChanged={() => refreshMembers()}
                   onDelete={() => setDeleteTarget(m)} />
               ))}
             </div>
@@ -257,6 +330,22 @@ export function MembersPage() {
         )}
         {detailTarget && <MemberDetailDialog member={detailTarget} onClose={() => setDetailTarget(null)} />}
         {editTarget && <MemberEditDialog member={editTarget} onClose={() => setEditTarget(null)} onSaved={() => refreshMembers()} />}
+
+        {/* ── ENHA2-034（すべて canManageSkills 配下） ── */}
+        {canManageSkills && skillTarget && effectiveOrgId && (
+          <MemberSkillDialog
+            member={skillTarget}
+            orgId={effectiveOrgId}
+            onClose={() => setSkillTarget(null)}
+            onSaved={() => refreshSkills()} />
+        )}
+        {canManageSkills && showSkillMaster && effectiveOrgId && (
+          <SkillMasterDialog
+            orgId={effectiveOrgId}
+            onClose={() => setShowSkillMaster(false)}
+            onChanged={() => refreshSkills()} />
+        )}
+
         {deleteTarget && (
           <ConfirmDialog
             message={`「${deleteTarget.name}」をチームから削除しますか？担当チケットの割り当てもすべて解除されます。`}

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Plus, X, Trash2, Check } from "lucide-react";
-import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
+import type { TicketCategory, TicketStatus, Priority, Skill, DevScale } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { labelCls, inputCls, TICKET_STATUSES, getDefaultProgressForStatus } from "@/app/lib/helpers";
@@ -20,6 +20,9 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { escStack } from "@/app/lib/escStack";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+// ENHA2-034 必要スキル・開発規模・担当者レコメンド
+import { TicketSkillFields, AssigneeRecommendPanel, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
+import { fetchSkills } from "@/app/lib/skillsApi";
 
 // 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -76,6 +79,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
   // --- ラベル（プレフィックス）---
+  // ── ENHA2-034 必要スキル・開発規模 ──
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [requiredSkills, setRequiredSkills] = useState<RequiredSkill[]>([]);
+  const [devScale, setDevScale] = useState<DevScale | null>(null);
+
   const [prefixes, setPrefixes] = useState<string[]>([]);
   const [allProjectPrefixLabels, setAllProjectPrefixLabels] = useState<string[]>([]);
   const [showPrefixInput, setShowPrefixInput] = useState(false);
@@ -383,6 +391,21 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     return () => document.removeEventListener("paste", handler);
   }, [addImages]);
 
+  // ENHA2-034: 組織のスキルマスタを読む。未登録の組織では入力欄自体が出ない（邪魔をしない）。
+  useEffect(() => {
+    if (!userOrgId) return;
+    fetchSkills(userOrgId).then(setSkills).catch(() => setSkills([]));
+  }, [userOrgId]);
+
+  /** ENHA2-034: チケットの必要スキルを保存する。②レコメンドの学習材料にもなる。 */
+  const saveRequiredSkills = async (tid: string) => {
+    if (!isSupabaseEnabled || requiredSkills.length === 0) return;
+    const { error } = await supabase!.from("ticket_required_skills").insert(
+      requiredSkills.map(r => ({ ticket_id: tid, skill_id: r.skillId, importance: r.importance })),
+    );
+    if (error) console.error("[ticket_required_skills] insert failed:", error.message);
+  };
+
   const handleSave = async () => {
     let valid = true;
     if (needsSelection && !selectedProjectId) { setProjectError(true); valid = false; }
@@ -459,8 +482,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               images: images.length ? images : [],
               parent_id: parentTicketId,
               prefixes,
+              dev_scale: devScale,
             });
             if (!insErr) {
+              await saveRequiredSkills(ticketId.current);
               if (finalAssignee && effectiveProjectSlug) {
                 const { error: nErr } = await supabase!.from("notifications").insert({
                   user_name: finalAssignee, type: "assign",
@@ -515,8 +540,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         images: images.length ? images : [],
         parent_id: parentTicketId || null,
         prefixes,
+        dev_scale: devScale,
       });
       if (!insErr2) {
+        await saveRequiredSkills(ticketId.current);
         if (finalAssignee && effectiveProjectSlug) {
           const { error: nErr2 } = await supabase!.from("notifications").insert({
             user_name: finalAssignee, type: "assign",
@@ -836,6 +863,15 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             })()}
           </div>
 
+          {/* ENHA2-034: 必要スキル・開発規模。スキルマスタが空の組織では表示されない。 */}
+          <TicketSkillFields
+            skills={skills}
+            required={requiredSkills}
+            devScale={devScale}
+            onRequiredChange={setRequiredSkills}
+            onDevScaleChange={setDevScale}
+          />
+
           <div>
             <label className={labelCls}>担当者</label>
             <CustomSelect
@@ -844,6 +880,20 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               onChange={v => setAssignee(v)}
             />
           </div>
+
+          {/* ENHA2-034: 必要スキルを選ぶと候補が出る。理由つきで、選択は人が決める。 */}
+          {userOrgId && (
+            <AssigneeRecommendPanel
+              orgId={userOrgId}
+              required={requiredSkills}
+              devScale={devScale}
+              estimatedHours={estimatedHours}
+              priority={priority}
+              candidateNames={currentProjectMembers.length > 0 ? currentProjectMembers : undefined}
+              currentAssignee={assignee}
+              onPick={name => setAssignee(name)}
+            />
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <DatePicker label="開始日" value={startDate}

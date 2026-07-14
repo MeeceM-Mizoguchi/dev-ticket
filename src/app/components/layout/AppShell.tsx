@@ -10,6 +10,7 @@ import { isNativeTabletApp } from "@/app/lib/platform";
 import { CallProvider } from "@/app/contexts/CallContext";
 import { RefreshProvider, useRefresh } from "@/app/contexts/RefreshContext";
 import { CallLayer } from "@/app/components/call/CallLayer";
+import { MlSetupGate } from "@/app/components/members/MlSetupGate";
 
 export function AppShell() {
   useVersionCheck();
@@ -78,6 +79,9 @@ export function ProtectedShell() {
         {isNativeTabletApp() ? <TabbedShell /> : <AppShell />}
       </RefreshProvider>
       <CallLayer />
+      {/* ENHA2-034 学習の初回セットアップ。ログイン直後・どの画面にいても走る。
+          メンバー管理権限を持つ人以外には何も起きない（内部で判定）。 */}
+      <MlSetupGate />
     </CallProvider>
   );
 }
