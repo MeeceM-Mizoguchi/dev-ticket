@@ -7,13 +7,14 @@ interface Props {
   boards: Whiteboard[];
   selectedId: string | null;
   canEdit: boolean;
+  loading?: boolean;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
 }
 
-export function BoardListSidebar({ boards, selectedId, canEdit, onSelect, onCreate, onRename, onDelete }: Props) {
+export function BoardListSidebar({ boards, selectedId, canEdit, loading, onSelect, onCreate, onRename, onDelete }: Props) {
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -47,10 +48,22 @@ export function BoardListSidebar({ boards, selectedId, canEdit, onSelect, onCrea
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        {filtered.length === 0 && (
+        {loading ? (
+          // 読み込み中はスピナー＋スケルトンを表示（空表示「ボードがありません」の誤表示を防ぐ）
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "24px 8px" }}>
+            <style>{"@keyframes wbspin{to{transform:rotate(360deg)}}@keyframes wbshimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}"}</style>
+            <div style={{ width: 20, height: 20, borderRadius: "50%", border: "2px solid #E7E5E1", borderTopColor: "#059669", animation: "wbspin 0.7s linear infinite" }} />
+            <span style={{ fontSize: 11, color: "#A09790" }}>ボードを読み込み中…</span>
+            <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+              {[0, 1, 2].map((i) => (
+                <div key={i} style={{ height: 30, borderRadius: 8, background: "linear-gradient(90deg,#F4F5F6,#E7E5E1,#F4F5F6)", backgroundSize: "200% 100%", animation: "wbshimmer 1.2s linear infinite", opacity: 1 - i * 0.2 }} />
+              ))}
+            </div>
+          </div>
+        ) : filtered.length === 0 && (
           <div style={{ padding: "20px 8px", fontSize: 11, color: "#A09790", textAlign: "center" }}>ボードがありません</div>
         )}
-        {filtered.map((b) => {
+        {!loading && filtered.map((b) => {
           const active = b.id === selectedId;
           return (
             <div key={b.id} onClick={() => onSelect(b.id)}

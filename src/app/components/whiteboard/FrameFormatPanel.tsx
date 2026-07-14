@@ -1,7 +1,8 @@
 // フレーム選択時に出る書式パネル（背景色 / 枠線ON・OFF / 枠線色）。
-// 書式は frame.customData.wbFrame に保存する（要素なのでYjs同期される）。描画は FrameDecorLayer。
+// 書式は frame.customData.wbFrame に保存する（要素なのでYjs同期される）。
+// 描画は syncFrameDecorRects が実 rectangle 要素として敷く（BRU5-063）。
 import { useEffect, useRef, useState } from "react";
-import type { WbFrameFormat } from "./FrameDecorLayer";
+import { type WbFrameFormat, isFrameDecorRect } from "@/app/lib/whiteboardFrameBg";
 import { resolveParent } from "@/app/lib/whiteboardFrames";
 
 interface Props {
@@ -39,8 +40,8 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
           // 子要素数も署名に含める。グループ解除で子の所属(wbParent)が変わってもフレーム自体の
           // 書式は不変なため、これが無いとボタン表示(件数)が再描画されない（BRU4-054）。
           // パネルは左側固定なので座標/ズームは署名に含めない（タイトルに重ならないよう常時左ドック）。
-          const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === el.id && !e.isDeleted).length;
-          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${childCount}`;
+          const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === el.id && !e.isDeleted && !isFrameDecorRect(e)).length;
+          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${fmt.sharp}:${childCount}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
             setFrame(el);
@@ -69,14 +70,14 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
     api.updateScene({ elements: els });
   };
 
-  // このフレームに属する子要素数（グループ解除ボタンの活性判定・表示用）
-  const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === frame.id && !e.isDeleted).length;
+  // このフレームに属する子要素数（グループ解除ボタンの活性判定・表示用）。装飾の影矩形は数えない。
+  const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === frame.id && !e.isDeleted && !isFrameDecorRect(e)).length;
 
   // グループ解除: 直下の子要素の所属(wbParent)を外し、以後フレームを動かしても追従しないようにする
   // （BRU4-054 / BRU5-040）。入れ子フレームは無所属化され独立したフレームに戻る。
   const ungroup = () => {
     const els = api.getSceneElements().map((e: any) =>
-      resolveParent(e) === frame.id && !e.isDeleted
+      resolveParent(e) === frame.id && !e.isDeleted && !isFrameDecorRect(e)
         ? { ...e, frameId: null, customData: { ...(e.customData ?? {}), wbParent: null }, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
@@ -120,6 +121,7 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
 
   const bgIsCustom = !!fmt.bg && !BG_COLORS.includes(fmt.bg);
   const borderIsCustom = !!fmt.borderColor && !LINE_COLORS.includes(fmt.borderColor);
+  const borderOn = fmt.border !== false; // 既定ON（色未指定はグレー枠）。明示 false のみOFF。
 
   // セクション見出し（画像2の図形パネルに合わせた淡いグレーのラベル）
   const heading = (label: string) => (
@@ -149,17 +151,39 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {heading("枠線")}
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            {/* 既定は「あり」（色未指定ならグレー枠）。明示的に「なし」にした時だけ枠線を消す。 */}
             <button
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => update({ border: !fmt.border })}
+              onClick={() => update({ border: fmt.border === false })}
               style={{
                 padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
                 border: "1px solid rgba(0,0,0,0.15)",
-                background: fmt.border ? "#1971c2" : "#fff", color: fmt.border ? "#fff" : "#444",
+                background: borderOn ? "#1971c2" : "#fff", color: borderOn ? "#fff" : "#444",
               }}
-            >{fmt.border ? "あり" : "なし"}</button>
-            {fmt.border && LINE_COLORS.map((c) => swatch(c, (fmt.borderColor ?? "#343a40") === c, () => update({ borderColor: c })))}
-            {fmt.border && picker(fmt.borderColor ?? "#343a40", (c) => update({ borderColor: c }), borderIsCustom)}
+            >{borderOn ? "あり" : "なし"}</button>
+            {borderOn && LINE_COLORS.map((c) => swatch(c, fmt.borderColor === c, () => update({ borderColor: c })))}
+            {borderOn && picker(fmt.borderColor, (c) => update({ borderColor: c }), borderIsCustom)}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("角")}
+          <div style={{ display: "flex", gap: 6 }}>
+            {([["角丸", false], ["角あり", true]] as const).map(([label, sharp]) => {
+              const active = (fmt.sharp !== false) === sharp; // 未設定は既定で角あり
+
+              return (
+                <button
+                  key={label}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => update({ sharp })}
+                  style={{
+                    padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    background: active ? "#1971c2" : "#fff", color: active ? "#fff" : "#444",
+                  }}
+                >{label}</button>
+              );
+            })}
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

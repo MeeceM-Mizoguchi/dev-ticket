@@ -7,7 +7,7 @@ import { orderFramesBehindChildren } from "@/app/lib/whiteboardFrames";
 
 // Excalidraw の型は版で import パスが揺れるため緩く扱う。
 type El = any; // ExcalidrawElement（version, versionNonce, isDeleted, index を持つ）
-type ExcalidrawAPI = { updateScene: (data: { elements?: readonly El[] }) => void };
+type ExcalidrawAPI = { updateScene: (data: { elements?: readonly El[] }) => void; getSceneElements?: () => readonly El[] };
 
 const LOCAL_ORIGIN = "excalidraw-local";
 
@@ -155,6 +155,16 @@ export class ExcalidrawYjsBridge {
     if (!this.api) return;
     // ローカル編集中は反映を保留（編集中の要素が外部更新で壊れる/透明化するのを防ぐ）
     if (this.deferCheck?.()) { this.pendingApply = true; return; }
+
+    // 反映は「Y.Map の中身でシーンを丸ごと置き換える」ので、まだ Y.Map に無いローカル要素は消滅する。
+    // ローカル操作中(pointerdown)は反映が保留され、pointerup 直後に flushPending でここへ来るため、
+    // 「Alt/Optionドラッグで複製した図形」「引いたばかりの矢印」など“操作中に生まれた要素”が、
+    // その onChange が applyingRemote のスキップ窓に重なって未同期だと、離した瞬間に消えてしまう。
+    // → 置き換える前に、現在のシーンを必ず Y.Map へ取り込んでから反映する（BRU5-067）。
+    //   syncFromExcalidraw は version/versionNonce 比較なので、リモートの新しい更新を巻き戻すことはない。
+    const local = this.api.getSceneElements?.();
+    if (local?.length) this.syncFromExcalidraw(local);
+
     const elements = this.currentElements();
     this.applyingRemote = true;
     try {

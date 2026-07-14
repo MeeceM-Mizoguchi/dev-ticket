@@ -91,6 +91,9 @@ function applyParents(api: any, elements: readonly any[], nextParent: Map<string
     // ここで幾何判定に基づき別々に書くと、文字は枠内・影矩形(PAD分大きい)は枠外で所属が食い違い、
     // 毎tick互いに上書きし合うチラつき(churn)になるため対象外にする。
     if (el?.customData?.wbBgFor) return el;
+    // フレーム装飾の影矩形(BRU5-063)も同様に、所属(wbParent=frame)は syncFrameDecorRects が
+    // 唯一の書き手。幾何判定で別途書くとフレーム自身を親にしようとして食い違うため対象外。
+    if (el?.customData?.wbFrameBg) return el;
     if (!nextParent.has(el.id)) return el;
     const np = nextParent.get(el.id) ?? null;
     if (resolveParent(el) === np) return el;
