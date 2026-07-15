@@ -900,6 +900,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               ticketTitle={title}
               ticketDescription={description}
               ticketPrefixes={prefixes}
+              ticketId={ticketId.current}
               onClose={() => setShowRecommend(false)}
               onPick={(name, req, scale) => {
                 // 選んだ担当者をセットしつつ、モーダルで選んだ必要スキル・開発規模も

@@ -120,6 +120,34 @@ export async function runSkillAnalysis(orgId: string, force = false): Promise<{
   return { skillsWritten: written, reason: first.reason, debug: first.debug };
 }
 
+/**
+ * 自動アサインで「レコメンド結果からこの人に決めた」を記録する。
+ * ②学習の材料になる（採用されたアサインを、次の再学習で強めに学習する）。
+ * 記録失敗はアサイン操作を妨げない（fire-and-forget）。
+ */
+export async function logRecommendationAccepted(params: {
+  organizationId: string;
+  ticketId?: string | null;
+  candidates: AssigneeRecommendation[];
+  chosen: AssigneeRecommendation;
+  source: "model" | "baseline";
+}): Promise<void> {
+  if (!isSupabaseEnabled) return;
+  const { organizationId, ticketId, candidates, chosen, source } = params;
+  try {
+    await supabase!.from("recommendation_logs").insert({
+      organization_id: organizationId,
+      ticket_id: ticketId ?? null,
+      recommended: candidates.map((c, i) => ({ rank: i + 1, profileId: c.profileId, name: c.name, score: c.score })),
+      chosen_profile_id: chosen.profileId,
+      was_top1: candidates[0]?.profileId === chosen.profileId,
+      source,
+    });
+  } catch {
+    /* ログ失敗は無視（アサインは成立させる） */
+  }
+}
+
 /** ②担当者レコメンド。学習済みモデルがあればそれを、無ければルールベースで返す。 */
 export async function fetchRecommendations(params: {
   organizationId: string;

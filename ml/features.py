@@ -233,25 +233,33 @@ def build_features(
     ]
 
 
+# レコメンドを採用して決めたアサインの正例に掛ける重み（普通の正例は1.0）
+ACCEPTED_POSITIVE_WEIGHT = 2.0
+
+
 def build_dataset(
     tickets: list[dict],
     profiles: list[dict],
     skills: list[dict],
     member_skills: list[dict],
     required_by_ticket: dict[str, list[dict]],
-) -> tuple[list[list[float]], list[int], list[int]]:
+    boosted_ticket_ids: set[str] | None = None,
+) -> tuple[list[list[float]], list[int], list[int], list[float]]:
     """学習用の表を作る。
 
-    戻り値: (X, y, groups)
-      X      … 特徴量ベクトルの並び
-      y      … 正解ラベル(1=成功アサイン / 0=失敗 or 選ばれなかった候補)
-      groups … 同一チケットのペアをまとめるためのグループサイズ（ランキング学習用）
+    戻り値: (X, y, groups, weights)
+      X       … 特徴量ベクトルの並び
+      y       … 正解ラベル(1=成功アサイン / 0=失敗 or 選ばれなかった候補)
+      groups  … 同一チケットのペアをまとめるためのグループサイズ（ランキング学習用）
+      weights … サンプル重み。自動アサインのレコメンドを採用して決めたアサイン
+                (boosted_ticket_ids に含まれる)の正例は、重めに学習する。
 
     ★リーク防止★
       チケットを作成日時の昇順に処理し、各ペアの特徴量は「そのチケット作成時点」の
       MemberState で作る。特徴量を作った後で、そのチケットの結果を MemberState に反映する。
       この順序を逆にすると、答えを見てから予想することになる。
     """
+    boosted = boosted_ticket_ids or set()
     skill_layer = {s["id"]: s["layer"] for s in skills}
     name_to_id = {p["name"]: p["id"] for p in profiles if p.get("name")}
     all_pids = [p["id"] for p in profiles]
@@ -270,6 +278,7 @@ def build_dataset(
     X: list[list[float]] = []
     y: list[int] = []
     groups: list[int] = []
+    weights: list[float] = []
 
     for idx, t in enumerate(ordered):
         assignee_name = t.get("assignee") or ""
@@ -312,9 +321,12 @@ def build_dataset(
                 pairs.append((q, build_features(t, required, levels.get(q, {}), states[q]), 0))
 
         if len(pairs) >= 2:
+            # このチケットのアサインがレコメンド採用由来なら、その正例を重めに学習する
+            boost = t["id"] in boosted
             for _, feat, lab in pairs:
                 X.append(feat)
                 y.append(lab)
+                weights.append(ACCEPTED_POSITIVE_WEIGHT if (boost and lab == 1) else 1.0)
             groups.append(len(pairs))
 
         # ── 特徴量を作り終えたので、このチケットの結果を state に反映する ──
@@ -346,4 +358,4 @@ def build_dataset(
             for l in t_layers:
                 states[rid].layer(l).reviews += 1
 
-    return X, y, groups
+    return X, y, groups, weights
