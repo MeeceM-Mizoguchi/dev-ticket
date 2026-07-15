@@ -77,11 +77,12 @@ def fetch_org_data(sb: Client, org_id: str) -> dict:
 
     tickets = (
         sb.table("sprint_tickets")
+        # ※ sprint_tickets には updated_at 列が無いので選択しない
         .select(
             "id, title, description, prefixes, status, priority, assignee, reviewer_name, review_round, "
             "due_date, dev_scale, estimated_hours, actual_work_hours, is_operation_verified, "
             "started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, "
-            "created_at, updated_at"
+            "created_at"
         )
         .in_("sprint_id", sprint_ids)
         .gte("created_at", since)
@@ -191,10 +192,18 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
         )
         if latest:
             last = parse_ts(latest[0]["created_at"])
-            changed = any(
-                (parse_ts(t.get("updated_at")) or parse_ts(t.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) > last
-                for t in tickets
-            )
+            # sprint_tickets に updated_at が無いので、作成日時とマイルストーン日時の
+            # 最大値で「最後に動いた時刻」を近似する。
+            def last_activity(t: dict) -> datetime:
+                cands = [
+                    parse_ts(t.get(k))
+                    for k in ("created_at", "started_at", "review_approved_at",
+                              "stg_completed_at", "uat_completed_at", "released_at")
+                ]
+                cands = [c for c in cands if c]
+                return max(cands) if cands else datetime.min.replace(tzinfo=timezone.utc)
+
+            changed = any(last_activity(t) > last for t in tickets)
             if not changed:
                 return {"org": org_id, "trained": False, "reason": "前回学習以降に変更なし（スキップ）"}
 
