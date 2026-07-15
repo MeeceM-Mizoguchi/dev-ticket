@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
-import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
+import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
+// ENHA2-034 担当者レコメンド（自動アサイン）
+import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
+import { fetchSkills } from "@/app/lib/skillsApi";
+import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
@@ -178,6 +182,9 @@ export function TicketDetailPanel({
   const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
   const [assignee, setAssignee] = useState<string>(ticket?.assignee ?? "");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
+  // ENHA2-034 担当者レコメンド（自動アサイン）
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [showRecommend, setShowRecommend] = useState(false);
   const [startDate, setStartDate] = useState(ticket?.startDate ?? "");
   const [dueDate, setDueDate] = useState(ticket?.dueDate ?? "");
   const [estimatedH, setEstimatedH] = useState(ticket?.estimatedHours ?? 0);
@@ -1079,6 +1086,25 @@ export function TicketDetailPanel({
     }
     await addComment(`<p>リリース日を未定に変更しました</p>`, "status_change", []);
     onUpdated?.();
+  };
+
+  // ENHA2-034: 組織のスキルマスタを読む（自動アサインのモーダルで使う）
+  useEffect(() => {
+    if (!userOrgId) return;
+    fetchSkills(userOrgId).then(setSkills).catch(() => setSkills([]));
+  }, [userOrgId]);
+
+  // ENHA2-034: モーダルで選んだ必要スキル・開発規模をこのチケットに保存する
+  //（②レコメンドの学習材料としてDBに残す）
+  const persistTicketSkills = async (req: RequiredSkill[], scale: string | null) => {
+    if (!ticket?.id || !isSupabaseEnabled) return;
+    await save({ dev_scale: scale });
+    await supabase!.from("ticket_required_skills").delete().eq("ticket_id", ticket.id);
+    if (req.length > 0) {
+      await supabase!.from("ticket_required_skills").insert(
+        req.map(r => ({ ticket_id: ticket.id, skill_id: r.skillId, importance: r.importance })),
+      );
+    }
   };
 
   const saveAssignee = (name: string) => {
@@ -2380,7 +2406,18 @@ export function TicketDetailPanel({
 
               {/* 担当者 */}
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>担当者</p>
+                  {userOrgId && skills.length > 0 && (
+                    <button onClick={e => { e.stopPropagation(); setShowRecommend(true); }}
+                      title="AIにおすすめ担当者を提案してもらう"
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 9px", fontSize: 10.5, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: "pointer", whiteSpace: "nowrap" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <Sparkles style={{ width: 11, height: 11 }} />自動アサイン
+                    </button>
+                  )}
+                </div>
                 <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
                   style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
@@ -2409,6 +2446,24 @@ export function TicketDetailPanel({
                   </div>
                 )}
               </div>
+
+              {/* ENHA2-034: 自動アサインのレコメンドモーダル */}
+              {showRecommend && userOrgId && (
+                <AssigneeRecommendModal
+                  orgId={userOrgId}
+                  skills={skills}
+                  estimatedHours={estimatedH}
+                  priority={priority}
+                  candidateNames={projectMemberNames.length > 0 ? projectMemberNames : undefined}
+                  initialRequired={[]}
+                  initialScale={ticket?.devScale ?? null}
+                  onClose={() => setShowRecommend(false)}
+                  onPick={(name, req, scale) => {
+                    saveAssignee(name);
+                    void persistTicketSkills(req, scale);
+                  }}
+                />
+              )}
 
               {/* 開始日 | 期限日 */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
