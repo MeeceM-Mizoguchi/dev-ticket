@@ -897,6 +897,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               candidateNames={currentProjectMembers.length > 0 ? currentProjectMembers : undefined}
               initialRequired={requiredSkills}
               initialScale={devScale}
+              ticketTitle={title}
+              ticketDescription={description}
+              ticketPrefixes={prefixes}
               onClose={() => setShowRecommend(false)}
               onPick={(name, req, scale) => {
                 // 選んだ担当者をセットしつつ、モーダルで選んだ必要スキル・開発規模も

@@ -131,7 +131,8 @@ export function TicketSkillFields({ skills, required, devScale, onRequiredChange
  */
 export function AssigneeRecommendModal({
   orgId, skills, estimatedHours, priority, candidateNames,
-  initialRequired, initialScale, onClose, onPick,
+  initialRequired, initialScale, ticketTitle, ticketDescription, ticketPrefixes,
+  onClose, onPick,
 }: {
   orgId: string;
   skills: Skill[];
@@ -140,6 +141,10 @@ export function AssigneeRecommendModal({
   candidateNames?: string[];
   initialRequired: RequiredSkill[];
   initialScale: DevScale | null;
+  // チケットの内容。開いた瞬間にここから必要スキルを自動判定する。
+  ticketTitle?: string;
+  ticketDescription?: string;
+  ticketPrefixes?: string[];
   onClose: () => void;
   // 担当者名と、モーダルで選んだ必要スキル・開発規模を親へ返す（チケットにも保存する）
   onPick: (name: string, required: RequiredSkill[], devScale: DevScale | null) => void;
@@ -151,14 +156,18 @@ export function AssigneeRecommendModal({
   const [source, setSource] = useState<"model" | "baseline">("baseline");
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState(false);
+  const [autoFilled, setAutoFilled] = useState(false);   // チケット内容から自動判定したか
 
-  const runRecommend = async () => {
-    if (required.length === 0) return;
+  // レコメンド実行。mount時の自動実行では state 反映を待たず、算出値を直接渡す。
+  const runRecommend = async (reqArg?: RequiredSkill[], scaleArg?: DevScale | null) => {
+    const req = reqArg ?? required;
+    const scale = scaleArg !== undefined ? scaleArg : devScale;
+    if (req.length === 0) { setSearched(true); setCandidates([]); return; }
     setLoading(true); setError(false); setSearched(true);
     try {
       const r = await fetchRecommendations({
-        organizationId: orgId, requiredSkillIds: required,
-        devScale, estimatedHours, priority, candidateNames, limit: 3,
+        organizationId: orgId, requiredSkillIds: req,
+        devScale: scale, estimatedHours, priority, candidateNames, limit: 3,
       });
       setCandidates(r.candidates ?? []);
       setSource(r.source ?? "baseline");
@@ -168,6 +177,27 @@ export function AssigneeRecommendModal({
       setLoading(false);
     }
   };
+
+  // 開いた瞬間に「チケット内容から必要スキルを自動判定 → 規模を工数から推定 → そのままレコメンド」。
+  // ズレていたら手で直して「再レコメンド」を押せば取り直せる。外部AIは使わず辞書キーワード方式。
+  useEffect(() => {
+    const detected = initialRequired.length > 0
+      ? initialRequired
+      : detectSkillKeywords(
+          ticketSearchText({
+            title: ticketTitle ?? "",
+            description: (ticketDescription ?? "").replace(/<[^>]*>/g, " "),
+            prefixes: ticketPrefixes ?? [],
+          }),
+          skills,
+        ).map(id => ({ skillId: id, importance: 3 as const })) as RequiredSkill[];
+    const scale = initialScale ?? estimateScale(estimatedHours);
+    setRequired(detected);
+    setDevScale(scale);
+    setAutoFilled(initialRequired.length === 0 && detected.length > 0);
+    if (detected.length > 0) void runRecommend(detected, scale);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(26,23,20,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 500, padding: 20 }}
@@ -183,7 +213,7 @@ export function AssigneeRecommendModal({
               <Sparkles style={{ width: 15, height: 15, color: "#059669" }} />自動アサイン
             </h2>
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>
-              必要スキルと開発規模を選んで「レコメンド」を押すと、適任者トップ3を提案します
+              チケット内容から必要スキルを自動判定して提案します。ズレていれば手で直して「再レコメンド」してください
             </p>
           </div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "#B0A9A4", padding: 4 }}>
@@ -198,22 +228,32 @@ export function AssigneeRecommendModal({
               スキルマスタが未登録です。先にメンバー管理の「スキル管理」からスキルを登録してください。
             </p>
           ) : (
-            <TicketSkillFields
-              skills={skills}
-              required={required}
-              devScale={devScale}
-              onRequiredChange={setRequired}
-              onDevScaleChange={setDevScale}
-            />
+            <>
+              {autoFilled && (
+                <div style={{ marginBottom: 12, padding: "8px 11px", background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.2)", borderRadius: 9, display: "flex", gap: 7, alignItems: "flex-start" }}>
+                  <Sparkles style={{ width: 13, height: 13, color: "#059669", flexShrink: 0, marginTop: 1 }} />
+                  <p style={{ fontSize: 11, color: "#047857", lineHeight: 1.5 }}>
+                    チケット内容から必要スキルを自動判定しました。違っていれば下で調整して「再レコメンド」してください。
+                  </p>
+                </div>
+              )}
+              <TicketSkillFields
+                skills={skills}
+                required={required}
+                devScale={devScale}
+                onRequiredChange={setRequired}
+                onDevScaleChange={setDevScale}
+              />
+            </>
           )}
 
-          {/* レコメンド実行ボタン */}
-          <button onClick={runRecommend} disabled={required.length === 0 || loading}
+          {/* 再レコメンド（スキル・規模を手で直したあと押し直す） */}
+          <button onClick={() => void runRecommend()} disabled={required.length === 0 || loading}
             title={required.length === 0 ? "必要スキルを1つ以上選んでください" : undefined}
             style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "11px 0", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", background: required.length === 0 || loading ? "#D1D5DB" : "#059669", color: "#fff", cursor: required.length === 0 || loading ? "not-allowed" : "pointer", boxShadow: required.length === 0 || loading ? "none" : "0 2px 8px rgba(5,150,105,0.25)" }}>
             {loading
               ? <><Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />候補を計算中...</>
-              : <><Sparkles style={{ width: 14, height: 14 }} />レコメンド</>}
+              : <><Sparkles style={{ width: 14, height: 14 }} />再レコメンド</>}
           </button>
 
           {/* 結果 */}
