@@ -156,7 +156,17 @@ interface TicketRow {
   stg_completed_at: string | null;
   review_approved_at: string | null;
   created_at: string | null;
-  updated_at: string | null;
+}
+
+/**
+ * チケットの「最終活動日時」。
+ * ※ sprint_tickets には updated_at 列が無いため、作成日時とマイルストーン日時の
+ *   最大値で「最後に動いた時刻」を近似する（差分検知に使う）。
+ */
+function lastActivityMs(t: TicketRow): number {
+  const ts = [t.created_at, t.started_at, t.review_approved_at, t.stg_completed_at, t.uat_completed_at, t.released_at]
+    .map(x => (x ? new Date(x).getTime() : 0));
+  return Math.max(0, ...ts);
 }
 
 /** チケット1件の実績工数（h）。手入力があればそれを優先し、無ければマイルストーン差分で概算する。 */
@@ -242,7 +252,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
 
   const { data: ticketsRaw, error: tktErr } = await sb
     .from("sprint_tickets")
-    .select("id, title, description, prefixes, status, assignee, reviewer_name, due_date, dev_scale, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, created_at, updated_at")
+    .select("id, title, description, prefixes, status, assignee, reviewer_name, due_date, dev_scale, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, created_at")
     .in("sprint_id", sprintIds)
     .gte("created_at", since);
   if (tktErr) debug.ticketsError = tktErr.message;
@@ -255,10 +265,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   // 前回分析以降にチケットが1件も動いていなければ、分析するだけ無駄なのでスキップする。
   const lastAnalyzed = org?.ml_last_analyzed_at ? new Date(org.ml_last_analyzed_at).getTime() : 0;
   if (!force && lastAnalyzed > 0) {
-    const changed = tickets.some(t => {
-      const ts = new Date(t.updated_at || t.created_at || 0).getTime();
-      return ts > lastAnalyzed;
-    });
+    const changed = tickets.some(t => lastActivityMs(t) > lastAnalyzed);
     if (!changed) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
   }
 
