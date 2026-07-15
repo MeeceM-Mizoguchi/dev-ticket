@@ -12,13 +12,124 @@
 //   1000組織あっても、昨日チケットが動いたのは一部だけ。ここが効いて日次でも軽い。
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import {
-  SEED_SKILLS,
-  detectSkillKeywords,
-  ticketSearchText,
-  inferSkillLevel,
-  type SkillStats,
-} from "../../src/app/lib/skills";
+
+// ============================================================
+// ★ここは src/app/lib/skills.ts の内容を「そのまま複製」したもの ★
+//
+// Vercel のサーバー関数(api/配下)は src/ フォルダを同梱しないため、
+// src から import するとデプロイ後に ERR_MODULE_NOT_FOUND でクラッシュする。
+// そのため、必要なロジックをこのファイル内に自己完結で持たせている。
+//
+// ⚠️ src/app/lib/skills.ts を変更したら、ここも同じ内容に合わせること。
+//    （初期辞書・キーワード検出・レベル判定ルールの3点）
+// ============================================================
+type SkillLevel = 1 | 2 | 3 | 4;
+interface SkillEvidence {
+  doneCount?: number; avgHours?: number; maxHours?: number;
+  reviewCount?: number; onTimeRate?: number;
+}
+interface SeedSkill { layer: string; name: string; keywords: string[] }
+interface SkillStats {
+  doneCount: number; hours: number[]; onTimeCount: number;
+  reviewCount: number; largeScaleCount: number;
+}
+
+const SEED_SKILLS: SeedSkill[] = [
+  { layer: "frontend", name: "React",          keywords: ["react", "リアクト", "jsx", "tsx", "コンポーネント"] },
+  { layer: "frontend", name: "Vue",            keywords: ["vue", "nuxt"] },
+  { layer: "frontend", name: "TypeScript",     keywords: ["typescript", "ts型", "型定義"] },
+  { layer: "frontend", name: "HTML・CSS",      keywords: ["css", "html", "スタイル", "見た目", "レイアウト", "tailwind"] },
+  { layer: "frontend", name: "UI実装",         keywords: ["ui", "画面", "フロント", "表示", "ボタン", "モーダル", "ダイアログ", "一覧画面"] },
+  { layer: "frontend", name: "レスポンシブ対応", keywords: ["レスポンシブ", "スマホ対応", "モバイル対応", "ブレークポイント"] },
+  { layer: "frontend", name: "状態管理",       keywords: ["状態管理", "redux", "zustand", "context"] },
+  { layer: "backend", name: "API設計",         keywords: ["api", "エンドポイント", "rest", "リクエスト", "レスポンス", "graphql"] },
+  { layer: "backend", name: "DB設計",          keywords: ["db", "テーブル", "スキーマ", "マイグレーション", "database", "カラム追加"] },
+  { layer: "backend", name: "SQL",             keywords: ["sql", "クエリ", "select", "join", "インデックス"] },
+  { layer: "backend", name: "Node.js",         keywords: ["node", "express", "npm"] },
+  { layer: "backend", name: "Python",          keywords: ["python", "django", "fastapi"] },
+  { layer: "backend", name: "PHP",             keywords: ["php", "laravel"] },
+  { layer: "backend", name: "Java",            keywords: ["java", "spring"] },
+  { layer: "backend", name: "認証・認可",       keywords: ["認証", "ログイン", "権限", "auth", "oauth", "jwt", "パスワード", "rls"] },
+  { layer: "backend", name: "バッチ処理",       keywords: ["バッチ", "cron", "定期実行", "ジョブ"] },
+  { layer: "backend", name: "外部連携",         keywords: ["連携", "webhook", "slack", "外部api", "サードパーティ"] },
+  { layer: "infra", name: "AWS",               keywords: ["aws", "ec2", "s3", "lambda", "rds"] },
+  { layer: "infra", name: "GCP",               keywords: ["gcp", "firebase", "cloud run"] },
+  { layer: "infra", name: "Docker",            keywords: ["docker", "コンテナ", "dockerfile"] },
+  { layer: "infra", name: "CI・CD",            keywords: ["ci", "cd", "デプロイ", "パイプライン", "github actions", "リリース作業"] },
+  { layer: "infra", name: "サーバー構築",       keywords: ["サーバー", "サーバ構築", "nginx", "本番環境", "ステージング環境"] },
+  { layer: "infra", name: "監視・ログ",         keywords: ["監視", "ログ", "アラート", "メトリクス", "モニタリング"] },
+  { layer: "infra", name: "ネットワーク",       keywords: ["ネットワーク", "dns", "ドメイン", "ssl", "証明書"] },
+  { layer: "infra", name: "セキュリティ",       keywords: ["セキュリティ", "脆弱性", "csrf", "xss", "暗号化"] },
+  { layer: "design", name: "Figma",            keywords: ["figma", "フィグマ", "モック"] },
+  { layer: "design", name: "UIデザイン",       keywords: ["デザイン", "uiデザイン", "配色", "アイコン"] },
+  { layer: "design", name: "UXデザイン",       keywords: ["ux", "導線", "ユーザビリティ", "体験"] },
+  { layer: "qa", name: "テスト設計",           keywords: ["テスト設計", "テストケース", "test case"] },
+  { layer: "qa", name: "自動テスト",           keywords: ["自動テスト", "e2e", "ユニットテスト", "jest", "playwright"] },
+  { layer: "qa", name: "動作検証",             keywords: ["動作確認", "検証", "テスト", "qa", "不具合再現"] },
+  { layer: "other", name: "要件定義",          keywords: ["要件定義", "要件", "ヒアリング"] },
+  { layer: "other", name: "設計",              keywords: ["設計", "基本設計", "詳細設計", "アーキテクチャ"] },
+  { layer: "other", name: "コードレビュー",     keywords: ["レビュー", "リファクタ", "リファクタリング"] },
+  { layer: "other", name: "ドキュメント",       keywords: ["ドキュメント", "wiki", "手順書", "マニュアル"] },
+  { layer: "other", name: "調査・分析",         keywords: ["調査", "分析", "原因究明", "切り分け"] },
+];
+
+function detectSkillKeywords(
+  text: string,
+  skills: { id: string; name: string; keywords: string[] }[],
+): string[] {
+  const haystack = text.toLowerCase();
+  const hit: string[] = [];
+  for (const s of skills) {
+    const terms = [s.name, ...s.keywords].map(t => t.toLowerCase()).filter(Boolean);
+    if (terms.some(t => haystack.includes(t))) hit.push(s.id);
+  }
+  return hit;
+}
+
+function ticketSearchText(t: {
+  title?: string; description?: string; prefixes?: string[]; categoryName?: string;
+}): string {
+  return [t.title ?? "", t.description ?? "", ...(t.prefixes ?? []), t.categoryName ?? ""].join(" ");
+}
+
+const STABLE_MIN = 3;
+const LV1_MAX_HOURS = 0.5;
+const LV2_MAX_HOURS = 3;
+
+function inferSkillLevel(stats: SkillStats): { level: SkillLevel; evidence: SkillEvidence } | null {
+  if (stats.doneCount === 0) return null;
+
+  const hours = stats.hours.filter(h => h > 0).sort((a, b) => a - b);
+  const avgHours = hours.length ? hours.reduce((a, b) => a + b, 0) / hours.length : 0;
+  const onTimeRate = stats.doneCount > 0 ? stats.onTimeCount / stats.doneCount : 0;
+  const stableMaxHours = hours.length
+    ? hours[Math.max(0, Math.floor(hours.length * 0.75) - 1)] ?? hours[hours.length - 1]
+    : 0;
+
+  const evidence: SkillEvidence = {
+    doneCount: stats.doneCount,
+    avgHours: Math.round(avgHours * 10) / 10,
+    maxHours: Math.round(stableMaxHours * 10) / 10,
+    reviewCount: stats.reviewCount,
+    onTimeRate: Math.round(onTimeRate * 100) / 100,
+  };
+
+  if (stats.reviewCount >= STABLE_MIN && (stats.largeScaleCount >= 1 || stableMaxHours > LV2_MAX_HOURS)) {
+    return { level: 4, evidence };
+  }
+  const overLv2 = hours.filter(h => h > LV2_MAX_HOURS).length;
+  if (overLv2 >= STABLE_MIN || stats.largeScaleCount >= STABLE_MIN) {
+    return { level: 3, evidence };
+  }
+  const inLv2 = hours.filter(h => h > LV1_MAX_HOURS && h <= LV2_MAX_HOURS).length;
+  if (inLv2 >= STABLE_MIN || stableMaxHours > LV1_MAX_HOURS) {
+    return { level: 2, evidence };
+  }
+  return { level: 1, evidence };
+}
+// ============================================================
+// 複製ここまで
+// ============================================================
 
 // 完了とみなすステータス（実績として数える）
 const DONE_STATUSES = ["done", "closed", "released", "waiting-release"];
