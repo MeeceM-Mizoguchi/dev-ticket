@@ -5,9 +5,9 @@
 // 保存すると source='manual' になり、以降は自動判定に上書きされなくなる。
 
 import { useEffect, useMemo, useState } from "react";
-import { X, Plus, Trash2, Sparkles, Check } from "lucide-react";
+import { X, Trash2, Sparkles, Check } from "lucide-react";
 import type { Member, Skill, MemberSkill, SkillLevel, SkillLayer } from "@/app/types";
-import { SKILL_LAYERS, SKILL_LEVELS, SEED_SKILLS, evidenceText } from "@/app/lib/skills";
+import { SKILL_LAYERS, SKILL_LEVELS, evidenceText } from "@/app/lib/skills";
 import { fetchSkills, fetchMemberSkills, saveMemberSkills, createSkill } from "@/app/lib/skillsApi";
 import { useToast } from "@/app/contexts/ToastContext";
 
@@ -30,7 +30,7 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
   const [removed, setRemoved] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [addingLayer, setAddingLayer] = useState<SkillLayer | null>(null);
+  const [dirty, setDirty] = useState(false);   // 何か変更したか（未変更なら保存ボタンを非活性に）
   // 自由入力モード（辞書に無いスキルを自分で入力して追加する）
   const [customLayer, setCustomLayer] = useState<SkillLayer | null>(null);
   const [customName, setCustomName] = useState("");
@@ -63,30 +63,28 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
     return m;
   }, [rows, skillById]);
 
-  const setLevel = (skillId: string, level: SkillLevel) =>
+  const setLevel = (skillId: string, level: SkillLevel) => {
     setRows(prev => prev.map(r => (r.skillId === skillId ? { ...r, level, source: "manual" } : r)));
+    setDirty(true);
+  };
 
   const removeRow = (skillId: string) => {
     setRows(prev => prev.filter(r => r.skillId !== skillId));
     setRemoved(prev => [...prev, skillId]);
+    setDirty(true);
   };
 
   // あるレイヤーで「追加できるスキル」の候補。
-  //   ① スキルマスタに登録済みでこのメンバーが未保有のもの
-  //   ② 初期辞書(SEED_SKILLS)にあってスキルマスタ未登録のもの（選んだら自動でマスタに登録）
-  // これで、実績から見つからなかったスキル（フロントのVue等）も常に追加できる。
-  type AddOption = { key: string; name: string; layer: SkillLayer; skillId?: string; keywords?: string[] };
+  //   ① スキルマスタに登録済みで、このメンバーがまだ持っていないもの
+  //   ② 「自分で入力...」… 新しいスキルを入力してスキルマスタ(DB)に登録して追加
+  // 内蔵辞書の候補は出さない（登録済み＋自由入力のみ）。
+  type AddOption = { key: string; name: string; layer: SkillLayer; skillId?: string };
   const optionsForLayer = (layer: SkillLayer): AddOption[] => {
     const registered: AddOption[] = skills
       .filter(s => s.layer === layer && !rows.some(r => r.skillId === s.id))
       .map(s => ({ key: s.id, name: s.name, layer, skillId: s.id }));
-    const masterNames = new Set(skills.filter(s => s.layer === layer).map(s => s.name));
-    const seed: AddOption[] = SEED_SKILLS
-      .filter(s => s.layer === layer && !masterNames.has(s.name))
-      .map(s => ({ key: `seed:${s.name}`, name: s.name, layer, keywords: s.keywords }));
-    // 末尾に「自分で入力」。辞書に無いスキルもここから自由に足せる。
     const custom: AddOption = { key: "__custom__", name: "＋ 自分で入力...", layer };
-    return [...registered, ...seed, custom];
+    return [...registered, custom];
   };
 
   // 自由入力で新しいスキルを作って追加する
@@ -105,23 +103,19 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
     if (!rows.some(r => r.skillId === skillId)) {
       setRows(prev => [...prev, { skillId: skillId!, level: 1, source: "manual", evidence: "手動で追加" }]);
       setRemoved(prev => prev.filter(id => id !== skillId));
+      setDirty(true);
     }
-    setCustomLayer(null); setCustomName(""); setAddingLayer(null);
+    setCustomLayer(null); setCustomName("");
   };
 
-  const addSkill = async (opt: AddOption) => {
-    let skillId = opt.skillId;
-    // 初期辞書のスキル → まずスキルマスタに登録して skillId を得る
-    if (!skillId) {
-      const created = await createSkill(orgId, opt.layer, opt.name, opt.keywords ?? []);
-      if (!created) return;
-      setSkills(prev => [...prev, created]);
-      skillId = created.id;
-    }
-    if (rows.some(r => r.skillId === skillId)) { setAddingLayer(null); return; }
-    setRows(prev => [...prev, { skillId: skillId!, level: 1, source: "manual", evidence: "手動で追加" }]);
+  // 登録済みスキル（スキルマスタにあるもの）をこのメンバーに付与する
+  const addSkill = (opt: AddOption) => {
+    const skillId = opt.skillId;
+    if (!skillId || rows.some(r => r.skillId === skillId)) { return; }
+    setRows(prev => [...prev, { skillId, level: 1, source: "manual", evidence: "手動で追加" }]);
     setRemoved(prev => prev.filter(id => id !== skillId));
-    setAddingLayer(null);
+    setDirty(true);
+   
   };
 
   const save = async () => {
@@ -259,24 +253,19 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
                         ×
                       </button>
                     </div>
-                  ) : addingLayer === layer.key ? (
-                    <select autoFocus defaultValue=""
+                  ) : (
+                    // ワンクリックで開くよう常に select を表示（value="" で選択後もプレースホルダーに戻す）
+                    <select value=""
                       onChange={e => {
                         const o = addOptions.find(x => x.key === e.target.value);
                         if (!o) return;
-                        if (o.key === "__custom__") { setCustomLayer(layer.key); setCustomName(""); setAddingLayer(null); }
-                        else void addSkill(o);
+                        if (o.key === "__custom__") { setCustomLayer(layer.key); setCustomName(""); }
+                        else addSkill(o);
                       }}
-                      onBlur={() => setAddingLayer(null)}
-                      style={{ marginTop: 4, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(5,150,105,0.4)", outline: "none", background: "#FFFFFF", color: "#1A1714" }}>
-                      <option value="">スキルを選択...</option>
+                      style={{ marginTop: 4, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.2)", outline: "none", background: "transparent", color: "#A09790", cursor: "pointer" }}>
+                      <option value="">＋ スキルを追加</option>
                       {addOptions.map(o => <option key={o.key} value={o.key}>{o.name}</option>)}
                     </select>
-                  ) : (
-                    <button onClick={() => setAddingLayer(layer.key)}
-                      style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 4, background: "transparent", border: "1px dashed rgba(26,23,20,0.15)", borderRadius: 8, padding: "5px 10px", fontSize: 11, color: "#A09790", cursor: "pointer" }}>
-                      <Plus style={{ width: 11, height: 11 }} />スキルを追加
-                    </button>
                   )}
                 </div>
               );
@@ -290,11 +279,17 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
             style={{ padding: "9px 16px", fontSize: 12.5, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#6B6458", cursor: "pointer" }}>
             キャンセル
           </button>
-          <button onClick={save} disabled={saving || loading}
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 16px", fontSize: 12.5, fontWeight: 600, borderRadius: 9, border: "none", background: saving ? "#9CA3AF" : "#059669", color: "#fff", cursor: saving ? "not-allowed" : "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)" }}>
-            <Check style={{ width: 13, height: 13 }} />
-            {saving ? "保存中..." : "確認済みで保存"}
-          </button>
+          {(() => {
+            const disabled = saving || loading || !dirty;
+            return (
+              <button onClick={save} disabled={disabled}
+                title={!dirty ? "変更がありません" : undefined}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 16px", fontSize: 12.5, fontWeight: 600, borderRadius: 9, border: "none", background: disabled ? "#D1D5DB" : "#059669", color: "#fff", cursor: disabled ? "not-allowed" : "pointer", boxShadow: disabled ? "none" : "0 2px 8px rgba(5,150,105,0.25)" }}>
+                <Check style={{ width: 13, height: 13 }} />
+                {saving ? "保存中..." : "保存"}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>
