@@ -2457,6 +2457,9 @@ export function TicketDetailPanel({
                   candidateNames={projectMemberNames.length > 0 ? projectMemberNames : undefined}
                   initialRequired={[]}
                   initialScale={ticket?.devScale ?? null}
+                  ticketTitle={ticket?.title}
+                  ticketDescription={ticket?.description}
+                  ticketPrefixes={ticket?.prefixes}
                   onClose={() => setShowRecommend(false)}
                   onPick={(name, req, scale) => {
                     saveAssignee(name);
