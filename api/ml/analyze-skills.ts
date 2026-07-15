@@ -182,8 +182,9 @@ function isOnTime(t: TicketRow): boolean {
  * 初期辞書(SEED_SKILLS)で過去チケットを走査し、実際にヒットしたスキルだけを登録する。
  * （辞書80個をそのまま入れると、使っていない技術まで並んで邪魔になる）
  */
-async function ensureSkillMaster(sb: SupabaseClient, orgId: string, tickets: TicketRow[]) {
-  const { data: existing } = await sb.from("skills").select("id, name, layer, keywords").eq("organization_id", orgId);
+async function ensureSkillMaster(sb: SupabaseClient, orgId: string, tickets: TicketRow[], debug: Record<string, unknown>) {
+  const { data: existing, error: exErr } = await sb.from("skills").select("id, name, layer, keywords").eq("organization_id", orgId);
+  if (exErr) debug.skillsSelectError = exErr.message;
   if (existing && existing.length > 0) return existing;
 
   const corpus = tickets.map(t => ticketSearchText({
@@ -199,41 +200,56 @@ async function ensureSkillMaster(sb: SupabaseClient, orgId: string, tickets: Tic
   const toInsert = (hits.length > 0 ? hits : SEED_SKILLS.slice(0, 12)).map((s, i) => ({
     organization_id: orgId, layer: s.layer, name: s.name, keywords: s.keywords, sort_order: i,
   }));
+  debug.toInsertCount = toInsert.length;
 
-  await sb.from("skills").upsert(toInsert, { onConflict: "organization_id,layer,name" });
-  const { data } = await sb.from("skills").select("id, name, layer, keywords").eq("organization_id", orgId);
+  const { error: upErr } = await sb.from("skills").upsert(toInsert, { onConflict: "organization_id,layer,name" });
+  if (upErr) debug.skillsUpsertError = upErr.message;   // ← 握りつぶさず記録
+
+  const { data, error: selErr } = await sb.from("skills").select("id, name, layer, keywords").eq("organization_id", orgId);
+  if (selErr) debug.skillsSelect2Error = selErr.message;
   return data ?? [];
 }
 
 /** 1組織を分析する */
 async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Promise<{
   orgId: string; skipped: boolean; members: number; skillsWritten: number;
+  reason?: string; debug?: Record<string, unknown>;
 }> {
-  const { data: org } = await sb
+  // どこで・なぜ止まったかを必ず返す（握りつぶさない）
+  const debug: Record<string, unknown> = {};
+
+  const { data: org, error: orgErr } = await sb
     .from("organizations")
     .select("id, ml_last_analyzed_at")
     .eq("id", orgId)
     .maybeSingle();
+  if (orgErr) debug.orgError = orgErr.message;
 
   const since = new Date(Date.now() - LOOKBACK_MONTHS * 30 * 864e5).toISOString();
 
   // 対象チケット（この組織のプロジェクト配下、直近LOOKBACK_MONTHS）
-  const { data: projects } = await sb.from("projects").select("id").eq("organization_id", orgId);
+  const { data: projects, error: projErr } = await sb.from("projects").select("id").eq("organization_id", orgId);
+  if (projErr) debug.projectsError = projErr.message;
   const projectIds = (projects ?? []).map(p => p.id);
-  if (projectIds.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
+  debug.projectCount = projectIds.length;
+  if (projectIds.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "projects=0", debug };
 
-  const { data: sprints } = await sb.from("sprints").select("id").in("project_id", projectIds);
+  const { data: sprints, error: sprErr } = await sb.from("sprints").select("id").in("project_id", projectIds);
+  if (sprErr) debug.sprintsError = sprErr.message;
   const sprintIds = (sprints ?? []).map(s => s.id);
-  if (sprintIds.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
+  debug.sprintCount = sprintIds.length;
+  if (sprintIds.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "sprints=0", debug };
 
-  const { data: ticketsRaw } = await sb
+  const { data: ticketsRaw, error: tktErr } = await sb
     .from("sprint_tickets")
     .select("id, title, description, prefixes, status, assignee, reviewer_name, due_date, dev_scale, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, created_at, updated_at")
     .in("sprint_id", sprintIds)
     .gte("created_at", since);
+  if (tktErr) debug.ticketsError = tktErr.message;
 
   const tickets = (ticketsRaw ?? []) as TicketRow[];
-  if (tickets.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
+  debug.ticketCount = tickets.length;
+  if (tickets.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "tickets=0", debug };
 
   // ── 差分検知 ──
   // 前回分析以降にチケットが1件も動いていなければ、分析するだけ無駄なのでスキップする。
@@ -246,21 +262,24 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     if (!changed) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
   }
 
-  const skills = await ensureSkillMaster(sb, orgId, tickets);
-  if (skills.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
+  const skills = await ensureSkillMaster(sb, orgId, tickets, debug);
+  debug.skillMasterCount = skills.length;
+  if (skills.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "skillMaster=0", debug };
 
   // ── メンバー ──
   // ★ skill_auto_update が ON のメンバーだけがスキル自動更新の対象。
   //   OFF のメンバーは手動で設定した値を守る（ただしレコメンドの対象からは外さない）。
-  const { data: profiles } = await sb
+  const { data: profiles, error: profErr } = await sb
     .from("profiles")
     .select("id, name, skill_auto_update")
     .eq("organization_id", orgId);
+  if (profErr) debug.profilesError = profErr.message;
 
   const autoMembers = (profiles ?? []).filter(p => p.skill_auto_update !== false);
+  debug.autoMemberCount = autoMembers.length;
   if (autoMembers.length === 0) {
     await sb.from("organizations").update({ ml_setup_done: true, ml_last_analyzed_at: new Date().toISOString() }).eq("id", orgId);
-    return { orgId, skipped: false, members: 0, skillsWritten: 0 };
+    return { orgId, skipped: false, members: 0, skillsWritten: 0, reason: "autoMembers=0", debug };
   }
 
   // assignee は名前の文字列（UUIDではない）ので、名前 → profile の名寄せをする。
@@ -337,15 +356,18 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     });
   }
 
+  debug.matchedPairs = stats.size;   // チケット文章からスキル検出できた(メンバー×スキル)の数
+  debug.candidateRows = rows.length;
   if (rows.length > 0) {
-    await sb.from("member_skills").upsert(rows, { onConflict: "profile_id,skill_id" });
+    const { error: msErr } = await sb.from("member_skills").upsert(rows, { onConflict: "profile_id,skill_id" });
+    if (msErr) debug.memberSkillsUpsertError = msErr.message;
   }
 
   await sb.from("organizations")
     .update({ ml_setup_done: true, ml_last_analyzed_at: now })
     .eq("id", orgId);
 
-  return { orgId, skipped: false, members: autoMembers.length, skillsWritten: rows.length };
+  return { orgId, skipped: false, members: autoMembers.length, skillsWritten: rows.length, debug };
 }
 
 export default async function handler(req: any, res: any) {
