@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Zap, Sparkles, Loader2, X, RotateCcw, Wand2 } from "lucide-react";
 import type { Skill, DevScale, Priority, AssigneeRecommendation } from "@/app/types";
 import { SKILL_LAYERS, DEV_SCALES, layerMeta, detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
-import { fetchRecommendations } from "@/app/lib/skillsApi";
+import { fetchRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
 
 /** 見積工数(h)から開発規模をざっくり推定する（未入力なら未設定のまま） */
 function estimateScale(hours: number): DevScale | null {
@@ -131,7 +131,7 @@ export function TicketSkillFields({ skills, required, devScale, onRequiredChange
  */
 export function AssigneeRecommendModal({
   orgId, skills, estimatedHours, priority, candidateNames,
-  initialRequired, initialScale, ticketTitle, ticketDescription, ticketPrefixes,
+  initialRequired, initialScale, ticketTitle, ticketDescription, ticketPrefixes, ticketId,
   onClose, onPick,
 }: {
   orgId: string;
@@ -145,6 +145,7 @@ export function AssigneeRecommendModal({
   ticketTitle?: string;
   ticketDescription?: string;
   ticketPrefixes?: string[];
+  ticketId?: string | null;   // 採用ログ(recommendation_logs)に紐づける
   onClose: () => void;
   // 担当者名と、モーダルで選んだ必要スキル・開発規模を親へ返す（チケットにも保存する）
   onPick: (name: string, required: RequiredSkill[], devScale: DevScale | null) => void;
@@ -308,7 +309,12 @@ export function AssigneeRecommendModal({
                 <p style={{ fontSize: 11.5, color: "#A09790", padding: "8px 0" }}>該当する候補がいません</p>
               ) : (
                 candidates.map((c, i) => (
-                  <button key={c.profileId} onClick={() => { onPick(c.name, required, devScale); onClose(); }}
+                  <button key={c.profileId} onClick={() => {
+                    // 「レコメンド結果からこの人に決めた」を学習用に記録（採用ログ）
+                    void logRecommendationAccepted({ organizationId: orgId, ticketId, candidates, chosen: c, source });
+                    onPick(c.name, required, devScale);
+                    onClose();
+                  }}
                     style={{ width: "100%", textAlign: "left" as const, display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 12px", borderRadius: 10, background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.2)", marginBottom: 7, cursor: "pointer" }}
                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}>

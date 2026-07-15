@@ -118,12 +118,26 @@ def fetch_org_data(sb: Client, org_id: str) -> dict:
             {"skill_id": r["skill_id"], "importance": r.get("importance", 3)}
         )
 
+    # 自動アサインのレコメンドを採用して決めたアサインのチケットID。
+    # これらの正例は build_dataset で重めに学習される。
+    accepted_ticket_ids: set[str] = set()
+    for row in (
+        sb.table("recommendation_logs")
+        .select("ticket_id")
+        .eq("organization_id", org_id)
+        .execute()
+        .data
+    ):
+        if row.get("ticket_id"):
+            accepted_ticket_ids.add(row["ticket_id"])
+
     return {
         "tickets": tickets,
         "profiles": profiles,
         "skills": skills,
         "member_skills": member_skills,
         "required": required,
+        "accepted_ticket_ids": accepted_ticket_ids,
     }
 
 
@@ -208,14 +222,16 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
                 return {"org": org_id, "trained": False, "reason": "前回学習以降に変更なし（スキップ）"}
 
     # ── 学習用の表を組み立てる ──
-    X, y, groups = build_dataset(
-        tickets, data["profiles"], data["skills"], data["member_skills"], data["required"]
+    X, y, groups, w = build_dataset(
+        tickets, data["profiles"], data["skills"], data["member_skills"], data["required"],
+        boosted_ticket_ids=data.get("accepted_ticket_ids"),
     )
     if len(X) < MIN_TRAIN_ROWS:
         return {"org": org_id, "trained": False, "reason": f"学習データが{len(X)}行（{MIN_TRAIN_ROWS}行未満）"}
 
     Xa = np.array(X, dtype=np.float64)
     ya = np.array(y, dtype=np.int32)
+    wa = np.array(w, dtype=np.float64)
 
     # ── 時系列split ──
     # ランダムに分割すると「未来を見て過去を当てる」ことになり、評価が甘くなる。
@@ -225,7 +241,7 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
     if cut_group < 5 or cut_row < 50 or cut_row >= len(Xa):
         return {"org": org_id, "trained": False, "reason": "検証データを分けるにはデータが不足"}
 
-    X_tr, y_tr = Xa[:cut_row], ya[:cut_row]
+    X_tr, y_tr, w_tr = Xa[:cut_row], ya[:cut_row], wa[:cut_row]
     X_va, y_va = Xa[cut_row:], ya[cut_row:]
     g_va = groups[cut_group:]
 
@@ -248,7 +264,8 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
         reg_lambda=1.0,
         verbose=-1,
     )
-    model.fit(X_tr, y_tr, feature_name=FEATURE_NAMES)
+    # sample_weight で、レコメンド採用アサインの正例を重めに学習させる
+    model.fit(X_tr, y_tr, sample_weight=w_tr, feature_name=FEATURE_NAMES)
 
     # ── 評価: ベースラインに勝てたか ──
     model_scores = model.predict_proba(X_va)[:, 1]
