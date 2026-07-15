@@ -102,8 +102,11 @@ export async function dismissMlNotice(profileId: string): Promise<void> {
 /**
  * ①スキル自動分析を実行する。
  * 初回セットアップ（AM3時を待たずに即実行）と、管理者の「今すぐ再分析」から呼ぶ。
+ * 調査用に、止まった段階(reason)と握りつぶしていたエラー(debug)も返す。
  */
-export async function runSkillAnalysis(orgId: string, force = false): Promise<{ skillsWritten: number }> {
+export async function runSkillAnalysis(orgId: string, force = false): Promise<{
+  skillsWritten: number; reason?: string; debug?: Record<string, unknown>;
+}> {
   const res = await fetch("/api/ml/analyze-skills", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -111,8 +114,9 @@ export async function runSkillAnalysis(orgId: string, force = false): Promise<{ 
   });
   if (!res.ok) throw new Error(`分析に失敗しました (${res.status})`);
   const json = await res.json();
+  const first = (json.results ?? [])[0] ?? {};
   const written = (json.results ?? []).reduce((a: number, r: { skillsWritten?: number }) => a + (r.skillsWritten ?? 0), 0);
-  return { skillsWritten: written };
+  return { skillsWritten: written, reason: first.reason, debug: first.debug };
 }
 
 /** ②担当者レコメンド。学習済みモデルがあればそれを、無ければルールベースで返す。 */

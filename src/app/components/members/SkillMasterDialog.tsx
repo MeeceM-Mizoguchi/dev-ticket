@@ -61,10 +61,19 @@ export function SkillMasterDialog({ orgId, onClose, onChanged }: {
   const reanalyze = async () => {
     setReanalyzing(true);
     try {
-      const { skillsWritten } = await runSkillAnalysis(orgId, true);
+      const { skillsWritten, reason, debug } = await runSkillAnalysis(orgId, true);
       await load();
       onChanged?.();
-      toast(`実績からスキルを再分析しました（${skillsWritten}件更新）`);
+      if (skillsWritten > 0) {
+        toast(`実績からスキルを再分析しました（${skillsWritten}件更新）`);
+      } else {
+        // 0件だった原因（止まった段階＋握りつぶしていたエラー）をそのまま画面に出す
+        const detail = debug ? JSON.stringify(debug) : "";
+        toast(`0件でした｜停止理由: ${reason ?? "不明"}｜${detail}`, "error");
+        // 全文はコンソールにも出す（トーストが切れても追えるように）
+        // eslint-disable-next-line no-console
+        console.log("[skill-analysis] reason=", reason, "debug=", debug);
+      }
     } catch (e) {
       toast(`再分析に失敗しました: ${e}`, "error");
     } finally {
