@@ -20,9 +20,10 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { escStack } from "@/app/lib/escStack";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
-// ENHA2-034 必要スキル・開発規模・担当者レコメンド
-import { TicketSkillFields, AssigneeRecommendPanel, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
+// ENHA2-034 担当者レコメンド（自動アサイン）
+import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
 import { fetchSkills } from "@/app/lib/skillsApi";
+import { Sparkles } from "lucide-react";
 
 // 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -79,10 +80,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
   // --- ラベル（プレフィックス）---
-  // ── ENHA2-034 必要スキル・開発規模 ──
+  // ── ENHA2-034 担当者レコメンド（自動アサイン） ──
   const [skills, setSkills] = useState<Skill[]>([]);
   const [requiredSkills, setRequiredSkills] = useState<RequiredSkill[]>([]);
   const [devScale, setDevScale] = useState<DevScale | null>(null);
+  const [showRecommend, setShowRecommend] = useState(false);
 
   const [prefixes, setPrefixes] = useState<string[]>([]);
   const [allProjectPrefixLabels, setAllProjectPrefixLabels] = useState<string[]>([]);
@@ -863,35 +865,46 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             })()}
           </div>
 
-          {/* ENHA2-034: 必要スキル・開発規模。スキルマスタが空の組織では表示されない。 */}
-          <TicketSkillFields
-            skills={skills}
-            required={requiredSkills}
-            devScale={devScale}
-            onRequiredChange={setRequiredSkills}
-            onDevScaleChange={setDevScale}
-          />
-
+          {/* ENHA2-034: 担当者。右の「自動アサイン」ボタンでレコメンドのモーダルを開く。 */}
           <div>
             <label className={labelCls}>担当者</label>
-            <CustomSelect
-              value={assignee}
-              options={assigneeList.map(m => ({ value: m.name, label: m.name }))}
-              onChange={v => setAssignee(v)}
-            />
+            <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <CustomSelect
+                  value={assignee}
+                  options={assigneeList.map(m => ({ value: m.name, label: m.name }))}
+                  onChange={v => setAssignee(v)}
+                />
+              </div>
+              {userOrgId && skills.length > 0 && (
+                <button type="button" onClick={() => setShowRecommend(true)}
+                  title="AIにおすすめ担当者を提案してもらう"
+                  style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 5, padding: "0 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 10, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: "pointer", whiteSpace: "nowrap" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                  <Sparkles style={{ width: 14, height: 14 }} />自動アサイン
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* ENHA2-034: 必要スキルを選ぶと候補が出る。理由つきで、選択は人が決める。 */}
-          {userOrgId && (
-            <AssigneeRecommendPanel
+          {showRecommend && userOrgId && (
+            <AssigneeRecommendModal
               orgId={userOrgId}
-              required={requiredSkills}
-              devScale={devScale}
+              skills={skills}
               estimatedHours={estimatedHours}
               priority={priority}
               candidateNames={currentProjectMembers.length > 0 ? currentProjectMembers : undefined}
-              currentAssignee={assignee}
-              onPick={name => setAssignee(name)}
+              initialRequired={requiredSkills}
+              initialScale={devScale}
+              onClose={() => setShowRecommend(false)}
+              onPick={(name, req, scale) => {
+                // 選んだ担当者をセットしつつ、モーダルで選んだ必要スキル・開発規模も
+                // チケットに反映する（②レコメンドの学習材料としてDBに保存される）。
+                setAssignee(name);
+                setRequiredSkills(req);
+                setDevScale(scale);
+              }}
             />
           )}
 
