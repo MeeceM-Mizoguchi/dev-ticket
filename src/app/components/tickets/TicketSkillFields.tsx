@@ -3,11 +3,20 @@
 // 日常の追加入力はここだけ。必要スキルを2〜3個選んで、規模をS/M/Lで選ぶ。数秒で終わる。
 // 選んだ瞬間に、その条件に合う担当者候補が下に出る。
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Zap, Sparkles, Loader2, X } from "lucide-react";
 import type { Skill, DevScale, Priority, AssigneeRecommendation } from "@/app/types";
-import { SKILL_LAYERS, DEV_SCALES, layerMeta } from "@/app/lib/skills";
+import { SKILL_LAYERS, DEV_SCALES, layerMeta, detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fetchRecommendations } from "@/app/lib/skillsApi";
+
+/** 見積工数(h)から開発規模をざっくり推定する（未入力なら未設定のまま） */
+function estimateScale(hours: number): DevScale | null {
+  if (!hours || hours <= 0) return null;
+  if (hours <= 3) return "S";
+  if (hours <= 8) return "M";
+  if (hours <= 40) return "L";
+  return "XL";
+}
 
 export interface RequiredSkill { skillId: string; importance: 1 | 2 | 3 }
 
