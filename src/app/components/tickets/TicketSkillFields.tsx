@@ -4,7 +4,7 @@
 // 選んだ瞬間に、その条件に合う担当者候補が下に出る。
 
 import { useEffect, useMemo, useState } from "react";
-import { Zap, Sparkles, Loader2, X } from "lucide-react";
+import { Zap, Sparkles, Loader2, X, RotateCcw, Wand2 } from "lucide-react";
 import type { Skill, DevScale, Priority, AssigneeRecommendation } from "@/app/types";
 import { SKILL_LAYERS, DEV_SCALES, layerMeta, detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fetchRecommendations } from "@/app/lib/skillsApi";
@@ -178,19 +178,41 @@ export function AssigneeRecommendModal({
     }
   };
 
-  // 開いた瞬間に「チケット内容から必要スキルを自動判定 → 規模を工数から推定 → そのままレコメンド」。
-  // ズレていたら手で直して「再レコメンド」を押せば取り直せる。外部AIは使わず辞書キーワード方式。
+  // チケットのタイトル・説明・ラベルから必要スキルを辞書キーワードで判定する（外部AI不要）
+  const detectFromContent = (): RequiredSkill[] =>
+    detectSkillKeywords(
+      ticketSearchText({
+        title: ticketTitle ?? "",
+        description: (ticketDescription ?? "").replace(/<[^>]*>/g, " "),
+        prefixes: ticketPrefixes ?? [],
+      }),
+      skills,
+    ).map(id => ({ skillId: id, importance: 3 as const }));
+
+  // 「チケット内容から自動判定 → 規模を工数から推定 → そのままレコメンド」を実行する。
+  // モーダルを開いた瞬間（mount）と、右上の「自動判定」ボタンから呼ぶ。
+  const autoDetectAndRecommend = () => {
+    const detected = detectFromContent();
+    const scale = estimateScale(estimatedHours);
+    setRequired(detected);
+    setDevScale(scale);
+    setAutoFilled(detected.length > 0);
+    if (detected.length > 0) void runRecommend(detected, scale);
+    else { setSearched(true); setCandidates([]); }
+  };
+
+  // 手で触った内容を白紙に戻す（結果もクリア）
+  const reset = () => {
+    setRequired([]);
+    setDevScale(null);
+    setCandidates([]);
+    setSearched(false);
+    setAutoFilled(false);
+  };
+
   useEffect(() => {
-    const detected = initialRequired.length > 0
-      ? initialRequired
-      : detectSkillKeywords(
-          ticketSearchText({
-            title: ticketTitle ?? "",
-            description: (ticketDescription ?? "").replace(/<[^>]*>/g, " "),
-            prefixes: ticketPrefixes ?? [],
-          }),
-          skills,
-        ).map(id => ({ skillId: id, importance: 3 as const })) as RequiredSkill[];
+    // 作成画面で既に必要スキルを持っている場合はそれを優先。無ければ内容から自動判定。
+    const detected = initialRequired.length > 0 ? initialRequired : detectFromContent();
     const scale = initialScale ?? estimateScale(estimatedHours);
     setRequired(detected);
     setDevScale(scale);
@@ -216,9 +238,25 @@ export function AssigneeRecommendModal({
               チケット内容から必要スキルを自動判定して提案します。ズレていれば手で直して「再レコメンド」してください
             </p>
           </div>
-          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "#B0A9A4", padding: 4 }}>
-            <X style={{ width: 18, height: 18 }} />
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {skills.length > 0 && (
+              <>
+                <button onClick={reset} disabled={loading}
+                  title="選択内容を白紙に戻す"
+                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 9px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#6B6458", cursor: loading ? "not-allowed" : "pointer" }}>
+                  <RotateCcw style={{ width: 12, height: 12 }} />リセット
+                </button>
+                <button onClick={autoDetectAndRecommend} disabled={loading}
+                  title="チケット内容からもう一度自動判定してレコメンドする"
+                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 9px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: loading ? "not-allowed" : "pointer" }}>
+                  <Wand2 style={{ width: 12, height: 12 }} />自動判定
+                </button>
+              </>
+            )}
+            <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "#B0A9A4", padding: 4 }}>
+              <X style={{ width: 18, height: 18 }} />
+            </button>
+          </div>
         </div>
 
         {/* 本体 */}
