@@ -31,6 +31,9 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [addingLayer, setAddingLayer] = useState<SkillLayer | null>(null);
+  // 自由入力モード（辞書に無いスキルを自分で入力して追加する）
+  const [customLayer, setCustomLayer] = useState<SkillLayer | null>(null);
+  const [customName, setCustomName] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -81,7 +84,29 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
     const seed: AddOption[] = SEED_SKILLS
       .filter(s => s.layer === layer && !masterNames.has(s.name))
       .map(s => ({ key: `seed:${s.name}`, name: s.name, layer, keywords: s.keywords }));
-    return [...registered, ...seed];
+    // 末尾に「自分で入力」。辞書に無いスキルもここから自由に足せる。
+    const custom: AddOption = { key: "__custom__", name: "＋ 自分で入力...", layer };
+    return [...registered, ...seed, custom];
+  };
+
+  // 自由入力で新しいスキルを作って追加する
+  const addCustom = async (layer: SkillLayer) => {
+    const name = customName.trim();
+    if (!name) return;
+    // 同名が既にあればそれを使う（重複作成を防ぐ）
+    const existing = skills.find(s => s.layer === layer && s.name === name);
+    let skillId = existing?.id;
+    if (!skillId) {
+      const created = await createSkill(orgId, layer, name, []);
+      if (!created) return;
+      setSkills(prev => [...prev, created]);
+      skillId = created.id;
+    }
+    if (!rows.some(r => r.skillId === skillId)) {
+      setRows(prev => [...prev, { skillId: skillId!, level: 1, source: "manual", evidence: "手動で追加" }]);
+      setRemoved(prev => prev.filter(id => id !== skillId));
+    }
+    setCustomLayer(null); setCustomName(""); setAddingLayer(null);
   };
 
   const addSkill = async (opt: AddOption) => {
@@ -218,22 +243,40 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
                     );
                   })}
 
-                  {/* スキル追加（初期辞書も候補に含めるので、どのレイヤーでも追加できる） */}
-                  {addOptions.length > 0 && (
-                    addingLayer === layer.key ? (
-                      <select autoFocus defaultValue=""
-                        onChange={e => { const o = addOptions.find(x => x.key === e.target.value); if (o) void addSkill(o); }}
-                        onBlur={() => setAddingLayer(null)}
-                        style={{ marginTop: 4, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(5,150,105,0.4)", outline: "none", background: "#FFFFFF", color: "#1A1714" }}>
-                        <option value="">スキルを選択...</option>
-                        {addOptions.map(o => <option key={o.key} value={o.key}>{o.name}</option>)}
-                      </select>
-                    ) : (
-                      <button onClick={() => setAddingLayer(layer.key)}
-                        style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 4, background: "transparent", border: "1px dashed rgba(26,23,20,0.15)", borderRadius: 8, padding: "5px 10px", fontSize: 11, color: "#A09790", cursor: "pointer" }}>
-                        <Plus style={{ width: 11, height: 11 }} />スキルを追加
+                  {/* スキル追加（初期辞書＋自由入力。どのレイヤーでも必ず追加できる） */}
+                  {customLayer === layer.key ? (
+                    <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                      <input autoFocus value={customName} onChange={e => setCustomName(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") void addCustom(layer.key); if (e.key === "Escape") { setCustomLayer(null); setCustomName(""); } }}
+                        placeholder="スキル名を入力（例: Svelte）"
+                        style={{ flex: 1, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(5,150,105,0.4)", outline: "none", background: "#FFFFFF", color: "#1A1714" }} />
+                      <button onClick={() => void addCustom(layer.key)} disabled={!customName.trim()}
+                        style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", background: customName.trim() ? "#059669" : "#D1D5DB", color: "#fff", cursor: customName.trim() ? "pointer" : "not-allowed" }}>
+                        追加
                       </button>
-                    )
+                      <button onClick={() => { setCustomLayer(null); setCustomName(""); }}
+                        style={{ padding: "6px 9px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#A09790", cursor: "pointer" }}>
+                        ×
+                      </button>
+                    </div>
+                  ) : addingLayer === layer.key ? (
+                    <select autoFocus defaultValue=""
+                      onChange={e => {
+                        const o = addOptions.find(x => x.key === e.target.value);
+                        if (!o) return;
+                        if (o.key === "__custom__") { setCustomLayer(layer.key); setCustomName(""); setAddingLayer(null); }
+                        else void addSkill(o);
+                      }}
+                      onBlur={() => setAddingLayer(null)}
+                      style={{ marginTop: 4, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(5,150,105,0.4)", outline: "none", background: "#FFFFFF", color: "#1A1714" }}>
+                      <option value="">スキルを選択...</option>
+                      {addOptions.map(o => <option key={o.key} value={o.key}>{o.name}</option>)}
+                    </select>
+                  ) : (
+                    <button onClick={() => setAddingLayer(layer.key)}
+                      style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 4, background: "transparent", border: "1px dashed rgba(26,23,20,0.15)", borderRadius: 8, padding: "5px 10px", fontSize: 11, color: "#A09790", cursor: "pointer" }}>
+                      <Plus style={{ width: 11, height: 11 }} />スキルを追加
+                    </button>
                   )}
                 </div>
               );
