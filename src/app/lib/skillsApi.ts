@@ -52,14 +52,15 @@ export async function setSkillAutoUpdate(profileId: string, on: boolean): Promis
   await supabase!.from("profiles").update({ skill_auto_update: on }).eq("id", profileId);
 }
 
-/** スキルマスタにスキルを追加 */
+/** スキルマスタにスキルを追加し、作成された行を返す */
 export async function createSkill(
   orgId: string, layer: SkillLayer, name: string, keywords: string[],
-): Promise<void> {
-  if (!isSupabaseEnabled) return;
-  await supabase!.from("skills").insert({
+): Promise<Skill | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data } = await supabase!.from("skills").insert({
     organization_id: orgId, layer, name, keywords, sort_order: 999,
-  });
+  }).select().maybeSingle();
+  return data ? mapSkill(data) : null;
 }
 
 export async function deleteSkill(skillId: string): Promise<void> {

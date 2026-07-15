@@ -7,8 +7,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { X, Plus, Trash2, Sparkles, Check } from "lucide-react";
 import type { Member, Skill, MemberSkill, SkillLevel, SkillLayer } from "@/app/types";
-import { SKILL_LAYERS, SKILL_LEVELS, evidenceText } from "@/app/lib/skills";
-import { fetchSkills, fetchMemberSkills, saveMemberSkills } from "@/app/lib/skillsApi";
+import { SKILL_LAYERS, SKILL_LEVELS, SEED_SKILLS, evidenceText } from "@/app/lib/skills";
+import { fetchSkills, fetchMemberSkills, saveMemberSkills, createSkill } from "@/app/lib/skillsApi";
 import { useToast } from "@/app/contexts/ToastContext";
 
 interface Row {
@@ -68,9 +68,33 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
     setRemoved(prev => [...prev, skillId]);
   };
 
-  const addSkill = (skillId: string) => {
-    if (rows.some(r => r.skillId === skillId)) return;
-    setRows(prev => [...prev, { skillId, level: 1, source: "manual", evidence: "手動で追加" }]);
+  // あるレイヤーで「追加できるスキル」の候補。
+  //   ① スキルマスタに登録済みでこのメンバーが未保有のもの
+  //   ② 初期辞書(SEED_SKILLS)にあってスキルマスタ未登録のもの（選んだら自動でマスタに登録）
+  // これで、実績から見つからなかったスキル（フロントのVue等）も常に追加できる。
+  type AddOption = { key: string; name: string; layer: SkillLayer; skillId?: string; keywords?: string[] };
+  const optionsForLayer = (layer: SkillLayer): AddOption[] => {
+    const registered: AddOption[] = skills
+      .filter(s => s.layer === layer && !rows.some(r => r.skillId === s.id))
+      .map(s => ({ key: s.id, name: s.name, layer, skillId: s.id }));
+    const masterNames = new Set(skills.filter(s => s.layer === layer).map(s => s.name));
+    const seed: AddOption[] = SEED_SKILLS
+      .filter(s => s.layer === layer && !masterNames.has(s.name))
+      .map(s => ({ key: `seed:${s.name}`, name: s.name, layer, keywords: s.keywords }));
+    return [...registered, ...seed];
+  };
+
+  const addSkill = async (opt: AddOption) => {
+    let skillId = opt.skillId;
+    // 初期辞書のスキル → まずスキルマスタに登録して skillId を得る
+    if (!skillId) {
+      const created = await createSkill(orgId, opt.layer, opt.name, opt.keywords ?? []);
+      if (!created) return;
+      setSkills(prev => [...prev, created]);
+      skillId = created.id;
+    }
+    if (rows.some(r => r.skillId === skillId)) { setAddingLayer(null); return; }
+    setRows(prev => [...prev, { skillId: skillId!, level: 1, source: "manual", evidence: "手動で追加" }]);
     setRemoved(prev => prev.filter(id => id !== skillId));
     setAddingLayer(null);
   };
@@ -137,7 +161,7 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
           ) : (
             SKILL_LAYERS.map(layer => {
               const layerRows = byLayer[layer.key] ?? [];
-              const available = skills.filter(s => s.layer === layer.key && !rows.some(r => r.skillId === s.id));
+              const addOptions = optionsForLayer(layer.key);
 
               return (
                 <div key={layer.key} style={{ marginBottom: 18 }}>
@@ -194,15 +218,15 @@ export function MemberSkillDialog({ member, orgId, onClose, onSaved }: {
                     );
                   })}
 
-                  {/* スキル追加 */}
-                  {available.length > 0 && (
+                  {/* スキル追加（初期辞書も候補に含めるので、どのレイヤーでも追加できる） */}
+                  {addOptions.length > 0 && (
                     addingLayer === layer.key ? (
                       <select autoFocus defaultValue=""
-                        onChange={e => e.target.value && addSkill(e.target.value)}
+                        onChange={e => { const o = addOptions.find(x => x.key === e.target.value); if (o) void addSkill(o); }}
                         onBlur={() => setAddingLayer(null)}
                         style={{ marginTop: 4, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(5,150,105,0.4)", outline: "none", background: "#FFFFFF", color: "#1A1714" }}>
                         <option value="">スキルを選択...</option>
-                        {available.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        {addOptions.map(o => <option key={o.key} value={o.key}>{o.name}</option>)}
                       </select>
                     ) : (
                       <button onClick={() => setAddingLayer(layer.key)}
