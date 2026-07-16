@@ -148,6 +148,40 @@ export async function logRecommendationAccepted(params: {
   }
 }
 
+/** 一括アサインの1件分の結果 */
+export interface BulkRecommendResult {
+  ticketId: string;
+  chosen: AssigneeRecommendation | null;
+  candidates: AssigneeRecommendation[];
+  source: "model" | "baseline";
+}
+
+/**
+ * BRU6-002-2 一括アサイン。複数チケットの推奨担当者(Top1)をまとめて取得する。
+ * サーバー側で組織の特徴量を1回だけ構築し、公平分散（貪欲逐次）で割り当てる。
+ */
+export async function fetchBulkRecommendations(params: {
+  organizationId: string;
+  candidateNames?: string[];
+  tickets: {
+    ticketId: string;
+    requiredSkillIds: { skillId: string; importance: number }[];
+    devScale: DevScale | null;
+    estimatedHours: number;
+    priority: Priority;
+    startDate?: string | null;
+    dueDate?: string | null;
+  }[];
+}): Promise<{ results: BulkRecommendResult[]; source: "model" | "baseline" }> {
+  const res = await fetch("/api/ml/recommend-bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`一括レコメンドの取得に失敗しました (${res.status})`);
+  return res.json();
+}
+
 /** ②担当者レコメンド。学習済みモデルがあればそれを、無ければルールベースで返す。 */
 export async function fetchRecommendations(params: {
   organizationId: string;

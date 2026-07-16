@@ -17,17 +17,17 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 // ⚠️ src/app/lib/recommendCore.ts と ml/features.py を変更したら、ここも合わせること。
 //    特に FEATURE_NAMES の順序は3箇所すべてで一致させること。
 // ============================================================
-type SkillLayer = string;
-type Priority = "low" | "medium" | "high";
-type DevScale = "S" | "M" | "L" | "XL";
+export type SkillLayer = string;
+export type Priority = "low" | "medium" | "high";
+export type DevScale = "S" | "M" | "L" | "XL";
 
-interface TicketFeatureInput {
+export interface TicketFeatureInput {
   requiredSkills: { skillId: string; layer: SkillLayer; importance: number }[];
   devScale: DevScale | null;
   estimatedHours: number;
   priority: Priority;
 }
-interface MemberFeatureInput {
+export interface MemberFeatureInput {
   profileId: string;
   name: string;
   skillLevels: Record<string, number>;
@@ -46,7 +46,7 @@ function scaleToNum(s: DevScale | null | undefined): number {
   return s ? (SCALE_NUM_F[s] ?? 2) : 2;
 }
 
-function buildFeatures(ticket: TicketFeatureInput, m: MemberFeatureInput): number[] {
+export function buildFeatures(ticket: TicketFeatureInput, m: MemberFeatureInput): number[] {
   const req = ticket.requiredSkills;
   let weighted = 0, weightSum = 0, have = 0, gap = 0;
   let minLevel = req.length > 0 ? 4 : 0;
@@ -90,7 +90,7 @@ interface LgbNode {
   split_feature?: number; threshold?: number; decision_type?: string;
   default_left?: boolean; left_child?: LgbNode; right_child?: LgbNode; leaf_value?: number;
 }
-interface LgbModel {
+export interface LgbModel {
   feature_names?: string[];
   tree_info?: { tree_structure: LgbNode }[];
 }
@@ -105,7 +105,7 @@ function walkTree(node: LgbNode, x: number[]): number {
   return n.leaf_value;
 }
 const sigmoid = (z: number) => 1 / (1 + Math.exp(-z));
-function scoreWithModel(model: LgbModel, features: number[]): number {
+export function scoreWithModel(model: LgbModel, features: number[]): number {
   const trees = model.tree_info ?? [];
   if (trees.length === 0) return 0;
   let raw = 0;
@@ -113,7 +113,7 @@ function scoreWithModel(model: LgbModel, features: number[]): number {
   return sigmoid(raw);
 }
 
-function baselineScore(ticket: TicketFeatureInput, m: MemberFeatureInput): number {
+export function baselineScore(ticket: TicketFeatureInput, m: MemberFeatureInput): number {
   const f = buildFeatures(ticket, m);
   const [skillMatch, coverage, , gap, doneCount, , domainOnTime, reviewCount, workload, , scaleFit] = f;
   const experience = Math.min(1, doneCount / 20);
@@ -129,7 +129,7 @@ function baselineScore(ticket: TicketFeatureInput, m: MemberFeatureInput): numbe
   return Math.max(0, Math.min(1, score));
 }
 
-function buildReasons(
+export function buildReasons(
   ticket: TicketFeatureInput, m: MemberFeatureInput, skillNames: Record<string, string>, activeCount: number,
 ): string[] {
   const reasons: string[] = [];
@@ -164,9 +164,9 @@ const IN_PROGRESS_STATUSES = ["in-progress", "in-review", "review-done", "stg-te
 // さらに保留(progress=-1)/取下(progress=-2)は下の集計で除外する。削除は行ごと消えるので自然に対象外。
 const ACTIVE_STATUSES = ["todo", "in-progress", "in-review", "review-done", "stg-test", "uat"];
 // 相対キャップ: 有資格者の中で稼働中が最少の人を基準に、+この件数を超える人は推薦対象から外す。
-const CAP_MARGIN = 5;
+export const CAP_MARGIN = 5;
 // スキルゲート（規模別）: 必須スキルをこのLv以上で保有していないと候補にしない。
-const GATE_LEVEL: Record<string, number> = { S: 1, M: 1, L: 2, XL: 3 };
+export const GATE_LEVEL: Record<string, number> = { S: 1, M: 1, L: 2, XL: 3 };
 const LOOKBACK_MONTHS = 18;
 const SCALE_NUM: Record<string, number> = { S: 1, M: 2, L: 3, XL: 4 };
 
@@ -180,8 +180,8 @@ interface TRow {
 }
 
 // メンバーごとの空き状況。稼働中件数・稼働中チケットの期間・最終アサイン日。
-type MemberAvail = { activeCount: number; ranges: { start: string | null; due: string | null }[]; lastAssignedAt: string | null };
-type AvailInfo = Record<string, MemberAvail>;
+export type MemberAvail = { activeCount: number; ranges: { start: string | null; due: string | null }[]; lastAssignedAt: string | null };
+export type AvailInfo = Record<string, MemberAvail>;
 
 function actualHours(t: TRow): number {
   if (t.actual_work_hours && t.actual_work_hours > 0) return t.actual_work_hours;
@@ -202,7 +202,7 @@ function onTime(t: TRow): boolean {
  * ※ skill_auto_update が OFF のメンバーも候補に含める。
  *   トグルが止めるのは「①スキルの自動更新」だけで、②レコメンドの対象からは外さない。
  */
-async function buildMemberFeatures(
+export async function buildMemberFeatures(
   sb: SupabaseClient, orgId: string,
 ): Promise<{ members: MemberFeatureInput[]; skillLayer: Record<string, SkillLayer>; skillName: Record<string, string>; avail: AvailInfo }> {
   const [{ data: profiles }, { data: skills }, { data: memberSkills }] = await Promise.all([

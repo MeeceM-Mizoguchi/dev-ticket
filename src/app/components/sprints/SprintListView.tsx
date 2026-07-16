@@ -1,7 +1,16 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
-import type { Sprint, SprintTicket, SortCol } from "@/app/types";
+import type { Sprint, SprintTicket, SortCol, DevScale } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
+// 🌟 BRU6-002 一括操作（削除・スプリント移動・アサイン）
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
+import { BulkActionBar } from "@/app/components/sprints/BulkActionBar";
+import { BulkAssignProgress, type BulkAssignPhase } from "@/app/components/sprints/BulkAssignProgress";
+import { bulkDeleteTickets, bulkMoveTickets } from "@/app/lib/bulkTicketOps";
+import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
+import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
+import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
@@ -62,6 +71,27 @@ const BASE_CATEGORY_MAP: Record<string, string> = {
   "CAT-1780241120059": "改善",
   "CAT-1780293371590": "新規機能開発"
 };
+
+// 🌟 BRU6-002: 見積工数(h)から開発規模をざっくり推定（TicketSkillFields と同じルール）
+function estimateScale(hours: number): DevScale | null {
+  if (!hours || hours <= 0) return null;
+  if (hours <= 3) return "S";
+  if (hours <= 8) return "M";
+  if (hours <= 40) return "L";
+  return "XL";
+}
+
+// 🌟 BRU6-002: 一括選択チェックボックス（チェック / 一部 / 無 の3状態）
+function SelBox({ checked, indeterminate, onClick }: { checked: boolean; indeterminate?: boolean; onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <div onClick={onClick} title="選択" style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", width: "100%" }}>
+      <div style={{ width: 15, height: 15, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", border: (checked || indeterminate) ? "none" : "1.5px solid rgba(26,23,20,0.28)", background: checked ? "#059669" : indeterminate ? "#9CA3AF" : "transparent", transition: "all 0.1s" }}>
+        {checked && <span style={{ color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1 }}>✓</span>}
+        {indeterminate && !checked && <span style={{ color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: 1 }}>−</span>}
+      </div>
+    </div>
+  );
+}
 
 function ColumnFilter({
   col, label, sortCol, sortDir, onSort, onClearSort,
@@ -252,7 +282,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, stickyTop }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, stickyTop, onUpdated, projectMembers, projectSlug }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -265,8 +295,12 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   targetSprintId?: string | null;
   // 🌟 BRU5-043: 上部固定バー(パンくず〜ビュー切替)の高さ分だけ、各スプリントの sticky ヘッダーを下げるオフセット
   stickyTop?: number;
+  // 🌟 BRU6-002 一括操作: 保存後の再取得・アサイン候補の絞り込み・通知に使う
+  onUpdated?: () => void;
+  projectMembers?: string[];
+  projectSlug?: string;
 }) {
-  const { userId } = useAuth();
+  const { userId, userOrgId } = useAuth();
   const { plan } = usePlan();
   const { showAlert } = useAlert();
 
@@ -287,6 +321,12 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   } | null>(null);
   // 🌟 追加: アラート（茶色）ではなく、通常の美しい緑ヘッダーUIで完了通知を出すためのステート
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // 🌟 BRU6-002 一括操作: 選択状態・確認ダイアログ・進捗・ハイライト
+  const [selectedTicketIds, setSelectedTicketIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<null | "delete" | "move">(null);
+  const [assignState, setAssignState] = useState<{ phase: BulkAssignPhase; current: number; total: number; message?: string } | null>(null);
+  const [highlightedTicketIds, setHighlightedTicketIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!isSupabaseEnabled || !userId || sprints.length === 0) return;
@@ -597,6 +637,166 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     });
   };
 
+  // ══════════════════════════════════════════════════════════
+  // 🌟 BRU6-002 一括操作（削除・スプリント移動・アサイン）
+  // ══════════════════════════════════════════════════════════
+  const allTickets = useMemo(() => sprints.flatMap(s => s.tickets), [sprints]);
+  const selectedTickets = useMemo(() => allTickets.filter(t => selectedTicketIds.has(t.id)), [allTickets, selectedTicketIds]);
+  const bulkProjectId = sprints[0]?.projectId ?? null;
+
+  const clearSelection = () => setSelectedTicketIds(new Set());
+  const toggleTicketSel = (id: string) => setSelectedTicketIds(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const setSprintSelection = (tickets: SprintTicket[], checked: boolean) => setSelectedTicketIds(prev => {
+    const n = new Set(prev); tickets.forEach(t => { checked ? n.add(t.id) : n.delete(t.id); }); return n;
+  });
+
+  const flashTickets = (ids: string[]) => {
+    setHighlightedTicketIds(new Set(ids));
+    window.setTimeout(() => setHighlightedTicketIds(new Set()), 6000);
+  };
+
+  // 選択された親の子で、明示選択されていないもの（削除・移動時に一緒に処理される件数）
+  const impliedChildCount = useMemo(
+    () => allTickets.filter(t => t.parentId && selectedTicketIds.has(t.parentId) && !selectedTicketIds.has(t.id)).length,
+    [allTickets, selectedTicketIds],
+  );
+
+  // ── 一括削除 ──
+  const runBulkDelete = async () => {
+    const ids = Array.from(selectedTicketIds);
+    const n = selectedTickets.length;
+    try {
+      await bulkDeleteTickets(ids);
+      clearSelection();
+      onUpdated?.();
+      setSuccessMessage(`${n}件のチケットを削除しました。`);
+    } catch (e) {
+      showAlert("削除に失敗しました。\n\n" + String(e), "エラー");
+    }
+  };
+
+  // ── 一括スプリント移動 ──
+  const runBulkMove = async (targetSprintId: string) => {
+    if (!bulkProjectId) return;
+    const ids = Array.from(selectedTicketIds);
+    try {
+      const moved = await bulkMoveTickets({ ticketIds: ids, targetSprintId, projectId: bulkProjectId });
+      const target = sprints.find(s => s.id === targetSprintId);
+      clearSelection();
+      setBulkAction(null);
+      onUpdated?.();
+      setSuccessMessage(`${moved}件のチケットを「${target?.name ?? "スプリント"}」へ移動しました。`);
+    } catch (e) {
+      showAlert("移動に失敗しました。\n\n" + String(e), "エラー");
+    }
+  };
+
+  // ── 一括アサイン（自動分析 → 保存 → ハイライト）──
+  const runBulkAssign = async () => {
+    if (!userOrgId) { showAlert("組織情報が取得できませんでした。", "エラー"); return; }
+    const targets = selectedTickets.slice();   // アサインは明示選択のチケットのみ対象（子は自動追従しない）
+    if (targets.length === 0) return;
+
+    setAssignState({ phase: "analyzing", current: 0, total: targets.length });
+    try {
+      const skills = await fetchSkills(userOrgId);
+
+      // 保存済みの必要スキルを一括取得
+      const ids = targets.map(t => t.id);
+      const { data: savedSkills } = isSupabaseEnabled
+        ? await supabase!.from("ticket_required_skills").select("ticket_id, skill_id, importance").in("ticket_id", ids)
+        : { data: [] as any[] };
+      const savedByTicket = new Map<string, { skillId: string; importance: number }[]>();
+      for (const r of savedSkills ?? []) {
+        const arr = savedByTicket.get(r.ticket_id) ?? [];
+        arr.push({ skillId: r.skill_id, importance: r.importance ?? 3 });
+        savedByTicket.set(r.ticket_id, arr);
+      }
+
+      // チケットごとに必要スキル・開発規模を解決（保存済み優先、無ければ内容から自動判定）
+      const resolved = targets.map(t => {
+        let required = savedByTicket.get(t.id) ?? [];
+        if (required.length === 0) {
+          required = detectSkillKeywords(
+            ticketSearchText({ title: t.title, description: (t.description ?? "").replace(/<[^>]*>/g, " "), prefixes: t.prefixes ?? [] }),
+            skills,
+          ).map(id => ({ skillId: id, importance: 3 }));
+        }
+        const scale = t.devScale ?? estimateScale(t.estimatedHours || 0);
+        return { ticket: t, required, scale };
+      });
+
+      // バッチ推奨（サーバー側で公平分散・貪欲逐次）
+      const { results } = await fetchBulkRecommendations({
+        organizationId: userOrgId,
+        candidateNames: projectMembers,
+        tickets: resolved.map(r => ({
+          ticketId: r.ticket.id,
+          requiredSkillIds: r.required,
+          devScale: r.scale,
+          estimatedHours: r.ticket.estimatedHours || 0,
+          priority: r.ticket.priority,
+          startDate: r.ticket.startDate || null,
+          dueDate: r.ticket.dueDate || null,
+        })),
+      });
+      const byTicket = new Map(results.map(r => [r.ticketId, r]));
+
+      // 保存フェーズ（1件ずつ書き込み、進捗を刻む）
+      setAssignState({ phase: "saving", current: 0, total: targets.length });
+      const assignedIds: string[] = [];
+      const notifRows: Record<string, unknown>[] = [];
+      let done = 0;
+      for (const r of resolved) {
+        const rec = byTicket.get(r.ticket.id);
+        const chosen = rec?.chosen ?? null;
+        if (chosen && chosen.name && isSupabaseEnabled) {
+          const prev = r.ticket.assignee;
+          await supabase!.from("sprint_tickets")
+            .update({ assignee: chosen.name, assignees: [chosen.name], dev_scale: r.scale })
+            .eq("id", r.ticket.id);
+          // 学習材料として必要スキルを保存
+          await supabase!.from("ticket_required_skills").delete().eq("ticket_id", r.ticket.id);
+          if (r.required.length > 0) {
+            await supabase!.from("ticket_required_skills").insert(
+              r.required.map(s => ({ ticket_id: r.ticket.id, skill_id: s.skillId, importance: s.importance })),
+            );
+          }
+          // 採用ログ（②学習の材料）
+          if (rec) void logRecommendationAccepted({ organizationId: userOrgId, ticketId: r.ticket.id, candidates: rec.candidates, chosen, source: rec.source });
+          // 通知（担当が変わった場合のみ）
+          if (chosen.name !== prev && projectSlug) {
+            notifRows.push({
+              user_name: chosen.name, type: "assign", title: "チケットが割り当てられました",
+              body: `${r.ticket.wbs}: ${r.ticket.title}（担当: ${prev || "未割り当て"} → ${chosen.name}）`,
+              ticket_id: r.ticket.id, ticket_wbs: r.ticket.wbs, ticket_title: r.ticket.title,
+              project_slug: projectSlug, is_read: false,
+            });
+            fireSlackNotify({ recipientUserNames: [chosen.name], projectSlug, title: "チケットが割り当てられました", body: `${r.ticket.wbs}: ${r.ticket.title}` });
+          }
+          assignedIds.push(r.ticket.id);
+        }
+        done++;
+        setAssignState({ phase: "saving", current: done, total: targets.length });
+      }
+      if (notifRows.length > 0 && isSupabaseEnabled) {
+        await supabase!.from("notifications").insert(notifRows);
+      }
+
+      setAssignState(null);
+      clearSelection();
+      onUpdated?.();
+      flashTickets(assignedIds);
+      setSuccessMessage(assignedIds.length === 0
+        ? "推奨できる担当者が見つかりませんでした。スキルマスタや条件をご確認ください。"
+        : `${assignedIds.length}件のチケットに担当者を自動アサインしました。`);
+    } catch (e) {
+      setAssignState({ phase: "error", current: 0, total: 0, message: String(e) });
+    }
+  };
+
   if (loading) return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 18px", marginBottom: 12, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12 }}>
@@ -624,7 +824,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
   const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const;
   const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日", "クローズ日"];
-  const GRID = `72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 60px 32px`;
+  // 🌟 BRU6-002: 先頭に一括選択チェックボックス列(32px)を追加
+  const GRID = `32px 72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 60px 32px`;
 
   return (
     <div>
@@ -738,8 +939,14 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                   </div>
                 </div>
                 {/* Column headers with filters */}
-                {isExp && (
+                {isExp && (() => {
+                  const visibleIds = displayTickets.map(t => t.id);
+                  const allSel = visibleIds.length > 0 && visibleIds.every(id => selectedTicketIds.has(id));
+                  const someSel = !allSel && visibleIds.some(id => selectedTicketIds.has(id));
+                  return (
                   <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
+                    <SelBox checked={allSel} indeterminate={someSel}
+                      onClick={e => { e.stopPropagation(); setSprintSelection(displayTickets, !allSel); }} />
                     {COLS.map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
@@ -798,7 +1005,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                       })()}
                     </div>
                   </div>
-                )}
+                  );
+                })()}
               </div>
 
               {/* Ticket rows */}
@@ -820,18 +1028,21 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
 
                     const displayCategory = getCategoryLabel(t);
-                    const isHighlighted = t.wbs === targetTicketWbs;
+                    // 🌟 BRU6-002: 一括アサイン直後のハイライトも既存の強調(琥珀色)と同じ扱いにする
+                    const isHighlighted = t.wbs === targetTicketWbs || highlightedTicketIds.has(t.id);
                     const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? "#F5F5F4" : "#FFFFFF";
                     const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
+                    const isSel = selectedTicketIds.has(t.id);
 
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           data-wbs={t.wbs}
                           // 🌟 修正: progress === -2 (取下) の時もグレーアウト＆半透明にする
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = baseBg; }}>
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
+                          <SelBox checked={isSel} onClick={e => { e.stopPropagation(); toggleTicketSel(t.id); }} />
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                             {needsHours && (
                               <span
@@ -881,8 +1092,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                           const childCategory = getCategoryLabel(child);
-                          const isChildHighlighted = child.wbs === targetTicketWbs;
-                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
+                          const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id);
+                          const isChildSel = selectedTicketIds.has(child.id);
+                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
                               data-wbs={child.wbs}
@@ -890,6 +1102,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                               style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.progress === -1 || child.progress === -2) ? 0.65 : 1 }}
                               onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.progress === -1 || child.progress === -2) ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
+                              <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); toggleTicketSel(child.id); }} />
                               <div style={{ display: "flex", justifyContent: "center" }}>
                                 <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                               </div>
@@ -985,6 +1198,49 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
             {successMessage}
           </p>
         </DialogShell>
+      )}
+
+      {/* 🌟 BRU6-002 一括操作: フローティングバー */}
+      <BulkActionBar
+        count={selectedTicketIds.size}
+        disabled={!!assignState}
+        onAssign={runBulkAssign}
+        onMove={() => setBulkAction("move")}
+        onDelete={() => setBulkAction("delete")}
+        onClear={clearSelection}
+      />
+
+      {/* 一括削除の確認 */}
+      {bulkAction === "delete" && (
+        <ConfirmDialog
+          title="チケットの一括削除"
+          message={`選択した ${selectedTickets.length}件 のチケットを削除します。`
+            + (impliedChildCount > 0 ? `\n（子チケット ${impliedChildCount}件 も一緒に削除されます）` : "")}
+          confirmLabel="削除する"
+          onConfirm={runBulkDelete}
+          onClose={() => setBulkAction(null)}
+        />
+      )}
+
+      {/* 一括スプリント移動 */}
+      {bulkAction === "move" && (
+        <MoveToSprintDialog
+          sprints={sprints}
+          count={selectedTickets.length}
+          onClose={() => setBulkAction(null)}
+          onConfirm={runBulkMove}
+        />
+      )}
+
+      {/* 一括アサインの進捗（全画面ブロック） */}
+      {assignState && (
+        <BulkAssignProgress
+          phase={assignState.phase}
+          current={assignState.current}
+          total={assignState.total}
+          message={assignState.message}
+          onClose={() => setAssignState(null)}
+        />
       )}
     </div>
   );
