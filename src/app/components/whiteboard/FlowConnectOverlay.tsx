@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { elementBBox, isTriangle } from "@/app/lib/whiteboardSnap";
+import { isTableCell } from "@/app/lib/whiteboardTable";
 
 type Dir = "up" | "down" | "left" | "right";
 type SpawnType = "rectangle" | "diamond" | "ellipse";
@@ -78,7 +79,9 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
         const el = ids.length === 1 && !interacting
           ? api.getSceneElements().find((e: any) => e.id === ids[0] && !e.isDeleted)
           : null;
-        const isShape = el && (el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse");
+        // 表（BRU5-042）のセルも rectangle だが、フロー接続の対象外。表には行/列の追加・削除UI
+        // （TableRowColControls）を別途出すため、こちらの＋ボタン・図形変換メニューは表では出さない。
+        const isShape = el && (el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse") && !isTableCell(el);
         const isTri = el && isTriangle(el);
         if (isShape || isTri) {
           // 三角形は element.x/y が bbox 左上でないため elementBBox を使う
