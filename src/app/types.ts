@@ -164,7 +164,8 @@ export interface AssigneeRecommendation {
   score: number;          // 0〜1
   reasons: string[];      // 「この領域12件完了・平均2.1h」など、なぜ推されたかの説明
   skillMatch: number;     // 必要スキルの充足度 0〜1
-  workload: number;       // 現在の進行中チケット数
+  workload: number;       // 現在の進行中チケット数（モデル特徴量互換のため維持）
+  activeCount: number;    // 稼働中の担当数（未着手〜作業途中。クローズ/完了/保留/取下は除く）。推奨判定と表示に使う
   source: "model" | "baseline";  // 学習済みモデル / ルールベース（モデル未成熟時のフォールバック）
 }
 

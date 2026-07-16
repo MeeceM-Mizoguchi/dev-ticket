@@ -57,52 +57,52 @@ export interface SeedSkill { layer: SkillLayer; name: string; keywords: string[]
 
 export const SEED_SKILLS: SeedSkill[] = [
   // ── フロントエンド ──
-  { layer: "frontend", name: "React",          keywords: ["react", "リアクト", "jsx", "tsx", "コンポーネント"] },
+  { layer: "frontend", name: "React",          keywords: ["react", "リアクト", "jsx", "tsx", "コンポーネント", "フック", "hooks", "再レンダリング"] },
   { layer: "frontend", name: "Vue",            keywords: ["vue", "nuxt"] },
-  { layer: "frontend", name: "TypeScript",     keywords: ["typescript", "ts型", "型定義"] },
-  { layer: "frontend", name: "HTML・CSS",      keywords: ["css", "html", "スタイル", "見た目", "レイアウト", "tailwind"] },
-  { layer: "frontend", name: "UI実装",         keywords: ["ui", "画面", "フロント", "表示", "ボタン", "モーダル", "ダイアログ", "一覧画面"] },
-  { layer: "frontend", name: "レスポンシブ対応", keywords: ["レスポンシブ", "スマホ対応", "モバイル対応", "ブレークポイント"] },
-  { layer: "frontend", name: "状態管理",       keywords: ["状態管理", "redux", "zustand", "context"] },
+  { layer: "frontend", name: "TypeScript",     keywords: ["typescript", "ts型", "型定義", "型エラー", "型安全", "ジェネリクス", "interface"] },
+  { layer: "frontend", name: "HTML・CSS",      keywords: ["css", "html", "スタイル", "見た目", "レイアウト", "tailwind", "装飾", "余白", "フォント", "中央寄せ", "枠線"] },
+  { layer: "frontend", name: "UI実装",         keywords: ["ui", "画面", "フロント", "表示", "ボタン", "モーダル", "ダイアログ", "一覧画面", "フォーム", "入力欄", "プルダウン", "セレクトボックス", "チェックボックス", "トグル", "タブ", "サイドバー", "ヘッダー", "フッター", "パネル", "カード", "リスト表示", "バッジ", "トースト", "ツールチップ", "ドロワー", "クリック", "画面遷移", "ページ", "一覧", "詳細画面"] },
+  { layer: "frontend", name: "レスポンシブ対応", keywords: ["レスポンシブ", "スマホ対応", "モバイル対応", "ブレークポイント", "タブレット対応", "画面幅", "スマホ表示"] },
+  { layer: "frontend", name: "状態管理",       keywords: ["状態管理", "redux", "zustand", "context", "グローバルstate", "ストア", "状態保持"] },
 
   // ── バックエンド ──
-  { layer: "backend", name: "API設計",         keywords: ["api", "エンドポイント", "rest", "リクエスト", "レスポンス", "graphql"] },
-  { layer: "backend", name: "DB設計",          keywords: ["db", "テーブル", "スキーマ", "マイグレーション", "database", "カラム追加"] },
-  { layer: "backend", name: "SQL",             keywords: ["sql", "クエリ", "select", "join", "インデックス"] },
-  { layer: "backend", name: "Node.js",         keywords: ["node", "express", "npm"] },
-  { layer: "backend", name: "Python",          keywords: ["python", "django", "fastapi"] },
+  { layer: "backend", name: "API設計",         keywords: ["api", "エンドポイント", "rest", "リクエスト", "レスポンス", "graphql", "取得処理", "保存処理", "サーバー処理", "通信", "呼び出し"] },
+  { layer: "backend", name: "DB設計",          keywords: ["db", "テーブル", "スキーマ", "マイグレーション", "database", "カラム追加", "レコード", "データ削除", "一括削除", "物理削除", "論理削除", "データ保存", "データ更新", "リレーション", "外部キー", "テーブル追加", "supabase"] },
+  { layer: "backend", name: "SQL",             keywords: ["sql", "クエリ", "select", "join", "インデックス", "集計", "サブクエリ", "upsert", "トランザクション", "一括更新", "一括登録"] },
+  { layer: "backend", name: "Node.js",         keywords: ["node", "express", "npm", "サーバーサイド", "vercel", "serverless"] },
+  { layer: "backend", name: "Python",          keywords: ["python", "django", "fastapi", "スクリプト"] },
   { layer: "backend", name: "PHP",             keywords: ["php", "laravel"] },
   { layer: "backend", name: "Java",            keywords: ["java", "spring"] },
-  { layer: "backend", name: "認証・認可",       keywords: ["認証", "ログイン", "権限", "auth", "oauth", "jwt", "パスワード", "rls"] },
-  { layer: "backend", name: "バッチ処理",       keywords: ["バッチ", "cron", "定期実行", "ジョブ"] },
-  { layer: "backend", name: "外部連携",         keywords: ["連携", "webhook", "slack", "外部api", "サードパーティ"] },
+  { layer: "backend", name: "認証・認可",       keywords: ["認証", "ログイン", "権限", "auth", "oauth", "jwt", "パスワード", "rls", "ログアウト", "サインイン", "サインアップ", "セッション", "アクセス制御", "ロール", "管理者権限", "生体認証", "2要素"] },
+  { layer: "backend", name: "バッチ処理",       keywords: ["バッチ", "cron", "定期実行", "ジョブ", "夜間", "スケジュール実行", "自動実行", "定時"] },
+  { layer: "backend", name: "外部連携",         keywords: ["連携", "webhook", "slack", "外部api", "サードパーティ", "line", "メール送信", "通知連携", "api連携"] },
 
   // ── インフラ ──
   { layer: "infra", name: "AWS",               keywords: ["aws", "ec2", "s3", "lambda", "rds"] },
   { layer: "infra", name: "GCP",               keywords: ["gcp", "firebase", "cloud run"] },
   { layer: "infra", name: "Docker",            keywords: ["docker", "コンテナ", "dockerfile"] },
-  { layer: "infra", name: "CI・CD",            keywords: ["ci", "cd", "デプロイ", "パイプライン", "github actions", "リリース作業"] },
-  { layer: "infra", name: "サーバー構築",       keywords: ["サーバー", "サーバ構築", "nginx", "本番環境", "ステージング環境"] },
-  { layer: "infra", name: "監視・ログ",         keywords: ["監視", "ログ", "アラート", "メトリクス", "モニタリング"] },
-  { layer: "infra", name: "ネットワーク",       keywords: ["ネットワーク", "dns", "ドメイン", "ssl", "証明書"] },
-  { layer: "infra", name: "セキュリティ",       keywords: ["セキュリティ", "脆弱性", "csrf", "xss", "暗号化"] },
+  { layer: "infra", name: "CI・CD",            keywords: ["ci", "cd", "デプロイ", "パイプライン", "github actions", "リリース作業", "ビルド", "本番反映", "デプロイ失敗"] },
+  { layer: "infra", name: "サーバー構築",       keywords: ["サーバー", "サーバ構築", "nginx", "本番環境", "ステージング環境", "環境構築", "環境変数", "インフラ"] },
+  { layer: "infra", name: "監視・ログ",         keywords: ["監視", "ログ", "アラート", "メトリクス", "モニタリング", "エラーログ", "ログ出力"] },
+  { layer: "infra", name: "ネットワーク",       keywords: ["ネットワーク", "dns", "ドメイン", "ssl", "証明書", "https", "cors", "リダイレクト"] },
+  { layer: "infra", name: "セキュリティ",       keywords: ["セキュリティ", "脆弱性", "csrf", "xss", "暗号化", "サニタイズ", "エスケープ", "情報漏洩"] },
 
   // ── デザイン ──
-  { layer: "design", name: "Figma",            keywords: ["figma", "フィグマ", "モック"] },
-  { layer: "design", name: "UIデザイン",       keywords: ["デザイン", "uiデザイン", "配色", "アイコン"] },
-  { layer: "design", name: "UXデザイン",       keywords: ["ux", "導線", "ユーザビリティ", "体験"] },
+  { layer: "design", name: "Figma",            keywords: ["figma", "フィグマ", "モック", "ワイヤーフレーム", "プロトタイプ", "デザインカンプ"] },
+  { layer: "design", name: "UIデザイン",       keywords: ["デザイン", "uiデザイン", "配色", "スタイリング", "カラーパレット", "トンマナ", "ビジュアル"] },
+  { layer: "design", name: "UXデザイン",       keywords: ["ux", "導線", "ユーザビリティ", "体験", "使いやすさ", "操作性", "わかりやすさ", "ユーザー体験"] },
 
   // ── QA ──
-  { layer: "qa", name: "テスト設計",           keywords: ["テスト設計", "テストケース", "test case"] },
-  { layer: "qa", name: "自動テスト",           keywords: ["自動テスト", "e2e", "ユニットテスト", "jest", "playwright"] },
-  { layer: "qa", name: "動作検証",             keywords: ["動作確認", "検証", "テスト", "qa", "不具合再現"] },
+  { layer: "qa", name: "テスト設計",           keywords: ["テスト設計", "テストケース", "test case", "観点", "テスト項目"] },
+  { layer: "qa", name: "自動テスト",           keywords: ["自動テスト", "e2e", "ユニットテスト", "jest", "playwright", "結合テスト", "カバレッジ"] },
+  { layer: "qa", name: "動作検証",             keywords: ["動作確認", "検証", "テスト", "qa", "不具合再現", "再現", "バグ再現", "リグレッション"] },
 
   // ── その他 ──
-  { layer: "other", name: "要件定義",          keywords: ["要件定義", "要件", "ヒアリング"] },
-  { layer: "other", name: "設計",              keywords: ["設計", "基本設計", "詳細設計", "アーキテクチャ"] },
-  { layer: "other", name: "コードレビュー",     keywords: ["レビュー", "リファクタ", "リファクタリング"] },
-  { layer: "other", name: "ドキュメント",       keywords: ["ドキュメント", "wiki", "手順書", "マニュアル"] },
-  { layer: "other", name: "調査・分析",         keywords: ["調査", "分析", "原因究明", "切り分け"] },
+  { layer: "other", name: "要件定義",          keywords: ["要件定義", "要件", "ヒアリング", "仕様", "仕様策定", "要求"] },
+  { layer: "other", name: "設計",              keywords: ["設計", "基本設計", "詳細設計", "アーキテクチャ", "方式検討"] },
+  { layer: "other", name: "コードレビュー",     keywords: ["レビュー", "リファクタ", "リファクタリング", "コード改善", "保守性"] },
+  { layer: "other", name: "ドキュメント",       keywords: ["ドキュメント", "wiki", "手順書", "マニュアル", "議事録", "記事", "ナレッジ"] },
+  { layer: "other", name: "調査・分析",         keywords: ["調査", "分析", "原因究明", "切り分け", "原因調査"] },
 ];
 
 // ============================================================
@@ -116,6 +116,17 @@ export const SEED_SKILLS: SeedSkill[] = [
  * 段階A（現行）: 過去チケットにはスキルラベルが無いので、文章から拾うしかない。
  * 段階B（将来）: 過去チケットの文章とラベルの対応を学習して、辞書に頼らず判定する。
  */
+// 語が半角英数字のみで構成されるか（例: "ui" "ci" "db" "react" "api"）。
+// こうした短い英語語は "build" 内の "ui" のように別の英単語の一部へ紛れて誤爆しやすい。
+// そのため、前後が英数字でない位置（語境界。日本語や記号・空白・行頭行末）でのみ一致させる。
+const ASCII_TERM = /^[a-z0-9.+#]+$/;
+function termMatches(haystack: string, term: string): boolean {
+  // 日本語を含む・空白入りの語は従来どおり単純な部分一致（誤爆しにくい）
+  if (!ASCII_TERM.test(term)) return haystack.includes(term);
+  const esc = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`).test(haystack);
+}
+
 export function detectSkillKeywords(
   text: string,
   skills: { id: string; name: string; keywords: string[] }[],
@@ -125,7 +136,7 @@ export function detectSkillKeywords(
   for (const s of skills) {
     // スキル名そのもの、またはキーワードのいずれかが含まれれば該当
     const terms = [s.name, ...s.keywords].map(t => t.toLowerCase()).filter(Boolean);
-    if (terms.some(t => haystack.includes(t))) hit.push(s.id);
+    if (terms.some(t => termMatches(haystack, t))) hit.push(s.id);
   }
   return hit;
 }

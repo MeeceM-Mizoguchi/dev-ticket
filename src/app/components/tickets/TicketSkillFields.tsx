@@ -132,6 +132,7 @@ export function TicketSkillFields({ skills, required, devScale, onRequiredChange
 export function AssigneeRecommendModal({
   orgId, skills, estimatedHours, priority, candidateNames,
   initialRequired, initialScale, ticketTitle, ticketDescription, ticketPrefixes, ticketId,
+  ticketStartDate, ticketDueDate,
   onClose, onPick,
 }: {
   orgId: string;
@@ -141,11 +142,14 @@ export function AssigneeRecommendModal({
   candidateNames?: string[];
   initialRequired: RequiredSkill[];
   initialScale: DevScale | null;
-  // チケットの内容。開いた瞬間にここから必要スキルを自動判定する。
+  // チケットの内容。新規で保存済みスキルが無いときだけ、ここから必要スキルを自動判定する。
   ticketTitle?: string;
   ticketDescription?: string;
   ticketPrefixes?: string[];
   ticketId?: string | null;   // 採用ログ(recommendation_logs)に紐づける
+  // 開始日・期限日。入っていれば「その期間に空いている人」を優先してレコメンドする。
+  ticketStartDate?: string | null;
+  ticketDueDate?: string | null;
   onClose: () => void;
   // 担当者名と、モーダルで選んだ必要スキル・開発規模を親へ返す（チケットにも保存する）
   onPick: (name: string, required: RequiredSkill[], devScale: DevScale | null) => void;
@@ -158,17 +162,19 @@ export function AssigneeRecommendModal({
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState(false);
   const [autoFilled, setAutoFilled] = useState(false);   // チケット内容から自動判定したか
+  const [showAll, setShowAll] = useState(false);         // 「もっと見る」で有資格者を全員表示
 
   // レコメンド実行。mount時の自動実行では state 反映を待たず、算出値を直接渡す。
   const runRecommend = async (reqArg?: RequiredSkill[], scaleArg?: DevScale | null) => {
     const req = reqArg ?? required;
     const scale = scaleArg !== undefined ? scaleArg : devScale;
     if (req.length === 0) { setSearched(true); setCandidates([]); return; }
-    setLoading(true); setError(false); setSearched(true);
+    setLoading(true); setError(false); setSearched(true); setShowAll(false);
     try {
       const r = await fetchRecommendations({
         organizationId: orgId, requiredSkillIds: req,
-        devScale: scale, estimatedHours, priority, candidateNames, limit: 3,
+        devScale: scale, estimatedHours, priority, candidateNames,
+        startDate: ticketStartDate ?? null, dueDate: ticketDueDate ?? null, limit: 3,
       });
       setCandidates(r.candidates ?? []);
       setSource(r.source ?? "baseline");
@@ -202,23 +208,33 @@ export function AssigneeRecommendModal({
     else { setSearched(true); setCandidates([]); }
   };
 
-  // 手で触った内容を白紙に戻す（結果もクリア）
+  // 手で触った内容を白紙に戻す（結果もクリア）。＝手動で選び直すためのボタン。
   const reset = () => {
     setRequired([]);
     setDevScale(null);
     setCandidates([]);
     setSearched(false);
     setAutoFilled(false);
+    setShowAll(false);
   };
 
   useEffect(() => {
-    // 作成画面で既に必要スキルを持っている場合はそれを優先。無ければ内容から自動判定。
-    const detected = initialRequired.length > 0 ? initialRequired : detectFromContent();
     const scale = initialScale ?? estimateScale(estimatedHours);
-    setRequired(detected);
-    setDevScale(scale);
-    setAutoFilled(initialRequired.length === 0 && detected.length > 0);
-    if (detected.length > 0) void runRecommend(detected, scale);
+    if (initialRequired.length > 0) {
+      // 保存済みスキルあり（＝一度アサイン判定した／手で設定したチケットを開き直した）:
+      // 内容から再検出して勝手に上書きしない。レコメンドも自動では走らせない
+      // （開くたびに再判定が走る問題の解消）。ユーザーが「再レコメンド」で候補を取得する。
+      setRequired(initialRequired);
+      setDevScale(scale);
+      setAutoFilled(false);
+    } else {
+      // 新規（保存済みスキル無し）: チケット内容から一度だけ検出し、その場でレコメンド。
+      const detected = detectFromContent();
+      setRequired(detected);
+      setDevScale(scale);
+      setAutoFilled(detected.length > 0);
+      if (detected.length > 0) void runRecommend(detected, scale);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -243,14 +259,14 @@ export function AssigneeRecommendModal({
             {skills.length > 0 && (
               <>
                 <button onClick={reset} disabled={loading}
-                  title="選択内容を白紙に戻す"
+                  title="スキルを空にして手動で選び直す（自動判定はしない）"
                   style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 9px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.12)", background: "transparent", color: "#6B6458", cursor: loading ? "not-allowed" : "pointer" }}>
                   <RotateCcw style={{ width: 12, height: 12 }} />リセット
                 </button>
                 <button onClick={autoDetectAndRecommend} disabled={loading}
-                  title="チケット内容からもう一度自動判定してレコメンドする"
+                  title="チケット本文からスキルを検出し直す（手動修正は破棄してレコメンド）"
                   style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 9px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: loading ? "not-allowed" : "pointer" }}>
-                  <Wand2 style={{ width: 12, height: 12 }} />自動判定
+                  <Wand2 style={{ width: 12, height: 12 }} />内容から再判定
                 </button>
               </>
             )}
@@ -295,11 +311,18 @@ export function AssigneeRecommendModal({
               : <><Sparkles style={{ width: 14, height: 14 }} />再レコメンド</>}
           </button>
 
+          {/* 保存済みスキルで開いた直後は自動でレコメンドしない → 取得を促すヒント */}
+          {!searched && !loading && required.length > 0 && (
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, textAlign: "center" as const }}>
+              「再レコメンド」で空き状況からおすすめ担当者を取得します。
+            </p>
+          )}
+
           {/* 結果 */}
           {searched && !loading && (
             <div style={{ marginTop: 16 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: "#047857" }}>おすすめ担当者トップ3</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#047857" }}>おすすめ担当者（空き順）</span>
                 <span style={{ fontSize: 9.5, color: "#059669", opacity: 0.8 }}>{source === "model" ? "学習済みモデル" : "実績ベース"}</span>
               </div>
 
@@ -308,27 +331,47 @@ export function AssigneeRecommendModal({
               ) : candidates.length === 0 ? (
                 <p style={{ fontSize: 11.5, color: "#A09790", padding: "8px 0" }}>該当する候補がいません</p>
               ) : (
-                candidates.map((c, i) => (
-                  <button key={c.profileId} onClick={() => {
-                    // 「レコメンド結果からこの人に決めた」を学習用に記録（採用ログ）
-                    void logRecommendationAccepted({ organizationId: orgId, ticketId, candidates, chosen: c, source });
-                    onPick(c.name, required, devScale);
-                    onClose();
-                  }}
-                    style={{ width: "100%", textAlign: "left" as const, display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 12px", borderRadius: 10, background: "#F0FDF4", border: "1px solid rgba(5,150,105,0.2)", marginBottom: 7, cursor: "pointer" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: "#059669", width: 16, flexShrink: 0 }}>{i + 1}.</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 13.5, fontWeight: 700, color: "#1A1714" }}>{c.name}</span>
-                        <span style={{ fontSize: 10.5, fontWeight: 700, color: "#059669" }}>適合 {Math.round(c.score * 100)}%</span>
-                      </div>
-                      <p style={{ fontSize: 11, color: "#6B6458", marginTop: 3, lineHeight: 1.55 }}>{c.reasons.join(" · ")}</p>
-                    </div>
-                    <span style={{ flexShrink: 0, alignSelf: "center", fontSize: 11, fontWeight: 700, color: "#059669" }}>この人に決定 →</span>
-                  </button>
-                ))
+                <>
+                  {(showAll ? candidates : candidates.slice(0, 3)).map((c, i) => {
+                    const recommended = i === 0;   // 空き順の先頭＝推奨
+                    return (
+                      <button key={c.profileId} onClick={() => {
+                        // 「レコメンド結果からこの人に決めた」を学習用に記録（採用ログ）
+                        void logRecommendationAccepted({ organizationId: orgId, ticketId, candidates, chosen: c, source });
+                        onPick(c.name, required, devScale);
+                        onClose();
+                      }}
+                        style={{ width: "100%", textAlign: "left" as const, display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 12px", borderRadius: 10, background: recommended ? "#ECFDF5" : "#F0FDF4", border: recommended ? "2px solid #059669" : "1px solid rgba(5,150,105,0.2)", marginBottom: 7, cursor: "pointer" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = recommended ? "#ECFDF5" : "#F0FDF4"; }}>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: "#059669", width: 16, flexShrink: 0 }}>{i + 1}.</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const }}>
+                            <span style={{ fontSize: 13.5, fontWeight: 700, color: "#1A1714" }}>{c.name}</span>
+                            {recommended && (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 800, color: "#fff", background: "#059669", padding: "2px 7px", borderRadius: 999 }}>
+                                <Sparkles style={{ width: 10, height: 10 }} />推奨
+                              </span>
+                            )}
+                            <span style={{ fontSize: 10.5, fontWeight: 700, color: c.activeCount === 0 ? "#059669" : "#6B6458" }}>
+                              稼働中{c.activeCount}件
+                            </span>
+                            <span style={{ fontSize: 10.5, fontWeight: 600, color: "#A09790" }}>適合 {Math.round(c.skillMatch * 100)}%</span>
+                          </div>
+                          <p style={{ fontSize: 11, color: "#6B6458", marginTop: 3, lineHeight: 1.55 }}>{c.reasons.join(" · ")}</p>
+                        </div>
+                        <span style={{ flexShrink: 0, alignSelf: "center", fontSize: 11, fontWeight: 700, color: "#059669" }}>この人に決定 →</span>
+                      </button>
+                    );
+                  })}
+
+                  {candidates.length > 3 && (
+                    <button onClick={() => setShowAll(v => !v)}
+                      style={{ width: "100%", padding: "8px 0", fontSize: 11.5, fontWeight: 600, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.15)", background: "transparent", color: "#6B6458", cursor: "pointer" }}>
+                      {showAll ? "上位3人だけ表示" : `もっと見る（他${candidates.length - 3}人の有資格者）`}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}

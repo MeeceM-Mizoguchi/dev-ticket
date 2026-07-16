@@ -901,6 +901,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               ticketDescription={description}
               ticketPrefixes={prefixes}
               ticketId={ticketId.current}
+              ticketStartDate={startDate}
+              ticketDueDate={dueDate}
               onClose={() => setShowRecommend(false)}
               onPick={(name, req, scale) => {
                 // 選んだ担当者をセットしつつ、モーダルで選んだ必要スキル・開発規模も
