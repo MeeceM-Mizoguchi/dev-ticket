@@ -387,9 +387,14 @@ export function ReleaseNotesPage() {
             <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div>
                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>リリースノート</p>
-                <h2 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>
-                  {selectedDate?.replace(/-/g, "/")} のチケット
-                </h2>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <h2 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>
+                    {selectedDate?.replace(/-/g, "/")} のチケット
+                  </h2>
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#EEF2FF", color: "#4F46E5", flexShrink: 0 }}>
+                    {listItems.length}件
+                  </span>
+                </div>
               </div>
               <button onClick={closeList} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -642,7 +647,22 @@ export function ReleaseNotesPage() {
                 }}>
                 {/* Top row: date + buttons */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
-                  <span style={{ fontSize: 12, fontWeight: isToday ? 800 : 500, color: dow === 0 ? "#EF4444" : dow === 6 ? "#3B82F6" : isToday ? "#059669" : "#1A1714", lineHeight: 1 }}>{day}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                    <span style={{ fontSize: 12, fontWeight: isToday ? 800 : 500, color: dow === 0 ? "#EF4444" : dow === 6 ? "#3B82F6" : isToday ? "#059669" : "#1A1714", lineHeight: 1 }}>{day}</span>
+                    {dayItems.length > 0 && (
+                      <span
+                        title={`${dayItems.length}件のチケット`}
+                        style={{
+                          fontSize: 9, fontWeight: 700, lineHeight: 1,
+                          padding: "2px 5px", borderRadius: 20,
+                          background: allReleased ? "#DCFCE7" : "#EEF2FF",
+                          color: allReleased ? "#16A34A" : "#4F46E5",
+                          flexShrink: 0,
+                        }}>
+                        {dayItems.length}件
+                      </span>
+                    )}
+                  </div>
                   {dayItems.length > 0 && (
                     <div style={{ display: "flex", gap: 3 }}>
                       <button
@@ -763,8 +783,14 @@ export function ReleaseNotesPage() {
             background: dragOverTarget === "undecided" ? "#F5F3FF" : "#FAFAF8",
             transition: "border-color 0.15s, background 0.15s",
           }}>
-          <p style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", marginBottom: undecidedItems.length > 0 ? 10 : 0, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-            リリース日未定エリア {undecidedItems.length > 0 && <span style={{ fontWeight: 400, textTransform: "none" }}>— ここにドラッグして退避</span>}
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", marginBottom: undecidedItems.length > 0 ? 10 : 0, textTransform: "uppercase", letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 6 }}>
+            リリース日未定エリア
+            {undecidedItems.length > 0 && (
+              <span style={{ fontWeight: 700, fontSize: 10, padding: "1px 7px", borderRadius: 20, background: "#EEF2FF", color: "#4F46E5", textTransform: "none", letterSpacing: 0 }}>
+                {undecidedItems.length}件
+              </span>
+            )}
+            {undecidedItems.length > 0 && <span style={{ fontWeight: 400, textTransform: "none" }}>— ここにドラッグして退避</span>}
           </p>
           {undecidedItems.length === 0 && (
             <p style={{ fontSize: 12, color: "#C9C4BB", textAlign: "center", padding: "8px 0" }}>チケットをここにドラッグして退避できます</p>
