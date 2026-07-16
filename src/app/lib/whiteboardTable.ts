@@ -14,7 +14,10 @@
 // 文字の計測・折り返しは Excalidraw 内部関数に依存せず、オフスクリーン canvas で自前に行う
 // （@excalidraw の getFontString/refreshTextDimensions は型宣言のみで実体が公開されていないため）。
 // 生成した折り返し済みテキストと寸法をバインドテキスト要素へ直接反映するので、描画も一致する。
-import { viewportCoordsToSceneCoords } from "@excalidraw/excalidraw";
+import { viewportCoordsToSceneCoords, convertToExcalidrawElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
+
+const SOFT_BLACK = "#343a40";     // セル罫線色（TableToolButton の生成と揃える）
+const rand = () => Math.floor(Math.random() * 0x7fffffff);
 
 const MIN_COL_W = 40;   // 列の最小幅
 const MIN_ROW_H = 32;   // 行の最小高
@@ -107,6 +110,167 @@ export function freezeSelectedTable(api: any): boolean {
     return { ...e, customData: { ...e.customData, wbTable: { ...m, cw: Math.round(colW[m.c]) || undefined, rh: Math.round(rowH[m.r]) || undefined } } };
   });
   api.updateScene({ elements: next });
+  return true;
+}
+
+// ── 行・列の追加/削除（BRU5-042） ────────────────────────────────────────────
+// 表は「セル=rectangle＋customData.wbTable{tid,r,c}」の格子。行/列の増減は (1) 既存セルの
+// r/c を付け替え、(2) 新規セル(空)を差し込む/対象セルを isDeleted にする、だけで良い。位置・寸法は
+// updateScene 後の onChange 駆動 reflowTables が隙間なくタイルし直すため、ここでは指定しない。
+// 変更したセルは version/versionNonce を上げてリアルタイム同期（Yjsブリッジは version 比較で伝播）
+// と undo（captureUpdate: IMMEDIATELY）に確実に乗せる。
+
+// scene 座標 (x,y) を含む表セルを返す（pointerdown で「クリックしたセル」を特定するのに使う）。
+export function tableCellAtPoint(els: readonly any[], x: number, y: number): { tid: string; r: number; c: number; id: string } | null {
+  for (const e of els) {
+    const m = cellMeta(e);
+    if (!m) continue;
+    if (x >= e.x && x <= e.x + e.width && y >= e.y && y <= e.y + e.height) return { tid: m.tid, r: m.r, c: m.c, id: e.id };
+  }
+  return null;
+}
+
+export interface TableSel { tid: string; rows: number[]; cols: number[]; R: number; C: number; single: boolean; focusedId: string | null }
+
+// 追加・削除の基準となる「選択が跨る行・列」を返す。
+//   ・セルを個別に複数選択している（＝全セルではない部分選択）→ その選択が跨る行数/列数を単位にする
+//     （3セル選択→3行/3列 追加・削除）。
+//   ・表を1クリックして全セルが選択されている → グループ選択なので単一セルの意図が取れない。そこで
+//     直前に pointerdown で当てた focused セルを基準にする（single=true。操作後にそのセルへ選択を寄せる）。
+// 表以外の選択・非選択は null。
+export function selectedTableRange(api: any, focused: { tid: string; r: number; c: number; id: string } | null): TableSel | null {
+  const tid = selectedTableId(api);
+  if (!tid) return null;
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return null;
+  const sel = api.getAppState().selectedElementIds || {};
+  let total = 0, selCount = 0;
+  const rows = new Set<number>(), cols = new Set<number>();
+  for (const e of els) {
+    const m = cellMeta(e);
+    if (!m || m.tid !== tid) continue;
+    total++;
+    if (sel[e.id]) { selCount++; rows.add(m.r); cols.add(m.c); }
+  }
+  if (!selCount) return null;
+  const f = focused && focused.tid === tid && focused.r < info.R && focused.c < info.C ? focused : null;
+  // 全セル選択（グループ選択）でフォーカスセルが取れていれば、そのセル1つを基準にする
+  if (selCount >= total && f) {
+    return { tid, rows: [f.r], cols: [f.c], R: info.R, C: info.C, single: true, focusedId: f.id };
+  }
+  return { tid, rows: [...rows].sort((a, b) => a - b), cols: [...cols].sort((a, b) => a - b), R: info.R, C: info.C, single: false, focusedId: null };
+}
+
+// テンプレセル（見た目の継承元）から空セルを1つ生成する。列幅/行高の手動値は carry で引き継ぐ。
+function makeCellFrom(tmpl: any, tid: string, r: number, c: number, carry: { cw?: number; rh?: number }): any {
+  const [el] = convertToExcalidrawElements([{
+    type: "rectangle",
+    x: tmpl?.x ?? 0, y: tmpl?.y ?? 0, width: tmpl?.width ?? 120, height: tmpl?.height ?? 44,
+    strokeColor: tmpl?.strokeColor ?? SOFT_BLACK, strokeWidth: tmpl?.strokeWidth ?? 1, roughness: 0,
+    backgroundColor: tmpl?.backgroundColor ?? "#ffffff", fillStyle: "solid",
+  }] as any) as any[];
+  el.roundness = null; el.roughness = 0; el.fillStyle = "solid";       // 角あり・直線罫線
+  el.groupIds = tmpl?.groupIds ? [...tmpl.groupIds] : [tid];           // 同一グループへ（一体で移動/削除）
+  el.customData = { ...(el.customData ?? {}), wbTable: { tid, r, c, ...carry } };
+  return el;
+}
+
+// at 列目に count 列ぶんの新しい列を挿入（at=0..C。C は末尾に追加）。手動行高 rh は行で共有のため隣列から引き継ぐ。
+export function insertTableColumns(api: any, tid: string, at: number, count = 1): boolean {
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return false;
+  const { grid, R, C } = info;
+  const idx = Math.max(0, Math.min(at, C));
+  const n = Math.max(1, count);
+  const created: any[] = [];
+  for (let r = 0; r < R; r++) {
+    const ref = grid[r][idx - 1] ?? grid[r][idx] ?? grid[r].find(Boolean);
+    const rh = cellMeta(ref)?.rh;
+    for (let k = 0; k < n; k++) created.push(makeCellFrom(ref, tid, r, idx + k, rh ? { rh } : {}));
+  }
+  const shifted = els.map((e) => {
+    const m = cellMeta(e);
+    if (!m || m.tid !== tid || m.c < idx) return e;
+    return { ...e, customData: { ...e.customData, wbTable: { ...m, c: m.c + n } }, version: (e.version ?? 1) + 1, versionNonce: rand() };
+  });
+  // 選択は変更しない（元の選択セルを保持＝同じ位置へ続けて追加できる）。新規セルは非選択のまま。
+  api.updateScene({ elements: [...shifted, ...created], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  return true;
+}
+
+// at 行目に count 行ぶんの新しい行を挿入（at=0..R。R は末尾に追加）。手動列幅 cw は列で共有のため隣行から引き継ぐ。
+export function insertTableRows(api: any, tid: string, at: number, count = 1): boolean {
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return false;
+  const { grid, R, C } = info;
+  const idx = Math.max(0, Math.min(at, R));
+  const n = Math.max(1, count);
+  const created: any[] = [];
+  for (let c = 0; c < C; c++) {
+    const ref = grid[idx - 1]?.[c] ?? grid[idx]?.[c] ?? grid.map((row) => row[c]).find(Boolean);
+    const cw = cellMeta(ref)?.cw;
+    for (let k = 0; k < n; k++) created.push(makeCellFrom(ref, tid, idx + k, c, cw ? { cw } : {}));
+  }
+  const shifted = els.map((e) => {
+    const m = cellMeta(e);
+    if (!m || m.tid !== tid || m.r < idx) return e;
+    return { ...e, customData: { ...e.customData, wbTable: { ...m, r: m.r + n } }, version: (e.version ?? 1) + 1, versionNonce: rand() };
+  });
+  // 選択は変更しない（元の選択セルを保持＝同じ位置へ続けて追加できる）。新規セルは非選択のまま。
+  api.updateScene({ elements: [...shifted, ...created], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  return true;
+}
+
+// 選択が跨る複数列を一括削除（残りが1列以上になる範囲のみ）。対象セル＋バインドテキストを isDeleted にし、
+// 右側の列を詰める。削除したセルは選択から外れるため、パネルは自然に閉じる（deselect も明示する）。
+export function deleteTableColumns(api: any, tid: string, cols: number[]): boolean {
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return false;
+  const { grid, R, C } = info;
+  const del = new Set(cols.filter((c) => c >= 0 && c < C));
+  if (!del.size || del.size >= C) return false;             // 全列は消さない
+  const cellIds = new Set<string>();
+  for (let r = 0; r < R; r++) for (const c of del) { const cell = grid[r][c]; if (cell) cellIds.add(cell.id); }
+  const shift = (c: number) => c - [...del].filter((x) => x < c).length;   // 左詰め後の新インデックス
+  const next = els.map((e) => {
+    if (cellIds.has(e.id) || (e.type === "text" && cellIds.has(e.containerId)))
+      return { ...e, isDeleted: true, version: (e.version ?? 1) + 1, versionNonce: rand() };
+    const m = cellMeta(e);
+    if (m && m.tid === tid && !del.has(m.c) && shift(m.c) !== m.c)
+      return { ...e, customData: { ...e.customData, wbTable: { ...m, c: shift(m.c) } }, version: (e.version ?? 1) + 1, versionNonce: rand() };
+    return e;
+  });
+  api.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  api.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
+  return true;
+}
+
+// 選択が跨る複数行を一括削除（残りが1行以上になる範囲のみ）。対象セル＋バインドテキストを isDeleted にし、
+// 下側の行を詰める。
+export function deleteTableRows(api: any, tid: string, rows: number[]): boolean {
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return false;
+  const { grid, R, C } = info;
+  const del = new Set(rows.filter((r) => r >= 0 && r < R));
+  if (!del.size || del.size >= R) return false;             // 全行は消さない
+  const cellIds = new Set<string>();
+  for (const r of del) for (let c = 0; c < C; c++) { const cell = grid[r][c]; if (cell) cellIds.add(cell.id); }
+  const shift = (r: number) => r - [...del].filter((x) => x < r).length;   // 上詰め後の新インデックス
+  const next = els.map((e) => {
+    if (cellIds.has(e.id) || (e.type === "text" && cellIds.has(e.containerId)))
+      return { ...e, isDeleted: true, version: (e.version ?? 1) + 1, versionNonce: rand() };
+    const m = cellMeta(e);
+    if (m && m.tid === tid && !del.has(m.r) && shift(m.r) !== m.r)
+      return { ...e, customData: { ...e.customData, wbTable: { ...m, r: shift(m.r) } }, version: (e.version ?? 1) + 1, versionNonce: rand() };
+    return e;
+  });
+  api.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  api.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
   return true;
 }
 

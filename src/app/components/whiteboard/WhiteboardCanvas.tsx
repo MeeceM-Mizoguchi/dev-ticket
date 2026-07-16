@@ -21,6 +21,7 @@ import { TriangleToolButton } from "./TriangleToolButton";
 import { MermaidToolButton } from "./MermaidToolButton";
 import { TableToolButton } from "./TableToolButton";
 import { TableResizeOverlay } from "./TableResizeOverlay";
+import { TableRowColControls } from "./TableRowColControls";
 import { SnapGuideLayer } from "./SnapGuideLayer";
 import { TriangleBindHint } from "./TriangleBindHint";
 import { FrameHighlightLayer } from "./FrameHighlightLayer";
@@ -654,6 +655,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <MermaidToolButton api={api} containerRef={containerRef} />}
           {canEdit && <TableToolButton api={api} containerRef={containerRef} />}
           {canEdit && <TableResizeOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <TableRowColControls api={api} containerRef={containerRef} canEdit={canEdit} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
         </>
