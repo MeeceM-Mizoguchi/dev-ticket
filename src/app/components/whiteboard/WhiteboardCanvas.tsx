@@ -2,7 +2,7 @@
 // useWhiteboardSync でリアルタイム同期し、フロー接続・カーソルチャット・エクスポートの
 // 各オーバーレイを重ねる。画像は Storage にアップロードして fileId→URL を Yjs で共有する。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Excalidraw } from "@excalidraw/excalidraw";
+import { Excalidraw, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
@@ -366,6 +366,90 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       if (copyToastTimer.current) clearTimeout(copyToastTimer.current);
     };
   }, [api]);
+
+  // 全画面(ネイティブ)中は Esc をブラウザ既定の「即・全画面解除」ではなく自前で処理するため、
+  // Keyboard Lock API で Esc を横取りする（BRU6-004-2）。これがないと図形にフォーカスがあっても
+  // 1回目の Esc で全画面が抜けてしまい、「まずフォーカスを外す」処理を挟めない。
+  // Chrome/Edge のみ対応。未対応環境(Safari等)ではネイティブ全画面のEscは既定挙動のまま。
+  // ※iPad/Mac(WKWebView)や非対応環境は疑似全画面(pseudoFull)なので Keyboard Lock は不要。
+  useEffect(() => {
+    const kb = (navigator as any)?.keyboard;
+    if (!kb?.lock) return;
+    const onFsChange = () => {
+      const full = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      if (full) { try { kb.lock(["Escape"]).catch(() => {}); } catch { /* noop */ } }
+      else { try { kb.unlock?.(); } catch { /* noop */ } }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange as any);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange as any);
+      try { kb.unlock?.(); } catch { /* noop */ }
+    };
+  }, []);
+
+  // 全画面中の Esc 挙動（BRU6-004-2）:
+  //   ・テキスト編集中／図形選択中／描画ツール選択中など「フォーカス」がある → まずフォーカスを外し、全画面は維持
+  //   ・フォーカスが無い → 全画面を解除
+  // あわせて「たまに Esc で選択が外れない」不具合の対策として、選択解除を自前でも確実に行う。
+  //   （自前オーバーレイのボタン等にDOMフォーカスが移ると Excalidraw のキーボード処理が働かず、
+  //     Esc を押しても選択が外れないことがあるため、window キャプチャで確実に拾って解除する。）
+  useEffect(() => {
+    if (!api) return;
+    const isNativeFull = () =>
+      !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+    const exitFull = () => {
+      if (isNativeFull()) {
+        const anyDoc = document as any;
+        (document.exitFullscreen || anyDoc.webkitExitFullscreen)?.call(document);
+      } else if (pseudoFull) {
+        setPseudoFull(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const inFull = isNativeFull() || pseudoFull;
+
+      // テキスト編集中（wysiwygオーバーレイ／入力欄）は確定/キャンセルを Excalidraw に任せる。
+      // 全画面は維持（ネイティブは Keyboard Lock、疑似は何もしないことで維持）。
+      const t = e.target as HTMLElement | null;
+      const editingText = !!document.querySelector(".excalidraw-wysiwyg")
+        || (!!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable));
+      if (editingText) return;
+
+      const st = api.getAppState?.() || {};
+      const sel = st.selectedElementIds || {};
+      const hasSelection = Object.values(sel).some(Boolean)
+        || !!st.editingGroupId || !!st.editingLinearElement || !!st.selectedLinearElement;
+      const toolType = st.activeTool?.type;
+      const toolActive = !!toolType && toolType !== "selection" && toolType !== "hand";
+
+      if (hasSelection) {
+        // 1回目のEsc = フォーカス(選択)を外すだけ。全画面は維持。
+        // Excalidraw 本体にも Esc は流す（stopPropagationしない）が、取りこぼし対策で自前でも解除する。
+        try {
+          api.updateScene({
+            appState: { selectedElementIds: {}, selectedGroupIds: {}, selectedLinearElement: null, editingGroupId: null, editingLinearElement: null },
+            captureUpdate: CaptureUpdateAction.NEVER,
+          });
+        } catch { /* noop */ }
+        return;
+      }
+      if (toolActive) {
+        // 描画ツール選択中は Excalidraw に選択ツールへ戻させる。全画面は維持。
+        return;
+      }
+      // フォーカスなし → 全画面を解除
+      if (inFull) {
+        e.preventDefault();
+        e.stopPropagation();
+        exitFull();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [api, pseudoFull, setPseudoFull]);
 
   // 表のセル編集中は Excalidraw の onChange が発火しない（＝シーンが確定まで凍結される）ため、
   // onChange 駆動の再レイアウトが編集中は一度も走らず、周囲セルが編集開始時の高さのまま固まって

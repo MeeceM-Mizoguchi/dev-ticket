@@ -183,21 +183,8 @@ export function reflowTables(api: any, skip: boolean): boolean {
     // 直前に特定したセルを使い続けて stale へ戻らないようにする（編集が続く間だけ有効）。
     if (editingId) _lastEditingId = editingId;
     else if (_lastEditingId && els.some((e) => e.id === _lastEditingId && cellMeta(e))) editingId = _lastEditingId;
-    // ── 一時デバッグ表示（原因特定用・完成後に削除） ──
-    try {
-      const editCell = editingId ? els.find((e) => e.id === editingId) : null;
-      const tEl = editCell ? textByContainer.get(editCell.id) : null;
-      let dbg = document.getElementById("wb-table-debug");
-      if (!dbg) { dbg = document.createElement("div"); dbg.id = "wb-table-debug"; dbg.style.cssText = "position:fixed;top:8px;left:8px;z-index:99999;background:#000;color:#0f0;font:12px monospace;padding:8px;white-space:pre;pointer-events:none;border-radius:6px;line-height:1.5;"; document.body.appendChild(dbg); }
-      dbg.textContent =
-        `editingId = ${editingId ?? "(なし)"}\n` +
-        `liveText = ${JSON.stringify(liveText)}\n` +
-        `editCell.height(実描画) = ${editCell?.height?.toFixed?.(1)}  originalText = ${JSON.stringify(tEl?.originalText)}`;
-    } catch { /* noop */ }
   } else {
     _lastEditingId = null; // 編集終了（textareaなし）でクリア
-    const dbg = document.getElementById("wb-table-debug");
-    if (dbg) dbg.remove();
   }
   const rawTextOf = (cell: any, t: any): string => {
     if (editingId && cell.id === editingId && liveText != null) return liveText;
