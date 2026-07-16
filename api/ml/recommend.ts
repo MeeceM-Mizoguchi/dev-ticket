@@ -130,7 +130,7 @@ function baselineScore(ticket: TicketFeatureInput, m: MemberFeatureInput): numbe
 }
 
 function buildReasons(
-  ticket: TicketFeatureInput, m: MemberFeatureInput, skillNames: Record<string, string>,
+  ticket: TicketFeatureInput, m: MemberFeatureInput, skillNames: Record<string, string>, activeCount: number,
 ): string[] {
   const reasons: string[] = [];
   const req = ticket.requiredSkills;
@@ -149,9 +149,9 @@ function buildReasons(
   if (reviews >= 3) reasons.push(`レビュー承認 ${reviews}件（リーダー実績）`);
   const missing = req.filter(r => (m.skillLevels[r.skillId] ?? 0) === 0);
   if (missing.length > 0) reasons.push(`未保有: ${missing.map(r => skillNames[r.skillId] ?? "?").join(" / ")}`);
-  if (m.workload === 0) reasons.push("現在の負荷: 空き");
-  else if (m.workload >= 5) reasons.push(`現在の負荷: 高（進行中${m.workload}件）`);
-  else reasons.push(`現在の負荷: 進行中${m.workload}件`);
+  if (activeCount === 0) reasons.push("現在の負荷: 空き");
+  else if (activeCount >= 5) reasons.push(`現在の負荷: 高（稼働中${activeCount}件）`);
+  else reasons.push(`現在の負荷: 稼働中${activeCount}件`);
   return reasons;
 }
 // ============================================================
@@ -160,16 +160,28 @@ function buildReasons(
 
 const DONE_STATUSES = ["done", "closed", "released", "waiting-release"];
 const IN_PROGRESS_STATUSES = ["in-progress", "in-review", "review-done", "stg-test", "uat"];
+// 「稼働中」= アサインされて動き出し可能 or 作業途中。クローズ/完了/リリース待ちは除外、未着手(todo)は含める。
+// さらに保留(progress=-1)/取下(progress=-2)は下の集計で除外する。削除は行ごと消えるので自然に対象外。
+const ACTIVE_STATUSES = ["todo", "in-progress", "in-review", "review-done", "stg-test", "uat"];
+// 相対キャップ: 有資格者の中で稼働中が最少の人を基準に、+この件数を超える人は推薦対象から外す。
+const CAP_MARGIN = 5;
+// スキルゲート（規模別）: 必須スキルをこのLv以上で保有していないと候補にしない。
+const GATE_LEVEL: Record<string, number> = { S: 1, M: 1, L: 2, XL: 3 };
 const LOOKBACK_MONTHS = 18;
 const SCALE_NUM: Record<string, number> = { S: 1, M: 2, L: 3, XL: 4 };
 
 interface TRow {
   id: string; status: string; assignee: string | null; reviewer_name: string | null;
-  due_date: string | null; dev_scale: string | null;
+  due_date: string | null; start_date: string | null; dev_scale: string | null;
+  progress: number | null; created_at: string | null;
   estimated_hours: number | null; actual_work_hours: number | null;
   started_at: string | null; released_at: string | null; uat_completed_at: string | null;
   stg_completed_at: string | null; review_approved_at: string | null;
 }
+
+// メンバーごとの空き状況。稼働中件数・稼働中チケットの期間・最終アサイン日。
+type MemberAvail = { activeCount: number; ranges: { start: string | null; due: string | null }[]; lastAssignedAt: string | null };
+type AvailInfo = Record<string, MemberAvail>;
 
 function actualHours(t: TRow): number {
   if (t.actual_work_hours && t.actual_work_hours > 0) return t.actual_work_hours;
@@ -192,7 +204,7 @@ function onTime(t: TRow): boolean {
  */
 async function buildMemberFeatures(
   sb: SupabaseClient, orgId: string,
-): Promise<{ members: MemberFeatureInput[]; skillLayer: Record<string, SkillLayer>; skillName: Record<string, string> }> {
+): Promise<{ members: MemberFeatureInput[]; skillLayer: Record<string, SkillLayer>; skillName: Record<string, string>; avail: AvailInfo }> {
   const [{ data: profiles }, { data: skills }, { data: memberSkills }] = await Promise.all([
     sb.from("profiles").select("id, name, status").eq("organization_id", orgId),
     sb.from("skills").select("id, name, layer").eq("organization_id", orgId),
@@ -219,7 +231,7 @@ async function buildMemberFeatures(
   const since = new Date(Date.now() - LOOKBACK_MONTHS * 30 * 864e5).toISOString();
   const { data: ticketsRaw } = sprintIds.length
     ? await sb.from("sprint_tickets")
-        .select("id, status, assignee, reviewer_name, due_date, dev_scale, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, sprint_id, category_id, title, description, prefixes")
+        .select("id, status, assignee, reviewer_name, due_date, start_date, dev_scale, progress, created_at, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, sprint_id, category_id, title, description, prefixes")
         .in("sprint_id", sprintIds).gte("created_at", since)
     : { data: [] as TRow[] };
   const tickets = (ticketsRaw ?? []) as unknown as TRow[];
@@ -236,6 +248,7 @@ async function buildMemberFeatures(
   const layerStats: Record<string, Record<string, LStat>> = {};   // profileId → layer → stat
   const totals: Record<string, { done: number; onTime: number }> = {};
   const workload: Record<string, { count: number; hours: number }> = {};
+  const avail: AvailInfo = {};
 
   const emptyL = (): LStat => ({ doneCount: 0, hoursSum: 0, hoursN: 0, onTimeCount: 0, reviewCount: 0, maxScale: 0 });
 
@@ -245,6 +258,16 @@ async function buildMemberFeatures(
     if (pid && IN_PROGRESS_STATUSES.includes(t.status)) {
       const w = (workload[pid] ??= { count: 0, hours: 0 });
       w.count++; w.hours += t.estimated_hours ?? 0;
+    }
+
+    // 稼働中(=未着手〜作業途中、クローズ/完了/保留/取下は除く)の件数・期間・最終アサイン日を集計
+    if (pid) {
+      const av = (avail[pid] ??= { activeCount: 0, ranges: [], lastAssignedAt: null });
+      if (t.created_at && (!av.lastAssignedAt || t.created_at > av.lastAssignedAt)) av.lastAssignedAt = t.created_at;
+      if (ACTIVE_STATUSES.includes(t.status) && t.progress !== -1 && t.progress !== -2) {
+        av.activeCount++;
+        av.ranges.push({ start: t.start_date, due: t.due_date });
+      }
     }
 
     if (!DONE_STATUSES.includes(t.status)) continue;
@@ -303,7 +326,7 @@ async function buildMemberFeatures(
     };
   });
 
-  return { members, skillLayer, skillName };
+  return { members, skillLayer, skillName, avail };
 }
 
 export default async function handler(req: any, res: any) {
@@ -316,7 +339,7 @@ export default async function handler(req: any, res: any) {
   const {
     organizationId, requiredSkillIds = [], devScale = null,
     estimatedHours = 0, priority = "medium", limit = 3,
-    candidateNames,
+    candidateNames, startDate = null, dueDate = null,
   } = req.body ?? {};
 
   if (!organizationId) return res.status(400).json({ error: "organizationId is required" });
@@ -324,7 +347,7 @@ export default async function handler(req: any, res: any) {
   const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
 
   try {
-    const { members, skillLayer, skillName } = await buildMemberFeatures(sb, organizationId);
+    const { members, skillLayer, skillName, avail } = await buildMemberFeatures(sb, organizationId);
     if (members.length === 0) return res.json({ candidates: [], source: "baseline" });
 
     // 必要スキル。{skillId, importance} でも skillId の配列でも受ける。
@@ -337,10 +360,55 @@ export default async function handler(req: any, res: any) {
     const ticket: TicketFeatureInput = { requiredSkills: required, devScale, estimatedHours, priority };
 
     // プロジェクトのメンバーに絞り込む（指定があれば）
-    const pool = Array.isArray(candidateNames) && candidateNames.length > 0
+    const basePool = Array.isArray(candidateNames) && candidateNames.length > 0
       ? members.filter(m => candidateNames.includes(m.name))
       : members;
-    if (pool.length === 0) return res.json({ candidates: [], source: "baseline" });
+    if (basePool.length === 0) return res.json({ candidates: [], source: "baseline" });
+
+    // ── Step0: スキルゲート（規模で可変）── 必須スキルを最低Lv以上で保有する人だけ候補にする。
+    //   0人なら1段ずつ緩め、Lv1でも0なら（誰も保有せず）足切りせず全員を候補にする。
+    const mustSkills = required.filter(r => r.importance >= 3);
+    const passesGate = (m: MemberFeatureInput, minLv: number) =>
+      mustSkills.every(r => (m.skillLevels[r.skillId] ?? 0) >= minLv);
+    let qualified = basePool;
+    if (mustSkills.length > 0) {
+      let lv = GATE_LEVEL[devScale ?? "M"] ?? 1;
+      qualified = basePool.filter(m => passesGate(m, lv));
+      while (qualified.length === 0 && lv > 1) { lv -= 1; qualified = basePool.filter(m => passesGate(m, lv)); }
+      if (qualified.length === 0) qualified = basePool;
+    }
+
+    // ── Step1: 相対キャップ（集中防止①）── 稼働中が最少の人 + CAP_MARGIN を超える人を外す。
+    //   除外後にlimit未満なら緩める（有資格者を全員残す）。
+    const activeOf = (m: MemberFeatureInput) => avail[m.profileId]?.activeCount ?? 0;
+    let recommendable = qualified;
+    if (qualified.length > 0) {
+      const minActive = Math.min(...qualified.map(activeOf));
+      const capped = qualified.filter(m => activeOf(m) <= minActive + CAP_MARGIN);
+      recommendable = capped.length >= Math.min(limit, qualified.length) ? capped : qualified;
+    }
+
+    // ── Step2: 空き順ソート（先頭=推奨）──
+    const hasDates = typeof startDate === "string" && startDate !== "" && typeof dueDate === "string" && dueDate !== "";
+    const overlapOf = (m: MemberFeatureInput): number => {
+      if (!hasDates) return 0;
+      let n = 0;
+      for (const r of avail[m.profileId]?.ranges ?? []) {
+        if (r.start && r.due && r.start <= dueDate && startDate <= r.due) n++;   // 期間の重なり
+      }
+      return n;
+    };
+    const skillSum = (m: MemberFeatureInput) => mustSkills.reduce((a, r) => a + (m.skillLevels[r.skillId] ?? 0), 0);
+    const lastMs = (m: MemberFeatureInput) => {
+      const s = avail[m.profileId]?.lastAssignedAt;
+      return s ? new Date(s).getTime() : 0;   // 未アサイン=最古=ローテーション最優先
+    };
+    const ranked = recommendable.slice().sort((a, b) =>
+      (overlapOf(a) - overlapOf(b)) ||          // ①期間の重なりが少ない順
+      (activeOf(a) - activeOf(b)) ||            // ②稼働中が少ない順
+      (lastMs(a) - lastMs(b)) ||                // ③最終アサインが古い順（ローテーション・控えめ）
+      (skillSum(b) - skillSum(a)),              // ④スキルレベル合計が高い順（品質タイブレーク）
+    );
 
     // 学習済みモデル（オフライン評価でベースラインを超えたものだけ is_active=true）
     const { data: modelRow } = await sb
@@ -355,22 +423,23 @@ export default async function handler(req: any, res: any) {
     const model = modelRow?.model_json as LgbModel | undefined;
     const source: "model" | "baseline" = model ? "model" : "baseline";
 
-    const scored = pool.map(m => {
-      const score = model
-        ? scoreWithModel(model, buildFeatures(ticket, m))
-        : baselineScore(ticket, m);
+    // 「もっと見る」で有資格者全員を出せるよう、上位limitで切らず多めに返す（表示はフロントで制御）。
+    const MAX_RETURN = 30;
+    const candidates = ranked.slice(0, MAX_RETURN).map(m => {
+      const active = activeOf(m);
       return {
         profileId: m.profileId,
         name: m.name,
-        score: Math.round(score * 1000) / 1000,
-        reasons: buildReasons(ticket, m, skillName),
+        score: Math.round((model ? scoreWithModel(model, buildFeatures(ticket, m)) : baselineScore(ticket, m)) * 1000) / 1000,
+        reasons: buildReasons(ticket, m, skillName, active),
         skillMatch: Math.round(buildFeatures(ticket, m)[0] * 1000) / 1000,
         workload: m.workload,
+        activeCount: active,
         source,
       };
-    }).sort((a, b) => b.score - a.score).slice(0, limit);
+    });
 
-    res.json({ candidates: scored, source, modelVersion: modelRow?.version ?? null });
+    res.json({ candidates, source, modelVersion: modelRow?.version ?? null });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

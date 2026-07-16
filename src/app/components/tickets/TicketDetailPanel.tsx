@@ -2461,6 +2461,8 @@ export function TicketDetailPanel({
                   ticketDescription={ticket?.description}
                   ticketPrefixes={ticket?.prefixes}
                   ticketId={ticket?.id}
+                  ticketStartDate={startDate}
+                  ticketDueDate={dueDate}
                   onClose={() => setShowRecommend(false)}
                   onPick={(name, req, scale) => {
                     saveAssignee(name);

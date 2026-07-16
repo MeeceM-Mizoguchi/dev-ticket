@@ -156,6 +156,9 @@ export async function fetchRecommendations(params: {
   estimatedHours: number;
   priority: Priority;
   candidateNames?: string[];
+  // 開始日・期限日があれば、その期間に空いている人を優先する（サーバー側で期間重なりを判定）。
+  startDate?: string | null;
+  dueDate?: string | null;
   limit?: number;
 }): Promise<{ candidates: AssigneeRecommendation[]; source: "model" | "baseline" }> {
   const res = await fetch("/api/ml/recommend", {
