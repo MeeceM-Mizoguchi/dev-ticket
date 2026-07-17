@@ -1769,11 +1769,11 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div onClick={stableEscHandler} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+      <div onClick={stableEscHandler} style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
 
       {/* 背景親チケットパネル — 子チケット表示中に親を裏に見せる */}
       {showParentBackground && breadcrumbParentTicket && (
-        <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column" }}>
+        <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 301, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "#A09690", letterSpacing: "0.05em", marginBottom: 10 }}>{breadcrumbParentTicket.wbs}</div>
             <div style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", lineHeight: 1.2 }}>{breadcrumbParentTicket.title}</div>
@@ -1782,7 +1782,7 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 202 : 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim, overflow: "hidden" }}>
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 302 : 301, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim, overflow: "hidden" }}>
 
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
