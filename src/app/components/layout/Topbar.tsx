@@ -315,7 +315,10 @@ export function Topbar() {
     {showAnnouncement && announcement && (
       <AnnouncementModal announcement={announcement} onClose={handleMarkAsReadAndClose} anchorX={announcementAnchorX} />
     )}
-    <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 10, flexShrink: 0 }}>
+    {/* position:relative + zIndex でヘッダー自体を独立したスタッキングコンテキストにし、
+        ドロップダウン(通知/ユーザーメニュ)がページ側のsticky見出し(zIndex 100〜200)の裏に隠れないようにする。
+        モーダル類(zIndex 300以上)より下に保つことで、全画面ダイアログは従来どおりヘッダーの上に被さる。 */}
+    <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 10, flexShrink: 0, position: "relative", zIndex: 250 }}>
       <style>{`
         @keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }
         @keyframes announcementPulse {
