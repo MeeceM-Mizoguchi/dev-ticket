@@ -77,11 +77,16 @@ export function Sidebar() {
   });
 
   const TooltipEl = ({ label }: { label: string }) => (
+    // サイドバー幅(64px)の外(left:68)へはみ出してページ側に重なるため、
+    // ページの sticky 見出し(zIndex 100〜200)より上に出す。Topbar と同じ 250 の階層
+    // (sticky より上・モーダル類 300 以上より下)に合わせ、スプリント/チケット一覧の
+    // 固定見出しの裏に隠れないようにする。aside 自体は静的配置でスタッキングコンテキストを
+    // 作らないため、この zIndex はルートで sticky 見出しと直接競合する。
     <div style={{
       position: "absolute", left: 68, top: "50%", transform: "translateY(-50%)",
       background: "#1A1714", color: "#fff", fontSize: 11, fontWeight: 600,
       padding: "5px 10px", borderRadius: 7, whiteSpace: "nowrap" as const,
-      pointerEvents: "none", zIndex: 100, boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+      pointerEvents: "none", zIndex: 250, boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
     }}>
       {label}
       <div style={{ position: "absolute", right: "100%", top: "50%", transform: "translateY(-50%)", width: 0, height: 0, borderTop: "5px solid transparent", borderBottom: "5px solid transparent", borderRight: "6px solid #1A1714" }} />
