@@ -34,7 +34,7 @@ const PRIORITY_OPTIONS: SelectOption[] = [
 
 const CACHE_KEY_PREFIX = "new_ticket_draft_";
 
-export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200, currentTicketCount }: {
+export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 300, currentTicketCount }: {
   sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: (wbs?: string) => void;
   sprintStartDate?: string; sprintEndDate?: string;
   parentTicketId?: string; parentWbs?: string;
