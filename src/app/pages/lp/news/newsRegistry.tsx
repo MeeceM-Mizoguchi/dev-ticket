@@ -13,6 +13,7 @@ import WhiteboardFixes from './articles/20260708-whiteboard-fixes';
 import MermaidDiagram from './articles/20260709-mermaid-diagram';
 import WhiteboardFollow from './articles/20260713-whiteboard-follow';
 import WhiteboardTable from './articles/20260713-whiteboard-table';
+import AssigneeRecommend from './articles/20260718-assignee-recommend';
 
 /**
  * ============================================================
@@ -63,6 +64,14 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260718-assignee-recommend',
+    date: '2026.07.18',
+    category: 'リリース',
+    title: '担当者をAIがおすすめする「担当者レコメンド」機能を追加しました',
+    excerpt: '2つのAIが連携。毎晩実績を学習してスキルを自動更新する「分析AI」と、スキル×チケット内容と今の空き状況から担当者をおすすめする「アサインAI」を搭載しました。決めるたびに精度が上がり、外部AIは使わず自社の実績データだけで動作します。',
+    Component: AssigneeRecommend,
+  },
   {
     slug: '20260713-whiteboard-table',
     date: '2026.07.13',
