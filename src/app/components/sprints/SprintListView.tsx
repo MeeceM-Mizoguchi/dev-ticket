@@ -538,15 +538,25 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         return [{ value: "high", label: "高" }, { value: "medium", label: "中" }, { value: "low", label: "低" }];
       case "assignee":
         return [...new Set(sprintTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
-      case "startDate":
-        return [...new Set(sprintTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
-      case "dueDate":
-        return [...new Set(sprintTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+      case "startDate": {
+        const opts = [...new Set(sprintTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+        // 🌟 追加: 日付未入力（空白）の行を絞り込めるように空白選択肢を追加
+        if (sprintTickets.some(t => !(t.startDate || ""))) opts.push({ value: "", label: "（空白）" });
+        return opts;
+      }
+      case "dueDate": {
+        const opts = [...new Set(sprintTickets.map(t => t.dueDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
+        if (sprintTickets.some(t => !(t.dueDate || ""))) opts.push({ value: "", label: "（空白）" });
+        return opts;
+      }
       // 🌟 追加: クローズ日のフィルタ選択肢を生成（内部ではタイムスタンプ、表示はmm/dd）
-      case "closedDate":
-        return [...new Set(sprintTickets.map(t => getClosedDateFromMonitor(t)).filter(Boolean))]
+      case "closedDate": {
+        const opts = [...new Set(sprintTickets.map(t => getClosedDateFromMonitor(t)).filter(Boolean))]
           .sort()
           .map(v => ({ value: v, label: formatClosedMMDD(v) }));
+        if (sprintTickets.some(t => !getClosedDateFromMonitor(t))) opts.push({ value: "", label: "（空白）" });
+        return opts;
+      }
       case "category":
         const optionSet = new Set<string>();
         sprintTickets.forEach(t => optionSet.add(getCategoryLabel(t)));
