@@ -22,7 +22,7 @@ import {
   Mic, MicOff, PhoneOff, ScreenShare, Minus, MousePointer2, Type, ExternalLink,
   Phone, Check, Users, X, Bug, Bell,
   FileText, Lock, Hand, Square, Diamond, Circle, MoveRight, Image as ImageIcon, Maximize2,
-  Eye, Table as TableIcon,
+  Eye, Table as TableIcon, Sparkles, UserRound, RotateCcw,
 } from 'lucide-react';
 
 /** ブラウザ／アプリのウィンドウ枠。中身を実画面らしく見せる共通シェル。 */
@@ -1174,6 +1174,246 @@ export function WhiteboardTableScreen() {
           セルはダブルクリックで入力。内容に合わせて自動で整います
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑫ 担当者レコメンド（TicketSkillFields.tsx / AssigneeRecommendModal をトレース）
+ * ========================================================== */
+export function AssigneeRecommendScreen() {
+  const candidates = [
+    { rank: 1, name: '田中 太郎', active: 0, match: 100, reasons: '必須スキルを全て保有 · 対象期間に空きあり', recommended: true },
+    { rank: 2, name: '佐藤 花子', active: 2, match: 92, reasons: '必須スキルを保有 · 稼働はやや多め', recommended: false },
+    { rank: 3, name: '鈴木 一郎', active: 3, match: 85, reasons: '推奨スキルを一部保有', recommended: false },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      {/* モーダル見出し */}
+      <div className="flex items-center gap-2.5 mb-3.5">
+        <div className="w-8 h-8 rounded-[10px] bg-emerald-600 flex items-center justify-center shrink-0">
+          <Sparkles className="w-4 h-4 text-white" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-[13px] font-bold text-slate-900 leading-tight">担当者をおすすめ</div>
+          <div className="text-[10px] text-slate-400 truncate">必要スキルと開発規模から、空いている適任者を提案します</div>
+        </div>
+      </div>
+
+      {/* 必要スキル＋開発規模（レコメンドの入力） */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-4">
+        <span className="text-[10px] font-semibold text-slate-400 mr-0.5">必要スキル</span>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-100">React <span className="text-[8px] font-bold text-red-500">必須</span></span>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">Node.js <span className="text-[8px] font-bold text-amber-600">推奨</span></span>
+        <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full bg-slate-50 text-slate-500 border border-slate-200">規模 <span className="font-extrabold text-slate-700">M</span></span>
+      </div>
+
+      {/* 結果ヘッダー */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[12px] font-bold text-emerald-700">おすすめ担当者（空き順）</span>
+        <span className="text-[9.5px] text-emerald-600/80">学習済みモデル</span>
+      </div>
+
+      {/* 候補リスト */}
+      <div className="space-y-1.5">
+        {candidates.map((c) => (
+          <div key={c.rank}
+            className={`flex items-start gap-2.5 px-3 py-2.5 rounded-[10px] ${c.recommended ? 'bg-emerald-50 border-2 border-emerald-600' : 'bg-green-50/60 border border-emerald-600/20'}`}>
+            <span className="text-[13px] font-extrabold text-emerald-600 w-4 shrink-0">{c.rank}.</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[13px] font-bold text-slate-900">{c.name}</span>
+                {c.recommended && (
+                  <span className="inline-flex items-center gap-0.5 text-[9.5px] font-extrabold text-white bg-emerald-600 px-1.5 py-0.5 rounded-full">
+                    <Sparkles className="w-2.5 h-2.5" />推奨
+                  </span>
+                )}
+                <span className={`text-[10px] font-bold ${c.active === 0 ? 'text-emerald-600' : 'text-slate-500'}`}>稼働中{c.active}件</span>
+                <span className="text-[10px] font-semibold text-slate-400">適合 {c.match}%</span>
+              </div>
+              <p className="text-[10.5px] text-slate-500 mt-0.5 leading-snug">{c.reasons}</p>
+            </div>
+            <span className="self-center shrink-0 text-[10.5px] font-bold text-emerald-600">この人に決定 →</span>
+          </div>
+        ))}
+      </div>
+
+      {/* もっと見る */}
+      <div className="mt-2 w-full text-center text-[11px] font-semibold text-slate-500 border border-dashed border-slate-300 rounded-lg py-1.5">
+        もっと見る（他4人の有資格者）
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑬ スキル自動分析・登録（MemberSkillDialog.tsx / skills.ts をトレース）
+ * ========================================================== */
+export function MemberSkillScreen() {
+  // レイヤーごとに「スキル名＋レベル(1〜4)」。実画面の配色に合わせる。
+  const layers = [
+    { name: 'フロントエンド', color: '#0284C7', bg: '#F0F9FF', skills: [{ n: 'React', lv: 3 }, { n: 'TypeScript', lv: 4 }] },
+    { name: 'バックエンド', color: '#059669', bg: '#ECFDF5', skills: [{ n: 'Node.js', lv: 2 }, { n: 'PostgreSQL', lv: 3 }] },
+    { name: 'インフラ', color: '#D97706', bg: '#FFFBEB', skills: [{ n: 'Docker', lv: 2 }] },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      {/* メンバーヘッダー＋自動更新トグル */}
+      <div className="flex items-center gap-2.5 mb-4">
+        <div className="w-9 h-9 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+          <UserRound className="w-4 h-4 text-emerald-700" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-[13px] font-bold text-slate-900 leading-tight">田中 太郎</div>
+          <div className="text-[10px] text-slate-400">実績からスキルを自動登録しました</div>
+        </div>
+        <span className="ml-auto inline-flex items-center gap-1.5 shrink-0">
+          <span className="text-[10px] font-semibold text-emerald-700">スキル自動更新</span>
+          <span className="relative w-8 h-[18px] rounded-full bg-emerald-500">
+            <span className="absolute top-0.5 right-0.5 w-[14px] h-[14px] rounded-full bg-white" />
+          </span>
+        </span>
+      </div>
+
+      {/* レイヤーごとのスキル＋レベル */}
+      <div className="space-y-2.5">
+        {layers.map((layer) => (
+          <div key={layer.name} className="rounded-[11px] border border-slate-100 p-2.5">
+            <div className="text-[10px] font-bold mb-2" style={{ color: layer.color }}>{layer.name}</div>
+            <div className="space-y-1.5">
+              {layer.skills.map((s) => (
+                <div key={s.n} className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold px-2 py-1 rounded-md shrink-0" style={{ color: layer.color, background: layer.bg }}>{s.n}</span>
+                  {/* レベル ①②③④（保有レベルまで塗り） */}
+                  <span className="ml-auto flex items-center gap-1">
+                    {[1, 2, 3, 4].map((lv) => (
+                      <span key={lv}
+                        className="w-4 h-4 rounded-[5px] flex items-center justify-center text-[9px] font-bold"
+                        style={s.lv >= lv
+                          ? { background: '#059669', color: '#fff', border: '1px solid #059669' }
+                          : { background: '#fff', color: '#C9C4BB', border: '1px solid rgba(26,23,20,0.12)' }}>
+                        {lv}
+                      </span>
+                    ))}
+                    <span className="ml-1 text-[9.5px] font-bold text-slate-400">Lv{s.lv}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 flex items-center gap-1.5 text-[10px] text-slate-400">
+        <Sparkles className="w-3 h-3 text-emerald-500" />
+        過去のチケット実績からAIが自動判定。手動での調整もできます
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑭ 学習 → 活用の全体像（構図図版・ブラウザ枠なし）
+ *    実処理の関係をトレース:
+ *      過去実績 →①スキル分析(自動登録) →②レコメンド →決定 →(採用ログを学習)→②へ
+ * ========================================================== */
+
+/** 記事内に「概念図」を差し込む共通図版（ScreenFrame を使わない・枠なし）。 */
+export function ConceptFigure({ caption, children }: { caption?: string; children: ReactNode }) {
+  return (
+    <figure className="my-8 sm:my-10">
+      <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-slate-50 to-white p-5 sm:p-6 shadow-sm">
+        {children}
+      </div>
+      {caption && (
+        <figcaption className="mt-3 text-center text-[13px] text-slate-400">{caption}</figcaption>
+      )}
+    </figure>
+  );
+}
+
+/** 図版内の丸アイコン・ノード（アイコン＋2行ラベル）。 */
+function CycleNode({
+  Icon, ring, iconColor, title, sub,
+}: { Icon: typeof Ticket; ring: string; iconColor: string; title: string; sub: string }) {
+  return (
+    <div className="flex flex-col items-center gap-1.5 w-[74px] sm:w-[86px] shrink-0">
+      <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-white flex items-center justify-center shadow-sm" style={{ border: `2px solid ${ring}` }}>
+        <Icon className="w-5 h-5 sm:w-6 sm:h-6" style={{ color: iconColor }} />
+      </div>
+      <div className="text-center leading-tight">
+        <div className="text-[11px] sm:text-[11.5px] font-bold text-slate-800">{title}</div>
+        <div className="text-[9px] text-slate-400 mt-0.5">{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+/** ノード間の小さな右向き矢印（丸アイコンの中心に合わせる）。 */
+function MiniArrow() {
+  return <ArrowRight className="w-4 h-4 text-slate-300 shrink-0 mt-4 sm:mt-5" />;
+}
+
+export function RecommendFlowDiagram() {
+  return (
+    <div className="text-left">
+      {/* 外部AI不使用バッジ */}
+      <div className="flex justify-center mb-5">
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <Lock className="w-3 h-3" />
+          外部AIは不使用 ― すべて自社のチケット実績データだけで完結
+        </span>
+      </div>
+
+      {/* 学習ゾーン → 活用ゾーン（横並び）＋下部に学習ループの弧 */}
+      <div className="relative" style={{ paddingBottom: 62 }}>
+        <div className="flex items-stretch gap-2 sm:gap-3">
+          {/* ① 学習ゾーン */}
+          <div className="flex-1 rounded-2xl border-2 border-sky-200 bg-sky-50/50 px-2 pt-2.5 pb-4">
+            <div className="flex justify-center mb-2.5">
+              <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-full bg-sky-600 text-white">分析AI ・ 学習（自動）</span>
+            </div>
+            <div className="flex items-start justify-center gap-1 sm:gap-2">
+              <CycleNode Icon={Ticket} ring="#7DD3FC" iconColor="#0284C7" title="実績" sub="チケットの蓄積" />
+              <MiniArrow />
+              <CycleNode Icon={Sparkles} ring="#6EE7B7" iconColor="#059669" title="スキル分析" sub="レベルを自動登録" />
+            </div>
+          </div>
+
+          {/* ゾーン間の矢印 */}
+          <div className="flex items-center shrink-0 self-center">
+            <ArrowRight className="w-5 h-5 text-emerald-500" />
+          </div>
+
+          {/* ② 活用ゾーン */}
+          <div className="flex-1 rounded-2xl border-2 border-emerald-200 bg-emerald-50/50 px-2 pt-2.5 pb-4">
+            <div className="flex justify-center mb-2.5">
+              <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-full bg-emerald-600 text-white">アサインAI ・ 活用</span>
+            </div>
+            <div className="flex items-start justify-center gap-1 sm:gap-2">
+              <CycleNode Icon={UserRound} ring="#6EE7B7" iconColor="#059669" title="レコメンド" sub="スキル×空き状況" />
+              <MiniArrow />
+              <CycleNode Icon={CheckCircle2} ring="#6EE7B7" iconColor="#059669" title="担当を決定" sub="採用ログに記録" />
+            </div>
+          </div>
+        </div>
+
+        {/* 学習ループの弧（活用の「決定」→ 学習へ戻る） */}
+        <div style={{ position: 'absolute', left: '33%', right: '11%', bottom: 20, height: 34, borderBottom: '2px dashed #34D399', borderLeft: '2px dashed #34D399', borderRight: '2px dashed #34D399', borderBottomLeftRadius: 14, borderBottomRightRadius: 14 }} />
+        {/* 左端＝学習へ戻る上向き矢印 */}
+        <span style={{ position: 'absolute', left: 'calc(33% - 5px)', bottom: 52, width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '7px solid #34D399' }} />
+        {/* 中央ラベル */}
+        <span style={{ position: 'absolute', left: '61%', bottom: 6, transform: 'translateX(-50%)' }}
+          className="inline-flex items-center gap-1 whitespace-nowrap bg-white text-emerald-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-emerald-200">
+          <RotateCcw className="w-3 h-3" />
+          決定結果が次の学習に
+        </span>
+      </div>
+
+      {/* まとめ */}
+      <p className="mt-1 text-center text-[11px] text-slate-500 leading-relaxed">
+        「決めるたびに学習」が回るので、使うほどおすすめの精度が高まっていきます。
+      </p>
     </div>
   );
 }
