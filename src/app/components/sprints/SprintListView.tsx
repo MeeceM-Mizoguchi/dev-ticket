@@ -296,7 +296,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   // 🌟 BRU5-043: 上部固定バー(パンくず〜ビュー切替)の高さ分だけ、各スプリントの sticky ヘッダーを下げるオフセット
   stickyTop?: number;
   // 🌟 BRU6-002 一括操作: 保存後の再取得・アサイン候補の絞り込み・通知に使う
-  onUpdated?: () => void;
+  onUpdated?: () => void | Promise<void>;
   projectMembers?: string[];
   projectSlug?: string;
 }) {
@@ -694,9 +694,11 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     try {
       const moved = await bulkMoveTickets({ ticketIds: ids, targetSprintId, projectId: bulkProjectId });
       const target = sprints.find(s => s.id === targetSprintId);
+      // 再取得の完了を待ってからダイアログを閉じる。fire-and-forget だと移動元に
+      // 古いデータ（移動済みチケットが残った状態）が一瞬映る「ちらつき」が出るため。
+      await onUpdated?.();
       clearSelection();
       setBulkAction(null);
-      onUpdated?.();
       setSuccessMessage(`${moved}件のチケットを「${target?.name ?? "スプリント"}」へ移動しました。`);
     } catch (e) {
       showAlert("移動に失敗しました。\n\n" + String(e), "エラー");

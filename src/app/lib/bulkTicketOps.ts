@@ -96,24 +96,31 @@ export async function bulkMoveTickets(params: {
     childrenByParent.set(pid, arr);
   }
 
-  let moved = 0;
+  // 全チケット（ルート＋子）の更新を一度に組み立て、並列実行する。
+  // 直列 await だと 1 件ごとに通信往復を待って数十件で数秒かかっていた。
+  // 採番(nextNum)は同期的にこのループで確定するため、通信自体は順序非依存で並列化できる。
+  const updates: PromiseLike<unknown>[] = [];
   for (const root of roots) {
     const newWbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
     nextNum++;
     const oldWbs = root.wbs;
 
-    await supabase!.from("sprint_tickets")
-      .update({ sprint_id: targetSprintId, wbs: newWbs })
-      .eq("id", root.id);
+    updates.push(
+      supabase!.from("sprint_tickets")
+        .update({ sprint_id: targetSprintId, wbs: newWbs })
+        .eq("id", root.id),
+    );
 
     const children = childrenByParent.get(root.id) ?? [];
     for (const child of children) {
       const suffix = child.wbs.slice(oldWbs.length);   // 例: "-01" を維持
-      await supabase!.from("sprint_tickets")
-        .update({ sprint_id: targetSprintId, wbs: `${newWbs}${suffix}` })
-        .eq("id", child.id);
+      updates.push(
+        supabase!.from("sprint_tickets")
+          .update({ sprint_id: targetSprintId, wbs: `${newWbs}${suffix}` })
+          .eq("id", child.id),
+      );
     }
-    moved++;
   }
-  return moved;
+  await Promise.all(updates);
+  return roots.length;
 }

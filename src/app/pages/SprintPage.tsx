@@ -125,14 +125,14 @@ export function SprintPage() {
     }
   }, [selectedTicketWbs, isParentNav]);
 
-  const refreshSprints = () => {
+  const refreshSprints = async () => {
     if (!isSupabaseEnabled || !projectId) return;
-    supabase!.from("projects").select("*").eq("id", projectId).single()
-      .then(({ data: p }) => { if (p) setProject(mapProject(p)); });
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" })
-      .then(({ data }) => {
-        if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
-      });
+    const [{ data: p }, { data }] = await Promise.all([
+      supabase!.from("projects").select("*").eq("id", projectId).single(),
+      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }),
+    ]);
+    if (p) setProject(mapProject(p));
+    if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
   };
 
   useEffect(() => {
