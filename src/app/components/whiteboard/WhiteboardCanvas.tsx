@@ -11,7 +11,9 @@ import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from 
 import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
 import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
 import { healEscapedBoundText } from "@/app/lib/whiteboardBoundText";
-import { reflowTables, freezeSelectedTable, setEditingTextEl } from "@/app/lib/whiteboardTable";
+import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
+import { setEditingTextEl } from "@/app/lib/whiteboardText";
+import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
@@ -463,6 +465,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       raf = requestAnimationFrame(tick);
       if (document.querySelector(".excalidraw-wysiwyg")) {
         try { reflowTables(api, false); } catch { /* noop */ }
+        // 素の図形のラベル編集中も、改行の増減にライブで高さを追従させる（BRU6-011）。
+        try { reflowBoundTextShapes(api, false); } catch { /* noop */ }
       }
     };
     raf = requestAnimationFrame(tick);
@@ -585,10 +589,15 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         wasResizing.current = resizingNow;
         // 角リサイズ確定時、拡大縮小後の寸法を手動値へ焼き込む（reflow に戻されないようにする）。
         const frozen = resizeEnded ? freezeSelectedTable(api) : false;
+        // 素の図形も角リサイズ確定時に現在高さを wbBaseH へ焼き込む（それより下へは縮めない・BRU6-011）。
+        const shapeFrozen = resizeEnded ? freezeSelectedShapeHeights(api) : false;
         // 移動/リサイズ中とリモート/焼き込み直後はスキップ。テキスト編集中は reflow 内部でエディタ
         // textarea を検出して「ライブモード」で再レイアウトする（入力しながら列幅を可変に・BRU5-042）。
         const hardInteract = !!(appState?.selectedElementsAreBeingDragged || resizingNow || appState?.draggingElement);
         reflowTables(api, remote || hardInteract || frozen || elbowHealed);
+        // 素の図形のバインドテキスト高さフィット（BRU6-011）。改行を減らすと元の高さへ戻す。
+        // 新規作成中(newElement)は触らない（作成中の要素を updateScene で壊さない）。
+        reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || !!appState?.newElement);
       }
     } catch { /* noop */ }
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
