@@ -14,7 +14,11 @@
 // 文字の計測・折り返しは Excalidraw 内部関数に依存せず、オフスクリーン canvas で自前に行う
 // （@excalidraw の getFontString/refreshTextDimensions は型宣言のみで実体が公開されていないため）。
 // 生成した折り返し済みテキストと寸法をバインドテキスト要素へ直接反映するので、描画も一致する。
+// 計測ヘルパーと編集中テキスト状態は素の図形フィット(whiteboardShapeFit)と共有する（whiteboardText）。
 import { viewportCoordsToSceneCoords, convertToExcalidrawElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
+import { fontString, lineW, wrapText, getEditingTextEl } from "./whiteboardText";
+
+export { setEditingTextEl } from "./whiteboardText"; // 既存 import 経路の互換のため再エクスポート
 
 const SOFT_BLACK = "#343a40";     // セル罫線色（TableToolButton の生成と揃える）
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
@@ -35,37 +39,6 @@ const cellMeta = (e: any): WbTableMeta | null => {
 };
 
 export const isTableCell = (e: any) => cellMeta(e) != null;
-
-// ── 文字計測（自前・オフスクリーン canvas） ──
-let _ctx: CanvasRenderingContext2D | null = null;
-function ctx(): CanvasRenderingContext2D {
-  if (!_ctx) _ctx = document.createElement("canvas").getContext("2d");
-  return _ctx!;
-}
-function fontString(fontSize: number, fontFamily: number): string {
-  const fam = fontFamily === 3 ? "Cascadia Code, monospace"
-    : fontFamily === 1 ? "Virgil, Segoe UI Emoji, sans-serif"
-    : "Helvetica, Segoe UI, Hiragino Sans, sans-serif";
-  return `${fontSize}px ${fam}`;
-}
-function lineW(text: string, font: string): number {
-  const g = ctx(); g.font = font; return g.measureText(text).width;
-}
-// raw を最大内側幅 maxW で折り返す（半角は語優先、CJK等はグリフ単位で貪欲に折る）。
-function wrapText(raw: string, font: string, maxW: number): string[] {
-  const lines: string[] = [];
-  for (const para of raw.split("\n")) {
-    if (para === "") { lines.push(""); continue; }
-    let line = "";
-    for (const ch of para) {
-      const trial = line + ch;
-      if (line !== "" && lineW(trial, font) > maxW) { lines.push(line); line = ch === " " ? "" : ch; }
-      else line = trial;
-    }
-    lines.push(line);
-  }
-  return lines.length ? lines : [""];
-}
 
 // 選択中の要素が単一の表に属していれば、その tid を返す。
 export function selectedTableId(api: any): string | null {
@@ -286,10 +259,6 @@ export function deleteTableRows(api: any, tid: string, rows: number[]): boolean 
 let _reflowing = false; // 再入ガード。updateScene が同期的に onChange→reflow を呼び戻しても、
                         // ネストした reflow は即 return させ「Maximum update depth exceeded(白画面)」を構造的に防ぐ。
 let _lastEditingId: string | null = null; // 直近に特定した編集中セル。特定がフレーム毎に一瞬失敗しても保持する。
-// onChange 側（appState に editingTextElement が確実に入る）から編集中テキスト要素を受け取る。
-// api.getAppState() には editingTextElement が入らないことがあるため、こちらを最優先で使う。
-let _editingTextEl: any = null;
-export function setEditingTextEl(el: any): void { _editingTextEl = el ?? null; }
 export function reflowTables(api: any, skip: boolean): boolean {
   if (skip || _reflowing) return false;
   const els = api.getSceneElements() as any[];
@@ -317,7 +286,7 @@ export function reflowTables(api: any, skip: boolean): boolean {
   if (ta && ta.offsetParent !== null) {
     liveText = ta.value;
     // onChange で捕まえた編集中テキスト要素を最優先（api.getAppState()の editingTextElement は欠けることがある）。
-    const editEl: any = _editingTextEl ?? st0?.editingTextElement;
+    const editEl: any = getEditingTextEl() ?? st0?.editingTextElement;
     const editTextId: string | null = editEl?.id ?? null;
     if (editEl?.containerId) editingId = editEl.containerId;
     if (!editingId && editTextId) {
