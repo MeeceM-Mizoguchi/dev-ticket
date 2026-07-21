@@ -11,7 +11,7 @@ const sizeConfig: Record<DialogSize, { maxWidth: number; minHeight?: number }> =
   xl: { maxWidth: 940 },
 };
 
-export function DialogShell({ title, onClose, children, footer, size = "md" }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode; size?: DialogSize }) {
+export function DialogShell({ title, onClose, children, footer, size = "md", zIndex = 300 }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode; size?: DialogSize; zIndex?: number }) {
   const { maxWidth, minHeight } = sizeConfig[size];
 
   useEffect(() => {
@@ -20,7 +20,7 @@ export function DialogShell({ title, onClose, children, footer, size = "md" }: {
   }, [onClose]);
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    <div style={{ position: "fixed", inset: 0, zIndex, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ position: "absolute", inset: 0, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} onClick={onClose} />
       {/* overflow: visible でドロップダウンがモーダル外にはみ出せるようにする */}
       <div style={{ position: "relative", zIndex: 10, width: "100%", maxWidth, background: "#FFFFFF", borderRadius: 20, boxShadow: "0 24px 80px rgba(0,0,0,0.22), 0 4px 16px rgba(0,0,0,0.08)" }}>
