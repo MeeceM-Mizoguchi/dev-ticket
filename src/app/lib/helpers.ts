@@ -6,10 +6,15 @@ export function computeSprintStatus(sprint: Sprint): SprintStatus {
   const { tickets, endDate } = sprint;
   const active: TicketStatus[] = ["in-progress", "in-review", "review-done", "stg-test", "uat", "done", "waiting-release", "released"];
   const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released"];
-  // 🌟 修正: tickets.every の判定に、t.progress === -2（取下）の場合も含める
-  if (tickets.length > 0 && tickets.every((t: SprintTicket) => terminal.includes(t.status) || t.progress === -2)) return "completed";
+  // 保留(progress === -1)・取下(progress === -2)は「もう動いていない」チケット。
+  // 保留チケットは元の status（例: in-progress）を保持したままなので、これを弾かないと
+  // 稼働中と誤判定され、実質止まっているスプリントが「進行中」のままになる。
+  const isPaused = (t: SprintTicket) => t.progress === -1 || t.progress === -2;
+  // 🌟 修正: 全チケットが terminal または 保留/取下（＝動いているものが無い）なら完了
+  if (tickets.length > 0 && tickets.every((t: SprintTicket) => terminal.includes(t.status) || isPaused(t))) return "completed";
   if (endDate && endDate < today) return "delayed";
-  if (tickets.some((t: SprintTicket) => active.includes(t.status))) return "active";
+  // 🌟 修正: 保留/取下チケットは稼働中に含めない
+  if (tickets.some((t: SprintTicket) => !isPaused(t) && active.includes(t.status))) return "active";
   return "planning";
 }
 
@@ -280,6 +285,12 @@ export function sprintProgress(s: Sprint) {
   const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released"];
   // 🌟 修正: statusが terminal配列に含まれているか、または progress が -2（取下）の場合も「完了」としてカウントする
   return Math.round(s.tickets.filter(t => terminal.includes(t.status) || t.progress === -2).length / s.tickets.length * 100);
+}
+
+// スプリント内に保留中(progress === -1)のチケットが1件でもあるか。
+// 「完了」だが保留を含むスプリントに「保留あり」ラベルを出すために使う。
+export function sprintHasPending(s: Sprint) {
+  return s.tickets.some(t => t.progress === -1);
 }
 
 export const inputCls = "w-full bg-[#F7F8F9] border border-stone-200/70 rounded-xl px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 focus:bg-white transition-all";

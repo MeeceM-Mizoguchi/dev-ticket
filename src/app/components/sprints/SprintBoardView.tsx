@@ -17,6 +17,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { MEMBERS } from "@/app/data/mock";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
+import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
 import { escStack } from "@/app/lib/escStack";
 
 const DRAG_TYPE = "SPRINT_TICKET";
@@ -267,6 +268,8 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
             });
           }
         }
+        // ステータス変更後、所属スプリントの完了判定をDBへ同期する
+        void syncSprintStatusInDb(currentSprintRef.current?.id);
       }
       onUpdated?.();
     } finally {
