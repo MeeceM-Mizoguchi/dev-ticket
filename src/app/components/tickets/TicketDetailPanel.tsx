@@ -1643,6 +1643,7 @@ export function TicketDetailPanel({
           message={childTickets.length > 0
             ? `「${title}」を削除しますか？\n子チケットが${childTickets.length}件あります。子チケットも全て削除されます。`
             : `「${title}」を削除しますか？`}
+          zIndex={320}
           onConfirm={handleDeleteTicket}
           onClose={() => setShowDeleteConfirm(false)}
         />
@@ -1655,6 +1656,7 @@ export function TicketDetailPanel({
           confirmLabel="取下する"
           confirmColor="#059669"
           hasWarningText={false}
+          zIndex={320}
           onConfirm={executeWithdraw}
           onClose={() => setShowWithdrawConfirm(false)}
         />
@@ -1669,6 +1671,7 @@ export function TicketDetailPanel({
           confirmLabel="親も開始して着手する"
           confirmColor="#D97706"
           hasWarningText={false}
+          zIndex={320}
           onConfirm={handleConfirmParentStart}
           onClose={() => setShowParentStartConfirm(false)}
         />
@@ -1680,6 +1683,7 @@ export function TicketDetailPanel({
           confirmLabel="変更する"
           confirmColor="#7C3AED"
           hasWarningText={false}
+          zIndex={320}
           onConfirm={async () => { await handleSaveReleaseDate(pendingReleaseDate); setPendingReleaseDate(null); }}
           onClose={() => setPendingReleaseDate(null)}
         />
@@ -1691,6 +1695,7 @@ export function TicketDetailPanel({
           confirmLabel="未定にする"
           confirmColor="#6B7280"
           hasWarningText={false}
+          zIndex={320}
           onConfirm={async () => { await handleSetReleaseDateUndecided(); setShowUndecidedConfirm(false); }}
           onClose={() => setShowUndecidedConfirm(false)}
         />
@@ -1698,6 +1703,7 @@ export function TicketDetailPanel({
       {showMoveModal && (
         <DialogShell
           title="スプリントへ移動"
+          zIndex={320}
           onClose={isMoveLoading ? () => { } : () => setShowMoveModal(false)}
           footer={<>
             <BtnSecondary onClick={() => setShowMoveModal(false)} disabled={isMoveLoading}>キャンセル</BtnSecondary>
