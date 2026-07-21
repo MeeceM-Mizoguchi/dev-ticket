@@ -2,11 +2,10 @@
 // ヘッダーを掴んでドラッグ移動でき、最小化・復帰もできる。
 // 各参加者の音声は非表示の <audio> で再生する（最小化中も再生を継続）。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, MicOff, PhoneOff, Loader2, ScreenShare, ScreenShareOff, Minus, Maximize2, UserPlus, AlertTriangle } from "lucide-react";
+import { Mic, MicOff, PhoneOff, Loader2, ScreenShare, ScreenShareOff, Minus, Maximize2, AlertTriangle } from "lucide-react";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useCall } from "@/app/contexts/CallContext";
-import { StartCallDialog } from "./StartCallDialog";
-import { MAX_PARTICIPANTS, type CallMember, type Participant } from "@/app/lib/callConstants";
+import { type CallMember, type Participant } from "@/app/lib/callConstants";
 
 const DRAG_MARGIN = 8; // 画面端との最小余白
 
@@ -101,7 +100,6 @@ export function CallWidget() {
   // pos=null のときは既定の右下配置。ドラッグすると left/top 座標で固定する。
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [minimized, setMinimized] = useState(false);
-  const [addOpen, setAddOpen] = useState(false); // 通話中の「メンバーを追加」ダイアログ(BRU5-066)
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<{ dx: number; dy: number; w: number; h: number } | null>(null);
   // 非対応端末（iPad/iPhone）で画面共有ボタンをタップした際に表示する説明ツールチップ
@@ -174,9 +172,7 @@ export function CallWidget() {
 
   const others = call.participants.filter((p) => p.connState !== "self");
   const self = call.participants.find((p) => p.connState === "self");
-  const title = call.status === "outgoing" ? "呼び出し中…" : others.length > 1 ? `グループ通話（${call.participants.length}人）` : "通話中";
-  // 参加中＋呼び出し中が上限に達していなければ追加で呼べる
-  const canAddMember = call.participants.length + call.pending.length < MAX_PARTICIPANTS;
+  const title = call.status === "outgoing" ? "呼び出し中…" : "通話中";
 
   // 画面共有ボタンの状態
   const iAmSharing = !!screenShare?.isSelf;
@@ -255,19 +251,6 @@ export function CallWidget() {
         {call.status === "outgoing" && others.length === 0 && (
           <div style={{ padding: "8px 4px", fontSize: 11.5, color: "#A09790" }}>相手の応答を待っています…</div>
         )}
-        {/* 通話中でも参加者を追加で呼べる(BRU5-066) */}
-        {canAddMember && (
-          <button
-            onClick={() => setAddOpen(true)}
-            style={{ width: "100%", marginTop: 2, padding: "7px 4px", borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, color: "#059669", fontWeight: 700, fontSize: 12.5 }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "#F0FDF8"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-            <span style={{ width: 32, height: 32, borderRadius: "50%", border: "1.5px dashed rgba(5,150,105,0.45)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <UserPlus style={{ width: 14, height: 14 }} />
-            </span>
-            メンバーを追加
-          </button>
-        )}
       </div>
 
       <div style={{ display: "flex", gap: 10, padding: "10px 14px 14px" }}>
@@ -300,7 +283,6 @@ export function CallWidget() {
           <PhoneOff style={{ width: 18, height: 18 }} />
         </button>
       </div>
-      {addOpen && <StartCallDialog onClose={() => setAddOpen(false)} />}
     </div>
   );
 }
