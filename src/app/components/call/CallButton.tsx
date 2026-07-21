@@ -12,7 +12,7 @@ export function CallButton() {
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => { if (!inCall) setOpen(true); }}
         title={inCall ? "通話中" : "音声通話を発信"}
         style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: inCall ? "rgba(5,150,105,0.1)" : "transparent", transition: "background 0.15s" }}
         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
