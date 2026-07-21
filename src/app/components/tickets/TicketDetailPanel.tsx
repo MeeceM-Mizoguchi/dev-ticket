@@ -9,6 +9,7 @@ import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
+import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -848,6 +849,10 @@ export function TicketDetailPanel({
     }
   }, [ticket?.id, fetchServerImages, emitMine]);
 
+  // チケットのステータス変更／保留／取下のたびに、所属スプリントの完了判定を
+  // DBへ同期する（表示は computeSprintStatus のライブ計算が担保するので fire-and-forget）。
+  const syncSprint = useCallback(() => { void syncSprintStatusInDb(sprintId); }, [sprintId]);
+
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
     const validErr = validateParentStatusChange(btn.next, childTickets);
@@ -863,6 +868,7 @@ export function TicketDetailPanel({
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
     await addComment(`<p>${btn.label}：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus as TicketStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
@@ -879,6 +885,7 @@ export function TicketDetailPanel({
       if (ticket) recordMilestoneFromTicketStatus(ticket.id, "保留" as any);
       await addComment(`<p>チケットを保留にしました</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+      syncSprint();
     } else {
       // 保留を解除する（元のステータスに応じた正しいprogressを再計算してDBに保存）
       const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
@@ -889,6 +896,7 @@ export function TicketDetailPanel({
       // 🌟 修正: ProjectMonitor側の判定ロジックと一致させるため、コメントテキストに「保留を解除しました」を確実に含める
       await addComment(`<p>保留を解除しました（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+      syncSprint();
     }
   };
 
@@ -902,6 +910,7 @@ export function TicketDetailPanel({
       if (ticket) recordMilestoneFromTicketStatus(ticket.id, "取下" as any);
       await addComment(`<p>チケットを取下げました</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+      syncSprint();
       setShowWithdrawConfirm(false);
     } finally {
       setIsWithdrawLoading(false);
@@ -927,6 +936,7 @@ export function TicketDetailPanel({
         const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
         await addComment(`<p>取下げを解除し、ステータスを「${newLabel}」に戻しました</p>`, "status_change", [], status as TicketStatus);
         onUpdated?.();
+        syncSprint();
       } finally {
         setIsWithdrawLoading(false);
       }
@@ -946,6 +956,7 @@ export function TicketDetailPanel({
     }
     await addComment(`<p>着手開始しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   // 🌟 追加(BRU4-059): 子チケット着手に伴い、裏で親チケットも「対応中」に開始する実処理
@@ -967,6 +978,7 @@ export function TicketDetailPanel({
     // ローカルの親情報も開始済みへ更新（同一セッションで再度ダイアログが出ないように）
     setBreadcrumbParentTicket({ ...parent, status: newStatus, progress: p });
     onUpdated?.();
+    syncSprint();
   };
 
   // 🌟 修正(BRU4-059): 親が未開始(todo)なら「親も開始しますか？」の確認を挟む
@@ -1010,6 +1022,7 @@ export function TicketDetailPanel({
     }
     await addComment(`<p>対応完了しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleSaveActualWorkHours = async (hours: number, segmentHours?: string[]) => {
@@ -1057,6 +1070,7 @@ export function TicketDetailPanel({
       }
       const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
       await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
+      syncSprint();
     })();
   };
 
@@ -1308,6 +1322,7 @@ export function TicketDetailPanel({
     setReviewContent("");
     setShowReReviewForm(false);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleRevisionRequest = async (revisionText: string = "") => {
@@ -1345,6 +1360,7 @@ export function TicketDetailPanel({
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleReviewApproval = async (approvalText: string = "") => {
@@ -1383,6 +1399,7 @@ export function TicketDetailPanel({
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleSkipReview = async () => {
@@ -1398,6 +1415,7 @@ export function TicketDetailPanel({
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
     await addComment(`<p>レビュースキップ：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleWithdrawReview = async () => {
@@ -1431,6 +1449,7 @@ export function TicketDetailPanel({
       });
     }
     onUpdated?.();
+    syncSprint();
   };
 
   const handleDeleteTicket = async () => {

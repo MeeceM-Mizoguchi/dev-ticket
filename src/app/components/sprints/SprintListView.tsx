@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol, DevScale } from "@/app/types";
-import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
+import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, sprintHasPending, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
 // 🌟 BRU6-002 一括操作（削除・スプリント移動・アサイン）
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
@@ -846,7 +846,10 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sprints.map(sprint => {
           const isExp = expanded.has(sprint.id);
-          const sm = getSprintStatusMeta(computeSprintStatus(sprint));
+          const computedStatus = computeSprintStatus(sprint);
+          const sm = getSprintStatusMeta(computedStatus);
+          // 完了だが保留中チケットを含む場合は「保留あり」を併記する
+          const showPendingBadge = computedStatus === "completed" && sprintHasPending(sprint);
           const progress = sprintProgress(sprint);
           // 🌟 修正: "done", "closed", "waiting-release", "released" のいずれか、または progress が -2（取下）の場合を完了件数としてカウント
           const terminalStatuses = ["done", "closed", "waiting-release", "released"];
@@ -873,6 +876,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, minWidth: 0, overflow: "hidden" }}>
                       <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sprint.name}</span>
                       <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
+                      {showPendingBadge && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", whiteSpace: "nowrap" }}>保留あり</span>
+                      )}
                     </div>
                     {sprint.goal && <p style={{ fontSize: 11, color: "#A09790", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sprint.goal}</p>}
                     <div style={{ marginTop: 6 }}><ProgressBar value={progress} /></div>
