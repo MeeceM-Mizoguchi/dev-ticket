@@ -135,6 +135,7 @@ export default async function handler(req: any, res: any) {
   const authAdmin = (sb.auth as any).admin;
 
   // Generate invite link (does NOT send Supabase's default email)
+  let verifyType: "invite" | "magiclink" = "invite";
   let { data, error } = await authAdmin.generateLink({
     type: "invite",
     email,
@@ -153,11 +154,19 @@ export default async function handler(req: any, res: any) {
     });
     data = mlResult.data;
     error = mlResult.error;
+    verifyType = "magiclink";
   }
 
-  if (error || !data?.properties?.action_link) {
+  if (error || !data?.properties?.hashed_token) {
     return res.status(400).json({ error: error?.message || "招待リンクの生成に失敗しました" });
   }
+
+  // NOTE: Supabase の action_link はワンタイムトークンの直リンクで、法人メールの
+  // リンクスキャナ（Safe Links 等）が受信直後に自動アクセスするとトークンが
+  // 消費され、担当者がクリックする頃には otp_expired になる。これを避けるため、
+  // トークンは直リンクせず自前ページの query に渡し、accept-invite 側でユーザーの
+  // ボタン操作をトリガーに verifyOtp で消費する。
+  const inviteUrl = `${publicUrl}/accept-invite?token_hash=${encodeURIComponent(data.properties.hashed_token)}&type=${verifyType}`;
 
   // Pre-create profile with status='invited' so member appears immediately in the list
   if (data.user?.id) {
@@ -178,7 +187,7 @@ export default async function handler(req: any, res: any) {
     from: fromEmail,
     to: email,
     subject: "【Dev Ticket】チームへの招待",
-    html: inviteHtml(name || "", role || "developer", data.properties.action_link),
+    html: inviteHtml(name || "", role || "developer", inviteUrl),
   });
 
   if (mailError) return res.status(500).json({ error: "メールの送信に失敗しました: " + mailError.message });

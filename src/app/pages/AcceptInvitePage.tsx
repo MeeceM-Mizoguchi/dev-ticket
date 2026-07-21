@@ -1,8 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import { Ticket, AlertTriangle, ArrowRight } from "lucide-react";
+import type { EmailOtpType } from "@supabase/supabase-js";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { FieldInput } from "@/app/components/shared/FieldInput";
+
+type Phase = "loading" | "verify" | "form" | "error";
+
+function linkErrorMessage(code: string | null): string {
+  if (code === "otp_expired") {
+    return "この招待リンクは既に使用済みか、有効期限が切れています。お手数ですが、招待した管理者に再送を依頼してください。";
+  }
+  return "招待リンクの確認に失敗しました。リンクが無効か期限切れの可能性があります。管理者に再送を依頼してください。";
+}
 
 export function AcceptInvitePage() {
   const navigate = useNavigate();
@@ -10,17 +20,60 @@ export function AcceptInvitePage() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [sessionReady, setSessionReady] = useState(false);
+  const [phase, setPhase] = useState<Phase>("loading");
+  const [linkError, setLinkError] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [token, setToken] = useState<{ hash: string; type: EmailOtpType } | null>(null);
 
   useEffect(() => {
-    if (!isSupabaseEnabled) { setSessionReady(true); return; }
+    if (!isSupabaseEnabled) { setPhase("form"); return; }
+
+    // 1) Supabase がエラーを URL ハッシュに載せて返すケース（期限切れ・消費済みの旧リンク等）。
+    //    以前はここを読まず onAuthStateChange を待ち続けて無限ローディングになっていた。
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (hashParams.get("error")) {
+      setLinkError(linkErrorMessage(hashParams.get("error_code")));
+      setPhase("error");
+      return;
+    }
+
+    // 2) 新方式: メールから token_hash を受け取り、ユーザーのボタン操作を待って verifyOtp する。
+    //    リンクスキャナが自動アクセスしてもトークンは消費されない（＝ otp_expired を防ぐ）。
+    const q = new URLSearchParams(window.location.search);
+    const th = q.get("token_hash");
+    const ty = q.get("type") as EmailOtpType | null;
+    if (th && ty) {
+      setToken({ hash: th, type: ty });
+      setPhase("verify");
+      return;
+    }
+
+    // 3) 既存セッション経由（旧 action_link がハッシュにセッションを載せて戻すケース含む）。
+    let done = false;
     supabase!.auth.getSession().then(({ data: { session } }) => {
-      if (session) { setSessionReady(true); return; }
+      if (session) { done = true; setPhase("form"); return; }
       const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
-        if (session) { setSessionReady(true); subscription.unsubscribe(); }
+        if (session) { done = true; setPhase("form"); subscription.unsubscribe(); }
       });
     });
+    // セッションが一定時間来なければエラー表示（無限ローディング防止）。
+    const timer = setTimeout(() => {
+      if (!done) { setLinkError(linkErrorMessage(null)); setPhase("error"); }
+    }, 8000);
+    return () => clearTimeout(timer);
   }, []);
+
+  const handleVerify = async () => {
+    if (!token) return;
+    setVerifying(true); setLinkError("");
+    const { error } = await supabase!.auth.verifyOtp({ token_hash: token.hash, type: token.type });
+    if (error) {
+      setLinkError(linkErrorMessage("otp_expired"));
+      setPhase("error");
+    } else {
+      setPhase("form");
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -38,13 +91,43 @@ export function AcceptInvitePage() {
     }
   };
 
-  if (!sessionReady) return (
+  if (phase === "loading") return (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", background:"#F5F6F8" }}>
       <div style={{ textAlign:"center" as const }}>
         <div style={{ width:38, height:38, borderRadius:11, background:"linear-gradient(145deg,#34D399,#059669)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px", boxShadow:"0 4px 12px rgba(5,150,105,0.35)" }}>
           <Ticket style={{ width:17, height:17, color:"#fff" }} />
         </div>
         <p style={{ fontSize:12, color:"#A09790" }}>招待を確認中...</p>
+      </div>
+    </div>
+  );
+
+  if (phase === "error") return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", background:"#F5F6F8", padding:24 }}>
+      <div style={{ maxWidth:380, width:"100%", background:"#fff", border:"1px solid #E7E5E4", borderRadius:16, padding:32, textAlign:"center" as const, boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}>
+        <div style={{ width:44, height:44, borderRadius:12, background:"#FEF2F2", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
+          <AlertTriangle style={{ width:22, height:22, color:"#DC2626" }} />
+        </div>
+        <h1 style={{ fontSize:18, fontWeight:700, color:"#1C1917", margin:"0 0 8px" }}>リンクを開けませんでした</h1>
+        <p style={{ fontSize:13, color:"#78716C", lineHeight:1.7, margin:0 }}>{linkError}</p>
+      </div>
+    </div>
+  );
+
+  if (phase === "verify") return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh", background:"#F5F6F8", padding:24 }}>
+      <div style={{ maxWidth:380, width:"100%", background:"#fff", border:"1px solid #E7E5E4", borderRadius:16, padding:32, textAlign:"center" as const, boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}>
+        <div style={{ width:44, height:44, borderRadius:12, background:"linear-gradient(145deg,#34D399,#059669)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px", boxShadow:"0 4px 12px rgba(5,150,105,0.35)" }}>
+          <Ticket style={{ width:20, height:20, color:"#fff" }} />
+        </div>
+        <h1 style={{ fontSize:18, fontWeight:700, color:"#1C1917", margin:"0 0 8px" }}>チームへの招待</h1>
+        <p style={{ fontSize:13, color:"#78716C", lineHeight:1.7, margin:"0 0 20px" }}>下のボタンを押して招待を受け、パスワードを設定してください。</p>
+        <button type="button" onClick={handleVerify} disabled={verifying}
+          className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-sm flex items-center justify-center gap-2 shadow-sm shadow-emerald-200">
+          {verifying
+            ? <><div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />確認中...</>
+            : <>招待を受けて続ける <ArrowRight className="w-4 h-4" /></>}
+        </button>
       </div>
     </div>
   );
