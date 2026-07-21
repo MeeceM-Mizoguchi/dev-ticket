@@ -304,7 +304,7 @@ export function MembersPage() {
               {filtered.map(m => (
                 <MemberCard key={m.id} member={m}
                   canEdit={canEdit}
-                  canDelete={m.id !== userId && (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager"))}
+                  canDelete={m.id !== userId && m.role !== "owner" && (isOwner || (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager")))}
                   canManageSkills={canManageSkills}
                   skills={skills}
                   memberSkills={memberSkills}
