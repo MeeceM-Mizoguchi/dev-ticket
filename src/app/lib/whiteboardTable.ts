@@ -406,12 +406,20 @@ export function reflowTables(api: any, skip: boolean): boolean {
         const t = textByContainer.get(cell.id);
         const wi = wrapInfo.get(cell.id);
         if (t && wi) {
-          const tx = nx + (nw - wi.w) / 2;      // セル中央そろえ
-          const ty = ny + (nh - wi.h) / 2;
+          // 文字の配置はユーザー設定(textAlign/verticalAlign)を尊重する。以前は毎回 center/middle を
+          // 強制上書きしていたため、左寄せ/右寄せにしてもフォーカスアウト時の reflow で中央へ戻ってしまった
+          // （BRU7-038）。既定は中央そろえ（未設定・不正値は center/middle にフォールバック）。
+          const hAlign = t.textAlign === "left" || t.textAlign === "right" ? t.textAlign : "center";
+          const vAlign = t.verticalAlign === "top" || t.verticalAlign === "bottom" ? t.verticalAlign : "middle";
+          const tx = hAlign === "left" ? nx + HPAD
+                   : hAlign === "right" ? nx + nw - wi.w - HPAD
+                   : nx + (nw - wi.w) / 2;
+          const ty = vAlign === "top" ? ny + VPAD
+                   : vAlign === "bottom" ? ny + nh - wi.h - VPAD
+                   : ny + (nh - wi.h) / 2;
           if (t.text !== wi.text || Math.abs(t.width - wi.w) > EPS || Math.abs(t.height - wi.h) > EPS ||
-              Math.abs(t.x - tx) > EPS || Math.abs(t.y - ty) > EPS ||
-              t.textAlign !== "center" || t.verticalAlign !== "middle") {
-            patch.set(t.id, { ...t, text: wi.text, width: wi.w, height: wi.h, x: tx, y: ty, textAlign: "center", verticalAlign: "middle" });
+              Math.abs(t.x - tx) > EPS || Math.abs(t.y - ty) > EPS) {
+            patch.set(t.id, { ...t, text: wi.text, width: wi.w, height: wi.h, x: tx, y: ty });
           }
         }
       }
