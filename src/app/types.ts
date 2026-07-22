@@ -334,7 +334,4 @@ export interface UserPermissions {
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
   whiteboardPermission: AccessLevel;
-  // ENHA2-035: 後追い追加のため optional。未設定時はプロジェクトメンバーなら編集可として扱う。
-  canAccessFiles?: boolean;
-  filesPermission?: AccessLevel;
 }
