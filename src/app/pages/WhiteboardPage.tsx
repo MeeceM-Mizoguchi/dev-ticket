@@ -19,7 +19,7 @@ function colorFromId(id: string): string {
   return `hsl(${h}, 70%, 45%)`;
 }
 
-interface Perms { whiteboard: AccessLevel; wiki: AccessLevel; backlog: AccessLevel; minutes: AccessLevel }
+interface Perms { whiteboard: AccessLevel; wiki: AccessLevel; backlog: AccessLevel; minutes: AccessLevel; files: AccessLevel }
 
 export function WhiteboardPage() {
   const { projectSlug, boardId } = useParams();
@@ -30,7 +30,7 @@ export function WhiteboardPage() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [boards, setBoards] = useState<Whiteboard[]>([]);
-  const [perms, setPerms] = useState<Perms>({ whiteboard: "view", wiki: "view", backlog: "view", minutes: "view" });
+  const [perms, setPerms] = useState<Perms>({ whiteboard: "view", wiki: "view", backlog: "view", minutes: "view", files: "edit" });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -48,7 +48,7 @@ export function WhiteboardPage() {
     ]);
     setBoards(boardRows);
     if (isAdminRole) {
-      setPerms({ whiteboard: "edit", wiki: "edit", backlog: "edit", minutes: "edit" });
+      setPerms({ whiteboard: "edit", wiki: "edit", backlog: "edit", minutes: "edit", files: "edit" });
     } else {
       const up = (permRes as any).data?.permissions as Partial<UserPermissions> | undefined;
       setPerms({
@@ -56,6 +56,8 @@ export function WhiteboardPage() {
         wiki: (up?.wikiPermission as AccessLevel) ?? "none",
         backlog: (up?.backlogPermission as AccessLevel) ?? "none",
         minutes: (up?.minutesPermission as AccessLevel) ?? "none",
+        // ENHA2-035: 後追い追加のため未設定時は "edit"（既存プロジェクトでも即使える）
+        files: (up?.filesPermission as AccessLevel) ?? "edit",
       });
     }
     setLoading(false);
@@ -107,7 +109,7 @@ export function WhiteboardPage() {
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
           <ProjectSubNav projectSlug={projectSlug ?? ""} active="whiteboard" marginBottom={0}
-            whiteboardPerm={perms.whiteboard} wikiPerm={perms.wiki} backlogPerm={perms.backlog} minutesPerm={perms.minutes} />
+            whiteboardPerm={perms.whiteboard} wikiPerm={perms.wiki} backlogPerm={perms.backlog} minutesPerm={perms.minutes} filesPerm={perms.files} />
         </div>
       </div>
 
