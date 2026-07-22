@@ -8,6 +8,7 @@
  * ・レポート管理  … src/app/pages/ReportsPage.tsx
  * ・生体認証ログイン … src/app/pages/LoginPage.tsx
  * ・ホワイトボード … src/app/pages/WhiteboardPage.tsx ほか whiteboard/*
+ * ・ファイルボックス … src/app/pages/FileBoxPage.tsx / components/files/*
  *
  * 配色・ラベル・アイコンは実画面に合わせている（emerald/teal 系アクセント）。
  * div / span / svg のみで構成し、記事本文の共通タイポグラフィ(PROSE)の
@@ -23,6 +24,8 @@ import {
   Phone, Check, Users, X, Bug, Bell,
   FileText, Lock, Hand, Square, Diamond, Circle, MoveRight, Image as ImageIcon, Maximize2,
   Eye, Table as TableIcon, Sparkles, UserRound, RotateCcw,
+  FolderOpen, FileSpreadsheet, FileImage, Upload, Link2, MonitorCog, Save, ShieldCheck,
+  Layers, ClipboardList, BookOpen,
 } from 'lucide-react';
 
 /** ブラウザ／アプリのウィンドウ枠。中身を実画面らしく見せる共通シェル。 */
@@ -1413,6 +1416,255 @@ export function RecommendFlowDiagram() {
       {/* まとめ */}
       <p className="mt-1 text-center text-[11px] text-slate-500 leading-relaxed">
         「決めるたびに学習」が回るので、使うほどおすすめの精度が高まっていきます。
+      </p>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑮ ファイルボックス（FileBoxPage.tsx をトレース）
+ *    プロジェクト直下の /files。サブナビ・検索・D&Dアップロード・一覧。
+ * ========================================================== */
+export function FileBoxScreen() {
+  // ProjectSubNav.tsx と同じ並び・同じ配色（アクティブは #059669 の塗り）
+  const tabs = [
+    { label: 'スプリント管理', Icon: Layers },
+    { label: 'バックログ', Icon: ClipboardList },
+    { label: 'Wiki', Icon: BookOpen },
+    { label: '議事録', Icon: FileText },
+    { label: 'ファイルボックス', Icon: FolderOpen },
+    { label: 'ホワイトボード', Icon: PenTool },
+  ];
+  // KIND_COLOR（projectFiles.ts）に合わせた種別カラー
+  const files = [
+    { name: '要件定義書.xlsx', Icon: FileSpreadsheet, color: '#059669', meta: '412.8 KB · 田中 太郎 · 2026/07/22 14:20', ver: 3 },
+    { name: '画面設計書.docx', Icon: FileText, color: '#2563EB', meta: '1.2 MB · 佐藤 花子 · 2026/07/22 11:05', ver: 2 },
+    { name: 'API仕様書.pdf', Icon: FileText, color: '#DC2626', meta: '860.4 KB · 鈴木 一郎 · 2026/07/21 18:42', ver: 1 },
+    { name: 'ロゴ案.png', Icon: FileImage, color: '#7C3AED', meta: '245.0 KB · 田中 太郎 · 2026/07/21 09:30', ver: 1 },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      {/* 見出し＋サブナビ */}
+      <div className="flex items-start justify-between gap-3 mb-3.5">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-[10px] bg-cyan-600 flex items-center justify-center shrink-0">
+              <FolderOpen className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <div className="text-[13px] font-bold text-slate-900 leading-tight">ファイルボックス</div>
+              <div className="text-[10px] text-slate-400">DevTicket 開発 · 4 件</div>
+            </div>
+          </div>
+        </div>
+        <div className="hidden sm:flex items-center gap-1 shrink-0 rounded-[9px] border border-slate-900/[0.08] bg-white p-[3px]">
+          {tabs.map((t) => {
+            const active = t.label === 'ファイルボックス';
+            return (
+              <span key={t.label}
+                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[9.5px] font-medium whitespace-nowrap ${
+                  active ? 'bg-emerald-600 text-white' : 'text-stone-500'}`}>
+                <t.Icon className="w-[11px] h-[11px]" />{t.label}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="rounded-[13px] border border-slate-100 p-3">
+        {/* 検索 */}
+        <div className="relative max-w-[280px] mb-3">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" />
+          <div className="rounded-lg bg-slate-100 py-1.5 pl-7 pr-2 text-[11px] text-slate-400">ファイル名・アップロード者で検索...</div>
+        </div>
+
+        {/* アップロード枠（ドラッグ&ドロップ） */}
+        <div className="flex items-center justify-center gap-2 rounded-[10px] border-[1.5px] border-dashed border-emerald-500/50 bg-emerald-50/40 py-4 mb-3">
+          <Upload className="w-3.5 h-3.5 text-emerald-600" />
+          <span className="text-[11px] text-emerald-700 font-medium">クリックしてファイルを追加、またはドラッグ&amp;ドロップ（1ファイル 50.0 MB まで）</span>
+        </div>
+
+        {/* 一覧 */}
+        <div>
+          {files.map((f) => (
+            <div key={f.name} className="flex items-center gap-2.5 px-2 py-2.5 border-b border-slate-100 last:border-b-0">
+              <span className="w-[30px] h-[30px] rounded-[7px] shrink-0 flex items-center justify-center" style={{ background: `${f.color}14` }}>
+                <f.Icon className="w-3.5 h-3.5" style={{ color: f.color }} />
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[12px] font-semibold text-slate-900 truncate">{f.name}</span>
+                  {f.ver > 1 && (
+                    <span className="text-[9px] font-bold px-1.5 py-px rounded-full bg-indigo-50 text-indigo-600 shrink-0">v{f.ver}</span>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5 truncate">{f.meta}</div>
+              </div>
+              <span className="flex items-center gap-1.5 shrink-0 text-slate-300">
+                <Link2 className="w-3 h-3" />
+                <Download className="w-3 h-3" />
+                <Trash2 className="w-3 h-3" />
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑯ 自前ファイルビューア（FileViewerModal.tsx / ExcelViewer.tsx をトレース）
+ *    署名付きURLからブラウザが直接取得し、描画も全てブラウザ内で完結する。
+ * ========================================================== */
+export function FileViewerScreen() {
+  const cols = ['A', 'B', 'C', 'D', 'E'];
+  const rows: string[][] = [
+    ['機能', '担当', '規模', '状態', ''],
+    ['ファイル一覧', '田中 太郎', 'M', '完了', ''],
+    ['ブラウザ閲覧', '佐藤 花子', 'L', '完了', ''],
+    ['バージョン管理', '鈴木 一郎', 'M', '進行中', ''],
+    ['%メンション', '田中 太郎', 'S', '完了', ''],
+    ['', '', '', '', ''],
+  ];
+  return (
+    <div className="text-left bg-white">
+      {/* ビューアのヘッダー */}
+      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-slate-100">
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-bold text-slate-900 truncate">要件定義書.xlsx</div>
+          <div className="text-[10px] text-slate-400">412.8 KB · 田中 太郎</div>
+        </div>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 border-[1.5px] border-blue-200 shrink-0">
+          <MonitorCog className="w-3 h-3" />アプリで開く
+        </span>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-600 border-[1.5px] border-emerald-200 shrink-0">
+          <Download className="w-3 h-3" />ダウンロード
+        </span>
+        <X className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+      </div>
+
+      {/* シート本体（列ヘッダー・行番号つきグリッド） */}
+      <div className="relative bg-white p-3">
+        <div className="overflow-hidden rounded-md border border-slate-200">
+          {/* 列ヘッダー */}
+          <div className="flex bg-slate-50 border-b border-slate-200">
+            <span className="w-7 shrink-0 border-r border-slate-200" />
+            {cols.map((c) => (
+              <span key={c} className="flex-1 text-center text-[9px] font-semibold text-slate-400 py-1 border-r border-slate-200 last:border-r-0">{c}</span>
+            ))}
+          </div>
+          {rows.map((r, ri) => (
+            <div key={ri} className="flex border-b border-slate-100 last:border-b-0">
+              <span className="w-7 shrink-0 text-center text-[9px] text-slate-400 py-1.5 bg-slate-50 border-r border-slate-200">{ri + 1}</span>
+              {r.map((cell, ci) => (
+                <span key={ci}
+                  className={`flex-1 min-w-0 truncate px-1.5 py-1.5 text-[10px] border-r border-slate-100 last:border-r-0 ${
+                    ri === 0 ? 'font-bold text-slate-700 bg-slate-50/70' : 'text-slate-600'}`}>
+                  {cell}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* 描画レイヤー（シート上に浮いた図形もそのまま再現） */}
+        <div className="absolute right-6 top-9 rotate-[-4deg]">
+          <span className="inline-flex items-center gap-1 rounded-lg border-2 border-amber-400 bg-amber-50 px-2.5 py-1.5 text-[9.5px] font-bold text-amber-700 shadow-sm">
+            <ImageIcon className="w-3 h-3" />シート上の図形・画像も表示
+          </span>
+        </div>
+
+        {/* シートタブ */}
+        <div className="flex items-center gap-1 mt-2.5">
+          <span className="text-[9.5px] font-bold px-2 py-1 rounded-t-md bg-white border border-slate-200 border-b-white text-emerald-700">要件一覧</span>
+          <span className="text-[9.5px] px-2 py-1 text-slate-400">スケジュール</span>
+          <span className="text-[9.5px] px-2 py-1 text-slate-400">課題管理</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑰ %ファイルメンション（RichEditor.tsx の FileMentionList をトレース）
+ *    チケット・バックログ・Wiki・議事録の本文から、その場でファイルを開ける。
+ * ========================================================== */
+export function FileMentionScreen() {
+  const items = [
+    { name: '要件定義書.xlsx', sel: true },
+    { name: '要件ヒアリングメモ.docx', sel: false },
+    { name: '要件_API仕様書.pdf', sel: false },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className="w-8 h-8 rounded-[10px] bg-emerald-600 flex items-center justify-center shrink-0">
+          <Ticket className="w-4 h-4 text-white" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-[13px] font-bold text-slate-900 leading-tight">DEV-128 ファイル一覧の実装</div>
+          <div className="text-[10px] text-slate-400">詳細</div>
+        </div>
+      </div>
+
+      {/* 本文エディタ */}
+      <div className="rounded-[10px] border border-slate-200 p-3">
+        <p className="text-[11.5px] text-slate-600 leading-relaxed">
+          仕様は <span className="rounded bg-cyan-50 px-1 py-px font-semibold text-cyan-700">%要件定義書.xlsx</span> の「要件一覧」シートを参照。
+        </p>
+        <p className="text-[11.5px] text-slate-600 leading-relaxed mt-1.5">
+          レビュー観点は <span className="text-slate-900 font-semibold">%要件</span>
+          <span className="inline-block w-px h-3 align-middle bg-slate-900 ml-px" />
+        </p>
+
+        {/* サジェストポップアップ */}
+        <div className="mt-1.5 w-full max-w-[320px] rounded-[10px] border border-slate-200 bg-white shadow-lg overflow-hidden">
+          {items.map((it) => (
+            <div key={it.name}
+              className={`flex items-center gap-2 px-3 py-[7px] ${it.sel ? 'bg-cyan-50' : 'bg-white'}`}>
+              <span className="text-[9px] font-bold px-1.5 py-px rounded bg-cyan-100 text-cyan-700 shrink-0">ファイル</span>
+              <span className="text-[10.5px] text-slate-500 truncate">{it.name}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center gap-1.5 text-[10px] text-slate-400">
+        <Eye className="w-3 h-3 text-cyan-500" />
+        クリックするとその場でプレビュー。閉じても画面は移動しないので、作業を中断せずに確認できます
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑱ 「アプリで開く → Ctrl+S → 新バージョン」の往復（構図図版）
+ *    api/dav（WebDAV）と api/project-files の関係をトレース。
+ * ========================================================== */
+export function FileRoundTripDiagram() {
+  return (
+    <div className="text-left">
+      {/* 外部ビューア不使用バッジ */}
+      <div className="flex justify-center mb-5">
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold px-3 py-1.5 rounded-full bg-cyan-50 text-cyan-700 border border-cyan-200">
+          <ShieldCheck className="w-3 h-3" />
+          外部のオンラインビューアは経由しません ― ファイルは社外に出ません
+        </span>
+      </div>
+
+      <div className="flex items-start justify-center gap-1 sm:gap-2">
+        <CycleNode Icon={FolderOpen} ring="#67E8F9" iconColor="#0891B2" title="ファイルボックス" sub="最新版を保管" />
+        <MiniArrow />
+        <CycleNode Icon={MonitorCog} ring="#93C5FD" iconColor="#2563EB" title="アプリで開く" sub="Excel / Word" />
+        <MiniArrow />
+        <CycleNode Icon={Save} ring="#6EE7B7" iconColor="#059669" title="Ctrl+S で保存" sub="いつもの操作" />
+        <MiniArrow />
+        <CycleNode Icon={CheckCircle2} ring="#6EE7B7" iconColor="#059669" title="v2 として反映" sub="そのまま最新版に" />
+      </div>
+
+      <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
+        ダウンロードして編集し、また上げ直す ―― その手間なく、いつもの保存操作だけで最新版が全員に共有されます。
       </p>
     </div>
   );

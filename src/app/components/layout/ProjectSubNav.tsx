@@ -5,12 +5,13 @@ import type { AccessLevel } from "@/app/types";
 
 type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard" | "files";
 
-const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" | "files" }[] = [
+// ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
+const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" }[] = [
   { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
   { id: "backlog",    label: "バックログ",     icon: ClipboardList, path: "/backlog",    permKey: "backlog" },
   { id: "wiki",       label: "Wiki",           icon: BookOpen,      path: "/wiki",       permKey: "wiki" },
   { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
-  { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files",      permKey: "files" },
+  { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files" },
   { id: "whiteboard", label: "ホワイトボード", icon: PenTool,       path: "/whiteboard", permKey: "whiteboard" },
 ];
 
@@ -22,14 +23,13 @@ interface ProjectSubNavProps {
   backlogPerm?: AccessLevel;
   minutesPerm?: AccessLevel;
   whiteboardPerm?: AccessLevel;
-  filesPerm?: AccessLevel;
 }
 
-export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm, filesPerm }: ProjectSubNavProps) {
+export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm }: ProjectSubNavProps) {
   const navigate = useNavigate();
 
   const permMap: Record<string, AccessLevel | undefined> = {
-    wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm, files: filesPerm,
+    wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm,
   };
 
   const visibleItems = ITEMS.filter(item => {

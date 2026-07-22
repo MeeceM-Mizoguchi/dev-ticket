@@ -280,7 +280,6 @@ export function SprintPage() {
           backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
           minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
           whiteboardPerm={isAdmin ? "edit" : ((projectPermissions?.whiteboardPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
-          filesPerm={isAdmin ? "edit" : ((projectPermissions?.filesPermission as AccessLevel | undefined) ?? "edit")}
         />
       </div>
 

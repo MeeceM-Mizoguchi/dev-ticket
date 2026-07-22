@@ -48,15 +48,12 @@ export function FileBoxPage() {
   const [deleteTarget, setDeleteTarget] = useState<ProjectFile | null>(null);
   const [previewTarget, setPreviewTarget] = useState<ProjectFile | null>(null);
 
-  const [effectiveFilesPerm, setEffectiveFilesPerm] = useState<AccessLevel>("edit");
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("edit");
   const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("edit");
-  const [permsLoaded, setPermsLoaded] = useState(false);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
-  const canEdit = effectiveFilesPerm === "edit";
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
@@ -73,20 +70,17 @@ export function FileBoxPage() {
     setFiles((data ?? []).map(mapProjectFile));
 
     if (isAdminRole) {
-      setEffectiveFilesPerm("edit");
       setEffectiveWikiPerm("edit"); setEffectiveBacklogPerm("edit");
       setEffectiveMinutesPerm("edit"); setEffectiveWhiteboardPerm("edit");
     } else {
       const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
-      // filesPermission は後追い追加の項目。未設定のプロジェクトでも使えるよう "edit" にフォールバックする
-      // （アクセス自体は下のプロジェクトメンバー判定で絞られる）
-      setEffectiveFilesPerm((perms?.filesPermission as AccessLevel | undefined) ?? "edit");
+      // ここで読むのはサブナビに出す他ページの権限のみ。
+      // ファイルボックス自身はプロジェクトメンバーであれば常に利用できる
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
       setEffectiveWhiteboardPerm((perms?.whiteboardPermission as AccessLevel | undefined) ?? "none");
     }
-    setPermsLoaded(true);
     setLoading(false);
   }, [projectSlug, userId, isAdminRole]);
 
@@ -134,7 +128,7 @@ export function FileBoxPage() {
   // 保存キーの採番・DB登録・版番号はすべてサーバー(api/project-files)側で行う。
   // ブラウザは署名付きアップロードURLへ直接送るだけなので storage のRLS設定が不要。
   const uploadFiles = useCallback(async (incoming: FileList | File[]) => {
-    if (!project || !canEdit) return;
+    if (!project) return;
     const list = Array.from(incoming);
     if (list.length === 0) return;
 
@@ -159,7 +153,7 @@ export function FileBoxPage() {
       emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
       load();
     }
-  }, [project, canEdit, toast, load]);
+  }, [project, toast, load]);
 
   // ── 各アクション ────────────────────────────────────────────
   const handleDownload = useCallback(async (file: ProjectFile) => {
@@ -218,7 +212,6 @@ export function FileBoxPage() {
   // ── ガード ─────────────────────────────────────────────────
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
   if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
-  if (!loading && effectiveFilesPerm === "none") return <Navigate to="/dashboard" replace />;
 
   // 保存や差し替えのたびに版が増えるので、一覧は同名ファイルの最新版だけを見せる。
   // (files は created_at 降順で取得済み。同名なら version が大きい方を残す)
@@ -246,11 +239,8 @@ export function FileBoxPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${files.length} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {permsLoaded && effectiveFilesPerm === "view" && (
-            <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
-          )}
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="files" marginBottom={0}
-            filesPerm={effectiveFilesPerm} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm}
+            minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm}
             backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} />
         </div>
       </div>
@@ -269,24 +259,22 @@ export function FileBoxPage() {
         </div>
 
         {/* アップロード */}
-        {canEdit && (
-          <div
-            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
-            onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
-            style={{ marginBottom: 14 }}>
-            <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, cursor: uploading ? "wait" : "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
-              {uploading
-                ? <Loader2 style={{ width: 14, height: 14, color: "#059669", animation: "spin 1s linear infinite" }} />
-                : <Upload style={{ width: 14, height: 14, color: dragOver ? "#059669" : "#B0A9A4" }} />}
-              <span style={{ fontSize: 12, color: dragOver || uploading ? "#059669" : "#B0A9A4" }}>
-                {uploading ? "アップロード中..." : dragOver ? "ドロップして追加" : `クリックしてファイルを追加、またはドラッグ&ドロップ（1ファイル ${formatFileSize(MAX_FILE_SIZE)} まで）`}
-              </span>
-              <input type="file" multiple disabled={uploading} style={{ display: "none" }}
-                onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
-            </label>
-          </div>
-        )}
+        <div
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
+          onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
+          style={{ marginBottom: 14 }}>
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, cursor: uploading ? "wait" : "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
+            {uploading
+              ? <Loader2 style={{ width: 14, height: 14, color: "#059669", animation: "spin 1s linear infinite" }} />
+              : <Upload style={{ width: 14, height: 14, color: dragOver ? "#059669" : "#B0A9A4" }} />}
+            <span style={{ fontSize: 12, color: dragOver || uploading ? "#059669" : "#B0A9A4" }}>
+              {uploading ? "アップロード中..." : dragOver ? "ドロップして追加" : `クリックしてファイルを追加、またはドラッグ&ドロップ（1ファイル ${formatFileSize(MAX_FILE_SIZE)} まで）`}
+            </span>
+            <input type="file" multiple disabled={uploading} style={{ display: "none" }}
+              onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
+          </label>
+        </div>
 
         {/* 一覧 */}
         {loading ? (
@@ -326,17 +314,14 @@ export function FileBoxPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Link2 style={{ width: 13, height: 13 }} />
                   </button>
-                  {/* ダウンロードは閲覧のみの権限でも使えるようにする */}
                   <button onClick={e => { e.stopPropagation(); handleDownload(f); }} title="ダウンロード"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Download style={{ width: 13, height: 13 }} />
                   </button>
-                  {canEdit && (
-                    <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                      <Trash2 style={{ width: 13, height: 13 }} />
-                    </button>
-                  )}
+                  <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                    <Trash2 style={{ width: 13, height: 13 }} />
+                  </button>
                 </div>
               );
             })}

@@ -14,6 +14,7 @@ import MermaidDiagram from './articles/20260709-mermaid-diagram';
 import WhiteboardFollow from './articles/20260713-whiteboard-follow';
 import WhiteboardTable from './articles/20260713-whiteboard-table';
 import AssigneeRecommend from './articles/20260718-assignee-recommend';
+import FileBox from './articles/20260722-file-box';
 
 /**
  * ============================================================
@@ -64,6 +65,14 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260722-file-box',
+    date: '2026.07.22',
+    category: 'リリース',
+    title: 'プロジェクトの資料を一元管理する「ファイルボックス」機能を追加しました',
+    excerpt: 'プロジェクトごとに資料をまとめて保管。PDF・Excel・Word・画像をダウンロードせずブラウザでそのまま閲覧でき、Excel / Word は「アプリで開く」からいつも通り保存するだけで新しいバージョンとして反映されます。',
+    Component: FileBox,
+  },
   {
     slug: '20260718-assignee-recommend',
     date: '2026.07.18',

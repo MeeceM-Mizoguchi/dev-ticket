@@ -304,7 +304,6 @@ export function WikiPage() {
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
   const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("view");
   // ENHA2-035: 後追い追加のため未設定時は "edit"（既存プロジェクトでも即使える）
-  const [effectiveFilesPerm, setEffectiveFilesPerm] = useState<AccessLevel>("edit");
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
 
@@ -362,7 +361,6 @@ export function WikiPage() {
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
       setEffectiveMinutesPerm((perms?.minutesPermission as AccessLevel | undefined) ?? "none");
       setEffectiveWhiteboardPerm((perms?.whiteboardPermission as AccessLevel | undefined) ?? "none");
-      setEffectiveFilesPerm((perms?.filesPermission as AccessLevel | undefined) ?? "edit");
     }
     setPermsLoaded(true);
 
@@ -606,7 +604,7 @@ export function WikiPage() {
           {permsLoaded && effectiveWikiPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
-          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} minutesPerm={effectiveMinutesPerm} whiteboardPerm={effectiveWhiteboardPerm} filesPerm={effectiveFilesPerm} />
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="wiki" marginBottom={0} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} minutesPerm={effectiveMinutesPerm} whiteboardPerm={effectiveWhiteboardPerm} />
         </div>
       </div>
 
