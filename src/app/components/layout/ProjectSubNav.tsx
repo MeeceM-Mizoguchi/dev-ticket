@@ -1,15 +1,16 @@
 import type { ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText, PenTool } from "lucide-react";
+import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen } from "lucide-react";
 import type { AccessLevel } from "@/app/types";
 
-type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard";
+type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard" | "files";
 
-const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" }[] = [
+const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" | "files" }[] = [
   { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
   { id: "backlog",    label: "バックログ",     icon: ClipboardList, path: "/backlog",    permKey: "backlog" },
   { id: "wiki",       label: "Wiki",           icon: BookOpen,      path: "/wiki",       permKey: "wiki" },
   { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
+  { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files",      permKey: "files" },
   { id: "whiteboard", label: "ホワイトボード", icon: PenTool,       path: "/whiteboard", permKey: "whiteboard" },
 ];
 
@@ -21,13 +22,14 @@ interface ProjectSubNavProps {
   backlogPerm?: AccessLevel;
   minutesPerm?: AccessLevel;
   whiteboardPerm?: AccessLevel;
+  filesPerm?: AccessLevel;
 }
 
-export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm }: ProjectSubNavProps) {
+export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm, filesPerm }: ProjectSubNavProps) {
   const navigate = useNavigate();
 
   const permMap: Record<string, AccessLevel | undefined> = {
-    wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm,
+    wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm, files: filesPerm,
   };
 
   const visibleItems = ITEMS.filter(item => {

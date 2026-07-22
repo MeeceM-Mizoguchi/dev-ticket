@@ -182,6 +182,16 @@ export interface TicketSourceFile {
   fileType: string; uploadedBy: string; reviewRound: number;
   fileUrl?: string; createdAt: string;
 }
+
+// ── ENHA2-035 ファイルボックス ──
+// 非公開バケット(project-files)に置くため公開URLは持たない。
+// 表示・DLのたびに api/project-files/signed-url で短命の署名付きURLを発行する。
+export interface ProjectFile {
+  id: string; projectId: string; folderPath: string;
+  fileName: string; fileSize: number; fileType: string;
+  filePath: string; version: number;
+  uploadedBy: string; createdAt: string;
+}
 export interface Sprint {
   id: string; projectId: string; name: string; goal: string;
   status: SprintStatus; startDate: string; endDate: string;
@@ -324,4 +334,7 @@ export interface UserPermissions {
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
   whiteboardPermission: AccessLevel;
+  // ENHA2-035: 後追い追加のため optional。未設定時はプロジェクトメンバーなら編集可として扱う。
+  canAccessFiles?: boolean;
+  filesPermission?: AccessLevel;
 }

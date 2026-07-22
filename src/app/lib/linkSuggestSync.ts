@@ -13,7 +13,7 @@
 //
 // 別ユーザー間のリアルタイム同期(Supabase realtime)は対象外。
 
-export type LinkItemKind = "ticket" | "backlog" | "wiki" | "minute";
+export type LinkItemKind = "ticket" | "backlog" | "wiki" | "minute" | "file";
 
 type Listener = (kind: LinkItemKind) => void;
 

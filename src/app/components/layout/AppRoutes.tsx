@@ -16,6 +16,7 @@ import { BacklogPage } from "@/app/pages/BacklogPage";
 import { BugReportsPage } from "@/app/pages/BugReportsPage";
 import { WikiPage } from "@/app/pages/WikiPage";
 import { MinutesPage } from "@/app/pages/MinutesPage";
+import { FileBoxPage } from "@/app/pages/FileBoxPage";
 import { WhiteboardPage } from "@/app/pages/WhiteboardPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
@@ -49,6 +50,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   
   { path: "/:projectSlug/minutes", element: <MinutesPage /> },
   { path: "/:projectSlug/minutes/:minuteId", element: <MinutesPage /> },
+  // ENHA2-035 ファイルボックス（静的セグメントなので /:projectSlug/:segment より優先される）
+  { path: "/:projectSlug/files", element: <FileBoxPage /> },
   { path: "/:projectSlug/whiteboard", element: <WhiteboardPage /> },
   { path: "/:projectSlug/whiteboard/:boardId", element: <WhiteboardPage /> },
   // Sprint detail (チケット一覧) with optional ticket open

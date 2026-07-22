@@ -139,6 +139,8 @@ export function MinutesPage() {
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
   const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("view");
+  // ENHA2-035: 後追い追加のため未設定時は "edit"（既存プロジェクトでも即使える）
+  const [effectiveFilesPerm, setEffectiveFilesPerm] = useState<AccessLevel>("edit");
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -188,6 +190,7 @@ export function MinutesPage() {
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
       setEffectiveBacklogPerm((perms?.backlogPermission as AccessLevel | undefined) ?? "none");
       setEffectiveWhiteboardPerm((perms?.whiteboardPermission as AccessLevel | undefined) ?? "none");
+      setEffectiveFilesPerm((perms?.filesPermission as AccessLevel | undefined) ?? "edit");
     }
     setPermsLoaded(true);
     setLoading(false);
@@ -290,7 +293,7 @@ export function MinutesPage() {
           {permsLoaded && effectiveMinutesPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
-          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} />
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="minutes" marginBottom={0} minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm} backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} filesPerm={effectiveFilesPerm} />
         </div>
       </div>
 
@@ -469,9 +472,11 @@ export function MinutesPage() {
                   backlogItems={suggest.backlogItems}
                   wikiItems={suggest.wikiItems}
                   minuteItems={suggest.minuteItems}
+                  fileItems={suggest.fileItems}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
+                  onFileClick={id => openPreview("file", id)}
                   onImageUpload={canEdit ? async (file) => {
                     if (plan.maxImagesPerItem !== null) {
                       const currentCount = (content.match(/<img/g) ?? []).length;

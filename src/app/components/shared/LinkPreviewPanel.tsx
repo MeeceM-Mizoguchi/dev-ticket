@@ -6,6 +6,7 @@ import { copyText } from "@/lib/clipboard";
 import { htmlToMarkdown } from "@/app/lib/helpers";
 import { RichEditor } from "./RichEditor";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { FileLinkPreview } from "@/app/components/files/FileLinkPreview";
 // LinkPreviewPanel は TabProvider の外側(App.tsx 直下)に描画されるため、
 // useTabs() ではなくモジュールレベルのブリッジでアクティブタブを操作する。
 import { navigateInActiveTab, getActiveTabPath } from "@/app/contexts/TabContext";
@@ -223,6 +224,9 @@ export function LinkPreviewPanel() {
     setLoading(true);
     setData(null);
 
+    // ファイルは専用ビューア(FileLinkPreview)が自前で取得するのでここでは何もしない
+    if (target.type === "file") { setLoading(false); return; }
+
     if (target.type === "backlog") {
       supabase!.from("backlog_items").select("id, title, status, priority, description, images").eq("id", target.id).maybeSingle()
         .then(({ data: r }) => {
@@ -259,6 +263,12 @@ export function LinkPreviewPanel() {
   }, [mounted, close]);
 
   if (!mounted) return null;
+
+  // ファイルはサイドパネルではなく全画面ビューアで見せる（PDF/Excel/Word をそのまま描画するため）。
+  // 閉じても遷移しないので、直前に見ていた画面のまま戻る。
+  if (target?.type === "file") {
+    return <FileLinkPreview fileId={target.id} onClose={close} />;
+  }
 
   const typeLabel = target?.type === "backlog" ? "バックログ" : target?.type === "wiki" ? "Wiki" : "議事録";
 

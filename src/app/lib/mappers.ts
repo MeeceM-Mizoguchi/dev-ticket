@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -41,6 +41,12 @@ export function mapComment(r: any): TicketComment {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapSourceFile(r: any): TicketSourceFile {
   return { id: r.id, ticketId: r.ticket_id, fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", uploadedBy: r.uploaded_by, reviewRound: r.review_round || 1, fileUrl: r.file_url || "", createdAt: r.created_at || "" };
+}
+
+// ── ENHA2-035 ファイルボックス ──
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapProjectFile(r: any): ProjectFile {
+  return { id: r.id, projectId: r.project_id, folderPath: r.folder_path || "", fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", filePath: r.file_path || "", version: r.version || 1, uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

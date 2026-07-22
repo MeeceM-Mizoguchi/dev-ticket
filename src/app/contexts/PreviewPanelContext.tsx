@@ -1,7 +1,8 @@
 import { createContext, useContext, useState } from "react";
 import type { ReactNode } from "react";
 
-export type PreviewType = "backlog" | "wiki" | "minute";
+// ENHA2-035: ファイルボックスのファイル(%メンション)も同じ仕組みでプレビューする
+export type PreviewType = "backlog" | "wiki" | "minute" | "file";
 export interface PreviewTarget { type: PreviewType; id: string; }
 
 const Ctx = createContext<{

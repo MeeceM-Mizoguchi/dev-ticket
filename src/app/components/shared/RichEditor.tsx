@@ -268,6 +268,7 @@ const SuggestionStore = Extension.create({
       backlogItems: [] as { id: string; title: string }[],
       wikiItems: [] as { id: string; title: string }[],
       minuteItems: [] as { id: string; title: string }[],
+      fileItems: [] as { id: string; title: string }[],
     };
   },
 });
@@ -326,7 +327,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 MentionList.displayName = "MentionList";
 
 // ---- LinkMentionList popup: バックログ・Wiki・議事録の統合 $メンション ----
-interface LinkMentionOption { id: string; title: string; type: "backlog" | "wiki" | "minute" }
+interface LinkMentionOption { id: string; title: string; sub?: string; type: "backlog" | "wiki" | "minute" }
 interface LinkMentionListProps {
   items: LinkMentionOption[];
   command: (p: { id: string; label: string }) => void;
@@ -395,6 +396,12 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
             }}>
               {item.title}
             </span>
+            {/* プロジェクト横断で候補を出す画面では、同名を区別できるようPJ名を添える */}
+            {item.sub && (
+              <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0, whiteSpace: "nowrap" as const }}>
+                {item.sub}
+              </span>
+            )}
           </button>
         );
       })}
@@ -402,6 +409,72 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
   );
 });
 LinkMentionList.displayName = "LinkMentionList";
+
+// ---- FileMentionList popup: ファイルボックスの %メンション (ENHA2-035) ----
+interface FileMentionListProps {
+  items: { id: string; title: string; sub?: string }[];
+  command: (p: { id: string; label: string }) => void;
+}
+
+const FileMentionList = forwardRef<MentionListHandle, FileMentionListProps>(({ items, command }, ref) => {
+  const [sel, setSel] = useState(0);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  useEffect(() => { setSel(0); }, [items]);
+  useEffect(() => { itemRefs.current[sel]?.scrollIntoView({ block: "nearest" }); }, [sel]);
+
+  useImperativeHandle(ref, () => ({
+    onKeyDown: ({ event }) => {
+      if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
+      if (event.key === "Enter") {
+        const item = items[sel];
+        if (item) command({ id: item.id, label: item.title });
+        return true;
+      }
+      return false;
+    },
+  }));
+
+  if (!items.length) return (
+    <div style={{ padding: "10px 14px", fontSize: 11, color: "#B0A9A4" }}>該当なし</div>
+  );
+
+  return (
+    <>
+      {items.map((item, i) => (
+        <button key={item.id}
+          ref={el => { itemRefs.current[i] = el; }}
+          onMouseDown={e => { e.preventDefault(); command({ id: item.id, label: item.title }); }}
+          onMouseEnter={() => setSel(i)}
+          style={{
+            width: "100%", padding: "7px 12px", textAlign: "left" as const,
+            background: i === sel ? "#ECFEFF" : "transparent",
+            border: "none", cursor: "pointer", fontSize: 12,
+            color: i === sel ? "#0891B2" : "#1A1714",
+            display: "flex", alignItems: "center", gap: 8,
+            transition: "background 0.1s", boxSizing: "border-box" as const,
+          }}>
+          <span style={{
+            padding: "1px 6px", borderRadius: 4, background: "#CFFAFE",
+            fontSize: 10, fontWeight: 700, color: "#0891B2",
+            flexShrink: 0, whiteSpace: "nowrap" as const,
+          }}>ファイル</span>
+          <span style={{
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
+            flex: 1, color: "#6B6458", fontSize: 11,
+          }}>{item.title}</span>
+          {item.sub && (
+            <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0, whiteSpace: "nowrap" as const }}>
+              {item.sub}
+            </span>
+          )}
+        </button>
+      ))}
+    </>
+  );
+});
+FileMentionList.displayName = "FileMentionList";
 
 // ---- TicketMentionList popup component --------------------------------------
 interface TicketItem { wbs: string; title: string }
@@ -547,19 +620,22 @@ function makeSuggestionPopup<T>(
 
 // ---- RichEditor -------------------------------------------------------------
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onImageUpload, style,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], fileItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick, onImageUpload, style,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
   members?: string[];
   tickets?: { wbs: string; title: string }[];
-  backlogItems?: { id: string; title: string }[];
-  wikiItems?: { id: string; title: string }[];
-  minuteItems?: { id: string; title: string }[];
+  // sub はプロジェクト横断で候補を出す画面(マイアクション等)の所属PJ名
+  backlogItems?: { id: string; title: string; sub?: string }[];
+  wikiItems?: { id: string; title: string; sub?: string }[];
+  minuteItems?: { id: string; title: string; sub?: string }[];
+  fileItems?: { id: string; title: string; sub?: string }[];
   onTicketClick?: (wbs: string) => void;
   onBacklogClick?: (id: string) => void;
   onWikiClick?: (id: string) => void;
   onMinuteClick?: (id: string) => void;
+  onFileClick?: (id: string) => void;
   onImageUpload?: (file: File) => Promise<string>;
   style?: React.CSSProperties;
 }) {
@@ -597,6 +673,7 @@ export function RichEditor({
         renderText({ node, suggestion }) {
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") return `#${node.attrs.id ?? ""}`;
+          if (char === "%") return `%${node.attrs.label ?? node.attrs.id ?? ""}`;
           if (char === "$") {
             const rawId = node.attrs.id ?? "";
             const label = node.attrs.label ?? rawId.split(":").slice(1).join(":") ?? rawId;
@@ -608,6 +685,9 @@ export function RichEditor({
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") {
             return ["span", { ...options.HTMLAttributes, class: "ticket-mention" }, `#${node.attrs.id ?? ""}`];
+          }
+          if (char === "%") {
+            return ["span", { ...options.HTMLAttributes, class: "file-mention" }, `%${node.attrs.label ?? node.attrs.id ?? ""}`];
           }
           if (char === "$") {
             const rawId = node.attrs.id ?? "";
@@ -673,6 +753,16 @@ export function RichEditor({
               return q ? all.filter(i => i.title.toLowerCase().includes(q)) : all;
             },
             render: makeSuggestionPopup(LinkMentionList, 320),
+          },
+          {
+            // %ファイルメンション (ENHA2-035)
+            char: "%",
+            items: ({ query, editor: ed }: { query: string; editor: any }) => {
+              const f: { id: string; title: string }[] = ed?.storage?.suggestionStore?.fileItems ?? [];
+              const q = query.toLowerCase();
+              return q ? f.filter(i => i.title.toLowerCase().includes(q)) : f;
+            },
+            render: makeSuggestionPopup(FileMentionList, 320),
           },
         ],
       }),
@@ -803,6 +893,7 @@ export function RichEditor({
     editor.storage.suggestionStore.backlogItems = backlogItems;
     editor.storage.suggestionStore.wikiItems = wikiItems;
     editor.storage.suggestionStore.minuteItems = minuteItems;
+    editor.storage.suggestionStore.fileItems = fileItems;
   }, [editor, members, tickets, backlogItems, wikiItems, minuteItems]);
 
   useEffect(() => {
@@ -862,11 +953,17 @@ export function RichEditor({
         const id = rawId.startsWith("minute:") ? rawId.slice(7) : rawId;
         e.preventDefault(); e.stopPropagation();
         onMinuteClick(id);
+        return;
+      }
+      const fileEl = el.closest(".file-mention[data-id]");
+      if (fileEl && onFileClick) {
+        e.preventDefault(); e.stopPropagation();
+        onFileClick(fileEl.getAttribute("data-id") ?? "");
       }
     };
     dom.addEventListener("click", handler);
     return () => dom.removeEventListener("click", handler);
-  }, [editor, onBacklogClick, onWikiClick, onMinuteClick]);
+  }, [editor, onBacklogClick, onWikiClick, onMinuteClick, onFileClick]);
 
   // 🌟 BRU4-049: 縦罫線をダブルクリックで、その列の最長1行の自然幅に自動フィット
   useEffect(() => {
@@ -1053,6 +1150,8 @@ export function RichEditor({
         .tiptap .wiki-mention:hover { background: #BAE6FD; }
         .tiptap .minute-mention { color: #059669; font-weight: 700; background: #D1FAE5; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .minute-mention:hover { background: #A7F3D0; }
+        .tiptap .file-mention { color: #0891B2; font-weight: 700; background: #CFFAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .file-mention:hover { background: #A5F3FC; }
         .tiptap img { max-width: 100%; }
       `}</style>
       {!readOnly && toolbar && (

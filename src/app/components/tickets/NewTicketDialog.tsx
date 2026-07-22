@@ -106,6 +106,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     backlogItems: projectBacklogItems,
     wikiItems: projectWikiItems,
     minuteItems: projectMinuteItems,
+    fileItems: projectFileItems,
     prefixLabels: fetchedPrefixLabels,
   } = useLinkSuggestions(effectiveProjectId);
 
@@ -933,7 +934,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} />
           </div>
 
           <div>
