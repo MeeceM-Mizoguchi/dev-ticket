@@ -1,5 +1,6 @@
-import { Routes, Route, Navigate } from "react-router";
+import { Routes, Route, Navigate, useLocation } from "react-router";
 import type { ReactElement } from "react";
+import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { Dashboard } from "@/app/pages/Dashboard";
 import { ProjectsPage } from "@/app/pages/ProjectsPage";
 import { SprintPage } from "@/app/pages/SprintPage";
@@ -59,12 +60,20 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
 ];
 
 export function ProtectedRoutes({ location }: { location?: string }) {
+  const current = useLocation();
+  // アクティブタブは location 未指定(=実ルーター現在地)。境界リセット用のキーは実際に描画を
+  // 駆動している経路にそろえる（固定 location があればそれ、無ければ現在地）。
+  const resetKey = location ?? current.pathname + current.search;
   return (
-    <Routes location={location}>
-      {PROTECTED_ROUTES.map((r) => (
-        <Route key={r.path} path={r.path} element={r.element} />
-      ))}
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
-    </Routes>
+    // アプリ全体の保険（BRU7-043）: いずれかのページが描画中に例外を投げても白画面にしない。
+    // 画面遷移のたびに境界をリセットし、他画面へ移れば自然に復帰する。
+    <ErrorBoundary resetKeys={[resetKey]}>
+      <Routes location={location}>
+        {PROTECTED_ROUTES.map((r) => (
+          <Route key={r.path} path={r.path} element={r.element} />
+        ))}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </ErrorBoundary>
   );
 }
