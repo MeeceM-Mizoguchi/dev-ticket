@@ -50,8 +50,16 @@ create policy "auth_delete_project_files" on project_files for delete using (aut
 create index if not exists idx_project_files_project_id on project_files(project_id);
 create index if not exists idx_project_files_listing on project_files(project_id, created_at desc);
 
--- ── 権限フラグ ───────────────────────────────────────────────
--- 全ロールにファイルボックスへのアクセスを許可（実アクセスはプロジェクトメンバー判定で絞る）
-update roles set base_permissions = base_permissions
-  || '{"canAccessFiles":true}'::jsonb
-  where name in ('admin','project-manager','developer','designer');
+-- ── 権限について ─────────────────────────────────────────────
+-- ファイルボックスは Wiki/バックログ等と違い、ページ単位のアクセス権限を持たない。
+-- プロジェクトのメンバーであれば全員が閲覧・追加・削除できる。
+-- そのため roles / project_member_permissions に専用フラグは追加しない。
+--
+-- 実アクセスの制御:
+--   画面 … プロジェクトメンバー判定（FileBoxPage のガード）
+--   実体 … api/project-files, api/dav がリクエストごとにメンバー判定
+--
+-- 【既にこのSQLの旧版を実行済みの場合】
+-- roles.base_permissions に不要な "canAccessFiles" が残るが、参照している箇所は無いので
+-- 実害はない。消したい場合のみ以下を実行する:
+--   update roles set base_permissions = base_permissions - 'canAccessFiles';

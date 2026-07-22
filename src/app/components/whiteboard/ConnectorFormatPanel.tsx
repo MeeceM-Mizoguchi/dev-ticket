@@ -7,7 +7,7 @@
 // 標準パネル(island)の真下にドッキングし、収まらない時は右隣に出す（重なり防止）。
 import { useEffect, useRef, useState } from "react";
 import { isTriangle } from "@/app/lib/whiteboardSnap";
-import { foldCorner, foldSelectedConnectors, unfoldSelectedConnectors } from "@/app/lib/whiteboardAutoConnect";
+import { applyConnectorVias, foldCorner, foldSelectedConnectors, readVias, unfoldSelectedConnectors } from "@/app/lib/whiteboardAutoConnect";
 
 interface Props {
   api: any;
@@ -47,11 +47,11 @@ export const FOLD_HL_CSS = `
 `;
 
 const PANEL_W = 150;
-const PANEL_H = 130;
+const PANEL_H = 190; // 線の形 + 折れ線の角 + 折れ点（BRU7-043）
 
 export function ConnectorFormatPanel({ api, containerRef, canEdit }: Props) {
   const [state, setState] = useState<
-    { ids: string[]; folded: boolean; sharp: boolean; left: number; top: number } | null
+    { ids: string[]; folded: boolean; sharp: boolean; vias: boolean; left: number; top: number } | null
   >(null);
   const raf = useRef<number>(0);
   const sigRef = useRef<string>("");
@@ -89,9 +89,10 @@ export function ConnectorFormatPanel({ api, containerRef, canEdit }: Props) {
           }
           const folded = conns.every((e) => !!e.customData?.wbFolded);
           const sharp = conns.every((e) => !e.roundness);
+          const vias = conns.some((e) => readVias(e.customData).length > 0); // 手動の折れ点を持つか
           const ids = conns.map((e) => e.id);
-          const sig = `${ids.join(",")}:${folded}:${sharp}:${left}:${top}`;
-          if (sig !== sigRef.current) { sigRef.current = sig; setState({ ids, folded, sharp, left, top }); }
+          const sig = `${ids.join(",")}:${folded}:${sharp}:${vias}:${left}:${top}`;
+          if (sig !== sigRef.current) { sigRef.current = sig; setState({ ids, folded, sharp, vias, left, top }); }
         }
       } catch { /* noop */ }
       raf.current = requestAnimationFrame(tick);
@@ -167,6 +168,15 @@ export function ConnectorFormatPanel({ api, containerRef, canEdit }: Props) {
               {btn("角丸", !state.sharp, () => setCorner(false))}
               {btn("角あり", state.sharp, () => setCorner(true))}
             </div>
+          </div>
+        )}
+        {/* 手動の折れ点（BRU7-043）。追加/移動は線上のつまみで行い、ここでは全消しだけ提供する。 */}
+        {state.folded && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {heading("折れ点")}
+            {state.vias
+              ? btn("リセット", false, () => { for (const id of state.ids) applyConnectorVias(api, id, [], true); })
+              : <span style={{ fontSize: 10, color: "#adb5bd", lineHeight: 1.5 }}>線上の丸をドラッグすると<br />折れ点を追加できます</span>}
           </div>
         )}
       </div>
