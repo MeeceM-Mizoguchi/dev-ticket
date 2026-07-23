@@ -13,8 +13,12 @@
 //     なると Excalidraw 側の伸長条件 (metrics.height > maxContainerHeight) が成立しないため、縮めた
 //     直後に再度伸ばされる綱引き（＝白画面ループ）が構造的に起きない。
 //   - wbBaseH は「テキスト要素が無い間（＝テキストで伸びようがない＝必ずユーザー意図の高さ）」に
-//     追従記録し、文字入りの図形を角リサイズで確定した時にも焼き込む。図形を描いてから文字を入れる
-//     通常フローで、文字入力前の高さが自然に基準になる。
+//     追従記録し、角リサイズを確定した時にも（文字の有無に関わらず）焼き込む。図形を描いてから
+//     文字を入れる通常フローで、文字入力前の高さが自然に基準になる。
+//   - さらに「文字を持たない図形の現在高さは定義上つねにユーザー意図」という不変条件を自己修復で
+//     常時成立させる: 既に焼き込み済みの wbBaseH が実高さとズレていたら（remote拡大・undo/redo・
+//     複製など経路を問わず）静穏フェーズで書き直す。これで「空図形を大きくした後に文字を入れると、
+//     古い基準まで一気に縮む」不具合を構造的に断つ（BRU6-011 追加修正）。
 //
 // 幅は一切触らない（Excalidraw の折り返し幅管理／ユーザー設定幅を尊重）。高さ変更に伴い、バインド
 // テキストの配置を Excalidraw と同じ式で中央へ置き直す（はみ出し自己修復に頼らず即整える）。
@@ -94,16 +98,18 @@ let _shapeReflowing = false; // 再入ガード（updateScene が同期的に on
 // 図形がテキストを持った瞬間に一度だけ customData.wbBaseH へ焼き込んで永続化する。
 const _emptyH = new Map<string, number>();
 
-// 角リサイズ確定時に、選択中の素の図形（バインドテキスト付き）の現在高さを wbBaseH へ焼き込む。
-// これで「文字入りの箱を手で大きくしたら、その高さが新しい下限になる」（表の freezeSelectedTable と同発想）。
+// 角リサイズ確定時に、選択中の素の図形の現在高さを wbBaseH へ焼き込む（表の freezeSelectedTable と同発想）。
+// 文字の有無は問わない: 空図形を大きくした場合もその高さを永続基準にしないと、後で文字を入れた瞬間に
+// 古い（または存在しない）基準まで縮んでしまうため（BRU6-011 追加修正・G1）。合わせてセッション記録
+// _emptyH も同値へ更新し、2つの台帳（永続 wbBaseH / セッション _emptyH）が食い違わないようにする。
 export function freezeSelectedShapeHeights(api: any): boolean {
   const st = api.getAppState();
   const sel = st.selectedElementIds || {};
   const els = api.getSceneElements() as any[];
-  const hasBoundText = (c: any) => els.some((e) => e.type === "text" && e.containerId === c.id && !e.isDeleted);
   const patch = new Map<string, any>();
   for (const e of els) {
-    if (!sel[e.id] || !isFitShape(e) || !hasBoundText(e)) continue;
+    if (!sel[e.id] || !isFitShape(e)) continue;
+    _emptyH.set(e.id, e.height); // リサイズ確定＝この高さがユーザー意図。基準として控える。
     const baseH = e.customData?.wbBaseH;
     if (typeof baseH === "number" && Math.abs(baseH - e.height) < EPS) continue;
     patch.set(e.id, { ...e, customData: { ...e.customData, wbBaseH: Math.round(e.height) }, version: (e.version ?? 1) + 1, versionNonce: rand() });
@@ -133,9 +139,17 @@ export function reflowBoundTextShapes(api: any, skip: boolean): boolean {
     const t = textByContainer.get(c.id);
 
     // テキスト要素が無い図形は「テキストで伸びようがない＝現在高さは必ずユーザー意図」。
-    // updateScene せず（＝新規作成中の要素を壊さない）、その高さをセッションMapへ控えるだけ。
+    // その高さをセッションMapへ控える。加えて、既に焼き込み済みの wbBaseH が実高さとズレていたら
+    // （remote拡大・undo/redo・複製など経路を問わず）ここで書き直し、台帳を実高さへ同期する（G2）。
+    // これで「空図形を拡大→文字入力で古い基準まで縮む」不具合を根本から断つ。差分がある時だけ patch
+    // するので churn は起きず1tickで収束する。新規作成中は onChange 側が newElement で本関数ごと skip
+    // 済みなので、ここで patch 対象になるのは wbBaseH を既に持つ＝作成済みの図形だけで安全。
     if (!t) {
       _emptyH.set(c.id, c.height);
+      const savedBaseEmpty = typeof c.customData?.wbBaseH === "number" ? c.customData.wbBaseH : undefined;
+      if (savedBaseEmpty != null && Math.abs(savedBaseEmpty - c.height) > EPS) {
+        patch.set(c.id, { ...c, customData: { ...c.customData, wbBaseH: Math.round(c.height) }, version: (c.version ?? 1) + 1, versionNonce: rand() });
+      }
       continue;
     }
 
@@ -149,10 +163,13 @@ export function reflowBoundTextShapes(api: any, skip: boolean): boolean {
     const textH = wrapped.length * fontSize * lineHeight;
     const fitH = containerHeightForText(textH, c.type);
 
-    // 基準高さ = 焼き込み済み wbBaseH ＞ セッション記録（テキスト前の高さ）＞ 現在高さ。
+    // 基準高さ = セッション記録（空だった時に観測した高さ）＞ 焼き込み済み wbBaseH ＞ 現在高さ。
+    // _emptyH は「テキストが無い間に見た＝確実にユーザー意図」の最も新しい観測なので最優先。次に永続
+    // 値、最後に現在高さ。※現在高さを wbBaseH より前に置くと、テキストで既に伸びた高さを下限に焼いて
+    // しまい「改行を減らしても縮まない」＝BRU6-011 の核が壊れるため、この順序は変えないこと。
     // 改修前からの既存図形（どちらも無い）は現在高さを下限にして縮めない（誤縮小の回帰を避ける）。
     const savedBase = typeof c.customData?.wbBaseH === "number" ? c.customData.wbBaseH : undefined;
-    const base = savedBase ?? _emptyH.get(c.id) ?? c.height;
+    const base = _emptyH.get(c.id) ?? savedBase ?? c.height;
     const targetH = Math.max(base, fitH);
 
     const needH = Math.abs(c.height - targetH) > EPS;
