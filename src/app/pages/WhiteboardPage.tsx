@@ -6,6 +6,7 @@ import { FolderKanban, ChevronRight, PenTool } from "lucide-react";
 import { isSupabaseEnabled, supabase } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
 import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject } from "@/app/lib/whiteboardService";
 import type { AccessLevel, UserPermissions, Whiteboard } from "@/app/types";
@@ -119,9 +120,12 @@ export function WhiteboardPage() {
         />
         <div style={{ flex: 1, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", overflow: "hidden" }}>
           {boardId ? (
-            <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
-              <WhiteboardCanvas key={boardId} boardId={boardId} title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"} user={user} canEdit={canEdit} />
-            </Suspense>
+            // ボード切替時は resetKeys で境界を自動リセットし、前ボードの例外を持ち越さない（BRU7-043）。
+            <ErrorBoundary resetKeys={[boardId]}>
+              <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
+                <WhiteboardCanvas key={boardId} boardId={boardId} title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"} user={user} canEdit={canEdit} />
+              </Suspense>
+            </ErrorBoundary>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", gap: 10 }}>
               <PenTool style={{ width: 34, height: 34, color: "#D8D3CC" }} />

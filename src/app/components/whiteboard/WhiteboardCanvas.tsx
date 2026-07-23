@@ -105,7 +105,9 @@ const CLEAN_DEFAULTS = {
 function guardApi(api: any): any {
   if (!api || api.__wbGuarded) return api;
   const orig = api.updateScene.bind(api);
-  api.updateScene = (data: any) => {
+
+  // 「現在のシーンには在るのに渡された配列に無い要素」を末尾へ復元してから適用する（BRU5-067）。
+  const applyGuarded = (data: any) => {
     if (data?.elements) {
       const incoming = new Set<string>(data.elements.map((e: any) => e.id));
       const missing = (api.getSceneElements() as any[]).filter((e) => !incoming.has(e.id));
@@ -116,6 +118,48 @@ function guardApi(api: any): any {
     }
     return orig(data);
   };
+
+  // ── React #185(Maximum update depth exceeded)対策（BRU7-043）─────────────────
+  // Excalidraw は componentDidUpdate の中（＝commitフェーズ）から onChange を同期的に呼ぶ。
+  // その onChange 内でヘルパーが api.updateScene を呼ぶと setState→componentDidUpdate→onChange
+  // →updateScene… と“同期の入れ子更新”になり、収束に必要な tick 数だけネストが深くなる。
+  // 複数図形の Alt 複製では要素数×ヘルパー数ぶん tick が要り、容易に 50 段を超えて React が
+  // #185 を投げ、（ErrorBoundary が無いため）画面が真っ白になっていた。
+  //
+  // → onChange 実行中(__wbSetDefer(true))の updateScene は同期適用せず rAF に集約し、commit の
+  //   外で1回だけ適用する。各更新は毎回トップレベルから始まるため React の入れ子にならず、
+  //   #185 は原理的に起こらない。収束は同じ tick 数を「ネスト」ではなく「フレーム跨ぎ」で行う。
+  //   ※各ヘルパーは1 tickにつき高々1回しか updateScene しない設計（busyゲート）なので、
+  //     last-write-wins の集約で更新が失われることはない（未反映分は次tickで再評価される）。
+  let deferring = false;
+  let pending: any = null;
+  let rafId = 0;
+  let flushStreak = 0;                 // 自己駆動 flush の連続回数（暴走の保険）
+  const MAX_FLUSH_STREAK = 300;
+
+  const flush = () => {
+    rafId = 0;
+    const data = pending; pending = null;
+    if (!data) return;
+    if (flushStreak++ > MAX_FLUSH_STREAK) {
+      console.warn("[WB-GUARD] onChange 由来の updateScene が収束しないため保留分を破棄しました");
+      return; // 保留を捨てて自己駆動ループを止める（次のユーザー/リモート操作で復帰）
+    }
+    applyGuarded(data);   // ← commitフェーズ外(rAF)で実行。入れ子更新にならず #185 を防ぐ
+  };
+
+  api.updateScene = (data: any) => {
+    if (deferring) {
+      // onChange(commitフェーズ)内の更新は rAF へ集約（elements/appState を last-write-wins）
+      pending = pending ? { ...pending, ...data } : data;
+      if (!rafId) rafId = requestAnimationFrame(flush);
+      return;
+    }
+    flushStreak = 0;      // 同期(ユーザー/リモート/オーバーレイ)更新が来たら収束カウンタをリセット
+    return applyGuarded(data);
+  };
+
+  api.__wbSetDefer = (v: boolean) => { deferring = v; };
   api.__wbGuarded = true;
   return api;
 }
@@ -142,6 +186,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const lastPointerScene = useRef<{ x: number; y: number } | null>(null); // 直近カーソル(scene座標)
   const undoUntil = useRef(0);                     // undo/redo 直後の猶予期限(ms)。この間は接続を記録どおり復元する（BRU5-066）
   const preDragSig = useRef<Map<string, string>>(new Map()); // pointerdown時点の図形geometry署名（Alt複製の付け替え判定用・BRU5-068）
+  const preDragIds = useRef<Set<string>>(new Set());         // pointerdown時点の全要素id（このドラッグで生まれた複製の判別用・BRU7-043）
+  const onChangeDepth = useRef(0);                           // onChangeの同期再入深度（#185保険・BRU7-043）
   const pointerUpPending = useRef(false);          // 直前にポインタを離したか（端点ドラッグの繋ぎ直し評価用・BRU5-073）
   const lastCursor = useRef(0);
   const lastViewport = useRef(0);
@@ -253,8 +299,13 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     if (!api) return;
     const onDown = () => {
       const m = new Map<string, string>();
-      for (const el of api.getSceneElements() as any[]) if (isConnectableShape(el)) m.set(el.id, shapeSig(el));
+      const ids = new Set<string>();
+      for (const el of api.getSceneElements() as any[]) {
+        ids.add(el.id);
+        if (isConnectableShape(el)) m.set(el.id, shapeSig(el));
+      }
       preDragSig.current = m;
+      preDragIds.current = ids; // このドラッグで新たに現れた要素＝複製、の判別に使う（BRU7-043）
     };
     // 端点ドラッグを離した合図（BRU5-073）。次の onChange 一回だけ、点編集中の要素も繋ぎ直し評価に通す。
     const onUp = () => { pointerUpPending.current = true; };
@@ -481,6 +532,11 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const wasDragging = useRef(false); // 前tickでドラッグ中だったか（ドラッグ確定=所属再判定の契機・BRU5-040）
   const wasResizing = useRef(false); // 前tickでリサイズ中だったか（表の角リサイズ確定=サイズ焼き込みの契機・BRU5-042）
   const onChange = useCallback((elements: readonly any[], appState?: any) => {
+    // #185保険(BRU7-043): Phase1(updateScene遅延)で通常 onChange は再入せず depth=1 だが、
+    // 万一 updateScene が同期的に onChange を再入させても、深さで自動処理を打ち切って白画面を防ぐ。
+    onChangeDepth.current++;
+    const tooDeep = onChangeDepth.current > 8;
+    try {
     // 編集中テキスト要素を表の再レイアウトへ渡す（api.getAppState()には入らないことがあるため、
     // editingTextElementが確実に入るこのappStateで捕捉）。編集開始で set・終了(null)でクリアされる。
     if (appState) setEditingTextEl(appState.editingTextElement ?? null);
@@ -527,17 +583,25 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     // onChange内で例外を投げるとExcalidrawのドラッグ/複製処理が壊れるため必ずcatchする
     // リモート反映(updateScene)由来のonChange、および追従適用中は自動接続/追従を実行しない（二重適用防止）
     const remote = (bridgeRef.current?.isApplyingRemote?.() ?? false) || isApplyingFollow();
+    // このブロック内の updateScene は commitフェーズ外(rAF)へ遅延させ、React の入れ子更新を断つ（BRU7-043）
+    api?.__wbSetDefer?.(true);
     try {
-      if (api) {
+      if (api && !tooDeep) {
         // 三角形は「図形」扱い：標準の点編集UIが付いたら外す（テッペン二股化の根本防止・BRU4-051）
         suppressTrianglePointEditing(api, elements, appState);
         // 壊れた elbow arrow（点列が斜めのまま elbowed になった線）を救出する（BRU5-065）。
         // 放置すると Excalidraw 内部の invariant がドラッグ中に毎フレーム throw する。
         // 修復した tick は他ヘルパーを止め、単一 updateScene/tick を保つ（次tickで収束）。
         const elbowHealed = remote ? false : healBrokenElbowArrows(api, elements, appState);
+        // このドラッグ操作中に生まれた要素（Alt複製した複製など）。元フレームの移動へ巻き込んで
+        // 動かすと二重移動＆署名が毎tick変わって収束しないため、追従対象から除外する（BRU7-043）。
+        const draggingNow = !!appState?.selectedElementsAreBeingDragged;
+        const bornIds = draggingNow
+          ? new Set(elements.filter((e: any) => !e.isDeleted && !preDragIds.current.has(e.id)).map((e: any) => e.id))
+          : undefined;
         // フレーム移動時に子（図形・入れ子フレーム）を同じデルタで追従させる（BRU5-040）。
         // remote/リサイズ/新規描画時は追従せず、位置スナップショットのみ更新する。
-        const followed = elbowHealed ? false : followFrameMoves(api, elements, appState, prevFramePos.current, remote);
+        const followed = elbowHealed ? false : followFrameMoves(api, elements, appState, prevFramePos.current, remote, bornIds);
         // フレーム新規作成/リサイズ時に内包要素を wbParent で所属させる（BRU4-054 / BRU5-040）。
         const framed = (remote || elbowHealed || followed) ? false : captureFrameChildren(api, elements, appState, prevFrameSig.current);
         // ドラッグ確定時に、動かした要素の所属を再判定（枠へ入れた/出した/入れ子にした・BRU5-040）。
@@ -601,8 +665,10 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || !!appState?.newElement);
       }
     } catch { /* noop */ }
+    finally { api?.__wbSetDefer?.(false); } // 遅延スコープを閉じる（以後の updateScene は同期適用へ戻す）
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
     try { void syncLocalImages(); } catch { /* noop */ }
+    } finally { onChangeDepth.current--; }
   }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow]);
 
   const onPointerUpdate = useCallback((payload: any) => {

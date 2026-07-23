@@ -206,6 +206,8 @@ export function reparentDraggedElements(api: any, appState: any): boolean {
  * リサイズ/新規描画/リモート反映中は追従しない（位置スナップショットのみ更新して抜ける）。
  *
  * @param prevPos 前回のフレーム位置(id -> {x,y})。移動検知に使い、毎回最新へ更新する。
+ * @param bornIds このドラッグ操作中に生まれた要素id（Alt複製した複製など）。元フレームの移動へ
+ *   巻き込んで動かさない（複製は元位置に残すのが正しい）。二重移動＆収束不能の防止（BRU7-043）。
  * @returns updateScene で反映したら true
  */
 export function followFrameMoves(
@@ -214,6 +216,7 @@ export function followFrameMoves(
   appState: any,
   prevPos: Map<string, { x: number; y: number; w: number; h: number }>,
   remote: boolean,
+  bornIds?: Set<string>,
 ): boolean {
   const draftId = appState?.newElement?.id;
   const frames = elements.filter((e) => isFrame(e) && !e.isDeleted);
@@ -306,6 +309,7 @@ export function followFrameMoves(
   const deltaById = new Map<string, { dx: number; dy: number }>();
   for (const el of elements) {
     if (el.isDeleted || sel[el.id]) continue;         // 削除／共ドラッグ済みは対象外
+    if (bornIds?.has(el.id)) continue;                // このドラッグで生まれた複製は追従させない（BRU7-043）
     if (isFrame(el) && moved.has(el.id)) continue;    // 動いたフレーム自身は移動済み
     const d = nearestMovedDelta(el.id) ?? geoDeltaFor(el);
     if (d && !alreadyMoved(el, d)) deltaById.set(el.id, d); // undo/redo で一緒に動いた子は除外
@@ -313,6 +317,7 @@ export function followFrameMoves(
   // 図形内テキスト（containerId）は単独ドラッグされず所属も付きにくいので、親図形が動くなら必ず追従。
   for (const el of elements) {
     if (el.isDeleted || sel[el.id] || deltaById.has(el.id)) continue;
+    if (bornIds?.has(el.id)) continue;                // 複製された図形内テキストも追従対象外（BRU7-043）
     const cid = el.containerId;
     if (cid && deltaById.has(cid)) {
       const d = deltaById.get(cid)!;
