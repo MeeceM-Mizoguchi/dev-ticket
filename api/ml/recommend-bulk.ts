@@ -13,7 +13,6 @@
 import { createClient } from "@supabase/supabase-js";
 import {
   buildMemberFeatures, buildFeatures, scoreWithModel, baselineScore, buildReasons,
-  CAP_MARGIN, GATE_LEVEL,
   type MemberFeatureInput, type TicketFeatureInput, type LgbModel, type SkillLayer, type DevScale, type Priority,
 } from "./recommend";
 
@@ -98,28 +97,16 @@ export default async function handler(req: any, res: any) {
 
       if (basePool.length === 0) return { ticketId: tk.ticketId, chosen: null, candidates: [], source };
 
-      // ── Step0: スキルゲート（規模で可変）──
+      // 必須スキル（importance>=3）。足切りには使わず、スコアリング/タイブレークにのみ使う。
       const mustSkills = required.filter(r => r.importance >= 3);
-      const passesGate = (m: MemberFeatureInput, minLv: number) =>
-        mustSkills.every(r => (m.skillLevels[r.skillId] ?? 0) >= minLv);
-      let qualified = basePool;
-      if (mustSkills.length > 0) {
-        let lv = GATE_LEVEL[tk.devScale ?? "M"] ?? 1;
-        qualified = basePool.filter(m => passesGate(m, lv));
-        while (qualified.length === 0 && lv > 1) { lv -= 1; qualified = basePool.filter(m => passesGate(m, lv)); }
-        if (qualified.length === 0) qualified = basePool;
-      }
 
-      // ── Step1: 相対キャップ（集中防止）── ※ liveActive を使う ──
+      // ── 軸① マッチ度（0〜1）── 未保有でも0にはならず候補として残す（足切りしない）。
+      const fitOf = (m: MemberFeatureInput): number =>
+        model ? scoreWithModel(model, buildFeatures(ticket, m)) : baselineScore(ticket, m);
+
+      // ── 軸② 空き具合（0〜1）── liveActive/liveRanges（バッチ内で仮想更新される負荷）を使う。
+      //   期日があればその期間に重なる稼働中件数、無ければ現在の稼働中件数を負荷とみなす。
       const activeOf = (m: MemberFeatureInput) => liveActive[m.profileId] ?? 0;
-      let recommendable = qualified;
-      if (qualified.length > 0) {
-        const minActive = Math.min(...qualified.map(activeOf));
-        const capped = qualified.filter(m => activeOf(m) <= minActive + CAP_MARGIN);
-        recommendable = capped.length >= Math.min(1, qualified.length) ? capped : qualified;
-      }
-
-      // ── Step2: 空き順ソート（先頭=推奨）── ※ liveRanges / liveActive を使う ──
       const hasDates = typeof tk.startDate === "string" && tk.startDate !== "" && typeof tk.dueDate === "string" && tk.dueDate !== "";
       const overlapOf = (m: MemberFeatureInput): number => {
         if (!hasDates) return 0;
@@ -129,12 +116,21 @@ export default async function handler(req: any, res: any) {
         }
         return n;
       };
+      const loadOf = (m: MemberFeatureInput) => hasDates ? overlapOf(m) : activeOf(m);
+      const freeOf = (m: MemberFeatureInput) => 1 / (1 + loadOf(m));
+
+      // ── 合成スコア（バランス型: マッチ度50% + 空き具合50%）──
+      //   ハードなスキルゲート/稼働キャップは廃止。全メンバーを合成スコアで並べる。
+      //   公平分散は、選ばれた人の liveActive/liveRanges を後段で増やすことで次チケット以降に効かせる。
+      const MATCH_W = 0.5, FREE_W = 0.5;
+      const compositeOf = (m: MemberFeatureInput) => MATCH_W * fitOf(m) + FREE_W * freeOf(m);
+
       const skillSum = (m: MemberFeatureInput) => mustSkills.reduce((a, r) => a + (m.skillLevels[r.skillId] ?? 0), 0);
-      const ranked = recommendable.slice().sort((a, b) =>
-        (overlapOf(a) - overlapOf(b)) ||
-        (activeOf(a) - activeOf(b)) ||
-        (lastMsOf(a) - lastMsOf(b)) ||
-        (skillSum(b) - skillSum(a)),
+      const ranked = basePool.slice().sort((a, b) =>
+        (compositeOf(b) - compositeOf(a)) ||     // ①合成スコアが高い順（マッチ度×空き）
+        (freeOf(b) - freeOf(a)) ||               // ②空いてる順
+        (lastMsOf(a) - lastMsOf(b)) ||           // ③最終アサインが古い順（ローテーション）
+        (skillSum(b) - skillSum(a)),             // ④スキルレベル合計が高い順
       );
 
       if (ranked.length === 0) return { ticketId: tk.ticketId, chosen: null, candidates: [], source };

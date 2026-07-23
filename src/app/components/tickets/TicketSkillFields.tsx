@@ -322,7 +322,7 @@ export function AssigneeRecommendModal({
           {searched && !loading && (
             <div style={{ marginTop: 16 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: "#047857" }}>おすすめ担当者（空き順）</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#047857" }}>おすすめ担当者（適合×空き）</span>
                 <span style={{ fontSize: 9.5, color: "#059669", opacity: 0.8 }}>{source === "model" ? "学習済みモデル" : "実績ベース"}</span>
               </div>
 
@@ -368,7 +368,7 @@ export function AssigneeRecommendModal({
                   {candidates.length > 3 && (
                     <button onClick={() => setShowAll(v => !v)}
                       style={{ width: "100%", padding: "8px 0", fontSize: 11.5, fontWeight: 600, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.15)", background: "transparent", color: "#6B6458", cursor: "pointer" }}>
-                      {showAll ? "上位3人だけ表示" : `もっと見る（他${candidates.length - 3}人の有資格者）`}
+                      {showAll ? "上位3人だけ表示" : `もっと見る（他${candidates.length - 3}人）`}
                     </button>
                   )}
                 </>

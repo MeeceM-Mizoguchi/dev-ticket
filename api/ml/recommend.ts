@@ -365,52 +365,11 @@ export default async function handler(req: any, res: any) {
       : members;
     if (basePool.length === 0) return res.json({ candidates: [], source: "baseline" });
 
-    // ── Step0: スキルゲート（規模で可変）── 必須スキルを最低Lv以上で保有する人だけ候補にする。
-    //   0人なら1段ずつ緩め、Lv1でも0なら（誰も保有せず）足切りせず全員を候補にする。
+    // 必須スキル（importance>=3）。ハードな足切りには使わず、スコアリング/タイブレークにのみ使う。
     const mustSkills = required.filter(r => r.importance >= 3);
-    const passesGate = (m: MemberFeatureInput, minLv: number) =>
-      mustSkills.every(r => (m.skillLevels[r.skillId] ?? 0) >= minLv);
-    let qualified = basePool;
-    if (mustSkills.length > 0) {
-      let lv = GATE_LEVEL[devScale ?? "M"] ?? 1;
-      qualified = basePool.filter(m => passesGate(m, lv));
-      while (qualified.length === 0 && lv > 1) { lv -= 1; qualified = basePool.filter(m => passesGate(m, lv)); }
-      if (qualified.length === 0) qualified = basePool;
-    }
 
-    // ── Step1: 相対キャップ（集中防止①）── 稼働中が最少の人 + CAP_MARGIN を超える人を外す。
-    //   除外後にlimit未満なら緩める（有資格者を全員残す）。
-    const activeOf = (m: MemberFeatureInput) => avail[m.profileId]?.activeCount ?? 0;
-    let recommendable = qualified;
-    if (qualified.length > 0) {
-      const minActive = Math.min(...qualified.map(activeOf));
-      const capped = qualified.filter(m => activeOf(m) <= minActive + CAP_MARGIN);
-      recommendable = capped.length >= Math.min(limit, qualified.length) ? capped : qualified;
-    }
-
-    // ── Step2: 空き順ソート（先頭=推奨）──
-    const hasDates = typeof startDate === "string" && startDate !== "" && typeof dueDate === "string" && dueDate !== "";
-    const overlapOf = (m: MemberFeatureInput): number => {
-      if (!hasDates) return 0;
-      let n = 0;
-      for (const r of avail[m.profileId]?.ranges ?? []) {
-        if (r.start && r.due && r.start <= dueDate && startDate <= r.due) n++;   // 期間の重なり
-      }
-      return n;
-    };
-    const skillSum = (m: MemberFeatureInput) => mustSkills.reduce((a, r) => a + (m.skillLevels[r.skillId] ?? 0), 0);
-    const lastMs = (m: MemberFeatureInput) => {
-      const s = avail[m.profileId]?.lastAssignedAt;
-      return s ? new Date(s).getTime() : 0;   // 未アサイン=最古=ローテーション最優先
-    };
-    const ranked = recommendable.slice().sort((a, b) =>
-      (overlapOf(a) - overlapOf(b)) ||          // ①期間の重なりが少ない順
-      (activeOf(a) - activeOf(b)) ||            // ②稼働中が少ない順
-      (lastMs(a) - lastMs(b)) ||                // ③最終アサインが古い順（ローテーション・控えめ）
-      (skillSum(b) - skillSum(a)),              // ④スキルレベル合計が高い順（品質タイブレーク）
-    );
-
-    // 学習済みモデル（オフライン評価でベースラインを超えたものだけ is_active=true）
+    // 学習済みモデル（オフライン評価でベースラインを超えたものだけ is_active=true）。
+    // 合成スコアの「マッチ度」軸に使うので、並び替えより先に取得する。
     const { data: modelRow } = await sb
       .from("recommendation_models")
       .select("model_json, version")
@@ -423,7 +382,45 @@ export default async function handler(req: any, res: any) {
     const model = modelRow?.model_json as LgbModel | undefined;
     const source: "model" | "baseline" = model ? "model" : "baseline";
 
-    // 「もっと見る」で有資格者全員を出せるよう、上位limitで切らず多めに返す（表示はフロントで制御）。
+    // ── 軸① マッチ度（0〜1）── スキル適合・実績・規模適合の総合スコア。
+    //   必須スキル未保有でも 0 にはならず（低いだけ）候補として残る＝足切りしない。
+    const fitOf = (m: MemberFeatureInput): number =>
+      model ? scoreWithModel(model, buildFeatures(ticket, m)) : baselineScore(ticket, m);
+
+    // ── 軸② 空き具合（0〜1）── 「今週・来週」の負荷。期日が入っていればその期間に重なる稼働中件数、
+    //   入っていなければ現在の稼働中件数を負荷とみなす。負荷 0=1.0 / 1件=0.5 / 2件=0.33 … と滑らかに下がる。
+    const activeOf = (m: MemberFeatureInput) => avail[m.profileId]?.activeCount ?? 0;
+    const hasDates = typeof startDate === "string" && startDate !== "" && typeof dueDate === "string" && dueDate !== "";
+    const overlapOf = (m: MemberFeatureInput): number => {
+      if (!hasDates) return 0;
+      let n = 0;
+      for (const r of avail[m.profileId]?.ranges ?? []) {
+        if (r.start && r.due && r.start <= dueDate && startDate <= r.due) n++;   // 期間の重なり
+      }
+      return n;
+    };
+    const loadOf = (m: MemberFeatureInput) => hasDates ? overlapOf(m) : activeOf(m);
+    const freeOf = (m: MemberFeatureInput) => 1 / (1 + loadOf(m));
+
+    // ── 合成スコア（バランス型: マッチ度50% + 空き具合50%）──
+    //   スキルが近い×手が空いている人ほど上位に。ハードなスキルゲート/稼働キャップは廃止し、
+    //   プロジェクトメンバー全員を合成スコアで並べる（非保有者はマッチ度が低く自然に下位に沈む）。
+    const MATCH_W = 0.5, FREE_W = 0.5;
+    const compositeOf = (m: MemberFeatureInput) => MATCH_W * fitOf(m) + FREE_W * freeOf(m);
+
+    const skillSum = (m: MemberFeatureInput) => mustSkills.reduce((a, r) => a + (m.skillLevels[r.skillId] ?? 0), 0);
+    const lastMs = (m: MemberFeatureInput) => {
+      const s = avail[m.profileId]?.lastAssignedAt;
+      return s ? new Date(s).getTime() : 0;   // 未アサイン=最古=ローテーション最優先
+    };
+    const ranked = basePool.slice().sort((a, b) =>
+      (compositeOf(b) - compositeOf(a)) ||     // ①合成スコアが高い順（マッチ度×空き）
+      (freeOf(b) - freeOf(a)) ||               // ②空いてる順
+      (lastMs(a) - lastMs(b)) ||               // ③最終アサインが古い順（ローテーション）
+      (skillSum(b) - skillSum(a)),             // ④スキルレベル合計が高い順（品質タイブレーク）
+    );
+
+    // 「もっと見る」で全員を出せるよう、上位limitで切らず多めに返す（表示はフロントで制御）。
     const MAX_RETURN = 30;
     const candidates = ranked.slice(0, MAX_RETURN).map(m => {
       const active = activeOf(m);
