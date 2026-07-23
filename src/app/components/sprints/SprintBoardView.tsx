@@ -209,6 +209,17 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
   const currentSprintRef = useRef(currentSprint);
   currentSprintRef.current = currentSprint;
 
+  // 🌟 ヘッダー(overflowX:hidden)と本体(overflowX:auto)の横スクロールを同期する。
+  //    横スクロールを外枠ではなく本体側に持たせることで、ステータスヘッダーの
+  //    position:sticky がアプリのスクロール領域(上部固定バー直下)に正しく吸着する。
+  const boardBodyRef = useRef<HTMLDivElement>(null);
+  const boardHeaderRef = useRef<HTMLDivElement>(null);
+  const handleBoardScroll = () => {
+    if (boardBodyRef.current && boardHeaderRef.current) {
+      boardHeaderRef.current.scrollLeft = boardBodyRef.current.scrollLeft;
+    }
+  };
+
   useEffect(() => {
     if (sprints.length && !sprints.find(s => s.id === selectedSprintId)) {
       setSelectedSprintId(sprints[0].id);
@@ -415,34 +426,43 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
 
       {/* ── Kanban board ── */}
       {currentSprint && (
-        <div style={{ overflowX: "auto", overflowY: "clip" }}>
-          {/* Sticky status header row — overflow-y:clip doesn't create a scroll container, so sticky still works relative to the window */}
-          <div style={{ position: "sticky", top: stickyTop ?? 0, zIndex: 10, background: "#F5F6F8", marginBottom: 4, minWidth: "fit-content" }}>
-            <div style={{ display: "flex", gap: 8 }}>
-              {TICKET_STATUSES.map(col => {
-                const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
-                return (
-                  <div key={col.value} style={{ flex: "0 0 180px" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{count}</span>
+        <div>
+          {/* Sticky status header row.
+              🌟 横スクロールを外枠ではなく本体(下の overflowX:auto)側へ移した。外枠が overflow を持たない
+                 ことで、このヘッダーの position:sticky はアプリのスクロール領域(<main>)＝上部固定バー直下に
+                 正しく吸着する。旧実装は外枠の overflowX:auto がスクロールコンテナになって sticky を捕捉し、
+                 top オフセット(stickyTop)分だけヘッダーがカラム中央へ押し下げられていた。
+                 内側の overflowX:hidden 要素(boardHeaderRef)は本体の横スクロールに追従させる。 */}
+          <div style={{ position: "sticky", top: stickyTop ?? 0, zIndex: 10, background: "#F5F6F8", marginBottom: 4 }}>
+            <div ref={boardHeaderRef} style={{ overflowX: "hidden" }}>
+              <div style={{ display: "flex", gap: 8, minWidth: "fit-content" }}>
+                {TICKET_STATUSES.map(col => {
+                  const count = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value).length;
+                  return (
+                    <div key={col.value} style={{ flex: "0 0 180px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: col.bg }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: col.color }}>{col.label}</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: col.color, fontFamily: "var(--font-mono)" }}>{count}</span>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          {/* Board body — 横スクロールはここで行い、ヘッダーの scrollLeft と同期する */}
+          <div ref={boardBodyRef} onScroll={handleBoardScroll} style={{ overflowX: "auto" }}>
+            <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
+              {TICKET_STATUSES.map(col => {
+                const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
+                return (
+                  <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
+                    <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
+                      style={{ flex: 1 }} />
                   </div>
                 );
               })}
             </div>
-          </div>
-          {/* Board body */}
-          <div style={{ display: "flex", gap: 8, minWidth: "fit-content", minHeight: "calc(100vh - 390px)" }}>
-            {TICKET_STATUSES.map(col => {
-              const colTickets = currentSprint.tickets.filter(t => effectiveStatus(t) === col.value);
-              return (
-                <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
-                  <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                    style={{ flex: 1 }} />
-                </div>
-              );
-            })}
           </div>
         </div>
       )}

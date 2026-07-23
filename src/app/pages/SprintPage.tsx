@@ -117,6 +117,17 @@ export function SprintPage() {
     return () => ro.disconnect();
   }, []);
 
+  // 🌟 ボード表示時はスクロール領域(<main>)を先頭へ戻す。
+  //    スクロールコンテナ(<main>)はビュー切替・遷移で位置がリセットされないため、
+  //    前画面のスクロール位置を保持したままボードを開くと、ボードのタブ・情報バー・ステータスヘッダー
+  //    (通常フロー)が不透明な固定ヘッダーの裏に隠れ「ボードが表示されない」ように見える不具合を防ぐ。
+  //    リスト/ガントは対象チケットへ scrollIntoView する設計のため対象外(ボード限定)。
+  useEffect(() => {
+    if (loading || viewMode !== "board") return;
+    const scroller = headerRef.current?.closest("main") as HTMLElement | null;
+    if (scroller) scroller.scrollTop = 0;
+  }, [viewMode, loading]);
+
   const projectId = project?.id ?? null;
 
   useEffect(() => {
