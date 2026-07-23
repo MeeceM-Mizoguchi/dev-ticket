@@ -30,6 +30,7 @@ import { FrameHighlightLayer } from "./FrameHighlightLayer";
 import { FrameFormatPanel } from "./FrameFormatPanel";
 import { TextBoxFormatPanel } from "./TextBoxFormatPanel";
 import { ConnectorFormatPanel } from "./ConnectorFormatPanel";
+import { ConnectorViaOverlay } from "./ConnectorViaOverlay";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
 
@@ -656,6 +657,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <FrameHighlightLayer api={api} containerRef={containerRef} />}
           {canEdit && <FrameFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TextBoxFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <ConnectorViaOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <ConnectorFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <SnapGuideLayer api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TriangleBindHint api={api} containerRef={containerRef} canEdit={canEdit} />}
