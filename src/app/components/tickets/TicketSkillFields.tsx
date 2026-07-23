@@ -162,14 +162,15 @@ export function AssigneeRecommendModal({
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState(false);
   const [autoFilled, setAutoFilled] = useState(false);   // チケット内容から自動判定したか
-  const [showAll, setShowAll] = useState(false);         // 「もっと見る」で有資格者を全員表示
+  const [showAll, setShowAll] = useState(false);         // 「もっと見る」で適合あり(>0%)を全員表示
+  const [showZero, setShowZero] = useState(false);       // 「さらに全メンバー」で適合0%の人も最下部に表示
 
   // レコメンド実行。mount時の自動実行では state 反映を待たず、算出値を直接渡す。
   const runRecommend = async (reqArg?: RequiredSkill[], scaleArg?: DevScale | null) => {
     const req = reqArg ?? required;
     const scale = scaleArg !== undefined ? scaleArg : devScale;
     if (req.length === 0) { setSearched(true); setCandidates([]); return; }
-    setLoading(true); setError(false); setSearched(true); setShowAll(false);
+    setLoading(true); setError(false); setSearched(true); setShowAll(false); setShowZero(false);
     try {
       const r = await fetchRecommendations({
         organizationId: orgId, requiredSkillIds: req,
@@ -328,51 +329,84 @@ export function AssigneeRecommendModal({
 
               {error ? (
                 <p style={{ fontSize: 11.5, color: "#A09790", padding: "8px 0" }}>候補を取得できませんでした</p>
-              ) : candidates.length === 0 ? (
-                <p style={{ fontSize: 11.5, color: "#A09790", padding: "8px 0" }}>該当する候補がいません</p>
-              ) : (
-                <>
-                  {(showAll ? candidates : candidates.slice(0, 3)).map((c, i) => {
-                    const recommended = i === 0;   // 空き順の先頭＝推奨
-                    return (
-                      <button key={c.profileId} onClick={() => {
-                        // 「レコメンド結果からこの人に決めた」を学習用に記録（採用ログ）
-                        void logRecommendationAccepted({ organizationId: orgId, ticketId, candidates, chosen: c, source });
-                        onPick(c.name, required, devScale);
-                        onClose();
-                      }}
-                        style={{ width: "100%", textAlign: "left" as const, display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 12px", borderRadius: 10, background: recommended ? "#ECFDF5" : "#F0FDF4", border: recommended ? "2px solid #059669" : "1px solid rgba(5,150,105,0.2)", marginBottom: 7, cursor: "pointer" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = recommended ? "#ECFDF5" : "#F0FDF4"; }}>
-                        <span style={{ fontSize: 13, fontWeight: 800, color: "#059669", width: 16, flexShrink: 0 }}>{i + 1}.</span>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const }}>
-                            <span style={{ fontSize: 13.5, fontWeight: 700, color: "#1A1714" }}>{c.name}</span>
-                            {recommended && (
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 800, color: "#fff", background: "#059669", padding: "2px 7px", borderRadius: 999 }}>
-                                <Sparkles style={{ width: 10, height: 10 }} />推奨
-                              </span>
-                            )}
-                            <span style={{ fontSize: 10.5, fontWeight: 700, color: c.activeCount === 0 ? "#059669" : "#6B6458" }}>
-                              稼働中{c.activeCount}件
-                            </span>
-                            <span style={{ fontSize: 10.5, fontWeight: 600, color: "#A09790" }}>適合 {Math.round(c.skillMatch * 100)}%</span>
-                          </div>
-                          <p style={{ fontSize: 11, color: "#6B6458", marginTop: 3, lineHeight: 1.55 }}>{c.reasons.join(" · ")}</p>
-                        </div>
-                        <span style={{ flexShrink: 0, alignSelf: "center", fontSize: 11, fontWeight: 700, color: "#059669" }}>この人に決定 →</span>
-                      </button>
-                    );
-                  })}
+              ) : (() => {
+                // 適合あり(>0%)と適合0%（必須スキルを1つも持たない人）を分離。
+                //   ・デフォルト: 適合ありの上位3人   ・「もっと見る」: 適合あり全員
+                //   ・「さらに全メンバー」: 適合0%の人を最下部に追加表示
+                const matched = candidates.filter(c => c.skillMatch > 0);
+                const zero = candidates.filter(c => c.skillMatch <= 0);
+                const matchedShown = showAll ? matched : matched.slice(0, 3);
+                const matchedFull = showAll || matched.length <= 3;   // 適合ありを出し切ったか
+                const zeroShown = showZero && matchedFull;            // 出し切った時だけ0%を追加
+                const visible = zeroShown ? [...matchedShown, ...zero] : matchedShown;
 
-                  {candidates.length > 3 && (
-                    <button onClick={() => setShowAll(v => !v)}
-                      style={{ width: "100%", padding: "8px 0", fontSize: 11.5, fontWeight: 600, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.15)", background: "transparent", color: "#6B6458", cursor: "pointer" }}>
-                      {showAll ? "上位3人だけ表示" : `もっと見る（他${candidates.length - 3}人）`}
-                    </button>
-                  )}
-                </>
-              )}
+                if (matched.length === 0 && !zeroShown) {
+                  return (
+                    <>
+                      <p style={{ fontSize: 11.5, color: "#A09790", padding: "8px 0" }}>
+                        必須スキルに適合するメンバーがいません
+                      </p>
+                      {zero.length > 0 && (
+                        <button onClick={() => setShowZero(true)}
+                          style={{ width: "100%", padding: "8px 0", fontSize: 11.5, fontWeight: 600, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.15)", background: "transparent", color: "#6B6458", cursor: "pointer" }}>
+                          {`すべてのメンバーを表示（適合0%の${zero.length}人）`}
+                        </button>
+                      )}
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    {visible.map((c, i) => {
+                      const recommended = i === 0 && c.skillMatch > 0;   // 先頭かつ適合あり＝推奨
+                      return (
+                        <button key={c.profileId} onClick={() => {
+                          // 「レコメンド結果からこの人に決めた」を学習用に記録（採用ログ）
+                          void logRecommendationAccepted({ organizationId: orgId, ticketId, candidates, chosen: c, source });
+                          onPick(c.name, required, devScale);
+                          onClose();
+                        }}
+                          style={{ width: "100%", textAlign: "left" as const, display: "flex", alignItems: "flex-start", gap: 10, padding: "11px 12px", borderRadius: 10, background: recommended ? "#ECFDF5" : "#F0FDF4", border: recommended ? "2px solid #059669" : "1px solid rgba(5,150,105,0.2)", marginBottom: 7, cursor: "pointer" }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = recommended ? "#ECFDF5" : "#F0FDF4"; }}>
+                          <span style={{ fontSize: 13, fontWeight: 800, color: "#059669", width: 16, flexShrink: 0 }}>{i + 1}.</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const }}>
+                              <span style={{ fontSize: 13.5, fontWeight: 700, color: "#1A1714" }}>{c.name}</span>
+                              {recommended && (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 800, color: "#fff", background: "#059669", padding: "2px 7px", borderRadius: 999 }}>
+                                  <Sparkles style={{ width: 10, height: 10 }} />推奨
+                                </span>
+                              )}
+                              <span style={{ fontSize: 10.5, fontWeight: 700, color: c.activeCount === 0 ? "#059669" : "#6B6458" }}>
+                                稼働中{c.activeCount}件
+                              </span>
+                              <span style={{ fontSize: 10.5, fontWeight: 600, color: "#A09790" }}>適合 {Math.round(c.skillMatch * 100)}%</span>
+                            </div>
+                            <p style={{ fontSize: 11, color: "#6B6458", marginTop: 3, lineHeight: 1.55 }}>{c.reasons.join(" · ")}</p>
+                          </div>
+                          <span style={{ flexShrink: 0, alignSelf: "center", fontSize: 11, fontWeight: 700, color: "#059669" }}>この人に決定 →</span>
+                        </button>
+                      );
+                    })}
+
+                    {matched.length > 3 && (
+                      <button onClick={() => setShowAll(v => !v)}
+                        style={{ width: "100%", padding: "8px 0", fontSize: 11.5, fontWeight: 600, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.15)", background: "transparent", color: "#6B6458", cursor: "pointer" }}>
+                        {showAll ? "上位3人だけ表示" : `もっと見る（他${matched.length - 3}人）`}
+                      </button>
+                    )}
+
+                    {matchedFull && zero.length > 0 && (
+                      <button onClick={() => setShowZero(v => !v)}
+                        style={{ width: "100%", marginTop: 4, padding: "8px 0", fontSize: 11.5, fontWeight: 600, borderRadius: 8, border: "1px dashed rgba(26,23,20,0.15)", background: "transparent", color: "#A09790", cursor: "pointer" }}>
+                        {showZero ? "適合0%のメンバーを隠す" : `さらにすべてのメンバーを表示（適合0%の${zero.length}人）`}
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>
