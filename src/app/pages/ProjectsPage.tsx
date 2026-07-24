@@ -143,6 +143,7 @@ export function ProjectsPage() {
       setProjects(injectLocalTags(PROJECTS));
       return;
     }
+    setLoading(true);
     Promise.all([
       buildProjectQuery(),
       (() => {
@@ -376,7 +377,9 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {loading ? (
+        <PageLoader label="プロジェクトを読み込み中..." />
+      ) : filtered.length === 0 ? (
         <div style={{ textAlign: "center", padding: "80px 0" }}>
           <div style={{ width: 56, height: 56, background: "#F4F5F6", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
             <FolderKanban style={{ width: 24, height: 24, color: "#B0A9A4" }} />
