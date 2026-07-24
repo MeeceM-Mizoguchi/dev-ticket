@@ -2,15 +2,16 @@
 //
 // チケットを1件以上選択している間だけ出現。選択件数と3つの一括アクションを提供する。
 
-import { Trash2, ArrowRightLeft, Sparkles, X } from "lucide-react";
+import { Trash2, ArrowRightLeft, Sparkles, Link2, X } from "lucide-react";
 
 export function BulkActionBar({
-  count, onDelete, onMove, onAssign, onClear, disabled,
+  count, onDelete, onMove, onAssign, onCopyLinks, onClear, disabled,
 }: {
   count: number;
   onDelete: () => void;
   onMove: () => void;
   onAssign: () => void;
+  onCopyLinks: () => void;
   onClear: () => void;
   disabled?: boolean;
 }) {
@@ -44,6 +45,13 @@ export function BulkActionBar({
         onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.18)"; }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
         <ArrowRightLeft style={{ width: 14, height: 14 }} />スプリント移動
+      </button>
+
+      <button type="button" disabled={disabled} onClick={onCopyLinks}
+        style={{ ...btnBase, background: "rgba(255,255,255,0.10)", color: "#F3F4F6", border: "1px solid rgba(255,255,255,0.16)" }}
+        onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.18)"; }}
+        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
+        <Link2 style={{ width: 14, height: 14 }} />リンクをコピー
       </button>
 
       <button type="button" disabled={disabled} onClick={onDelete}
