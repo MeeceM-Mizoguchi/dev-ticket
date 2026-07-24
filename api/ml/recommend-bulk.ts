@@ -14,7 +14,13 @@ import { createClient } from "@supabase/supabase-js";
 import {
   buildMemberFeatures, buildFeatures, scoreWithModel, baselineScore, buildReasons,
   type MemberFeatureInput, type TicketFeatureInput, type LgbModel, type SkillLayer, type DevScale, type Priority,
-} from "./recommend";
+} from "./recommend.js";
+// ⚠️ 拡張子 ".js" は必須。本番(Vercel/Node ESM, package.json "type":"module")では
+//    相対 import に拡張子が無いと ERR_MODULE_NOT_FOUND でモジュール読込時にクラッシュし、
+//    ハンドラの try/catch に入る前に落ちる＝Vercel が JSON ではなく HTML の 500 を返す。
+//    これが「一括レコメンドの取得に失敗しました (500)」の実原因だった（単一 recommend は
+//    自己完結でクロスファイル import が無いため影響を受けていなかった）。
+//    tsconfig は moduleResolution:"bundler" なので ".js" 指定子は .ts に解決され型チェックも通る。
 
 interface BulkTicketInput {
   ticketId: string;
