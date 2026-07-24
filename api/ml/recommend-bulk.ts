@@ -80,6 +80,7 @@ export default async function handler(req: any, res: any) {
     };
 
     const results = ticketList.map((tk) => {
+     try {
       const required = ((tk.requiredSkillIds ?? []) as (string | { skillId: string; importance?: number })[])
         .map(r => {
           const skillId = typeof r === "string" ? r : r.skillId;
@@ -158,10 +159,17 @@ export default async function handler(req: any, res: any) {
       }
 
       return { ticketId: tk.ticketId, chosen, candidates, source };
+     } catch (perTicketErr) {
+      // 1件のチケットの異常データでバッチ全体を 500 に巻き込まないよう、そのチケットだけ
+      // 「割り当てなし」に縮退して続行する。
+      console.error("[recommend-bulk] ticket failed", tk.ticketId, perTicketErr);
+      return { ticketId: tk.ticketId, chosen: null, candidates: [], source };
+     }
     });
 
     res.json({ results, source, modelVersion: modelRow?.version ?? null });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    console.error("[recommend-bulk] failed", e);
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 }

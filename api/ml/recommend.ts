@@ -205,11 +205,12 @@ function onTime(t: TRow): boolean {
 export async function buildMemberFeatures(
   sb: SupabaseClient, orgId: string,
 ): Promise<{ members: MemberFeatureInput[]; skillLayer: Record<string, SkillLayer>; skillName: Record<string, string>; avail: AvailInfo }> {
-  const [{ data: profiles }, { data: skills }, { data: memberSkills }] = await Promise.all([
+  const [{ data: profiles, error: profErr }, { data: skills, error: skillErr }, { data: memberSkills, error: msErr }] = await Promise.all([
     sb.from("profiles").select("id, name, status").eq("organization_id", orgId),
     sb.from("skills").select("id, name, layer").eq("organization_id", orgId),
     sb.from("member_skills").select("profile_id, skill_id, level"),
   ]);
+  if (profErr || skillErr || msErr) console.error("[recommend] buildMemberFeatures base query error", { profErr, skillErr, msErr });
 
   const skillLayer: Record<string, SkillLayer> = {};
   const skillName: Record<string, string> = {};
@@ -229,11 +230,15 @@ export async function buildMemberFeatures(
   const sprintIds = (sprints ?? []).map(s => s.id);
 
   const since = new Date(Date.now() - LOOKBACK_MONTHS * 30 * 864e5).toISOString();
-  const { data: ticketsRaw } = sprintIds.length
+  // 集計に使うカラムだけを取得する。title/description/prefixes 等の巨大カラムは
+  // buildMemberFeatures では一切使わないため引かない（description はリッチHTML＋画像埋め込みで
+  // 巨大化しうる。全チケット×18か月分を載せると関数の OOM=500 の原因になる）。
+  const { data: ticketsRaw, error: ticketsErr } = sprintIds.length
     ? await sb.from("sprint_tickets")
-        .select("id, status, assignee, reviewer_name, due_date, start_date, dev_scale, progress, created_at, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, sprint_id, category_id, title, description, prefixes")
+        .select("id, status, assignee, reviewer_name, due_date, start_date, dev_scale, progress, created_at, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at")
         .in("sprint_id", sprintIds).gte("created_at", since)
-    : { data: [] as TRow[] };
+    : { data: [] as TRow[], error: null };
+  if (ticketsErr) console.error("[recommend] buildMemberFeatures tickets query error", ticketsErr);
   const tickets = (ticketsRaw ?? []) as unknown as TRow[];
 
   // 名前 → profile の名寄せ（assignee は名前の文字列で持たれている）
@@ -438,6 +443,7 @@ export default async function handler(req: any, res: any) {
 
     res.json({ candidates, source, modelVersion: modelRow?.version ?? null });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    console.error("[recommend] failed", e);
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 }

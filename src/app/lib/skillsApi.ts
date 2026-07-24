@@ -178,7 +178,11 @@ export async function fetchBulkRecommendations(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
-  if (!res.ok) throw new Error(`一括レコメンドの取得に失敗しました (${res.status})`);
+  if (!res.ok) {
+    // サーバーは本文に実エラーを返している（{ error: ... }）。status だけでなく本文も拾って表示する。
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error ?? `一括レコメンドの取得に失敗しました (${res.status})`);
+  }
   return res.json();
 }
 
