@@ -15,8 +15,7 @@ Thumbs.db
 仕様書.txt
 env
 .gitignore
-env.example
-.env.example
+
 
 # Capacitor / iOS
 ios/App/App/public/
@@ -28,3 +27,4 @@ xcuserdata/
 .build/
 guidelines/whiteboard-design.md
 docs/ENHA2-030-screen-share-design.md
+docs/BRU7-035-turn-setup.md
