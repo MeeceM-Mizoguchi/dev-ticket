@@ -15,6 +15,7 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
 // 🌟 追加: 緑色の完了ダイアログをこのファイル内で描画するために必要な共通コンポーネントをインポート
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
@@ -687,6 +688,21 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     }
   };
 
+  // ── 一括リンクコピー ──
+  // 選択したチケットの詳細ページURLを、1件1行（改行区切り）でクリップボードへ。
+  // URL形式は単一チケットの「リンクをコピー」（TicketDetailPanel）と同一。
+  const runBulkCopyLinks = async () => {
+    if (!projectSlug) { showAlert("プロジェクト情報が取得できませんでした。", "エラー"); return; }
+    const targets = selectedTickets;   // 明示選択のチケットのみ（子は自動追従しない）
+    if (targets.length === 0) return;
+    const links = targets.map(t => `${window.location.origin}/${projectSlug}/${t.wbs}`).join("\n");
+    if (await copyText(links)) {
+      setSuccessMessage(`${targets.length}件のチケットのリンクをコピーしました。`);
+    } else {
+      showAlert("リンクのコピーに失敗しました。", "エラー");
+    }
+  };
+
   // ── 一括スプリント移動 ──
   const runBulkMove = async (targetSprintId: string) => {
     if (!bulkProjectId) return;
@@ -1224,6 +1240,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         disabled={!!assignState}
         onAssign={runBulkAssign}
         onMove={() => setBulkAction("move")}
+        onCopyLinks={runBulkCopyLinks}
         onDelete={() => setBulkAction("delete")}
         onClear={clearSelection}
       />
