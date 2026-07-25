@@ -373,7 +373,7 @@ export function ReleaseNotesPage() {
 
       {/* Ticket list panel (slide from right) — stays mounted while ticket detail is open to prevent re-animation */}
       {listPanelOpen && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 190 }}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 290 }}>
           <div style={{ position: "absolute", inset: 0, background: "rgba(10,14,12,0.28)", backdropFilter: "blur(3px)" }} onClick={closeList} />
           <div style={{
             position: "absolute", top: 0, right: 0, bottom: 0, width: 420,
