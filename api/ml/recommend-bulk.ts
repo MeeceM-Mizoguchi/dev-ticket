@@ -76,9 +76,12 @@ export default async function handler(req: any, res: any) {
     //   activeCount は割り当てるたびに +1、期間も稼働レンジへ積む（このバッチ内での擬似更新）。
     const liveActive: Record<string, number> = {};
     const liveRanges: Record<string, { start: string | null; due: string | null }[]> = {};
+    // このバッチで既に割り当てた件数。公平分散(ラウンドロビン)の主軸キー。
+    const batchCount: Record<string, number> = {};
     for (const m of members) {
       liveActive[m.profileId] = avail[m.profileId]?.activeCount ?? 0;
       liveRanges[m.profileId] = (avail[m.profileId]?.ranges ?? []).slice();
+      batchCount[m.profileId] = 0;
     }
     const lastMsOf = (m: MemberFeatureInput): number => {
       const s = avail[m.profileId]?.lastAssignedAt;
@@ -104,14 +107,14 @@ export default async function handler(req: any, res: any) {
 
       if (basePool.length === 0) return { ticketId: tk.ticketId, chosen: null, candidates: [], source };
 
-      // 必須スキル（importance>=3）。足切りには使わず、スコアリング/タイブレークにのみ使う。
+      // 必須スキル（importance>=3）。足切りには使わず、タイブレークにのみ使う。
       const mustSkills = required.filter(r => r.importance >= 3);
 
-      // ── 軸① マッチ度（0〜1）── 未保有でも0にはならず候補として残す（足切りしない）。
+      // ── スキル適合（0〜1）── 未保有でも0にはならず候補として残す（足切りしない）。品質タイブレーク用。
       const fitOf = (m: MemberFeatureInput): number =>
         model ? scoreWithModel(model, buildFeatures(ticket, m)) : baselineScore(ticket, m);
 
-      // ── 軸② 空き具合（0〜1）── liveActive/liveRanges（バッチ内で仮想更新される負荷）を使う。
+      // ── 既存の稼働負荷 ── liveActive/liveRanges（バッチ内で仮想更新される負荷）を使う。
       //   期日があればその期間に重なる稼働中件数、無ければ現在の稼働中件数を負荷とみなす。
       const activeOf = (m: MemberFeatureInput) => liveActive[m.profileId] ?? 0;
       const hasDates = typeof tk.startDate === "string" && tk.startDate !== "" && typeof tk.dueDate === "string" && tk.dueDate !== "";
@@ -124,20 +127,22 @@ export default async function handler(req: any, res: any) {
         return n;
       };
       const loadOf = (m: MemberFeatureInput) => hasDates ? overlapOf(m) : activeOf(m);
-      const freeOf = (m: MemberFeatureInput) => 1 / (1 + loadOf(m));
-
-      // ── 合成スコア（バランス型: マッチ度50% + 空き具合50%）──
-      //   ハードなスキルゲート/稼働キャップは廃止。全メンバーを合成スコアで並べる。
-      //   公平分散は、選ばれた人の liveActive/liveRanges を後段で増やすことで次チケット以降に効かせる。
-      const MATCH_W = 0.5, FREE_W = 0.5;
-      const compositeOf = (m: MemberFeatureInput) => MATCH_W * fitOf(m) + FREE_W * freeOf(m);
 
       const skillSum = (m: MemberFeatureInput) => mustSkills.reduce((a, r) => a + (m.skillLevels[r.skillId] ?? 0), 0);
+
+      // ── 一括アサインの並び順（公平分散＝ラウンドロビンを主軸に据える）──
+      //   旧実装は合成スコア(0.5*fit + 0.5*free)。free項は最大寄与0.5・負荷で減衰するため、
+      //   fit差や「既存稼働負荷の偏り」がこれを超えると一部メンバーへ全件集中した
+      //   （実測: 空いている2名だけに11件、稼働負荷の高い2名は0件）。
+      //   そこで「このバッチで既に割り当てた件数 batchCount」を最優先キーにしてラウンドロビンし、
+      //   全員へ1件ずつ→2件目… と回す。同ラウンド内は 既存負荷が軽い順 → スキル適合が高い順 →
+      //   最終アサインが古い順、で決定（空き・品質・ローテーションはタイブレークとして尊重）。
       const ranked = basePool.slice().sort((a, b) =>
-        (compositeOf(b) - compositeOf(a)) ||     // ①合成スコアが高い順（マッチ度×空き）
-        (freeOf(b) - freeOf(a)) ||               // ②空いてる順
-        (lastMsOf(a) - lastMsOf(b)) ||           // ③最終アサインが古い順（ローテーション）
-        (skillSum(b) - skillSum(a)),             // ④スキルレベル合計が高い順
+        ((batchCount[a.profileId] ?? 0) - (batchCount[b.profileId] ?? 0)) ||  // ①このバッチでの割当が少ない順（公平分散の主軸）
+        (loadOf(a) - loadOf(b)) ||                // ②既存の稼働負荷が軽い順
+        (fitOf(b) - fitOf(a)) ||                  // ③スキル適合が高い順（品質タイブレーク）
+        (lastMsOf(a) - lastMsOf(b)) ||            // ④最終アサインが古い順（ローテーション）
+        (skillSum(b) - skillSum(a)),              // ⑤スキルレベル合計が高い順
       );
 
       if (ranked.length === 0) return { ticketId: tk.ticketId, chosen: null, candidates: [], source };
@@ -158,8 +163,10 @@ export default async function handler(req: any, res: any) {
 
       const chosen = candidates[0] ?? null;
 
-      // ── 公平分散: 選ばれた人の稼働を仮想的に増やす ──
+      // ── 公平分散: 選ばれた人のバッチ割当数と稼働を仮想的に増やす ──
+      //   batchCount を増やすことで次チケットはまだ割当の少ない人へ回る（ラウンドロビン）。
       if (chosen) {
+        batchCount[chosen.profileId] = (batchCount[chosen.profileId] ?? 0) + 1;
         liveActive[chosen.profileId] = (liveActive[chosen.profileId] ?? 0) + 1;
         if (hasDates) (liveRanges[chosen.profileId] ??= []).push({ start: tk.startDate ?? null, due: tk.dueDate ?? null });
       }
