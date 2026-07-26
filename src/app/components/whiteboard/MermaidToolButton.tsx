@@ -10,6 +10,7 @@ import { createPortal } from "react-dom";
 import { convertToExcalidrawElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { renderMermaid, mermaidSvgToPngDataUrl } from "@/app/lib/mermaid";
+import { overlayMount } from "@/app/lib/whiteboardPortal";
 import { MermaidView } from "../shared/MermaidView";
 
 const BTN_ID = "wb-mermaid-tool";
@@ -268,6 +269,7 @@ export function MermaidToolButton({ api, containerRef }: { api: any; containerRe
         </div>
       </div>
     </div>,
-    document.body
+    // 全画面中は body 直下だと描画されないので、全画面要素の中へ取り付ける（BRU7-056-9）
+    overlayMount()
   );
 }

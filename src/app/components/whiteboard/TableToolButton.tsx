@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { convertToExcalidrawElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
+import { overlayMount } from "@/app/lib/whiteboardPortal";
 
 const BTN_ID = "wb-table-tool";
 const SOFT_BLACK = "#343a40";     // 白板の既定線色（CLEAN_DEFAULTS と揃える）
@@ -186,6 +187,7 @@ export function TableToolButton({ api, containerRef }: { api: any; containerRef:
         <GridPicker onPick={(rows, cols) => insertTable(api, rows, cols)} onClose={() => setOpen(false)} />
       </div>
     </>,
-    document.body
+    // 全画面中は body 直下だと描画されないので、全画面要素の中へ取り付ける（BRU7-056-9）
+    overlayMount()
   );
 }
