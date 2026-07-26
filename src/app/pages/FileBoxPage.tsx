@@ -331,7 +331,8 @@ export function FileBoxPage() {
 
       {previewTarget && (
         <FileViewerModal file={previewTarget} onClose={closePreview}
-          onDownload={handleDownload} onOpenInApp={handleOpenInApp} />
+          onDownload={handleDownload} onOpenInApp={handleOpenInApp}
+          onSaved={() => { load(); if (project) emitLinkItemsChanged(project.id, "file"); }} />
       )}
       {deleteTarget && (
         <ConfirmDialog

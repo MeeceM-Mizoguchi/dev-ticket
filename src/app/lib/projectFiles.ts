@@ -57,6 +57,13 @@ export function isOfficeFile(fileName: string): boolean {
   return OFFICE_SCHEME[getFileKind(fileName)] !== undefined;
 }
 
+// 画面内エディタで直接編集できる拡張子。
+// xlsx/xlsm: 元ファイルを直接パッチ（グラフ等を保持）。docx: 本文を再生成（書式は一部欠落）。
+const EDITABLE_EXT = new Set(["xlsx", "xlsm", "docx"]);
+export function isEditableInBrowser(fileName: string): boolean {
+  return EDITABLE_EXT.has(getExt(fileName));
+}
+
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -85,6 +92,26 @@ async function postApi<T>(action: string, body: unknown): Promise<T> {
     throw new Error(msg?.error || "リクエストに失敗しました");
   }
   return res.json() as Promise<T>;
+}
+
+/**
+ * 署名付きURLからファイルを取得する（保存直後のストレージ整合待ちに備えてリトライ）。
+ * アップロード直後はオブジェクトが即時に整合せず一時的に 400/404 を返すことがあるため、
+ * res.ok を確認し、失敗時は短い待機を挟んで数回やり直す。
+ */
+export async function fetchFileWithRetry(url: string, tries = 4): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      lastErr = e;
+    }
+    if (i < tries - 1) await new Promise(r => setTimeout(r, 500 * (i + 1)));
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("ファイルの取得に失敗しました");
 }
 
 /** 閲覧・DL用の短命な署名付きURLを取得する（サーバー側でメンバー判定） */

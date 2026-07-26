@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { X, Download, Loader2, FileWarning, MonitorCog } from "lucide-react";
+import { X, Download, Loader2, FileWarning, MonitorCog, Pencil, Eye } from "lucide-react";
 import type { ProjectFile } from "@/app/types";
 import { escStack } from "@/app/lib/escStack";
-import { fetchSignedUrl, getFileKind, getExt, formatFileSize, isOfficeFile, canPreviewInBrowser } from "@/app/lib/projectFiles";
+import { fetchSignedUrl, getFileKind, getExt, formatFileSize, isOfficeFile, canPreviewInBrowser, isEditableInBrowser, fetchFileWithRetry } from "@/app/lib/projectFiles";
 import { ExcelViewer } from "./ExcelViewer";
+import { ExcelEditor, type EditorHandle } from "./ExcelEditor";
+import { WordEditor } from "./WordEditor";
 
 // ENHA2-035 自前ファイルビューア
 // 署名付きURLからブラウザが直接ファイルを取得し、レンダリングもすべてブラウザ内で行う。
@@ -32,7 +34,7 @@ function WordViewer({ url }: { url: string }) {
     let cancelled = false;
     (async () => {
       try {
-        const blob = await (await fetch(url)).blob();
+        const blob = await (await fetchFileWithRetry(url)).blob();
         const { renderAsync } = await import("docx-preview");
         if (cancelled || !hostRef.current) return;
         hostRef.current.innerHTML = "";
@@ -66,7 +68,7 @@ function TextViewer({ url }: { url: string }) {
     let cancelled = false;
     (async () => {
       try {
-        const t = await (await fetch(url)).text();
+        const t = await (await fetchFileWithRetry(url)).text();
         if (!cancelled) setText(t);
       } catch {
         if (!cancelled) setError("ファイルの読み込みに失敗しました");
@@ -90,17 +92,41 @@ interface Props {
   onClose: () => void;
   onDownload: (file: ProjectFile) => void;
   onOpenInApp: (file: ProjectFile) => void;
+  onSaved?: () => void;
 }
 
-export function FileViewerModal({ file, onClose, onDownload, onOpenInApp }: Props) {
+export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSaved }: Props) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [closeConfirm, setCloseConfirm] = useState(false);
+  const editorRef = useRef<EditorHandle | null>(null);
   const kind = getFileKind(file.fileName);
+  const canEdit = isEditableInBrowser(file.fileName) && canPreviewInBrowser(file.fileName);
+
+  // 別ファイルに切り替わったら閲覧モードへ戻す
+  useEffect(() => { setEditing(false); setCloseConfirm(false); }, [file.id]);
+
+  // 閉じるガード：編集中で未保存なら確認ダイアログを出す
+  const attemptCloseRef = useRef<() => void>(() => {});
+  attemptCloseRef.current = () => {
+    if (closeConfirm) { setCloseConfirm(false); return; }
+    if (editing && editorRef.current?.isDirty()) { setCloseConfirm(true); return; }
+    onClose();
+  };
+  const attemptClose = () => attemptCloseRef.current();
+  const closeWithoutSave = () => { setCloseConfirm(false); onClose(); };
+  const saveAndClose = async () => {
+    const ok = await editorRef.current?.save();
+    setCloseConfirm(false);
+    if (ok) onClose();
+  };
 
   useEffect(() => {
-    escStack.push(onClose);
-    return () => escStack.pop(onClose);
-  }, [onClose]);
+    const h = () => attemptCloseRef.current();
+    escStack.push(h);
+    return () => escStack.pop(h);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +138,12 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp }: Prop
 
   const body = (() => {
     if (error) return <ErrorBox message={error} />;
+    // 編集モード：自前エディタで画面内編集（保存は新バージョンとして登録）
+    if (editing && url) {
+      const exit = () => setEditing(false);
+      if (kind === "excel") return <ExcelEditor ref={editorRef} url={url} file={file} onSaved={() => onSaved?.()} onClose={exit} />;
+      if (kind === "word") return <WordEditor ref={editorRef} url={url} file={file} onSaved={() => onSaved?.()} onClose={exit} />;
+    }
     // 非対応形式(.doc/.xls/.pptx 等)はビューアを起動させない。
     // 起動すると描画に失敗して「読み込み失敗」と出るだけで、理由が伝わらないため。
     if (!canPreviewInBrowser(file.fileName)) {
@@ -137,7 +169,7 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp }: Prop
 
   return createPortal(
     <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.55)", display: "flex" }}
-      onClick={onClose}>
+      onClick={attemptClose}>
       {/* 図面やシートを見るため全画面。閉じるのは右上の×か Esc */}
       <div onClick={e => e.stopPropagation()}
         style={{ width: "100vw", height: "100vh", background: "#FFFFFF", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -147,6 +179,14 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp }: Prop
             <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.fileName}</p>
             <p style={{ margin: 0, fontSize: 11, color: "#A09790" }}>{formatFileSize(file.fileSize)} · {file.uploadedBy}</p>
           </div>
+          {/* 画面内エディタ（xlsx/xlsm/docx）。閲覧⇔編集をトグルする */}
+          {canEdit && (
+            <button onClick={() => setEditing(v => !v)}
+              title={editing ? "閲覧モードに戻る" : "この画面で直接編集します"}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: editing ? "#F4F5F6" : "#FEF3C7", color: editing ? "#6B6458" : "#B45309", border: `1.5px solid ${editing ? "rgba(26,23,20,0.12)" : "#FDE68A"}`, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              {editing ? <><Eye style={{ width: 12, height: 12 }} />閲覧</> : <><Pencil style={{ width: 12, height: 12 }} />編集</>}
+            </button>
+          )}
           {/* Office系は本物のアプリで開いて編集できるようにする（保存は再アップロード運用） */}
           {isOfficeFile(file.fileName) && (
             <button onClick={() => onOpenInApp(file)} title="デスクトップのOfficeで開きます（編集後は再アップロードが必要）"
@@ -158,13 +198,38 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp }: Prop
             style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
             <Download style={{ width: 12, height: 12 }} />ダウンロード
           </button>
-          <button onClick={onClose} title="閉じる"
+          <button onClick={attemptClose} title="閉じる"
             style={{ width: 30, height: 30, borderRadius: 8, background: "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}>
             <X style={{ width: 16, height: 16 }} />
           </button>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>{body}</div>
       </div>
+
+      {/* 未保存の確認 */}
+      {closeConfirm && (
+        <div onClick={e => e.stopPropagation()}
+          style={{ position: "fixed", inset: 0, zIndex: 13000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ width: 380, maxWidth: "90vw", background: "#fff", borderRadius: 14, padding: "22px 24px", boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }}>
+            <p style={{ margin: "0 0 6px", fontSize: 15, fontWeight: 700, color: "#1A1714" }}>保存されていない変更があります</p>
+            <p style={{ margin: "0 0 18px", fontSize: 13, color: "#6B6458", lineHeight: 1.6 }}>編集内容を保存してから閉じますか？</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button onClick={saveAndClose}
+                style={{ padding: "10px 14px", background: "#059669", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                保存して閉じる
+              </button>
+              <button onClick={closeWithoutSave}
+                style={{ padding: "10px 14px", background: "#FEF2F2", color: "#DC2626", border: "1.5px solid #FECACA", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                保存せずに閉じる
+              </button>
+              <button onClick={() => setCloseConfirm(false)}
+                style={{ padding: "10px 14px", background: "#F4F5F6", color: "#6B6458", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                キャンセル
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     document.body
   );

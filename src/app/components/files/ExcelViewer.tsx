@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { parseXlsxDrawings } from "@/app/lib/xlsxDrawing";
 import type { DrawingObject, Paragraph } from "@/app/lib/xlsxDrawing";
+import { fetchFileWithRetry } from "@/app/lib/projectFiles";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) ビューア
 //
@@ -13,11 +14,12 @@ const MAX_ROWS = 400;
 const MAX_COLS = 80;
 
 // Excel の列幅は「標準フォントの数字1文字ぶん」単位。Calibri 11 での慣用換算。
-const CHAR_PX = 7;
-const COL_PADDING_PX = 5;
-const DEFAULT_COL_WIDTH = 8.43;
-const DEFAULT_ROW_HEIGHT_PT = 15;
-const PT_TO_PX = 4 / 3;
+// ExcelEditor でも同じ換算を使うので export する（描画レイヤーの座標系を一致させるため）。
+export const CHAR_PX = 7;
+export const COL_PADDING_PX = 5;
+export const DEFAULT_COL_WIDTH = 8.43;
+export const DEFAULT_ROW_HEIGHT_PT = 15;
+export const PT_TO_PX = 4 / 3;
 
 const HEADER_W = 34;
 const HEADER_H = 20;
@@ -102,11 +104,11 @@ function arrowPolygon(geom: string | undefined, w: number, h: number): string | 
   }
 }
 
-function DrawingLayer({ objects, width, height }: { objects: DrawingObject[]; width: number; height: number }) {
+export function DrawingLayer({ objects, width, height, offsetLeft = HEADER_W, offsetTop = HEADER_H }: { objects: DrawingObject[]; width: number; height: number; offsetLeft?: number; offsetTop?: number }) {
   return (
     // width/height を明示する。幅0のままだと Tailwind リセットの img{max-width:100%} が
     // max-width:0 と解決され、画像だけが潰れて見えなくなる。
-    <div style={{ position: "absolute", left: HEADER_W, top: HEADER_H, width, height, pointerEvents: "none" }}>
+    <div style={{ position: "absolute", left: offsetLeft, top: offsetTop, width, height, pointerEvents: "none" }}>
       {objects.map(o => {
         // コネクタは線の始終点座標で反転を表現するので transform では反転させない
         const transform = [
@@ -196,7 +198,7 @@ export function ExcelViewer({ url }: { url: string }) {
     disposeRef.current = () => {};
     (async () => {
       try {
-        const buf = await (await fetch(url)).arrayBuffer();
+        const buf = await (await fetchFileWithRetry(url)).arrayBuffer();
         const ExcelJS = (await import("exceljs")).default;
         const wb = new ExcelJS.Workbook();
         await wb.xlsx.load(buf);
