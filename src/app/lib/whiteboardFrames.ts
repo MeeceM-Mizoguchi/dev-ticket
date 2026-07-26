@@ -356,39 +356,136 @@ export function followFrameMoves(
 
 /**
  * フレームが自分の子孫より背面に来るよう並べ替える。
- * ネイティブ frameId を使わないため「配列順 = z-order（フレームは中身の背面）」を
- * こちらで保証する。同じ親の兄弟内は元の index 順を保持し、全クライアントで決定的に揃える。
+ * ネイティブ frameId を使わないため「フレームは中身の背面」だけをこちらで保証する。
+ *
+ * 【重要・BRU7-057】ここで保証するのは “それだけ” にする。
+ * 以前はフレームの子孫を「フレームの直後へまとめて emit」していたため、子の重なり順が
+ * フレームの位置に固定され、fractional index を無視していた。その結果
+ *   ・フレーム内の図形を「最前面へ」しても、フレーム外の要素（あとから引いた矢印・貼った画像など）
+ *     より前に出られない ＝ ボタンを押しても何も起きない
+ *   ・逆にフレーム外の要素は常にフレームの中身より前面
+ * となっていた。Excalidraw の「最前面へ」は index を全体の最大値に振り直す（frameId を使って
+ * いないので盤面全体が対象）ので、こちらが位置を握り潰していたのが原因。
+ *
+ * 新方式: index 昇順（＝ユーザーが決めた重なり順）をそのまま維持し、フレーム要素だけを
+ * 「自分の最も背面の子孫の直前」へ引き下げる。子は動かさないので最前面/最背面がそのまま効く。
+ * 位置は元配列の添字から決定的に導くため、全クライアントで同じ並びに揃う。
+ *
+ * 例外は「フレーム自身が全子孫より前面にある」状態だけ。Excalidraw の最前面/前面へは
+ * frameId を見ないためフレーム要素しか動かさず、放置すると引き下げで元に戻って“ボタンが効かない”
+ * ことになる。この並びは通常の収束状態では起こり得ない（＝ユーザーがフレームを前へ出した合図）
+ * ので、その時だけ子孫をフレームの直後へ連れて行き、グループごと前面へ出す。
  *
  * @param sorted fractional index 昇順で整列済みの要素配列
  */
 export function orderFramesBehindChildren(sorted: readonly any[]): any[] {
   const frameIds = new Set(sorted.filter((e) => isFrame(e) && !e.isDeleted).map((e) => e.id));
+  if (frameIds.size === 0) return sorted.slice();
   const parentOf = (el: any): string | null => {
     const p = resolveParent(el);
     return p && frameIds.has(p) && p !== el.id ? p : null;
   };
-  const childrenOf = new Map<string, any[]>();
+
+  sorted = carryFramesMovedToFront(sorted, frameIds, parentOf);
+
+  const pos = new Map<string, number>();
+  sorted.forEach((el, i) => pos.set(el.id, i));
+
+  // 各フレームの「引き下げ先」= 自分と全子孫の中で最も背面（＝添字が最小）の位置。
+  // 入れ子フレームも祖先チェーンを遡って伝播させる（親は孫より必ず背面になる）。
+  const anchor = new Map<string, number>();
+  const depth = new Map<string, number>();
   for (const el of sorted) {
-    const p = parentOf(el);
-    if (!p) continue;
-    const arr = childrenOf.get(p) ?? [];
-    arr.push(el);
-    childrenOf.set(p, arr);
+    const i = pos.get(el.id)!;
+    if (frameIds.has(el.id)) anchor.set(el.id, Math.min(anchor.get(el.id) ?? i, i));
+    let cur = parentOf(el);
+    let d = 0;
+    while (cur && d++ < 64) {
+      anchor.set(cur, Math.min(anchor.get(cur) ?? i, i));
+      cur = parentOf(sorted[pos.get(cur)!]);
+    }
+    if (frameIds.has(el.id)) depth.set(el.id, d);
   }
-  const out: any[] = [];
-  const emitted = new Set<string>();
-  const emit = (el: any, depth: number) => {
-    if (emitted.has(el.id) || depth > 64) return;
-    emitted.add(el.id);
-    out.push(el);
-    const kids = childrenOf.get(el.id);
-    if (kids) for (const k of kids) emit(k, depth + 1);
+
+  // フレームは「引き下げ先の直前(-0.5)」へ。整数の隣接要素は跨がないので、
+  // フレーム以外の重なり順は一切変わらない。
+  const keyOf = (el: any): number => {
+    const i = pos.get(el.id)!;
+    return frameIds.has(el.id) ? (anchor.get(el.id) ?? i) - 0.5 : i;
+  };
+  return sorted.slice().sort((a, b) => {
+    const d = keyOf(a) - keyOf(b);
+    if (d !== 0) return d;
+    // 同じ位置を取り合うのは入れ子フレームだけ。浅い（外側の）フレームを背面にする。
+    const dd = (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0);
+    return dd !== 0 ? dd : pos.get(a.id)! - pos.get(b.id)!;
+  });
+}
+
+/**
+ * 「フレームを最前面へ」を成立させる前処理。
+ * フレーム要素が自分の全子孫より後ろ（＝前面）に来ている時だけ、その子孫をフレームの直後へ
+ * 集めてグループごと運ぶ。通常はフレームが必ず子孫より前（背面）に整列されるので、この形は
+ * ユーザーがフレームを前面へ出した／既存の図形を囲うフレームを新規作成した時にしか現れない。
+ * 該当が無ければ元配列をそのまま返す（＝通常時のコストは走査1回のみ）。
+ */
+function carryFramesMovedToFront(
+  sorted: readonly any[],
+  frameIds: Set<string>,
+  parentOf: (el: any) => string | null,
+): readonly any[] {
+  // frameId -> 子孫（元の並び順）
+  const byId = new Map<string, any>(sorted.map((e) => [e.id, e]));
+  const descOf = new Map<string, any[]>();
+  const ancestorsOf = (el: any): string[] => {
+    const out: string[] = [];
+    let cur = parentOf(el);
+    let guard = 0;
+    while (cur && guard++ < 64) {
+      out.push(cur);
+      const p = byId.get(cur);
+      cur = p ? parentOf(p) : null;
+    }
+    return out;
   };
   for (const el of sorted) {
-    if (parentOf(el)) continue; // 子は親の下で emit される
-    emit(el, 0);
+    for (const a of ancestorsOf(el)) {
+      const arr = descOf.get(a) ?? [];
+      arr.push(el);
+      descOf.set(a, arr);
+    }
   }
-  // 取りこぼし（循環など）は元順で末尾に付ける
+
+  const pos = new Map<string, number>();
+  sorted.forEach((el, i) => pos.set(el.id, i));
+  // 「自分の全子孫より前面」＝ フレームの添字が子孫の最大添字より大きい
+  const moving = new Set<string>();
+  for (const id of frameIds) {
+    const desc = descOf.get(id);
+    if (!desc || !desc.length) continue;
+    const maxDesc = desc.reduce((m, d) => Math.max(m, pos.get(d.id)!), -1); // 子孫が多くても安全（spread しない）
+    if (pos.get(id)! > maxDesc) moving.add(id);
+  }
+  if (!moving.size) return sorted;
+
+  // 運ばれる子孫は元の位置から抜き、フレームの直後へ差し込む。
+  // 入れ子フレームが両方 moving でも、外側の子孫リストに内側とその中身が含まれるため二重には出ない。
+  const carried = new Set<string>();
+  for (const id of moving) for (const d of descOf.get(id)!) carried.add(d.id);
+  const out: any[] = [];
+  const emitted = new Set<string>();
+  for (const el of sorted) {
+    if (carried.has(el.id)) continue;
+    if (emitted.has(el.id)) continue;
+    emitted.add(el.id);
+    out.push(el);
+    if (!moving.has(el.id)) continue;
+    for (const d of descOf.get(el.id)!) {
+      if (emitted.has(d.id)) continue;
+      emitted.add(d.id);
+      out.push(d);
+    }
+  }
   for (const el of sorted) if (!emitted.has(el.id)) { emitted.add(el.id); out.push(el); }
   return out;
 }
