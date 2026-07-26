@@ -6,7 +6,7 @@ import { Excalidraw, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
-import { autoConnectLines, foldSelectedConnectors, followTriangleConnections, healBrokenElbowArrows, isConnectableShape, reconnectDraggedConnectors, remapDuplicatedShapeAnchors, repairOpenTriangles, shapeSig, suppressTrianglePointEditing, unfoldSelectedConnectors } from "@/app/lib/whiteboardAutoConnect";
+import { autoConnectLines, foldSelectedConnectors, followTriangleConnections, healBrokenElbowArrows, isConnectableShape, reconnectDraggedConnectors, remapDuplicatedCustomRefs, remapDuplicatedShapeAnchors, repairOpenTriangles, shapeSig, suppressTrianglePointEditing, unfoldSelectedConnectors, type DupPlan } from "@/app/lib/whiteboardAutoConnect";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
 import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
 import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
@@ -305,6 +305,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     const onDown = () => {
       pointerDownNow.current = true;
       endpointDragId.current = null; // 新しいポインタ操作の開始（前回の取りこぼしを持ち越さない）
+      copiedConnIds.current.clear(); // 前回のコピー操作の控えは持ち越さない（BRU7-056-7）
       const m = new Map<string, string>();
       const ids = new Set<string>();
       for (const el of api.getSceneElements() as any[]) {
@@ -535,6 +536,9 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   }, [api, canEdit]);
 
   const processedLines = useRef<Set<string>>(new Set());
+  const knownElementIds = useRef<Set<string>>(new Set());      // これまでに見た要素id（複製された一群の検出用・BRU7-056-5）
+  const dupPlan = useRef<DupPlan | null>(null);                // 複製の対応表。反映されるまで毎tick適用し直す（BRU7-056-5）
+  const copiedConnIds = useRef<Set<string>>(new Set());        // このポインタ操作でコピーに関わった線・矢印（接続状態を変えない・BRU7-056-7）
   const seededLines = useRef(false);                          // 起動時に盤面へ在った線を「評価済み」にしたか（BRU7-056-3）
   const touchedConnIds = useRef<Set<string>>(new Set());      // このポインタ操作で掴んだ線・矢印（離した時に接続を再判定・BRU7-056-3）
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
@@ -613,6 +617,17 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 放置すると Excalidraw 内部の invariant がドラッグ中に毎フレーム throw する。
         // 修復した tick は他ヘルパーを止め、単一 updateScene/tick を保つ（次tickで収束）。
         const elbowHealed = remote ? false : healBrokenElbowArrows(api, elements, appState);
+        // 【BRU7-056-5】複製・コピペで生まれた要素の自前 id 参照（接続 triStart/triEnd・所属 wbParent 等）を
+        // 複製された側へ貼り替える。Excalidraw は customData を丸ごとコピーするだけで id を貼り替えないため、
+        // これが無いとコピーした瞬間に「複製の線がコピー元の図形へ伸びる」「複製の子がコピー元のフレームに
+        // 付いていく」＝コピー元がぐちゃぐちゃになる。他のどの追従処理より先に直す必要があるので最初に置く。
+        const dupRemapped = remapDuplicatedCustomRefs(api, elements, appState, knownElementIds.current, remote || elbowHealed, dupPlan, processedLines.current);
+        // このポインタ操作でコピーに関わった線・矢印を控える（次の pointerdown で破棄）。
+        // 対応表は反映が済むと破棄されるが、ポインタを離すのはその後なので別に持つ必要がある。
+        if (dupPlan.current) {
+          for (const id of dupPlan.current.carried) copiedConnIds.current.add(id);
+          for (const id of dupPlan.current.dups) copiedConnIds.current.add(id);
+        }
         // このドラッグ操作中に生まれた要素（Alt複製した複製など）。元フレームの移動へ巻き込んで
         // 動かすと二重移動＆署名が毎tick変わって収束しないため、追従対象から除外する（BRU7-043）。
         const draggingNow = !!appState?.selectedElementsAreBeingDragged;
@@ -621,20 +636,25 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           : undefined;
         // フレーム移動時に子（図形・入れ子フレーム）を同じデルタで追従させる（BRU5-040）。
         // remote/リサイズ/新規描画時は追従せず、位置スナップショットのみ更新する。
-        const followed = elbowHealed ? false : followFrameMoves(api, elements, appState, prevFramePos.current, remote, bornIds);
+        const followed = (elbowHealed || dupRemapped) ? false : followFrameMoves(api, elements, appState, prevFramePos.current, remote, bornIds);
         // フレーム新規作成/リサイズ時に内包要素を wbParent で所属させる（BRU4-054 / BRU5-040）。
-        const framed = (remote || elbowHealed || followed) ? false : captureFrameChildren(api, elements, appState, prevFrameSig.current);
+        const framed = (remote || elbowHealed || dupRemapped || followed) ? false : captureFrameChildren(api, elements, appState, prevFrameSig.current);
         // ドラッグ確定時に、動かした要素の所属を再判定（枠へ入れた/出した/入れ子にした・BRU5-040）。
         // 最新シーンから取り直すため、同tickで followed が updateScene 済みでも安全に上書きできる。
         const dragging = !!appState?.selectedElementsAreBeingDragged;
         const dragEnded = !remote && !elbowHealed && wasDragging.current && !dragging;
         // Alt複製: Excalidrawは「複製を元の位置に残し、元の要素を動かす」ため、そのままだと矢印が
         // コピー側に付いていく。元の位置に残った複製へアンカーを付け替える（BRU5-068）。
-        const remapped = (!remote && !elbowHealed && (dragging || dragEnded))
+        // 複製の対応表が「外部の矢印」を担当している間は、そちらに任せる（BRU7-056-10）。
+        // 旧BRU5-068は一度きりの書き換えで、同フレームの追従処理に上書きされると復帰できない。
+        // 対応表が矢印を1本も掴んでいない場合（対応付けに失敗した等）は、旧処理を保険として動かす。
+        const dupOwnsArrows = !!dupPlan.current && dupPlan.current.external.size > 0;
+        const remapped = (!remote && !elbowHealed && !dupRemapped && !dupOwnsArrows && (dragging || dragEnded))
           ? remapDuplicatedShapeAnchors(api, appState, preDragSig.current) : false;
         const reparented = dragEnded && !remapped ? reparentDraggedElements(api, appState) : false;
         // ドラッグ確定時に、一緒に運んだコネクタの端点をアンカー図形へ貼り直しズレを解消（BRU5-061）。
-        const reconnected = dragEnded && !remapped ? reconnectDraggedConnectors(api, appState) : false;
+        // コピーで運ばれた線は貼り直さない（離した瞬間に画面を横切って伸びるのを防ぐ・BRU7-056-8）
+        const reconnected = dragEnded && !remapped ? reconnectDraggedConnectors(api, appState, copiedConnIds.current) : false;
         wasDragging.current = dragging;
         // 【BRU7-056-3】掴んで動かしている線・矢印を控え、ポインタを離したフレームで「未処理」へ戻す。
         // 自動接続は1要素1回きりになったため、これが無いと「一度どこにも繋がらなかった線を
@@ -661,17 +681,26 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           }
         }
         if (pointerUpPending.current && touchedConnIds.current.size) {
-          for (const id of touchedConnIds.current) processedLines.current.delete(id);
+          for (const id of touchedConnIds.current) {
+            // 【BRU7-056-7】コピー操作で運ばれただけの線は接続状態を変えない。
+            // ここで未処理へ戻すと、離した瞬間に自動接続が走り、元々どこにも繋がっていなかった
+            // 飾り線がコピー先の図形へ勝手に繋がって画面を横切る（複製側と同じ事故）。
+            // 「線そのものを掴んで図形へ寄せた」操作は複製を伴わないのでこの除外に入らない。
+            if (copiedConnIds.current.has(id)) continue;
+            processedLines.current.delete(id);
+          }
           touchedConnIds.current.clear();
         }
-        const busy = elbowHealed || remapped || followed || framed || reparented || reconnected;
+        const busy = elbowHealed || dupRemapped || remapped || followed || framed || reparented || reconnected;
         // 塗りが透明になるバグの保険的修復（BRU4-051）。万一ループが開いた三角形を閉じ直す。
         const repaired = remote || busy ? false : repairOpenTriangles(api, elements, appState);
         // 【BRU7-056-4】Ctrl/Cmd を押しながらの操作ではコネクトしない（ハイライトも TriangleBindHint 側で消す）。
         // 「今のポインタ操作」にだけ効かせる（ポインタを押している間＋離した直後の評価フレーム）。
         // こうしないと Ctrl+V / Ctrl+Z など無関係なキー操作の拍子に判定が抑止されてしまう。
         const noConnect = isConnectSuppressed() && (pointerDownNow.current || pointerUpPending.current);
-        const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect);
+        // 端点つまみを掴んで離した線だけは「今繋がっている図形」を優先せず接続先を選び直す（BRU7-056-4/-6）。
+        // それ以外の線まで選び直すと、端点が矩形から少しはみ出しているだけで外枠に吸われて崩れる。
+        const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ。
         // 折れ矢印トグルON時は foldAll を渡し、接続済み直線をこの追従パスで確実に折る（描画タイミング非依存）。
         // undo/redo 直後は forceAnchor: 繋ぎ替え/解除をせず、記録どおりのアンカーへ端点を戻す（BRU5-066）。
@@ -688,7 +717,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 追従処理に foldAll を渡すと、盤面上の“既存の接続済みの線すべて”が折れ線に作り替えられ、
         // 「Elbowを押しただけで関係ない矢印まで壊れる」事故になる（BRU5-083）。既存の線は
         // 選択して「線の形」から明示的に折る。
-        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId, noConnect);
+        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
         // テキストボックスの背景/枠線を描く「影の背景板(rectangle)」を生成・追従・削除する（BRU5-062）。
         // 画像の上でも背景が透けないよう、DOMオーバーレイでなく実要素でネイティブに背面へ敷く。
         // 他ヘルパーが updateScene 済みの tick はスキップし（1tick遅れて追従・単一updateScene維持）、
@@ -717,10 +746,10 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 移動/リサイズ中とリモート/焼き込み直後はスキップ。テキスト編集中は reflow 内部でエディタ
         // textarea を検出して「ライブモード」で再レイアウトする（入力しながら列幅を可変に・BRU5-042）。
         const hardInteract = !!(appState?.selectedElementsAreBeingDragged || resizingNow || appState?.draggingElement);
-        reflowTables(api, remote || hardInteract || frozen || elbowHealed);
+        reflowTables(api, remote || hardInteract || frozen || elbowHealed || dupRemapped);
         // 素の図形のバインドテキスト高さフィット（BRU6-011）。改行を減らすと元の高さへ戻す。
         // 新規作成中(newElement)は触らない（作成中の要素を updateScene で壊さない）。
-        reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || !!appState?.newElement);
+        reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || dupRemapped || !!appState?.newElement);
       }
     } catch { /* noop */ }
     finally { api?.__wbSetDefer?.(false); } // 遅延スコープを閉じる（以後の updateScene は同期適用へ戻す）

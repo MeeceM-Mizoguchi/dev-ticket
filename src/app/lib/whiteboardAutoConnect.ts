@@ -37,6 +37,7 @@ const foldRoundness = () => (foldCorner.round ? { type: 2 } : null);
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
+
 // テキストボックスの枠線は文字bboxの外側 TEXT_BORDER_PAD(scene単位) に描かれる（whiteboardTextBoxBg の影矩形と一致）。
 // 枠線付きテキストへ接続する時は、この枠線ちょうどに端点を貼り付けたいので接続用bboxを外側へ広げる。
 // （枠線なしのテキストや他図形は素の外接矩形のまま。）
@@ -484,6 +485,9 @@ export function autoConnectLines(
   // Ctrl/Cmd 押下中（BRU7-056-4）: 接続しない。ただし「評価済み」にはする＝キーを離した後に
   // 無関係な操作をした拍子へ判定が持ち越されて、あとから勝手に吸着するのを防ぐ。
   suppress?: boolean,
+  // 端点つまみを掴んで離した線の id（BRU7-056-4）。この線だけは「今繋がっている図形」を
+  // 優先せず、端点を落とした位置から接続先を選び直す（狙った図形へ繋ぎ替えられるようにする）。
+  retargetId?: string,
 ): boolean {
   const drawingId = appState?.newElement?.id ?? appState?.editingLinearElement?.elementId;
   const shapes = elements.filter(isConnectableShape);
@@ -511,27 +515,21 @@ export function autoConnectLines(
     // これを渡さないと、再評価のたびに「たまたま近くにある別の図形」へ乗り換えてしまい、
     // 何も触っていない矢印が突然よその図形へ繋ぎ変わって向きが変わる。
     //
-    // ただし優先するのは「端点が記録どおりの位置にある＝ユーザーが動かしていない」側だけ（BRU7-056-4）。
-    // 動かした端点まで優先すると、四角の中の小さい四角のように“今の接続先の内側”へ狙って
-    // 落としても、優先された外側の図形が勝ち続けて端点が元の辺へ戻る＝いくらやっても繋ぎ替えられない。
-    // （ハイライトは優先なしで出るため、「グレー枠は内側に出たのに繋がるのは外側」というズレにもなる。）
+    // 優先を外すのは「端点つまみを掴んで離した線」だけ（BRU7-056-4/-6）。その線は狙って端点を
+    // 落としているので、四角の中の小さい四角のように“今の接続先の内側”へも繋ぎ替えられる必要がある。
+    // 逆にそれ以外の線まで優先を外すと、端点が接続先の矩形からわずかにはみ出しているだけで
+    // 「それを囲む外側の図形」が選ばれ、端点が外枠の辺の中央へ飛んで盤面が崩れる（BRU7-056-6）。
     const aS0 = readAnchor(el.customData?.triStart);
     const aE0 = readAnchor(el.customData?.triEnd);
-    const ANCHOR_KEEP = 1.5; // 端点がこの距離以内なら「記録位置のまま＝触っていない」
-    const preferOf = (a: TriAnchor | null, pt: Pt): string | undefined => {
-      if (!a) return undefined;
-      const sh = shapes.find((s: any) => s.id === a.id);
-      if (!sh) return undefined;
-      const p = anchorToPoint(a, sh);
-      return Math.hypot(p.x - pt.x, p.y - pt.y) <= ANCHOR_KEEP ? a.id : undefined;
-    };
-    let sShape = pickConnectTarget(startPt, shapes, preferOf(aS0, startPt), findTol);
-    let eShape = pickConnectTarget(endPt, shapes, preferOf(aE0, endPt), findTol);
+    const retarget = !!retargetId && el.id === retargetId;
+    const preferOf = (a: TriAnchor | null): string | undefined => (a && !retarget ? a.id : undefined);
+    let sShape = pickConnectTarget(startPt, shapes, preferOf(aS0), findTol);
+    let eShape = pickConnectTarget(endPt, shapes, preferOf(aE0), findTol);
     // 折れ矢印で終端(離した側)が図形に届かない場合、実カーソル位置(pointerHint)で拾い直す。
     // Shiftの角度スナップで端点が図形からズレても、狙った図形へ繋いで折れるようにする（BRU5-064）。
     let endRef = endPt;
     if (wantFold && !eShape && pointerHint) {
-      const s = pickConnectTarget(pointerHint, shapes, preferOf(aE0, endPt), FOLD_FIND_TOL);
+      const s = pickConnectTarget(pointerHint, shapes, preferOf(aE0), FOLD_FIND_TOL);
       if (s) { eShape = s; endRef = pointerHint; }
     }
     // 【BRU7-056-3】両端が同じ図形へ吸着する接続は作らない。
@@ -627,6 +625,11 @@ export function followTriangleConnections(
   // ※「押しながら端点をずらして接続を切る」＝ユーザーの意図どおりの解除。図形が動いた時の追従
   //   （記録済みアンカーへの復元）はキーに関係なく従来どおり行う。
   noConnect?: boolean,
+  // 複製処理が接続を握っているコネクタ（BRU7-056-10）。反映が済むまでここは一切触らない。
+  // これが無いと、複製の付け替えと追従が同じ端点を奪い合い、最後に書いた方が勝つ
+  // （updateScene が rAF へ集約され last-write-wins になるため）。実測では追従が勝ち続け、
+  // 矢印がコピー先へ付いていったままになっていた。
+  pinned?: Set<string>,
 ): boolean {
   const shapeMap = new Map<string, any>();
   const curSig = new Map<string, string>();
@@ -650,6 +653,7 @@ export function followTriangleConnections(
     // 線自体をドラッグ/編集/描画中は触らない（操作の邪魔をしない）。
     // ただし undo/redo 直後は例外: undo は巻き戻した要素を選択状態で復元するため、選択中スキップのままだと
     // ズレた端点も折れ崩れも一切直らずに残ってしまう（BRU5-066）。
+    if (pinned?.has(el.id)) return el; // 複製処理が接続を握っている間は触らない（BRU7-056-10）
     const editApply = !!editApplyId && el.id === editApplyId; // 端点ドラッグを離したフレーム
     if (!editApply && ((selected[el.id] && !forceAnchor) || el.id === editId || el.id === newId)) return el;
     const cd = el.customData;
@@ -726,12 +730,15 @@ export function followTriangleConnections(
       } else {
         const tp = anchorToPoint(aS!, sShape);
         if (Math.hypot(tp.x - gp[0].x, tp.y - gp[0].y) > REANCHOR) {
-          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（BRU5-061/064）。
-          // ここは「図形は静止しているのに端点が記録位置から動いた」＝ユーザーが狙って動かした時だけ
-          // 通る分岐なので、現在のアンカーは優先しない（優先すると四角の中の四角のように“今の接続先の
-          // 内側”へ落としても外側が勝ち続け、いつまでも繋ぎ替えられない・BRU7-056-4）。
+          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（現在のアンカーを優先して安定化・BRU5-061/064）。
+          // 【重要・BRU7-056-6】ここで現在のアンカーを優先しないと、端点が接続先の矩形からわずかに
+          // はみ出しているだけで「それを囲む外側の図形」が接続先に選ばれ、端点が外枠の辺の中央へ
+          // 飛ぶ（枠の中の線が外枠の右辺へ集まって交差する）。この分岐は端点をドラッグしていない
+          // 線も通る（記録が旧形式で位置が一致しない等）ため、優先を外すと盤面が勝手に崩れる。
+          // 狙って繋ぎ替えたい時だけ＝端点ドラッグを離したフレーム(editApply)に限って優先を外す。
+          const prefer = editApply ? undefined : aS!.id;
           if (noConnect) dropStart = true; // Ctrl/Cmd 中は吸い戻さず、そこで接続を切る（BRU7-056-4）
-          else { const re = connectTo(gp[0], pickConnectTarget(gp[0], shapeArr) ?? sShape); gp[0] = re.point; reStart = re.anchor; touched = true; }
+          else { const re = connectTo(gp[0], pickConnectTarget(gp[0], shapeArr, prefer) ?? sShape); gp[0] = re.point; reStart = re.anchor; touched = true; }
         }
       }
     }
@@ -747,10 +754,11 @@ export function followTriangleConnections(
       } else {
         const tp = anchorToPoint(aE!, eShape);
         if (Math.hypot(tp.x - gp[L].x, tp.y - gp[L].y) > REANCHOR) {
-          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（BRU5-061/064）。
-          // 上（始点側）と同じ理由で、狙って動かした端点には現在のアンカーを優先しない（BRU7-056-4）。
+          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（現在のアンカーを優先して安定化・BRU5-061/064）。
+          // 優先を外すのは端点ドラッグを離したフレームだけ。理由は始点側と同じ（BRU7-056-6）。
+          const prefer = editApply ? undefined : aE!.id;
           if (noConnect) dropEnd = true; // Ctrl/Cmd 中は吸い戻さず、そこで接続を切る（BRU7-056-4）
-          else { const re = connectTo(gp[L], pickConnectTarget(gp[L], shapeArr) ?? eShape); gp[L] = re.point; reEnd = re.anchor; touched = true; }
+          else { const re = connectTo(gp[L], pickConnectTarget(gp[L], shapeArr, prefer) ?? eShape); gp[L] = re.point; reEnd = re.anchor; touched = true; }
         }
       }
     }
@@ -781,6 +789,340 @@ export function followTriangleConnections(
   finish();
   if (!did) return false;
   api.updateScene({ elements: moved });
+  return true;
+}
+
+/**
+ * 複製・コピペで生まれた要素が持つ「自前の id 参照」を、複製された側の id へ貼り替える（BRU7-056-5）。
+ *
+ * 【なぜ必要か】
+ * Excalidraw の複製（Alt+ドラッグ / Ctrl+D / コピー＆ペースト）は deepCopyElement で要素を丸ごと
+ * 複製し、**自分が知っている参照だけ**を新しい id へ貼り替える
+ * （boundElements・startBinding/endBinding・frameId・containerId・groupIds）。
+ * このボードは接続と所属を customData に自前で持っているため、
+ *   ・triStart / triEnd … 線・矢印の接続先の図形 id
+ *   ・wbParent          … フレームへの所属
+ *   ・wbBgFor / wbFrameBg … 背景・枠線を描く影矩形の対象 id
+ * は貼り替えられず、**複製された要素が“コピー元”の要素を指したまま**になる。
+ *
+ * その結果、コピーした瞬間にコピー元がぐちゃぐちゃになる:
+ *   ・複製された線の端点が、コピー元の図形へ引き寄せられて画面を横切る長い線になる
+ *   ・複製された子要素が、コピー元のフレームの移動に付いていく
+ * Alt+ドラッグでは「複製が元の位置に残り、掴んで動くのは元の要素」なので、
+ * 見た目には “置いてきたはずのコピー元” が壊れて見える（＝報告された症状）。
+ *
+ * 【直し方】
+ * 「今のフレームで新しく現れた要素の集まり（＝複製された一群）」を求め、その中で
+ * 複製元→複製先の対応表を作り、一群の中の参照を貼り替える。
+ * 対応付けは複製が保つ性質を使う:
+ *   ・見た目・寸法・points・customData は複製元と完全に同一（deepCopyElementのため）
+ *   ・一群はすべて同じ平行移動量で置かれる（貼り付け位置 / Alt複製なら元の位置）
+ * → 「同一の指紋を持つ既存要素」との位置差の多数決で平行移動量を決め、その差で1対1に対応付ける。
+ *
+ * 【一群の外への接続の扱い】
+ * 複製は必ず「持ち出す側」と「その場に残る側」に分かれる。
+ *   ・Alt+ドラッグ … 持ち出すのは元の要素（同じid）。複製が元の位置に残る。
+ *   ・Ctrl+D / 貼り付け … 持ち出す（＝別の場所に置かれる）のは複製の方。
+ * どちらの場合も「持ち出される側」は選択状態になっているので、それで判別する。
+ *
+ * 持ち出される側が一群の外の図形へ繋がったままだと、離れていくにつれて線が引き伸ばされ、
+ * コピー元とコピー先を結ぶ長い線が画面を横切る（＝報告された「コピー元が大きく崩れる」）。
+ * 枠の中に引いただけの飾り線が昔の自動接続で外枠に繋がっている、というだけで起きるので、
+ * **持ち出される側の「一群の外への接続」は複製の時点で切る**。コピーは独立した一塊になる。
+ *
+ * その場に残る側は位置が変わらないので外への接続をそのまま保つ（Alt複製で元の位置に残った線が
+ * 引き続き外の矢印と繋がっているのが正しい・BRU5-068）。ただし端点が実際にその図形へ
+ * 触れていなければ捨てる（離れた場所へ貼り付けたコピーの取りこぼし対策）。
+ *
+ * 【必ず“毎tick再評価できる”形にすること】
+ * onChange 内の updateScene は commitフェーズ外(rAF)へ遅延され、同じフレームに onChange が
+ * 複数回来ると last-write-wins で握り潰される（guardApi 参照）。この設計は
+ * 「未反映分は次tickで再評価される」ことを前提にしているので、複製を見つけた一度きりで
+ * 書き換える作りにすると、握り潰された瞬間に永久に反映されない（＝ドラッグ中は毎フレーム
+ * pointermove が複数回来るためほぼ必ず起きる）。
+ * そこで検出（複製元→複製先の対応表づくり）と適用を分け、対応表を plan として持ち回り、
+ * **反映されるまで毎tick同じ書き換えを試みる**。書き換え済みなら差分ゼロで false を返すだけなので、
+ * 何度呼ばれても結果は変わらない（冪等）。
+ *
+ * 【複製された線は自動接続にかけない・BRU7-056-7】
+ * これが「コピーするとコピー元が崩れる」の直接の原因だった。複製された線は新しい id を持つため
+ * autoConnectLines から見ると「まだ評価していない新しい線」に見え、接続の判定にかけられる。
+ * その結果、**元々どこにも繋がっていなかった飾り線**（枠の中に引いただけの線）が、コピーした
+ * 瞬間に近くの図形へ勝手に接続される。しかも始点と終点が別々の図形に繋がると線が引き裂かれ、
+ * 画面を横切る長い線になる。実測ログ:
+ *   [WB-TRACE] 自動接続: line#roP2cD 始点 - → PnWB9J(0,0.5) / 終点 - → 6RqAAe(0.5,1)
+ * 複製は「元の線の写し」であって新しく引かれた線ではないので、接続状態は元から引き継ぐのが正しい
+ * （繋がっていなかった線の複製は繋がっていない）。対応の付いた複製は評価済みとして登録する。
+ *
+ * @param known これまでに見たことのある要素id。初回は現況を種まきするだけで何もしない。
+ * @param skip リモート反映中など、貼り替えを行わずに台帳だけ更新したい時 true。
+ * @param planRef 検出した複製の対応表。反映が確認できるまで持ち越して毎tick適用する。
+ * @param processed autoConnectLines の「評価済み」台帳。複製された線をここへ登録する。
+ * @returns updateScene で反映したら true
+ */
+export interface DupPlan {
+  map: Map<string, string>;  // 複製元id → 複製先id
+  dups: Set<string>;         // 複製された側（＝新しく現れた要素）
+  batch: Set<string>;        // 複製に関わった一群（元＋複製）
+  carried: Set<string>;      // 持ち出される側（一群の外への接続を切る対象）
+  external: Set<string>;     // 一群の外にいて、持ち出される図形に繋がっているコネクタ
+  pinned: Set<string>;       // この plan が接続を握っているコネクタ（追従処理は触らない）
+  until: number;             // この時刻(performance.now)を過ぎたら諦める
+}
+
+export function remapDuplicatedCustomRefs(
+  api: any,
+  elements: readonly any[],
+  appState: any,
+  known: Set<string>,
+  skip: boolean,
+  planRef: { current: DupPlan | null },
+  processed?: Set<string>,
+): boolean {
+  const detected = detectDuplication(elements, appState, known, skip);
+  if (detected && processed) {
+    // 複製された線・矢印は「評価済み」にして自動接続の判定にかけない（BRU7-056-7・上の説明を参照）。
+    // ここは検出したフレームで必ず通るため、以降どのタイミングで autoConnectLines が走っても
+    // 複製が勝手に繋がることはない。
+    for (const el of elements) if (detected.dups.has(el.id) && isConnector(el)) processed.add(el.id);
+  }
+  const plan = detected ?? planRef.current;
+  planRef.current = plan;
+  if (!plan) return false;
+  if (performance.now() > plan.until) { planRef.current = null; return false; }
+  const applied = applyDupPlan(api, elements, plan);
+  // 書き換えるものが無くなった＝反映が確認できた。役目を終えたので破棄する
+  // （握り潰されている間は「まだ書き換えるものがある」ので true が返り、次tickも再挑戦する）。
+  if (!applied) planRef.current = null;
+  return applied;
+}
+
+/** 複製された一群を検出して対応表を作る（見つからなければ null） */
+function detectDuplication(
+  elements: readonly any[],
+  appState: any,
+  known: Set<string>,
+  skip: boolean,
+): DupPlan | null {
+  // 初回（起動直後）は盤面にある要素をすべて「既知」にするだけ。
+  // ここで種まきしないと、ロード時の全要素が「新しく現れた一群」に見えて誤った貼り替えをする。
+  if (known.size === 0) {
+    for (const e of elements) known.add(e.id);
+    return null;
+  }
+  // 今まさに描いている要素は「複製」ではないので対象外（描き始めの1フレームで拾わない）。
+  const drawingId = appState?.newElement?.id ?? appState?.editingLinearElement?.elementId;
+  const fresh: any[] = [];
+  for (const e of elements) if (!known.has(e.id) && e.id !== drawingId) fresh.push(e);
+  for (const e of elements) known.add(e.id);
+  if (skip || fresh.length === 0) return null;
+
+  // 対応表づくりは安くないので、関係のある新要素が無ければ抜ける。ただし範囲は広く取る:
+  //  ・線・矢印 … 「自動接続にかけない」ための登録が要る（繋がっていない飾り線の複製が
+  //                勝手に接続されるのを防ぐ・BRU7-056-7）
+  //  ・図形     … その図形に**外から繋がっている矢印**を、その場に残る複製へ向け直す必要がある。
+  //                【BRU7-056-11】ここを線と参照持ちだけに絞っていたため、素の図形を1つだけ
+  //                コピーすると対応表が作られず、握り潰されて負ける旧処理へフォールバックし、
+  //                矢印がコピー側へ付いていっていた（＝「図形だけコピーすると再発する」の正体）。
+  //  ・参照持ち … フレーム所属や影矩形など、id で他要素を指しているもの
+  const hasRef = (e: any) => {
+    const cd = e?.customData;
+    return !!cd && !!(cd.triStart || cd.triEnd || cd.wbParent || cd.wbBgFor || cd.wbFrameBg);
+  };
+  if (!fresh.some((e) => isConnector(e) || isConnectableShape(e) || hasRef(e))) return null;
+
+  const freshIds = new Set<string>(fresh.map((e) => e.id));
+  const selMap = appState?.selectedElementIds ?? {};
+  const selSet = new Set<string>(Object.keys(selMap).filter((k) => selMap[k]));
+
+  // 【BRU7-056-12】複製元の候補を、可能なら「選択されている要素」だけに絞る。
+  //
+  // 複製は必ず〈新しく現れた側〉と〈選択されている側〉の2つに分かれる。
+  //   ・Alt+ドラッグ … 掴んで動くのは複製元（同じid）＝選択されている側
+  //   ・貼り付け/Ctrl+D … 置かれるのは複製の方＝選択されている側
+  // 前者では複製元が選択中なので、候補を選択中の要素に絞れば対応が一意に決まる。
+  //
+  // これが無いと、寸法もスタイルも同一の図形が複数ある盤面（同じ大きさの破線矩形が上下に
+  // 並んでいる等）で対応付けを誤る。指紋は「見た目・寸法・points・customData」で作るため、
+  // 同一の図形どうしは区別できない。図形を1つだけコピーした場合は候補ごとに1票ずつしか
+  // 入らず同点になり、先に見つかった方＝コピーしていない図形とペアになってしまう。
+  // その結果、矢印の付け替えが空振りして矢印がコピー側へ付いていく（実測の症状）。
+  const freshIsSelected = fresh.some((e) => selSet.has(e.id));
+  const olds = elements.filter((e) => {
+    if (freshIds.has(e.id) || e.isDeleted) return false;
+    if (!freshIsSelected && selSet.size > 0) return selSet.has(e.id); // Alt+ドラッグ: 選択中が複製元
+    return true;
+  });
+  if (olds.length === 0) return null;
+
+  // 複製で必ず保たれる値だけで作る「指紋」。位置(x,y)は入れない（平行移動するため）。
+  const fp = (e: any) => JSON.stringify([
+    e.type, e.width, e.height, e.angle ?? 0, e.strokeColor, e.backgroundColor,
+    e.fillStyle, e.strokeWidth, e.strokeStyle, e.roughness, e.opacity,
+    e.text ?? null, e.fontSize ?? null, e.fontFamily ?? null,
+    Array.isArray(e.points) ? e.points : null, e.customData ?? null,
+  ]);
+  const oldByFp = new Map<string, any[]>();
+  for (const o of olds) {
+    const k = fp(o);
+    const arr = oldByFp.get(k);
+    if (arr) arr.push(o); else oldByFp.set(k, [o]);
+  }
+
+  // 一群の平行移動量を多数決で決める（同じ形の要素が偶然そこに在っても最多の差が勝つ）
+  const votes = new Map<string, { dx: number; dy: number; n: number }>();
+  for (const f of fresh) {
+    for (const o of oldByFp.get(fp(f)) ?? []) {
+      const dx = f.x - o.x, dy = f.y - o.y;
+      const k = `${Math.round(dx * 100)},${Math.round(dy * 100)}`;
+      const v = votes.get(k);
+      if (v) v.n++; else votes.set(k, { dx, dy, n: 1 });
+    }
+  }
+  if (votes.size === 0) return null;
+  let D = { dx: 0, dy: 0, n: 0 };
+  for (const v of votes.values()) if (v.n > D.n) D = v;
+
+  const EPS_POS = 0.01;
+  const map = new Map<string, string>(); // 複製元id → 複製先id
+  for (const f of fresh) {
+    const o = (oldByFp.get(fp(f)) ?? []).find((c) =>
+      !map.has(c.id) && Math.abs(c.x + D.dx - f.x) <= EPS_POS && Math.abs(c.y + D.dy - f.y) <= EPS_POS);
+    if (o) map.set(o.id, f.id);
+  }
+  if (map.size === 0) return null;
+
+  const selIds = [...selSet];
+  // 複製に関わった一群。対応の付いた元＋複製に加えて「新しく現れた要素」と「選択中の要素」も含める。
+  // 複製は必ず〈新しく現れた側〉と〈選択されている側〉の2つに分かれるので、指紋照合で1対1の対応が
+  // 付かなかった要素（同形が並んでいて絞れない等）があっても、一群の内か外かの判定は正しく効く。
+  const batch = new Set<string>([...map.keys(), ...map.values(), ...freshIds, ...selIds]);
+  // 持ち出される側＝選択されている方の一群。
+  // Alt+ドラッグの最中は「掴んで動いている＝複製元(同じid)」が持ち出される側なので、
+  // 選択状態がまだ更新されていない環境向けの保険としてドラッグ中は複製元側も持ち出し扱いにする。
+  const draggingNow = !!appState?.selectedElementsAreBeingDragged;
+  const carried = new Set<string>(selIds);
+  if (draggingNow) for (const id of map.keys()) carried.add(id);
+
+  // 【BRU7-056-10】一群の外にいて「持ち出される図形」に繋がっているコネクタを拾う。
+  // Alt+ドラッグでは持ち出されるのは複製元（同じid）なので、そこに繋がっている矢印は
+  // そのままだとコピー先へ付いていってしまう。元の位置に残った複製の方へ繋ぎ直すのが正しい
+  // （BRU5-068 と同じ意図。ただしあちらは一度きりの書き換えで、握り潰されると復帰できなかった）。
+  // 貼り付け／Ctrl+D では持ち出されるのは複製の方なので、複製元に繋がっている矢印は動かさない
+  // ＝ carried な図形だけを対象にすることで、両方のケースが自動的に正しくなる。
+  const carriedShapes = new Set<string>([...map.keys()].filter((id) => carried.has(id)));
+  const external = new Set<string>();
+  for (const el of elements) {
+    if (el.isDeleted || !isConnector(el)) continue;
+    if (freshIds.has(el.id) || carried.has(el.id)) continue;
+    const aS = readAnchor(el.customData?.triStart), aE = readAnchor(el.customData?.triEnd);
+    if ((aS && carriedShapes.has(aS.id)) || (aE && carriedShapes.has(aE.id))) external.add(el.id);
+  }
+
+  // この plan が接続を握るコネクタ。反映が済むまで追従処理には触らせない（奪い合いの防止）。
+  const pinned = new Set<string>([...external]);
+  for (const el of elements) {
+    if (el.isDeleted || !isConnector(el)) continue;
+    if (freshIds.has(el.id) || carried.has(el.id)) pinned.add(el.id);
+  }
+
+  // 反映されるまで毎tick適用し直す。until は「いつまでも直らない時に諦める」ための保険で、
+  // 通常は反映が確認できた時点（applyDupPlan が差分ゼロを返した時点）で破棄される。
+  return { map, dups: new Set(map.values()), batch, carried, external, pinned, until: performance.now() + 3000 };
+}
+
+/**
+ * 対応表どおりに customData の id 参照を書き換える。**冪等**（書き換え済みなら何もしない）。
+ * @returns updateScene で反映したら true
+ */
+function applyDupPlan(api: any, elements: readonly any[], plan: DupPlan): boolean {
+  const { map, dups, batch, carried, external } = plan;
+  const byId = new Map<string, any>(elements.map((e) => [e.id, e]));
+  const carriedShapes = new Set<string>([...map.keys()].filter((id) => carried.has(id)));
+
+  let changed = false;
+  const updated = elements.map((el: any) => {
+    // 【BRU7-056-10】一群の外の矢印を「持ち出される図形」から「その場に残る複製」へ繋ぎ替える。
+    // 記録だけでなく端点も新しいアンカーの位置へ戻すのが要点。端点を放置すると、追従処理が
+    // 「アンカーから離れている」と判断して元の図形へ繋ぎ直し、両者が同じ端点を奪い合う。
+    if (external.has(el.id) && !el.isDeleted) {
+      const cd0 = el.customData;
+      const pts0: number[][] = Array.isArray(el.points) ? el.points : [];
+      if (!cd0 || pts0.length < 2) return el;
+      const aS = readAnchor(cd0.triStart), aE = readAnchor(cd0.triEnd);
+      const nS = aS && carriedShapes.has(aS.id) ? map.get(aS.id) : undefined;
+      const nE = aE && carriedShapes.has(aE.id) ? map.get(aE.id) : undefined;
+      if (!nS && !nE) return el;
+      const nextCd = {
+        ...cd0,
+        ...(nS ? { triStart: { ...aS!, id: nS } } : {}),
+        ...(nE ? { triEnd: { ...aE!, id: nE } } : {}),
+      };
+      const gp = pts0.map((p) => ({ x: el.x + p[0], y: el.y + p[1] }));
+      const L0 = gp.length - 1;
+      if (nS && byId.has(nS)) gp[0] = anchorToPoint({ ...aS!, id: nS }, byId.get(nS));
+      if (nE && byId.has(nE)) gp[L0] = anchorToPoint({ ...aE!, id: nE }, byId.get(nE));
+      const ox0 = gp[0].x, oy0 = gp[0].y;
+      const np0 = gp.map((p) => [p.x - ox0, p.y - oy0]);
+      const xs0 = np0.map((p) => p[0]), ys0 = np0.map((p) => p[1]);
+      changed = true;
+      return {
+        ...el, x: ox0, y: oy0, points: np0,
+        width: Math.max(...xs0) - Math.min(...xs0), height: Math.max(...ys0) - Math.min(...ys0),
+        customData: nextCd, version: (el.version ?? 1) + 1, versionNonce: rand(),
+      };
+    }
+    const isFresh = dups.has(el.id);
+    const isCarried = carried.has(el.id);
+    if (el.isDeleted || (!isFresh && !isCarried)) return el;
+    const cd = el.customData;
+    if (!cd) return el;
+    let next: any = null;
+    const put = (k: string, v: any) => {
+      next = next ?? { ...cd };
+      if (v === undefined) delete next[k]; else next[k] = v;
+    };
+
+    // 接続（線・矢印の端点）
+    const pts: number[][] = Array.isArray(el.points) ? el.points : [];
+    for (const key of ["triStart", "triEnd"] as const) {
+      const a = readAnchor(cd[key]);
+      if (!a) continue;
+      if (isFresh) {
+        if (dups.has(a.id)) continue; // 既に複製先を指している（貼り替え済み）。冪等性のため触らない
+        // 複製された側: 一群の中を指す接続は複製先へ貼り替える（これが本命の修正）
+        const nid = map.get(a.id);
+        if (nid) { put(key, { ...a, id: nid }); continue; }
+        // 一群の中を指しているのに対応が付かなかった場合は切る。
+        // 残すと複製元の図形に引かれて画面を横切る長い線になるため、繋がっていない方がまだ良い。
+        if (batch.has(a.id)) { put(key, undefined); continue; }
+      } else if (batch.has(a.id)) {
+        continue; // 複製元側が一群の中を指している＝一緒に動くので正しい。触らない
+      }
+      // ここから先は「一群の外の図形」への接続。
+      if (isCarried) { put(key, undefined); continue; } // 持ち出す側は切り離す（長い線が伸びるのを防ぐ）
+      // その場に残る側: 端点が実際にその図形へ触れているなら残す
+      const sh = byId.get(a.id);
+      if (!sh || !isConnectableShape(sh) || pts.length < 2) { put(key, undefined); continue; }
+      const p = key === "triStart" ? pts[0] : pts[pts.length - 1];
+      if (distToBox({ x: el.x + p[0], y: el.y + p[1] }, connectBBox(sh)) > TOL) put(key, undefined);
+    }
+    // 所属（フレーム）と、背景/枠線を描く影矩形の対象。複製された側だけ貼り替える。
+    if (isFresh) {
+      for (const key of ["wbParent", "wbBgFor", "wbFrameBg"] as const) {
+        const v = cd[key];
+        if (typeof v !== "string") continue;
+        const nid = map.get(v);
+        if (nid) put(key, nid);
+      }
+    }
+
+    if (!next) return el;
+    changed = true;
+    return { ...el, customData: next, version: (el.version ?? 1) + 1, versionNonce: rand() };
+  });
+  if (!changed) return false;
+  api.updateScene({ elements: updated });
   return true;
 }
 
@@ -822,6 +1164,7 @@ export function remapDuplicatedShapeAnchors(api: any, appState: any, preDragSig:
   if (map.size === 0) return false;
 
   const sel = appState?.selectedElementIds ?? {};
+  const shapeById = new Map<string, any>(shapes.map((s: any) => [s.id, s]));
   let changed = false;
   const updated = elements.map((el: any) => {
     if (el.isDeleted || !isConnector(el)) return el;
@@ -833,14 +1176,32 @@ export function remapDuplicatedShapeAnchors(api: any, appState: any, preDragSig:
     const nE = aE ? map.get(aE.id) : undefined;
     if (!nS && !nE) return el;
     changed = true;
+    const nextCd = {
+      ...cd,
+      ...(nS ? { triStart: { ...aS!, id: nS } } : {}),
+      ...(nE ? { triEnd: { ...aE!, id: nE } } : {}),
+    };
+    // 【要注意】両端が同じ図形を指していても、片方だけ map に載っていれば片方だけ貼り替わる。
+    // その場合コネクタは「複製の側」と「動いた元の側」に引き裂かれて画面を横切る線になる。
+
+    // 【BRU7-056-8】アンカーの付け替えと同時に、端点も新しいアンカーの位置へ戻す。
+    // ここで端点を動かさないと、端点は「動いていった元図形」に付いていったままなので、
+    // followTriangleConnections が「アンカーから離れている」と判断して元の図形へ繋ぎ直し、
+    // 次のtickでまたここが付け替え……と両者が同じ端点を奪い合って往復する（実測済み）。
+    // 端点まで戻せば状態が一貫し、矢印は狙いどおり元の位置（＝残った複製）に留まる。
+    const pts: number[][] = Array.isArray(el.points) ? el.points : [];
+    if (pts.length < 2) return { ...el, customData: nextCd, version: (el.version ?? 1) + 1, versionNonce: rand() };
+    const gp = pts.map((p) => ({ x: el.x + p[0], y: el.y + p[1] }));
+    const L = gp.length - 1;
+    if (nS && shapeById.has(nS)) gp[0] = anchorToPoint({ ...aS!, id: nS }, shapeById.get(nS));
+    if (nE && shapeById.has(nE)) gp[L] = anchorToPoint({ ...aE!, id: nE }, shapeById.get(nE));
+    const ox = gp[0].x, oy = gp[0].y;
+    const np = gp.map((p) => [p.x - ox, p.y - oy]);
+    const xs = np.map((p) => p[0]), ys = np.map((p) => p[1]);
     return {
-      ...el,
-      customData: {
-        ...cd,
-        ...(nS ? { triStart: { ...aS!, id: nS } } : {}),
-        ...(nE ? { triEnd: { ...aE!, id: nE } } : {}),
-      },
-      version: (el.version ?? 1) + 1, versionNonce: rand(),
+      ...el, x: ox, y: oy, points: np,
+      width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys),
+      customData: nextCd, version: (el.version ?? 1) + 1, versionNonce: rand(),
     };
   });
   if (!changed) return false;
@@ -1088,7 +1449,7 @@ export function healBrokenElbowArrows(api: any, elements: readonly any[], appSta
  *
  * @returns updateScene で反映したら true
  */
-export function reconnectDraggedConnectors(api: any, appState: any): boolean {
+export function reconnectDraggedConnectors(api: any, appState: any, skipIds?: Set<string>): boolean {
   const sel = appState?.selectedElementIds ?? {};
   const editId = appState?.editingLinearElement?.elementId;
   const elements = api.getSceneElements();
@@ -1102,6 +1463,12 @@ export function reconnectDraggedConnectors(api: any, appState: any): boolean {
     if (el.isDeleted) return el;
     if (!(el.type === "line" || el.type === "arrow") || el.elbowed || isTriangle(el)) return el; // elbowはネイティブ結合に委ねる
     if (!sel[el.id] || el.id === editId) return el; // ドラッグされたコネクタのみ（端点編集は除外）
+    // 【BRU7-056-8】コピー操作で運ばれた線は貼り直さない。
+    // ここは「両端を記録どおりのアンカーへ強制的に貼り直す」処理なので、片方の接続先が一緒に動き、
+    // もう片方が置いて行かれていると、指を離した瞬間に線が画面を横切って伸びる
+    // （＝「移動中は崩れないのに、マウスを離すと崩れる」の正体）。コピーで持ち出した一群は
+    // 落とした場所の見た目のままにするのが正しいので、この貼り直しから除外する。
+    if (skipIds?.has(el.id)) return el;
     const cd = el.customData;
     if (!cd) return el;
     const aS = readAnchor(cd.triStart), aE = readAnchor(cd.triEnd);
