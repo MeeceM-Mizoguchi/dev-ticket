@@ -481,6 +481,9 @@ export function autoConnectLines(
   foldIds?: Set<string>,
   foldAll?: boolean, // 折れ矢印トグルON: 新規接続した矢印/線を常にカギ型にする（id追跡に依存しない）
   pointerHint?: Pt | null, // 直近カーソル(scene)。Shift角度スナップで端点がズレた時の接続先ヒント
+  // Ctrl/Cmd 押下中（BRU7-056-4）: 接続しない。ただし「評価済み」にはする＝キーを離した後に
+  // 無関係な操作をした拍子へ判定が持ち越されて、あとから勝手に吸着するのを防ぐ。
+  suppress?: boolean,
 ): boolean {
   const drawingId = appState?.newElement?.id ?? appState?.editingLinearElement?.elementId;
   const shapes = elements.filter(isConnectableShape);
@@ -492,6 +495,8 @@ export function autoConnectLines(
     if (el.id === drawingId) return el;          // まだ描画中
     if (processed.has(el.id)) return el;          // 処理済み
     if (!Array.isArray(el.points) || el.points.length < 2) return el;
+    // Ctrl/Cmd 押下中は接続しない（BRU7-056-4）。評価だけ消化して、素の線のまま残す。
+    if (suppress) { processed.add(el.id); foldIds?.delete(el.id); return el; }
 
     const p0 = el.points[0];
     const pN = el.points[el.points.length - 1];
@@ -502,20 +507,48 @@ export function autoConnectLines(
     // これで Shift の角度スナップで端点が図形から少しズレても拾って、辺の中央へ吸着＆折れる（BRU5-064）。
     const wantFold = !!foldAll || (foldIds?.has(el.id) ?? false);
     const findTol = wantFold ? FOLD_FIND_TOL : TOL;
-    const sShape = pickConnectTarget(startPt, shapes, undefined, findTol);
-    let eShape = pickConnectTarget(endPt, shapes, undefined, findTol);
+    // 既に接続している図形を優先候補として渡す（BRU7-056-3）。
+    // これを渡さないと、再評価のたびに「たまたま近くにある別の図形」へ乗り換えてしまい、
+    // 何も触っていない矢印が突然よその図形へ繋ぎ変わって向きが変わる。
+    //
+    // ただし優先するのは「端点が記録どおりの位置にある＝ユーザーが動かしていない」側だけ（BRU7-056-4）。
+    // 動かした端点まで優先すると、四角の中の小さい四角のように“今の接続先の内側”へ狙って
+    // 落としても、優先された外側の図形が勝ち続けて端点が元の辺へ戻る＝いくらやっても繋ぎ替えられない。
+    // （ハイライトは優先なしで出るため、「グレー枠は内側に出たのに繋がるのは外側」というズレにもなる。）
+    const aS0 = readAnchor(el.customData?.triStart);
+    const aE0 = readAnchor(el.customData?.triEnd);
+    const ANCHOR_KEEP = 1.5; // 端点がこの距離以内なら「記録位置のまま＝触っていない」
+    const preferOf = (a: TriAnchor | null, pt: Pt): string | undefined => {
+      if (!a) return undefined;
+      const sh = shapes.find((s: any) => s.id === a.id);
+      if (!sh) return undefined;
+      const p = anchorToPoint(a, sh);
+      return Math.hypot(p.x - pt.x, p.y - pt.y) <= ANCHOR_KEEP ? a.id : undefined;
+    };
+    let sShape = pickConnectTarget(startPt, shapes, preferOf(aS0, startPt), findTol);
+    let eShape = pickConnectTarget(endPt, shapes, preferOf(aE0, endPt), findTol);
     // 折れ矢印で終端(離した側)が図形に届かない場合、実カーソル位置(pointerHint)で拾い直す。
     // Shiftの角度スナップで端点が図形からズレても、狙った図形へ繋いで折れるようにする（BRU5-064）。
     let endRef = endPt;
     if (wantFold && !eShape && pointerHint) {
-      const s = pickConnectTarget(pointerHint, shapes, undefined, FOLD_FIND_TOL);
+      const s = pickConnectTarget(pointerHint, shapes, preferOf(aE0, endPt), FOLD_FIND_TOL);
       if (s) { eShape = s; endRef = pointerHint; }
     }
-    // どこにも近くない → まだ処理済みにしない（後で図形へ近づいた時に接続できるよう毎フレーム再判定）
-    if (!sShape && !eShape) return el;
+    // 【BRU7-056-3】両端が同じ図形へ吸着する接続は作らない。
+    // 図形の“中”に引いただけの線・矢印（四角の中に置いた棒など）は、端点がその図形のbboxに
+    // 内包されるため両端ともその図形を接続先に選ぶ。すると始点は左辺の中点・終点は上辺の中点…と
+    // バラバラの辺へ引っ張られ、水平だった棒がいきなり斜めに化ける（＝報告された症状）。
+    // 4点アンカー方式では自己ループを表現できず繋いでも意味が無いので、接続そのものを見送る。
+    if (sShape && eShape && sShape.id === eShape.id) { sShape = null; eShape = null; }
 
-    processed.add(el.id); // 実際に接続する時だけ処理済みにする
-    foldIds?.delete(el.id); // 接続処理に入った時点で折れ要求は消化（未接続で残り続けるのを防ぐ）
+    // 【BRU7-056-3】評価は1要素につき1回だけ（接続できなくても「評価済み」にする）。
+    // 以前は接続できるまで毎フレーム再判定していたため、ずっと前に引いた線・矢印が
+    // 「別の図形を追加した」「無関係な要素を動かした」拍子に初めて評価され、近くの図形へ
+    // 突然吸着して向きが変わっていた（＝再現に規則性が無い原因）。
+    // 掴んで動かした線は WhiteboardCanvas 側が“離したフレーム”で未処理へ戻し、その時に再判定する。
+    processed.add(el.id);
+    foldIds?.delete(el.id); // 折れ要求も同時に消化（未接続で残り続けるのを防ぐ）
+    if (!sShape && !eShape) return el;
     changed = true;
 
     const customData = { ...(el.customData ?? {}) };
@@ -590,6 +623,10 @@ export function followTriangleConnections(
   // 追従処理は編集の邪魔をしないよう編集中の要素を丸ごと除外している。そのままだと
   // 「別の場所にコネクトしようとしても繋がらない」ので、指を離したフレームだけ解禁する。
   editApplyId?: string,
+  // Ctrl/Cmd 押下中（BRU7-056-4）: 端点を動かした線は繋ぎ替えず、接続を外して置いた場所に残す。
+  // ※「押しながら端点をずらして接続を切る」＝ユーザーの意図どおりの解除。図形が動いた時の追従
+  //   （記録済みアンカーへの復元）はキーに関係なく従来どおり行う。
+  noConnect?: boolean,
 ): boolean {
   const shapeMap = new Map<string, any>();
   const curSig = new Map<string, string>();
@@ -683,14 +720,18 @@ export function followTriangleConnections(
         if (Math.hypot(tp.x - gp[0].x, tp.y - gp[0].y) > EPS) { gp[0] = tp; touched = true; }
       } else if (distToBox(gp[0], connectBBox(sShape)) > TOL) {
         // 旧アンカーから離れた: 近くに別図形があれば4点で繋ぎ替え、無ければ解除（BRU5-064）
-        const t = pickConnectTarget(gp[0], shapeArr);
+        const t = noConnect ? null : pickConnectTarget(gp[0], shapeArr);
         if (t) { const re = connectTo(gp[0], t); gp[0] = re.point; reStart = re.anchor; touched = true; }
         else dropStart = true;
       } else {
         const tp = anchorToPoint(aS!, sShape);
         if (Math.hypot(tp.x - gp[0].x, tp.y - gp[0].y) > REANCHOR) {
-          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（現在のアンカーを優先して安定化・BRU5-061/064）
-          const re = connectTo(gp[0], pickConnectTarget(gp[0], shapeArr, aS!.id) ?? sShape); gp[0] = re.point; reStart = re.anchor; touched = true;
+          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（BRU5-061/064）。
+          // ここは「図形は静止しているのに端点が記録位置から動いた」＝ユーザーが狙って動かした時だけ
+          // 通る分岐なので、現在のアンカーは優先しない（優先すると四角の中の四角のように“今の接続先の
+          // 内側”へ落としても外側が勝ち続け、いつまでも繋ぎ替えられない・BRU7-056-4）。
+          if (noConnect) dropStart = true; // Ctrl/Cmd 中は吸い戻さず、そこで接続を切る（BRU7-056-4）
+          else { const re = connectTo(gp[0], pickConnectTarget(gp[0], shapeArr) ?? sShape); gp[0] = re.point; reStart = re.anchor; touched = true; }
         }
       }
     }
@@ -700,14 +741,16 @@ export function followTriangleConnections(
         if (Math.hypot(tp.x - gp[L].x, tp.y - gp[L].y) > EPS) { gp[L] = tp; touched = true; }
       } else if (distToBox(gp[L], connectBBox(eShape)) > TOL) {
         // 旧アンカーから離れた: 近くに別図形があれば4点で繋ぎ替え、無ければ解除（BRU5-064）
-        const t = pickConnectTarget(gp[L], shapeArr);
+        const t = noConnect ? null : pickConnectTarget(gp[L], shapeArr);
         if (t) { const re = connectTo(gp[L], t); gp[L] = re.point; reEnd = re.anchor; touched = true; }
         else dropEnd = true;
       } else {
         const tp = anchorToPoint(aE!, eShape);
         if (Math.hypot(tp.x - gp[L].x, tp.y - gp[L].y) > REANCHOR) {
-          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（現在のアンカーを優先して安定化・BRU5-061/064）
-          const re = connectTo(gp[L], pickConnectTarget(gp[L], shapeArr, aE!.id) ?? eShape); gp[L] = re.point; reEnd = re.anchor; touched = true;
+          // 端点が近接する別セルへズレた場合はそちらへ乗り換える（BRU5-061/064）。
+          // 上（始点側）と同じ理由で、狙って動かした端点には現在のアンカーを優先しない（BRU7-056-4）。
+          if (noConnect) dropEnd = true; // Ctrl/Cmd 中は吸い戻さず、そこで接続を切る（BRU7-056-4）
+          else { const re = connectTo(gp[L], pickConnectTarget(gp[L], shapeArr) ?? eShape); gp[L] = re.point; reEnd = re.anchor; touched = true; }
         }
       }
     }

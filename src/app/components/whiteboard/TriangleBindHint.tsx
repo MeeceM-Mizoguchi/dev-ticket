@@ -4,6 +4,7 @@
 import { useEffect, useRef } from "react";
 import { elementBBox, linearEndpoints, nearestPointOnPolyline, type Pt } from "@/app/lib/whiteboardSnap";
 import { isConnectableShape, pickConnectTarget, shapeOutline } from "@/app/lib/whiteboardAutoConnect";
+import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
 
 interface Props {
   api: any;
@@ -111,6 +112,8 @@ export function TriangleBindHint({ api, containerRef, canEdit }: Props) {
 
     const tick = () => {
       try {
+        // Ctrl/Cmd 押下中はコネクトしない（BRU7-056-4）ので、繋がる予告（グレー枠・緑ドット）も出さない
+        if (isConnectSuppressed()) { clear(); rafId.current = requestAnimationFrame(tick); return; }
         const st = api.getAppState();
         const els = api.getSceneElements();
         const shapes = els.filter((e: any) => isConnectableShape(e));
