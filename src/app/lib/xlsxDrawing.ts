@@ -25,12 +25,17 @@ export interface DrawingObject {
   rot: number;              // 度
   flipH: boolean; flipV: boolean;
   src?: string;             // image: blob URL
+  embedId?: string;         // image: r:embed の rId（書き戻しで既存メディアを再参照する）
   geom?: string;            // shape: prstGeom の prst
   fill?: string | null;
   line?: { color: string; width: number } | null;
   paragraphs?: Paragraph[];
+  vAlign?: "top" | "middle" | "bottom"; // 図形内テキストの縦揃え（bodyPr anchor）
+  adj?: { fx: number; fy: number };     // 吹き出しの尾の先端（box に対する割合。0..1外も可）
   arrowHead?: boolean;      // 始点側の矢印
   arrowTail?: boolean;      // 終点側の矢印
+  /** この図形が属する元アンカーの番号（0始まり）。書き戻しで「未編集アンカーは原文のまま温存」に使う */
+  anchorIndex?: number;
 }
 
 export interface ParsedDrawings {
@@ -38,6 +43,8 @@ export interface ParsedDrawings {
   /** 描画が占める最大の列・行（グリッドをそこまで伸ばすために使う） */
   maxCol: number;
   maxRow: number;
+  /** この描画の zip 内パス（xl/drawings/drawingN.xml）。無ければ null。書き戻し先の特定に使う */
+  drawingPath: string | null;
   /** blob URL の解放 */
   dispose: () => void;
 }
@@ -238,7 +245,7 @@ function parseLine(spPr: Element | null, style: Element | null, theme: Theme) {
  * @param grid 列幅・行高(px)を返すアクセサ。アンカー位置の算出に使う
  */
 export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: Grid): ParsedDrawings {
-  const empty: ParsedDrawings = { objects: [], maxCol: 0, maxRow: 0, dispose: () => {} };
+  const empty: ParsedDrawings = { objects: [], maxCol: 0, maxRow: 0, drawingPath: null, dispose: () => {} };
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(new Uint8Array(data));
@@ -337,7 +344,7 @@ export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: G
   };
 
   // 1オブジェクトを描画モデルへ。grpSp の場合は子を座標変換しつつ再帰する。
-  const emitOne = (el: Element, box: Box): void => {
+  const emitOne = (el: Element, box: Box, anchorIndex: number): void => {
     const name = el.localName;
 
     if (name === "pic") {
@@ -345,7 +352,7 @@ export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: G
       const rid = dig(el, [NS_XDR, "blipFill"], [NS_A, "blip"])?.getAttributeNS(NS_R, "embed") ?? null;
       const src = imageUrl(rid);
       if (!src) return;
-      objects.push({ id: `d${seq++}`, kind: "image", ...box, ...parseFrame(child(el, NS_XDR, "spPr")), src });
+      objects.push({ id: `d${seq++}`, kind: "image", ...box, ...parseFrame(child(el, NS_XDR, "spPr")), src, embedId: rid ?? undefined, anchorIndex });
       return;
     }
 
@@ -361,9 +368,24 @@ export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: G
       if (name === "sp") {
         if (box.w <= 0 || box.h <= 0) return;
         const fill = parseFill(spPr, style, theme);
+        const txBody = child(el, NS_XDR, "txBody");
+        const anchor = child(txBody, NS_A, "bodyPr")?.getAttribute("anchor");
+        const vAlign = anchor === "t" ? "top" : anchor === "b" ? "bottom" : anchor === "ctr" ? "middle" : undefined;
+        // 吹き出しの尾（wedge*Callout の adj1/adj2）
+        let adj: { fx: number; fy: number } | undefined;
+        if (/callout/i.test(geom)) {
+          const gds = children(dig(spPr, [NS_A, "prstGeom"], [NS_A, "avLst"]), NS_A, "gd");
+          const val = (nm: string) => {
+            const g = gds.find(e => e.getAttribute("name") === nm);
+            const m = /val\s+(-?\d+)/.exec(g?.getAttribute("fmla") ?? "");
+            return m ? Number(m[1]) / 100000 : null;
+          };
+          const a1 = val("adj1"), a2 = val("adj2");
+          if (a1 !== null || a2 !== null) adj = { fx: 0.5 + (a1 ?? 0), fy: 0.5 + (a2 ?? 0) };
+        }
         objects.push({
-          id: `d${seq++}`, kind: "shape", ...box, ...frame, geom, fill, line,
-          paragraphs: parseTextBody(child(el, NS_XDR, "txBody"), theme, defaultTextColor(style, fill)),
+          id: `d${seq++}`, kind: "shape", ...box, ...frame, geom, fill, line, anchorIndex, vAlign, adj,
+          paragraphs: parseTextBody(txBody, theme, defaultTextColor(style, fill)),
         });
       } else {
         const ln = child(spPr, NS_A, "ln");
@@ -372,7 +394,7 @@ export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: G
           return !!e && e.getAttribute("type") !== "none";
         };
         objects.push({
-          id: `d${seq++}`, kind: "connector", ...box, ...frame, geom,
+          id: `d${seq++}`, kind: "connector", ...box, ...frame, geom, anchorIndex,
           line: line ?? { color: "#000000", width: 1 },
           arrowHead: hasEnd("headEnd"), arrowTail: hasEnd("tailEnd"),
         });
@@ -400,15 +422,17 @@ export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: G
           w: (num(kext, "cx") / cw) * box.w,
           h: (num(kext, "cy") / ch) * box.h,
         } : box;
-        emitOne(kid, kb);
+        emitOne(kid, kb, anchorIndex);
       }
     }
   };
 
+  let anchorIndex = -1;
   for (const anchor of Array.from(root.children)) {
     if (anchor.namespaceURI !== NS_XDR) continue;
     const type = anchor.localName; // twoCellAnchor / oneCellAnchor / absoluteAnchor
     if (!["twoCellAnchor", "oneCellAnchor", "absoluteAnchor"].includes(type)) continue;
+    anchorIndex++;
 
     // 位置とサイズ
     let x = 0, y = 0, w = 0, h = 0;
@@ -437,12 +461,12 @@ export function parseXlsxDrawings(data: ArrayBuffer, sheetIndex: number, grid: G
     // アンカー直下には pic / sp / cxnSp のほか grpSp(グループ) が来ることがある
     for (const el of Array.from(anchor.children)) {
       if (el.namespaceURI !== NS_XDR) continue;
-      if (["pic", "sp", "cxnSp", "grpSp"].includes(el.localName)) emitOne(el, { x, y, w, h });
+      if (["pic", "sp", "cxnSp", "grpSp"].includes(el.localName)) emitOne(el, { x, y, w, h }, anchorIndex);
     }
   }
 
   return {
-    objects, maxCol, maxRow,
+    objects, maxCol, maxRow, drawingPath,
     dispose: () => { for (const u of urls) URL.revokeObjectURL(u); },
   };
 }
