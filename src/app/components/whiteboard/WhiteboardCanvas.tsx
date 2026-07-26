@@ -11,6 +11,8 @@ import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from 
 import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
 import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
 import { healEscapedBoundText } from "@/app/lib/whiteboardBoundText";
+import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
+import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
 import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
 import { setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
@@ -29,6 +31,7 @@ import { TriangleBindHint } from "./TriangleBindHint";
 import { FrameHighlightLayer } from "./FrameHighlightLayer";
 import { FrameFormatPanel } from "./FrameFormatPanel";
 import { TextBoxFormatPanel } from "./TextBoxFormatPanel";
+import { TextColorPanel } from "./TextColorPanel";
 import { ConnectorFormatPanel } from "./ConnectorFormatPanel";
 import { ConnectorViaOverlay } from "./ConnectorViaOverlay";
 import { HelpButton } from "./HelpButton";
@@ -189,6 +192,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const preDragIds = useRef<Set<string>>(new Set());         // pointerdown時点の全要素id（このドラッグで生まれた複製の判別用・BRU7-043）
   const onChangeDepth = useRef(0);                           // onChangeの同期再入深度（#185保険・BRU7-043）
   const pointerUpPending = useRef(false);          // 直前にポインタを離したか（端点ドラッグの繋ぎ直し評価用・BRU5-073）
+  const pointerDownNow = useRef(false);            // ポインタを押している最中か（Ctrl抑止をポインタ操作にだけ効かせる・BRU7-056-4）
+  const endpointDragId = useRef<string | null>(null); // 端点つまみをドラッグ中／直前にドラッグした線のid（BRU7-056-4）
   const lastCursor = useRef(0);
   const lastViewport = useRef(0);
   const lastVpSig = useRef(""); // 直近に配信したビューポート署名（無変化時の配信抑制）
@@ -298,6 +303,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   useEffect(() => {
     if (!api) return;
     const onDown = () => {
+      pointerDownNow.current = true;
+      endpointDragId.current = null; // 新しいポインタ操作の開始（前回の取りこぼしを持ち越さない）
       const m = new Map<string, string>();
       const ids = new Set<string>();
       for (const el of api.getSceneElements() as any[]) {
@@ -308,12 +315,14 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       preDragIds.current = ids; // このドラッグで新たに現れた要素＝複製、の判別に使う（BRU7-043）
     };
     // 端点ドラッグを離した合図（BRU5-073）。次の onChange 一回だけ、点編集中の要素も繋ぎ直し評価に通す。
-    const onUp = () => { pointerUpPending.current = true; };
+    const onUp = () => { pointerUpPending.current = true; pointerDownNow.current = false; };
     window.addEventListener("pointerdown", onDown, true);
     window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
     return () => {
       window.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
     };
   }, [api]);
 
@@ -526,6 +535,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   }, [api, canEdit]);
 
   const processedLines = useRef<Set<string>>(new Set());
+  const seededLines = useRef(false);                          // 起動時に盤面へ在った線を「評価済み」にしたか（BRU7-056-3）
+  const touchedConnIds = useRef<Set<string>>(new Set());      // このポインタ操作で掴んだ線・矢印（離した時に接続を再判定・BRU7-056-3）
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const prevFrameSig = useRef<Map<string, string>>(new Map()); // 前回のフレーム矩形署名（グループ化の新規/リサイズ判定用・BRU4-054）
   const prevFramePos = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map()); // 前回のフレーム位置＋サイズ（移動/リサイズ判別用・BRU5-040/BRU5-061）
@@ -587,6 +598,15 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     api?.__wbSetDefer?.(true);
     try {
       if (api && !tooDeep) {
+        // 【BRU7-056-3】自動接続は「今ユーザーが引いた／触った線」だけに効かせる。
+        // 起動時点で盤面に在った線・矢印は接続情報(customData)を既に持っているので評価済みとして扱い、
+        // 後から無関係な操作をした拍子に近くの図形へ吸着して向きが変わるのを防ぐ。
+        if (!seededLines.current && elements.length) {
+          seededLines.current = true;
+          for (const e of elements) {
+            if (!e.isDeleted && (e.type === "line" || e.type === "arrow")) processedLines.current.add(e.id);
+          }
+        }
         // 三角形は「図形」扱い：標準の点編集UIが付いたら外す（テッペン二股化の根本防止・BRU4-051）
         suppressTrianglePointEditing(api, elements, appState);
         // 壊れた elbow arrow（点列が斜めのまま elbowed になった線）を救出する（BRU5-065）。
@@ -616,23 +636,59 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // ドラッグ確定時に、一緒に運んだコネクタの端点をアンカー図形へ貼り直しズレを解消（BRU5-061）。
         const reconnected = dragEnded && !remapped ? reconnectDraggedConnectors(api, appState) : false;
         wasDragging.current = dragging;
+        // 【BRU7-056-3】掴んで動かしている線・矢印を控え、ポインタを離したフレームで「未処理」へ戻す。
+        // 自動接続は1要素1回きりになったため、これが無いと「一度どこにも繋がらなかった線を
+        // あとから図形へ寄せてもコネクトできない」。逆にドラッグ中は評価しないので、
+        // 掴んでいる途中で端点が勝手に辺の中点へ吸われることも無くなる。
+        // 【BRU7-056-4】端点つまみのドラッグは「点編集モード(editingLinearElement)」だけで起きるのではない。
+        // 線を1つ選んだだけの状態（selectedLinearElement）でも端点は掴んで動かせる——というより
+        // 普段のコネクト操作はほぼこちらで、点編集モードには入っていない。従来はこの状態を一切見て
+        // いなかったため、「矢印を選んで端点を図形へドラッグ」しても
+        //   ・autoConnectLines は「評価済み」のままなので接続を作らない
+        //   ・followTriangleConnections は選択中としてスキップし、繋ぎ替えもしない
+        // となり、ハイライト（グレー枠と緑の接続予定点）は出るのに離すと何も繋がらなかった。
+        // ＝報告された「どうしてもコネクトがスムーズにいかない」の正体。ここで拾って評価対象に戻す。
+        const linEd = appState?.editingLinearElement ?? appState?.selectedLinearElement;
+        const linDragId: string | undefined = linEd?.isDragging ? linEd.elementId : undefined;
+        if (linDragId) endpointDragId.current = linDragId; // 離したフレームで繋ぎ直しを適用するため控える
+        if (dragging || appState?.isResizing || appState?.editingLinearElement || linDragId) {
+          const selIds = appState?.selectedElementIds ?? {};
+          const editingId = appState?.editingLinearElement?.elementId;
+          for (const e of elements) {
+            if (e.isDeleted || (e.type !== "line" && e.type !== "arrow")) continue;
+            if (e.customData?.wbFolded) continue; // 折れ線の経路は followTriangleConnections が管理するので触らない
+            if (selIds[e.id] || e.id === editingId || e.id === linDragId) touchedConnIds.current.add(e.id);
+          }
+        }
+        if (pointerUpPending.current && touchedConnIds.current.size) {
+          for (const id of touchedConnIds.current) processedLines.current.delete(id);
+          touchedConnIds.current.clear();
+        }
         const busy = elbowHealed || remapped || followed || framed || reparented || reconnected;
         // 塗りが透明になるバグの保険的修復（BRU4-051）。万一ループが開いた三角形を閉じ直す。
         const repaired = remote || busy ? false : repairOpenTriangles(api, elements, appState);
-        const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current);
+        // 【BRU7-056-4】Ctrl/Cmd を押しながらの操作ではコネクトしない（ハイライトも TriangleBindHint 側で消す）。
+        // 「今のポインタ操作」にだけ効かせる（ポインタを押している間＋離した直後の評価フレーム）。
+        // こうしないと Ctrl+V / Ctrl+Z など無関係なキー操作の拍子に判定が抑止されてしまう。
+        const noConnect = isConnectSuppressed() && (pointerDownNow.current || pointerUpPending.current);
+        const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ。
         // 折れ矢印トグルON時は foldAll を渡し、接続済み直線をこの追従パスで確実に折る（描画タイミング非依存）。
         // undo/redo 直後は forceAnchor: 繋ぎ替え/解除をせず、記録どおりのアンカーへ端点を戻す（BRU5-066）。
         const undoing = !remote && performance.now() < undoUntil.current;
         // 端点ドラッグを離したフレームだけ、点編集中の要素も繋ぎ直し評価に通す（BRU5-073）。
         // これが無いと「端点を別の図形へドラッグしてもコネクトできない」。
-        const editApplyId = (!remote && pointerUpPending.current) ? appState?.editingLinearElement?.elementId : undefined;
-        if (pointerUpPending.current) pointerUpPending.current = false;
+        // 選択中の線の端点つまみを離した場合も同じ扱いにする（BRU7-056-4）。
+        // 既に接続済みの矢印を別の図形／別の面へ繋ぎ替えるのはこの経路。
+        const editApplyId = (!remote && pointerUpPending.current)
+          ? (appState?.editingLinearElement?.elementId ?? endpointDragId.current ?? undefined)
+          : undefined;
+        if (pointerUpPending.current) { pointerUpPending.current = false; endpointDragId.current = null; }
         // 折れ矢印モードは「これから引く線」にだけ効かせる（autoConnectLines 側で処理）。
         // 追従処理に foldAll を渡すと、盤面上の“既存の接続済みの線すべて”が折れ線に作り替えられ、
         // 「Elbowを押しただけで関係ない矢印まで壊れる」事故になる（BRU5-083）。既存の線は
         // 選択して「線の形」から明示的に折る。
-        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId);
+        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId, noConnect);
         // テキストボックスの背景/枠線を描く「影の背景板(rectangle)」を生成・追従・削除する（BRU5-062）。
         // 画像の上でも背景が透けないよう、DOMオーバーレイでなく実要素でネイティブに背面へ敷く。
         // 他ヘルパーが updateScene 済みの tick はスキップし（1tick遅れて追従・単一updateScene維持）、
@@ -640,10 +696,12 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 静穏フェーズ: フレーム装飾矩形の同期・テキストボックス影矩形の同期・はみ出したバインド
         // テキストの修復（BRU5-063）。単一 updateScene/tick を保つため、先に反映したものが
         // あれば残りは次tickへ回す（各関数は内部で最新シーンを取り直すため1tick遅れで収束する）。
+        // 「線」の色変更に巻き込まれた図形ラベルの文字色を、記録した色へ戻す（BRU7-056-2）。
         if (!remote && !busy && !connected && !repaired) {
           const frameUpdated = syncFrameDecorRects(api, appState, remote);
           const bgUpdated = frameUpdated || syncTextBoxBgRects(api, appState, remote);
-          if (!frameUpdated && !bgUpdated) healEscapedBoundText(api, remote, appState);
+          const textPinned = frameUpdated || bgUpdated || pinBoundTextColor(api, remote, appState);
+          if (!frameUpdated && !bgUpdated && !textPinned) healEscapedBoundText(api, remote, appState);
         }
         // 表（BRU5-042）の再レイアウト。移動/リサイズ/テキスト編集中とリモート反映中は避け、
         // 操作確定後に整える。編集や列幅変更が終わるたびに行高・列幅を内容へフィットさせ、隙間なく
@@ -723,6 +781,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <FrameHighlightLayer api={api} containerRef={containerRef} />}
           {canEdit && <FrameFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TextBoxFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <TextColorPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <ConnectorViaOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <ConnectorFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <SnapGuideLayer api={api} containerRef={containerRef} canEdit={canEdit} />}

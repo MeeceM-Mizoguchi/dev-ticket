@@ -1,4 +1,4 @@
-// テキストボックス選択時の書式（背景色 / 枠線ON・OFF / 枠線色）。
+// テキストボックス選択時の書式（背景色 / 文字色 / 枠線ON・OFF / 枠線色）。
 // Excalidraw標準の「線」は文字色(strokeColor)なので、枠線色はここで別途指定する（BRU5-054）。
 //
 // レイアウト統一（BRU5-054）: 図形パネルは「線 → 背景 → …」の順で並ぶため、テキストでも
@@ -7,9 +7,15 @@
 // legend/fieldset は .panelColumn の子孫スタイルが自動適用されるので標準セクションと同じ体裁になる。
 // 書式は text.customData.wbTextBox に保存（要素なのでYjs同期される）。描画は whiteboardTextBoxBg
 // の影矩形(rectangle)で行う（旧オーバーレイ TextBoxDecorLayer は BRU5-062 で廃止）。
+//
+// 文字色（BRU7-056-2）: 標準の「線」は実体が文字色なのに“線”と表示され紛らわしいので隠し、
+// 図形パネルと同じ「文字色」セクションへ一本化する（背景の直下＝図形の TextColorPanel と同じ位置）。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { isPlainTextBox, type WbTextBoxFormat } from "@/app/lib/whiteboardTextBoxBg";
+import { TEXT_COLORS, readTextColor, setTextColor } from "@/app/lib/whiteboardTextColor";
+import { CustomColorSwatch, Swatch, swatchRow } from "./ColorSwatch";
+import { HIDE_NATIVE_STROKE } from "./TextColorPanel";
 
 interface Props {
   api: any;
@@ -67,7 +73,7 @@ export function TextBoxFormatPanel({ api, containerRef, canEdit }: Props) {
             }
           }
           const fmt = el.customData?.wbTextBox ?? {};
-          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${!!host}`;
+          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${readTextColor(el)}:${!!host}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
             setText(el);
@@ -97,58 +103,36 @@ export function TextBoxFormatPanel({ api, containerRef, canEdit }: Props) {
     api.updateScene({ elements: els });
   };
 
-  const swatch = (color: string, active: boolean, onClick: () => void, none = false) => (
-    <button
-      key={color || "none"}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      title={none ? "なし" : color}
-      style={{
-        width: 20, height: 20, borderRadius: 5, cursor: "pointer", padding: 0,
-        border: active ? "2px solid #1971c2" : "1px solid rgba(0,0,0,0.15)",
-        background: none ? "#fff" : color,
-        position: "relative",
-      }}
-    >{none && <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#e5484d", fontSize: 14, lineHeight: 1 }}>／</span>}</button>
-  );
-
-  // 好きな色を指定するカラーピッカー（虹色のスウォッチ。選択中は選んだ色を表示）
-  const picker = (value: string | undefined, onPick: (c: string) => void, active: boolean) => (
-    <label
-      title="好きな色を指定"
-      style={{
-        width: 20, height: 20, borderRadius: 5, cursor: "pointer", position: "relative", overflow: "hidden",
-        border: active ? "2px solid #1971c2" : "1px solid rgba(0,0,0,0.15)",
-        background: active && value ? value : "conic-gradient(red, yellow, lime, aqua, blue, magenta, red)",
-      }}
-    >
-      <input
-        type="color"
-        value={value && /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#ffffff"}
-        onChange={(e) => onPick(e.target.value)}
-        onMouseDown={(e) => e.stopPropagation()}
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", border: "none", padding: 0 }}
-      />
-    </label>
-  );
-
   const bgIsCustom = !!fmt.bg && !BG_COLORS.includes(fmt.bg);
   const borderIsCustom = !!fmt.borderColor && !LINE_COLORS.includes(fmt.borderColor);
-  const row: React.CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 };
+  const textColor = readTextColor(text);
+  const textIsCustom = !TEXT_COLORS.includes(textColor);
 
   // legend/fieldset は .panelColumn 配下のスタイルが自動適用され、標準セクションと同じ見た目になる
   const content = (
     <>
+      <style>{HIDE_NATIVE_STROKE}</style>
       <fieldset>
         <legend>背景</legend>
-        <div style={row}>
-          {BG_COLORS.map((c) => swatch(c, (fmt.bg ?? "") === c, () => update({ bg: c || undefined }), c === ""))}
-          {picker(fmt.bg, (c) => update({ bg: c }), bgIsCustom)}
+        <div style={swatchRow}>
+          {BG_COLORS.map((c) => (
+            <Swatch key={c || "none"} color={c} active={(fmt.bg ?? "") === c} onPick={() => update({ bg: c || undefined })} none={c === ""} />
+          ))}
+          <CustomColorSwatch value={fmt.bg} active={bgIsCustom} onPick={(c) => update({ bg: c })} />
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>文字色</legend>
+        <div style={swatchRow}>
+          {TEXT_COLORS.map((c) => (
+            <Swatch key={c} color={c} active={textColor === c} onPick={() => setTextColor(api, [text.id], c)} />
+          ))}
+          <CustomColorSwatch value={textColor} active={textIsCustom} onPick={(c) => setTextColor(api, [text.id], c)} />
         </div>
       </fieldset>
       <fieldset>
         <legend>枠線</legend>
-        <div style={row}>
+        <div style={swatchRow}>
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => update({ border: !fmt.border })}
@@ -158,8 +142,10 @@ export function TextBoxFormatPanel({ api, containerRef, canEdit }: Props) {
               background: fmt.border ? "#1971c2" : "#fff", color: fmt.border ? "#fff" : "#444",
             }}
           >{fmt.border ? "あり" : "なし"}</button>
-          {fmt.border && LINE_COLORS.map((c) => swatch(c, (fmt.borderColor ?? "#343a40") === c, () => update({ borderColor: c })))}
-          {fmt.border && picker(fmt.borderColor ?? "#343a40", (c) => update({ borderColor: c }), borderIsCustom)}
+          {fmt.border && LINE_COLORS.map((c) => (
+            <Swatch key={c} color={c} active={(fmt.borderColor ?? "#343a40") === c} onPick={() => update({ borderColor: c })} />
+          ))}
+          {fmt.border && <CustomColorSwatch value={fmt.borderColor ?? "#343a40"} active={borderIsCustom} onPick={(c) => update({ borderColor: c })} />}
         </div>
       </fieldset>
     </>
