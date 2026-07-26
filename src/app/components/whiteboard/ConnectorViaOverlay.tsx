@@ -13,6 +13,7 @@
 // 座標変換とDOM構築は TableResizeOverlay と同じ方式（React再レンダーを挟まない命令的な更新）。
 import { useEffect, useRef } from "react";
 import { applyConnectorVias, foldedRouteInfo, type RouteInfo } from "@/app/lib/whiteboardAutoConnect";
+import { beginHistoryGesture } from "@/app/lib/whiteboardHistory";
 
 interface Props {
   api: any;
@@ -115,6 +116,8 @@ export function ConnectorViaOverlay({ api, containerRef, canEdit }: Props) {
       e.preventDefault();
       e.stopPropagation();
       h.setPointerCapture?.(e.pointerId);
+      // ドラッグ確定(onUp)の1回で履歴に載せる。それまでの中間状態は EVENTUALLY で溜める（BRU7-058）。
+      beginHistoryGesture();
       const vias = t.info.vias.map((v) => ({ ...v }));
       if (kind === "via") {
         dragRef.current = { id: t.id, viaIndex: Number(h.dataset.index), vias };
@@ -160,7 +163,8 @@ export function ConnectorViaOverlay({ api, containerRef, canEdit }: Props) {
       // ※ここで structRef を潰してつまみを作り直すと、削除用の dblclick が拾えなくなる
       //   （dblclick は2回目の pointerup の後に来るため、DOMノードが差し替わると届かない）。
       //   構成が本当に変わった時は position() が署名の変化で作り直すので、それに任せる。
-      applyConnectorVias(api, d.id, d.vias, true);
+      // 確定フレームだけ履歴へ記録する（1ドラッグ＝1 undo ステップ・BRU7-058）。
+      applyConnectorVias(api, d.id, d.vias, true, true);
     };
 
     // 折れ点つまみのダブルクリック＝その折れ点を削除
@@ -172,7 +176,7 @@ export function ConnectorViaOverlay({ api, containerRef, canEdit }: Props) {
       e.preventDefault();
       e.stopPropagation();
       const vias = t.info.vias.filter((_, i) => i !== Number(h.dataset.index));
-      applyConnectorVias(api, t.id, vias, true);
+      applyConnectorVias(api, t.id, vias, true, true); // 削除も 1 undo ステップ（BRU7-058）
     };
 
     const mkHandle = (kind: "via" | "add", index: number) => {

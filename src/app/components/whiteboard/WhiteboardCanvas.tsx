@@ -13,6 +13,7 @@ import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
 import { healEscapedBoundText } from "@/app/lib/whiteboardBoundText";
 import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
+import { isHistoryGestureActive } from "@/app/lib/whiteboardHistory";
 import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
 import { setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
@@ -104,18 +105,55 @@ const CLEAN_DEFAULTS = {
  * 検出して末尾へ復元する。どこか一箇所が古い配列を渡しても、要素が失われることは無くなる。
  * 併せてどの呼び出しが落としかけたかを警告として出す（原因箇所の特定用）。
  * ※本当に削除された要素は getSceneElements() に現れないので、復活してしまうことは無い。
+ *
+ * ── undo が正しく戻らない問題の根本対策（BRU7-058）───────────────────────────
+ * Excalidraw の updateScene は captureUpdate を省略すると CaptureUpdateAction.EVENTUALLY
+ * （＝履歴のスナップショットを進めない）になる。履歴の増分は commit 時に
+ * 「前回スナップショット ↔ 現在のシーン」を丸ごと差分して作られるため、captureUpdate を
+ * 指定しない更新は **次にユーザーが行った操作の履歴エントリへ丸ごと混入する**。
+ *
+ *   capture(操作A1) → ヘルパー書き込みH1 → capture(操作A2) → …
+ *   履歴エントリ(A2) = H1 + A2
+ *
+ * つまり Ctrl+Z 一回が「直前の操作」だけでなく「その1つ前の操作で走った自動コネクト処理」まで
+ * 巻き戻していた。矢印を引いた直後の接続確定（triStart/triEnd の記録・端点の吸着・折れ線の
+ * 点列）は必ず描画の capture 後に走るので、次の操作を undo した瞬間にコネクト情報ごと消え、
+ * forceAnchor（記録どおりに復元するモード）にも復元材料が無くなる＝接続が永久に失われる。
+ *
+ * → 自動導出（追従・自動接続・再レイアウト・リモート反映）の更新は履歴に載せてはいけない。
+ *   captureUpdate 未指定の更新は NEVER を既定にし、スナップショットだけを進める。
+ *   ユーザー操作そのもの（書式パネル・図形追加・折れ点ドラッグの確定など）は
+ *   呼び出し側で明示的に IMMEDIATELY を渡し、1操作＝1undo ステップにする。
+ *
+ * ※ NEVER でもドラッグ中の要素が undo 不能になることはない。Excalidraw 側の
+ *   filterUncomittedElements が「ローカルで未コミットの変更を持つ要素」をスナップショット更新
+ *   から自動的に除外するため、ユーザーが操作中の要素は元の値のまま保たれる。
  */
 function guardApi(api: any): any {
   if (!api || api.__wbGuarded) return api;
   const orig = api.updateScene.bind(api);
 
   // 「現在のシーンには在るのに渡された配列に無い要素」を末尾へ復元してから適用する（BRU5-067）。
+  //
+  // 【BRU7-058】削除済み要素（tombstone）も復元対象に含める。
+  // 多くのヘルパーはシーンを api.getSceneElements() から組み立てるが、この API は
+  // **削除済み要素を含まない**。その配列をそのまま updateScene へ渡すと、削除済み要素が
+  // シーンから丸ごと消える＝Excalidraw の履歴スナップショットからも落ちる。
+  // すると「図形を削除 → 折れ線化などヘルパーが走る操作 → Ctrl+Z を戻していく」と、
+  // 削除した図形が二度と復活しなくなる（復元元の tombstone が失われるため）。
+  // ここで拾い直せば全ての呼び出し元をまとめて安全にできる。
+  // ※ヘルパー側の削除は必ず isDeleted:true を立てて配列に残す実装なので、
+  //   ここで戻しても「消したはずのものが復活する」ことはない。
   const applyGuarded = (data: any) => {
     if (data?.elements) {
       const incoming = new Set<string>(data.elements.map((e: any) => e.id));
-      const missing = (api.getSceneElements() as any[]).filter((e) => !incoming.has(e.id));
+      const current = (api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements()) as any[];
+      const missing = current.filter((e) => !incoming.has(e.id));
       if (missing.length) {
-        console.warn("[WB-LOST] updateScene が要素を落としかけたので復元:", missing.map((m) => `${m.type}:${m.id.slice(0, 6)}`).join(", "));
+        const live = missing.filter((m) => !m.isDeleted);
+        if (live.length) {
+          console.warn("[WB-LOST] updateScene が要素を落としかけたので復元:", live.map((m) => `${m.type}:${m.id.slice(0, 6)}`).join(", "));
+        }
         data = { ...data, elements: [...data.elements, ...missing] };
       }
     }
@@ -151,7 +189,14 @@ function guardApi(api: any): any {
     applyGuarded(data);   // ← commitフェーズ外(rAF)で実行。入れ子更新にならず #185 を防ぐ
   };
 
-  api.updateScene = (data: any) => {
+  api.updateScene = (raw: any) => {
+    // captureUpdate 未指定＝自動導出の更新とみなし、履歴には載せない（BRU7-058・上の説明を参照）。
+    // ただし自前オーバーレイのドラッグ中だけは EVENTUALLY にする。NEVER でスナップショットを
+    // 進めてしまうと、離した時の IMMEDIATELY が差分ゼロになり“そのドラッグが undo できない”。
+    // 保留へ積む前に正規化しておく（集約で他の呼び出しの captureUpdate を引き継がないようにする）。
+    const data = raw && raw.captureUpdate === undefined
+      ? { ...raw, captureUpdate: isHistoryGestureActive() ? CaptureUpdateAction.EVENTUALLY : CaptureUpdateAction.NEVER }
+      : raw;
     if (deferring) {
       // onChange(commitフェーズ)内の更新は rAF へ集約（elements/appState を last-write-wins）
       pending = pending ? { ...pending, ...data } : data;
@@ -175,6 +220,8 @@ interface Props {
 }
 
 const CURSOR_THROTTLE_MS = 30;
+const UNDO_GRACE = 300;      // undo/redo 直後に「記録どおりのアンカーへ復元」する猶予(ms)
+const UNDO_MAX_GRACE = 3000; // 収束しない時に猶予窓を開きっぱなしにしない絶対上限(ms)
 
 export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -188,6 +235,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   const foldReqIds = useRef<Set<string>>(new Set()); // 折れ矢印にする要求idの控え
   const lastPointerScene = useRef<{ x: number; y: number } | null>(null); // 直近カーソル(scene座標)
   const undoUntil = useRef(0);                     // undo/redo 直後の猶予期限(ms)。この間は接続を記録どおり復元する（BRU5-066）
+  const undoHardUntil = useRef(0);                 // 猶予窓の絶対上限（窓が開きっぱなしになるのを防ぐ・BRU7-058）
   const preDragSig = useRef<Map<string, string>>(new Map()); // pointerdown時点の図形geometry署名（Alt複製の付け替え判定用・BRU5-068）
   const preDragIds = useRef<Set<string>>(new Set());         // pointerdown時点の全要素id（このドラッグで生まれた複製の判別用・BRU7-043）
   const onChangeDepth = useRef(0);                           // onChangeの同期再入深度（#185保険・BRU7-043）
@@ -262,6 +310,23 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     };
     el.addEventListener("keydown", onKeyDownCapture, true); // キャプチャ段階
     return () => el.removeEventListener("keydown", onKeyDownCapture, true);
+  }, []);
+
+  // undo/redo の猶予窓（BRU5-066 / BRU7-058）。
+  // 従来は固定 300ms の壁時計だったが、要素数の多い盤面では 300ms（≒18フレーム）以内に
+  // 追従処理が収束しきらず、窓が切れた残りの tick が「図形は静止・端点がズレた」分岐に落ちて
+  // 繋ぎ替え／接続解除が起きていた。→ 「シーンが静定するまで」延長する方式へ変更する。
+  //   ・undo/redo を検知したら UNDO_GRACE だけ窓を開く
+  //   ・その間に追従処理が何か直したら、都度 UNDO_GRACE ぶん窓を延長する
+  //   ・ただし UNDO_MAX_GRACE を超えては延長しない（収束しない時に開きっぱなしにしない）
+  const armUndoGrace = useCallback(() => {
+    const now = performance.now();
+    undoUntil.current = now + UNDO_GRACE;
+    undoHardUntil.current = now + UNDO_MAX_GRACE;
+  }, []);
+  const extendUndoGrace = useCallback(() => {
+    const next = performance.now() + UNDO_GRACE;
+    undoUntil.current = Math.max(undoUntil.current, Math.min(next, undoHardUntil.current));
   }, []);
 
   // 折れ矢印(BRU5-064): Shift押下状態を追跡＋トグル状態をrefへミラー（onChangeから安全に参照する）。
@@ -368,20 +433,31 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   // undo/redo 検知（BRU5-066）。undo は線の点列だけを巻き戻すことがあり、図形は動いていないため
   // 追従ロジックが「ユーザーが線を動かした」と誤判定して接続を繋ぎ替え/解除してしまう。
   // 直後の数フレームだけ「記録どおりのアンカーへ強制復元」モードに入れる。
-  // キーボード(Cmd/Ctrl+Z)とフッターの undo/redo ボタン、両方の経路を拾う。
+  // キーボードとフッターの undo/redo ボタン、両方の経路を拾う。
+  //
+  // 【BRU7-058】Excalidraw 本体のショートカット定義に合わせる。
+  //   undo … Ctrl/Cmd + Z（Shiftなし）
+  //   redo … Ctrl/Cmd + Shift + Z ／ Windows は Ctrl + Y も
+  // 従来は e.code === "KeyZ" だけを見ていたため、**Windows の Ctrl+Y（redo）で猶予窓が開かず**、
+  // redo 直後の追従が「ユーザーが線を動かした」と誤判定して接続を壊していた。
+  // 本体は matchKey（英字レイアウトは event.key 優先・非ラテンのみ code へフォールバック）で
+  // 判定するので、こちらも key を優先し code は保険として併用する。
   useEffect(() => {
-    const GRACE = 300; // ms
+    const isKey = (e: KeyboardEvent, k: "z" | "y") =>
+      e.key?.toLowerCase() === k || e.code === (k === "z" ? "KeyZ" : "KeyY");
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") undoUntil.current = performance.now() + GRACE;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      // Ctrl/Cmd+Z（undo・Shift付きは redo）と、Windows の Ctrl+Y（redo）
+      if (isKey(e, "z") || (!e.shiftKey && isKey(e, "y"))) armUndoGrace();
     };
     const onClick = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest?.('[data-testid="button-undo"],[data-testid="button-redo"]')) undoUntil.current = performance.now() + GRACE;
+      if (t?.closest?.('[data-testid="button-undo"],[data-testid="button-redo"]')) armUndoGrace();
     };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("pointerdown", onClick, true);
     return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("pointerdown", onClick, true); };
-  }, []);
+  }, [armUndoGrace]);
 
   // ロード後に一度だけフレーム装飾矩形を生成する（BRU5-063）。
   // この機能以前に作られた既存フレームは装飾矩形を持たない。初回onChangeはリモート適用中で
@@ -717,7 +793,11 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 追従処理に foldAll を渡すと、盤面上の“既存の接続済みの線すべて”が折れ線に作り替えられ、
         // 「Elbowを押しただけで関係ない矢印まで壊れる」事故になる（BRU5-083）。既存の線は
         // 選択して「線の形」から明示的に折る。
-        followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
+        const followedTri = followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
+        // undo/redo の巻き戻しがまだ収束していない間は猶予窓を延長する（BRU7-058）。
+        // 盤面が大きいと 300ms では追従が終わらず、窓が切れた残りの tick で接続が繋ぎ替え／解除
+        // されていた。「直したものがある＝まだ収束していない」を延長条件にし、静定したら自然に閉じる。
+        if (undoing && (busy || repaired || connected || followedTri)) extendUndoGrace();
         // テキストボックスの背景/枠線を描く「影の背景板(rectangle)」を生成・追従・削除する（BRU5-062）。
         // 画像の上でも背景が透けないよう、DOMオーバーレイでなく実要素でネイティブに背面へ敷く。
         // 他ヘルパーが updateScene 済みの tick はスキップし（1tick遅れて追従・単一updateScene維持）、
@@ -756,7 +836,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
     try { void syncLocalImages(); } catch { /* noop */ }
     } finally { onChangeDepth.current--; }
-  }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow]);
+  }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow, extendUndoGrace]);
 
   const onPointerUpdate = useCallback((payload: any) => {
     // 折れ矢印(BRU5-064): 実カーソル位置(scene)を常に控える。Shiftの角度スナップで矢印端点が

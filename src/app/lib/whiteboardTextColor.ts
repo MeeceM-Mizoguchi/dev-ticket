@@ -13,6 +13,8 @@
 // 文字色の変更は書式パネル（TextColorPanel / TextBoxFormatPanel）から setTextColor で行い、
 // 図形とラベルの両方へ同時に書く。
 
+import { COMMIT } from "./whiteboardHistory";
+
 const SOFT_BLACK = "#343a40";
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 
@@ -99,9 +101,10 @@ export function setTextColor(api: any, ids: string[], color: string, currentItem
   const set = new Set(ids);
   const els = (api.getSceneElements() as any[]).map((e) =>
     !set.has(e.id) ? e : e.type === "text" ? withColor(e, color) : withLabelColor(e, color));
+  // 文字色の変更は 1 undo ステップとして記録する（BRU7-058）
   api.updateScene(currentItem
-    ? { elements: els, appState: { currentItemStrokeColor: color } }
-    : { elements: els });
+    ? { elements: els, appState: { currentItemStrokeColor: color }, ...COMMIT }
+    : { elements: els, ...COMMIT });
 }
 
 /**

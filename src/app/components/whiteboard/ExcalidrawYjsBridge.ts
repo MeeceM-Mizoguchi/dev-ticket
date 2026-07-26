@@ -4,10 +4,15 @@
 import * as Y from "yjs";
 import { REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvider";
 import { orderFramesBehindChildren } from "@/app/lib/whiteboardFrames";
+import { NO_HISTORY } from "@/app/lib/whiteboardHistory";
 
 // Excalidraw の型は版で import パスが揺れるため緩く扱う。
 type El = any; // ExcalidrawElement（version, versionNonce, isDeleted, index を持つ）
-type ExcalidrawAPI = { updateScene: (data: { elements?: readonly El[] }) => void; getSceneElements?: () => readonly El[] };
+type ExcalidrawAPI = {
+  updateScene: (data: { elements?: readonly El[]; captureUpdate?: string }) => void;
+  getSceneElements?: () => readonly El[];
+  getSceneElementsIncludingDeleted?: () => readonly El[];
+};
 
 const LOCAL_ORIGIN = "excalidraw-local";
 
@@ -162,13 +167,20 @@ export class ExcalidrawYjsBridge {
     // その onChange が applyingRemote のスキップ窓に重なって未同期だと、離した瞬間に消えてしまう。
     // → 置き換える前に、現在のシーンを必ず Y.Map へ取り込んでから反映する（BRU5-067）。
     //   syncFromExcalidraw は version/versionNonce 比較なので、リモートの新しい更新を巻き戻すことはない。
-    const local = this.api.getSceneElements?.();
+    // 削除済み要素も含めて取り込む（BRU7-058）。getSceneElements() は tombstone を含まないため、
+    // 保留中に消した要素の「削除」が Y.Map へ伝わらず、直後の置き換えで復活してしまう。
+    const local = (this.api.getSceneElementsIncludingDeleted?.() ?? this.api.getSceneElements?.());
     if (local?.length) this.syncFromExcalidraw(local);
 
     const elements = this.currentElements();
     this.applyingRemote = true;
     try {
-      this.api.updateScene({ elements });
+      // 【BRU7-058】リモート反映は絶対に履歴へ載せない（captureUpdate: NEVER）。
+      // 既定は EVENTUALLY で、これは「次にローカルで行った操作の履歴エントリへ混入する」動作。
+      // つまり他メンバーの編集が自分の undo スタックに紛れ込み、**自分の Ctrl+Z が
+      // 他人の編集を巻き戻してしまう**。初回反映（sanitize / frameId→wbParent 移行）も同様に、
+      // 履歴へ載せてはいけない下地の更新なのでここで一括して NEVER にする。
+      this.api.updateScene({ elements, captureUpdate: NO_HISTORY.captureUpdate });
       this.onRemoteElements?.(elements);
     } finally {
       // updateScene直後のonChange1回分をスキップ（エコー抑制）

@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { isTriangle } from "@/app/lib/whiteboardSnap";
 import { applyConnectorVias, foldCorner, foldSelectedConnectors, readVias, unfoldSelectedConnectors } from "@/app/lib/whiteboardAutoConnect";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 interface Props {
   api: any;
@@ -120,7 +121,7 @@ export function ConnectorFormatPanel({ api, containerRef, canEdit }: Props) {
         ? { ...e, roundness: sharp ? null : ROUND, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // 角の変更は 1 undo ステップ（BRU7-058）
   };
 
   const btn = (label: string, active: boolean, onClick: () => void) => (

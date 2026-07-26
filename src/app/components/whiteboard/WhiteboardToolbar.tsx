@@ -1,6 +1,7 @@
 // ホワイトボード補助ツールバー（下部中央）。付箋(Miro風) / フレーム(Excalidraw標準) / 折れ矢印トグル。
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { StickyNote, Frame, CornerDownRight } from "lucide-react";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 interface Props { api: any; foldMode: boolean; setFoldMode: (v: boolean) => void }
 
@@ -37,7 +38,8 @@ export function WhiteboardToolbar({ api, foldMode, setFoldMode }: Props) {
       } as any,
     ]) as any[];
     els.forEach((e) => { if (e.type === "rectangle") { e.roughness = 0; e.fillStyle = "solid"; e.backgroundColor = color; } });
-    api.updateScene({ elements: [...api.getSceneElements(), ...els] });
+    // 付箋の追加は 1 undo ステップとして記録する（BRU7-058）
+    api.updateScene({ elements: [...api.getSceneElements(), ...els], ...COMMIT });
     const rect = els.find((e) => e.type === "rectangle");
     if (rect) api.updateScene({ appState: { selectedElementIds: { [rect.id]: true } } });
   };

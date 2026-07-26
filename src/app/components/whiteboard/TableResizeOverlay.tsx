@@ -8,6 +8,7 @@
 // 座標変換は他オーバーレイ（FrameHighlightLayer 等）と同じ scene→ローカル画面px。
 import { useEffect, useRef } from "react";
 import { selectedTableId, tableGrid } from "@/app/lib/whiteboardTable";
+import { beginHistoryGesture, commitSceneToHistory } from "@/app/lib/whiteboardHistory";
 
 interface Props {
   api: any;
@@ -121,6 +122,7 @@ export function TableResizeOverlay({ api, containerRef, canEdit }: Props) {
       e.preventDefault();
       e.stopPropagation();
       el.setPointerCapture?.(e.pointerId);
+      beginHistoryGesture(); // 離すまでの中間状態は EVENTUALLY で溜める（BRU7-058）
       if (kind === "corner") {
         dragRef.current = {
           kind: "corner", corner: el.dataset.corner as Corner, tid: layout.tid,
@@ -151,7 +153,14 @@ export function TableResizeOverlay({ api, containerRef, canEdit }: Props) {
         applyManual(d.tid, "row", d.index, Math.max(MIN_ROW_H, Math.round(d.startSize + dy)));
       }
     };
-    const onUp = () => { dragRef.current = null; };
+    // ドラッグ確定の1回だけ履歴へ記録する（1ドラッグ＝1 undo ステップ・BRU7-058）。
+    // 中間フレームは beginHistoryGesture により EVENTUALLY で溜まっているので、ここで
+    // まとめて1つの増分になる。
+    const onUp = () => {
+      const had = !!dragRef.current;
+      dragRef.current = null;
+      if (had) commitSceneToHistory(api);
+    };
     const onDbl = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
       const kind = el.dataset.kind as "col" | "row" | "corner" | undefined;
@@ -160,6 +169,7 @@ export function TableResizeOverlay({ api, containerRef, canEdit }: Props) {
       if (!layout) return;
       e.preventDefault(); e.stopPropagation();
       applyManual(layout.tid, kind, Number(el.dataset.index), 0); // 自動フィットに戻す
+      commitSceneToHistory(api); // 1 undo ステップとして記録（BRU7-058）
     };
 
     // つまみ div を生成（構成が変わった時のみ作り直す）。

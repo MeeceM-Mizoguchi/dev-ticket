@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { elementBBox, isTriangle } from "@/app/lib/whiteboardSnap";
 import { isTableCell } from "@/app/lib/whiteboardTable";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 type Dir = "up" | "down" | "left" | "right";
 type SpawnType = "rectangle" | "diamond" | "ellipse";
@@ -173,7 +174,8 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
         roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, endArrowhead: "triangle" } as any,
     ]) as any[])[0];
     setLinearEnds(arrow, sx, sy, ex, ey);
-    api.updateScene({ elements: [...api.getSceneElements(), shape, arrow] });
+    // 図形＋矢印の生成は 1 undo ステップとして記録する（BRU7-058）
+    api.updateScene({ elements: [...api.getSceneElements(), shape, arrow], ...COMMIT });
     if (shape) api.updateScene({ appState: { selectedElementIds: { [shape.id]: true } } });
   };
 
@@ -188,7 +190,7 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
         ? { ...e, type: t, roundness: roundnessFor(t, !!e.roundness), version: (e.version ?? 1) + 1, versionNonce: Math.floor(Math.random() * 0x7fffffff) }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // 図形の種類変更は 1 undo ステップ（BRU7-058）
   };
 
   if (!box) return null;

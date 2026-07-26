@@ -16,6 +16,7 @@ import { isPlainTextBox, type WbTextBoxFormat } from "@/app/lib/whiteboardTextBo
 import { TEXT_COLORS, readTextColor, setTextColor } from "@/app/lib/whiteboardTextColor";
 import { CustomColorSwatch, Swatch, swatchRow } from "./ColorSwatch";
 import { HIDE_NATIVE_STROKE } from "./TextColorPanel";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 interface Props {
   api: any;
@@ -100,7 +101,7 @@ export function TextBoxFormatPanel({ api, containerRef, canEdit }: Props) {
         ? { ...e, customData: { ...(e.customData ?? {}), wbTextBox: next }, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // 書式変更は 1 undo ステップ（BRU7-058）
   };
 
   const bgIsCustom = !!fmt.bg && !BG_COLORS.includes(fmt.bg);

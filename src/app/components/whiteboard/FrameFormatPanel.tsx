@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { type WbFrameFormat, isFrameDecorRect } from "@/app/lib/whiteboardFrameBg";
 import { resolveParent } from "@/app/lib/whiteboardFrames";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 interface Props {
   api: any;
@@ -67,7 +68,7 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
         ? { ...e, customData: { ...(e.customData ?? {}), wbFrame: next }, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // 書式変更は 1 undo ステップ（BRU7-058）
   };
 
   // このフレームに属する子要素数（グループ解除ボタンの活性判定・表示用）。装飾の影矩形は数えない。
@@ -81,7 +82,7 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
         ? { ...e, frameId: null, customData: { ...(e.customData ?? {}), wbParent: null }, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // グループ解除は 1 undo ステップ（BRU7-058）
   };
 
   const swatch = (color: string, active: boolean, onClick: () => void, none = false) => (

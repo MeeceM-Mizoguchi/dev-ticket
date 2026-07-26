@@ -3,6 +3,10 @@
 // followTriangleConnections が図形の移動/リサイズ/回転に合わせて端点を“固定して追従”させる。
 // （Excalidrawネイティブbindは接続位置を固定できず戻ってしまうため使わず、接続端点のbindは無効化する。）
 import { elementBBox, isTriangle, nearestPointOnPolyline } from "./whiteboardSnap";
+// 【BRU7-058】ユーザー操作そのもの（書式パネル・折れ点の確定など）は 1操作＝1 undo ステップに
+// なるよう IMMEDIATELY で履歴へ記録する。追従・自動接続などの自動導出は captureUpdate を
+// 指定せず、WhiteboardCanvas の guardApi が NEVER を与える（＝履歴に載せない）。
+import { COMMIT } from "./whiteboardHistory";
 
 interface Pt { x: number; y: number }
 // 三角形への接続アンカー：三角形bbox内での相対位置(fx,fy ∈ [0,1])。
@@ -426,9 +430,12 @@ export function foldedRouteInfo(el: any, elements: readonly any[]): RouteInfo | 
  *   ドラッグ中に捨てると掴んでいるつまみが消えるので、指を離したフレームだけ true にする。
  *   ※「経路の頂点に現れない点」は捨ててはいけない。直線区間に打った点は dedupeCollinear で
  *     頂点としては畳まれるが、その区間の位置を決めている（＝区間の平行移動）ので必須。
+ * @param commit ジェスチャの確定フレームで true（BRU7-058）。折れ点の編集は明確なユーザー操作
+ *   なので、確定時の1回だけ履歴へ記録して「Ctrl+Z で折れ点の移動だけを戻せる」ようにする。
+ *   ドラッグ中の中間状態を記録すると 1ドラッグが何十もの undo ステップに割れるため false。
  * @returns updateScene で反映したら true
  */
-export function applyConnectorVias(api: any, id: string, viasScene: readonly Pt[], prune = false): boolean {
+export function applyConnectorVias(api: any, id: string, viasScene: readonly Pt[], prune = false, commit = false): boolean {
   const elements = api.getSceneElements();
   const el = elements.find((e: any) => e.id === id);
   const info = el ? foldedRouteInfo(el, elements) : null;
@@ -465,6 +472,7 @@ export function applyConnectorVias(api: any, id: string, viasScene: readonly Pt[
       ...(cd.triEnd ? { endBinding: null } : {}),
       version: (e.version ?? 1) + 1, versionNonce: rand(),
     })),
+    ...(commit ? COMMIT : {}),
   });
   return true;
 }
@@ -1250,7 +1258,8 @@ export function unfoldSelectedConnectors(api: any, appState: any, round: boolean
     };
   });
   if (!changed) return false;
-  api.updateScene({ elements: updated });
+  // 「直線に戻す」は明確なユーザー操作なので 1 undo ステップとして記録する（BRU7-058）
+  api.updateScene({ elements: updated, ...COMMIT });
   return true;
 }
 
@@ -1306,7 +1315,8 @@ export function foldSelectedConnectors(api: any, appState: any): boolean {
     };
   });
   if (!changed) return false;
-  api.updateScene({ elements: updated });
+  // 「折れ線にする」は明確なユーザー操作なので 1 undo ステップとして記録する（BRU7-058）
+  api.updateScene({ elements: updated, ...COMMIT });
   return true;
 }
 
