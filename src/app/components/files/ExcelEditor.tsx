@@ -8,7 +8,7 @@ import { uploadProjectFile, fetchSignedUrl } from "@/app/lib/projectFiles";
 import { patchXlsx, colLetter, type CellEdit } from "@/app/lib/xlsxEdit";
 import { insertRows, removeRows, insertCols, removeCols, setColWidths, setRowHeights, addHyperlinks } from "@/app/lib/xlsxStructure";
 import { parseXlsxDrawings, type DrawingObject } from "@/app/lib/xlsxDrawing";
-import { patchXlsxDrawing } from "@/app/lib/xlsxDrawingWrite";
+import { patchXlsxDrawing, repairDrawingIds, findDuplicateShapeIds } from "@/app/lib/xlsxDrawingWrite";
 import { unzipSync, strFromU8 } from "fflate";
 import { ShapeEditorOverlay, type ShapeEditorHandle, type SelectInfo } from "./ShapeEditorOverlay";
 import {
@@ -45,8 +45,8 @@ interface SheetModel {
 
 const ROW_HEADER_W = 50; // Handsontable の行ヘッダ幅（固定）
 
-// 保存前の破損ガード：exceljs で開け、編集シートの描画XMLが整形式であることを確認する
-async function verifyXlsx(bytes: Uint8Array, models: SheetModel[], editedSheetNames: string[]): Promise<boolean> {
+// 保存前の破損ガード：exceljs で開け、描画XMLが整形式かつ図形IDが一意であることを確認する
+async function verifyXlsx(bytes: Uint8Array, models: SheetModel[]): Promise<boolean> {
   try {
     const ExcelJS = (await import("exceljs")).default;
     const wb = new ExcelJS.Workbook();
@@ -54,12 +54,18 @@ async function verifyXlsx(bytes: Uint8Array, models: SheetModel[], editedSheetNa
   } catch (e) { console.error("[ExcelEditor] verify: exceljs load failed", e); return false; }
   try {
     const files = unzipSync(bytes);
-    for (const name of editedSheetNames) {
-      const m = models.find(x => x.name === name);
-      if (!m?.drawingPath || !files[m.drawingPath]) continue;
-      const doc = new DOMParser().parseFromString(strFromU8(files[m.drawingPath]), "application/xml");
+    // 全シートの描画を検査する。cNvPr/@id が重複していると Excel は描画パートを
+    // 丸ごと捨てる（画像も図形も全消え）ので、ここで必ず弾く。
+    for (const m of models) {
+      if (!m.drawingPath || !files[m.drawingPath]) continue;
+      const xml = strFromU8(files[m.drawingPath]);
+      const doc = new DOMParser().parseFromString(xml, "application/xml");
       if (doc.getElementsByTagName("parsererror").length > 0) {
-        console.error("[ExcelEditor] verify: malformed drawing XML", name); return false;
+        console.error("[ExcelEditor] verify: malformed drawing XML", m.name); return false;
+      }
+      const dups = findDuplicateShapeIds(xml);
+      if (dups.length > 0) {
+        console.error("[ExcelEditor] verify: duplicate shape ids", m.name, dups); return false;
       }
     }
   } catch (e) { console.error("[ExcelEditor] verify: unzip failed", e); return false; }
@@ -725,9 +731,21 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         editedSheets.push(m.name);
       }
 
-      // 破損ガード：生成物が exceljs で開け、編集シートの描画XMLが整形式であることを確認
-      if (editedSheets.length > 0 || structuralTouched) {
-        const okVerify = await verifyXlsx(out, models, editedSheets);
+      // 図形を触っていない drawing の自己修復。
+      // 旧バージョンの採番バグで既に cNvPr/@id が重複しているファイルは、
+      // このまま保存しても Excel 側で描画が全消えになるため、ここで直しておく。
+      let repaired = false;
+      try {
+        const paths = models
+          .filter(m => m.drawingPath && !editedSheets.includes(m.name))
+          .map(m => m.drawingPath as string);
+        const fixed = repairDrawingIds(out, paths);
+        if (fixed) { out = fixed; repaired = true; }
+      } catch (e) { console.error("[ExcelEditor] repair drawing ids:", e); }
+
+      // 破損ガード：生成物が exceljs で開け、描画XMLが整形式かつ図形IDが一意であることを確認
+      if (editedSheets.length > 0 || structuralTouched || repaired) {
+        const okVerify = await verifyXlsx(out, models);
         if (!okVerify) {
           setError("図形の書き戻しに失敗しました（ファイル整合性チェックに不合格）。保存を中止しました。元ファイルは無傷です。");
           setSaving(false);
