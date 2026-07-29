@@ -46,7 +46,8 @@ function containerHeightForText(textHeight: number, type: string): number {
 }
 
 // Excalidraw getBoundTextMaxWidth と一致（折り返しに使う内側最大幅）。
-function maxTextWidth(container: any): number {
+// インデント（whiteboardIndent）も同じ式で折り返し幅を求めるため export する。
+export function maxTextWidth(container: any): number {
   const w = container.width;
   if (container.type === "ellipse") return Math.round(w / 2 * Math.sqrt(2)) - PAD * 2;
   if (container.type === "diamond") return Math.round(w / 2) - PAD * 2;
@@ -75,7 +76,8 @@ function containerCoords(container: any): { x: number; y: number } {
 }
 
 // Excalidraw computeBoundTextPosition と一致（align/valign を尊重してテキスト x/y を算出）。
-function boundTextPos(container: any, t: any): { x: number; y: number } {
+// インデントで幅が変わった右揃えラベルの置き直しにも使うため export する（whiteboardIndent）。
+export function boundTextPos(container: any, t: any): { x: number; y: number } {
   const cc = containerCoords(container);
   const maxH = maxTextHeight(container);
   const maxW = maxTextWidth(container);

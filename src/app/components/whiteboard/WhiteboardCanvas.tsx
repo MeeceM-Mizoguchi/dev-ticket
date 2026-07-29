@@ -15,9 +15,10 @@ import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
 import { isHistoryGestureActive } from "@/app/lib/whiteboardHistory";
 import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
-import { setEditingTextEl } from "@/app/lib/whiteboardText";
+import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
+import { handleIndentKey } from "@/app/lib/whiteboardIndent";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
@@ -311,6 +312,34 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     el.addEventListener("keydown", onKeyDownCapture, true); // キャプチャ段階
     return () => el.removeEventListener("keydown", onKeyDownCapture, true);
   }, []);
+
+  // テキスト編集中のインデント操作（BRU9-040）。Tab/Shift+Tab/Ctrl+[ ] で行頭（右揃えなら行末）の
+  // 半角スペースを増減し、Enter では直前の行のインデントを引き継ぐ。
+  // Backspace/Delete は「インデントを消しに行った時だけ」握り潰す（文字消しで揃えが崩れないように）。
+  // Excalidraw 標準にも Tab インデントはあるが「4スペース固定・UI無し・改行で継がない」ため差し替える。
+  // エディタの textarea は containerRef の内側に生成され、Excalidraw のハンドラは textarea 自身の
+  // onkeydown なので、ここ（祖先の capture）が必ず先に走る。
+  // ※上のIME用ハンドラと同じノードに付くため stopPropagation では止まらない。handleIndentKey 側でも
+  //   isComposing を自前判定している（stopImmediatePropagation は使わない＝IME対策を壊さない）。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !api || !canEdit) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.classList?.contains("excalidraw-wysiwyg")) return;
+      // 通常の文字入力でシーンを走査しないよう、関係するキーだけ通す
+      const bracket = (e.metaKey || e.ctrlKey) && (e.code === "BracketLeft" || e.code === "BracketRight");
+      if (!bracket && e.key !== "Tab" && e.key !== "Enter" && e.key !== "Backspace" && e.key !== "Delete") return;
+      try {
+        // 揃えの判定は「今シーンにある要素」で行う（editingTextElement は揃えを変えた直後 stale になる）
+        const ed = getEditingTextEl() ?? api.getAppState()?.editingTextElement;
+        const live = ed?.id ? (api.getSceneElements() as any[]).find((x) => x.id === ed.id) : null;
+        handleIndentKey(e, live ?? ed);
+      } catch { /* noop */ }
+    };
+    el.addEventListener("keydown", onKey, true); // キャプチャ段階
+    return () => el.removeEventListener("keydown", onKey, true);
+  }, [api, canEdit]);
 
   // undo/redo の猶予窓（BRU5-066 / BRU7-058）。
   // 従来は固定 300ms の壁時計だったが、要素数の多い盤面では 300ms（≒18フレーム）以内に
