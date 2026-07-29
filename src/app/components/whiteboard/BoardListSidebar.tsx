@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { Plus, Search, X, Trash2, Pencil, PenTool } from "lucide-react";
 import type { Whiteboard } from "@/app/types";
+import { BoardListToggle } from "./BoardListToggle";
 
 interface Props {
   boards: Whiteboard[];
@@ -12,9 +13,10 @@ interface Props {
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onCollapse: () => void;
 }
 
-export function BoardListSidebar({ boards, selectedId, canEdit, loading, onSelect, onCreate, onRename, onDelete }: Props) {
+export function BoardListSidebar({ boards, selectedId, canEdit, loading, onSelect, onCreate, onRename, onDelete, onCollapse }: Props) {
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -29,6 +31,11 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, onSelec
 
   return (
     <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+      {/* たたむボタン（BRU9-046）。閉じる対象のすぐ内側に置き、右寄せで検索欄の上へ。 */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+        <BoardListToggle collapsed={false} onToggle={onCollapse} variant="inline" />
+      </div>
+
       <div style={{ position: "relative", marginBottom: 8 }}>
         <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: search ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="検索..."
