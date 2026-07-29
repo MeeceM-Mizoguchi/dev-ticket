@@ -16,7 +16,7 @@ const ROLE_COLORS: Record<string, { grad: string; badge: string; text: string }>
 const DEFAULT_ROLE_COLOR = { grad: "linear-gradient(135deg,#9CA3AF,#6B7280)", badge: "#F3F4F6", text: "#6B7280" };
 function getRoleColor(role: string) { return ROLE_COLORS[role] ?? DEFAULT_ROLE_COLOR; }
 
-export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills, memberSkills, highlighted, cardRef, onEdit, onDetail, onDelete, onSkills, onAutoUpdateChanged }: {
+export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills, memberSkills, highlighted, cardRef, onEdit, onDetail, onDelete, onSkills, onAutoUpdateChanged, onAutoUpdateFailed }: {
   member: Member; canEdit: boolean; canDelete: boolean;
   // ENHA2-034: スキルUI は「メンバー管理」権限(canAccessMembers)を持つ人だけに見せる
   canManageSkills?: boolean;
@@ -26,6 +26,7 @@ export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills
   onEdit?: () => void; onDetail?: () => void; onDelete?: () => void;
   onSkills?: () => void;
   onAutoUpdateChanged?: (on: boolean) => void;
+  onAutoUpdateFailed?: (message: string) => void;
 }) {
   const [projectCount, setProjectCount] = useState<number>(member.projects ?? 0);
   const [ticketCount, setTicketCount] = useState<number>(member.tickets ?? 0);
@@ -79,8 +80,12 @@ export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills
     try {
       await setSkillAutoUpdate(member.id, next);
       onAutoUpdateChanged?.(next);
-    } catch {
-      setAutoUpdate(!next);   // 失敗したら戻す
+    } catch (err) {
+      // BRU9-041: 以前は失敗を黙って戻すだけだった。そのうえ setSkillAutoUpdate が
+      // エラーを握りつぶしていたため、10秒ポーリングでトグルが勝手にONへ戻り
+      // 「効かない」ように見えていた。今は理由を必ず出す。
+      setAutoUpdate(!next);
+      onAutoUpdateFailed?.(err instanceof Error ? err.message : String(err));
     }
   };
 

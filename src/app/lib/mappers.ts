@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -63,6 +63,17 @@ export function mapSkill(r: any): Skill {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMemberSkill(r: any): MemberSkill {
   return { profileId: r.profile_id, skillId: r.skill_id, level: r.level, source: r.source || "auto", evidence: r.evidence ?? {}, updatedAt: r.updated_at || "" };
+}
+
+// ── BRU9-041 スキル更新の履歴 ──
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapSkillUpdateRun(r: any): SkillUpdateRun {
+  return { id: r.id, organizationId: r.organization_id, kind: r.kind, actorProfileId: r.actor_profile_id ?? null, targetProfileId: r.target_profile_id ?? null, restoredFromAt: r.restored_from_at ?? null, summary: r.summary ?? {}, createdAt: r.created_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapMemberSkillChange(r: any): MemberSkillChange {
+  return { id: r.id, runId: r.run_id, organizationId: r.organization_id, profileId: r.profile_id, skillId: r.skill_id, changeType: r.change_type, oldLevel: r.old_level ?? null, newLevel: r.new_level ?? null, oldSource: r.old_source ?? null, newSource: r.new_source ?? null, evidence: r.evidence ?? {}, changedAt: r.changed_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

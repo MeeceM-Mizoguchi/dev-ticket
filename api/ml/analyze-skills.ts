@@ -4,8 +4,11 @@
 // これは「集計＋ルール判定」であって機械学習ではない（学習するのは ②レコメンド = ml/train.py）。
 //
 // 呼ばれる経路は3つ:
-//   1. 初回セットアップ … 組織の ml_setup_done が false のとき、アプリから即時実行（AM3時を待たない）
-//   2. 日次cron        … 毎日 AM3:00 JST（vercel.json の crons、UTC 18:00）
+//   1. 初回セットアップ … 組織の ml_setup_done が false のとき、アプリから即時実行（未明を待たない）
+//   2. 日次バッチ      … .github/workflows/ml-daily.yml（cron "0 18 * * *" UTC = 翌03:00 JST）
+//        ※ Vercel cron ではない。LightGBM を使う②学習と直列に走らせる必要があるため
+//          GitHub Actions 側に集約している。vercel.json に crons は無い。
+//        ※ GitHub の schedule は best-effort で、実際の起動は JST 3:00〜4:40 程度にばらつく。
 //   3. 手動            … 管理者の「今すぐ再学習」ボタン
 //
 // 差分検知: 前回分析以降にチケットが動いていない組織はスキップする。
@@ -346,29 +349,58 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   }
 
   // ── レベル判定 → member_skills へ書き込み ──
+  //
+  // ★ 現在値を読んでから「実際に変わった行だけ」書く ★
+  //   以前は判定結果を全件そのまま upsert し、updated_at に毎回 now を書いていた。
+  //   そのため (a) 変わっていない行にも書き込みが走り (b) updated_at が
+  //   「最後に変わった日」として使えず (c) 履歴を採ると毎晩「全件変更」になって読めない。
+  //   差分を取ることでこの3つが同時に解決する。
+  //
   // source='manual'（人が設定した）行は上書きしない。自動判定が人の意思を潰さないため。
-  const { data: manualRows } = await sb
+  const { data: existingRows, error: exMsErr } = await sb
     .from("member_skills")
-    .select("profile_id, skill_id")
-    .eq("source", "manual")
+    .select("profile_id, skill_id, level, source")
     .in("profile_id", autoMembers.map(m => m.id));
-  const manualKeys = new Set((manualRows ?? []).map(r => keyOf(r.profile_id, r.skill_id)));
+  if (exMsErr) debug.memberSkillsSelectError = exMsErr.message;
+
+  const existing = new Map<string, { level: number; source: string }>();
+  for (const r of existingRows ?? []) {
+    existing.set(keyOf(r.profile_id, r.skill_id), { level: r.level, source: r.source });
+  }
 
   const rows: {
     profile_id: string; skill_id: string; level: number; source: string;
     evidence: unknown; updated_at: string;
   }[] = [];
+  // 履歴に残す変更（run_id は run を作ってから埋める）
+  const changes: {
+    organization_id: string; profile_id: string; skill_id: string; change_type: string;
+    old_level: number | null; new_level: number; old_source: string | null; new_source: string;
+    evidence: unknown; changed_at: string;
+  }[] = [];
   const now = new Date().toISOString();
 
   for (const [k, s] of stats) {
-    if (manualKeys.has(k)) continue;
+    const prev = existing.get(k);
+    if (prev?.source === "manual") continue;   // 人が設定した行は触らない
     const [profileId, skillId] = k.split("::");
     const inferred = inferSkillLevel(s);
     if (!inferred) continue;
+
+    // 値が変わらないなら書かない（無駄な書き込みと、無意味な履歴を作らない）
+    if (prev && prev.level === inferred.level) continue;
+
     rows.push({
       profile_id: profileId, skill_id: skillId,
       level: inferred.level, source: "auto",
       evidence: inferred.evidence, updated_at: now,
+    });
+    changes.push({
+      organization_id: orgId, profile_id: profileId, skill_id: skillId,
+      change_type: prev ? "level_changed" : "added",
+      old_level: prev ? prev.level : null, new_level: inferred.level,
+      old_source: prev ? prev.source : null, new_source: "auto",
+      evidence: inferred.evidence, changed_at: now,
     });
   }
 
@@ -377,6 +409,29 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   if (rows.length > 0) {
     const { error: msErr } = await sb.from("member_skills").upsert(rows, { onConflict: "profile_id,skill_id" });
     if (msErr) debug.memberSkillsUpsertError = msErr.message;
+
+    // ── BRU9-041 履歴を残す ──
+    // 失敗しても分析そのものは成立させる（履歴が欠けるだけ）。
+    try {
+      const added = changes.filter(c => c.change_type === "added").length;
+      const { data: run, error: runErr } = await sb
+        .from("skill_update_runs")
+        .insert({
+          organization_id: orgId, kind: "auto", created_at: now,
+          summary: { added, updated: changes.length - added, removed: 0, members: new Set(changes.map(c => c.profile_id)).size },
+        })
+        .select("id").maybeSingle();
+      if (runErr) debug.runInsertError = runErr.message;
+
+      if (run?.id) {
+        const { error: chErr } = await sb
+          .from("member_skill_changes")
+          .insert(changes.map(c => ({ ...c, run_id: run.id })));
+        if (chErr) debug.changesInsertError = chErr.message;
+      }
+    } catch (e) {
+      debug.historyError = String(e);
+    }
   }
 
   await sb.from("organizations")

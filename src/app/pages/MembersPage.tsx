@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Search, UserPlus, Globe, Users, ArrowLeft, Sparkles, Zap, Settings2 } from "lucide-react";
+import { Search, UserPlus, Globe, Users, ArrowLeft, Sparkles, Zap, Settings2, History } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams, Navigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -13,6 +13,7 @@ import { MemberDetailDialog } from "@/app/components/members/MemberDetailDialog"
 import { MemberEditDialog } from "@/app/components/members/MemberEditDialog";
 import { MemberSkillDialog } from "@/app/components/members/MemberSkillDialog";
 import { SkillMasterDialog } from "@/app/components/members/SkillMasterDialog";
+import { SkillHistoryDialog } from "@/app/components/members/SkillHistoryDialog";
 import { InviteDialog } from "@/app/components/members/InviteDialog";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
@@ -49,6 +50,7 @@ export function MembersPage() {
   const [memberSkills, setMemberSkills] = useState<MemberSkill[]>([]);
   const [skillTarget, setSkillTarget] = useState<Member | null>(null);
   const [showSkillMaster, setShowSkillMaster] = useState(false);
+  const [showSkillHistory, setShowSkillHistory] = useState(false);
   const [layerFilter, setLayerFilter] = useState<SkillLayer | "all">("all");
 
   const isOwner = userRole === "owner";
@@ -57,6 +59,10 @@ export function MembersPage() {
   // ENHA2-034: スキルUI・学習のお知らせは「メンバー管理」権限を持つ人だけに見せる。
   // 一般の開発者には何も表示しない。
   const canManageSkills = Boolean(userPermissions.canAccessMembers) || isOwner;
+  // BRU9-041: 履歴の閲覧は canManageSkills、過去の状態への復元はオーナー/管理者だけ。
+  // ※ 画面で隠すだけでなく restore_member_skills RPC 側でもロールを検証している
+  //   （UIを隠すだけではRPCを直接叩けてしまうため）。
+  const canRestoreSkills = isOwner || userRole === "admin";
 
   // ownerはorgIdなしで直接アクセスした場合は組織一覧へリダイレクト
   useEffect(() => {
@@ -294,6 +300,13 @@ export function MembersPage() {
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFFFFF"; }}>
                 <Settings2 style={{ width: 12, height: 12 }} />スキル管理
               </button>
+              {/* BRU9-041 組織全体のスキル更新履歴（閲覧専用） */}
+              <button onClick={() => setShowSkillHistory(true)} title="組織全体のスキル更新履歴を見る"
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.08)", background: "#FFFFFF", color: "#6B6458", cursor: "pointer" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFFFFF"; }}>
+                <History style={{ width: 12, height: 12 }} />スキル更新履歴
+              </button>
             </>
           )}
         </div>
@@ -314,6 +327,7 @@ export function MembersPage() {
                   onEdit={() => setEditTarget(m)}
                   onSkills={() => setSkillTarget(m)}
                   onAutoUpdateChanged={() => refreshMembers()}
+                  onAutoUpdateFailed={msg => toast(`スキル自動更新を変更できませんでした: ${msg}`, "error")}
                   onDelete={() => setDeleteTarget(m)} />
               ))}
             </div>
@@ -336,8 +350,15 @@ export function MembersPage() {
           <MemberSkillDialog
             member={skillTarget}
             orgId={effectiveOrgId}
+            canRestore={canRestoreSkills}
             onClose={() => setSkillTarget(null)}
-            onSaved={() => refreshSkills()} />
+            onSaved={() => { refreshSkills(); refreshMembers(); }} />
+        )}
+        {canManageSkills && showSkillHistory && effectiveOrgId && (
+          <SkillHistoryDialog
+            orgId={effectiveOrgId}
+            members={members}
+            onClose={() => setShowSkillHistory(false)} />
         )}
         {canManageSkills && showSkillMaster && effectiveOrgId && (
           <SkillMasterDialog
