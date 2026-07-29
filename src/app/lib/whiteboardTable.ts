@@ -64,6 +64,24 @@ export function tableGrid(elements: readonly any[], tid: string) {
   return { grid, R, C };
 }
 
+// 表の現在レイアウト（原点・列幅・行高）。列幅/行高は「その列/行で最初に見つかったセル」の実寸から取る
+// （reflowTables が同じ列/行のセルを同寸にタイルしているため、どれを見ても同じ）。
+export function tableLayout(elements: readonly any[], tid: string) {
+  const info = tableGrid(elements, tid);
+  if (!info) return null;
+  const { grid, R, C } = info;
+  const anchor = grid[0][0];
+  const colW = Array.from({ length: C }, (_, c) => {
+    for (let r = 0; r < R; r++) if (grid[r][c]) return grid[r][c].width as number;
+    return 0;
+  });
+  const rowH = Array.from({ length: R }, (_, r) => {
+    for (let c = 0; c < C; c++) if (grid[r][c]) return grid[r][c].height as number;
+    return 0;
+  });
+  return { grid, R, C, ox: anchor.x as number, oy: anchor.y as number, colW, rowH };
+}
+
 // 四角の角ハンドル（グループ全体のリサイズ）でサイズ変更した直後に呼ぶ。
 // Excalidraw が拡大縮小した現在の各列幅/行高を、手動値 cw/rh として全セルへ焼き込む。
 // これをしないと直後の reflowTables が内容フィット寸法へ戻してしまい「角で大きさを変えられない」。
@@ -72,11 +90,9 @@ export function freezeSelectedTable(api: any): boolean {
   const tid = selectedTableId(api);
   if (!tid) return false;
   const els = api.getSceneElements() as any[];
-  const info = tableGrid(els, tid);
-  if (!info) return false;
-  const { grid, R, C } = info;
-  const colW = Array.from({ length: C }, (_, c) => { for (let r = 0; r < R; r++) if (grid[r][c]) return grid[r][c].width; return 0; });
-  const rowH = Array.from({ length: R }, (_, r) => { for (let c = 0; c < C; c++) if (grid[r][c]) return grid[r][c].height; return 0; });
+  const lay = tableLayout(els, tid);
+  if (!lay) return false;
+  const { colW, rowH } = lay;
   const next = els.map((e) => {
     const m = cellMeta(e);
     if (!m || m.tid !== tid) return e;
@@ -103,13 +119,164 @@ export function tableCellAtPoint(els: readonly any[], x: number, y: number): { t
   return null;
 }
 
-export interface TableSel { tid: string; rows: number[]; cols: number[]; R: number; C: number; single: boolean; focusedId: string | null }
+// ── 行/列の軸選択と一括サイズ調整（BRU9-039-2） ────────────────────────────────
+// 「複数の列（行）を選んでまとめて幅（高さ）を変える」ための土台。
+// セルはグループなので1クリックでは表全体が選ばれ、個別セルを行数ぶん Shift+クリックする以外に
+// 「列を選ぶ」手段が無かった。そこで TableResizeOverlay のヘッダー帯から列/行を丸ごと選択できるように
+// し、その明示的な選択をここでローカル UI 状態として保持する（他ユーザーへは同期しない）。
+//
+// 手でセルを複数選択した場合も、それが「完全な列/行」を2本以上覆っていれば一括の対象として扱う
+// （bulkSizeTargets の補助ルール）。表全体選択（1クリックのグループ選択）は従来どおり1本だけ動く。
+
+export type TableAxisSel = { tid: string; kind: "col" | "row"; indices: number[] } | null;
+
+let _axisSel: TableAxisSel = null;
+
+export function setTableAxisSel(sel: TableAxisSel): void {
+  _axisSel = sel && sel.indices.length
+    ? { tid: sel.tid, kind: sel.kind, indices: [...new Set(sel.indices)].sort((a, b) => a - b) }
+    : null;
+}
+
+// 保持中の軸選択を妥当性検証つきで返す。次のいずれかなら破棄して null（古い選択が残らないようにする）:
+//   ・表が消えた / index が行列数の外（行・列の増減で崩れた）
+//   ・現在の選択セルが「その軸のセル集合」と一致しない（ユーザーが別の選択をした）
+export function tableAxisSel(api: any, elements?: readonly any[]): TableAxisSel {
+  const s = _axisSel;
+  if (!s) return null;
+  const els = elements ?? (api.getSceneElements() as any[]);
+  const info = tableGrid(els, s.tid);
+  if (!info) { _axisSel = null; return null; }
+  const limit = s.kind === "col" ? info.C : info.R;
+  if (s.indices.some((i) => i < 0 || i >= limit)) { _axisSel = null; return null; }
+  const want = new Set(s.indices);
+  const sel = api.getAppState().selectedElementIds || {};
+  let on = 0;
+  for (const e of els) {
+    const m = cellMeta(e);
+    if (!m || m.tid !== s.tid) continue;
+    const isSel = !!sel[e.id];
+    if (isSel !== want.has(s.kind === "col" ? m.c : m.r)) { _axisSel = null; return null; }
+    if (isSel) on++;
+  }
+  if (!on) { _axisSel = null; return null; }
+  return s;
+}
+
+// 指定の列（行）を丸ごと選択する。選択の変更だけなので履歴には残さない（NEVER）。
+// selectedGroupIds も落とす: 表をクリックした直後はグループが選択済みで、残したままだと
+// 個別セルの選択が表全体へ戻ってしまう。
+export function selectTableAxis(api: any, tid: string, kind: "col" | "row", indices: number[]): boolean {
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return false;
+  const limit = kind === "col" ? info.C : info.R;
+  const idx = [...new Set(indices)].filter((i) => i >= 0 && i < limit).sort((a, b) => a - b);
+  if (!idx.length) return false;
+  const want = new Set(idx);
+  const ids: Record<string, true> = {};
+  for (const e of els) {
+    const m = cellMeta(e);
+    if (m && m.tid === tid && want.has(kind === "col" ? m.c : m.r)) ids[e.id] = true;
+  }
+  setTableAxisSel({ tid, kind, indices: idx });
+  api.updateScene({
+    appState: { selectedElementIds: ids, selectedGroupIds: {}, editingGroupId: null },
+    captureUpdate: CaptureUpdateAction.NEVER,
+  });
+  return true;
+}
+
+// 一括サイズ変更の対象になり得る列/行。
+//   ・明示の軸選択（ヘッダー帯）があればそれ
+//   ・無ければ「全行そろって選択されている列」「全列そろって選択されている行」（手でセルを選んだ場合）
+//   ・表全体選択は対象外＝従来どおり1本だけ動く
+export function bulkSizeTargets(api: any, tid: string, elements?: readonly any[]): { cols: number[]; rows: number[] } {
+  const els = elements ?? (api.getSceneElements() as any[]);
+  const ax = tableAxisSel(api, els);
+  if (ax && ax.tid === tid) {
+    return ax.kind === "col" ? { cols: ax.indices, rows: [] } : { cols: [], rows: ax.indices };
+  }
+  const info = tableGrid(els, tid);
+  if (!info) return { cols: [], rows: [] };
+  const { grid, R, C } = info;
+  const sel = api.getAppState().selectedElementIds || {};
+  let total = 0, on = 0;
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+    const cell = grid[r][c];
+    if (!cell) continue;
+    total++;
+    if (sel[cell.id]) on++;
+  }
+  if (!on || on >= total) return { cols: [], rows: [] };
+  const cols: number[] = [], rows: number[] = [];
+  for (let c = 0; c < C; c++) {
+    let any = false, all = true;
+    for (let r = 0; r < R; r++) { const cell = grid[r][c]; if (!cell) continue; any = true; if (!sel[cell.id]) { all = false; break; } }
+    if (any && all) cols.push(c);
+  }
+  for (let r = 0; r < R; r++) {
+    let any = false, all = true;
+    for (let c = 0; c < C; c++) { const cell = grid[r][c]; if (!cell) continue; any = true; if (!sel[cell.id]) { all = false; break; } }
+    if (any && all) rows.push(r);
+  }
+  return { cols, rows };
+}
+
+// 境界つまみを掴んだ / ダブルクリックしたときの実対象。2本以上まとまっている時だけ一括にする。
+export function resolveSizeTargets(api: any, tid: string, kind: "col" | "row", index: number): number[] {
+  const t = bulkSizeTargets(api, tid)[kind === "col" ? "cols" : "rows"];
+  return t.length >= 2 && t.includes(index) ? t : [index];
+}
+
+// 複数の列/行へ手動サイズ（cw/rh）を一括適用。value<=0 でクリア（自動フィットへ復帰）。
+// commit=true のときは undo の1ステップとして記録し、version も上げて他クライアントへ確実に伝播させる
+// （Yjsブリッジは version 比較で伝播するため。ドラッグ中は commit=false で、離した時にまとめて記録する）。
+export function applyTableSizes(
+  api: any, tid: string, kind: "col" | "row", indices: number[], value: number, commit = false,
+): boolean {
+  const want = new Set(indices);
+  const els = api.getSceneElements() as any[];
+  let changed = false;
+  const next = els.map((e) => {
+    const m = cellMeta(e);
+    if (!m || m.tid !== tid || !want.has(kind === "col" ? m.c : m.r)) return e;
+    const wb: WbTableMeta = { ...m };
+    if (kind === "col") { if (value > 0) wb.cw = value; else delete wb.cw; }
+    else { if (value > 0) wb.rh = value; else delete wb.rh; }
+    if (wb.cw === m.cw && wb.rh === m.rh) return e;   // 変化なしはそのまま（余計な更新を出さない）
+    changed = true;
+    const patch = { ...e, customData: { ...e.customData, wbTable: wb } };
+    return commit ? { ...patch, version: (e.version ?? 1) + 1, versionNonce: rand() } : patch;
+  });
+  if (!changed) return false;
+  api.updateScene(commit ? { elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY } : { elements: next });
+  return true;
+}
+
+// 選択列/行のサイズをそろえる。
+//   列 = 現在幅の平均（合計を保ったまま均等割り＝表の総幅が変わらない）
+//   行 = 現在高の最大（rh は下限としてしか効かないため、平均だと「そろえたのにそろわない」になる）
+export function distributeTableSizes(api: any, tid: string, kind: "col" | "row", indices: number[]): boolean {
+  const lay = tableLayout(api.getSceneElements(), tid);
+  if (!lay || indices.length < 2) return false;
+  const sizes = indices.map((i) => (kind === "col" ? lay.colW[i] : lay.rowH[i])).filter((v) => v > 0);
+  if (!sizes.length) return false;
+  const value = kind === "col"
+    ? Math.max(MIN_COL_W, Math.round(sizes.reduce((a, b) => a + b, 0) / sizes.length))
+    : Math.max(MIN_ROW_H, Math.round(Math.max(...sizes)));
+  return applyTableSizes(api, tid, kind, indices, value, true);
+}
+
+export interface TableSel { tid: string; rows: number[]; cols: number[]; R: number; C: number; single: boolean; focusedId: string | null; axis: "col" | "row" | null }
 
 // 追加・削除の基準となる「選択が跨る行・列」を返す。
 //   ・セルを個別に複数選択している（＝全セルではない部分選択）→ その選択が跨る行数/列数を単位にする
 //     （3セル選択→3行/3列 追加・削除）。
 //   ・表を1クリックして全セルが選択されている → グループ選択なので単一セルの意図が取れない。そこで
 //     直前に pointerdown で当てた focused セルを基準にする（single=true。操作後にそのセルへ選択を寄せる）。
+//     ただしヘッダー帯で明示的に軸選択している時は「その列/行を選んだ」意図が確実なので、1列だけの表など
+//     結果的に全セルが選ばれるケースでも単一へフォールバックしない（BRU9-039-2）。
 // 表以外の選択・非選択は null。
 export function selectedTableRange(api: any, focused: { tid: string; r: number; c: number; id: string } | null): TableSel | null {
   const tid = selectedTableId(api);
@@ -117,6 +284,8 @@ export function selectedTableRange(api: any, focused: { tid: string; r: number; 
   const els = api.getSceneElements() as any[];
   const info = tableGrid(els, tid);
   if (!info) return null;
+  const ax = tableAxisSel(api, els);
+  const axis = ax && ax.tid === tid ? ax.kind : null;
   const sel = api.getAppState().selectedElementIds || {};
   let total = 0, selCount = 0;
   const rows = new Set<number>(), cols = new Set<number>();
@@ -129,10 +298,10 @@ export function selectedTableRange(api: any, focused: { tid: string; r: number; 
   if (!selCount) return null;
   const f = focused && focused.tid === tid && focused.r < info.R && focused.c < info.C ? focused : null;
   // 全セル選択（グループ選択）でフォーカスセルが取れていれば、そのセル1つを基準にする
-  if (selCount >= total && f) {
-    return { tid, rows: [f.r], cols: [f.c], R: info.R, C: info.C, single: true, focusedId: f.id };
+  if (selCount >= total && f && !axis) {
+    return { tid, rows: [f.r], cols: [f.c], R: info.R, C: info.C, single: true, focusedId: f.id, axis: null };
   }
-  return { tid, rows: [...rows].sort((a, b) => a - b), cols: [...cols].sort((a, b) => a - b), R: info.R, C: info.C, single: false, focusedId: null };
+  return { tid, rows: [...rows].sort((a, b) => a - b), cols: [...cols].sort((a, b) => a - b), R: info.R, C: info.C, single: false, focusedId: null, axis };
 }
 
 // テンプレセル（見た目の継承元）から空セルを1つ生成する。列幅/行高の手動値は carry で引き継ぐ。
@@ -149,7 +318,20 @@ function makeCellFrom(tmpl: any, tid: string, r: number, c: number, carry: { cw?
   return el;
 }
 
+// テンプレセルの「今の見た目のサイズ」を手動値として取り出す。
+// 手動値(cw/rh)があればそれ、無ければ実寸（＝内容フィットや過去のリサイズで決まった現在のサイズ）。
+// これを新しい列/行へ焼き込まないと、追加した列/行だけ最小サイズ(40/32px)で生まれ、
+// 直前の行・列より明らかに小さく見える（BRU9-039-2）。
+function sizeOfCell(tmpl: any, kind: "col" | "row"): number | undefined {
+  const m = cellMeta(tmpl);
+  const manual = kind === "col" ? m?.cw : m?.rh;
+  if ((manual ?? 0) > 0) return Math.round(manual!);
+  const v = kind === "col" ? tmpl?.width : tmpl?.height;
+  return typeof v === "number" && v > 0 ? Math.round(v) : undefined;
+}
+
 // at 列目に count 列ぶんの新しい列を挿入（at=0..C。C は末尾に追加）。手動行高 rh は行で共有のため隣列から引き継ぐ。
+// 幅は「1つ前の列（先頭に挿す時は元の先頭列）と同じ」にする（BRU9-039-2）。
 export function insertTableColumns(api: any, tid: string, at: number, count = 1): boolean {
   const els = api.getSceneElements() as any[];
   const info = tableGrid(els, tid);
@@ -160,20 +342,26 @@ export function insertTableColumns(api: any, tid: string, at: number, count = 1)
   const created: any[] = [];
   for (let r = 0; r < R; r++) {
     const ref = grid[r][idx - 1] ?? grid[r][idx] ?? grid[r].find(Boolean);
-    const rh = cellMeta(ref)?.rh;
-    for (let k = 0; k < n; k++) created.push(makeCellFrom(ref, tid, r, idx + k, rh ? { rh } : {}));
+    const rh = cellMeta(ref)?.rh;          // 行高は行で共有なので手動値だけ引き継ぐ
+    const cw = sizeOfCell(ref, "col");     // 列幅は「1つ前の列と同じ」で生む
+    for (let k = 0; k < n; k++) created.push(makeCellFrom(ref, tid, r, idx + k, { ...(rh ? { rh } : {}), ...(cw ? { cw } : {}) }));
   }
   const shifted = els.map((e) => {
     const m = cellMeta(e);
     if (!m || m.tid !== tid || m.c < idx) return e;
     return { ...e, customData: { ...e.customData, wbTable: { ...m, c: m.c + n } }, version: (e.version ?? 1) + 1, versionNonce: rand() };
   });
+  // 保持中の軸選択も一緒にずらす（そうしないと「3列選択→左に追加」で選択が外れる・BRU9-039-2）
+  if (_axisSel && _axisSel.tid === tid && _axisSel.kind === "col") {
+    setTableAxisSel({ ..._axisSel, indices: _axisSel.indices.map((i) => (i >= idx ? i + n : i)) });
+  }
   // 選択は変更しない（元の選択セルを保持＝同じ位置へ続けて追加できる）。新規セルは非選択のまま。
   api.updateScene({ elements: [...shifted, ...created], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
   return true;
 }
 
 // at 行目に count 行ぶんの新しい行を挿入（at=0..R。R は末尾に追加）。手動列幅 cw は列で共有のため隣行から引き継ぐ。
+// 高さは「1つ前の行（先頭に挿す時は元の先頭行）と同じ」にする（BRU9-039-2）。
 export function insertTableRows(api: any, tid: string, at: number, count = 1): boolean {
   const els = api.getSceneElements() as any[];
   const info = tableGrid(els, tid);
@@ -184,14 +372,19 @@ export function insertTableRows(api: any, tid: string, at: number, count = 1): b
   const created: any[] = [];
   for (let c = 0; c < C; c++) {
     const ref = grid[idx - 1]?.[c] ?? grid[idx]?.[c] ?? grid.map((row) => row[c]).find(Boolean);
-    const cw = cellMeta(ref)?.cw;
-    for (let k = 0; k < n; k++) created.push(makeCellFrom(ref, tid, idx + k, c, cw ? { cw } : {}));
+    const cw = cellMeta(ref)?.cw;          // 列幅は列で共有なので手動値だけ引き継ぐ
+    const rh = sizeOfCell(ref, "row");     // 行高は「1つ前の行と同じ」で生む
+    for (let k = 0; k < n; k++) created.push(makeCellFrom(ref, tid, idx + k, c, { ...(cw ? { cw } : {}), ...(rh ? { rh } : {}) }));
   }
   const shifted = els.map((e) => {
     const m = cellMeta(e);
     if (!m || m.tid !== tid || m.r < idx) return e;
     return { ...e, customData: { ...e.customData, wbTable: { ...m, r: m.r + n } }, version: (e.version ?? 1) + 1, versionNonce: rand() };
   });
+  // 保持中の軸選択も一緒にずらす（BRU9-039-2）
+  if (_axisSel && _axisSel.tid === tid && _axisSel.kind === "row") {
+    setTableAxisSel({ ..._axisSel, indices: _axisSel.indices.map((i) => (i >= idx ? i + n : i)) });
+  }
   // 選択は変更しない（元の選択セルを保持＝同じ位置へ続けて追加できる）。新規セルは非選択のまま。
   api.updateScene({ elements: [...shifted, ...created], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
   return true;
@@ -218,6 +411,7 @@ export function deleteTableColumns(api: any, tid: string, cols: number[]): boole
     return e;
   });
   api.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  setTableAxisSel(null); // 選択ごと消えるので軸選択も畳む
   api.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
   return true;
 }
@@ -243,6 +437,7 @@ export function deleteTableRows(api: any, tid: string, rows: number[]): boolean 
     return e;
   });
   api.updateScene({ elements: next, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+  setTableAxisSel(null); // 選択ごと消えるので軸選択も畳む
   api.updateScene({ appState: { selectedElementIds: {} }, captureUpdate: CaptureUpdateAction.NEVER });
   return true;
 }
