@@ -74,6 +74,28 @@ function extOf(fileName: string): string {
   return i < 0 ? "" : fileName.slice(i + 1).toLowerCase();
 }
 
+// 先頭ドット（.gitignore 等）は拡張子扱いしない
+function splitName(fileName: string): { base: string; ext: string } {
+  const i = fileName.lastIndexOf(".");
+  return i > 0 ? { base: fileName.slice(0, i), ext: fileName.slice(i) } : { base: fileName, ext: "" };
+}
+
+/**
+ * 同名が既にあれば「foo (1).xlsx」「foo (2).xlsx」…と空き番号を探す。
+ * 手動アップロードで既存ファイルの新バージョンにされてしまうのを避けるため。
+ */
+function nextFreeName(fileName: string, taken: Set<string>): string {
+  if (!taken.has(fileName)) return fileName;
+  const { base, ext } = splitName(fileName);
+  // 既に「foo (1)」なら「foo (1) (1)」ではなく「foo (2)」へ続ける
+  const stem = base.replace(/ \(\d+\)$/, "");
+  for (let n = 1; n <= 999; n++) {
+    const candidate = `${stem} (${n})${ext}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${stem} (${Date.now()})${ext}`;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -108,11 +130,19 @@ export default async function handler(req: any, res: any) {
   if (action === "register") {
     const projectId = String(body.projectId ?? "");
     const path = String(body.path ?? "");
-    const fileName = String(body.fileName ?? "");
+    let fileName = String(body.fileName ?? "");
     if (!projectId || !path || !fileName) return res.status(400).json({ error: "projectId, path and fileName are required" });
     if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
     // 他プロジェクト配下のオブジェクトを自プロジェクトの行として登録させない
     if (!path.startsWith(`${projectId}/`)) return res.status(400).json({ error: "Invalid path" });
+
+    // 手動アップロード（uniqueName）は「既存ファイルの新バージョン」ではなく別ファイルとして扱う。
+    // エディタ保存・WebDAV保存はフラグを立てないので、これまで通り版が上がる。
+    if (body.uniqueName) {
+      const { data: rows } = await sb.from("project_files")
+        .select("file_name").eq("project_id", projectId);
+      fileName = nextFreeName(fileName, new Set((rows ?? []).map(r => String(r.file_name))));
+    }
 
     // 版番号はサーバーで採番する（クライアント側の一覧が古くても衝突しない）
     const { data: sameName } = await sb.from("project_files")
@@ -130,7 +160,8 @@ export default async function handler(req: any, res: any) {
       await sb.storage.from(BUCKET).remove([path]);
       return res.status(500).json({ error: error.message });
     }
-    return res.json({ file: inserted });
+    // 改名した場合があるので、実際に登録した名前を返す
+    return res.json({ file: inserted, fileName });
   }
 
   // ── 閲覧/DL用の短命な署名付きURLを発行 ──────────────────────

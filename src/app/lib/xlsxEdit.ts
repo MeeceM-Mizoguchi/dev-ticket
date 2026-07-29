@@ -217,6 +217,35 @@ function clearCellValue(cell: Element) {
   cell.removeAttribute("t");
 }
 
+// ── 行/列の既定書式の継承 ──────────────────────────────────────
+//
+// ★重要: <c> に s 属性が無いと、Excel はその セルを style 0（＝書式なし）として扱う。
+//   行の s + customFormat（や列の style）は「XMLに存在しないセル」にしか効かないため、
+//   空セルを編集して <c> を作った瞬間に、行に付いていた塗り・フォントが消えて白くなる。
+//   そこで、s を持たないセルには継承していたはずの書式を明示的に持たせる。
+
+/** <cols> の style 属性（列単位の既定書式）をレンジのまま取り出す */
+function colStyleRanges(doc: Document): Array<{ min: number; max: number; s: string }> {
+  const out: Array<{ min: number; max: number; s: string }> = [];
+  const cols = doc.getElementsByTagName("cols")[0];
+  if (!cols) return out;
+  for (const c of Array.from(cols.getElementsByTagName("col"))) {
+    const s = c.getAttribute("style");
+    const min = Number(c.getAttribute("min")), max = Number(c.getAttribute("max"));
+    if (!s || !Number.isInteger(min) || !Number.isInteger(max)) continue;
+    out.push({ min, max, s });
+  }
+  return out;
+}
+
+/** そのセルが（<c> が無ければ）適用されていたはずの style index。無ければ null */
+function inheritedStyle(row: Element, col: number, ranges: ReturnType<typeof colStyleRanges>): string | null {
+  const cf = row.getAttribute("customFormat");
+  const rowS = (cf === "1" || cf === "true") ? row.getAttribute("s") : null;
+  if (rowS) return rowS;                                   // 行書式が列書式より優先
+  return ranges.find(r => r.min <= col && col <= r.max)?.s ?? null;
+}
+
 function applyEdit(doc: Document, cell: Element, edit: CellEdit) {
   clearCellValue(cell);
   if (edit.kind === "blank") return;
@@ -302,10 +331,17 @@ export function patchXlsx(originalBytes: Uint8Array, edits: CellEdit[]): Uint8Ar
       doc.documentElement.appendChild(sheetData);
     }
 
+    const ranges = colStyleRanges(doc);
+
     for (const edit of sheetEdits) {
       const ref = colLetter(edit.col) + edit.row;
       const row = getOrCreateRow(doc, sheetData, edit.row);
       const cell = getOrCreateCell(doc, row, edit.col, ref);
+      // <c> を作った時点で行/列の既定書式が外れるので、明示的に引き継ぐ
+      if (!cell.hasAttribute("s")) {
+        const inherited = inheritedStyle(row, edit.col, ranges);
+        if (inherited) cell.setAttribute("s", inherited);
+      }
       applyEdit(doc, cell, edit);
       // 色・揃え
       const wantFill = edit.fill !== undefined && edit.fill !== null;

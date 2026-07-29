@@ -125,8 +125,15 @@ export async function fetchSignedUrl(fileId: string, mode: "inline" | "download"
  * ①サーバーが保存キーを決めて署名付きアップロードURLを発行
  * ②ブラウザ→ストレージへ直接アップロード（サーバーレス関数のサイズ上限を回避）
  * ③サーバー側でDB登録（版番号の採番も含む）
+ *
+ * @param opts.uniqueName 同名のファイルが既にあるとき、新バージョンにせず
+ *   「foo (1).xlsx」のように別ファイルとして登録する（手動アップロード用）。
+ *   エディタ保存やWebDAV保存では指定しない＝これまで通り版が上がる。
+ * @returns 実際に登録されたファイル名（改名された場合はその名前）
  */
-export async function uploadProjectFile(projectId: string, file: File): Promise<void> {
+export async function uploadProjectFile(
+  projectId: string, file: File, opts?: { uniqueName?: boolean },
+): Promise<string> {
   const fileName = file.name;
   const { path, token } = await postApi<{ path: string; token: string }>(
     "upload-url", { projectId, fileName });
@@ -135,9 +142,11 @@ export async function uploadProjectFile(projectId: string, file: File): Promise<
     .uploadToSignedUrl(path, token, file, { contentType: file.type || "application/octet-stream" });
   if (error) throw new Error(error.message);
 
-  await postApi<{ file: unknown }>("register", {
+  const res = await postApi<{ file: unknown; fileName?: string }>("register", {
     projectId, path, fileName, fileSize: file.size, fileType: file.type || "",
+    uniqueName: !!opts?.uniqueName,
   });
+  return res.fileName ?? fileName;
 }
 
 /**

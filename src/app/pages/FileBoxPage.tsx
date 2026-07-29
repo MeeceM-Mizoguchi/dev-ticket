@@ -134,13 +134,16 @@ export function FileBoxPage() {
 
     setUploading(true);
     let ok = 0;
+    const renamed: string[] = [];
     for (const f of list) {
       if (f.size > MAX_FILE_SIZE) {
         toast(`「${f.name}」は上限(${formatFileSize(MAX_FILE_SIZE)})を超えています`, "error");
         continue;
       }
       try {
-        await uploadProjectFile(project.id, f);
+        // 同名でも上書き（新バージョン）にせず、別ファイルとして残す
+        const stored = await uploadProjectFile(project.id, f, { uniqueName: true });
+        if (stored !== f.name) renamed.push(`「${f.name}」→「${stored}」`);
         ok++;
       } catch (e) {
         console.error("[FileBox] upload error:", e);
@@ -148,6 +151,9 @@ export function FileBoxPage() {
       }
     }
     setUploading(false);
+    if (renamed.length > 0) {
+      toast(`同名のファイルがあるため名前を変更しました：${renamed.join("、")}`);
+    }
     if (ok > 0) {
       toast(`${ok} 件のファイルをアップロードしました`);
       emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映

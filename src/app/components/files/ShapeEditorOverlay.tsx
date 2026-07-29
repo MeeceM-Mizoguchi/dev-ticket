@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { DrawingObject } from "@/app/lib/xlsxDrawing";
+import { calloutTailPoints } from "@/app/lib/xlsxDrawing";
 
 // ENHA2-035 / BRU7-054 図形エディタ（B1・常時操作可）
 //
@@ -44,20 +45,6 @@ function arrowPoints(geom: string, w: number, h: number): string {
     case "leftArrow": return p([[w * .45, 0], [w * .45, h * .3], [w, h * .3], [w, h * .7], [w * .45, h * .7], [w * .45, h], [0, h * .5]]);
     default: return "";
   }
-}
-
-// 吹き出しの尾（三角形）の頂点を計算：尾先端＝(fx*w, fy*h)、底辺は最寄り辺上
-function calloutTail(w: number, h: number, adj: { fx: number; fy: number }): string | null {
-  const tx = adj.fx * w, ty = adj.fy * h;
-  const bh = Math.min(w, h) * 0.16;
-  const inside = tx >= 0 && tx <= w && ty >= 0 && ty <= h;
-  if (inside) return null;
-  let b1: [number, number], b2: [number, number];
-  if (ty > h) { const cx = Math.max(bh, Math.min(w - bh, tx)); b1 = [cx - bh, h]; b2 = [cx + bh, h]; }
-  else if (ty < 0) { const cx = Math.max(bh, Math.min(w - bh, tx)); b1 = [cx - bh, 0]; b2 = [cx + bh, 0]; }
-  else if (tx > w) { const cy = Math.max(bh, Math.min(h - bh, ty)); b1 = [w, cy - bh]; b2 = [w, cy + bh]; }
-  else { const cy = Math.max(bh, Math.min(h - bh, ty)); b1 = [0, cy - bh]; b2 = [0, cy + bh]; }
-  return `${b1[0]},${b1[1]} ${tx},${ty} ${b2[0]},${b2[1]}`;
 }
 
 // コネクタの2端点（flip で向きを表現）
@@ -238,7 +225,7 @@ export const ShapeEditorOverlay = forwardRef<ShapeEditorHandle, Props>(function 
 
     // 吹き出し：本体（角丸）＋尾（三角）
     if (o.geom && /callout/i.test(o.geom) && o.adj) {
-      const tail = calloutTail(o.w, o.h, o.adj);
+      const tail = calloutTailPoints(o.w, o.h, o.adj);
       return (
         <div style={{ position: "relative", width: "100%", height: "100%", display: "flex", alignItems: vJustify, justifyContent: "center" }}>
           {tail && (

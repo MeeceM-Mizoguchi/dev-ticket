@@ -38,6 +38,23 @@ export interface DrawingObject {
   anchorIndex?: number;
 }
 
+/**
+ * 吹き出しの尾（三角形）の頂点を SVG points 文字列で返す。尾が図形内なら null。
+ * 尾先端＝(fx*w, fy*h)、底辺は先端に最も近い辺の上に取る。
+ * ★ビューアと編集モードで見た目を揃えるため、両方からこの関数を使う。
+ */
+export function calloutTailPoints(w: number, h: number, adj: { fx: number; fy: number }): string | null {
+  const tx = adj.fx * w, ty = adj.fy * h;
+  const bh = Math.min(w, h) * 0.16;
+  if (tx >= 0 && tx <= w && ty >= 0 && ty <= h) return null; // 図形の内側なら尾は出ない
+  let b1: [number, number], b2: [number, number];
+  if (ty > h) { const cx = Math.max(bh, Math.min(w - bh, tx)); b1 = [cx - bh, h]; b2 = [cx + bh, h]; }
+  else if (ty < 0) { const cx = Math.max(bh, Math.min(w - bh, tx)); b1 = [cx - bh, 0]; b2 = [cx + bh, 0]; }
+  else if (tx > w) { const cy = Math.max(bh, Math.min(h - bh, ty)); b1 = [w, cy - bh]; b2 = [w, cy + bh]; }
+  else { const cy = Math.max(bh, Math.min(h - bh, ty)); b1 = [0, cy - bh]; b2 = [0, cy + bh]; }
+  return `${b1[0]},${b1[1]} ${tx},${ty} ${b2[0]},${b2[1]}`;
+}
+
 export interface ParsedDrawings {
   objects: DrawingObject[];
   /** 描画が占める最大の列・行（グリッドをそこまで伸ばすために使う） */
