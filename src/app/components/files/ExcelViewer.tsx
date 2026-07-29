@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { parseXlsxDrawings } from "@/app/lib/xlsxDrawing";
+import { parseXlsxDrawings, calloutTailPoints } from "@/app/lib/xlsxDrawing";
 import type { DrawingObject, Paragraph } from "@/app/lib/xlsxDrawing";
+import { parseThemePalette, resolveCellColor } from "@/app/lib/xlsxCellColor";
 import { fetchFileWithRetry } from "@/app/lib/projectFiles";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) ビューア
@@ -50,13 +51,6 @@ interface SheetData {
   rowHeights: number[];
   drawings: DrawingObject[];
   truncated: boolean;
-}
-
-// ARGB(exceljs) → CSS
-function argb(v: string | undefined | null): string | null {
-  if (!v) return null;
-  const h = v.length === 8 ? v.slice(2) : v;
-  return /^[0-9a-fA-F]{6}$/.test(h) ? `#${h}` : null;
 }
 
 function ParagraphsView({ paragraphs }: { paragraphs: Paragraph[] }) {
@@ -170,6 +164,28 @@ export function DrawingLayer({ objects, width, height, offsetLeft = HEADER_W, of
           );
         }
 
+        // 吹き出し：本体（角丸）＋尾（三角）。編集モードと同じ形で描く。
+        // 尾は本体の外へ出るので、下の汎用分岐(overflow:hidden)には落とせない。
+        if (o.geom && /callout/i.test(o.geom) && o.adj) {
+          const tail = calloutTailPoints(o.w, o.h, o.adj);
+          return (
+            <div key={o.id} style={{ ...base, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {tail && (
+                <svg style={{ position: "absolute", inset: 0, overflow: "visible" }} width={o.w} height={o.h}>
+                  <polygon points={tail} fill={o.fill ?? "#fff"}
+                    stroke={o.line?.color ?? "none"} strokeWidth={o.line?.width ?? 0} />
+                </svg>
+              )}
+              <div style={{
+                position: "absolute", inset: 0, background: o.fill ?? "transparent",
+                border: o.line ? `${o.line.width}px solid ${o.line.color}` : "none",
+                borderRadius: `${Math.min(o.w, o.h) * 0.14}px`, boxSizing: "border-box",
+              }} />
+              <div style={{ position: "relative", zIndex: 1, width: "100%" }}>{label}</div>
+            </div>
+          );
+        }
+
         return (
           <div key={o.id} style={{
             ...base,
@@ -202,6 +218,8 @@ export function ExcelViewer({ url }: { url: string }) {
         const ExcelJS = (await import("exceljs")).default;
         const wb = new ExcelJS.Workbook();
         await wb.xlsx.load(buf);
+        // Excel の色指定はテーマ色（theme + tint）が大半なので、theme1.xml から色表を作る
+        const themePalette = parseThemePalette(buf);
 
         const out: SheetData[] = wb.worksheets.map((ws, sheetIdx) => {
           const defColW = ws.properties?.defaultColWidth ?? DEFAULT_COL_WIDTH;
@@ -250,15 +268,16 @@ export function ExcelViewer({ url }: { url: string }) {
             for (let c = 1; c <= colCount; c++) {
               const cell = row.getCell(c);
               const font = cell.font ?? {};
+              // 塗りは argb 直指定とは限らない（テーマ色＋tint / インデックス色）ので解決する
               const fillFg = (cell.fill as any)?.type === "pattern"
-                ? argb((cell.fill as any)?.fgColor?.argb) : null;
+                ? resolveCellColor((cell.fill as any)?.fgColor, themePalette) : null;
               const al = cell.alignment?.horizontal;
               const span = spans.get(`${r}:${c}`);
               cells.push({
                 text: cell.text ?? "",
                 bold: !!font.bold, italic: !!font.italic,
                 sizePx: (font.size ?? 11) * PT_TO_PX,
-                color: argb((font.color as any)?.argb) ?? "#1A1714",
+                color: resolveCellColor(font.color as any, themePalette) ?? "#1A1714",
                 bg: fillFg,
                 align: al === "center" ? "center" : al === "right" ? "right" : "left",
                 colSpan: span?.cs ?? 1, rowSpan: span?.rs ?? 1,

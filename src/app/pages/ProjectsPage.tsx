@@ -33,7 +33,9 @@ export function ProjectsPage() {
   // Mac/iPad のタブモードでは ⌘/中/右クリック・長押しで新規タブを開ける。
   const { isTabMode, openNewTab } = useTabNavigation();
   const [search, setSearch] = useState("");
-  
+  // 作成直後のプロジェクト。該当カードを強調表示し、画面外ならそこまでスクロールする
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+
   // 更新維持用の各種フィルターステート
   const [statusFilter, setStatusFilter] = useState(() => localStorage.getItem(CACHE_STATUS_KEY) || "all");
   const [selectedTags, setSelectedTags] = useState<string[]>(() => {
@@ -218,6 +220,20 @@ export function ProjectsPage() {
     return ms && matchesStatus && matchesTags;
   });
 
+  // 作成したカードが現在の絞り込みで隠れてしまう場合は、見えるようにフィルターを解除する
+  const highlightExists = !!highlightId && visibleProjects.some(p => p.id === highlightId);
+  const highlightVisible = !!highlightId && filtered.some(p => p.id === highlightId);
+  useEffect(() => {
+    if (highlightExists && !highlightVisible) { setSearch(""); setSelectedTags([]); setStatusFilter("all"); }
+  }, [highlightExists, highlightVisible]);
+
+  // 強調表示は数秒で解除する（カードが実際に出てから数える）
+  useEffect(() => {
+    if (!highlightVisible) return;
+    const t = setTimeout(() => setHighlightId(null), 3000);
+    return () => clearTimeout(t);
+  }, [highlightVisible]);
+
   const statusOpts = [
     { value: "all", label: "すべて", count: visibleProjects.length },
     { value: "in-progress", label: "進行中", count: visibleProjects.filter(p => p.status === "in-progress").length },
@@ -389,7 +405,7 @@ export function ProjectsPage() {
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
           {filtered.map(p => (
-            <ProjectCard key={p.id} project={p}
+            <ProjectCard key={p.id} project={p} highlight={p.id === highlightId}
               onNavigate={() => navigate(p.slug ? `/${p.slug}` : `/${p.id}`)}
               onOpenNewTab={isTabMode ? () => openNewTab(p.slug ? `/${p.slug}` : `/${p.id}`) : undefined}
               onEdit={canManage ? () => setEditTarget(p) : undefined}
@@ -403,7 +419,8 @@ export function ProjectsPage() {
         </div>
       )}
 
-      {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients} onCreated={refreshProjects} currentProjectCount={projects.length} />}
+      {showDialog && <NewProjectDialog onClose={() => setShowDialog(false)} clients={clients}
+        onCreated={id => { setHighlightId(id); refreshProjects(); }} currentProjectCount={projects.length} />}
       {editTarget && <EditProjectDialog project={editTarget} onClose={() => setEditTarget(null)} onUpdated={() => { refreshProjects(); setEditTarget(null); }} />}
       {deleteTarget && (
         <ConfirmDialog message={`「${deleteTarget.name}」を削除しますか？`} onConfirm={() => handleDeleteProject(deleteTarget)} onClose={() => setDeleteTarget(null)} />

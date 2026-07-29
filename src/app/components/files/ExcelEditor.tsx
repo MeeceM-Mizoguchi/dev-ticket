@@ -8,7 +8,8 @@ import { uploadProjectFile, fetchSignedUrl } from "@/app/lib/projectFiles";
 import { patchXlsx, colLetter, type CellEdit } from "@/app/lib/xlsxEdit";
 import { insertRows, removeRows, insertCols, removeCols, setColWidths, setRowHeights, addHyperlinks } from "@/app/lib/xlsxStructure";
 import { parseXlsxDrawings, type DrawingObject } from "@/app/lib/xlsxDrawing";
-import { patchXlsxDrawing } from "@/app/lib/xlsxDrawingWrite";
+import { patchXlsxDrawing, repairDrawings, findDrawingDefects } from "@/app/lib/xlsxDrawingWrite";
+import { parseThemePalette, resolveCellColor } from "@/app/lib/xlsxCellColor";
 import { unzipSync, strFromU8 } from "fflate";
 import { ShapeEditorOverlay, type ShapeEditorHandle, type SelectInfo } from "./ShapeEditorOverlay";
 import {
@@ -35,6 +36,7 @@ interface SheetModel {
   original: Grid;   // 差分判定用の元の値
   display: Grid;    // 数式を解決した表示値
   fills: (string | null)[][]; // 新規に塗ったセル色
+  baseFills: (string | null)[][]; // 元ファイルが持つセル色（表示専用。保存では書き戻さない）
   truncated: boolean;
   colWidths: number[];  // px（Excel換算・描画レイヤーと座標系を一致させる）
   rowHeights: number[]; // px
@@ -45,8 +47,8 @@ interface SheetModel {
 
 const ROW_HEADER_W = 50; // Handsontable の行ヘッダ幅（固定）
 
-// 保存前の破損ガード：exceljs で開け、編集シートの描画XMLが整形式であることを確認する
-async function verifyXlsx(bytes: Uint8Array, models: SheetModel[], editedSheetNames: string[]): Promise<boolean> {
+// 保存前の破損ガード：exceljs で開け、描画XMLに Excel が破損とみなす欠陥が無いことを確認する
+async function verifyXlsx(bytes: Uint8Array, models: SheetModel[]): Promise<boolean> {
   try {
     const ExcelJS = (await import("exceljs")).default;
     const wb = new ExcelJS.Workbook();
@@ -54,12 +56,13 @@ async function verifyXlsx(bytes: Uint8Array, models: SheetModel[], editedSheetNa
   } catch (e) { console.error("[ExcelEditor] verify: exceljs load failed", e); return false; }
   try {
     const files = unzipSync(bytes);
-    for (const name of editedSheetNames) {
-      const m = models.find(x => x.name === name);
-      if (!m?.drawingPath || !files[m.drawingPath]) continue;
-      const doc = new DOMParser().parseFromString(strFromU8(files[m.drawingPath]), "application/xml");
-      if (doc.getElementsByTagName("parsererror").length > 0) {
-        console.error("[ExcelEditor] verify: malformed drawing XML", name); return false;
+    // 全シートの描画を検査する。図形IDの重複や不完全な調整値リストがあると
+    // Excel は描画パートを丸ごと捨てる（画像も図形も全消え）ので、ここで必ず弾く。
+    for (const m of models) {
+      if (!m.drawingPath || !files[m.drawingPath]) continue;
+      const defects = findDrawingDefects(strFromU8(files[m.drawingPath]));
+      if (defects.length > 0) {
+        console.error("[ExcelEditor] verify: bad drawing", m.name, defects); return false;
       }
     }
   } catch (e) { console.error("[ExcelEditor] verify: unzip failed", e); return false; }
@@ -170,6 +173,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   const [error, setError] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [needsRepair, setNeedsRepair] = useState(false); // 旧バグで描画が壊れている＝保存すれば直る
   const [reloadKey, setReloadKey] = useState(0);
   const [fillColor, setFillColor] = useState("#FEF08A");
   const [shapeInfo, setShapeInfo] = useState<SelectInfo | null>(null);
@@ -229,6 +233,8 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         const ExcelJS = (await import("exceljs")).default;
         const wb = new ExcelJS.Workbook();
         await wb.xlsx.load(buf);
+        // Excel の色指定はテーマ色（theme + tint）が大半なので、theme1.xml から色表を作る
+        const themePalette = parseThemePalette(originalBytesRef.current);
 
         const models: SheetModel[] = [];
         const disposers: Array<() => void> = [];
@@ -259,10 +265,19 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           const rowCount = Math.min(Math.max(ws.rowCount, dMaxRow + 2, 1), MAX_ROWS);
           const colCount = Math.min(Math.max(ws.columnCount, dMaxCol + 2, 1), MAX_COLS);
           const raw: Grid = [];
+          const baseFills: (string | null)[][] = [];
           for (let r = 1; r <= rowCount; r++) {
             const line: string[] = [];
-            for (let c = 1; c <= colCount; c++) line.push(cellToRaw(ws.getRow(r).getCell(c)));
+            const fillLine: (string | null)[] = [];
+            for (let c = 1; c <= colCount; c++) {
+              const cell = ws.getRow(r).getCell(c);
+              line.push(cellToRaw(cell));
+              // 元ファイルのセル色。テーマ色＋tint 指定が大半なので解決してから表示する
+              fillLine.push((cell.fill as any)?.type === "pattern"
+                ? resolveCellColor((cell.fill as any)?.fgColor, themePalette) : null);
+            }
             raw.push(line);
+            baseFills.push(fillLine);
           }
           const display = await recompute(raw, ws.name);
           const colWidths = Array.from({ length: colCount }, (_, i) => colPx(i));
@@ -273,6 +288,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
             original: raw.map(row => row.slice()),
             display,
             fills: raw.map(row => row.map(() => null)),
+            baseFills,
             truncated: ws.rowCount > MAX_ROWS || ws.columnCount > MAX_COLS,
             colWidths, rowHeights,
             drawings, drawingPath,
@@ -282,6 +298,18 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         }
         disposeRef.current = () => disposers.forEach(d => d());
         if (!cancelled) setSheets(models);
+
+        // 旧バージョンのバグで描画が壊れているファイルの検知。
+        // 中身を直せるのは保存時だけなので、ダミー編集なしで保存できるようにする
+        // （dirty は立てない＝閉じるときに未保存確認を出さない。勝手な保存もしない）。
+        if (!cancelled) {
+          try {
+            const files = unzipSync(originalBytesRef.current);
+            const broken = models.some(m => m.drawingPath && files[m.drawingPath]
+              && findDrawingDefects(strFromU8(files[m.drawingPath])).length > 0);
+            if (broken) setNeedsRepair(true);
+          } catch (e) { console.error("[ExcelEditor] defect scan:", e); }
+        }
       } catch (e) {
         console.error("[ExcelEditor] load error:", e);
         if (!cancelled) setError("Excelファイルの読み込みに失敗しました");
@@ -324,6 +352,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     sheets: (sheetsRef.current ?? []).map(m => ({
       raw: m.raw.map(r => r.slice()), original: m.original.map(r => r.slice()),
       display: m.display.map(r => r.slice()), fills: m.fills.map(r => r.slice()),
+      baseFills: m.baseFills.map(r => r.slice()),
       rowHeights: m.rowHeights.slice(), colWidths: m.colWidths.slice(),
       drawings: m.drawings.map(o => ({ ...o })), totalW: m.totalW, totalH: m.totalH,
     })),
@@ -338,6 +367,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       const m = s[i]; if (!m) return;
       m.raw = ms.raw.map((r: string[]) => r.slice()); m.original = ms.original.map((r: string[]) => r.slice());
       m.display = ms.display.map((r: string[]) => r.slice()); m.fills = ms.fills.map((r: any[]) => r.slice());
+      m.baseFills = ms.baseFills.map((r: any[]) => r.slice());
       m.rowHeights = ms.rowHeights.slice(); m.colWidths = ms.colWidths.slice();
       m.drawings = ms.drawings.map((o: any) => ({ ...o })); m.totalW = ms.totalW; m.totalH = ms.totalH;
     });
@@ -451,7 +481,8 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     renderer(instance: any, td: HTMLElement, row: number, col: number, prop: any, value: any, cellProps: any) {
       textRenderer(instance, td, row, col, prop, value, cellProps);
       const m = sheetsRef.current?.[active];
-      const color = m?.fills[row]?.[col];
+      // ユーザーが塗った色を優先し、無ければ元ファイルの色を出す
+      const color = m?.fills[row]?.[col] ?? m?.baseFills[row]?.[col];
       if (color) td.style.background = color;
       const al = cellAlignRef.current[m?.name ?? ""]?.get(`${row}:${col}`);
       if (al?.h) td.style.textAlign = al.h;
@@ -541,6 +572,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     for (let k = 0; k < cnt; k++) {
       m.raw.splice(index0, 0, emptyRow(ncol)); m.original.splice(index0, 0, emptyRow(ncol));
       m.display.splice(index0, 0, emptyRow(ncol)); m.fills.splice(index0, 0, Array.from({ length: ncol }, () => null));
+      m.baseFills.splice(index0, 0, Array.from({ length: ncol }, () => null));
       m.rowHeights.splice(index0, 0, 24);
     }
     remapKeys(cellAlignRef.current[m.name], (r, c) => r >= index0 ? [r + cnt, c] : [r, c]);
@@ -555,7 +587,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     pushUndo();
     const boundary = sumPx(m.rowHeights, 0, index0);
     const deleted = sumPx(m.rowHeights, index0, index0 + cnt);
-    [m.raw, m.original, m.display, m.fills, m.rowHeights].forEach(a => a.splice(index0, cnt));
+    [m.raw, m.original, m.display, m.fills, m.baseFills, m.rowHeights].forEach(a => a.splice(index0, cnt));
     remapKeys(cellAlignRef.current[m.name], (r, c) => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? [r - cnt, c] : [r, c]));
     remapKeys(linksRef.current[m.name], (r, c) => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? [r - cnt, c] : [r, c]));
     shiftDrawings(m, "y", boundary, -deleted);
@@ -568,7 +600,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     pushUndo();
     const boundary = sumPx(m.colWidths, 0, index0);
     for (const arr of [m.raw, m.original, m.display]) for (const row of arr) row.splice(index0, 0, ...Array.from({ length: cnt }, () => ""));
-    for (const row of m.fills) row.splice(index0, 0, ...Array.from({ length: cnt }, () => null));
+    for (const arr of [m.fills, m.baseFills]) for (const row of arr) row.splice(index0, 0, ...Array.from({ length: cnt }, () => null));
     m.colWidths.splice(index0, 0, ...Array.from({ length: cnt }, () => 64));
     remapKeys(cellAlignRef.current[m.name], (r, c) => c >= index0 ? [r, c + cnt] : [r, c]);
     remapKeys(linksRef.current[m.name], (r, c) => c >= index0 ? [r, c + cnt] : [r, c]);
@@ -582,7 +614,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     pushUndo();
     const boundary = sumPx(m.colWidths, 0, index0);
     const deleted = sumPx(m.colWidths, index0, index0 + cnt);
-    for (const arr of [m.raw, m.original, m.display, m.fills]) for (const row of arr) row.splice(index0, cnt);
+    for (const arr of [m.raw, m.original, m.display, m.fills, m.baseFills]) for (const row of arr) row.splice(index0, cnt);
     m.colWidths.splice(index0, cnt);
     remapKeys(cellAlignRef.current[m.name], (r, c) => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? [r, c - cnt] : [r, c]));
     remapKeys(linksRef.current[m.name], (r, c) => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? [r, c - cnt] : [r, c]));
@@ -725,9 +757,20 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         editedSheets.push(m.name);
       }
 
-      // 破損ガード：生成物が exceljs で開け、編集シートの描画XMLが整形式であることを確認
-      if (editedSheets.length > 0 || structuralTouched) {
-        const okVerify = await verifyXlsx(out, models, editedSheets);
+      // 既に壊れている drawing の自己修復。
+      // 旧バージョンのバグ（cNvPr/@id の重複・吹き出しの調整値欠落）を抱えたファイルは、
+      // このまま保存しても Excel 側で描画が全消えになるため、ここで直しておく。
+      // 図形を編集したシートも含めて全 drawing を対象にする（修復は冪等）。
+      let repaired = false;
+      try {
+        const paths = models.filter(m => m.drawingPath).map(m => m.drawingPath as string);
+        const fixed = repairDrawings(out, paths);
+        if (fixed) { out = fixed; repaired = true; }
+      } catch (e) { console.error("[ExcelEditor] repair drawings:", e); }
+
+      // 破損ガード：生成物が exceljs で開け、描画XMLが整形式かつ図形IDが一意であることを確認
+      if (editedSheets.length > 0 || structuralTouched || repaired) {
+        const okVerify = await verifyXlsx(out, models);
         if (!okVerify) {
           setError("図形の書き戻しに失敗しました（ファイル整合性チェックに不合格）。保存を中止しました。元ファイルは無傷です。");
           setSaving(false);
@@ -742,6 +785,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       await uploadProjectFile(file.projectId, newFile);
       onSaved();
       setDirty(false);
+      setNeedsRepair(false);
       return true;
     } catch (e) {
       console.error("[ExcelEditor] save error:", e);
@@ -777,6 +821,11 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {/* 右クリックメニューはフルスクリーンのモーダル(z-index:9999)より前面に出す */}
       <style>{`.htMenu, .htContextMenu, .htContextMenu .wtHolder, .htDropdownMenu { z-index: 12000 !important; }`}</style>
+      {needsRepair && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#FEF3C7", color: "#92400E", fontSize: 12, fontWeight: 600, borderBottom: "1px solid #FDE68A", flexShrink: 0 }}>
+          このファイルは以前の不具合で図形データが壊れており、Excel で開くと画像・図形が消えます。「保存（新バージョン）」を押すと修復されます。
+        </div>
+      )}
       {/* ツールバー */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid rgba(26,23,20,0.07)", flexShrink: 0, flexWrap: "wrap" }}>
         <button onMouseDown={keepSel} onClick={undo} style={shapeBtn} title="元に戻す（⌘/Ctrl+Z）"><Undo2 style={sIc} /></button>
@@ -820,11 +869,14 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         <button onClick={() => overlayRef.current?.addShape("arrow")} style={shapeBtn} title="矢印"><MoveRight style={sIc} /></button>
         <button onClick={() => overlayRef.current?.addShape("text")} style={shapeBtn} title="テキストボックス"><Type style={sIc} /></button>
         <div style={{ flex: 1 }} />
-        <button onClick={handleSave} disabled={saving || !dirty}
-          style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: dirty ? "#059669" : "#D4CEC8", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: dirty && !saving ? "pointer" : "default" }}>
-          {saving ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} /> : <Save style={{ width: 12, height: 12 }} />}
-          {saving ? "保存中..." : "保存（新バージョン）"}
-        </button>
+        {/* 編集が無くても、壊れた描画の修復のために保存できるようにする */}
+        {(() => { const canSave = dirty || needsRepair; return (
+          <button onClick={handleSave} disabled={saving || !canSave}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: canSave ? "#059669" : "#D4CEC8", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: canSave && !saving ? "pointer" : "default" }}>
+            {saving ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} /> : <Save style={{ width: 12, height: 12 }} />}
+            {saving ? "保存中..." : needsRepair && !dirty ? "修復して保存" : "保存（新バージョン）"}
+          </button>
+        ); })()}
       </div>
 
       {/* 図形の書式ツールバー（図形選択時のみ） */}

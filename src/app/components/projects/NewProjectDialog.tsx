@@ -25,7 +25,8 @@ function sanitizePrefix(v: string) { return v.replace(/[^A-Z]/g, ""); }
 function autoSlug(name: string) { return sanitizeSlug(name.toUpperCase()).slice(0, 6) || "PROJ"; }
 function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).slice(0, 3) || "TKT"; }
 
-export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCount }: { onClose: () => void; clients: Client[]; onCreated?: () => void; currentProjectCount?: number }) {
+// onCreated には作成したプロジェクトIDを渡す（一覧側で該当カードを強調表示するため）
+export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCount }: { onClose: () => void; clients: Client[]; onCreated?: (projectId: string) => void; currentProjectCount?: number }) {
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
   const { plan } = usePlan();
@@ -139,7 +140,7 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
       }
     }
 
-    onCreated?.();
+    onCreated?.(projectId);
     onClose();
   };
 
