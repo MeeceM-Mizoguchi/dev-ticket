@@ -157,6 +157,54 @@ export interface TicketRequiredSkill {
   importance: 1 | 2 | 3;  // 3=必須 / 2=推奨 / 1=あれば尚可
 }
 
+// ── BRU9-041 スキル更新の履歴・復元 ──
+// 差分ログ方式。変更があった行だけを1件1行で残し、任意時点の状態を再構成できるようにする。
+//   seed    = 履歴機能の導入時点（再構成の床）
+//   auto    = 夜間バッチ ①スキル分析
+//   manual  = 人がスキル編集モーダルで保存した
+//   restore = 過去の時点へ戻した
+export type SkillUpdateKind = "seed" | "auto" | "manual" | "restore";
+export type SkillChangeType = "added" | "level_changed" | "removed" | "source_changed";
+
+export interface SkillUpdateRunSummary {
+  added?: number; updated?: number; removed?: number; changed?: number;
+  members?: number; skillDeleted?: string; note?: string;
+}
+
+export interface SkillUpdateRun {
+  id: string;
+  organizationId: string;
+  kind: SkillUpdateKind;
+  actorProfileId: string | null;   // manual/restore は操作者。auto/seed は null
+  targetProfileId: string | null;  // 特定メンバーだけを対象にした run
+  restoredFromAt: string | null;   // restore のとき、どの時点に戻したか
+  summary: SkillUpdateRunSummary;
+  createdAt: string;
+}
+
+export interface MemberSkillChange {
+  id: number;
+  runId: string;
+  organizationId: string;
+  profileId: string;
+  skillId: string;
+  changeType: SkillChangeType;
+  oldLevel: number | null;
+  newLevel: number | null;
+  oldSource: string | null;
+  newSource: string | null;
+  evidence: SkillEvidence;
+  changedAt: string;
+}
+
+/** 復元プレビュー（restore_member_skills の dry run）の1行 */
+export interface SkillRestoreChange {
+  skillId: string;
+  changeType: SkillChangeType;
+  oldLevel: number | null;
+  newLevel: number | null;
+}
+
 // 担当者レコメンドの1候補
 export interface AssigneeRecommendation {
   profileId: string;
