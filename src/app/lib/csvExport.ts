@@ -1,5 +1,5 @@
 import type { Sprint, SprintTicket } from "@/app/types";
-import { htmlToText, calcTicketActualHours, formatPersonDays, TICKET_STATUSES } from "@/app/lib/helpers";
+import { htmlToText, calcTicketActualHours, formatPersonDays, getTicketStatusMeta } from "@/app/lib/helpers";
 
 const PRIORITY_LABELS: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
@@ -54,7 +54,9 @@ function buildRow(
   ticket: SprintTicket,
   getCategoryLabel: (t: SprintTicket) => string
 ): string {
-  const statusLabel = TICKET_STATUSES.find(s => s.value === ticket.status)?.label ?? ticket.status;
+  // progress を見ないと保留(-1)/取下(-2)が元ステータスのまま出力され、
+  // 子チケットの closed も「未着手」に誤フォールバックする（getTicketStatusMeta が両方を吸収する）。
+  const statusLabel = getTicketStatusMeta(ticket.status, ticket.progress).label;
   const actualHours = calcTicketActualHours(ticket);
   const cells = [
     String(no),

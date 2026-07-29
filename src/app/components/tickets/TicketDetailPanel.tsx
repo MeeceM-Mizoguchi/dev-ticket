@@ -8,7 +8,8 @@ import { fetchSkills } from "@/app/lib/skillsApi";
 import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
-import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
+import { calcHoldHours, HOLD_START_MARKER, HOLD_END_MARKER } from "@/app/lib/holdHours";
 import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -50,6 +51,14 @@ const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100, pending: 0,
   "waiting-release": 100, released: 100,
 };
+
+// 保留／取下の解除コメントに載せる「戻した先のステータス名」を解決する。
+// TICKET_STATUSES には closed / done の単独エントリが無く、find が undefined になるため
+// （子チケットの「対応完了」= closed がここに該当する）、見つからない時だけ getStatusMeta で補う。
+function statusLabelOf(status: string): string {
+  return TICKET_STATUSES.find(s => s.value === status)?.label
+    ?? getStatusMeta(status as TicketStatus).label;
+}
 
 const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
   todo: { label: "着手開始", next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
@@ -875,6 +884,15 @@ export function TicketDetailPanel({
 
   // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
   // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
+  // 🌟 追加(BRU9-042): 子チケットではマイルストーン記録を呼ばない。
+  //   recordMilestoneFromTicketStatus は closed → releasedAt にマップされ、未記録の工程を
+  //   一括で現在時刻スタンプするため、レビューもSTGも通っていない子の実績列が壊れる。
+  //   子チケットは実績モニター非対応で started_at しか使わず、それは着手時に記録済み。
+  const recordMilestoneIfParent = (nextStatus: string) => {
+    if (!ticket || ticket.parentId) return;
+    recordMilestoneFromTicketStatus(ticket.id, nextStatus as any);
+  };
+
   const handleToggleHold = async () => {
     if (!ticket || !isSupabaseEnabled) return;
 
@@ -884,8 +902,8 @@ export function TicketDetailPanel({
       // 保留にする（progressを-1としてDBに保存）
       setProgress(-1);
       await supabase!.from("sprint_tickets").update({ progress: -1 }).eq("id", ticket.id);
-      if (ticket) recordMilestoneFromTicketStatus(ticket.id, "保留" as any);
-      await addComment(`<p>チケットを保留にしました</p>`, "status_change", [], status as TicketStatus);
+      recordMilestoneIfParent("保留");
+      await addComment(`<p>${HOLD_START_MARKER}</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
       syncSprint();
     } else {
@@ -893,10 +911,10 @@ export function TicketDetailPanel({
       const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
       setProgress(restoredProgress);
       await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
-      if (ticket) recordMilestoneFromTicketStatus(ticket.id, status as any);
-      const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
+      recordMilestoneIfParent(status);
+      const newLabel = statusLabelOf(status);
       // 🌟 修正: ProjectMonitor側の判定ロジックと一致させるため、コメントテキストに「保留を解除しました」を確実に含める
-      await addComment(`<p>保留を解除しました（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
+      await addComment(`<p>${HOLD_END_MARKER}（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
       syncSprint();
     }
@@ -909,7 +927,7 @@ export function TicketDetailPanel({
     try {
       setProgress(-2);
       await supabase!.from("sprint_tickets").update({ progress: -2 }).eq("id", ticket.id);
-      if (ticket) recordMilestoneFromTicketStatus(ticket.id, "取下" as any);
+      recordMilestoneIfParent("取下");
       await addComment(`<p>チケットを取下げました</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
       syncSprint();
@@ -934,8 +952,8 @@ export function TicketDetailPanel({
         const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
         setProgress(restoredProgress);
         await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
-        if (ticket) recordMilestoneFromTicketStatus(ticket.id, status as any);
-        const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
+        recordMilestoneIfParent(status);
+        const newLabel = statusLabelOf(status);
         await addComment(`<p>取下げを解除し、ステータスを「${newLabel}」に戻しました</p>`, "status_change", [], status as TicketStatus);
         onUpdated?.();
         syncSprint();
@@ -1015,9 +1033,19 @@ export function TicketDetailPanel({
       const patch: Record<string, unknown> = { status: newStatus, progress: p };
       if (row?.actual_work_hours == null && row?.started_at) {
         const startedMs = new Date(row.started_at).getTime();
+        const nowMs = Date.now();
         // 着手から1分以上経過した場合のみ計測（誤操作・即完了は計測しない）
-        if (Date.now() - startedMs >= 60_000) {
-          patch.actual_work_hours = Math.round(calcWorkingHours(startedMs, Date.now()) * 10) / 10;
+        if (nowMs - startedMs >= 60_000) {
+          // 🌟 追加(BRU9-042): 保留していた間は稼働していないため実績工数から差し引く。
+          //   画面上の comments ステートは他ユーザーの操作を取りこぼす可能性があるためDBから取り直す。
+          const { data: holdComments } = await supabase!
+            .from("ticket_comments")
+            .select("content, created_at, comment_type")
+            .eq("ticket_id", ticket.id)
+            .order("created_at");
+          const holdHours = calcHoldHours(holdComments ?? [], startedMs, nowMs);
+          const workedHours = calcWorkingHours(startedMs, nowMs) - holdHours;
+          patch.actual_work_hours = Math.max(0, Math.round(workedHours * 10) / 10);
         }
       }
       await supabase!.from("sprint_tickets").update(patch).eq("id", ticket.id);
@@ -1613,6 +1641,12 @@ export function TicketDetailPanel({
   const actionBtn = status !== "pending" ? ACTION_BUTTONS[status as TicketStatus] : null;
 
   const isAssignee = !assignee || assignee === userName;
+  // 🌟 追加(BRU9-042): 保留・取下を子チケットにも開放する。
+  //   終端ステータスは親が released（リリース済み）、子は closed（対応完了）と異なるため切り替える。
+  //   すでに保留/取下中(progress < 0)のときは、解除できるよう終端でも必ずボタンを出す。
+  const isChildTicket = !!ticket.parentId;
+  const isTerminalForHold = isChildTicket ? status === "closed" : status === "released";
+  const canToggleHold = isAssignee && (progress < 0 || !isTerminalForHold);
   const reviewRequestComments = comments.filter(c => c.commentType === "review_request");
   const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
@@ -2050,8 +2084,8 @@ export function TicketDetailPanel({
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
 
-                {/* リリース済み以外のみ保留・取下ボタンを表示 */}
-                {isAssignee && !ticket.parentId && status !== "released" && (
+                {/* 終端（親: リリース済み / 子: 対応完了）以外のみ保留・取下ボタンを表示 */}
+                {canToggleHold && (
                   <button onClick={handleToggleHold}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -2065,7 +2099,7 @@ export function TicketDetailPanel({
                     {progress === -1 ? "保留解除" : "保留する"}
                   </button>
                 )}
-                {isAssignee && !ticket.parentId && status !== "released" && (
+                {canToggleHold && (
                   <button onClick={handleToggleWithdraw}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -2534,7 +2568,13 @@ export function TicketDetailPanel({
                   <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
                     <GitBranch style={{ width: 12, height: 12, color: "#059669" }} />
                     子チケット
-                    <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({childTickets.length}件)</span>
+                    {/* 取下げた子は残作業ではないため、件数の内訳を出して誤読を防ぐ（BRU9-042） */}
+                    <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>
+                      ({childTickets.length}件{(() => {
+                        const withdrawn = childTickets.filter(c => c.progress === -2).length;
+                        return withdrawn > 0 ? ` / 取下${withdrawn}` : "";
+                      })()})
+                    </span>
                   </p>
                   {plan.featureChildTickets ? (
                     <button onClick={() => setShowCreateChild(true)}
@@ -2564,12 +2604,15 @@ export function TicketDetailPanel({
                       const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                       // 子チケットの実績工数（モニター用・BRU5-028）。集計はしないが各子の所要時間を帯に表示する。
                       const childHours = Math.round(calcTicketActualHours(child) * 10) / 10;
+                      // 保留/取下の子は一覧画面と同じくグレーアウトして「止まっている」ことを一目で分かるようにする（BRU9-042）
+                      const isChildPaused = child.progress === -1 || child.progress === -2;
+                      const childBg = isChildPaused ? "#F5F5F4" : "#FAFAF8";
                       return (
                         <div key={child.id}
                           onClick={() => onSelectTicket?.(child)}
-                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: "#FAFAF8", cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
-                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FAFAF8"; }}>
+                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: childBg, opacity: isChildPaused ? 0.65 : 1, cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
+                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = isChildPaused ? "#ECECEB" : "#F0F9F5"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBg; }}>
                           <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
                           <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
                           <ChildHoursBadge hours={childHours} />
