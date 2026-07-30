@@ -233,10 +233,10 @@ const finishInitialLoad = useCallback((runId: number) => {
 ```
 
 - 背景は不透明 `#FAFAF8`（パネル本体と同色）。半透明にすると裏の空セクションが透けて意味が薄れる
-- スピナーは [PageLoader.tsx:5](../src/app/components/shared/PageLoader.tsx#L5) と同一仕様（34px / `3px solid rgba(5,150,105,0.15)` + `borderTop: #059669` / `pageloader-spin 0.75s linear infinite`）。
-  keyframes は `PageLoader` 側に既にあるので**再定義しない**（同ファイルから何かを import すれば `<style>` も一緒に載る形にはならないため、オーバーレイ側では `PageLoader` を直接使うのが最も確実）
-- 実装としては **`<PageLoader label="読み込み中..." />` をそのまま流用**するのが最小。ただし `PageLoader` は `height: 60vh` 固定なので、
-  `inset: 0` のラッパー内で中央寄せするために `height: 100%` を取れるようにするか、オーバーレイ側で高さを吸収する（どちらでも良いが、`PageLoader` に `fullHeight?: boolean` を足すのが影響最小）
+- スピナーは [PageLoader.tsx:5](../src/app/components/shared/PageLoader.tsx#L5) と同一仕様（34px / `3px solid rgba(5,150,105,0.15)` + `borderTop: #059669` / `pageloader-spin 0.75s linear infinite`）
+- **`@keyframes pageloader-spin` は `PageLoader` コンポーネントの JSX 内 `<style>` で定義されており、`PageLoader` がマウントされていない画面には存在しない**。
+  そのためオーバーレイ側にも同名・同内容の `<style>` を持たせる（`<style>` は `display: none` なので flex レイアウトには影響しない）。
+  `PageLoader` 自体は `height: 60vh` 固定でオーバーレイに合わないため、リングをインラインで持つ形にして `PageLoader` は変更しない
 - WBS / タイトルは `ticket` prop から即出せるので、真っ白にならず「何を開いているか」が分かる
 - スタイルは**インラインスタイル**（[feedback](../../.claude/projects/c--dev-Devticketmanagement/memory/feedback.md) の方針）
 - フェードアウト（`opacity` 0.18s）を付けると解除が滑らか。ただし複雑になるので**初版は即 unmount で十分**
@@ -354,8 +354,8 @@ const finishInitialLoad = useCallback((runId: number) => {
 | 2 | プログレスの表現 | **既存の `PageLoader` のぐるぐるスピナー**（確定バー・件数表記なし）。他画面とローディング表現を揃える |
 | 3 | 進捗 state | 表示しないので `loadDone` / `loadTotal` は持たない。将来必要になれば `jobs` 配列から拡張 |
 
-### 未確定（実装時に決めれば良いもの）
+### 実装時に確定させたこと
 
-- `PageLoader` を `height: 100%` でも使えるようにするか（`fullHeight?: boolean` prop 追加）、オーバーレイ側で高さを吸収するか
-- 解除時のフェードアウト（初版は無しで進める）
-- grace 120ms / min 250ms / timeout 8000ms の具体値 — 実測後にチューニング
+- `PageLoader` は変更せず、オーバーレイ側にリングと `@keyframes` を持たせた（3.5 参照）
+- 解除時のフェードアウトは無し（初版）
+- grace 120ms / min 250ms / timeout 8000ms のまま実装。体感を見てチューニング可
