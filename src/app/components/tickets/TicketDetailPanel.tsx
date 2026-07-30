@@ -30,6 +30,7 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
@@ -51,6 +52,13 @@ const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100, pending: 0,
   "waiting-release": 100, released: 100,
 };
+
+// 初回ロードのオーバーレイ制御値。
+// チケットを開いた直後は本体・コメント・子チケット・パンくずが別々のクエリで返るため、
+// 揃うまでオーバーレイで覆って段階的なレイアウトシフトを見せない（BUG-04 の恒久対策）。
+const INITIAL_LOAD_GRACE_MS = 120;    // これ以内に終わればオーバーレイを出さない（一瞬の点滅を防ぐ）
+const INITIAL_LOAD_MIN_MS = 250;      // 一度出したら最低これだけ見せる（チカチカ防止）
+const INITIAL_LOAD_TIMEOUT_MS = 8000; // クエリが失敗・ハングしてもパネルが永久に隠れないためのフェイルセーフ
 
 // 保留／取下の解除コメントに載せる「戻した先のステータス名」を解決する。
 // TICKET_STATUSES には closed / done の単独エントリが無く、find が undefined になるため
@@ -209,6 +217,10 @@ export function TicketDetailPanel({
   const [categoryId, setCategoryId] = useState<string | null>(ticket?.categoryId ?? null);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
 
+  // 初回ロード用オーバーレイの表示フラグ。詳細は INITIAL_LOAD_* 定数のコメント参照。
+  // 定期ポーリング／ticketSync の再取得では絶対に true にしない（BUG-02 / BUG-03 の再発防止）。
+  const [showLoadOverlay, setShowLoadOverlay] = useState(false);
+
   // related data
   const [comments, setComments] = useState<TicketComment[]>([]);
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
@@ -313,10 +325,15 @@ export function TicketDetailPanel({
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
   // 🌟 カテゴリー一覧を最新の状態に更新する関数
+  // どの projectId のカテゴリーを取得済みかを覚えておき、初回ロード時の二重フェッチを避ける
+  const categoriesLoadedForRef = useRef<string | null>(null);
   const refreshCategories = useCallback(async () => {
     if (!isSupabaseEnabled || !projectId) return;
     const { data } = await supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at");
-    if (data) setCategories(data.map(mapTicketCategory));
+    if (data) {
+      setCategories(data.map(mapTicketCategory));
+      categoriesLoadedForRef.current = projectId;
+    }
   }, [projectId]);
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -365,15 +382,43 @@ export function TicketDetailPanel({
     if (fData) setSourceFiles(fData.map(mapSourceFile));
   }, []);
 
-  const loadRelated = useCallback(async (ticketId: string) => {
-    await Promise.all([loadCommentFiles(ticketId), loadChildTickets(ticketId)]);
-  }, [loadCommentFiles, loadChildTickets]);
+  // パンくず（プロジェクト名 / スプリント名 / 親チケット）。
+  // 初回ロードの完了待ちに含めるため、それぞれ Promise を返す形に切り出してある。
+  const loadBreadcrumbProject = useCallback(async (pid: string) => {
+    const { data } = await supabase!.from("projects").select("name").eq("id", pid).single();
+    if (data?.name) setBreadcrumbProjName(data.name);
+  }, []);
+
+  const loadBreadcrumbSprint = useCallback(async (sid: string) => {
+    const { data } = await supabase!.from("sprints").select("name, identifier").eq("id", sid).single();
+    if (data?.name) setBreadcrumbSprintName(data.name);
+    if (data?.identifier) setBreadcrumbSprintIdentifier(data.identifier);
+  }, []);
+
+  const loadBreadcrumbParent = useCallback(async (parentId: string) => {
+    const { data } = await supabase!.from("sprint_tickets").select("*").eq("id", parentId).single();
+    if (data) setBreadcrumbParentTicket(mapSprintTicket(data));
+  }, []);
+
+  // Supabase 無効時のパンくず（モックデータから同期的に解決する）
+  const applyMockBreadcrumbs = useCallback((t: SprintTicket) => {
+    const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
+    const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
+    if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
+    if (fallbackSprint) setBreadcrumbSprintName(fallbackSprint.name);
+    if (t.parentId) {
+      const allTickets = require("@/app/data/mock").SPRINTS.flatMap((s: any) => s.tickets ?? []) as SprintTicket[];
+      const parent = allTickets.find(pt => pt.id === t.parentId);
+      if (parent) setBreadcrumbParentTicket(parent);
+    }
+  }, [projectId, sprintId]);
 
   // サーバから最新のチケット本体を取得してフィールド state を更新する。
   // 初回ロードと、他タブからの ticketSync 通知時の再取得で共用する。
-  const reloadTicketFields = useCallback((ticketId: string) => {
-    if (!ticketId || !isSupabaseEnabled) return;
-    supabase!.from("sprint_tickets").select("*").eq("id", ticketId).single()
+  // 初回ロードのオーバーレイ解除は「全クエリの完了」を待つため、必ず Promise を返す。
+  const reloadTicketFields = useCallback((ticketId: string): Promise<void> => {
+    if (!ticketId || !isSupabaseEnabled) return Promise.resolve();
+    return supabase!.from("sprint_tickets").select("*").eq("id", ticketId).single()
       .then(({ data }) => {
         if (!data) return;
         const t = mapSprintTicket(data);
@@ -400,6 +445,94 @@ export function TicketDetailPanel({
         setPrefixes(t.prefixes ?? []);
       });
   }, []);
+
+  // ───────── 初回ロードのオーケストレーション ─────────
+  // チケットを開いたときに走るクエリを1か所に集約し、全部揃うまでオーバーレイで覆う。
+  // ここを通るのは「チケットを開いた／切り替えた」ときだけ。
+  // 定期ポーリング(10秒)や ticketSync の再取得は従来どおり loadCommentFiles を直接呼び、
+  // オーバーレイには一切触れない（BUG-02 / BUG-03 の再発防止）。
+  const loadRunIdRef = useRef(0);
+  const overlayShownAtRef = useRef(0);
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const failsafeTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const minVisibleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const clearLoadTimers = useCallback(() => {
+    clearTimeout(graceTimerRef.current);
+    clearTimeout(failsafeTimerRef.current);
+    clearTimeout(minVisibleTimerRef.current);
+  }, []);
+
+  const hideLoadOverlay = useCallback(() => {
+    clearLoadTimers();
+    overlayShownAtRef.current = 0;
+    setShowLoadOverlay(false);
+  }, [clearLoadTimers]);
+
+  // データ確定後、実際に描画されるフレームまで待ってからオーバーレイを解除する。
+  // ここを待たないと、消えた直後に高さが確定してガタッと動くのが見えてしまう。
+  const finishInitialLoad = useCallback((runId: number) => {
+    clearLoadTimers();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (runId !== loadRunIdRef.current) return;
+      const shownFor = overlayShownAtRef.current ? performance.now() - overlayShownAtRef.current : Infinity;
+      const wait = Math.max(0, INITIAL_LOAD_MIN_MS - shownFor);
+      if (wait === 0) { hideLoadOverlay(); return; }
+      minVisibleTimerRef.current = setTimeout(() => {
+        if (runId !== loadRunIdRef.current) return;
+        hideLoadOverlay();
+      }, wait);
+    }));
+  }, [clearLoadTimers, hideLoadOverlay]);
+
+  const runInitialLoad = useCallback(async (t: SprintTicket) => {
+    const runId = ++loadRunIdRef.current;
+    clearLoadTimers();
+
+    if (!isSupabaseEnabled) {
+      applyMockBreadcrumbs(t);
+      finishInitialLoad(runId);
+      return;
+    }
+
+    // 走らせるクエリを条件付きで組み立てる。
+    // profiles(担当者候補) / skills(モーダル用) / メンション候補は初期表示のレイアウトを
+    // 動かさないため、意図的に待ち合わせに含めていない。
+    const jobs: Array<() => Promise<unknown>> = [];
+    if (t.id) {
+      jobs.push(() => reloadTicketFields(t.id));
+      jobs.push(() => loadCommentFiles(t.id));
+      jobs.push(() => loadChildTickets(t.id));
+      if (t.parentId) jobs.push(() => loadBreadcrumbParent(t.parentId!));
+    }
+    if (projectId) jobs.push(() => loadBreadcrumbProject(projectId));
+    if (sprintId) jobs.push(() => loadBreadcrumbSprint(sprintId));
+    if (projectId && categoriesLoadedForRef.current !== projectId) jobs.push(() => refreshCategories());
+
+    // 待つものが無い（モック相当 / wbs だけの仮チケット）ならオーバーレイは出さない
+    if (jobs.length === 0) { finishInitialLoad(runId); return; }
+
+    graceTimerRef.current = setTimeout(() => {
+      if (runId !== loadRunIdRef.current) return;
+      overlayShownAtRef.current = performance.now();
+      setShowLoadOverlay(true);
+    }, INITIAL_LOAD_GRACE_MS);
+
+    failsafeTimerRef.current = setTimeout(() => {
+      if (runId !== loadRunIdRef.current) return;
+      console.warn("[TicketDetailPanel] 初回ロードがタイムアウトしました。取得済みのデータで表示を続行します。");
+      hideLoadOverlay();
+    }, INITIAL_LOAD_TIMEOUT_MS);
+
+    await Promise.allSettled(jobs.map(run => run()));
+
+    if (runId !== loadRunIdRef.current) return; // 別チケットに切り替わっていたら破棄
+    finishInitialLoad(runId);
+  }, [projectId, sprintId, applyMockBreadcrumbs, clearLoadTimers, finishInitialLoad, hideLoadOverlay,
+    reloadTicketFields, loadCommentFiles, loadChildTickets,
+    loadBreadcrumbParent, loadBreadcrumbProject, loadBreadcrumbSprint, refreshCategories]);
+
+  useEffect(() => clearLoadTimers, [clearLoadTimers]);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -548,43 +681,20 @@ export function TicketDetailPanel({
     setPrefixes(ticket.prefixes ?? []);
     setShowPrefixInput(false);
     setPrefixInputValue("");
+    setBreadcrumbParentTicket(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.id]);
 
-    if (ticket.id && isSupabaseEnabled) {
-      reloadTicketFields(ticket.id);
-    }
-
-    if (isSupabaseEnabled) {
-      if (projectId) {
-        supabase!.from("projects").select("name").eq("id", projectId).single()
-          .then(({ data }) => { if (data?.name) setBreadcrumbProjName(data.name); });
-      }
-      if (sprintId) {
-        supabase!.from("sprints").select("name, identifier").eq("id", sprintId).single()
-          .then(({ data }) => {
-            if (data?.name) setBreadcrumbSprintName(data.name);
-            if (data?.identifier) setBreadcrumbSprintIdentifier(data.identifier);
-          });
-      }
-      setBreadcrumbParentTicket(null);
-      if (ticket?.parentId) {
-        supabase!.from("sprint_tickets").select("*").eq("id", ticket.parentId).single()
-          .then(({ data }) => { if (data) setBreadcrumbParentTicket(mapSprintTicket(data)); });
-      }
-    } else {
-      const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
-      const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
-      if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
-      if (fallbackSprint) setBreadcrumbSprintName(fallbackSprint.name);
-      setBreadcrumbParentTicket(null);
-      if (ticket?.parentId) {
-        const allTickets = require("@/app/data/mock").SPRINTS.flatMap((s: any) => s.tickets ?? []) as SprintTicket[];
-        const parent = allTickets.find(t => t.id === ticket.parentId);
-        if (parent) setBreadcrumbParentTicket(parent);
-      }
-    }
-
-    if (ticket.id) loadRelated(ticket.id);
-  }, [ticket?.id, projectId, sprintId, loadRelated, reloadTicketFields]);
+  // 初回ロード。上のリセットとは分離してある。
+  // 以前は同じ effect に同居していたため、projectId が遅れて確定するページでは
+  // コメント／子チケットがもう一度空に戻る二重フラッシュが起きていた。
+  useEffect(() => {
+    // パネルを閉じたら進行中の実行を破棄してオーバーレイも消す。
+    // 残したままだと次に開いたチケットで一瞬オーバーレイが見えてしまう。
+    if (!ticket) { loadRunIdRef.current++; hideLoadOverlay(); return; }
+    runInitialLoad(ticket);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.id, projectId, sprintId, runInitialLoad, hideLoadOverlay]);
 
   // ticketSync: 同じチケットを別タブで開いている他パネルが更新したら、
   // 自分のローカル state をサーバ最新値で再取得する(自分発は無視)。
@@ -601,10 +711,7 @@ export function TicketDetailPanel({
     return unsub;
   }, [ticket?.id, reloadTicketFields, loadCommentFiles]);
 
-  useEffect(() => {
-    if (!isSupabaseEnabled || !projectId) return;
-    refreshCategories();
-  }, [projectId, refreshCategories]);
+  // カテゴリー一覧の取得は runInitialLoad の job に統合済み（projectId 変化時も上の effect が再実行される）。
 
   // フックが取得したプレフィックスを取り込む。ここで入力しただけでまだ保存していない
   // ラベルが再取得で消えないよう、置き換えではなくマージする。
@@ -1844,6 +1951,12 @@ export function TicketDetailPanel({
       )}
 
       <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 302 : 301, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim, overflow: "hidden" }}>
+
+        {/* 初回ロード中はパネル全面を覆う。ヘッダーも覆うことで、
+            フィールドの後追い書き換えと、子チケット未読込のままのステータス変更操作を防ぐ。 */}
+        {showLoadOverlay && (
+          <TicketDetailLoadingOverlay wbs={ticket.wbs} title={ticket.title} onClose={stableEscHandler} />
+        )}
 
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
