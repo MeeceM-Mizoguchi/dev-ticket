@@ -11,6 +11,7 @@ import { viewportCoordsToSceneCoords } from "@excalidraw/excalidraw";
 import {
   selectedTableRange, tableCellAtPoint,
   insertTableColumns, insertTableRows, deleteTableColumns, deleteTableRows,
+  bulkSizeTargets, distributeTableSizes, applyTableSizes,
 } from "@/app/lib/whiteboardTable";
 
 interface Props {
@@ -21,12 +22,14 @@ interface Props {
 
 const PANEL_W = 184;
 const PANEL_H = 120;
+const SIZE_ROW_H = 30;  // 「サイズ」セクション1行ぶんの高さ（ドッキング位置の判定用）
 
 type Focused = { tid: string; r: number; c: number; id: string } | null;
 
 export function TableRowColControls({ api, containerRef, canEdit }: Props) {
   const [state, setState] = useState<
-    { tid: string; rows: number[]; cols: number[]; R: number; C: number; single: boolean; focusedId: string | null; left: number; top: number } | null
+    { tid: string; rows: number[]; cols: number[]; R: number; C: number; single: boolean; focusedId: string | null;
+      sizeCols: number[]; sizeRows: number[]; left: number; top: number } | null
   >(null);
   const raf = useRef<number>(0);
   const sigRef = useRef<string>("");
@@ -65,6 +68,12 @@ export function TableRowColControls({ api, containerRef, canEdit }: Props) {
           raf.current = requestAnimationFrame(tick);
           return;
         }
+        // 一括サイズ調整の対象（ヘッダー帯で選んだ列/行、または「まるごと選択された列/行」）
+        const { cols: sizeCols, rows: sizeRows } = bulkSizeTargets(api, range.tid);
+        const panelH = PANEL_H
+          + (sizeCols.length >= 2 || sizeRows.length >= 2 ? 22 : 0)   // 見出し
+          + (sizeCols.length >= 2 ? SIZE_ROW_H : 0)
+          + (sizeRows.length >= 2 ? SIZE_ROW_H : 0);
         // 標準パネル(island)の真下にドッキング。入りきらない時は右隣へ逃がす（ConnectorFormatPanel と同方針）。
         const menu = containerRef.current?.querySelector(".App-menu__left") as HTMLElement | null;
         const bar = containerRef.current?.querySelector(".App-toolbar") as HTMLElement | null;
@@ -72,7 +81,7 @@ export function TableRowColControls({ api, containerRef, canEdit }: Props) {
         if (menu) {
           const m = menu.getBoundingClientRect();
           const below = m.bottom - box.top + 8;
-          if (below + PANEL_H < box.height - 70) {
+          if (below + panelH < box.height - 70) {
             left = Math.round(m.left - box.left);
             top = Math.round(below);
           } else {
@@ -82,8 +91,8 @@ export function TableRowColControls({ api, containerRef, canEdit }: Props) {
           }
         }
         const { tid, rows, cols, R, C, single, focusedId } = range;
-        const sig = `${tid}:${rows.join(",")}:${cols.join(",")}:${R}:${C}:${single}:${left}:${top}`;
-        if (sig !== sigRef.current) { sigRef.current = sig; setState({ tid, rows, cols, R, C, single, focusedId, left, top }); }
+        const sig = `${tid}:${rows.join(",")}:${cols.join(",")}:${R}:${C}:${single}:${sizeCols.join(",")}:${sizeRows.join(",")}:${left}:${top}`;
+        if (sig !== sigRef.current) { sigRef.current = sig; setState({ tid, rows, cols, R, C, single, focusedId, sizeCols, sizeRows, left, top }); }
       } catch { /* noop */ }
       raf.current = requestAnimationFrame(tick);
     };
@@ -92,7 +101,7 @@ export function TableRowColControls({ api, containerRef, canEdit }: Props) {
   }, [api, canEdit, containerRef]);
 
   if (!state) return null;
-  const { tid, rows, cols, R, C, single, focusedId, left, top } = state;
+  const { tid, rows, cols, R, C, single, focusedId, sizeCols, sizeRows, left, top } = state;
   const rowCount = rows.length, colCount = cols.length;
   const minRow = rows[0], maxRow = rows[rows.length - 1];
   const minCol = cols[0], maxCol = cols[cols.length - 1];
@@ -156,6 +165,26 @@ export function TableRowColControls({ api, containerRef, canEdit }: Props) {
           {btn("削除", `選択した${colLabel}を削除`, true, colCount >= C, () => deleteTableColumns(api, tid, cols))}
         </div>
       </div>
+      {/* 複数の列/行をまとめて選んでいる時だけ出す一括サイズ調整（BRU9-039-2）。
+          幅は平均で均等割り（表の総幅を保つ）、高さは最大に合わせる（rh は下限としてしか効かないため、
+          平均を入れると「そろえたのにそろわない」状態になる）。 */}
+      {(sizeCols.length >= 2 || sizeRows.length >= 2) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {heading("サイズ")}
+          {sizeCols.length >= 2 && (
+            <div style={{ display: "flex", gap: 6 }}>
+              {btn("幅をそろえる", `選択した${sizeCols.length}列の幅を均等にする`, false, false, () => distributeTableSizes(api, tid, "col", sizeCols))}
+              {btn("自動幅", `選択した${sizeCols.length}列を内容に合わせた幅に戻す`, false, false, () => applyTableSizes(api, tid, "col", sizeCols, 0, true))}
+            </div>
+          )}
+          {sizeRows.length >= 2 && (
+            <div style={{ display: "flex", gap: 6 }}>
+              {btn("高さをそろえる", `選択した${sizeRows.length}行の高さを一番高い行に合わせる`, false, false, () => distributeTableSizes(api, tid, "row", sizeRows))}
+              {btn("自動高さ", `選択した${sizeRows.length}行を内容に合わせた高さに戻す`, false, false, () => applyTableSizes(api, tid, "row", sizeRows, 0, true))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 # BRU9-039-2 ホワイトボードの表: 複数行・複数列の一括サイズ調整 — 設計書
 
-> 分類: 機能改善 / 実装は本設計の承認後に別途着手する。
+> 分類: 機能改善 / **実装済み**（本書は実装後の内容に更新済み）。
 > 要件: 「複数の行や複数の列を選択して、幅・高さを同時に調整できる機能」
 
 ---
@@ -83,9 +83,14 @@
 | 帯の上をドラッグ | 通過した範囲を連続選択 |
 | Shift+クリック | 直前のアンカーからの範囲選択 |
 | Ctrl/⌘+クリック | その列（行）を選択にトグル追加 |
-| 帯の区画の境目 ±4px | **リサイズつまみを優先**（既存の列/行つまみを帯の上端まで伸ばし、帯より前面に置く） |
+| 帯の区画の境目 ±4px | **リサイズとして扱う**（`bandEdgeTarget`。カーソルも `col-resize`/`row-resize` に変わる） |
+| 帯の境目のダブルクリック | その列/行（選択中なら全部）を自動フィットへ |
 
-- ダブルクリックは帯には割り当てない（境界ダブルクリック＝自動フィットと衝突させない）。
+- 帯の「中身」のダブルクリックには何も割り当てない（境界ダブルクリック＝自動フィットと衝突させない）。
+- **z 順**: 列/行つまみ → コーナー → 帯。帯は表の外側にしか無いので、表の内側の既存つまみ（コーナー含む）は
+  一切影響を受けない。四隅の外側だけ帯が勝つが、Excalidraw の四隅ハンドルは表の角そのものにあるため
+  四隅リサイズは従来どおり掴める。帯の中の境目リサイズは z 順で解決せず、帯自身の当たり判定
+  （`bandEdgeTarget`）で処理する。
 
 ### 3.2 一括リサイズ（柱 B）
 
@@ -192,8 +197,9 @@ export function distributeTableSizes(api: any, tid: string, kind: "col" | "row",
 - **ヘッダー帯つまみ（`head-col` / `head-row`）を追加**。既存の `buildHandles` に `C + R` 個追加し、
   `position()` で毎フレーム矩形を更新する（既存と同じ scene→ローカル画面 px 変換）。選択ハイライトは
   DOM 再構築ではなく `style.background` の書き換えのみで行う（**React 再レンダーを挟まない＝ちらつかない**、
-  既存オーバーレイの方針を踏襲）。
-- `structRef` の署名 `tid:C:R` は据え置き（帯の個数も C/R に従うため）。
+  既存オーバーレイの方針を踏襲）。ドラッグ中は一緒に動く境界つまみも ACCENT で光らせる。
+- 帯のドラッグ範囲選択は `axisIndexAt`（画面座標 → `viewportCoordsToSceneCoords` → 累積サイズで index）。
+- `structRef` の署名 `tid:C:R` は据え置き（帯の個数も C/R に従うため）。帯ドラッグ中は作り直さない。
 
 ### 4.3 `TableRowColControls.tsx`
 
@@ -248,14 +254,12 @@ export function distributeTableSizes(api: any, tid: string, kind: "col" | "row",
 
 ## 8. 実装ステップ（レビュー単位）
 
-| Phase | 内容 | 目安 |
+| Phase | 内容 | 状態 |
 |---|---|---|
-| 1 | `whiteboardTable.ts` に軸選択の状態・`selectTableAxis`・`applyTableSizes`（`applyManual` の移設＋複数対応）・`resolveSizeTargets` を追加 | 中 |
-| 2 | `TableResizeOverlay` にヘッダー帯を追加（選択・範囲ドラッグ・ハイライト） | 大 |
-| 3 | 境界ドラッグ／ダブルクリックを `resolveSizeTargets` 経由の一括適用へ差し替え（追従式込み） | 中 |
-| 4 | `TableRowColControls` に「サイズ」セクション、`selectedTableRange` の軸選択対応、行列増減時の index シフト | 中 |
-
-Phase 1〜3 で要件（複数選択して同時に幅・高さ調整）は満たす。Phase 4 は仕上げ。
+| 1 | `whiteboardTable.ts` に `tableLayout`・軸選択の状態・`selectTableAxis`・`applyTableSizes`（`applyManual` の移設＋複数対応）・`bulkSizeTargets`・`resolveSizeTargets`・`distributeTableSizes` を追加 | 実装済み |
+| 2 | `TableResizeOverlay` にヘッダー帯を追加（選択・範囲ドラッグ・ハイライト・境目リサイズ） | 実装済み |
+| 3 | 境界ドラッグ／ダブルクリックを `resolveSizeTargets` 経由の一括適用へ差し替え（追従式込み） | 実装済み |
+| 4 | `TableRowColControls` に「サイズ」セクション、`selectedTableRange` の軸選択対応、行列増減時の index シフト | 実装済み |
 
 ---
 
