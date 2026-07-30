@@ -3,7 +3,7 @@
 // Excalidraw 標準スナップ（図形の磁力感）はそのまま活かし、標準では扱えない
 // 線・矢印の端点だけを本層が補う。React 再レンダーを避けるため描画は canvas へ命令的に行う。
 import { useEffect, useRef } from "react";
-import { anchorPoints, isLinearEl, isTriangle, linearEndpoints, solveSnap, type Pt } from "@/app/lib/whiteboardSnap";
+import { anchorPoints, isBrace, isLinearEl, isTriangle, linearEndpoints, solveSnap, type Pt } from "@/app/lib/whiteboardSnap";
 
 interface Props {
   api: any; // ExcalidrawImperativeAPI
@@ -90,8 +90,8 @@ export function SnapGuideLayer({ api, containerRef, canEdit }: Props) {
     // 現在の選択のうち線・矢印を返す
     const selectedLinears = (): any[] => {
       const ids = api.getAppState().selectedElementIds || {};
-      // 三角形は図形扱い（端点スナップの対象外。標準の外接矩形スナップに任せる）
-      return api.getSceneElements().filter((el: any) => ids[el.id] && !el.isDeleted && isLinearEl(el) && !isTriangle(el));
+      // 三角形・大括弧は図形扱い（端点スナップの対象外。標準の外接矩形スナップに任せる）
+      return api.getSceneElements().filter((el: any) => ids[el.id] && !el.isDeleted && isLinearEl(el) && !isTriangle(el) && !isBrace(el));
     };
 
     const compute = () => {

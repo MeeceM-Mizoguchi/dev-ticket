@@ -1,8 +1,9 @@
-// 線・矢印を図形（四角/ひし形/楕円/三角形）に「コネクト」する仕組み（ENHA2-022）。
+// 線・矢印を図形（四角/ひし形/楕円/三角形/大括弧）に「コネクト」する仕組み（ENHA2-022）。
 // 全図形を自前方式に統一：接続を customData(triStart/triEnd) に「外周上の相対位置(fx,fy)」として記録し、
 // followTriangleConnections が図形の移動/リサイズ/回転に合わせて端点を“固定して追従”させる。
 // （Excalidrawネイティブbindは接続位置を固定できず戻ってしまうため使わず、接続端点のbindは無効化する。）
-import { elementBBox, isTriangle, nearestPointOnPolyline } from "./whiteboardSnap";
+import { elementBBox, isBrace, isTriangle, nearestPointOnPolyline } from "./whiteboardSnap";
+import { braceTip, nearestBraceAnchor } from "./whiteboardBrace";
 // 【BRU7-058】ユーザー操作そのもの（書式パネル・折れ点の確定など）は 1操作＝1 undo ステップに
 // なるよう IMMEDIATELY で履歴へ記録する。追従・自動接続などの自動導出は captureUpdate を
 // 指定せず、WhiteboardCanvas の guardApi が NEVER を与える（＝履歴に載せない）。
@@ -18,20 +19,24 @@ export const CONNECT_TOL = 16; // 端点がこの距離以内に図形があれ�
 const FOLD_FIND_TOL = 40;      // 折れ矢印だけは広めに探索（Shiftの角度スナップで端点がズレても両端を拾う）
 const TOL = CONNECT_TOL;
 
-// 接続元になり得る線形要素（三角形は図形扱いなので除外）。
+// 内部的には line だが「図形」として扱うもの（三角形・大括弧）。
+// コネクタ（接続元）にはならず接続先になり、4点アンカー(辺の中点)ではなく独自の接続点を持つ。
+const isPolyShape = (e: any) => isTriangle(e) || isBrace(e);
+// 接続元になり得る線形要素（三角形・大括弧は図形扱いなので除外）。
 // mermaid から生成した矢印・線(customData.wbMermaid)は、図のレイアウトを崩さないよう自動接続の対象外にする。
 // Elbow arrow(elbowed)は Excalidraw のエルボー・ルーターが中間点を直交に保つため、
 // 端点だけを書き換える自前コネクト方式とは相容れない（斜め/波打ちに崩れる・BRU5-050系）。
 // elbow はネイティブ結合＋ルーターに任せ、自前の接続/追従の対象から外す。
-const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !e?.elbowed && !isTriangle(e) && !e?.customData?.wbMermaid;
-// 接続先になれる図形（四角/ひし形/楕円/三角形/テキストボックス）。全て「辺上の相対位置を固定」する自前方式でつなぐ。
+const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !e?.elbowed && !isPolyShape(e) && !e?.customData?.wbMermaid;
+// 接続先になれる図形（四角/ひし形/楕円/三角形/大括弧/テキストボックス）。全て「辺上の相対位置を固定」する自前方式でつなぐ。
 // テキストボックスは矩形外周として扱い、四辺（上下左右）どこにでも端点を貼り付けられる（BRU5-054）。
 // 図形内に埋め込まれたラベルテキスト(containerId あり)は、コンテナ図形側が接続対象なので除外する。
+// 大括弧は3つの先端（トゲ・両端）だけを接続点にする（BRU9-042）。
 export const isConnectableShape = (e: any) =>
   !e?.isDeleted && !e?.customData?.wbBgFor  // テキスト背景の影矩形(BRU5-062)は接続対象外
     && !e?.customData?.wbFrameBg            // フレーム装飾の影矩形(BRU5-063)も接続対象外
     && (e?.type === "rectangle" || e?.type === "diamond" || e?.type === "ellipse"
-    || (e?.type === "text" && !e?.containerId) || isTriangle(e));
+    || (e?.type === "text" && !e?.containerId) || isPolyShape(e));
 // 折れ線の角の既定（BRU5-078）。左メニュー「折れ線の角」で切り替え、以後に折る線へ引き継ぐ。
 // Excalidraw の currentItemRoundness は四角形など図形の角丸とも共有される設定なので使わない
 // （線の角を変えたら図形の角まで変わってしまうため）。折れ線専用の設定としてここに持つ。
@@ -54,8 +59,13 @@ const connectBBox = (el: any): { x: number; y: number; w: number; h: number } =>
   return { x: b.x - TEXT_BORDER_PAD, y: b.y - TEXT_BORDER_PAD, w: b.w + TEXT_BORDER_PAD * 2, h: b.h + TEXT_BORDER_PAD * 2 };
 };
 
-// 図形の geometry 署名（移動/リサイズ/回転の検知用）
-export const shapeSig = (t: any): string => { const b = elementBBox(t); return `${b.x},${b.y},${b.w},${b.h},${t.angle || 0}`; };
+// 図形の geometry 署名（移動/リサイズ/回転の検知用）。
+// 大括弧はトゲ位置を動かしても外接矩形が変わらないため、tip も署名に含める。これが無いと
+// followTriangleConnections が「図形は静止」と判断し、トゲに繋いだ矢印が取り残される（BRU9-042）。
+export const shapeSig = (t: any): string => {
+  const b = elementBBox(t);
+  return `${b.x},${b.y},${b.w},${b.h},${t.angle || 0}${isBrace(t) ? `,${braceTip(t)}` : ""}`;
+};
 
 // 点 p から矩形 b までの距離（内側なら0）
 const distToBox = (p: Pt, b: { x: number; y: number; w: number; h: number }) => {
@@ -73,12 +83,15 @@ const distToBox = (p: Pt, b: { x: number; y: number; w: number; h: number }) => 
  * 点編集UI（selectedLinearElement / editingLinearElement）が三角形に付いたら即座に外す。
  * バウンディングボックス（リサイズハンドル）は points.length>2 の間は残るため、
  * 移動・リサイズは従来どおり可能。
+ *
+ * 大括弧（BRU9-042）も同じ理由で点編集を止める。こちらは弧のサンプル点まで掴めてしまうため、
+ * 1点でも動かすと括弧に見えなくなる（形は normalizeBraces が外接矩形から作り直して管理する）。
  */
 export function suppressTrianglePointEditing(api: any, elements: readonly any[], appState: any): void {
   const selId = appState?.selectedLinearElement?.elementId;
   const editId = appState?.editingLinearElement?.elementId;
   if (!selId && !editId) return;
-  const isTriId = (id: string | undefined) => !!id && isTriangle(elements.find((e) => e.id === id));
+  const isTriId = (id: string | undefined) => !!id && isPolyShape(elements.find((e) => e.id === id));
   const patch: any = {};
   if (isTriId(selId)) patch.selectedLinearElement = null;
   if (isTriId(editId)) patch.editingLinearElement = null;
@@ -136,7 +149,8 @@ export function repairOpenTriangles(api: any, elements: readonly any[], appState
 
 // 図形の外周ポリライン(scene座標, 非回転bbox基準)。端点の射影・ハイライト描画に使う。
 export const shapeOutline = (el: any): Pt[] => {
-  if (isTriangle(el)) return (Array.isArray(el.points) ? el.points : []).map((p: number[]) => ({ x: el.x + p[0], y: el.y + p[1] }));
+  // 三角形・大括弧は点列そのものが外周（括弧は閉じない開いた曲線）
+  if (isPolyShape(el)) return (Array.isArray(el.points) ? el.points : []).map((p: number[]) => ({ x: el.x + p[0], y: el.y + p[1] }));
   const b = connectBBox(el); // 枠線付きテキストは枠線位置の矩形で外周を作る
   const { x, y, w, h } = b;
   if (el.type === "diamond") return [{ x: x + w / 2, y }, { x: x + w, y: y + h / 2 }, { x: x + w / 2, y: y + h }, { x, y: y + h / 2 }, { x: x + w / 2, y }];
@@ -197,8 +211,14 @@ export function pickConnectTarget(pt: Pt, shapes: readonly any[], preferId?: str
 // 四角/ひし形/楕円/テキストボックスは「上下左右の4点(各辺の中点)」のみに接続する（BRU5-064）。
 // これで接続位置がブレず、折れ矢印も辺の中央から出入りして綺麗に決まる。図形中心から端点への
 // 向きで最寄りの1辺を選ぶ。三角形だけは辺の中点が外周上に無いため従来どおり外周へ射影する。
+// 大括弧は「3つの先端（トゲ・両端）」だけに繋ぐ（BRU9-042）。細い曲線なので外周へ射影すると
+// 曲線の途中に端点が付いて狙いが定まらず、先端に矢印を合わせたいという用途に合わないため。
 const connectTo = (pt: Pt, shape: any): { anchor: TriAnchor; point: Pt } => {
   const b = connectBBox(shape);
+  if (isBrace(shape)) {
+    const a = nearestBraceAnchor(pt, shape);
+    return { anchor: { id: shape.id, fx: a.fx, fy: a.fy }, point: { x: a.x, y: a.y } };
+  }
   if (isTriangle(shape)) {
     const proj = nearestPointOnPolyline(pt, shapeOutline(shape));
     return {
@@ -409,7 +429,7 @@ export function foldedRouteInfo(el: any, elements: readonly any[]): RouteInfo | 
   const findShape = (id?: string) => (id ? elements.find((e) => e.id === id && isConnectableShape(e)) : undefined);
   const sShape = aS ? findShape(aS.id) : undefined;
   const eShape = aE ? findShape(aE.id) : undefined;
-  const both = !!(aS && aE && sShape && eShape && !isTriangle(sShape) && !isTriangle(eShape));
+  const both = !!(aS && aE && sShape && eShape && !isPolyShape(sShape) && !isPolyShape(eShape));
   const S = both ? anchorToPoint(aS!, sShape) : { x: el.x + pts[0][0], y: el.y + pts[0][1] };
   const E = both ? anchorToPoint(aE!, eShape) : { x: el.x + pts[pts.length - 1][0], y: el.y + pts[pts.length - 1][1] };
   let vias = viasToScene(cd, S);
@@ -571,7 +591,7 @@ export function autoConnectLines(
     // 折れ矢印(Shift/トグル)要求: 両端が4点アンカー(=非三角形)に繋がった時だけ直交ルートへ差し替える。
     // 記録した triStart/triEnd と wbFolded を頼りに、追従時(followTriangleConnections)も再ルートする。
     let folded = false;
-    if (wantFold && sC && eC && sShape && eShape && !isTriangle(sShape) && !isTriangle(eShape)) {
+    if (wantFold && sC && eC && sShape && eShape && !isPolyShape(sShape) && !isPolyShape(eShape)) {
       // 手動の折れ点(wbVias)があれば必ず通す（BRU7-043）
       gp = routeOrthogonalVia(sC.point, sideFromAnchor(sC.anchor), viasToScene(customData, sC.point), eC.point, sideFromAnchor(eC.anchor));
       customData.wbFolded = true;
@@ -675,7 +695,7 @@ export function followTriangleConnections(
     // 折れ矢印(BRU5-064): 両端が4点アンカー(非三角形)に固定されている連結は直交ルートに保つ。
     //  - 既に折れ(wbFolded): 毎フレーム経路を引き直して形を維持（端点だけ動かすと折れ目が崩れるため）
     //  - トグルON(foldAll): まだ折れていない直線もこの追従パスで確実に折る（描画タイミング非依存の保険）
-    const bothConnected = !!(aS && aE && sShape && eShape && !isTriangle(sShape) && !isTriangle(eShape));
+    const bothConnected = !!(aS && aE && sShape && eShape && !isPolyShape(sShape) && !isPolyShape(eShape));
     // 折れ矢印“そのもの”をユーザーが掴んで図形から遠くへ動かした場合は、直交ルートを引き直して
     // 元位置へ戻してはいけない（動かせない／複製が元に重なる原因・BRU5-067）。
     // 図形が動いたフレーム、または端点がまだアンカー図形の近くにある時だけ経路を維持する。
@@ -1289,7 +1309,7 @@ export function foldSelectedConnectors(api: any, appState: any): boolean {
     const aS = readAnchor(cd.triStart), aE = readAnchor(cd.triEnd);
     const sShape = aS ? shapeMap.get(aS.id) : undefined;
     const eShape = aE ? shapeMap.get(aE.id) : undefined;
-    const both = !!(aS && aE && sShape && eShape && !isTriangle(sShape) && !isTriangle(eShape));
+    const both = !!(aS && aE && sShape && eShape && !isPolyShape(sShape) && !isPolyShape(eShape));
 
     const S = { x: el.x + pts[0][0], y: el.y + pts[0][1] };
     const E = { x: el.x + pts[pts.length - 1][0], y: el.y + pts[pts.length - 1][1] };
@@ -1371,7 +1391,7 @@ export function healBrokenElbowArrows(api: any, elements: readonly any[], appSta
     // 接続先は「ネイティブbind」→「自前アンカー」の順に拾う（どちらで繋がっていても引き継ぐ）
     const sShape = shapeMap.get(el.startBinding?.elementId) ?? (aS0 ? shapeMap.get(aS0.id) : undefined);
     const eShape = shapeMap.get(el.endBinding?.elementId) ?? (aE0 ? shapeMap.get(aE0.id) : undefined);
-    const both = !!(sShape && eShape && !isTriangle(sShape) && !isTriangle(eShape));
+    const both = !!(sShape && eShape && !isPolyShape(sShape) && !isPolyShape(eShape));
     changed = true;
 
     const S = { x: el.x + pts[0][0], y: el.y + pts[0][1] };
@@ -1471,7 +1491,7 @@ export function reconnectDraggedConnectors(api: any, appState: any, skipIds?: Se
   let changed = false;
   const updated = elements.map((el: any) => {
     if (el.isDeleted) return el;
-    if (!(el.type === "line" || el.type === "arrow") || el.elbowed || isTriangle(el)) return el; // elbowはネイティブ結合に委ねる
+    if (!(el.type === "line" || el.type === "arrow") || el.elbowed || isPolyShape(el)) return el; // elbowはネイティブ結合に委ねる
     if (!sel[el.id] || el.id === editId) return el; // ドラッグされたコネクタのみ（端点編集は除外）
     // 【BRU7-056-8】コピー操作で運ばれた線は貼り直さない。
     // ここは「両端を記録どおりのアンカーへ強制的に貼り直す」処理なので、片方の接続先が一緒に動き、

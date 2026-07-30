@@ -6,7 +6,7 @@
 //
 // 標準パネル(island)の真下にドッキングし、収まらない時は右隣に出す（重なり防止）。
 import { useEffect, useRef, useState } from "react";
-import { isTriangle } from "@/app/lib/whiteboardSnap";
+import { isBrace, isTriangle } from "@/app/lib/whiteboardSnap";
 import { applyConnectorVias, foldCorner, foldSelectedConnectors, readVias, unfoldSelectedConnectors } from "@/app/lib/whiteboardAutoConnect";
 import { COMMIT } from "@/app/lib/whiteboardHistory";
 
@@ -20,10 +20,10 @@ interface Props {
 const ROUND: { type: number } = { type: 2 };
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 
-// 対象: 自前で扱う線・矢印（三角形図形・mermaid由来・ネイティブelbowは除外）
+// 対象: 自前で扱う線・矢印（三角形/大括弧の図形・mermaid由来・ネイティブelbowは除外）
 const isConn = (e: any) =>
   !e?.isDeleted && (e?.type === "line" || e?.type === "arrow")
-  && !e?.elbowed && !isTriangle(e) && !e?.customData?.wbMermaid;
+  && !e?.elbowed && !isTriangle(e) && !isBrace(e) && !e?.customData?.wbMermaid;
 
 // 折れ矢印(wbFolded)を選択している間、標準パネルの Arrow type ハイライトを Elbow 側へ付け替える。
 // 自前の折れ線は内部的に elbowed:false なので、標準UIは Sharp を光らせてしまうため。
