@@ -22,10 +22,29 @@ const ErrMsg = ({ msg }: { msg: string }) => (
 
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
 function sanitizePrefix(v: string) { return v.replace(/[^A-Z]/g, ""); }
-function autoSlug(name: string) { return sanitizeSlug(name.toUpperCase()).slice(0, 6) || "PROJ"; }
-function autoPrefix(name: string) { return sanitizePrefix(name.toUpperCase()).slice(0, 3) || "TKT"; }
 
-// onCreated には作成したプロジェクトIDを渡す（一覧側で該当カードを強調表示するため）
+// 🌟 改善: 日本語のみ等の理由で英数字が抽出できない場合、ランダムな英数字4桁を付与して「PRJ-A8K2」のようなユニークな識別子を自動作成します
+function generateRandomCode(length = 4) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 誤認しやすい0/O/1/Iを除外した英数字
+  let res = "";
+  for (let i = 0; i < length; i++) {
+    res += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return res;
+}
+
+function autoSlug(name: string) {
+  const extracted = sanitizeSlug(name.toUpperCase()).slice(0, 6);
+  if (extracted) return extracted;
+  // 英数字が抽出できない（日本語など）場合は、PROJ-XXXX のようなランダムな初期値を生成
+  return `PRJ-${generateRandomCode(4)}`;
+}
+
+function autoPrefix(name: string) {
+  const extracted = sanitizePrefix(name.toUpperCase()).slice(0, 3);
+  return extracted || "TKT";
+}
+
 export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCount }: { onClose: () => void; clients: Client[]; onCreated?: (projectId: string) => void; currentProjectCount?: number }) {
   const { userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
@@ -35,7 +54,6 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
   const [name, setName] = useState("");
   const handleNameChange = (v: string) => {
     setName(v);
-    if (!slug) setSlug(sanitizeSlug(v.toUpperCase()).slice(0, 6));
   };
   const [clientName, setClientName] = useState("");
   const [description, setDescription] = useState("");
@@ -51,7 +69,7 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
   const [attempted, setAttempted] = useState(false);
 
   const [slug, setSlug] = useState("");
-  const canSubmit = name.trim() !== "" && slug.trim() !== "";
+  const canSubmit = name.trim() !== "";
 
   const DEFAULT_CATEGORIES = ["バグ", "改善", "新機能"];
 
@@ -72,7 +90,11 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
     if (!canSubmit) return;
     if (plan.maxProjects !== null && currentProjectCount !== undefined && currentProjectCount >= plan.maxProjects) return;
 
-    const finalSlug = sanitizeSlug((slug.trim() || autoSlug(name.trim())).toUpperCase());
+    // 🌟 改善: 空欄時またはサニタイズ後に空になった場合、重複しにくいランダムな英数字識別子（例: PRJ-9X2K）を自動決定します
+    let finalSlug = sanitizeSlug(slug.trim().toUpperCase());
+    if (!finalSlug) {
+      finalSlug = autoSlug(name.trim());
+    }
     const finalPrefix = autoPrefix(name);
 
     if (RESERVED_SLUGS.has(finalSlug.toLowerCase())) {
@@ -123,7 +145,6 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
       setSaving(false);
     }
 
-    // Supabase未接続時のみローカルストレージにフォールバック保存（接続時はinsertのtagsカラムへ保存済み）
     if (!isSupabaseEnabled && tags.length > 0) {
       try {
         const localTagsStore = localStorage.getItem("local_project_tags_map");
@@ -148,7 +169,6 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
     <DialogShell title="新規プロジェクト作成" onClose={onClose}
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
       
-      {/* 🌟 プランB最適化: 無駄な空白や複雑なイベントを一切使わず、要素の並び順の設計だけで完璧に解決します */}
       <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         
         <div>
@@ -159,17 +179,14 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
         <div>
           <FieldInput
             label="プロジェクト識別子"
-            placeholder={name ? autoSlug(name) : "例: PROJ"}
-            required
+            placeholder={name.trim() ? autoSlug(name) : "例: PRJ-8K2A"}
             value={slug}
             onChange={v => setSlug(sanitizeSlug(v.toUpperCase()))}
           />
           <p style={{ fontSize: 10, color: "#9CA3AF", marginTop: 3 }}>URLに使用されます。空欄の場合はプロジェクト名から自動生成</p>
-          {attempted && !slug.trim() && <ErrMsg msg="プロジェクト識別子を入力してください" />}
           {slugError && <ErrMsg msg={slugError} />}
         </div>
 
-        {/* 🌟 改善：見切れやすい2大プルダウン（クライアント・ステータス）を中段の横並びにまとめることで、展開スペースを上〜中部にしっかりと確保 */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
           <div>
             <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
@@ -247,8 +264,6 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
           )}
         </div>
 
-        {/* 🌟 解決：最も縦幅を広く使う「説明（Textarea）」を一番下に持ってきます。
-            これにより、中段にあるステータスやクライアントを展開しても、説明欄の真上に綺麗に重なるため、不自然な空白を一切作らずに100%見切れを回避できます！ */}
         <div>
           <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
         </div>
