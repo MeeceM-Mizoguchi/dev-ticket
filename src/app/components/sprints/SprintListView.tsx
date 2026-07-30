@@ -2,7 +2,6 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol, DevScale } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, sprintHasPending, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
-// 🌟 BRU6-002 一括操作（削除・スプリント移動・アサイン）
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
 import { BulkActionBar } from "@/app/components/sprints/BulkActionBar";
@@ -16,27 +15,40 @@ import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
-// 🌟 追加: 緑色の完了ダイアログをこのファイル内で描画するために必要な共通コンポーネントをインポート
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
-// 🌟 修正: 重複を事前に検知するため、checkDuplicateFilter も一緒にインポートへ追加する
 import { MyFilterModal, addMyFilter, SaveFilterDialog, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
-// 🌟 追加: 自前の美しいアラートダイアログを呼び出すためのインポート
 import { useAlert } from "@/app/contexts/AlertContext";
 
-// 🌟 追加: 実績モニターのログから「リリース」または「クローズ」の最終完了日を動的に抽出するヘルパー関数
+// 🌟 今日の日付（YYYY-MM-DD）を取得するヘルパー
+function getTodayString(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// 🌟 期限日当日以降かつ未完了（Done/Closed/Released/取下以外）か判定する関数
+function isOverdueOrToday(dueDate?: string, status?: string, progress?: number): boolean {
+  if (!dueDate || !dueDate.trim()) return false;
+  if (status === "closed" || status === "done" || status === "released" || progress === -2) {
+    return false;
+  }
+  const today = getTodayString();
+  const targetDate = dueDate.slice(0, 10);
+  return today >= targetDate;
+}
+
 const getClosedDateFromMonitor = (ticket: any): string => {
   if (!ticket) return "";
-
-  // 実績ログ配列として想定されるプロパティ名を広く網羅
   const logs = ticket.monitorLogs || ticket.monitor_logs || ticket.ticket_monitor_logs || ticket.actualLogs || [];
 
   if (Array.isArray(logs) && logs.length > 0) {
-    // 配列を末尾（直近）から検索し、最終工程が「リリース」か「クローズ」の記録を探す
     const closedLog = [...logs]
       .reverse()
       .find((log: any) => log && (
@@ -49,22 +61,18 @@ const getClosedDateFromMonitor = (ticket: any): string => {
       return closedLog.completed_at || closedLog.completedAt || closedLog.created_at || closedLog.createdAt || closedLog.date || "";
     }
   }
-
-  // 💡 フォールバック: 実績ログがない場合、チケット自体が既に持っているリリース完了日（mappersのreleasedAtなど）を流用
   return ticket.releasedAt || ticket.released_at || ticket.closedAt || ticket.closed_at || "";
 };
 
-// 🌟 追加: ISO形式などのタイムスタンプから mm/dd を安全に抽出する専用フォーマッター
 const formatClosedMMDD = (isoString: string) => {
   if (!isoString) return "";
   const d = new Date(isoString);
-  if (isNaN(d.getTime())) return isoString.slice(0, 5); // パース不能な場合のフォールバック
+  if (isNaN(d.getTime())) return isoString.slice(0, 5);
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${mm}/${dd}`;
 };
 
-// プロジェクト共通の分類ベースマスター
 const BASE_CATEGORY_MAP: Record<string, string> = {
   "CAT-1780106163889": "バグ",
   "CAT-1780106169442": "仕様確認",
@@ -73,7 +81,6 @@ const BASE_CATEGORY_MAP: Record<string, string> = {
   "CAT-1780293371590": "新規機能開発"
 };
 
-// 🌟 BRU6-002: 見積工数(h)から開発規模をざっくり推定（TicketSkillFields と同じルール）
 function estimateScale(hours: number): DevScale | null {
   if (!hours || hours <= 0) return null;
   if (hours <= 3) return "S";
@@ -82,7 +89,6 @@ function estimateScale(hours: number): DevScale | null {
   return "XL";
 }
 
-// 🌟 BRU6-002: 一括選択チェックボックス（チェック / 一部 / 無 の3状態）
 function SelBox({ checked, indeterminate, onClick }: { checked: boolean; indeterminate?: boolean; onClick: (e: React.MouseEvent) => void }) {
   return (
     <div onClick={onClick} title="選択" style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", width: "100%" }}>
@@ -99,7 +105,7 @@ function ColumnFilter({
   options, selected, onFilterChange,
   open, onToggle, onClose, alignRight,
 }: {
-  col: SortCol | "closedDate"; // 🌟 修正: closedDateを追加
+  col: SortCol | "closedDate";
   label: string;
   sortCol: SortCol | "closedDate" | "";
   sortDir: "asc" | "desc";
@@ -165,7 +171,6 @@ function ColumnFilter({
             background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", zIndex: 200, minWidth: 190, maxWidth: 360,
           }}>
-          {/* Sort */}
           <button onClick={() => { onSort(col, "asc"); onClose(); }} style={{
             display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
             borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
@@ -188,14 +193,12 @@ function ColumnFilter({
 
           <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
 
-          {/* Search */}
           <div style={{ padding: "2px 4px 4px" }}>
             <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
               onClick={e => e.stopPropagation()} placeholder="検索..."
               style={{ width: "100%", padding: "5px 8px", borderRadius: 6, border: "1px solid rgba(26,23,20,0.15)", fontSize: 11, outline: "none", boxSizing: "border-box" as const, color: "#1A1714", background: "#FAFAF9" }} />
           </div>
 
-          {/* Select all */}
           <button onClick={toggleAll} style={{
             display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
             borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
@@ -208,7 +211,6 @@ function ColumnFilter({
             すべて
           </button>
 
-          {/* Options */}
           <div style={{ maxHeight: 200, overflowY: "auto", overscrollBehavior: "contain" }}>
             {filteredOptions.length === 0 ? (
               <div style={{ padding: 8, textAlign: "center" as const, color: "#B0A9A4", fontSize: 11 }}>一致する項目がありません</div>
@@ -245,7 +247,6 @@ function ColumnFilter({
   );
 }
 
-// 🌟 追加: LocalStorageのキーを定数で定義
 const LOCAL_STORAGE_KEY = "sprint_accordion_states";
 
 function SkeletonBlock({ w, h, radius }: { w: number | string; h: number; radius?: number }) {
@@ -294,9 +295,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onBulkCreate?: (sprintId: string) => void;
   targetTicketWbs?: string;
   targetSprintId?: string | null;
-  // 🌟 BRU5-043: 上部固定バー(パンくず〜ビュー切替)の高さ分だけ、各スプリントの sticky ヘッダーを下げるオフセット
   stickyTop?: number;
-  // 🌟 BRU6-002 一括操作: 保存後の再取得・アサイン候補の絞り込み・通知に使う
   onUpdated?: () => void | Promise<void>;
   projectMembers?: string[];
   projectSlug?: string;
@@ -313,17 +312,14 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       .then(({ count }) => { setFilterCounts(prev => ({ ...prev, [sprintId]: count ?? 0 })); });
   };
 
-  // 🌟 追加: window.promptの代わりにオリジナル入力ダイアロップを立ち上げるための制御用ステート
   const [saveFilterTarget, setSaveFilterTarget] = useState<{
     sprintId: string;
     serializedFilters: Record<string, string[]>;
     sortCol: string;
     sortDir: "asc" | "desc";
   } | null>(null);
-  // 🌟 追加: アラート（茶色）ではなく、通常の美しい緑ヘッダーUIで完了通知を出すためのステート
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // 🌟 BRU6-002 一括操作: 選択状態・確認ダイアログ・進捗・ハイライト
   const [selectedTicketIds, setSelectedTicketIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<null | "delete" | "move">(null);
   const [assignState, setAssignState] = useState<{ phase: BulkAssignPhase; current: number; total: number; message?: string } | null>(null);
@@ -336,9 +332,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         .eq("sprint_id", s.id).eq("member_id", userId)
         .then(({ count }) => { setFilterCounts(prev => ({ ...prev, [s.id]: count ?? 0 })); });
     });
-  }, [sprints, userId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sprints, userId]);
 
-  // 🌟 修正: LocalStorageから初期状態を読み込むように変更
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     let savedStates: Record<string, boolean> = {};
     try {
@@ -348,7 +343,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
     const initial = new Set<string>();
     sprints.forEach(s => {
-      // localStorageで明示的に false（閉じる）と記録されていなければ、デフォルトで開く
       if (savedStates[s.id] !== false) {
         initial.add(s.id);
       }
@@ -356,7 +350,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     return initial;
   });
 
-  // 🌟 修正: データ再取得（更新）時も LocalStorage の状態を厳密に尊重する
   useEffect(() => {
     let savedStates: Record<string, boolean> = {};
     try {
@@ -368,16 +361,15 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       const next = new Set(prev);
       sprints.forEach(s => {
         if (savedStates[s.id] === false) {
-          next.delete(s.id); // 明示的に閉じられたものは閉じたまま
+          next.delete(s.id);
         } else {
-          next.add(s.id); // それ以外（新規スプリントや開いたもの）は開く
+          next.add(s.id);
         }
       });
       return next;
     });
-  }, [sprints.map(s => s.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sprints.map(s => s.id).join(",")]);
 
-  // Effect 1: アコーディオン展開（URLからのチケット直接指定時）
   useEffect(() => {
     if (!targetTicketWbs) return;
     const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
@@ -386,7 +378,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         const n = new Set(prev);
         if (!n.has(sprint.id)) {
           n.add(sprint.id);
-          // 🌟 修正: URLから強制展開された際も、その状態をLocalStorageに記憶させる
           try {
             const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
             const savedStates = saved ? JSON.parse(saved) : {};
@@ -397,46 +388,42 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         return n;
       });
     }
-  }, [targetTicketWbs, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [targetTicketWbs, sprints]);
 
-  // Effect 2: 展開後にスクロール（expanded が更新されてDOMに要素が現れてから実行）
   const scrolledForWbs = useRef<string | null>(null);
   useEffect(() => {
     if (!targetTicketWbs) { scrolledForWbs.current = null; return; }
     if (scrolledForWbs.current === targetTicketWbs) return;
     const el = document.querySelector(`[data-wbs="${targetTicketWbs}"]`);
-    if (!el) return; // まだDOMにない（展開待ち）
+    if (!el) return;
     scrolledForWbs.current = targetTicketWbs;
     requestAnimationFrame(() => {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
-  }, [targetTicketWbs, expanded]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [targetTicketWbs, expanded]);
 
-  // 作成直後のスプリントまでスクロール&一時強調（BRU5-034）。スプリント見出しは常に描画されるので展開不要。
   const scrolledForSprint = useRef<string | null>(null);
   const [flashSprintId, setFlashSprintId] = useState<string | null>(null);
   useEffect(() => {
     if (!targetSprintId) { scrolledForSprint.current = null; return; }
     if (scrolledForSprint.current === targetSprintId) return;
     const el = document.querySelector(`[data-sprint-id="${targetSprintId}"]`);
-    if (!el) return; // まだDOMにない（refreshSprints反映待ち）
+    if (!el) return;
     scrolledForSprint.current = targetSprintId;
     requestAnimationFrame(() => { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); });
     setFlashSprintId(targetSprintId);
     const t = setTimeout(() => setFlashSprintId(null), 2500);
     return () => clearTimeout(t);
-  }, [targetSprintId, sprints]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [targetSprintId, sprints]);
 
-  // 子チケット展開状態（チケットIDのSet）
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
 
   const [sprintSorts, setSprintSorts] = useState<Record<string, { col: SortCol | "closedDate" | ""; dir: "asc" | "desc" }>>({});
   const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
   const [openCol, setOpenCol] = useState<string>("");
 
-  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null); // 🌟 追加: MyFilter モーダル開閉用
+  const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
 
-  // 設定画面から、本物の分類データを直接保持するステート
   const [dbCategories, setDbCategories] = useState<Array<{ id: string; projectId: string; name: string }>>([]);
 
   useEffect(() => {
@@ -450,7 +437,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       .catch((err) => console.error("Failed to load category master:", err));
   }, [sprints]);
 
-  // 🌟 修正: 開閉のトグル処理に LocalStorage への保存をフックさせる
   const toggle = (id: string) => {
     setExpanded(prev => {
       const n = new Set(prev);
@@ -462,7 +448,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         n.delete(id);
       }
 
-      // LocalStorageへ現在の状態をシリアライズして記録
       try {
         const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
         const savedStates = saved ? JSON.parse(saved) : {};
@@ -472,12 +457,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
       return n;
     });
-  };
-
-  const getTicketsInSameProject = (currentSprint: Sprint): SprintTicket[] => {
-    return sprints
-      .filter(s => s.projectId === currentSprint.projectId)
-      .flatMap(s => s.tickets);
   };
 
   const unifiedCategoryMap = useMemo(() => {
@@ -541,7 +520,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         return [...new Set(sprintTickets.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ja")).map(v => ({ value: v, label: v }));
       case "startDate": {
         const opts = [...new Set(sprintTickets.map(t => t.startDate || "").filter(Boolean))].sort().map(v => ({ value: v, label: formatDate(v) }));
-        // 🌟 追加: 日付未入力（空白）の行を絞り込めるように空白選択肢を追加
         if (sprintTickets.some(t => !(t.startDate || ""))) opts.push({ value: "", label: "（空白）" });
         return opts;
       }
@@ -550,7 +528,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         if (sprintTickets.some(t => !(t.dueDate || ""))) opts.push({ value: "", label: "（空白）" });
         return opts;
       }
-      // 🌟 追加: クローズ日のフィルタ選択肢を生成（内部ではタイムスタンプ、表示はmm/dd）
       case "closedDate": {
         const opts = [...new Set(sprintTickets.map(t => getClosedDateFromMonitor(t)).filter(Boolean))]
           .sort()
@@ -600,7 +577,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     });
   };
 
-  // 複数条件のAND掛け合わせ抽出ロジック
   const processTickets = (sprintId: string, tickets: SprintTicket[]) => {
     const parents = tickets.filter(t => !t.parentId);
     const activeFilters = sprintFilters[sprintId] || {};
@@ -611,7 +587,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         wbs: t.wbs,
         title: t.title,
         description: htmlToText(t.description),
-        // 🌟 修正: -1 なら pending(保留), -2 なら withdrawn(取下) としてフィルタリングさせる
         status: t.progress === -1 ? "pending" : t.progress === -2 ? "withdrawn" : t.status,
         priority: t.priority,
         assignee: t.assignee || "",
@@ -633,7 +608,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     return [...filtered].sort((a, b) => {
       const dir = currentSort.dir === "asc" ? 1 : -1;
       const col = currentSort.col;
-      // 🌟 修正: 並び替え処理でも closedDate などを安全に取得できるように条件分岐を追加
       const getVal = (tick: SprintTicket, c: string) => {
         if (c === "category") return getCategoryLabel(tick);
         if (c === "closedDate") return getClosedDateFromMonitor(tick);
@@ -648,9 +622,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     });
   };
 
-  // ══════════════════════════════════════════════════════════
-  // 🌟 BRU6-002 一括操作（削除・スプリント移動・アサイン）
-  // ══════════════════════════════════════════════════════════
   const allTickets = useMemo(() => sprints.flatMap(s => s.tickets), [sprints]);
   const selectedTickets = useMemo(() => allTickets.filter(t => selectedTicketIds.has(t.id)), [allTickets, selectedTicketIds]);
   const bulkProjectId = sprints[0]?.projectId ?? null;
@@ -668,13 +639,11 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     window.setTimeout(() => setHighlightedTicketIds(new Set()), 6000);
   };
 
-  // 選択された親の子で、明示選択されていないもの（削除・移動時に一緒に処理される件数）
   const impliedChildCount = useMemo(
     () => allTickets.filter(t => t.parentId && selectedTicketIds.has(t.parentId) && !selectedTicketIds.has(t.id)).length,
     [allTickets, selectedTicketIds],
   );
 
-  // ── 一括削除 ──
   const runBulkDelete = async () => {
     const ids = Array.from(selectedTicketIds);
     const n = selectedTickets.length;
@@ -688,12 +657,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     }
   };
 
-  // ── 一括リンクコピー ──
-  // 選択したチケットの詳細ページURLを、1件1行（改行区切り）でクリップボードへ。
-  // URL形式は単一チケットの「リンクをコピー」（TicketDetailPanel）と同一。
   const runBulkCopyLinks = async () => {
     if (!projectSlug) { showAlert("プロジェクト情報が取得できませんでした。", "エラー"); return; }
-    const targets = selectedTickets;   // 明示選択のチケットのみ（子は自動追従しない）
+    const targets = selectedTickets;
     if (targets.length === 0) return;
     const links = targets.map(t => `${window.location.origin}/${projectSlug}/${t.wbs}`).join("\n");
     if (await copyText(links)) {
@@ -703,15 +669,12 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     }
   };
 
-  // ── 一括スプリント移動 ──
   const runBulkMove = async (targetSprintId: string) => {
     if (!bulkProjectId) return;
     const ids = Array.from(selectedTicketIds);
     try {
       const moved = await bulkMoveTickets({ ticketIds: ids, targetSprintId, projectId: bulkProjectId });
       const target = sprints.find(s => s.id === targetSprintId);
-      // 再取得の完了を待ってからダイアログを閉じる。fire-and-forget だと移動元に
-      // 古いデータ（移動済みチケットが残った状態）が一瞬映る「ちらつき」が出るため。
       await onUpdated?.();
       clearSelection();
       setBulkAction(null);
@@ -721,17 +684,15 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     }
   };
 
-  // ── 一括アサイン（自動分析 → 保存 → ハイライト）──
   const runBulkAssign = async () => {
     if (!userOrgId) { showAlert("組織情報が取得できませんでした。", "エラー"); return; }
-    const targets = selectedTickets.slice();   // アサインは明示選択のチケットのみ対象（子は自動追従しない）
+    const targets = selectedTickets.slice();
     if (targets.length === 0) return;
 
     setAssignState({ phase: "analyzing", current: 0, total: targets.length });
     try {
       const skills = await fetchSkills(userOrgId);
 
-      // 保存済みの必要スキルを一括取得
       const ids = targets.map(t => t.id);
       const { data: savedSkills } = isSupabaseEnabled
         ? await supabase!.from("ticket_required_skills").select("ticket_id, skill_id, importance").in("ticket_id", ids)
@@ -743,7 +704,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         savedByTicket.set(r.ticket_id, arr);
       }
 
-      // チケットごとに必要スキル・開発規模を解決（保存済み優先、無ければ内容から自動判定）
       const resolved = targets.map(t => {
         let required = savedByTicket.get(t.id) ?? [];
         if (required.length === 0) {
@@ -756,7 +716,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         return { ticket: t, required, scale };
       });
 
-      // バッチ推奨（サーバー側で公平分散・貪欲逐次）
       const { results } = await fetchBulkRecommendations({
         organizationId: userOrgId,
         candidateNames: projectMembers,
@@ -772,7 +731,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
       });
       const byTicket = new Map(results.map(r => [r.ticketId, r]));
 
-      // 保存フェーズ（1件ずつ書き込み、進捗を刻む）
       setAssignState({ phase: "saving", current: 0, total: targets.length });
       const assignedIds: string[] = [];
       const notifRows: Record<string, unknown>[] = [];
@@ -785,16 +743,13 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           await supabase!.from("sprint_tickets")
             .update({ assignee: chosen.name, assignees: [chosen.name], dev_scale: r.scale })
             .eq("id", r.ticket.id);
-          // 学習材料として必要スキルを保存
           await supabase!.from("ticket_required_skills").delete().eq("ticket_id", r.ticket.id);
           if (r.required.length > 0) {
             await supabase!.from("ticket_required_skills").insert(
               r.required.map(s => ({ ticket_id: r.ticket.id, skill_id: s.skillId, importance: s.importance })),
             );
           }
-          // 採用ログ（②学習の材料）
           if (rec) void logRecommendationAccepted({ organizationId: userOrgId, ticketId: r.ticket.id, candidates: rec.candidates, chosen, source: rec.source });
-          // 通知（担当が変わった場合のみ）
           if (chosen.name !== prev && projectSlug) {
             notifRows.push({
               user_name: chosen.name, type: "assign", title: "チケットが割り当てられました",
@@ -852,7 +807,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
   const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const;
   const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日", "クローズ日"];
-  // 🌟 BRU6-002: 先頭に一括選択チェックボックス列(32px)を追加
   const GRID = `32px 72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 60px 32px`;
 
   return (
@@ -864,10 +818,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           const isExp = expanded.has(sprint.id);
           const computedStatus = computeSprintStatus(sprint);
           const sm = getSprintStatusMeta(computedStatus);
-          // 完了だが保留中チケットを含む場合は「保留あり」を併記する
           const showPendingBadge = computedStatus === "completed" && sprintHasPending(sprint);
           const progress = sprintProgress(sprint);
-          // 🌟 修正: "done", "closed", "waiting-release", "released" のいずれか、または progress が -2（取下）の場合を完了件数としてカウント
           const terminalStatuses = ["done", "closed", "waiting-release", "released"];
           const done = sprint.tickets.filter(t => terminalStatuses.includes(t.status) || t.progress === -2).length;
           const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
@@ -881,9 +833,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
           return (
             <div key={sprint.id} data-sprint-id={sprint.id} style={{ borderRadius: 12, border: flashSprintId === sprint.id ? "1px solid #F59E0B" : "1px solid rgba(26,23,20,0.08)", boxShadow: flashSprintId === sprint.id ? "0 0 0 3px rgba(245,158,11,0.35)" : "0 1px 2px rgba(0,0,0,0.04)", transition: "box-shadow 0.3s, border-color 0.3s" }}>
-              {/* Sticky: sprint header + column headers */}
               <div style={{ position: "sticky", top: stickyTop ?? 0, zIndex: openCol.startsWith(`${sprint.id}:`) ? 100 : 10 }}>
-                {/* Sprint header */}
                 <div
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", background: "#F9F8F6", cursor: "pointer", borderBottom: isExp ? "1px solid rgba(26,23,20,0.06)" : "none", borderRadius: isExp ? "12px 12px 0 0" : 12 }}
                   onClick={() => toggle(sprint.id)}>
@@ -909,7 +859,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     {plan.featureActualMonitor && <SprintActualHours actualHours={actualHours} />}
                     <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const }}>{formatDate(sprint.startDate)} → {formatDate(sprint.endDate)}</span>
 
-                    {/* 🌟 追加: Myフィルタ ボタン */}
                     <button onClick={e => { e.stopPropagation(); setMyFilterSprintId(sprint.id); }}
                       style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
@@ -972,7 +921,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     )}
                   </div>
                 </div>
-                {/* Column headers with filters */}
                 {isExp && (() => {
                   const visibleIds = displayTickets.map(t => t.id);
                   const allSel = visibleIds.length > 0 && visibleIds.every(id => selectedTicketIds.has(id));
@@ -1043,7 +991,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                 })()}
               </div>
 
-              {/* Ticket rows */}
               {isExp && (
                 <div style={{ borderRadius: "0 0 12px 12px", overflow: "hidden", position: "relative", zIndex: 0 }}>
                   {displayTickets.length === 0 ? (
@@ -1051,7 +998,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                       {sprint.tickets.filter(t => !t.parentId).length === 0 ? "チケットがありません" : "条件に一致するチケットがありません"}
                     </div>
                   ) : displayTickets.map((t) => {
-                    // 🌟 修正: progress が -1 なら「保留中」、-2 なら「取下」のスタイルを強制適用する
                     const tsm = getTicketStatusMeta(t.status, t.progress);
                     const priBg = t.priority === "high" ? "#FEF2F2" : t.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                     const priColor = t.priority === "high" ? "#DC2626" : t.priority === "medium" ? "#D97706" : "#0284C7";
@@ -1062,17 +1008,18 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
 
                     const displayCategory = getCategoryLabel(t);
-                    // 🌟 BRU6-002: 一括アサイン直後のハイライトも既存の強調(琥珀色)と同じ扱いにする
                     const isHighlighted = t.wbs === targetTicketWbs || highlightedTicketIds.has(t.id);
                     const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? "#F5F5F4" : "#FFFFFF";
                     const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
                     const isSel = selectedTicketIds.has(t.id);
 
+                    // 🌟 期限日当日の赤文字判定
+                    const isDueAlert = isOverdueOrToday(t.dueDate, t.status, t.progress);
+
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           data-wbs={t.wbs}
-                          // 🌟 修正: progress === -2 (取下) の時もグレーアウト＆半透明にする
                           style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
@@ -1098,7 +1045,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           </div>
                           <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
 
-                          {/* 左詰め配置・動的固定幅での美表示 */}
                           <div style={{ display: "flex", justifyContent: "start", minWidth: 0, paddingLeft: 4 }}>
                             <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "100%", textAlign: "left" }}>
                               {displayCategory}
@@ -1112,15 +1058,25 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                             <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.assignee || "—"}</span>
                           </div>
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span></div>
-                          <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.dueDate)}</span></div>
 
-                          {/* 🌟 修正: 実績モニターから動的に取得したクローズ日を専用フォーマッタ(formatClosedMMDD)で表示 */}
+                          {/* 🌟 期限日の表示（当日以降かつ未完了なら赤文字・太字 / 未設定は『—』） */}
+                          <div style={{ display: "flex", justifyContent: "center" }}>
+                            <span style={{ 
+                              fontSize: 10, 
+                              color: isDueAlert ? "#DC2626" : "#B0A9A4", 
+                              fontWeight: isDueAlert ? 800 : 400, 
+                              fontFamily: "var(--font-mono)" 
+                            }}>
+                              {t.dueDate ? formatDate(t.dueDate) : "—"}
+                            </span>
+                          </div>
+
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatClosedMMDD(getClosedDateFromMonitor(t)) || "—"}</span></div>
                           {(() => { const ah = calcTicketActualHours(t); return <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontFamily: "var(--font-mono)", fontWeight: 600, color: ah > 0 ? "#059669" : "#B0A9A4" }}>{ah > 0 ? formatPersonDays(ah) : "—"}</span></div>; })()}
                         </div>
-                        {/* 子チケット行（アコーディオン展開時） */}
+
+                        {/* 子チケット行 */}
                         {hasChildren && isTicketExpanded && children.map(child => {
-                          // 🌟 修正: progress -1=保留中 / -2=取下、status closed=クローズ を一元解決
                           const ctsm = getTicketStatusMeta(child.status, child.progress);
                           const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
@@ -1129,10 +1085,13 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id);
                           const isChildSel = selectedTicketIds.has(child.id);
                           const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
+                          
+                          // 子チケットの期限日赤文字判定
+                          const isChildDueAlert = isOverdueOrToday(child.dueDate, child.status, child.progress);
+
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
                               data-wbs={child.wbs}
-                              // 🌟 修正: progress === -2 (取下) の時もグレーアウト＆半透明にする
                               style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.progress === -1 || child.progress === -2) ? 0.65 : 1 }}
                               onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.progress === -1 || child.progress === -2) ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
@@ -1167,33 +1126,28 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         })}
       </div>
 
-      {/* 🌟 追加: MyFilter モーダルの描画と適用処理 */}
       {myFilterSprintId && (
         <MyFilterModal
           onClose={() => { refreshFilterCount(myFilterSprintId); setMyFilterSprintId(null); }}
-          // 🌟 修正: 詳細画面での参照条件と完全に一致させるため、myFilterSprintId（本物のスプリントID）をそのまま渡す
           sprintId={myFilterSprintId}
           userId={userId ?? ""}
           cols={COLS.map((col, idx) => ({ col, label: COL_LABELS[idx] }))}
           getColOptions={(col) => getColOptions(sprints.find(s => s.id === myFilterSprintId)!, col)}
           onApply={(filters, sortCol, sortDir) => {
-            // 選択したフィルタ・ソートを、一覧の状態管理 (State) に上書き適用する
             setSprintFilters(prev => ({ ...prev, [myFilterSprintId]: filters }));
             if (sortCol) {
               setSprintSorts(prev => ({ ...prev, [myFilterSprintId]: { col: sortCol, dir: sortDir } }));
             } else {
               clearSort(myFilterSprintId);
             }
-            setExpanded(prev => new Set(prev).add(myFilterSprintId)); // 適用対象のスプリントを展開状態にする
+            setExpanded(prev => new Set(prev).add(myFilterSprintId));
           }}
         />
       )}
 
-      {/* 🌟 追加: window.promptを置き換えたオリジナルUIのフィルタ名入力ダイアログ */}
       {saveFilterTarget && (
         <SaveFilterDialog
           onClose={() => setSaveFilterTarget(null)}
-          // 🌟 修正: 重複検知機能に適合させるため、スプリントID、ユーザーID、シリアライズ済フィルター条件の3つをPropsへ確実に追加
           sprintId={saveFilterTarget.sprintId}
           userId={userId ?? ""}
           filters={saveFilterTarget.serializedFilters}
@@ -1218,7 +1172,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         />
       )}
 
-      {/* 🌟 追加: 保存完了通知用の緑ヘッダーカスタムダイアログ */}
       {successMessage && (
         <DialogShell
           title="保存完了"
@@ -1234,7 +1187,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         </DialogShell>
       )}
 
-      {/* 🌟 BRU6-002 一括操作: フローティングバー */}
       <BulkActionBar
         count={selectedTicketIds.size}
         disabled={!!assignState}
@@ -1245,7 +1197,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         onClear={clearSelection}
       />
 
-      {/* 一括削除の確認 */}
       {bulkAction === "delete" && (
         <ConfirmDialog
           title="チケットの一括削除"
@@ -1257,7 +1208,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         />
       )}
 
-      {/* 一括スプリント移動 */}
       {bulkAction === "move" && (
         <MoveToSprintDialog
           sprints={sprints}
@@ -1267,7 +1217,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         />
       )}
 
-      {/* 一括アサインの進捗（全画面ブロック） */}
       {assignState && (
         <BulkAssignProgress
           phase={assignState.phase}
