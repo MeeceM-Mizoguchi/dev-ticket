@@ -1,9 +1,10 @@
-// コネクト可能ハイライト（ENHA2-022）。線・矢印の端点を図形（四角/楕円/ひし形/三角形）に
+// コネクト可能ハイライト（ENHA2-022）。線・矢印の端点を図形（四角/楕円/ひし形/三角形/大括弧）に
 // 近づけたとき、その図形の外周に沿ったグレー枠を出す。接続は自前の customData 固定方式に
 // 統一したため、全図形でこの自前ハイライトを描く。見た目は Excalidraw 標準(rgba(0,0,0,.05))に合わせる。
 import { useEffect, useRef } from "react";
-import { elementBBox, linearEndpoints, nearestPointOnPolyline, type Pt } from "@/app/lib/whiteboardSnap";
+import { elementBBox, isBrace, linearEndpoints, nearestPointOnPolyline, type Pt } from "@/app/lib/whiteboardSnap";
 import { isConnectableShape, pickConnectTarget, shapeOutline } from "@/app/lib/whiteboardAutoConnect";
+import { nearestBraceAnchor } from "@/app/lib/whiteboardBrace";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
 
 interface Props {
@@ -82,7 +83,20 @@ export function TriangleBindHint({ api, containerRef, canEdit }: Props) {
       ctx.lineJoin = "round";
       for (const { el, dot } of hits) {
         const verts = shapeVertices(el).map((v) => sceneToLocal(v.x, v.y));
-        if (verts.length >= 3) {
+        if (isBrace(el)) {
+          // 大括弧は閉じない開いた曲線。閉じた枠にすると上端-下端を結ぶ弦が図の中を横切ってしまうので、
+          // 曲線そのものに沿った太い帯（＝他図形の枠と同じ薄グレー）で「ここに繋がる」を示す。
+          if (verts.length >= 2) {
+            ctx.strokeStyle = HL_COLOR;
+            ctx.lineWidth = HL_WIDTH;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(verts[0].x, verts[0].y);
+            for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i].x, verts[i].y);
+            ctx.stroke();
+            ctx.lineCap = "butt";
+          }
+        } else if (verts.length >= 3) {
           // 重心から外側へ少しはみ出させて“辺に沿った枠”にする（四角の枠と同じ薄グレー）
           const gx = verts.reduce((s, v) => s + v.x, 0) / verts.length;
           const gy = verts.reduce((s, v) => s + v.y, 0) / verts.length;
@@ -138,7 +152,8 @@ export function TriangleBindHint({ api, containerRef, canEdit }: Props) {
           for (const pt of cand) {
             const t = pickConnectTarget(pt, shapes);
             if (!t) continue;
-            const dot = nearestPointOnPolyline(pt, shapeOutline(t));
+            // 大括弧は3つの先端にしか繋がらないので、予告ドットも実際に繋がる先端に出す（BRU9-042）
+            const dot = isBrace(t) ? nearestBraceAnchor(pt, t) : nearestPointOnPolyline(pt, shapeOutline(t));
             hits.set(t.id, { el: t, dot });
           }
           if (hits.size === 0) clear();

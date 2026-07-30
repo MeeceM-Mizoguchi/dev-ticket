@@ -7,6 +7,7 @@ import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
 import { autoConnectLines, foldSelectedConnectors, followTriangleConnections, healBrokenElbowArrows, isConnectableShape, reconnectDraggedConnectors, remapDuplicatedCustomRefs, remapDuplicatedShapeAnchors, repairOpenTriangles, shapeSig, suppressTrianglePointEditing, unfoldSelectedConnectors, type DupPlan } from "@/app/lib/whiteboardAutoConnect";
+import { normalizeBraces } from "@/app/lib/whiteboardBrace";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
 import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
 import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
@@ -24,6 +25,8 @@ import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
 import { WhiteboardToolbar } from "./WhiteboardToolbar";
 import { TriangleToolButton } from "./TriangleToolButton";
+import { BraceToolButton } from "./BraceToolButton";
+import { BraceTipHandle } from "./BraceTipHandle";
 import { MermaidToolButton } from "./MermaidToolButton";
 import { TableToolButton } from "./TableToolButton";
 import { TableResizeOverlay } from "./TableResizeOverlay";
@@ -716,7 +719,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
             if (!e.isDeleted && (e.type === "line" || e.type === "arrow")) processedLines.current.add(e.id);
           }
         }
-        // 三角形は「図形」扱い：標準の点編集UIが付いたら外す（テッペン二股化の根本防止・BRU4-051）
+        // 三角形・大括弧は「図形」扱い：標準の点編集UIが付いたら外す（テッペン二股化の根本防止・BRU4-051）
         suppressTrianglePointEditing(api, elements, appState);
         // 壊れた elbow arrow（点列が斜めのまま elbowed になった線）を救出する（BRU5-065）。
         // 放置すると Excalidraw 内部の invariant がドラッグ中に毎フレーム throw する。
@@ -797,15 +800,18 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           touchedConnIds.current.clear();
         }
         const busy = elbowHealed || dupRemapped || remapped || followed || framed || reparented || reconnected;
+        // 大括弧の点列を外接矩形から作り直す（リサイズで弧が縦横に引き伸ばされるのを直す・BRU9-042）。
+        // 変形の最中は normalizeBraces 側が見送り、指を離したフレームで整える。
+        const bracesFixed = remote || busy ? false : normalizeBraces(api, elements, appState);
         // 塗りが透明になるバグの保険的修復（BRU4-051）。万一ループが開いた三角形を閉じ直す。
-        const repaired = remote || busy ? false : repairOpenTriangles(api, elements, appState);
+        const repaired = remote || busy || bracesFixed ? false : repairOpenTriangles(api, elements, appState);
         // 【BRU7-056-4】Ctrl/Cmd を押しながらの操作ではコネクトしない（ハイライトも TriangleBindHint 側で消す）。
         // 「今のポインタ操作」にだけ効かせる（ポインタを押している間＋離した直後の評価フレーム）。
         // こうしないと Ctrl+V / Ctrl+Z など無関係なキー操作の拍子に判定が抑止されてしまう。
         const noConnect = isConnectSuppressed() && (pointerDownNow.current || pointerUpPending.current);
         // 端点つまみを掴んで離した線だけは「今繋がっている図形」を優先せず接続先を選び直す（BRU7-056-4/-6）。
         // それ以外の線まで選び直すと、端点が矩形から少しはみ出しているだけで外枠に吸われて崩れる。
-        const connected = remote || busy || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined);
+        const connected = remote || busy || bracesFixed || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ。
         // 折れ矢印トグルON時は foldAll を渡し、接続済み直線をこの追従パスで確実に折る（描画タイミング非依存）。
         // undo/redo 直後は forceAnchor: 繋ぎ替え/解除をせず、記録どおりのアンカーへ端点を戻す（BRU5-066）。
@@ -822,11 +828,11 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 追従処理に foldAll を渡すと、盤面上の“既存の接続済みの線すべて”が折れ線に作り替えられ、
         // 「Elbowを押しただけで関係ない矢印まで壊れる」事故になる（BRU5-083）。既存の線は
         // 選択して「線の形」から明示的に折る。
-        const followedTri = followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !connected && !repaired, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
+        const followedTri = followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !bracesFixed && !connected && !repaired, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
         // undo/redo の巻き戻しがまだ収束していない間は猶予窓を延長する（BRU7-058）。
         // 盤面が大きいと 300ms では追従が終わらず、窓が切れた残りの tick で接続が繋ぎ替え／解除
         // されていた。「直したものがある＝まだ収束していない」を延長条件にし、静定したら自然に閉じる。
-        if (undoing && (busy || repaired || connected || followedTri)) extendUndoGrace();
+        if (undoing && (busy || bracesFixed || repaired || connected || followedTri)) extendUndoGrace();
         // テキストボックスの背景/枠線を描く「影の背景板(rectangle)」を生成・追従・削除する（BRU5-062）。
         // 画像の上でも背景が透けないよう、DOMオーバーレイでなく実要素でネイティブに背面へ敷く。
         // 他ヘルパーが updateScene 済みの tick はスキップし（1tick遅れて追従・単一updateScene維持）、
@@ -835,7 +841,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // テキストの修復（BRU5-063）。単一 updateScene/tick を保つため、先に反映したものが
         // あれば残りは次tickへ回す（各関数は内部で最新シーンを取り直すため1tick遅れで収束する）。
         // 「線」の色変更に巻き込まれた図形ラベルの文字色を、記録した色へ戻す（BRU7-056-2）。
-        if (!remote && !busy && !connected && !repaired) {
+        if (!remote && !busy && !bracesFixed && !connected && !repaired) {
           const frameUpdated = syncFrameDecorRects(api, appState, remote);
           const bgUpdated = frameUpdated || syncTextBoxBgRects(api, appState, remote);
           const textPinned = frameUpdated || bgUpdated || pinBoundTextColor(api, remote, appState);
@@ -926,6 +932,8 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <TriangleBindHint api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <WhiteboardToolbar api={api} foldMode={foldMode} setFoldMode={setFoldMode} />}
           {canEdit && <TriangleToolButton api={api} containerRef={containerRef} />}
+          {canEdit && <BraceToolButton api={api} containerRef={containerRef} />}
+          {canEdit && <BraceTipHandle api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <MermaidToolButton api={api} containerRef={containerRef} />}
           {canEdit && <TableToolButton api={api} containerRef={containerRef} />}
           {canEdit && <TableResizeOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
