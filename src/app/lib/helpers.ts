@@ -317,10 +317,19 @@ const STATUS_RANK: Record<TicketStatus, number> = {
   "stg-test": 4, uat: 5, done: 6, closed: 7, "waiting-release": 8, released: 9,
 };
 export function validateParentStatusChange(targetStatus: TicketStatus, childTickets: SprintTicket[]): string | null {
-  if (childTickets.length === 0) return null;
+  // 取下(progress === -2)の子は「今後対応しない」ため判定から除外する。
+  // 除外しないと、取下げた子の status が todo のまま残り、親を永久に前進できなくなる。
+  // 一方 保留(-1)は「一時停止しているだけでいずれ対応する」ので除外しない
+  // （除外すると「保留にすれば親を完了できる」抜け道になる）。
+  const effective = childTickets.filter(c => c.progress !== -2);
+  if (effective.length === 0) return null;
   const minRank = PARENT_STATUS_MIN_CHILD_RANK[targetStatus];
   if (minRank === undefined) return null;
-  const blocking = childTickets.filter(c => (STATUS_RANK[c.status] ?? 0) < minRank);
+  const blocking = effective.filter(c => (STATUS_RANK[c.status] ?? 0) < minRank);
   if (blocking.length === 0) return null;
-  return `子チケット ${blocking.length}件が対応完了していないため変更できません。`;
+  // 保留中の子が原因の場合、元の文言だけでは理由が分からず詰まるため内訳を併記する。
+  const held = blocking.filter(c => c.progress === -1).length;
+  return held > 0
+    ? `子チケット ${blocking.length}件が対応完了していないため変更できません。（うち保留中 ${held}件）`
+    : `子チケット ${blocking.length}件が対応完了していないため変更できません。`;
 }

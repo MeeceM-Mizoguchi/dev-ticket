@@ -4,6 +4,7 @@ import { X, CheckCircle2, Circle, Ban, Pencil } from "lucide-react";
 import { fetchMilestones } from "@/app/hooks/useProject";
 import type { MilestoneRow } from "@/app/hooks/useProject";
 import { calcWorkingHours } from "@/app/lib/helpers";
+import { calcHoldHours } from "@/app/lib/holdHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { escStack } from "@/app/lib/escStack";
 
@@ -166,32 +167,8 @@ export function ProjectMonitor({
     if (!startStr) return 0;
     const startTime = new Date(startStr).getTime();
     const endTime = endStr ? new Date(endStr).getTime() : new Date(effectiveNow).getTime();
-
-    const phaseComments = comments
-      .filter(c => {
-        const t = new Date(c.created_at || c.createdAt).getTime();
-        return t >= startTime && t <= endTime && (c.commentType === "status_change" || c.comment_type === "status_change");
-      })
-      .sort((a, b) => new Date(a.created_at || a.createdAt).getTime() - new Date(b.created_at || b.createdAt).getTime());
-
-    let totalHoldHours = 0;
-    let currentHoldStart: number | null = null;
-
-    phaseComments.forEach(c => {
-      const t = new Date(c.created_at || c.createdAt).getTime();
-      if (c.content.includes("チケットを保留にしました")) {
-        currentHoldStart = t;
-      } else if (c.content.includes("保留を解除しました") && currentHoldStart !== null) {
-        totalHoldHours += calcWorkingHours(currentHoldStart, t);
-        currentHoldStart = null;
-      }
-    });
-
-    if (checkHoldCurrent && isHold && currentHoldStart !== null) {
-      totalHoldHours += calcWorkingHours(currentHoldStart, new Date(effectiveNow).getTime());
-    }
-
-    return Math.max(0, totalHoldHours);
+    // 算出ロジックは子チケットの実績工数（BRU9-042）と共通化してある
+    return calcHoldHours(comments, startTime, endTime, checkHoldCurrent && isHold);
   };
 
   const totalHours = MILESTONES.reduce((sum, m, idx) => {
