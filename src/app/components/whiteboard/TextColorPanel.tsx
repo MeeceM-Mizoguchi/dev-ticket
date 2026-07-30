@@ -18,8 +18,9 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CustomColorSwatch, Swatch, swatchRow } from "./ColorSwatch";
+import { IndentField } from "./IndentField";
 import { isPlainTextBox } from "@/app/lib/whiteboardTextBoxBg";
-import { TEXT_COLORS, canHaveLabel, readLabelColor, readTextColor, setTextColor } from "@/app/lib/whiteboardTextColor";
+import { TEXT_COLORS, boundTextOf, canHaveLabel, readLabelColor, readTextColor, setTextColor } from "@/app/lib/whiteboardTextColor";
 
 interface Props {
   api: any;
@@ -35,13 +36,16 @@ export const HIDE_NATIVE_STROKE = `
 `;
 
 // 対象: 実際に色を書き込む要素id群 / 現在色 / 標準「線」を隠すか / 既定色(currentItemStrokeColor)も更新するか
+// indentText / indentIds はインデント欄（BRU9-040）用。揃えの判定に使うテキスト要素と、書き換え対象。
 interface Target {
   ids: string[];
   colors: string[];
   hideStroke: boolean;
   currentItem: boolean;
+  indentText: any | null;
+  indentIds: string[];
 }
-const NO_TARGET: Target = { ids: [], colors: [], hideStroke: false, currentItem: false };
+const NO_TARGET: Target = { ids: [], colors: [], hideStroke: false, currentItem: false, indentText: null, indentIds: [] };
 
 /**
  * 「背景」セクション（＝標準パネルの2つ目のカラーピッカー）の直後を差し込み位置として返す。
@@ -79,6 +83,8 @@ function collectTargets(api: any, appState: any): Target {
       colors: [readTextColor(editing)],
       hideStroke: plain,   // 図形のラベル編集中の「線」は本物の枠線色なので残す
       currentItem: plain,  // 入力中の見た目を即座に切り替えるため（標準の「線」と同じ振る舞い）
+      indentText: editing,
+      indentIds: [editing.id],
     };
   }
 
@@ -99,20 +105,29 @@ function collectTargets(api: any, appState: any): Target {
         if (t && !t.isDeleted) ids.push(t.id);
       }
     }
+    // インデントの揃え判定は「最初に見つかった実テキスト」で行う（ラベル未作成の図形は対象外）
+    let indentText: any = null;
+    for (const e of picked) {
+      const t = isPlainTextBox(e) ? e : boundTextOf(e, byId);
+      if (t) { indentText = t; break; }
+    }
     // テキストボックスだけを選んでいる時は、標準の「線」＝文字色なので隠す
-    return { ids, colors, hideStroke: picked.every(isPlainTextBox), currentItem: false };
+    return {
+      ids, colors, hideStroke: picked.every(isPlainTextBox), currentItem: false,
+      indentText, indentIds: indentText ? picked.map((e) => e.id) : [],
+    };
   }
 
   // 3. テキストツール選択中（まだ何も無い）: これから作るテキストの色を決める
   if (appState.activeTool?.type === "text") {
-    return { ids: [], colors: [appState.currentItemStrokeColor], hideStroke: true, currentItem: true };
+    return { ids: [], colors: [appState.currentItemStrokeColor], hideStroke: true, currentItem: true, indentText: null, indentIds: [] };
   }
   return NO_TARGET;
 }
 
 export function TextColorPanel({ api, containerRef, canEdit }: Props) {
   const [target, setTarget] = useState<
-    { ids: string[]; color: string | undefined; hideStroke: boolean; currentItem: boolean } | null
+    { ids: string[]; color: string | undefined; hideStroke: boolean; currentItem: boolean; indentText: any | null; indentIds: string[] } | null
   >(null);
   const mountRef = useRef<HTMLDivElement | null>(null); // 標準パネルへ差し込む実ノード
   const raf = useRef<number>(0);
@@ -138,7 +153,7 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
         // 新規描画/リサイズ/範囲選択中はパネルを出さない（操作の邪魔をしない）。
         // テキスト入力中は逆に出す（入力しながら色を変えられるように・collectTargets が担当）。
         const interacting = !!(st.newElement || st.resizingElement || st.selectionElement);
-        const { ids, colors, hideStroke, currentItem } = interacting ? NO_TARGET : collectTargets(api, st);
+        const { ids, colors, hideStroke, currentItem, indentText, indentIds } = interacting ? NO_TARGET : collectTargets(api, st);
 
         if (colors.length && mount) {
           const host = containerRef.current?.querySelector(".App-menu__left .panelColumn") as HTMLElement | null;
@@ -148,12 +163,13 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
             if (anchor && mount.previousElementSibling !== anchor) host.insertBefore(mount, anchor.nextSibling);
             else if (!mount.parentNode) host.appendChild(mount); // 万一アンカーが取れない時のフォールバック
           }
-          const sig = `${ids.join(",")}:${colors.join(",")}:${hideStroke}:${!!anchor}:${!!host}`;
+          // textAlign も署名に入れる: 揃えを変えた瞬間にインデント欄の活性/非活性を切り替えるため
+          const sig = `${ids.join(",")}:${colors.join(",")}:${hideStroke}:${!!anchor}:${!!host}:${indentText?.id}:${indentText?.textAlign}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
             // 複数選択で色が混在している時はどのスウォッチも光らせない（クリックで一括統一される）
             const uniq = new Set(colors);
-            setTarget({ ids, color: uniq.size === 1 ? [...uniq][0] : undefined, hideStroke, currentItem });
+            setTarget({ ids, color: uniq.size === 1 ? [...uniq][0] : undefined, hideStroke, currentItem, indentText, indentIds });
           }
         } else if (sigRef.current !== "") {
           sigRef.current = "";
@@ -169,7 +185,7 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
 
   if (!target || !mountRef.current) return null;
 
-  const { ids, color, hideStroke, currentItem } = target;
+  const { ids, color, hideStroke, currentItem, indentText, indentIds } = target;
   const isCustom = !!color && !TEXT_COLORS.includes(color);
   const apply = (c: string) => setTextColor(api, ids, c, currentItem);
 
@@ -183,6 +199,7 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
           <CustomColorSwatch value={color} active={isCustom} onPick={apply} />
         </div>
       </fieldset>
+      <IndentField api={api} text={indentText} ids={indentIds} />
     </>,
     mountRef.current,
   );

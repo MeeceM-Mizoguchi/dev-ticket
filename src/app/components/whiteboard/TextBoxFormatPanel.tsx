@@ -16,6 +16,7 @@ import { isPlainTextBox, type WbTextBoxFormat } from "@/app/lib/whiteboardTextBo
 import { TEXT_COLORS, readTextColor, setTextColor } from "@/app/lib/whiteboardTextColor";
 import { CustomColorSwatch, Swatch, swatchRow } from "./ColorSwatch";
 import { HIDE_NATIVE_STROKE } from "./TextColorPanel";
+import { IndentField } from "./IndentField";
 import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 interface Props {
@@ -74,7 +75,8 @@ export function TextBoxFormatPanel({ api, containerRef, canEdit }: Props) {
             }
           }
           const fmt = el.customData?.wbTextBox ?? {};
-          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${readTextColor(el)}:${!!host}`;
+          // textAlign も署名に入れる: 揃えを変えた瞬間にインデント欄の活性/非活性を切り替えるため
+          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${readTextColor(el)}:${el.textAlign}:${!!host}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
             setText(el);
@@ -149,6 +151,7 @@ export function TextBoxFormatPanel({ api, containerRef, canEdit }: Props) {
           {fmt.border && <CustomColorSwatch value={fmt.borderColor ?? "#343a40"} active={borderIsCustom} onPick={(c) => update({ borderColor: c })} />}
         </div>
       </fieldset>
+      <IndentField api={api} text={text} ids={[text.id]} />
     </>
   );
 
