@@ -10,7 +10,7 @@
 | # | 対応 | 規模 |
 |---|------|------|
 | A | 初回ロードのクエリ群を1本のオーケストレータ `runInitialLoad()` に集約し、完了数/総数を進捗として持つ | 中 |
-| B | パネル内に **プログレスオーバーレイ**（スピナー＋確定プログレスバー）を重ね、A の完了まで中身を隠す | 小 |
+| B | パネル**全面**に **ローディングオーバーレイ**（既存 `PageLoader` と同じぐるぐるスピナー）を重ね、A の完了まで中身を隠す | 小 |
 | C | 10秒ポーリング / `ticketSync` の再取得は **オーバーレイを絶対に出さない**（BUG-02/03 対策） | 小 |
 | D | 表示ディレイ 120ms・最低表示 250ms でチカチカ防止、8秒フェイルセーフで固まらないようにする | 小 |
 | E | データ確定後 1フレーム待って（double rAF）から隠し、「消えた瞬間にガタつく」のを防ぐ | 小 |
@@ -83,11 +83,9 @@ ticket?.id 変更
   │
   └─ [effect B] runInitialLoad(ticket)          ← 新規オーケストレータ
         │  jobs = [fields, commentFiles, children, projName, sprintName, (parent), (categories)]
-        │  setLoadProgress({done: 0, total: jobs.length})
         │  runIdRef を ++（古い実行の結果は破棄）
         │
-        ├─ 120ms 経過してもまだ終わってなければ  → オーバーレイ表示
-        ├─ 各 job 完了ごとに done++            → プログレスバーが伸びる
+        ├─ 120ms 経過してもまだ終わってなければ  → オーバーレイ表示（ぐるぐる）
         ├─ Promise.allSettled 完了
         ├─ double rAF（DOM が実際にペイントされるのを待つ）
         └─ 最低表示 250ms を満たしてから オーバーレイ解除
@@ -97,9 +95,7 @@ ticket?.id 変更
 ### 3.2 新規 state / ref
 
 ```ts
-// 初回ロード進捗。再取得（ポーリング/ticketSync）では絶対に触らない（BUG-02/03 対策）
-const [loadDone, setLoadDone] = useState(0);
-const [loadTotal, setLoadTotal] = useState(0);
+// 初回ロードのオーバーレイ。再取得（ポーリング/ticketSync）では絶対に触らない（BUG-02/03 対策）
 const [showLoadOverlay, setShowLoadOverlay] = useState(false);
 // 遅れて返ってきた古い実行が新しい表示を壊さないためのガード（useLinkSuggestions の runIdRef と同じ手法）
 const loadRunIdRef = useRef(0);
@@ -122,7 +118,7 @@ const INITIAL_LOAD_TIMEOUT_MS = 8000;  // フェイルセーフ（R4）
 const runInitialLoad = useCallback(async (t: SprintTicket) => {
   const runId = ++loadRunIdRef.current;
 
-  // 走らせる job を先に確定させてから total を決める（進捗が total 未確定で進むのを防ぐ）
+  // 走らせる job を条件付きで組み立てる
   const jobs: Array<() => Promise<unknown>> = [];
   if (t.id && isSupabaseEnabled) {
     jobs.push(() => reloadTicketFields(t.id));      // ← Promise を返すよう修正が必要（3.4）
@@ -139,9 +135,6 @@ const runInitialLoad = useCallback(async (t: SprintTicket) => {
     return;
   }
 
-  setLoadDone(0);
-  setLoadTotal(jobs.length);
-
   clearTimeout(graceTimerRef.current);
   graceTimerRef.current = setTimeout(() => {
     if (runId !== loadRunIdRef.current) return;
@@ -156,14 +149,16 @@ const runInitialLoad = useCallback(async (t: SprintTicket) => {
     forceHideOverlay();                       // 届いたデータで表示を続行（R4）
   }, INITIAL_LOAD_TIMEOUT_MS);
 
-  await Promise.allSettled(jobs.map(run => run().finally(() => {
-    if (runId === loadRunIdRef.current) setLoadDone(d => d + 1);
-  })));
+  await Promise.allSettled(jobs.map(run => run()));
 
   if (runId !== loadRunIdRef.current) return;   // 別チケットに切り替わっていたら破棄
   finishInitialLoad(runId);
 }, [projectId, sprintId, categories.length, reloadTicketFields, loadCommentFiles, loadChildTickets, refreshCategories]);
 ```
+
+> 進捗の「完了数/総数」は今回は表示しないため state に持ちません（下記 3.5 の決定）。
+> 将来 `4/6` のような確定バーを出したくなった場合は、この `jobs` 配列がそのまま総数になるので、
+> `run().finally(() => setLoadDone(d => d + 1))` を足すだけで拡張できます。
 
 `finishInitialLoad`（R5 の E: ペイント待ち＋最低表示時間）:
 
@@ -206,12 +201,15 @@ const finishInitialLoad = useCallback((runId: number) => {
 
 この3つが `runInitialLoad` を呼ばないことが **BUG-02 / BUG-03 の再発防止**そのものです。
 
-### 3.5 オーバーレイ UI
+### 3.5 オーバーレイ UI 【決定事項】
+
+- **範囲: パネル全面**（ヘッダーごと覆う）
+- **表示: 既存の `PageLoader` と同じぐるぐるスピナー**（確定プログレスバー・件数表記は出さない）
 
 **配置**: パネル本体 div [L1846](../src/app/components/tickets/TicketDetailPanel.tsx#L1846)（`position: fixed` / `overflow: hidden`）の**直下の子**として `position: absolute; inset: 0`。
 親が `overflow: hidden` なのでスライドインアニメーションに完全に追従します。
 
-**ヘッダーごと覆う**（＝パネル内部の全面）ことを推奨します。理由:
+ヘッダーごと覆う理由:
 
 - ヘッダーの `title` / `status` / prefix チップも `reloadTicketFields` で上書きされるため、覆わないと**ヘッダーだけ後から書き換わる**
 - ヘッダーにあるステータス変更ボタンを**子チケット未読込のまま押せてしまう**問題（3.6）を同時に塞げる
@@ -228,21 +226,23 @@ const finishInitialLoad = useCallback((runId: number) => {
 │               BRU9-042                        │  ← ticket.wbs（prop から即出せる）
 │          子チケットの保留・取下げ機能追加        │  ← ticket.title
 │                                               │
-│              読み込み中... (4/6)               │
-│          ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░               │  ← 幅 200px / 高さ 3px / 0.2s ease
+│                  読み込み中...                 │
 │                                               │
 └───────────────────────────────────────────────┘
   背景 #FAFAF8（パネル背景と同色・不透明）
 ```
 
 - 背景は不透明 `#FAFAF8`（パネル本体と同色）。半透明にすると裏の空セクションが透けて意味が薄れる
-- プログレスバーは **確定（determinate）**: `width: ${loadTotal ? (loadDone / loadTotal) * 100 : 0}%`、色は既存アクセントの `#059669`
-- ラベルは `読み込み中... (4/6)` 形式。数字を出さない案でも良いが、「進んでいる」ことが伝わる方が体感待ち時間が短い
-- スタイルは**インラインスタイル**（[feedback](../../.claude/projects/c--dev-Devticketmanagement/memory/feedback.md) の方針）。`pageloader-spin` keyframes は `PageLoader` 側に既にあるので再定義しない
-- フェードアウト（`opacity` 0.18s）を付けると解除が滑らか。`showLoadOverlay` を即 false にするのではなく `opacity` トランジション後に unmount する形でも良いが、複雑になるので**初版は即 unmount で十分**
+- スピナーは [PageLoader.tsx:5](../src/app/components/shared/PageLoader.tsx#L5) と同一仕様（34px / `3px solid rgba(5,150,105,0.15)` + `borderTop: #059669` / `pageloader-spin 0.75s linear infinite`）。
+  keyframes は `PageLoader` 側に既にあるので**再定義しない**（同ファイルから何かを import すれば `<style>` も一緒に載る形にはならないため、オーバーレイ側では `PageLoader` を直接使うのが最も確実）
+- 実装としては **`<PageLoader label="読み込み中..." />` をそのまま流用**するのが最小。ただし `PageLoader` は `height: 60vh` 固定なので、
+  `inset: 0` のラッパー内で中央寄せするために `height: 100%` を取れるようにするか、オーバーレイ側で高さを吸収する（どちらでも良いが、`PageLoader` に `fullHeight?: boolean` を足すのが影響最小）
+- WBS / タイトルは `ticket` prop から即出せるので、真っ白にならず「何を開いているか」が分かる
+- スタイルは**インラインスタイル**（[feedback](../../.claude/projects/c--dev-Devticketmanagement/memory/feedback.md) の方針）
+- フェードアウト（`opacity` 0.18s）を付けると解除が滑らか。ただし複雑になるので**初版は即 unmount で十分**
 
 **コンポーネント化**: 3713行のファイルをこれ以上膨らませないため、
-`src/app/components/tickets/TicketDetailLoadingOverlay.tsx` として切り出す（props: `wbs`, `title`, `done`, `total`, `onClose`）。
+`src/app/components/tickets/TicketDetailLoadingOverlay.tsx` として切り出す（props: `wbs`, `title`, `onClose`）。
 
 ### 3.6 副次的に解消される既存の潜在バグ
 
@@ -274,8 +274,8 @@ const finishInitialLoad = useCallback((runId: number) => {
 |----|------|------|
 | **スケルトン UI** | 子チケット・コメント各セクションに灰色プレースホルダを出す | ❌ 却下。3713行のファイル内の各セクションに条件分岐を撒く必要があり差分が大きい。ヘッダーのフィールド書き換えやステータスボタンの早期押下（3.6）も防げない。ただし「体感が最速」なのは事実なので、将来の改善案として残す |
 | **React Suspense + use()** | データ取得を Suspense 境界に寄せる | ❌ 却下。全画面が `useEffect` + `useState` の取得パターンで統一されており、ここだけデータ取得基盤を変えるのは影響範囲が読めない |
-| **ボディだけ覆う** | ヘッダーは見せて `overflowY: auto` のボディ [L2347](../src/app/components/tickets/TicketDetailPanel.tsx#L2347) だけ覆う | △ 保留（設計判断ポイント）。ヘッダーの WBS/タイトルが即見えるので体感は良いが、3.6 のボタン早期押下は塞げず、ヘッダー内フィールドの後追い書き換えも残る |
-| **不確定バー（indeterminate）のみ** | 総数を数えず流れるバーだけ出す | △ 実装は最小だが、「プログレスを表示してほしい」という要望に対しては確定バーの方が意図に合う |
+| **ボディだけ覆う** | ヘッダーは見せて `overflowY: auto` のボディ [L2347](../src/app/components/tickets/TicketDetailPanel.tsx#L2347) だけ覆う | ❌ 却下（3.5 で全面に決定）。ヘッダーの WBS/タイトルが即見えるので体感は良いが、3.6 のボタン早期押下は塞げず、ヘッダー内フィールドの後追い書き換えも残る |
+| **確定プログレスバー（4/6 など）** | job の完了数/総数をバーと数字で出す | ❌ 却下（3.5 で既存ぐるぐるに決定）。他画面（`PageLoader` 利用ページ）とローディング表現が揃う方を優先。必要になれば `jobs` 配列から容易に拡張できる |
 | **ページ側で先読みしてから開く** | 一覧ページ側で子チケット/コメントを先に取得してから panel を開く | ❌ 却下。パネルを使う6ページ（Dashboard / MyActions / Reports / ReleaseNotes / Sprint / SprintDetail）すべてに同じ実装が必要になり、重複が増える |
 
 ---
@@ -291,7 +291,7 @@ const finishInitialLoad = useCallback((runId: number) => {
    - `runInitialLoad` / `finishInitialLoad` / 進捗 state / runId ガード / 各タイマー
    - まだ UI は出さず、`console.log` で進捗と所要時間を確認
 3. **オーバーレイ UI**
-   - `TicketDetailLoadingOverlay.tsx` 新規作成 → パネル本体 div 直下にマウント
+   - `TicketDetailLoadingOverlay.tsx` 新規作成（`PageLoader` のぐるぐる流用）→ パネル本体 div 直下にマウント
 4. **微調整**
    - grace / min / timeout の実測に基づくチューニング
    - 必要ならフェードアウト追加
@@ -330,24 +330,32 @@ const finishInitialLoad = useCallback((runId: number) => {
 
 ## 9. 検証項目
 
-- [ ] 一覧 → チケット詳細を開く: プログレスが出て、消えた瞬間に子チケット・コメント・レビュー履歴がすべて揃っている（あとから増えない）
+- [ ] 一覧 → チケット詳細を開く: ぐるぐるが出て、消えた瞬間に子チケット・コメント・レビュー履歴がすべて揃っている（あとから増えない）
 - [ ] 子チケットを持つ親チケット / 子チケット / 子なしチケット の3パターン
 - [ ] 子チケット → 親に戻る（peek strip・Esc）でもプログレスが正しく出る／二重に点滅しない
 - [ ] チケットを連続で素早く切り替えて、古い結果が新しいパネルに混ざらない
 - [ ] **10秒ポーリングでオーバーレイが出ない**（開いたまま30秒放置して確認）
 - [ ] 別タブで同じチケットを更新 → `ticketSync` 反映時にオーバーレイが出ない
 - [ ] コメント投稿・ステータス変更・保留/取下 の直後にオーバーレイが出ない
-- [ ] 高速回線でプログレスが点滅しない（出ないか、出ても250ms以上留まる）
+- [ ] 高速回線でぐるぐるが点滅しない（出ないか、出ても250ms以上留まる）
 - [ ] DevTools の Network を Slow 3G にして 8秒フェイルセーフが働く
-- [ ] プログレス表示中に Esc / ✕ で閉じられる
-- [ ] ステータス変更ボタンがプログレス中は押せない（3.6）
-- [ ] Supabase 無効（モック）モードでプログレスが出ない
+- [ ] オーバーレイ表示中に Esc / ✕ で閉じられる
+- [ ] ステータス変更ボタンがオーバーレイ表示中は押せない（3.6）
+- [ ] Supabase 無効（モック）モードでオーバーレイが出ない
 - [ ] `npx vite build` が通る
 
 ---
 
-## 10. 設計判断ポイント（実装前に確認したい）
+## 10. 設計判断（決定済み）
 
-1. **オーバーレイの範囲**: パネル全面（推奨・3.5）か、ヘッダーを残してボディのみか
-2. **プログレスの表記**: `読み込み中... (4/6)` のように件数を出すか、文言だけにするか
-3. **確定バー**か、不確定（流れる）バーか — 推奨は確定バー
+| # | 論点 | 決定 |
+|---|------|------|
+| 1 | オーバーレイの範囲 | **パネル全面**（ヘッダーも覆う）。3.6 のボタン早期押下も同時に塞ぐ |
+| 2 | プログレスの表現 | **既存の `PageLoader` のぐるぐるスピナー**（確定バー・件数表記なし）。他画面とローディング表現を揃える |
+| 3 | 進捗 state | 表示しないので `loadDone` / `loadTotal` は持たない。将来必要になれば `jobs` 配列から拡張 |
+
+### 未確定（実装時に決めれば良いもの）
+
+- `PageLoader` を `height: 100%` でも使えるようにするか（`fullHeight?: boolean` prop 追加）、オーバーレイ側で高さを吸収するか
+- 解除時のフェードアウト（初版は無しで進める）
+- grace 120ms / min 250ms / timeout 8000ms の具体値 — 実測後にチューニング
