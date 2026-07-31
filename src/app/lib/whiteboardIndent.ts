@@ -19,14 +19,19 @@
 //
 // 最小単位は半角スペース1個。U+2009 等の可変幅スペースは Excalidraw の既定フォントにグリフが無く、
 // フォールバック幅が端末依存になる（共同編集で見た目が人により変わる）ため使わない。
+//
+// 折り返し（BRU9-053）: 改行せずに枠の端で折り返した「続きの行」にも同じインデントを付ける
+//   （ぶら下げインデント）。折り返し自体は whiteboardText の wrapText が担い、表示用テキストの
+//   組み直しは whiteboardIndentWrap が onChange の静穏フェーズで行う。本モジュールは変わらず
+//   originalText（生の空白）だけを扱う。
 import { COMMIT } from "./whiteboardHistory";
-import { fontString, lineW, wrapText } from "./whiteboardText";
+import { fontString, indentPadOf, indentSideOfAlign, lineW, wrapText, type IndentSide } from "./whiteboardText";
 import { isTableCell } from "./whiteboardTable";
 import { boundTextPos, maxTextWidth } from "./whiteboardShapeFit";
 import { boundTextOf } from "./whiteboardTextColor";
 
 /** インデントを入れる側。"start"=行頭（左揃え）／"end"=行末（右揃え） */
-export type IndentSide = "start" | "end";
+export type { IndentSide };
 
 /** 1段あたりの半角スペース数の選択肢 */
 export const INDENT_STEPS = [1, 2, 4] as const;
@@ -53,10 +58,7 @@ export function writeIndentStep(n: number): void {
  */
 export function indentSideOf(t: any): IndentSide | null {
   if (!t || t.type !== "text" || t.isDeleted) return null;
-  const a = t.textAlign;
-  if (a === "right") return "end";
-  if (a === "center") return null;
-  return "start";
+  return indentSideOfAlign(t.textAlign);
 }
 
 /** 要素（テキスト or ラベルを持つ図形）から、実際にインデントするテキスト要素を引く。 */
@@ -66,10 +68,7 @@ export function indentTargetOf(el: any, byId: Map<string, any>): any | undefined
 }
 
 /** 行の先頭（または末尾）に続く半角スペースの数。 */
-export function padCount(line: string, side: IndentSide): number {
-  const m = side === "start" ? /^ */.exec(line) : / *$/.exec(line);
-  return m ? m[0].length : 0;
-}
+export const padCount = indentPadOf;
 
 const rawTextOf = (t: any): string =>
   typeof t?.originalText === "string" ? t.originalText : (t?.text ?? "");
@@ -304,17 +303,20 @@ export function handleIndentKey(e: KeyboardEvent, editingText: any): boolean {
   return true;
 }
 
-// テキスト要素の text/width/height を、インデント後の originalText から計算し直す。
-// Excalidraw の refreshTextDimensions は非公開なので、コードベース既存の自前計測
-// （whiteboardText / whiteboardShapeFit）を使って同じ式で求める。
-function measured(t: any, raw: string, container: any | undefined): { text: string; width: number; height: number } {
+/**
+ * テキスト要素の text/width/height を、インデント後の originalText から計算し直す。
+ * Excalidraw の refreshTextDimensions は非公開なので、コードベース既存の自前計測
+ * （whiteboardText / whiteboardShapeFit）を使って同じ式で求める。
+ * 折り返しは wrapText がぶら下げインデント込みで行う（BRU9-053）。
+ */
+export function measureWrapped(t: any, raw: string, container: any | undefined): { text: string; width: number; height: number } {
   const fontSize = t.fontSize ?? 16;
   const lh = t.lineHeight ?? 1.25;
   const font = fontString(fontSize, t.fontFamily ?? 2);
   const fixedW = container ? Math.max(1, maxTextWidth(container))
     : t.autoResize === false ? Math.max(1, t.width ?? 1)
     : 0; // 0 = 折り返さない（autoResize の素のテキストボックス）
-  const lines = fixedW ? wrapText(raw, font, fixedW) : raw.split("\n");
+  const lines = fixedW ? wrapText(raw, font, fixedW, indentSideOf(t)) : raw.split("\n");
   const measuredW = lines.reduce((m, l) => Math.max(m, lineW(l, font)), 0);
   return {
     text: lines.join("\n"),
@@ -348,7 +350,7 @@ export function indentElements(api: any, ids: string[], delta: number, step: num
       patch.set(t.id, { ...t, originalText: next, version: (t.version ?? 1) + 1, versionNonce: rand() });
       continue;
     }
-    const m = measured(t, next, container);
+    const m = measureWrapped(t, next, container);
     const nt: any = { ...t, originalText: next, ...m, version: (t.version ?? 1) + 1, versionNonce: rand() };
     if (container) {
       // 幅が変わると右揃えラベルの x が動く。図形の高さ追従は reflowBoundTextShapes に任せる。

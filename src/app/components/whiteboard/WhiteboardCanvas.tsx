@@ -20,6 +20,7 @@ import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
 import { handleIndentKey } from "@/app/lib/whiteboardIndent";
+import { reflowIndentWrap } from "@/app/lib/whiteboardIndentWrap";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
@@ -30,6 +31,7 @@ import { BraceTipHandle } from "./BraceTipHandle";
 import { MermaidToolButton } from "./MermaidToolButton";
 import { TableToolButton } from "./TableToolButton";
 import { TableResizeOverlay } from "./TableResizeOverlay";
+import { CornerRotateOverlay } from "./CornerRotateOverlay";
 import { TableRowColControls } from "./TableRowColControls";
 import { SnapGuideLayer } from "./SnapGuideLayer";
 import { TriangleBindHint } from "./TriangleBindHint";
@@ -865,6 +867,9 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         // 素の図形のバインドテキスト高さフィット（BRU6-011）。改行を減らすと元の高さへ戻す。
         // 新規作成中(newElement)は触らない（作成中の要素を updateScene で壊さない）。
         reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || dupRemapped || !!appState?.newElement);
+        // インデントを入れた行が端で折り返したとき、続きの行も同じインデント位置から始める（BRU9-053）。
+        // 表示用の text だけを組み直す（生テキストは触らない）。高さは上の reflowBoundTextShapes が追従。
+        reflowIndentWrap(api, remote || hardInteract || shapeFrozen || elbowHealed || dupRemapped || !!appState?.newElement);
       }
     } catch { /* noop */ }
     finally { api?.__wbSetDefer?.(false); } // 遅延スコープを閉じる（以後の updateScene は同期適用へ戻す）
@@ -936,6 +941,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <BraceTipHandle api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <MermaidToolButton api={api} containerRef={containerRef} />}
           {canEdit && <TableToolButton api={api} containerRef={containerRef} />}
+          {canEdit && <CornerRotateOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TableResizeOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TableRowColControls api={api} containerRef={containerRef} canEdit={canEdit} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />

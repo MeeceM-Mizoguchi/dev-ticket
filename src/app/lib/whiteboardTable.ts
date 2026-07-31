@@ -16,7 +16,7 @@
 // 生成した折り返し済みテキストと寸法をバインドテキスト要素へ直接反映するので、描画も一致する。
 // 計測ヘルパーと編集中テキスト状態は素の図形フィット(whiteboardShapeFit)と共有する（whiteboardText）。
 import { viewportCoordsToSceneCoords, convertToExcalidrawElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
-import { fontString, lineW, wrapText, getEditingTextEl } from "./whiteboardText";
+import { fontString, indentSideOfAlign, lineW, wrapText, getEditingTextEl } from "./whiteboardText";
 
 export { setEditingTextEl } from "./whiteboardText"; // 既存 import 経路の互換のため再エクスポート
 
@@ -565,7 +565,8 @@ export function reflowTables(api: any, skip: boolean): boolean {
           const font = fontString(fontSize, t.fontFamily ?? 2);
           const raw = rawTextOf(cell, t);
           const innerW = Math.max(1, colW[c] - 2 * HPAD);
-          const wrapped = wrapText(raw, font, innerW);
+          // 左/右揃えのセルはインデントを折り返し行にも引き継ぐ（中央揃え＝インデント非対応・BRU9-053）
+          const wrapped = wrapText(raw, font, innerW, indentSideOfAlign(t.textAlign));
           let w = 0; for (const ln of wrapped) w = Math.max(w, lineW(ln, font));
           const h = wrapped.length * fontSize * lineHeight;
           wrapInfo.set(cell.id, { text: wrapped.join("\n"), w: Math.ceil(w), h: Math.ceil(h) });

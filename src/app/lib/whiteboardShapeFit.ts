@@ -22,7 +22,7 @@
 //
 // 幅は一切触らない（Excalidraw の折り返し幅管理／ユーザー設定幅を尊重）。高さ変更に伴い、バインド
 // テキストの配置を Excalidraw と同じ式で中央へ置き直す（はみ出し自己修復に頼らず即整える）。
-import { fontString, lineW, wrapText, getLiveEditing } from "./whiteboardText";
+import { fontString, indentSideOfAlign, lineW, wrapText, getLiveEditing } from "./whiteboardText";
 import { isTableCell } from "./whiteboardTable";
 
 const PAD = 5;      // Excalidraw BOUND_TEXT_PADDING
@@ -161,7 +161,8 @@ export function reflowBoundTextShapes(api: any, skip: boolean): boolean {
     const lineHeight = t.lineHeight ?? 1.25;
     const font = fontString(fontSize, t.fontFamily ?? 2);
     const innerW = Math.max(1, maxTextWidth(c));
-    const wrapped = wrapText(raw, font, innerW);
+    // ぶら下げインデント込みで折る（reflowIndentWrap が書く text と同じ行数＝同じ高さになる・BRU9-053）
+    const wrapped = wrapText(raw, font, innerW, indentSideOfAlign(t.textAlign));
     const textH = wrapped.length * fontSize * lineHeight;
     const fitH = containerHeightForText(textH, c.type);
 
