@@ -10,7 +10,7 @@ import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
-import { RichEditor } from "@/app/components/shared/RichEditor";
+import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 // CustomSelect コンポーネントをインポート
@@ -384,6 +384,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   // document レベルでキャプチャして画像だけ処理する
   useEffect(() => {
     const handler = (e: ClipboardEvent) => {
+      // 🌟 BRU9-044: Excel等の表コピーは表HTMLと画像が同時にクリップボードに載るため、
+      //   表があれば画像は拾わない（詳細欄に表としてそのまま貼り付けられるようにする）。
+      if (clipboardHasTable(e.clipboardData)) return;
       const items = Array.from(e.clipboardData?.items ?? []);
       const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
       if (imgFiles.length === 0) return;

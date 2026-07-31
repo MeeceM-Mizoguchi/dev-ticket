@@ -22,7 +22,7 @@ import { subscribeTicket, emitTicketUpdate } from "@/app/lib/ticketSync";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { Avatar } from "@/app/components/shared/Avatar";
-import { RichEditor } from "@/app/components/shared/RichEditor";
+import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -2742,6 +2742,9 @@ export function TicketDetailPanel({
             {/* 詳細 + 画像 */}
             <div
               onPaste={e => {
+                // 🌟 BRU9-044: Excel等の表コピーは表HTMLと画像が同時にクリップボードに載るため、
+                //   表として貼り付けたいケースで画像添付が増えてしまう。表があれば画像は拾わない。
+                if (clipboardHasTable(e.clipboardData)) return;
                 const items = Array.from(e.clipboardData?.items ?? []);
                 const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
                 if (imgFiles.length === 0) return;

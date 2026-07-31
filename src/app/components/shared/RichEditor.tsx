@@ -183,6 +183,49 @@ const NormalizeTableWidths = Extension.create({
   },
 });
 
+// 🌟 BRU9-044: クリップボードのHTMLに表が含まれるか判定する。
+//   Excel / Googleスプレッドシート / Word / Notion などから表をコピーすると、
+//   クリップボードには「表のHTML」と「セル範囲を描画したビットマップ画像」が同時に載る。
+//   画像を優先すると表が画像として貼り付いてしまうため、表があれば画像側は捨てる。
+//   コピー元によっては <table> ではなく <tr> から始まる断片が載るので、そちらも表とみなす
+//   （ProseMirror の readHTML が <table><tbody> を補ってくれるため、どちらでも表として貼れる）。
+export function clipboardHasTable(data: DataTransfer | null): boolean {
+  const html = data?.getData("text/html") ?? "";
+  return /<table[\s>]/i.test(html) || (/<tr[\s>]/i.test(html) && /<t[dh][\s>]/i.test(html));
+}
+
+// 🌟 BRU9-044: タブ区切りテキストを表のHTMLに変換する。表のHTMLをクリップボードに載せない
+//   表計算ソフト向けのフォールバック。誤検知（タブを含むコードの貼り付けなど）を避けるため、
+//   「2行以上」「2列以上」「全行の列数が一致」を満たすときだけ表とみなす。
+//   セル内改行は Excel の TSV と同じくダブルクォートで囲まれるので、その解除も行う。
+export function tsvToTableHtml(text: string): string | null {
+  if (!text.includes("\t")) return null;
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch !== '"') { cell += ch; continue; }
+      if (text[i + 1] === '"') { cell += '"'; i++; continue; }
+      quoted = false;
+      continue;
+    }
+    if (ch === '"' && cell === "") { quoted = true; continue; }
+    if (ch === "\t") { row.push(cell); cell = ""; continue; }
+    if (ch === "\r") continue;
+    if (ch === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; continue; }
+    cell += ch;
+  }
+  if (cell !== "" || row.length > 0) { row.push(cell); rows.push(row); }
+  const cols = rows[0]?.length ?? 0;
+  if (rows.length < 2 || cols < 2 || rows.some(r => r.length !== cols)) return null;
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const cellHtml = (s: string) => `<td>${s.split("\n").map(line => `<p>${esc(line)}</p>`).join("")}</td>`;
+  return `<table><tbody>${rows.map(r => `<tr>${r.map(cellHtml).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
 // ---- インライン画像 NodeView（ホバーでコピー/削除、クリックで拡大表示） ----
 function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
   const [hovered, setHovered] = useState(false);
@@ -773,13 +816,29 @@ export function RichEditor({
     onUpdate: ({ editor }) => { if (!editor.isEditable) return; onChange?.(editor.getHTML()); },
     editorProps: {
       handlePaste: onImageUpload ? (_view, event) => {
-        const items = Array.from(event.clipboardData?.items ?? []);
+        const data = event.clipboardData;
+        // 🌟 BRU9-044: Excel等の表をコピーすると、クリップボードには text/html(表のHTML) と
+        //   image/png(セル範囲のビットマップ)の両方が載る。ここで image/* を無条件に拾って
+        //   アップロードしていたため、表が画像として貼り付けられてしまっていた。
+        //   HTMLに表が含まれるときは画像を無視し、ProseMirror標準のHTMLパース(=表として貼付)に任せる。
+        if (clipboardHasTable(data)) return false;
+        const items = Array.from(data?.items ?? []);
         const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
         if (imgFiles.length === 0) return false;
+        // 🌟 BRU9-044: 表のHTMLをクリップボードに載せない表計算ソフトもある。画像と一緒に
+        //   タブ区切りテキストが載っていれば表計算のセル範囲なので、そこから表を組み立てる。
+        const tsvTable = tsvToTableHtml(data?.getData("text/plain") ?? "");
+        if (tsvTable) {
+          event.preventDefault();
+          editor?.chain().focus().insertContent(tsvTable).run();
+          return true;
+        }
         event.preventDefault();
         imgFiles.forEach(async (file) => {
           const url = await onImageUpload(file);
           if (url) editor?.chain().focus().setImage({ src: url }).run();
+          // アップロードが失敗すると「貼り付けたのに何も起きない」状態になるので必ず記録する
+          else console.warn("[RichEditor] 画像を貼り付けられませんでした（アップロード先がURLを返しませんでした）", { type: file.type, size: file.size, clipboardTypes: data?.types });
         });
         return true;
       } : undefined,
