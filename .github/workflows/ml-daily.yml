@@ -52,11 +52,26 @@ jobs:
           APP_URL: ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -f -X POST "$APP_URL/api/ml/analyze-skills" \
+          # ★ URL を正規化してから叩く ★
+          #   APP_URL が末尾スラッシュ付き / http:// だと "//api/..." や scheme 昇格で
+          #   Vercel が 308 を返す。curl は -L 無しでは追わず、-f は 3xx を失敗扱いにしないので、
+          #   本文 "Redirecting..." を出すだけで exit 0 → ワークフローは緑のまま
+          #   ①が一度も実行されない、という事故が実際に起きた（7/14〜7/31）。
+          BASE="${APP_URL%/}"
+          BASE="${BASE#http://}"; BASE="${BASE#https://}"; BASE="https://$BASE"
+
+          RES=$(curl -sS -f -L -X POST "$BASE/api/ml/analyze-skills" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            -d '{}' | head -c 2000
+            -d '{}')
+          echo "$RES" | head -c 2000
           echo
+
+          # ★ 応答を必ず検証する ★ 静かに素通りするくらいなら赤で落とす。
+          case "$RES" in
+            *'"ok":true'*) ;;
+            *) echo "::error::analyze-skills が正常応答を返さなかった（リダイレクト/認証失敗の可能性）"; exit 1 ;;
+          esac
 
       # ── ② モデル学習（全組織）── ①の結果を材料にする
       - uses: actions/setup-python@v5

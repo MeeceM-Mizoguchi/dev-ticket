@@ -42,11 +42,22 @@ jobs:
           APP_URL: ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          curl -sS -f -X POST "$APP_URL/api/ml/analyze-skills" \
+          # ★ URL 正規化と応答検証 ★ 理由は ml-daily.yml の同じステップのコメント参照。
+          #   末尾スラッシュ/http:// による 308 を curl が黙って成功扱いにする事故を防ぐ。
+          BASE="${APP_URL%/}"
+          BASE="${BASE#http://}"; BASE="${BASE#https://}"; BASE="https://$BASE"
+
+          RES=$(curl -sS -f -L -X POST "$BASE/api/ml/analyze-skills" \
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
-            -d '{}' | head -c 2000
+            -d '{}')
+          echo "$RES" | head -c 2000
           echo
+
+          case "$RES" in
+            *'"ok":true'*) ;;
+            *) echo "::error::analyze-skills が正常応答を返さなかった（リダイレクト/認証失敗の可能性）"; exit 1 ;;
+          esac
 
       # ── ② モデル学習（全組織） ──
       # 完了チケットが少ない組織は学習せず、ルールベースのまま運用される（train.py 内で判定）。
