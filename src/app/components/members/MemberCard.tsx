@@ -90,11 +90,15 @@ export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills
   };
 
   return (
+    // ★ カードは縦フレックス＋height:100% ★
+    //   親がグリッド（stretch）なので、これで同じ行のカードが必ず同じ高さになる。
+    //   そのうえで下部（数値＋ボタン）を marginTop:auto で底に貼り付けると、
+    //   名前が2行になる等の可変要素があってもボタン位置が揃う。
     <div ref={cardRef}
-      style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", boxShadow: highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.20)" : "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", transition: "all 0.2s", cursor: "pointer" }}
+      style={{ background: "#FFFFFF", borderRadius: 16, overflow: "hidden", boxShadow: highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.20)" : "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", transition: "all 0.2s", cursor: "pointer", height: "100%", display: "flex", flexDirection: "column" }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.25)" : "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = highlighted ? "0 0 0 3px #059669, 0 8px 32px rgba(5,150,105,0.20)" : "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
-      <div style={{ height: 60, background: rc.grad, position: "relative", borderRadius: "16px 16px 0 0", overflow: "hidden" }}>
+      <div style={{ height: 60, flexShrink: 0, background: rc.grad, position: "relative", borderRadius: "16px 16px 0 0", overflow: "hidden" }}>
         <div style={{ position: "absolute", inset: 0, backgroundImage: "radial-gradient(circle at 80% 50%, rgba(255,255,255,0.12) 0%, transparent 60%)" }} />
         <div style={{ position: "absolute", top: 12, right: 14 }}>
           <span style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.9)", background: "rgba(255,255,255,0.18)", padding: "3px 8px", borderRadius: 20, letterSpacing: "0.04em" }}>
@@ -107,7 +111,7 @@ export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills
           <Avatar name={member.name} size="md" />
         </div>
       </div>
-      <div style={{ padding: "28px 18px 18px" }}>
+      <div style={{ padding: "28px 18px 18px", flex: 1, display: "flex", flexDirection: "column" }}>
         <div style={{ marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <p style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>{member.name}</p>
@@ -131,23 +135,32 @@ export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills
         {/* ── ENHA2-034 スキル（メンバー管理権限を持つ人だけに表示） ── */}
         {canManageSkills && (
           <div style={{ marginBottom: 12 }}>
-            <div style={{ background: "#FAFAFA", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 10, padding: "8px 10px", minHeight: 52 }}>
+            {/* ★ 高さは固定（minHeight ではなく height）★
+                以前は minHeight:52 ＋ flexWrap:"wrap" だったため、スキルがある人は
+                「チップ → 折り返して +N → AI推定バッジ」で3行=約90pxになり、
+                スキル未登録の人（52px）との差およそ35pxが、下のトグル・数値・
+                ボタンをまるごと押し下げてカード間でガタついていた。 */}
+            <div style={{ background: "#FAFAFA", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 10, padding: "8px 10px", height: 52, overflow: "hidden" }}>
               {chips.length === 0 ? (
                 <p style={{ fontSize: 10.5, color: "#C9C4BB" }}>スキル未登録</p>
               ) : (
                 <>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                    {chips.slice(0, 4).map(({ ms, skill }) => {
-                      const lm = layerMeta(skill.layer);
-                      return (
-                        <span key={ms.skillId} title={`${lm.label} / ${skill.name} Lv${ms.level}`}
-                          style={{ fontSize: 9.5, fontWeight: 600, padding: "2px 6px", borderRadius: 5, background: lm.bg, color: lm.color, whiteSpace: "nowrap" }}>
-                          {skill.name} {ms.level}
-                        </span>
-                      );
-                    })}
+                  {/* 折り返さず1行に収める。入りきらないチップは横に隠れるが、
+                      件数を示す「+N」は flexShrink:0 で必ず右端に残す。 */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ display: "flex", gap: 4, overflow: "hidden", flex: 1, minWidth: 0 }}>
+                      {chips.slice(0, 4).map(({ ms, skill }) => {
+                        const lm = layerMeta(skill.layer);
+                        return (
+                          <span key={ms.skillId} title={`${lm.label} / ${skill.name} Lv${ms.level}`}
+                            style={{ fontSize: 9.5, fontWeight: 600, padding: "2px 6px", borderRadius: 5, background: lm.bg, color: lm.color, whiteSpace: "nowrap", flexShrink: 0 }}>
+                            {skill.name} {ms.level}
+                          </span>
+                        );
+                      })}
+                    </div>
                     {chips.length > 4 && (
-                      <span style={{ fontSize: 9.5, color: "#B0A9A4", padding: "2px 4px" }}>+{chips.length - 4}</span>
+                      <span style={{ fontSize: 9.5, color: "#B0A9A4", padding: "2px 4px", flexShrink: 0 }}>+{chips.length - 4}</span>
                     )}
                   </div>
                   {hasUnverified && (
@@ -175,7 +188,9 @@ export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+        {/* marginTop:auto で下部ブロックをカードの底に貼り付ける。
+            スキル欄の有無や名前の折り返しに関係なく、数値とボタンの位置が揃う。 */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14, marginTop: "auto" }}>
           {/* 🌟 修正: valueの参照先を取得した projectCount と ticketCount に変更 */}
           {[{ value: projectCount, label: "PJ", accent: "#059669" }, { value: ticketCount, label: "チケット", accent: "#0284C7" }].map(({ value, label }) => (
             <div key={label} style={{ background: "#F4F5F6", borderRadius: 10, padding: "12px", textAlign: "center" as const }}>
