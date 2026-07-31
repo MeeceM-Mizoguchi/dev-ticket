@@ -15,7 +15,7 @@ const ErrMsg = ({ msg }: { msg: string }) => (
   </p>
 );
 
-export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCount }: { onClose: () => void; projectId: string; onCreated?: () => void; currentSprintCount?: number }) {
+export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCount }: { onClose: () => void; projectId: string; onCreated?: (sprintId?: string) => void; currentSprintCount?: number }) {
   const { plan } = usePlan();
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
@@ -68,6 +68,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
       return;
     }
     setErrorMsg(null);
+    let createdSprintId: string | undefined; // 作成後スクロール&強調のため親へ返す（BRU5-034）
     if (isSupabaseEnabled) {
       setSaving(true);
       const { data: inserted, error } = await supabase!.from("sprints").insert({
@@ -80,8 +81,9 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
         setErrorMsg(`作成に失敗しました: ${error?.message ?? "0件挿入 (RLS ポリシー不足の可能性)"}`);
         return;
       }
+      createdSprintId = inserted[0].id;
     }
-    onCreated?.();
+    onCreated?.(createdSprintId);
     onClose();
   };
 

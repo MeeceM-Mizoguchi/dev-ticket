@@ -1,10 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
-import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType } from "@/app/types";
+import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
+// ENHA2-034 担当者レコメンド（自動アサイン）
+import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
+import { fetchSkills } from "@/app/lib/skillsApi";
+import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
-import { TICKET_STATUSES, getTicketStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
+import { calcHoldHours, HOLD_START_MARKER, HOLD_END_MARKER } from "@/app/lib/holdHours";
+import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -13,8 +19,10 @@ import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { subscribeTicket, emitTicketUpdate } from "@/app/lib/ticketSync";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { Avatar } from "@/app/components/shared/Avatar";
-import { RichEditor } from "@/app/components/shared/RichEditor";
+import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -22,6 +30,7 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
@@ -43,6 +52,21 @@ const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100, pending: 0,
   "waiting-release": 100, released: 100,
 };
+
+// 初回ロードのオーバーレイ制御値。
+// チケットを開いた直後は本体・コメント・子チケット・パンくずが別々のクエリで返るため、
+// 揃うまでオーバーレイで覆って段階的なレイアウトシフトを見せない（BUG-04 の恒久対策）。
+const INITIAL_LOAD_GRACE_MS = 120;    // これ以内に終わればオーバーレイを出さない（一瞬の点滅を防ぐ）
+const INITIAL_LOAD_MIN_MS = 250;      // 一度出したら最低これだけ見せる（チカチカ防止）
+const INITIAL_LOAD_TIMEOUT_MS = 8000; // クエリが失敗・ハングしてもパネルが永久に隠れないためのフェイルセーフ
+
+// 保留／取下の解除コメントに載せる「戻した先のステータス名」を解決する。
+// TICKET_STATUSES には closed / done の単独エントリが無く、find が undefined になるため
+// （子チケットの「対応完了」= closed がここに該当する）、見つからない時だけ getStatusMeta で補う。
+function statusLabelOf(status: string): string {
+  return TICKET_STATUSES.find(s => s.value === status)?.label
+    ?? getStatusMeta(status as TicketStatus).label;
+}
 
 const ACTION_BUTTONS: Partial<Record<TicketStatus, { label: string; next: TicketStatus; color: string; bg: string }>> = {
   todo: { label: "着手開始", next: "in-progress", color: "#D97706", bg: "#FFF7ED" },
@@ -114,6 +138,27 @@ function pointToComment(targetEl: HTMLElement) {
   window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
 }
 
+// 子チケットの実績工数バッジ（BRU5-028）。0Hのときは自前ツールチップで理由を表示する。
+// native title は表示が不安定なため、hoverで確実に出す自前実装にする。
+function ChildHoursBadge({ hours }: { hours: number }) {
+  const [hover, setHover] = useState(false);
+  const measured = hours > 0;
+  return (
+    <span
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ position: "relative", fontSize: 10, fontWeight: 700, color: measured ? "#6B6458" : "#B0A9A4", fontFamily: "var(--font-mono)", flexShrink: 0, cursor: "default" }}
+    >
+      {hours}H
+      {hover && !measured && (
+        <span style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, whiteSpace: "nowrap", background: "#1A1714", color: "#fff", fontSize: 10, fontWeight: 600, padding: "5px 9px", borderRadius: 6, boxShadow: "0 4px 14px rgba(0,0,0,0.22)", zIndex: 60, pointerEvents: "none" }}>
+          着手開始から1分未満の場合は計測されません
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function TicketDetailPanel({
   ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
 }: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
@@ -141,6 +186,8 @@ export function TicketDetailPanel({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 🌟 追加: 取下の確認モーダル表示用ステート
   const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
+  // 🌟 追加(BRU4-059): 親未開始の子チケットを着手する際の「親も開始しますか？」確認モーダル
+  const [showParentStartConfirm, setShowParentStartConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   // 🌟 修正: isUpdating だと名前が被る可能性があるため、専用の名前に変更
   const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
@@ -153,6 +200,9 @@ export function TicketDetailPanel({
   const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
   const [assignee, setAssignee] = useState<string>(ticket?.assignee ?? "");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
+  // ENHA2-034 担当者レコメンド（自動アサイン）
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [showRecommend, setShowRecommend] = useState(false);
   const [startDate, setStartDate] = useState(ticket?.startDate ?? "");
   const [dueDate, setDueDate] = useState(ticket?.dueDate ?? "");
   const [estimatedH, setEstimatedH] = useState(ticket?.estimatedHours ?? 0);
@@ -167,17 +217,28 @@ export function TicketDetailPanel({
   const [categoryId, setCategoryId] = useState<string | null>(ticket?.categoryId ?? null);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
 
+  // 初回ロード用オーバーレイの表示フラグ。詳細は INITIAL_LOAD_* 定数のコメント参照。
+  // 定期ポーリング／ticketSync の再取得では絶対に true にしない（BUG-02 / BUG-03 の再発防止）。
+  const [showLoadOverlay, setShowLoadOverlay] = useState(false);
+
   // related data
   const [comments, setComments] = useState<TicketComment[]>([]);
   const [sourceFiles, setSourceFiles] = useState<TicketSourceFile[]>([]);
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [reviewerEligibleNames, setReviewerEligibleNames] = useState<string[]>([]);
-  const [projectMemberNames, setProjectMemberNames] = useState<string[]>([]);
   const [adminMemberNames, setAdminMemberNames] = useState<string[]>([]);
-  const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
-  const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectWikiItems, setProjectWikiItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectMinuteItems, setProjectMinuteItems] = useState<{ id: string; title: string }[]>([]);
+
+  // メンション候補(チケット/バックログ/Wiki/議事録/メンバー)。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const {
+    tickets: projectTickets,
+    backlogItems: projectBacklogItems,
+    wikiItems: projectWikiItems,
+    minuteItems: projectMinuteItems,
+    fileItems: projectFileItems,
+    members: projectMemberNames,
+    prefixLabels: fetchedPrefixLabels,
+  } = useLinkSuggestions(projectId);
 
   // review request form
   const [reviewContent, setReviewContent] = useState("");
@@ -238,6 +299,7 @@ export function TicketDetailPanel({
   const [isReleaseDateUndecided, setIsReleaseDateUndecided] = useState(ticket?.isReleaseDateUndecided ?? false);
   const [showChangeDatePicker, setShowChangeDatePicker] = useState(false);
   const [pendingReleaseDate, setPendingReleaseDate] = useState<string | null>(null);
+  const [showUndecidedConfirm, setShowUndecidedConfirm] = useState(false);
 
   // 対応工数
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(ticket?.actualWorkHours ?? null);
@@ -263,10 +325,15 @@ export function TicketDetailPanel({
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
   // 🌟 カテゴリー一覧を最新の状態に更新する関数
+  // どの projectId のカテゴリーを取得済みかを覚えておき、初回ロード時の二重フェッチを避ける
+  const categoriesLoadedForRef = useRef<string | null>(null);
   const refreshCategories = useCallback(async () => {
     if (!isSupabaseEnabled || !projectId) return;
     const { data } = await supabase!.from("ticket_categories").select("*").eq("project_id", projectId).order("created_at");
-    if (data) setCategories(data.map(mapTicketCategory));
+    if (data) {
+      setCategories(data.map(mapTicketCategory));
+      categoriesLoadedForRef.current = projectId;
+    }
   }, [projectId]);
 
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -290,10 +357,19 @@ export function TicketDetailPanel({
     if (!isSupabaseEnabled) return;
     const { data } = await supabase!
       .from("sprint_tickets")
-      .select("id,wbs,title,status,priority,progress,parent_id")
-      .eq("parent_id", ticketId)
-      .order("wbs");
-    if (data) setChildTickets(data.map(mapSprintTicket));
+      .select("id,wbs,title,status,priority,progress,parent_id,actual_work_hours,started_at,review_requested_at,review_approved_at,stg_completed_at,uat_completed_at,released_at")
+      .eq("parent_id", ticketId);
+    if (data) {
+      // 🌟 修正(BRU4-057): 子チケットのwbsはゼロ埋め無しのため、DBの文字列ソート(order by wbs)だと
+      // "…-10" が "…-2" より前に並んでしまう。末尾の枝番を数値として昇順に並べ替える。
+      const childNum = (wbs: string) => {
+        const s = String(wbs);
+        const n = parseInt(s.slice(s.lastIndexOf("-") + 1), 10);
+        return Number.isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
+      };
+      const sorted = [...data].sort((a, b) => childNum(a.wbs) - childNum(b.wbs));
+      setChildTickets(sorted.map(mapSprintTicket));
+    }
   }, []);
 
   const loadCommentFiles = useCallback(async (ticketId: string) => {
@@ -306,15 +382,43 @@ export function TicketDetailPanel({
     if (fData) setSourceFiles(fData.map(mapSourceFile));
   }, []);
 
-  const loadRelated = useCallback(async (ticketId: string) => {
-    await Promise.all([loadCommentFiles(ticketId), loadChildTickets(ticketId)]);
-  }, [loadCommentFiles, loadChildTickets]);
+  // パンくず（プロジェクト名 / スプリント名 / 親チケット）。
+  // 初回ロードの完了待ちに含めるため、それぞれ Promise を返す形に切り出してある。
+  const loadBreadcrumbProject = useCallback(async (pid: string) => {
+    const { data } = await supabase!.from("projects").select("name").eq("id", pid).single();
+    if (data?.name) setBreadcrumbProjName(data.name);
+  }, []);
+
+  const loadBreadcrumbSprint = useCallback(async (sid: string) => {
+    const { data } = await supabase!.from("sprints").select("name, identifier").eq("id", sid).single();
+    if (data?.name) setBreadcrumbSprintName(data.name);
+    if (data?.identifier) setBreadcrumbSprintIdentifier(data.identifier);
+  }, []);
+
+  const loadBreadcrumbParent = useCallback(async (parentId: string) => {
+    const { data } = await supabase!.from("sprint_tickets").select("*").eq("id", parentId).single();
+    if (data) setBreadcrumbParentTicket(mapSprintTicket(data));
+  }, []);
+
+  // Supabase 無効時のパンくず（モックデータから同期的に解決する）
+  const applyMockBreadcrumbs = useCallback((t: SprintTicket) => {
+    const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
+    const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
+    if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
+    if (fallbackSprint) setBreadcrumbSprintName(fallbackSprint.name);
+    if (t.parentId) {
+      const allTickets = require("@/app/data/mock").SPRINTS.flatMap((s: any) => s.tickets ?? []) as SprintTicket[];
+      const parent = allTickets.find(pt => pt.id === t.parentId);
+      if (parent) setBreadcrumbParentTicket(parent);
+    }
+  }, [projectId, sprintId]);
 
   // サーバから最新のチケット本体を取得してフィールド state を更新する。
   // 初回ロードと、他タブからの ticketSync 通知時の再取得で共用する。
-  const reloadTicketFields = useCallback((ticketId: string) => {
-    if (!ticketId || !isSupabaseEnabled) return;
-    supabase!.from("sprint_tickets").select("*").eq("id", ticketId).single()
+  // 初回ロードのオーバーレイ解除は「全クエリの完了」を待つため、必ず Promise を返す。
+  const reloadTicketFields = useCallback((ticketId: string): Promise<void> => {
+    if (!ticketId || !isSupabaseEnabled) return Promise.resolve();
+    return supabase!.from("sprint_tickets").select("*").eq("id", ticketId).single()
       .then(({ data }) => {
         if (!data) return;
         const t = mapSprintTicket(data);
@@ -341,6 +445,94 @@ export function TicketDetailPanel({
         setPrefixes(t.prefixes ?? []);
       });
   }, []);
+
+  // ───────── 初回ロードのオーケストレーション ─────────
+  // チケットを開いたときに走るクエリを1か所に集約し、全部揃うまでオーバーレイで覆う。
+  // ここを通るのは「チケットを開いた／切り替えた」ときだけ。
+  // 定期ポーリング(10秒)や ticketSync の再取得は従来どおり loadCommentFiles を直接呼び、
+  // オーバーレイには一切触れない（BUG-02 / BUG-03 の再発防止）。
+  const loadRunIdRef = useRef(0);
+  const overlayShownAtRef = useRef(0);
+  const graceTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const failsafeTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const minVisibleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const clearLoadTimers = useCallback(() => {
+    clearTimeout(graceTimerRef.current);
+    clearTimeout(failsafeTimerRef.current);
+    clearTimeout(minVisibleTimerRef.current);
+  }, []);
+
+  const hideLoadOverlay = useCallback(() => {
+    clearLoadTimers();
+    overlayShownAtRef.current = 0;
+    setShowLoadOverlay(false);
+  }, [clearLoadTimers]);
+
+  // データ確定後、実際に描画されるフレームまで待ってからオーバーレイを解除する。
+  // ここを待たないと、消えた直後に高さが確定してガタッと動くのが見えてしまう。
+  const finishInitialLoad = useCallback((runId: number) => {
+    clearLoadTimers();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (runId !== loadRunIdRef.current) return;
+      const shownFor = overlayShownAtRef.current ? performance.now() - overlayShownAtRef.current : Infinity;
+      const wait = Math.max(0, INITIAL_LOAD_MIN_MS - shownFor);
+      if (wait === 0) { hideLoadOverlay(); return; }
+      minVisibleTimerRef.current = setTimeout(() => {
+        if (runId !== loadRunIdRef.current) return;
+        hideLoadOverlay();
+      }, wait);
+    }));
+  }, [clearLoadTimers, hideLoadOverlay]);
+
+  const runInitialLoad = useCallback(async (t: SprintTicket) => {
+    const runId = ++loadRunIdRef.current;
+    clearLoadTimers();
+
+    if (!isSupabaseEnabled) {
+      applyMockBreadcrumbs(t);
+      finishInitialLoad(runId);
+      return;
+    }
+
+    // 走らせるクエリを条件付きで組み立てる。
+    // profiles(担当者候補) / skills(モーダル用) / メンション候補は初期表示のレイアウトを
+    // 動かさないため、意図的に待ち合わせに含めていない。
+    const jobs: Array<() => Promise<unknown>> = [];
+    if (t.id) {
+      jobs.push(() => reloadTicketFields(t.id));
+      jobs.push(() => loadCommentFiles(t.id));
+      jobs.push(() => loadChildTickets(t.id));
+      if (t.parentId) jobs.push(() => loadBreadcrumbParent(t.parentId!));
+    }
+    if (projectId) jobs.push(() => loadBreadcrumbProject(projectId));
+    if (sprintId) jobs.push(() => loadBreadcrumbSprint(sprintId));
+    if (projectId && categoriesLoadedForRef.current !== projectId) jobs.push(() => refreshCategories());
+
+    // 待つものが無い（モック相当 / wbs だけの仮チケット）ならオーバーレイは出さない
+    if (jobs.length === 0) { finishInitialLoad(runId); return; }
+
+    graceTimerRef.current = setTimeout(() => {
+      if (runId !== loadRunIdRef.current) return;
+      overlayShownAtRef.current = performance.now();
+      setShowLoadOverlay(true);
+    }, INITIAL_LOAD_GRACE_MS);
+
+    failsafeTimerRef.current = setTimeout(() => {
+      if (runId !== loadRunIdRef.current) return;
+      console.warn("[TicketDetailPanel] 初回ロードがタイムアウトしました。取得済みのデータで表示を続行します。");
+      hideLoadOverlay();
+    }, INITIAL_LOAD_TIMEOUT_MS);
+
+    await Promise.allSettled(jobs.map(run => run()));
+
+    if (runId !== loadRunIdRef.current) return; // 別チケットに切り替わっていたら破棄
+    finishInitialLoad(runId);
+  }, [projectId, sprintId, applyMockBreadcrumbs, clearLoadTimers, finishInitialLoad, hideLoadOverlay,
+    reloadTicketFields, loadCommentFiles, loadChildTickets,
+    loadBreadcrumbParent, loadBreadcrumbProject, loadBreadcrumbSprint, refreshCategories]);
+
+  useEffect(() => clearLoadTimers, [clearLoadTimers]);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -489,43 +681,20 @@ export function TicketDetailPanel({
     setPrefixes(ticket.prefixes ?? []);
     setShowPrefixInput(false);
     setPrefixInputValue("");
+    setBreadcrumbParentTicket(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.id]);
 
-    if (ticket.id && isSupabaseEnabled) {
-      reloadTicketFields(ticket.id);
-    }
-
-    if (isSupabaseEnabled) {
-      if (projectId) {
-        supabase!.from("projects").select("name").eq("id", projectId).single()
-          .then(({ data }) => { if (data?.name) setBreadcrumbProjName(data.name); });
-      }
-      if (sprintId) {
-        supabase!.from("sprints").select("name, identifier").eq("id", sprintId).single()
-          .then(({ data }) => {
-            if (data?.name) setBreadcrumbSprintName(data.name);
-            if (data?.identifier) setBreadcrumbSprintIdentifier(data.identifier);
-          });
-      }
-      setBreadcrumbParentTicket(null);
-      if (ticket?.parentId) {
-        supabase!.from("sprint_tickets").select("*").eq("id", ticket.parentId).single()
-          .then(({ data }) => { if (data) setBreadcrumbParentTicket(mapSprintTicket(data)); });
-      }
-    } else {
-      const fallbackProj = require("@/app/data/mock").PROJECTS.find((p: any) => p.id === projectId);
-      const fallbackSprint = require("@/app/data/mock").SPRINTS.find((s: any) => s.id === sprintId);
-      if (fallbackProj) setBreadcrumbProjName(fallbackProj.name);
-      if (fallbackSprint) setBreadcrumbSprintName(fallbackSprint.name);
-      setBreadcrumbParentTicket(null);
-      if (ticket?.parentId) {
-        const allTickets = require("@/app/data/mock").SPRINTS.flatMap((s: any) => s.tickets ?? []) as SprintTicket[];
-        const parent = allTickets.find(t => t.id === ticket.parentId);
-        if (parent) setBreadcrumbParentTicket(parent);
-      }
-    }
-
-    if (ticket.id) loadRelated(ticket.id);
-  }, [ticket?.id, projectId, sprintId, loadRelated, reloadTicketFields]);
+  // 初回ロード。上のリセットとは分離してある。
+  // 以前は同じ effect に同居していたため、projectId が遅れて確定するページでは
+  // コメント／子チケットがもう一度空に戻る二重フラッシュが起きていた。
+  useEffect(() => {
+    // パネルを閉じたら進行中の実行を破棄してオーバーレイも消す。
+    // 残したままだと次に開いたチケットで一瞬オーバーレイが見えてしまう。
+    if (!ticket) { loadRunIdRef.current++; hideLoadOverlay(); return; }
+    runInitialLoad(ticket);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.id, projectId, sprintId, runInitialLoad, hideLoadOverlay]);
 
   // ticketSync: 同じチケットを別タブで開いている他パネルが更新したら、
   // 自分のローカル state をサーバ最新値で再取得する(自分発は無視)。
@@ -542,32 +711,18 @@ export function TicketDetailPanel({
     return unsub;
   }, [ticket?.id, reloadTicketFields, loadCommentFiles]);
 
+  // カテゴリー一覧の取得は runInitialLoad の job に統合済み（projectId 変化時も上の effect が再実行される）。
+
+  // フックが取得したプレフィックスを取り込む。ここで入力しただけでまだ保存していない
+  // ラベルが再取得で消えないよう、置き換えではなくマージする。
   useEffect(() => {
-    if (!isSupabaseEnabled || !projectId) return;
-    refreshCategories();
-    supabase!.from("projects").select("members").eq("id", projectId).single()
-      .then(({ data }) => { if (data?.members) setProjectMemberNames(data.members as string[]); });
-    (async () => {
-      const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", projectId);
-      if (!sprintData?.length) return;
-      const sprintIds = sprintData.map((s: { id: string }) => s.id);
-      const [{ data: ticketData }, { data: prefixData }] = await Promise.all([
-        supabase!.from("sprint_tickets").select("wbs, title").in("sprint_id", sprintIds).order("wbs"),
-        supabase!.from("sprint_tickets").select("prefixes").in("sprint_id", sprintIds),
-      ]);
-      if (ticketData) setProjectTickets(ticketData as { wbs: string; title: string }[]);
-      if (prefixData) {
-        const labels = [...new Set((prefixData as { prefixes: string[] }[]).flatMap(r => r.prefixes ?? []))].sort();
-        setAllProjectPrefixLabels(labels);
-      }
-    })();
-    supabase!.from("backlog_items").select("id, title").eq("project_id", projectId).order("id")
-      .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
-    supabase!.from("wiki_pages").select("id, title").eq("project_id", projectId).eq("is_folder", false)
-      .then(({ data }) => { if (data) setProjectWikiItems(data as { id: string; title: string }[]); });
-    supabase!.from("meeting_minutes").select("id, title").eq("project_id", projectId).order("meeting_date", { ascending: false })
-      .then(({ data }) => { if (data) setProjectMinuteItems(data as { id: string; title: string }[]); });
-  }, [projectId]);
+    if (!fetchedPrefixLabels.length) return;
+    setAllProjectPrefixLabels(prev => {
+      const merged = [...new Set([...prev, ...fetchedPrefixLabels])].sort();
+      const same = merged.length === prev.length && merged.every((l, i) => l === prev[i]);
+      return same ? prev : merged;
+    });
+  }, [fetchedPrefixLabels]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -614,13 +769,16 @@ export function TicketDetailPanel({
   const handleBacklogMentionClick = useCallback((id: string) => { openPreview("backlog", id); }, [openPreview]);
   const handleWikiMentionClick = useCallback((id: string) => { openPreview("wiki", id); }, [openPreview]);
   const handleMinuteMentionClick = useCallback((id: string) => { openPreview("minute", id); }, [openPreview]);
+  const handleFileMentionClick = useCallback((id: string) => { openPreview("file", id); }, [openPreview]);
 
   const save = useCallback(async (fields: Record<string, unknown>) => {
     if (!ticket || !isSupabaseEnabled) return;
     await supabase!.from("sprint_tickets").update(fields).eq("id", ticket.id);
     onUpdated?.();
     emitMine();
-  }, [ticket?.id, emitMine]);
+    // タイトルが変わるとメンション候補の表示名も変わるので、他タブへ再取得を促す
+    if ("title" in fields) emitLinkItemsChanged(projectId, "ticket");
+  }, [ticket?.id, emitMine, projectId]);
 
   const saveDebounced = useCallback((fields: Record<string, unknown>) => {
     clearTimeout(timerRef.current);
@@ -809,6 +967,10 @@ export function TicketDetailPanel({
     }
   }, [ticket?.id, fetchServerImages, emitMine]);
 
+  // チケットのステータス変更／保留／取下のたびに、所属スプリントの完了判定を
+  // DBへ同期する（表示は computeSprintStatus のライブ計算が担保するので fire-and-forget）。
+  const syncSprint = useCallback(() => { void syncSprintStatusInDb(sprintId); }, [sprintId]);
+
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
     const validErr = validateParentStatusChange(btn.next, childTickets);
@@ -824,10 +986,20 @@ export function TicketDetailPanel({
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
     await addComment(`<p>${btn.label}：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus as TicketStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
   // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
+  // 🌟 追加(BRU9-042): 子チケットではマイルストーン記録を呼ばない。
+  //   recordMilestoneFromTicketStatus は closed → releasedAt にマップされ、未記録の工程を
+  //   一括で現在時刻スタンプするため、レビューもSTGも通っていない子の実績列が壊れる。
+  //   子チケットは実績モニター非対応で started_at しか使わず、それは着手時に記録済み。
+  const recordMilestoneIfParent = (nextStatus: string) => {
+    if (!ticket || ticket.parentId) return;
+    recordMilestoneFromTicketStatus(ticket.id, nextStatus as any);
+  };
+
   const handleToggleHold = async () => {
     if (!ticket || !isSupabaseEnabled) return;
 
@@ -837,19 +1009,21 @@ export function TicketDetailPanel({
       // 保留にする（progressを-1としてDBに保存）
       setProgress(-1);
       await supabase!.from("sprint_tickets").update({ progress: -1 }).eq("id", ticket.id);
-      if (ticket) recordMilestoneFromTicketStatus(ticket.id, "保留" as any);
-      await addComment(`<p>チケットを保留にしました</p>`, "status_change", [], status as TicketStatus);
+      recordMilestoneIfParent("保留");
+      await addComment(`<p>${HOLD_START_MARKER}</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+      syncSprint();
     } else {
       // 保留を解除する（元のステータスに応じた正しいprogressを再計算してDBに保存）
       const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
       setProgress(restoredProgress);
       await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
-      if (ticket) recordMilestoneFromTicketStatus(ticket.id, status as any);
-      const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
+      recordMilestoneIfParent(status);
+      const newLabel = statusLabelOf(status);
       // 🌟 修正: ProjectMonitor側の判定ロジックと一致させるため、コメントテキストに「保留を解除しました」を確実に含める
-      await addComment(`<p>保留を解除しました（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
+      await addComment(`<p>${HOLD_END_MARKER}（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+      syncSprint();
     }
   };
 
@@ -860,9 +1034,10 @@ export function TicketDetailPanel({
     try {
       setProgress(-2);
       await supabase!.from("sprint_tickets").update({ progress: -2 }).eq("id", ticket.id);
-      if (ticket) recordMilestoneFromTicketStatus(ticket.id, "取下" as any);
+      recordMilestoneIfParent("取下");
       await addComment(`<p>チケットを取下げました</p>`, "status_change", [], status as TicketStatus);
       onUpdated?.();
+      syncSprint();
       setShowWithdrawConfirm(false);
     } finally {
       setIsWithdrawLoading(false);
@@ -884,27 +1059,72 @@ export function TicketDetailPanel({
         const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
         setProgress(restoredProgress);
         await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
-        if (ticket) recordMilestoneFromTicketStatus(ticket.id, status as any);
-        const newLabel = TICKET_STATUSES.find(s => s.value === status)?.label ?? status;
+        recordMilestoneIfParent(status);
+        const newLabel = statusLabelOf(status);
         await addComment(`<p>取下げを解除し、ステータスを「${newLabel}」に戻しました</p>`, "status_change", [], status as TicketStatus);
         onUpdated?.();
+        syncSprint();
       } finally {
         setIsWithdrawLoading(false);
       }
     }
   };
 
-  const handleChildStart = async () => {
+  // 子チケット本体を「対応中」に開始する実処理
+  const startChildSelf = async () => {
     if (!ticket) return;
     const newStatus: TicketStatus = "in-progress";
     const p = STATUS_PROGRESS[newStatus];
     setStatus(newStatus);
     setProgress(p);
     if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+      // 子チケットの着手時刻を記録（対応完了時に稼働時間を算出するため・BRU5-028）
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p, started_at: new Date().toISOString() }).eq("id", ticket.id);
     }
     await addComment(`<p>着手開始しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+    syncSprint();
+  };
+
+  // 🌟 追加(BRU4-059): 子チケット着手に伴い、裏で親チケットも「対応中」に開始する実処理
+  const startParentTicket = async () => {
+    const parent = breadcrumbParentTicket;
+    if (!parent) return;
+    const newStatus: TicketStatus = "in-progress";
+    const p = STATUS_PROGRESS[newStatus];
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", parent.id);
+      // 親チケット側にもステータス変更コメントを残し、履歴を子チケットと一致させる
+      await supabase!.from("ticket_comments").insert({
+        id: `CMT-${Date.now()}`, ticket_id: parent.id, user_name: userName,
+        content: `<p>子チケット着手に伴い、ステータスを「対応中」に変更しました</p>`,
+        ticket_status: newStatus, comment_type: "status_change", images: [],
+      });
+    }
+    recordMilestoneFromTicketStatus(parent.id, newStatus);
+    // ローカルの親情報も開始済みへ更新（同一セッションで再度ダイアログが出ないように）
+    setBreadcrumbParentTicket({ ...parent, status: newStatus, progress: p });
+    onUpdated?.();
+    syncSprint();
+  };
+
+  // 🌟 修正(BRU4-059): 親が未開始(todo)なら「親も開始しますか？」の確認を挟む
+  const handleChildStart = async () => {
+    if (!ticket) return;
+    const parent = breadcrumbParentTicket;
+    if (parent && parent.status === "todo") {
+      setShowParentStartConfirm(true);
+      return;
+    }
+    // 親が既に開始済み（またはparent情報未取得）の場合は従来通りそのまま着手
+    await startChildSelf();
+  };
+
+  // 🌟 追加(BRU4-059): 確認ダイアログで「親も開始する」を選んだ時の処理
+  const handleConfirmParentStart = async () => {
+    // 子チケットの画面に戻った状態で子を開始済みにし、裏で親も開始する
+    await startChildSelf();
+    await startParentTicket();
   };
 
   const handleChildComplete = async () => {
@@ -914,10 +1134,32 @@ export function TicketDetailPanel({
     setStatus(newStatus);
     setProgress(p);
     if (isSupabaseEnabled) {
-      await supabase!.from("sprint_tickets").update({ status: newStatus, progress: p }).eq("id", ticket.id);
+      // 着手時刻を取得し、着手→完了の稼働時間(営業時間ベース)を実績工数として保存（BRU5-028）。
+      // すでに実績が手入力されている場合は上書きしない。
+      const { data: row } = await supabase!.from("sprint_tickets").select("started_at, actual_work_hours").eq("id", ticket.id).single();
+      const patch: Record<string, unknown> = { status: newStatus, progress: p };
+      if (row?.actual_work_hours == null && row?.started_at) {
+        const startedMs = new Date(row.started_at).getTime();
+        const nowMs = Date.now();
+        // 着手から1分以上経過した場合のみ計測（誤操作・即完了は計測しない）
+        if (nowMs - startedMs >= 60_000) {
+          // 🌟 追加(BRU9-042): 保留していた間は稼働していないため実績工数から差し引く。
+          //   画面上の comments ステートは他ユーザーの操作を取りこぼす可能性があるためDBから取り直す。
+          const { data: holdComments } = await supabase!
+            .from("ticket_comments")
+            .select("content, created_at, comment_type")
+            .eq("ticket_id", ticket.id)
+            .order("created_at");
+          const holdHours = calcHoldHours(holdComments ?? [], startedMs, nowMs);
+          const workedHours = calcWorkingHours(startedMs, nowMs) - holdHours;
+          patch.actual_work_hours = Math.max(0, Math.round(workedHours * 10) / 10);
+        }
+      }
+      await supabase!.from("sprint_tickets").update(patch).eq("id", ticket.id);
     }
     await addComment(`<p>対応完了しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleSaveActualWorkHours = async (hours: number, segmentHours?: string[]) => {
@@ -965,6 +1207,7 @@ export function TicketDetailPanel({
       }
       const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
       await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
+      syncSprint();
     })();
   };
 
@@ -979,6 +1222,40 @@ export function TicketDetailPanel({
       }).eq("id", ticket.id);
     }
     onUpdated?.();
+  };
+
+  const handleSetReleaseDateUndecided = async () => {
+    if (!ticket) return;
+    setReleaseDate("");
+    setIsReleaseDateUndecided(true);
+    setShowChangeDatePicker(false);
+    if (isSupabaseEnabled) {
+      await supabase!.from("sprint_tickets").update({
+        release_date: null,
+        is_release_date_undecided: true,
+      }).eq("id", ticket.id);
+    }
+    await addComment(`<p>リリース日を未定に変更しました</p>`, "status_change", []);
+    onUpdated?.();
+  };
+
+  // ENHA2-034: 組織のスキルマスタを読む（自動アサインのモーダルで使う）
+  useEffect(() => {
+    if (!userOrgId) return;
+    fetchSkills(userOrgId).then(setSkills).catch(() => setSkills([]));
+  }, [userOrgId]);
+
+  // ENHA2-034: モーダルで選んだ必要スキル・開発規模をこのチケットに保存する
+  //（②レコメンドの学習材料としてDBに残す）
+  const persistTicketSkills = async (req: RequiredSkill[], scale: string | null) => {
+    if (!ticket?.id || !isSupabaseEnabled) return;
+    await save({ dev_scale: scale });
+    await supabase!.from("ticket_required_skills").delete().eq("ticket_id", ticket.id);
+    if (req.length > 0) {
+      await supabase!.from("ticket_required_skills").insert(
+        req.map(r => ({ ticket_id: ticket.id, skill_id: r.skillId, importance: r.importance })),
+      );
+    }
   };
 
   const saveAssignee = (name: string) => {
@@ -1182,6 +1459,7 @@ export function TicketDetailPanel({
     setReviewContent("");
     setShowReReviewForm(false);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleRevisionRequest = async (revisionText: string = "") => {
@@ -1219,6 +1497,7 @@ export function TicketDetailPanel({
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleReviewApproval = async (approvalText: string = "") => {
@@ -1257,6 +1536,7 @@ export function TicketDetailPanel({
     setRevisionInput("");
     setRevisionImages([]);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleSkipReview = async () => {
@@ -1272,6 +1552,7 @@ export function TicketDetailPanel({
     const newLabel = TICKET_STATUSES.find(s => s.value === newStatus)?.label ?? newStatus;
     await addComment(`<p>レビュースキップ：ステータスを「${newLabel}」に変更しました</p>`, "status_change", [], newStatus);
     onUpdated?.();
+    syncSprint();
   };
 
   const handleWithdrawReview = async () => {
@@ -1305,6 +1586,7 @@ export function TicketDetailPanel({
       });
     }
     onUpdated?.();
+    syncSprint();
   };
 
   const handleDeleteTicket = async () => {
@@ -1466,6 +1748,12 @@ export function TicketDetailPanel({
   const actionBtn = status !== "pending" ? ACTION_BUTTONS[status as TicketStatus] : null;
 
   const isAssignee = !assignee || assignee === userName;
+  // 🌟 追加(BRU9-042): 保留・取下を子チケットにも開放する。
+  //   終端ステータスは親が released（リリース済み）、子は closed（対応完了）と異なるため切り替える。
+  //   すでに保留/取下中(progress < 0)のときは、解除できるよう終端でも必ずボタンを出す。
+  const isChildTicket = !!ticket.parentId;
+  const isTerminalForHold = isChildTicket ? status === "closed" : status === "released";
+  const canToggleHold = isAssignee && (progress < 0 || !isTerminalForHold);
   const reviewRequestComments = comments.filter(c => c.commentType === "review_request");
   const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
@@ -1517,6 +1805,7 @@ export function TicketDetailPanel({
           message={childTickets.length > 0
             ? `「${title}」を削除しますか？\n子チケットが${childTickets.length}件あります。子チケットも全て削除されます。`
             : `「${title}」を削除しますか？`}
+          zIndex={320}
           onConfirm={handleDeleteTicket}
           onClose={() => setShowDeleteConfirm(false)}
         />
@@ -1529,8 +1818,24 @@ export function TicketDetailPanel({
           confirmLabel="取下する"
           confirmColor="#059669"
           hasWarningText={false}
+          zIndex={320}
           onConfirm={executeWithdraw}
           onClose={() => setShowWithdrawConfirm(false)}
+        />
+      )}
+      {/* 🌟 追加(BRU4-059): 親未開始の子チケット着手時に、親も開始するか確認するモーダル */}
+      {showParentStartConfirm && (
+        <ConfirmDialog
+          title="親チケットの開始確認"
+          message={breadcrumbParentTicket
+            ? `親チケット「${breadcrumbParentTicket.wbs} ${breadcrumbParentTicket.title}」がまだ開始されていません。\n親チケットのステータスも「対応中」に開始しますか？`
+            : `親チケットのステータスも「対応中」に開始しますか？`}
+          confirmLabel="親も開始して着手する"
+          confirmColor="#D97706"
+          hasWarningText={false}
+          zIndex={320}
+          onConfirm={handleConfirmParentStart}
+          onClose={() => setShowParentStartConfirm(false)}
         />
       )}
       {pendingReleaseDate !== null && (
@@ -1540,13 +1845,27 @@ export function TicketDetailPanel({
           confirmLabel="変更する"
           confirmColor="#7C3AED"
           hasWarningText={false}
+          zIndex={320}
           onConfirm={async () => { await handleSaveReleaseDate(pendingReleaseDate); setPendingReleaseDate(null); }}
           onClose={() => setPendingReleaseDate(null)}
+        />
+      )}
+      {showUndecidedConfirm && (
+        <ConfirmDialog
+          title="リリース日未定にする"
+          message="リリース日を未定に戻しますか？リリースノートの日程指定が解除されます。"
+          confirmLabel="未定にする"
+          confirmColor="#6B7280"
+          hasWarningText={false}
+          zIndex={320}
+          onConfirm={async () => { await handleSetReleaseDateUndecided(); setShowUndecidedConfirm(false); }}
+          onClose={() => setShowUndecidedConfirm(false)}
         />
       )}
       {showMoveModal && (
         <DialogShell
           title="スプリントへ移動"
+          zIndex={320}
           onClose={isMoveLoading ? () => { } : () => setShowMoveModal(false)}
           footer={<>
             <BtnSecondary onClick={() => setShowMoveModal(false)} disabled={isMoveLoading}>キャンセル</BtnSecondary>
@@ -1618,11 +1937,11 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div onClick={stableEscHandler} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
+      <div onClick={stableEscHandler} style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
 
       {/* 背景親チケットパネル — 子チケット表示中に親を裏に見せる */}
       {showParentBackground && breadcrumbParentTicket && (
-        <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column" }}>
+        <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: 301, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "#A09690", letterSpacing: "0.05em", marginBottom: 10 }}>{breadcrumbParentTicket.wbs}</div>
             <div style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", lineHeight: 1.2 }}>{breadcrumbParentTicket.title}</div>
@@ -1631,7 +1950,13 @@ export function TicketDetailPanel({
         </div>
       )}
 
-      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 202 : 201, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim, overflow: "hidden" }}>
+      <div style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "56%", minWidth: 520, background: "#FAFAF8", zIndex: showParentBackground ? 302 : 301, boxShadow: "-16px 0 60px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", animation: isClosing ? "slideOutPanel 0.26s cubic-bezier(0.4,0,1,1) forwards" : (forceNoAnim || isParentNavigationActive) ? "none" : panelAnim, overflow: "hidden" }}>
+
+        {/* 初回ロード中はパネル全面を覆う。ヘッダーも覆うことで、
+            フィールドの後追い書き換えと、子チケット未読込のままのステータス変更操作を防ぐ。 */}
+        {showLoadOverlay && (
+          <TicketDetailLoadingOverlay wbs={ticket.wbs} title={ticket.title} onClose={stableEscHandler} />
+        )}
 
         {/* 親チケット peek strip */}
         {breadcrumbParentTicket && (
@@ -1872,8 +2197,8 @@ export function TicketDetailPanel({
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
 
-                {/* リリース済み以外のみ保留・取下ボタンを表示 */}
-                {isAssignee && !ticket.parentId && status !== "released" && (
+                {/* 終端（親: リリース済み / 子: 対応完了）以外のみ保留・取下ボタンを表示 */}
+                {canToggleHold && (
                   <button onClick={handleToggleHold}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -1887,7 +2212,7 @@ export function TicketDetailPanel({
                     {progress === -1 ? "保留解除" : "保留する"}
                   </button>
                 )}
-                {isAssignee && !ticket.parentId && status !== "released" && (
+                {canToggleHold && (
                   <button onClick={handleToggleWithdraw}
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -2173,11 +2498,24 @@ export function TicketDetailPanel({
                       ) : releaseDate ? (
                         <span style={{ fontSize: 11, color: "#6B7280" }}>予定: {releaseDate.replace(/-/g, "/")}</span>
                       ) : null}
-                      <button
-                        onClick={() => setShowChangeDatePicker(v => !v)}
-                        style={{ display: "block", marginTop: 4, fontSize: 10, color: "#7C3AED", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}>
-                        リリース日変更
-                      </button>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                        <button
+                          onClick={() => setShowChangeDatePicker(v => !v)}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, lineHeight: 1, color: showChangeDatePicker ? "#FFF" : "#7C3AED", background: showChangeDatePicker ? "#7C3AED" : "rgba(124,58,237,0.08)", border: `1px solid ${showChangeDatePicker ? "#7C3AED" : "rgba(124,58,237,0.22)"}`, borderRadius: 999, padding: "5px 11px", cursor: "pointer", transition: "background 0.15s, color 0.15s, border-color 0.15s" }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+                          日付を変更
+                        </button>
+                        {!isReleaseDateUndecided && (
+                          <button
+                            onClick={() => setShowUndecidedConfirm(true)}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, lineHeight: 1, color: "#8A827C", background: "rgba(26,23,20,0.04)", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 999, padding: "5px 11px", cursor: "pointer", transition: "background 0.15s, color 0.15s, border-color 0.15s" }}
+                            onMouseEnter={e => { e.currentTarget.style.background = "rgba(26,23,20,0.07)"; e.currentTarget.style.color = "#57504A"; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = "rgba(26,23,20,0.04)"; e.currentTarget.style.color = "#8A827C"; }}>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /></svg>
+                            未定にする
+                          </button>
+                        )}
+                      </div>
                       {showChangeDatePicker && (
                         <div style={{ marginTop: 8 }}>
                           <DatePicker
@@ -2242,7 +2580,18 @@ export function TicketDetailPanel({
 
               {/* 担当者 */}
               <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
-                <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>担当者</p>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>担当者</p>
+                  {userOrgId && skills.length > 0 && (
+                    <button onClick={e => { e.stopPropagation(); setShowRecommend(true); }}
+                      title="AIにおすすめ担当者を提案してもらう"
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 9px", fontSize: 10.5, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: "pointer", whiteSpace: "nowrap" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                      <Sparkles style={{ width: 11, height: 11 }} />自動アサイン
+                    </button>
+                  )}
+                </div>
                 <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
                   style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
@@ -2271,6 +2620,30 @@ export function TicketDetailPanel({
                   </div>
                 )}
               </div>
+
+              {/* ENHA2-034: 自動アサインのレコメンドモーダル */}
+              {showRecommend && userOrgId && (
+                <AssigneeRecommendModal
+                  orgId={userOrgId}
+                  skills={skills}
+                  estimatedHours={estimatedH}
+                  priority={priority}
+                  candidateNames={projectMemberNames.length > 0 ? projectMemberNames : undefined}
+                  initialRequired={[]}
+                  initialScale={ticket?.devScale ?? null}
+                  ticketTitle={ticket?.title}
+                  ticketDescription={ticket?.description}
+                  ticketPrefixes={ticket?.prefixes}
+                  ticketId={ticket?.id}
+                  ticketStartDate={startDate}
+                  ticketDueDate={dueDate}
+                  onClose={() => setShowRecommend(false)}
+                  onPick={(name, req, scale) => {
+                    saveAssignee(name);
+                    void persistTicketSkills(req, scale);
+                  }}
+                />
+              )}
 
               {/* 開始日 | 期限日 */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -2308,7 +2681,13 @@ export function TicketDetailPanel({
                   <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
                     <GitBranch style={{ width: 12, height: 12, color: "#059669" }} />
                     子チケット
-                    <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>({childTickets.length}件)</span>
+                    {/* 取下げた子は残作業ではないため、件数の内訳を出して誤読を防ぐ（BRU9-042） */}
+                    <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>
+                      ({childTickets.length}件{(() => {
+                        const withdrawn = childTickets.filter(c => c.progress === -2).length;
+                        return withdrawn > 0 ? ` / 取下${withdrawn}` : "";
+                      })()})
+                    </span>
                   </p>
                   {plan.featureChildTickets ? (
                     <button onClick={() => setShowCreateChild(true)}
@@ -2336,14 +2715,20 @@ export function TicketDetailPanel({
                       const cPriBg = child.priority === "high" ? "#FEF2F2" : child.priority === "medium" ? "#FFFBEB" : "#F0F9FF";
                       const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                       const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
+                      // 子チケットの実績工数（モニター用・BRU5-028）。集計はしないが各子の所要時間を帯に表示する。
+                      const childHours = Math.round(calcTicketActualHours(child) * 10) / 10;
+                      // 保留/取下の子は一覧画面と同じくグレーアウトして「止まっている」ことを一目で分かるようにする（BRU9-042）
+                      const isChildPaused = child.progress === -1 || child.progress === -2;
+                      const childBg = isChildPaused ? "#F5F5F4" : "#FAFAF8";
                       return (
                         <div key={child.id}
                           onClick={() => onSelectTicket?.(child)}
-                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: "#FAFAF8", cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
-                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#F0F9F5"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FAFAF8"; }}>
+                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.07)", background: childBg, opacity: isChildPaused ? 0.65 : 1, cursor: onSelectTicket ? "pointer" : "default", transition: "background 0.1s" }}
+                          onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = isChildPaused ? "#ECECEB" : "#F0F9F5"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBg; }}>
                           <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, flexShrink: 0 }}>{child.wbs}</span>
                           <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                          <ChildHoursBadge hours={childHours} />
                           <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
                           <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: cPriBg, color: cPriColor, flexShrink: 0 }}>{cPriLabel}</span>
                         </div>
@@ -2357,6 +2742,9 @@ export function TicketDetailPanel({
             {/* 詳細 + 画像 */}
             <div
               onPaste={e => {
+                // 🌟 BRU9-044: Excel等の表コピーは表HTMLと画像が同時にクリップボードに載るため、
+                //   表として貼り付けたいケースで画像添付が増えてしまう。表があれば画像は拾わない。
+                if (clipboardHasTable(e.clipboardData)) return;
                 const items = Array.from(e.clipboardData?.items ?? []);
                 const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
                 if (imgFiles.length === 0) return;
@@ -2371,7 +2759,7 @@ export function TicketDetailPanel({
                 <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
               </div>
               <div id="panel-description-section">
-                <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
               </div>
               <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
                 <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
@@ -2527,7 +2915,7 @@ export function TicketDetailPanel({
                                             </div>
                                             {(c.content || (c.images?.length ?? 0) > 0) && (
                                               <div style={{ background: cBg, border: `1px solid ${cBorder}`, borderRadius: 7, padding: "8px 10px" }}>
-                                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />}
                                                 {(c.images?.length ?? 0) > 0 && (
                                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
                                                     {(c.images ?? []).map((img, i) => (
@@ -2641,7 +3029,7 @@ export function TicketDetailPanel({
                       <div style={{ marginBottom: 10 }}>
                         <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                         <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                          <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                          <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                         </div>
                       </div>
                       {fileDragOver && (
@@ -2801,7 +3189,7 @@ export function TicketDetailPanel({
                           </div>
                           {editingId === c.id ? (
                             <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                              <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                              <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                               {editImages.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                   {editImages.map((img, i) => (
@@ -2845,7 +3233,7 @@ export function TicketDetailPanel({
                           ) : (
                             (c.content || c.images?.length > 0) && (
                               <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: showReviewForm ? 10 : 0 }}>
-                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                                {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />}
                                 {c.images?.length > 0 && (
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                                     {c.images.map((img, i) => (
@@ -2894,7 +3282,7 @@ export function TicketDetailPanel({
                                 </div>
                                 {editingId === reply.id ? (
                                   <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                    <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                                    <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                     {editImages.length > 0 && (
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                         {editImages.map((img, i) => (
@@ -2969,7 +3357,7 @@ export function TicketDetailPanel({
                                     data-comment-box
                                     style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
                                   >
-                                    <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                                    <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                     {reply.images.length > 0 && (
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                         {reply.images.map((img, i) => (
@@ -2993,7 +3381,7 @@ export function TicketDetailPanel({
                           <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                             <Avatar name={userName} size="xs" />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                              <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                               {replyImages.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                   {replyImages.map((img, i) => (
@@ -3033,7 +3421,7 @@ export function TicketDetailPanel({
                         {showReviewForm && (
                           <div onPaste={e => pasteImage(e, setRevisionImages, `tickets/${ticket.id}/comments`)} style={{ padding: "14px 16px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10 }}>
                             <p style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", marginBottom: 8 }}>レビューコメント（任意）</p>
-                            <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} />
+                            <RichEditor value={revisionInput} onChange={setRevisionInput} placeholder="指摘内容・承認コメントを入力... （Ctrl+V で画像貼り付け可）" minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                             {revisionImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                                 {revisionImages.map((img, i) => (
@@ -3125,7 +3513,7 @@ export function TicketDetailPanel({
 
                         {editingId === c.id ? (
                           <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                            <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                            <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                             {editImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {editImages.map((img, i) => (
@@ -3169,7 +3557,7 @@ export function TicketDetailPanel({
                         ) : (
                           (c.content || c.images?.length > 0) && (
                             <div data-comment-box style={{ background: sysBg, border: `1px solid ${sysBorder}`, borderRadius: 8, padding: "10px 12px", marginBottom: 0 }}>
-                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />}
+                              {c.content && <RichEditor value={c.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />}
                               {c.images?.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                                   {c.images.map((img, i) => (
@@ -3234,7 +3622,7 @@ export function TicketDetailPanel({
                               </div>
                               {editingId === reply.id ? (
                                 <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                   {editImages.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                       {editImages.map((img, i) => (
@@ -3308,7 +3696,7 @@ export function TicketDetailPanel({
                                   data-comment-box
                                   style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "10px 12px" }}
                                 >
-                                  <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                                  <RichEditor value={reply.content} readOnly minHeight={20} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                   {reply.images.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                       {reply.images.map((img, i) => (
@@ -3332,7 +3720,7 @@ export function TicketDetailPanel({
                         <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                           <Avatar name={userName} size="xs" />
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                             {replyImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {replyImages.map((img, i) => (
@@ -3383,7 +3771,7 @@ export function TicketDetailPanel({
                     <StatusBadge status={status} />
                   </div>
                 </div>
-                <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} />
+                <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                 {commentImages.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                     {commentImages.map((img, i) => (

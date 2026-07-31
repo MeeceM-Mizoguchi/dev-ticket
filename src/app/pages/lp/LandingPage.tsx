@@ -1,9 +1,9 @@
-﻿import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef, Fragment } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router';
 import { Button } from '@/app/components/ui/button';
 import { Card, CardContent } from '@/app/components/ui/card';
 import { Badge } from '@/app/components/ui/badge';
-import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X, Fingerprint, AppWindow, Monitor, Tablet, Smartphone } from 'lucide-react';
+import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X, Fingerprint, AppWindow, Monitor, Tablet, Smartphone, Sparkles, Brain, Target, Scale, TrendingUp, RotateCcw, RotateCw, UserRound, Moon, type LucideIcon } from 'lucide-react';
 import { MockDashboard } from '@/app/components/lp/mocks/MockDashboard';
 import { MockSprintList } from '@/app/components/lp/mocks/MockSprintList';
 import { MockSprintBoard } from '@/app/components/lp/mocks/MockSprintBoard';
@@ -31,6 +31,21 @@ function StoryBrowser({ url, children }: { url: string; children: React.ReactNod
     </div>
   );
 }
+// ─── AI section: 循環（サイクル）図の各ステップノード ──────────────────────────
+function CycleNode({ Icon, tone, title, sub }: { Icon: LucideIcon; tone: 'teal' | 'emerald'; title: string; sub: string }) {
+  const ring = tone === 'teal' ? '#5eead4' : '#6ee7b7';
+  const color = tone === 'teal' ? '#0d9488' : '#059669';
+  return (
+    <div className="flex flex-col items-center text-center" style={{ width: 78 }}>
+      <div className="w-11 h-11 rounded-2xl flex items-center justify-center mb-1 bg-white shadow-sm" style={{ border: `2px solid ${ring}` }}>
+        <Icon className="w-5 h-5" style={{ color }} />
+      </div>
+      <p className="text-[11px] font-black text-slate-800 leading-tight whitespace-nowrap">{title}</p>
+      <p className="text-[9.5px] text-slate-400 leading-tight whitespace-nowrap">{sub}</p>
+    </div>
+  );
+}
+
 // ─── Native app section: MacBook / iPad device frames ──────────────────────
 // 固定px設計(1180幅)のダッシュボードを transform:scale で枠幅に縮小し、
 // 実スクショを縮小したような見た目にする（直接埋め込むと文字が巨大化して崩れる）。
@@ -546,6 +561,10 @@ export function LandingPage() {
             <div className="hidden md:flex items-center gap-8">
               <button onClick={() => scrollToSection('news')} className="text-slate-600 hover:text-teal-600 transition-colors">お知らせ</button>
               <button onClick={() => scrollToSection('features')} className="text-slate-600 hover:text-teal-600 transition-colors">機能</button>
+              <button onClick={() => scrollToSection('ai')} className="flex items-center gap-1.5 text-slate-600 hover:text-teal-600 transition-colors">
+                AI
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#d1fae5', color: '#059669' }}>搭載</span>
+              </button>
               <button onClick={() => scrollToSection('resources')} className="flex items-center gap-1.5 text-slate-600 hover:text-teal-600 transition-colors">
                 リソース調達
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#ffedd5', color: '#ea580c' }}>準備中</span>
@@ -572,6 +591,10 @@ export function LandingPage() {
             <div className="md:hidden border-t border-slate-100 py-3 flex flex-col gap-1">
               <button onClick={() => { scrollToSection('news'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">お知らせ</button>
               <button onClick={() => { scrollToSection('features'); setMobileMenuOpen(false); }} className="text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">機能</button>
+              <button onClick={() => { scrollToSection('ai'); setMobileMenuOpen(false); }} className="flex items-center gap-2 text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">
+                AI
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#d1fae5', color: '#059669' }}>搭載</span>
+              </button>
               <button onClick={() => { scrollToSection('resources'); setMobileMenuOpen(false); }} className="flex items-center gap-2 text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">
                 リソース調達
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#ffedd5', color: '#ea580c' }}>準備中</span>
@@ -1015,6 +1038,156 @@ export function LandingPage() {
                 <div>
                   <p className="text-sm font-semibold text-slate-800">チケット移動</p>
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">チケットを別スプリントへシームレスに移動</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* AI Section（アサインAI／分析AI 搭載）— 幅・縦幅とも Mac/iPad セクションに合わせた2カラム構成 */}
+      <section id="ai" className="py-12 sm:py-20 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(180deg, #ffffff 0%, #f2fdf9 45%, #e3fbf1 100%)' }}>
+        {/* 背景デコ */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div className="absolute -top-32 -right-24 w-[520px] h-[520px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(13,148,136,0.14) 0%, transparent 65%)' }} />
+          <div className="absolute -bottom-32 -left-24 w-[460px] h-[460px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 65%)' }} />
+        </div>
+
+        <div className="max-w-7xl mx-auto relative z-10">
+          <div className="grid lg:grid-cols-2 gap-10 lg:gap-14 items-center">
+            {/* 左: コピー + 2つのAI + 信頼バッジ */}
+            <div>
+              <div className="inline-flex items-center gap-2 text-white rounded-full px-4 py-1.5 text-xs font-bold mb-5" style={{ background: 'linear-gradient(135deg, #0d9488, #10b981)', boxShadow: '0 6px 20px rgba(16,185,129,0.35)' }}>
+                <Sparkles className="w-3.5 h-3.5" />
+                AI搭載 ― 担当決めを自動化
+              </div>
+              <h2 className="text-3xl sm:text-4xl lg:text-[2.6rem] font-black leading-[1.15] mb-5 text-slate-900">
+                担当決めは、<br />
+                <span className="text-transparent bg-clip-text" style={{ backgroundImage: 'linear-gradient(120deg, #0d9488, #10b981, #059669)' }}>AIにおまかせ。</span>
+              </h2>
+              <p className="text-sm sm:text-base text-slate-600 leading-relaxed mb-7 max-w-lg">
+                外部のAIサービスは使わず、<b className="text-slate-800">あなたのチケット実績だけ</b>で動く独自AI。「誰が適任か」「今、誰が空いているか」をAIが提案します。
+              </p>
+
+              <div className="space-y-4 mb-8">
+                {/* アサインAI */}
+                <div className="flex items-start gap-3.5 bg-white/70 backdrop-blur rounded-2xl border border-emerald-100 p-4 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5">
+                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-emerald-500/30">
+                    <Target className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="min-w-0 py-0.5">
+                    <p className="text-sm font-black text-slate-900 flex items-center gap-2 flex-wrap">
+                      アサインAI
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">ワンクリック提案</span>
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">必要スキル×開発規模×<b className="text-slate-700">空き状況</b>から適任者をおすすめ。特定の人に偏らせず公平に分散します。</p>
+                  </div>
+                </div>
+                {/* 分析AI */}
+                <div className="flex items-start gap-3.5 bg-white/70 backdrop-blur rounded-2xl border border-teal-100 p-4 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5">
+                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-teal-500 to-teal-700 flex items-center justify-center flex-shrink-0 shadow-lg shadow-teal-500/30">
+                    <Brain className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="min-w-0 py-0.5">
+                    <p className="text-sm font-black text-slate-900 flex items-center gap-2 flex-wrap">
+                      分析AI
+                      <span className="text-[10px] font-bold text-teal-700 bg-teal-100 px-1.5 py-0.5 rounded">機械学習</span>
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">過去の実績を毎晩学習し、メンバーの得意分野とレベル（1〜4）を<b className="text-slate-700">自動登録・最新化</b>します。</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {[
+                  { icon: Lock, t: '外部AI不使用' },
+                  { icon: Scale, t: '公平分散' },
+                  { icon: TrendingUp, t: '使うほど高精度' },
+                ].map(({ icon: Icon, t }) => (
+                  <span key={t} className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-full px-3 py-1.5 shadow-sm">
+                    <Icon className="w-3.5 h-3.5 text-emerald-600" />
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* 右: 学習→活用の循環（サイクル図）— 4ステップが時計回りに回り続けることを可視化 */}
+            <div className="relative">
+              <div className="absolute -inset-6 rounded-[2.5rem] blur-2xl opacity-70 pointer-events-none" style={{ background: 'radial-gradient(60% 60% at 50% 45%, rgba(16,185,129,0.20), transparent 70%)' }} />
+              <div className="relative bg-white rounded-3xl border border-slate-200/80 shadow-xl p-6 sm:p-8">
+                {/* 上部ピル */}
+                <div className="flex justify-center mb-3">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <Lock className="w-3 h-3 flex-shrink-0" />
+                    外部AI不使用・自社実績だけで学習
+                  </span>
+                </div>
+
+                {/* サイクル本体（学習→活用のループ） */}
+                <div className="relative mx-auto w-full max-w-[180px] aspect-square mt-14 mb-11 sm:mt-14 sm:mb-11">
+                  {/* 回転リング＋時計回りの進行矢印（SVG） */}
+                  <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full pointer-events-none" aria-hidden="true">
+                    <circle cx="50" cy="50" r="30" fill="none" stroke="#5eead4" strokeWidth="1.4" strokeDasharray="2.5 3.5" />
+                    <g fill="#0d9488">
+                      <path d="M-3.2,-3.2 L3.2,0 L-3.2,3.2 Z" transform="translate(71.21 28.79) rotate(45)" />
+                      <path d="M-3.2,-3.2 L3.2,0 L-3.2,3.2 Z" transform="translate(71.21 71.21) rotate(135)" />
+                      <path d="M-3.2,-3.2 L3.2,0 L-3.2,3.2 Z" transform="translate(28.79 71.21) rotate(225)" />
+                      <path d="M-3.2,-3.2 L3.2,0 L-3.2,3.2 Z" transform="translate(28.79 28.79) rotate(315)" />
+                    </g>
+                  </svg>
+
+                  {/* 中心ハブ */}
+                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[40%] aspect-square rounded-full flex flex-col items-center justify-center text-center text-white shadow-lg shadow-emerald-500/30" style={{ background: 'linear-gradient(135deg, #0d9488, #10b981)' }}>
+                    <RotateCw className="w-5 h-5 mb-1" />
+                    <p className="text-[10px] font-black leading-tight">回すほど<br />賢くなる</p>
+                  </div>
+
+                  {/* 4ノード（時計回り: 実績→スキル分析→レコメンド→担当を決定） */}
+                  <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2"><CycleNode Icon={Ticket} tone="teal" title="実績" sub="チケット蓄積" /></div>
+                  <div className="absolute right-0 top-1/2 translate-x-1/2 -translate-y-1/2"><CycleNode Icon={Sparkles} tone="teal" title="スキル分析" sub="レベル登録" /></div>
+                  <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2"><CycleNode Icon={UserRound} tone="emerald" title="レコメンド" sub="スキル×空き" /></div>
+                  <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2"><CycleNode Icon={CheckCircle2} tone="emerald" title="担当を決定" sub="採用ログ" /></div>
+                </div>
+
+                {/* ▼ 深夜3:00 の夜間バッチ 詳細図解（全画面で表示） */}
+                <div className="rounded-2xl border border-teal-100 bg-gradient-to-br from-teal-50/70 to-white p-4 sm:p-5">
+                  <div className="flex items-center justify-center gap-2 mb-4">
+                    <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-black text-teal-800">
+                      <Moon className="w-3.5 h-3.5 text-teal-600 flex-shrink-0" />
+                      毎晩 AM3:00 の自動処理
+                    </span>
+                    <span className="text-[9px] font-bold text-teal-700 bg-teal-100 rounded-full px-2 py-0.5">操作不要</span>
+                  </div>
+                  <div className="flex items-stretch justify-between gap-1.5 sm:gap-2">
+                    {[
+                      { no: '1', Icon: Ticket, t: '実績を集計', s: '完了チケット' },
+                      { no: '2', Icon: Sparkles, t: 'スキル再判定', s: '分析AI' },
+                      { no: '3', Icon: Brain, t: 'モデル再学習', s: 'アサインAI' },
+                    ].map((st, i) => (
+                      <Fragment key={st.no}>
+                        {i > 0 && <ChevronRight className="w-4 h-4 text-teal-400 self-center flex-shrink-0" />}
+                        <div className="flex-1 rounded-xl bg-white border border-slate-100 shadow-sm px-1 py-3.5 text-center relative">
+                          <span className="absolute top-1 left-1 w-3.5 h-3.5 rounded-full bg-teal-600 text-white text-[8px] font-black flex items-center justify-center">{st.no}</span>
+                          <div className="w-7 h-7 mx-auto rounded-lg bg-teal-50 flex items-center justify-center mb-1.5">
+                            <st.Icon className="w-3.5 h-3.5 text-teal-600" />
+                          </div>
+                          <p className="text-[9.5px] font-black text-slate-800 leading-tight whitespace-nowrap">{st.t}</p>
+                          <p className="text-[8px] text-slate-400 leading-tight mt-0.5 whitespace-nowrap">{st.s}</p>
+                        </div>
+                      </Fragment>
+                    ))}
+                  </div>
+                  <p className="text-center text-[10px] sm:text-[11px] text-slate-500 mt-3.5 flex items-center justify-center gap-1 flex-wrap">
+                    <ArrowRight className="w-3 h-3 text-teal-500 flex-shrink-0" />
+                    翌朝には<span className="font-black text-teal-700">より賢いおすすめ</span>に。学習中もアプリは止まりません
+                  </p>
+                </div>
+
+                {/* 凡例（サイクルの色分け） */}
+                <div className="mt-6 pt-5 border-t border-slate-100 flex items-center justify-center gap-4">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-600"><span className="w-2.5 h-2.5 rounded-full bg-teal-500" />分析AI（学習）</span>
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-600"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />アサインAI（活用）</span>
                 </div>
               </div>
             </div>

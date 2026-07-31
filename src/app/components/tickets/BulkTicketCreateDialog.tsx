@@ -8,6 +8,7 @@ import { PROJECTS, MEMBERS } from "@/app/data/mock";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { escStack } from "@/app/lib/escStack";
 import { getDefaultProgressForStatus } from "@/app/lib/helpers";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 
 registerAllModules();
 
@@ -1091,6 +1092,7 @@ export function BulkTicketCreateDialog({
       if (notifyInserts.length > 0) {
         await supabase!.from("notifications").insert(notifyInserts);
       }
+      emitLinkItemsChanged(projectId, "ticket"); // 他タブの # サジェストへ即時反映
     }
 
     setSaving(false);

@@ -1,6 +1,6 @@
 // ボードを全画面表示するトグル。
 // Mac/PC: ネイティブ Fullscreen API。iPad(WKWebView)などFS非対応環境: CSS疑似全画面にフォールバック。
-import { useEffect } from "react";
+// 全画面中の Esc 挙動（フォーカスを外す→もう一度で解除）は WhiteboardCanvas 側で一元管理する（BRU6-004-2）。
 import { Maximize, Minimize } from "lucide-react";
 
 interface Props {
@@ -21,15 +21,6 @@ function nativeFullscreenSupported(el: HTMLElement | null): boolean {
 export function FullscreenButton({ targetRef, pseudoFull, setPseudoFull }: Props) {
   const native = nativeFullscreenSupported(targetRef.current);
   const isFull = (typeof document !== "undefined" && !!document.fullscreenElement) || pseudoFull;
-
-  // ネイティブ全画面の状態変化に追従（疑似全画面は自前state）
-  useEffect(() => {
-    if (native) return;
-    // 疑似全画面中は Esc で解除
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && pseudoFull) setPseudoFull(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [native, pseudoFull, setPseudoFull]);
 
   const toggle = () => {
     const el = targetRef.current;

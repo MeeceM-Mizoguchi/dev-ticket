@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, HelpCircle } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, HelpCircle, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useTabs } from "@/app/contexts/TabContext";
+import { useRefresh } from "@/app/contexts/RefreshContext";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -10,6 +11,7 @@ import { GlobalSearch } from "@/app/components/layout/GlobalSearch";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapNotification } from "@/app/lib/mappers";
 import { BugReportModal } from "@/app/components/bug-report/BugReportModal";
+import { CallButton } from "@/app/components/call/CallButton";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
 import { APP_VERSION } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
@@ -37,6 +39,7 @@ const NOTIF_VIEWED_KEY = "notif_last_viewed_at";
 
 export function Topbar() {
   const { userName, isSystemAdmin } = useAuth();
+  const { refreshNonce, refreshing, refresh } = useRefresh();
   const navigate = useNavigate();
   // Mac/iPad のタブモードでは、実URL遷移ではなくアクティブタブ内で遷移する。
   const tabs = useTabs();
@@ -239,6 +242,15 @@ export function Topbar() {
     return () => clearInterval(id);
   }, [userName]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ソフト更新(ヘッダーの更新ボタン)時に、Topbar 自身が持つ通知/お知らせも再取得する。
+  // ページ本体は key 再マウントで再取得されるが、Topbar は再マウントされないためここで拾う。
+  const refreshMountedRef = useRef(false);
+  useEffect(() => {
+    if (!refreshMountedRef.current) { refreshMountedRef.current = true; return; }
+    loadNotifications();
+    loadAnnouncement();
+  }, [refreshNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleOpen = () => {
     const now = new Date().toISOString();
     setShowNotif(true);
@@ -314,7 +326,10 @@ export function Topbar() {
     {showAnnouncement && announcement && (
       <AnnouncementModal announcement={announcement} onClose={handleMarkAsReadAndClose} anchorX={announcementAnchorX} />
     )}
-    <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 10, flexShrink: 0 }}>
+    {/* position:relative + zIndex でヘッダー自体を独立したスタッキングコンテキストにし、
+        ドロップダウン(通知/ユーザーメニュ)がページ側のsticky見出し(zIndex 100〜200)の裏に隠れないようにする。
+        モーダル類(zIndex 300以上)より下に保つことで、全画面ダイアログは従来どおりヘッダーの上に被さる。 */}
+    <header style={{ height: 52, background: "#FFFFFF", borderBottom: "1px solid rgba(20,26,22,0.08)", display: "flex", alignItems: "center", padding: "0 20px", gap: 10, flexShrink: 0, position: "relative", zIndex: 250 }}>
       <style>{`
         @keyframes bellGlow { 0%,100%{box-shadow:0 0 0 0 rgba(5,150,105,0.45)} 50%{box-shadow:0 0 0 7px rgba(5,150,105,0)} }
         @keyframes announcementPulse {
@@ -328,6 +343,7 @@ export function Topbar() {
           40% { transform: translateY(-5px); }
           60% { transform: translateY(-2.5px); }
         }
+        @keyframes topbarRefreshSpin { to { transform: rotate(360deg); } }
       `}</style>
       <GlobalSearch />
 
@@ -402,6 +418,20 @@ export function Topbar() {
       )}
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4 }}>
+        {/* 音声通話ボタン */}
+        <CallButton />
+
+        {/* 更新ボタン: フルリロードせず全データを再取得する(通話は切断されない) */}
+        <button
+          onClick={() => refresh()}
+          disabled={refreshing}
+          title="最新の状態に更新（通話中でも切断されません）"
+          style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: refreshing ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", transition: "background 0.15s" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+          <RefreshCw style={{ width: 15, height: 15, color: "#9E9690", animation: refreshing ? "topbarRefreshSpin 0.8s linear infinite" : "none" }} />
+        </button>
+
         {/* バグ報告ボタン */}
         <button
           onClick={() => { setShowBugReport(true); }}
@@ -627,17 +657,6 @@ export function Topbar() {
           )}
         </div>
       </div>
-
-      {/* 不具合・要望報告用モーダル */}
-      {showBugReport && <BugReportModal onClose={closeBugReport} />}
-
-      {/* リリース告知用モーダル */}
-      {showAnnouncement && (
-        <AnnouncementModal
-          onClose={handleMarkAsReadAndClose}
-          announcement={announcement}
-        />
-      )}
 
       {/* 生体認証用トースト */}
       {bioToast && (

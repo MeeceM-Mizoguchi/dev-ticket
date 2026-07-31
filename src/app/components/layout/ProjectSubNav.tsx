@@ -1,15 +1,17 @@
 import type { ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText, PenTool } from "lucide-react";
+import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen } from "lucide-react";
 import type { AccessLevel } from "@/app/types";
 
-type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard";
+type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard" | "files";
 
+// ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
 const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" }[] = [
   { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
   { id: "backlog",    label: "バックログ",     icon: ClipboardList, path: "/backlog",    permKey: "backlog" },
   { id: "wiki",       label: "Wiki",           icon: BookOpen,      path: "/wiki",       permKey: "wiki" },
   { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
+  { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files" },
   { id: "whiteboard", label: "ホワイトボード", icon: PenTool,       path: "/whiteboard", permKey: "whiteboard" },
 ];
 

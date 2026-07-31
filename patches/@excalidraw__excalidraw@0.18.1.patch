@@ -1,0 +1,13 @@
+diff --git a/dist/dev/index.js b/dist/dev/index.js
+index b3155bf06ccdc90dd677be6b21293a78dcd46493..71ef45b93dbff691862ccfd272554cba5cc4fd59 100644
+--- a/dist/dev/index.js
++++ b/dist/dev/index.js
+@@ -16542,7 +16542,7 @@ var UserList = React35.memo(
+                       className: "dropdown-menu UserList__collaborators",
+                       placeholder: t("userList.empty"),
+                       children: filteredCollaborators.length > 0 ? [
+-                        /* @__PURE__ */ jsx93("div", { className: "hint", children: t("userList.hint.text") }),
++                        /* @__PURE__ */ jsx93("div", { className: "hint", children: t("userList.hint.text") }, "hint"),
+                         filteredCollaborators.map(
+                           (collaborator) => renderCollaborator({
+                             actionManager,

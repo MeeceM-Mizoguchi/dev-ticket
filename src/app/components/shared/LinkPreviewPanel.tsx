@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { X, ClipboardList, BookOpen, FileText, FolderOpen, ChevronRight, ExternalLink } from "lucide-react";
+import { X, ClipboardList, BookOpen, FileText, FolderOpen, ChevronRight, ExternalLink, Copy } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
+import { htmlToMarkdown } from "@/app/lib/helpers";
 import { RichEditor } from "./RichEditor";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { FileLinkPreview } from "@/app/components/files/FileLinkPreview";
 // LinkPreviewPanel は TabProvider の外側(App.tsx 直下)に描画されるため、
 // useTabs() ではなくモジュールレベルのブリッジでアクティブタブを操作する。
 import { navigateInActiveTab, getActiveTabPath } from "@/app/contexts/TabContext";
@@ -114,6 +117,41 @@ function MinuteContent({ d }: { d: MinutePreview }) {
   );
 }
 
+// プレビュー内容をプレーンテキスト(Markdown)としてまとめる
+function buildCopyText(preview: PreviewData): string {
+  if (!preview) return "";
+  if (preview.type === "backlog") {
+    const d = preview.data;
+    const s = STATUS[d.status] ?? STATUS.todo;
+    const p = PRIORITY[d.priority] ?? PRIORITY.medium;
+    return [
+      d.title || "無題",
+      `ステータス: ${s.label} / 優先度: ${p.label}`,
+      "",
+      htmlToMarkdown(d.description).trim(),
+    ].join("\n").trim();
+  }
+  if (preview.type === "wiki") {
+    const d = preview.data;
+    return [
+      d.title || "無題のページ",
+      "",
+      htmlToMarkdown(d.content).trim(),
+    ].join("\n").trim();
+  }
+  const d = preview.data;
+  const meta = [
+    d.meetingDate ? `開催日: ${d.meetingDate.replace(/-/g, "/")}` : "",
+    d.attendees.length > 0 ? `出席者: ${d.attendees.join(", ")}` : "",
+  ].filter(Boolean).join(" / ");
+  return [
+    d.title || "新規議事録",
+    meta,
+    "",
+    htmlToMarkdown(d.content).trim(),
+  ].filter((line, i) => i !== 1 || line).join("\n").trim();
+}
+
 function buildNavUrl(
   type: "backlog" | "wiki" | "minute",
   id: string,
@@ -144,7 +182,19 @@ export function LinkPreviewPanel() {
   const [mounted, setMounted] = useState(false);
   const [data, setData] = useState<PreviewData>(null);
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const prevId = useRef<string | null>(null);
+
+  const handleCopy = useCallback(async () => {
+    const text = buildCopyText(data);
+    if (!text) return;
+    if (await copyText(text)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      console.error("Failed to copy preview content");
+    }
+  }, [data]);
 
   // タブモードではアクティブタブの現在地、Web/iPhone では実URLを基準にする。
   const basePath = getActiveTabPath()
@@ -160,6 +210,7 @@ export function LinkPreviewPanel() {
       return () => cancelAnimationFrame(raf);
     } else {
       setVisible(false);
+      setCopied(false);
       const t = setTimeout(() => { setMounted(false); setData(null); prevId.current = null; }, 300);
       return () => clearTimeout(t);
     }
@@ -172,6 +223,9 @@ export function LinkPreviewPanel() {
     prevId.current = target.id;
     setLoading(true);
     setData(null);
+
+    // ファイルは専用ビューア(FileLinkPreview)が自前で取得するのでここでは何もしない
+    if (target.type === "file") { setLoading(false); return; }
 
     if (target.type === "backlog") {
       supabase!.from("backlog_items").select("id, title, status, priority, description, images").eq("id", target.id).maybeSingle()
@@ -210,6 +264,12 @@ export function LinkPreviewPanel() {
 
   if (!mounted) return null;
 
+  // ファイルはサイドパネルではなく全画面ビューアで見せる（PDF/Excel/Word をそのまま描画するため）。
+  // 閉じても遷移しないので、直前に見ていた画面のまま戻る。
+  if (target?.type === "file") {
+    return <FileLinkPreview fileId={target.id} onClose={close} />;
+  }
+
   const typeLabel = target?.type === "backlog" ? "バックログ" : target?.type === "wiki" ? "Wiki" : "議事録";
 
   return (
@@ -244,6 +304,28 @@ export function LinkPreviewPanel() {
               {typeLabel}
             </span>
           </div>
+          {data && !loading && (
+            <div style={{ position: "relative", flexShrink: 0 }}>
+              {copied && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+                  background: "#1E293B", color: "#fff", fontSize: 12, padding: "4px 8px", borderRadius: 6,
+                  whiteSpace: "nowrap" as const, pointerEvents: "none" as const, zIndex: 9999,
+                }}>
+                  コピーしました！
+                  <div style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderBottomColor: "#1E293B" }} />
+                </div>
+              )}
+              <button
+                onClick={handleCopy}
+                title="内容をコピー"
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: copied ? "#ECFDF5" : "#F4F5F6", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, color: copied ? "#059669" : "#4B4540", cursor: "pointer", whiteSpace: "nowrap" as const }}
+              >
+                <Copy style={{ width: 12, height: 12 }} />
+                内容をコピー
+              </button>
+            </div>
+          )}
           {target && projectSlug && (
             <button
               onClick={() => {

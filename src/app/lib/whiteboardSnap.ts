@@ -14,10 +14,21 @@ export const isLinearEl = (el: El): boolean => el?.type === "line" || el?.type =
 // customData/idが失われても検出できるよう、幾何形状（閉じた3頂点の折れ線）でもフォールバック判定する。
 export const isTriangle = (el: El): boolean => {
   if (el?.type !== "line") return false;
+  // mermaid 生成要素は三角形判定・修復の対象外（closed 4点lineと誤判定して崩さないため）
+  if (el?.customData?.wbMermaid === true) return false;
   if (el?.customData?.wbTriangle === true) return true;
   if (typeof el?.id === "string" && el.id.startsWith("wb_tri_")) return true;
   const p = el?.points;
   return Array.isArray(p) && p.length === 4 && p[0]?.[0] === p[3]?.[0] && p[0]?.[1] === p[3]?.[1];
+};
+
+// 大括弧（波括弧）も内部的には line だが「図形」として扱う（コネクトの対象、端点スナップの非対象）。
+// 判定は customData の印を第一に、customData が失われた場合の保険として id の接頭辞も見る
+// （三角形と同じ方針。ただし括弧は点数が多いので幾何形状からのフォールバックは持たない）。
+export const isBrace = (el: El): boolean => {
+  if (el?.type !== "line") return false;
+  if (el?.customData?.wbBrace) return true;
+  return typeof el?.id === "string" && el.id.startsWith("wb_brace_");
 };
 
 // 点(x,y)を中心(cx,cy)まわりに angle ラジアン回転
@@ -39,19 +50,23 @@ export function linearEndpoints(el: El): Pt[] {
 }
 
 // スナップ先アンカー点。線・矢印は全頂点、その他は外接矩形の角(4)・辺中点(上下左右4)・中心(1)。
+// 大括弧は点数が多く（弧のサンプル点まで候補になると狙いが定まらない）、かつ図形扱いなので
+// 外接矩形の9点を返す。括弧の3つの先端は必ずこの9点に含まれるので、先端に揃えるスナップも効く。
 export function anchorPoints(el: El): Pt[] {
   const angle = el?.angle || 0;
-  if (isLinearEl(el)) {
+  if (isLinearEl(el) && !isBrace(el)) {
     const pts: number[][] = Array.isArray(el.points) ? el.points : [];
     const cx = el.x + (el.width ?? 0) / 2, cy = el.y + (el.height ?? 0) / 2;
     return pts.map((p) => rotate(el.x + p[0], el.y + p[1], cx, cy, angle));
   }
-  const w = el?.width ?? 0, h = el?.height ?? 0;
-  const cx = el.x + w / 2, cy = el.y + h / 2;
+  // 括弧は線形要素なので element.x/y が外接矩形の左上ではない（points[0]基準）
+  const b = isBrace(el) ? elementBBox(el) : { x: el.x, y: el.y, w: el?.width ?? 0, h: el?.height ?? 0 };
+  const w = b.w, h = b.h;
+  const cx = b.x + w / 2, cy = b.y + h / 2;
   const raw: Pt[] = [
-    { x: el.x, y: el.y }, { x: el.x + w, y: el.y }, { x: el.x, y: el.y + h }, { x: el.x + w, y: el.y + h }, // 角
-    { x: cx, y: el.y }, { x: cx, y: el.y + h }, { x: el.x, y: cy }, { x: el.x + w, y: cy },                 // 辺中点(上下左右)
-    { x: cx, y: cy },                                                                                        // 中心
+    { x: b.x, y: b.y }, { x: b.x + w, y: b.y }, { x: b.x, y: b.y + h }, { x: b.x + w, y: b.y + h }, // 角
+    { x: cx, y: b.y }, { x: cx, y: b.y + h }, { x: b.x, y: cy }, { x: b.x + w, y: cy },             // 辺中点(上下左右)
+    { x: cx, y: cy },                                                                               // 中心
   ];
   return raw.map((p) => rotate(p.x, p.y, cx, cy, angle));
 }

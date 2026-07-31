@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { ArrowLeft, Ticket } from 'lucide-react';
+import ScrollToTop from '@/app/components/lp/ScrollToTop';
 
 /**
  * ニュース一覧・記事ページ共通の外枠（固定ヘッダー＋フッター）。
@@ -10,6 +11,8 @@ export function NewsChrome({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   return (
     <div className="min-h-screen bg-white flex flex-col">
+      {/* ページ遷移（一覧→記事・記事間）で最上部へ戻す。記事が途中から表示されるのを防ぐ */}
+      <ScrollToTop />
       {/* ヘッダー */}
       <header className="fixed top-0 w-full bg-white/80 backdrop-blur-md border-b border-slate-200 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft, BookOpen, FileText } from "lucide-react";
+import { Search, X, Hash, Layers, FolderKanban, Users, MessageSquare, AlignLeft, BookOpen, FileText, ChevronDown, ChevronUp } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
@@ -116,6 +116,7 @@ const ROLE_LABELS: Record<string, string> = {
   "designer": "デザイナー", "tester": "テスター",
 };
 
+// モック検索処理（検索上限を拡大）
 function searchMock(query: string, userName: string, userRole: string): SearchResults {
   const q = query.toLowerCase();
   const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
@@ -124,13 +125,11 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
 
   const projects: ProjectResult[] = accessible
     .filter(p => p.name.toLowerCase().includes(q) || p.client.toLowerCase().includes(q))
-    .slice(0, 5)
     .map(p => ({ type: "project", id: p.id, slug: p.slug ?? p.id, name: p.name, client: p.client, status: p.status }));
 
   const accessibleSprints = SPRINTS.filter(s => accessibleIds.has(s.projectId));
   const sprints: SprintResult[] = accessibleSprints
     .filter(s => s.name.toLowerCase().includes(q) || s.goal.toLowerCase().includes(q))
-    .slice(0, 5)
     .map(s => {
       const proj = PROJECTS.find(p => p.id === s.projectId);
       return { type: "sprint", id: s.id, identifier: s.identifier ?? "", name: s.name, status: s.status, projectSlug: proj?.slug ?? proj?.id ?? "", projectName: proj?.name ?? "" };
@@ -142,15 +141,12 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
     for (const t of s.tickets) {
       if (t.title.toLowerCase().includes(q) || t.wbs.toLowerCase().includes(q)) {
         tickets.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs, status: t.status, projectSlug: proj?.slug ?? proj?.id ?? "", projectName: proj?.name ?? "", sprintId: s.id, sprintName: s.name });
-        if (tickets.length >= 5) break;
       }
     }
-    if (tickets.length >= 5) break;
   }
 
   const members: MemberResult[] = MEMBERS
     .filter(m => m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q))
-    .slice(0, 5)
     .map(m => ({ type: "member", id: m.id, name: m.name, email: m.email, role: m.role }));
 
   return { tickets, sprints, projects, members, comments: [], descriptions: [], wikis: [], minutes: [] };
@@ -166,12 +162,20 @@ export function GlobalSearch() {
   const [results, setResults] = useState<SearchResults>(EMPTY);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  
+  // 各カテゴリごとの「もっと見る（アコーディオン）」開閉ステート
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isAdmin = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
 
   const hasResults = results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length + results.wikis.length + results.minutes.length > 0;
+
+  const toggleCategory = (categoryKey: string) => {
+    setExpandedCategories(prev => ({ ...prev, [categoryKey]: !prev[categoryKey] }));
+  };
 
   const doSearch = useCallback(async (q: string) => {
     if (q.length < 2) {
@@ -181,6 +185,7 @@ export function GlobalSearch() {
     }
     setIsLoading(true);
     setIsOpen(true);
+    setExpandedCategories({}); // 新規検索時にアコーディオン状態を初期化
 
     if (!isSupabaseEnabled) {
       setResults(searchMock(q, userName, userRole));
@@ -189,8 +194,6 @@ export function GlobalSearch() {
     }
 
     try {
-      // Get accessible projects with their sprints in one query_
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let projQuery = supabase!.from("projects").select("id, name, client, status, members, organization_id, slug, sprints(id, name, status, project_id, identifier)");
       if (userRole === "owner") {
@@ -206,10 +209,8 @@ export function GlobalSearch() {
       const ql = q.toLowerCase();
       const projectResults: ProjectResult[] = accessible
         .filter(p => p.name.toLowerCase().includes(ql) || (p.client ?? "").toLowerCase().includes(ql))
-        .slice(0, 5)
         .map(p => ({ type: "project", id: p.id, slug: p.slug ?? p.id, name: p.name, client: p.client ?? "", status: p.status }));
 
-      // Build sprint map for lookup
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sprintMap = new Map<string, { id: string; identifier: string; name: string; status: string; projectSlug: string; projectName: string }>();
       for (const p of accessible) {
@@ -220,44 +221,42 @@ export function GlobalSearch() {
 
       const sprintResults: SprintResult[] = Array.from(sprintMap.values())
         .filter(s => s.name.toLowerCase().includes(ql))
-        .slice(0, 5)
         .map(s => ({ type: "sprint" as const, id: s.id, identifier: s.identifier, name: s.name, status: s.status, projectSlug: s.projectSlug, projectName: s.projectName }));
 
       const accessibleProjectIds = accessible.map(p => p.id);
       const projectLookup = new Map(accessible.map(p => [p.id, { slug: p.slug ?? p.id, name: p.name }]));
 
-      // Parallel: search tickets(title/wbs/description) + members + raw comments + wiki + minutes
+      // 🌟 50件まで上限を拡大して検索（ヒット漏れを解消）
       const [ticketResp, memberResp, rawCommentResp, wikiResp, minuteResp] = await Promise.all([
         sprintIds.length > 0
-          ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id, description").or(`title.ilike.%${q}%,wbs.ilike.%${q}%,description.ilike.%${q}%`).in("sprint_id", sprintIds).limit(10)
+          ? supabase!.from("sprint_tickets").select("id, title, wbs, status, sprint_id, description").or(`title.ilike.%${q}%,wbs.ilike.%${q}%,description.ilike.%${q}%`).in("sprint_id", sprintIds).limit(50)
           : Promise.resolve({ data: [] }),
         (() => {
-          let mq = supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(5);
+          let mq = supabase!.from("profiles").select("id, name, email, role").or(`name.ilike.%${q}%,email.ilike.%${q}%`).limit(20);
           if (userRole === "owner") { if (selectedOrgId) mq = mq.eq("organization_id", selectedOrgId); }
           else if (userOrgId) mq = mq.eq("organization_id", userOrgId);
           return mq;
         })(),
         sprintIds.length > 0
-          ? supabase!.from("ticket_comments").select("id, content, ticket_id").eq("comment_type", "comment").ilike("content", `%${q}%`).limit(20)
+          ? supabase!.from("ticket_comments").select("id, content, ticket_id").eq("comment_type", "comment").ilike("content", `%${q}%`).limit(30)
           : Promise.resolve({ data: [] }),
         accessibleProjectIds.length > 0
-          ? supabase!.from("wiki_pages").select("id, title, content, project_id").eq("is_folder", false).in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(5)
+          ? supabase!.from("wiki_pages").select("id, title, content, project_id").eq("is_folder", false).in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(20)
           : Promise.resolve({ data: [] }),
         accessibleProjectIds.length > 0
-          ? supabase!.from("meeting_minutes").select("id, title, meeting_date, content, project_id, created_at").in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(5)
+          ? supabase!.from("meeting_minutes").select("id, title, meeting_date, content, project_id, created_at").in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(20)
           : Promise.resolve({ data: [] }),
       ]);
 
-      // Split ticket results: title/WBS match → TicketResult, description-only match → DescriptionResult
       const ticketResults: TicketResult[] = [];
       const descriptionResults: DescriptionResult[] = [];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const t of (ticketResp.data ?? []) as any[]) {
         const sprint = sprintMap.get(t.sprint_id);
         const titleOrWbs = t.title.toLowerCase().includes(ql) || (t.wbs ?? "").toLowerCase().includes(ql);
-        if (titleOrWbs && ticketResults.length < 5) {
+        if (titleOrWbs) {
           ticketResults.push({ type: "ticket", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectSlug: sprint?.projectSlug ?? "", projectName: sprint?.projectName ?? "" });
-        } else if (!titleOrWbs && descriptionResults.length < 5) {
+        } else {
           const snippet = htmlToText(t.description ?? "").slice(0, 70);
           descriptionResults.push({ type: "description", id: t.id, title: t.title, wbs: t.wbs ?? "", status: t.status, sprintId: t.sprint_id, sprintName: sprint?.name ?? "", projectSlug: sprint?.projectSlug ?? "", projectName: sprint?.projectName ?? "", snippet });
         }
@@ -266,7 +265,6 @@ export function GlobalSearch() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const memberResults: MemberResult[] = (memberResp.data ?? []).map((m: any) => ({ type: "member", id: m.id, name: m.name, email: m.email, role: m.role }));
 
-      // Comments: resolve ticket info via a second query (no FK join needed)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawComments = (rawCommentResp.data ?? []) as any[];
       const commentTicketIds = [...new Set(rawComments.map(c => c.ticket_id).filter(Boolean))];
@@ -277,7 +275,6 @@ export function GlobalSearch() {
         const ctMap = new Map<string, any>((ctData ?? []).map((t: any) => [t.id, t]));
         commentResults = rawComments
           .filter(c => ctMap.has(c.ticket_id))
-          .slice(0, 5)
           .map(c => {
             const ticket = ctMap.get(c.ticket_id);
             const sprint = sprintMap.get(ticket.sprint_id);
@@ -360,10 +357,13 @@ export function GlobalSearch() {
 
   const avatarInitial = (name: string) => name.charAt(0);
 
-  const CategoryHeader = ({ icon, label, color, showBorder }: { icon: React.ReactNode; label: string; color: string; showBorder: boolean }) => (
-    <div style={{ padding: "9px 14px 5px", display: "flex", alignItems: "center", gap: 5, borderTop: showBorder ? "1px solid rgba(26,23,20,0.07)" : undefined, background: "#FAFAFA" }}>
-      {icon}
-      <span style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: "0.06em", textTransform: "uppercase" }}>{label}</span>
+  const CategoryHeader = ({ icon, label, color, showBorder, count }: { icon: React.ReactNode; label: string; color: string; showBorder: boolean; count: number }) => (
+    <div style={{ padding: "9px 14px 5px", display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: showBorder ? "1px solid rgba(26,23,20,0.07)" : undefined, background: "#FAFAFA" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        {icon}
+        <span style={{ fontSize: 10, fontWeight: 700, color, letterSpacing: "0.06em", textTransform: "uppercase" }}>{label}</span>
+      </div>
+      <span style={{ fontSize: 10, fontWeight: 600, color: "#9CA3AF" }}>{count}件</span>
     </div>
   );
 
@@ -377,6 +377,61 @@ export function GlobalSearch() {
       {children}
     </div>
   );
+
+  // 🌟 アコーディオン展開ボタンのコンポーネント
+  const MoreButton = ({ totalCount, isExpanded, onToggle }: { totalCount: number; isExpanded: boolean; onToggle: () => void }) => (
+    <button
+      onClick={onToggle}
+      style={{
+        width: "100%",
+        padding: "6px 14px",
+        fontSize: 11,
+        fontWeight: 600,
+        color: "#059669",
+        background: "#F0FDF4",
+        border: "none",
+        borderTop: "1px solid rgba(5,150,105,0.1)",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+        transition: "background 0.15s"
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = "#DCFCE7")}
+      onMouseLeave={e => (e.currentTarget.style.background = "#F0FDF4")}
+    >
+      {isExpanded ? (
+        <>閉じる <ChevronUp style={{ width: 12, height: 12 }} /></>
+      ) : (
+        <>もっとみる (全{totalCount}件) <ChevronDown style={{ width: 12, height: 12 }} /></>
+      )}
+    </button>
+  );
+
+  // カテゴリごとのレンダリングヘルパー（初期表示3件 + アコーディオン対応）
+  const renderCategoryList = <T,>(
+    items: T[],
+    categoryKey: string,
+    renderItem: (item: T) => React.ReactNode
+  ) => {
+    const isExpanded = !!expandedCategories[categoryKey];
+    const visibleItems = isExpanded ? items : items.slice(0, 3);
+    const hasMore = items.length > 3;
+
+    return (
+      <div>
+        {visibleItems.map(renderItem)}
+        {hasMore && (
+          <MoreButton
+            totalCount={items.length}
+            isExpanded={isExpanded}
+            onToggle={() => toggleCategory(categoryKey)}
+          />
+        )}
+      </div>
+    );
+  };
 
   return (
     <div ref={containerRef} style={{ flex: 1, maxWidth: 440, position: "relative" }}>
@@ -420,6 +475,7 @@ export function GlobalSearch() {
             <div style={{ padding: "22px 16px", textAlign: "center", color: "#A09790", fontSize: 12 }}>検索中...</div>
           ) : hasResults ? (
             <>
+              {/* チケット一覧 */}
               {results.tickets.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -427,8 +483,9 @@ export function GlobalSearch() {
                     label="チケット"
                     color="#059669"
                     showBorder={false}
+                    count={results.tickets.length}
                   />
-                  {results.tickets.map(t => (
+                  {renderCategoryList(results.tickets, "tickets", t => (
                     <ResultRow key={t.id} onClick={() => handleSelect(t)} hoverColor="#F0FDF8">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{t.wbs}</span>
@@ -441,6 +498,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* 詳細記載 */}
               {results.descriptions.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -448,8 +506,9 @@ export function GlobalSearch() {
                     label="詳細記載"
                     color="#6366F1"
                     showBorder={results.tickets.length > 0}
+                    count={results.descriptions.length}
                   />
-                  {results.descriptions.map(d => (
+                  {renderCategoryList(results.descriptions, "descriptions", d => (
                     <ResultRow key={d.id} onClick={() => handleSelect(d)} hoverColor="#EEF2FF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{d.wbs}</span>
@@ -462,6 +521,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* コメント */}
               {results.comments.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -469,8 +529,9 @@ export function GlobalSearch() {
                     label="コメント"
                     color="#0891B2"
                     showBorder={results.tickets.length + results.descriptions.length > 0}
+                    count={results.comments.length}
                   />
-                  {results.comments.map(c => (
+                  {renderCategoryList(results.comments, "comments", c => (
                     <ResultRow key={c.id} onClick={() => handleSelect(c)} hoverColor="#ECFEFF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{c.ticketWbs}</span>
@@ -482,6 +543,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* スプリント */}
               {results.sprints.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -489,8 +551,9 @@ export function GlobalSearch() {
                     label="スプリント"
                     color="#7C3AED"
                     showBorder={results.tickets.length + results.descriptions.length + results.comments.length > 0}
+                    count={results.sprints.length}
                   />
-                  {results.sprints.map(s => (
+                  {renderCategoryList(results.sprints, "sprints", s => (
                     <ResultRow key={s.id} onClick={() => handleSelect(s)} hoverColor="#F5F3FF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
@@ -502,6 +565,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* プロジェクト */}
               {results.projects.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -509,8 +573,9 @@ export function GlobalSearch() {
                     label="プロジェクト"
                     color="#D97706"
                     showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length > 0}
+                    count={results.projects.length}
                   />
-                  {results.projects.map(p => (
+                  {renderCategoryList(results.projects, "projects", p => (
                     <ResultRow key={p.id} onClick={() => handleSelect(p)} hoverColor="#FFFBEB">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
@@ -522,6 +587,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* メンバー */}
               {results.members.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -529,8 +595,9 @@ export function GlobalSearch() {
                     label="メンバー"
                     color="#0891B2"
                     showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length > 0}
+                    count={results.members.length}
                   />
-                  {results.members.map(m => (
+                  {renderCategoryList(results.members, "members", m => (
                     <ResultRow key={m.id} onClick={() => handleSelect(m)} hoverColor="#ECFEFF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#E0F2FE", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#0891B2", flexShrink: 0 }}>
@@ -547,6 +614,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* Wiki */}
               {results.wikis.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -554,8 +622,9 @@ export function GlobalSearch() {
                     label="Wiki"
                     color="#7C3AED"
                     showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length > 0}
+                    count={results.wikis.length}
                   />
-                  {results.wikis.map(w => (
+                  {renderCategoryList(results.wikis, "wikis", w => (
                     <ResultRow key={w.id} onClick={() => handleSelect(w)} hoverColor="#F5F3FF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.title}</span>
@@ -569,6 +638,7 @@ export function GlobalSearch() {
                 </div>
               )}
 
+              {/* 議事録 */}
               {results.minutes.length > 0 && (
                 <div>
                   <CategoryHeader
@@ -576,8 +646,9 @@ export function GlobalSearch() {
                     label="議事録"
                     color="#0891B2"
                     showBorder={results.tickets.length + results.descriptions.length + results.comments.length + results.sprints.length + results.projects.length + results.members.length + results.wikis.length > 0}
+                    count={results.minutes.length}
                   />
-                  {results.minutes.map(m => (
+                  {renderCategoryList(results.minutes, "minutes", m => (
                     <ResultRow key={m.id} onClick={() => handleSelect(m)} hoverColor="#ECFEFF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>

@@ -5,11 +5,17 @@ import { Topbar } from "./Topbar";
 import { TabbedShell } from "./TabbedShell";
 import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
+import { useAutoLogout } from "@/app/hooks/useAutoLogout";
 import { isNativeTabletApp } from "@/app/lib/platform";
+import { CallProvider } from "@/app/contexts/CallContext";
+import { RefreshProvider, useRefresh } from "@/app/contexts/RefreshContext";
+import { CallLayer } from "@/app/components/call/CallLayer";
+import { MlSetupGate } from "@/app/components/members/MlSetupGate";
 
 export function AppShell() {
   useVersionCheck();
   usePushNotifications();
+  const { refreshNonce } = useRefresh();
   
   const outerContainerRef = useRef<HTMLDivElement>(null);
 
@@ -51,7 +57,11 @@ export function AppShell() {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         <Topbar />
         <main style={{ flex: 1, overflow: "auto", position: "relative" }}>
-          <Outlet />
+          {/* refreshNonce を key にして、ソフト更新時にページを再マウント→初期fetchを再実行する。
+              display:contents でレイアウトには影響を与えない。 */}
+          <div key={refreshNonce} style={{ display: "contents" }}>
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>
@@ -59,7 +69,19 @@ export function AppShell() {
 }
 
 export function ProtectedShell() {
+  // 自動ログアウト(ENHA2-027)。Web/ネイティブ両シェルの親で常時マウントする
+  // (早期returnより前にフックを呼ぶ。未ログイン時は内部で no-op)。
+  useAutoLogout();
   if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
-  if (isNativeTabletApp()) return <TabbedShell />;
-  return <AppShell />;
+  return (
+    <CallProvider>
+      <RefreshProvider>
+        {isNativeTabletApp() ? <TabbedShell /> : <AppShell />}
+      </RefreshProvider>
+      <CallLayer />
+      {/* ENHA2-034 学習の初回セットアップ。ログイン直後・どの画面にいても走る。
+          メンバー管理権限を持つ人以外には何も起きない（内部で判定）。 */}
+      <MlSetupGate />
+    </CallProvider>
+  );
 }

@@ -5,6 +5,7 @@
 // ツールバー(layer-ui, z-index:4)はオーバーレイより上なので、ボタン操作は妨げない。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { convertToExcalidrawElements, viewportCoordsToSceneCoords } from "@excalidraw/excalidraw";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 const TRI_SIZE = 120;         // ドラッグせずクリックしただけの時の既定サイズ
 const MIN_DRAG = 6;           // これ未満のドラッグはクリック扱い（既定サイズ）
@@ -12,6 +13,9 @@ const SOFT_BLACK = "#343a40";
 const BTN_ID = "wb-triangle-tool";
 const GUIDE = "#6965db";      // Excalidraw選択色に合わせたプレビュー色
 const EQ_RATIO = Math.sqrt(3) / 2; // 正三角形の 高さ/底辺
+// 他の自前ツール（BraceToolButton）と同時にモードONにならないようにするイベント名。
+// 両ファイルで同じ文字列を使う。detail は自分のツール名を入れ、他人のイベントを受けたら解除する。
+const ARM_EVENT = "wb-tool-armed";
 
 // Shift拘束：始点からの矩形を「正三角形の外接矩形」(高さ=底辺×√3/2) にそろえた終点を返す。
 // 四角のShift(正方形化)と同様、底辺は縦横ドラッグ量の大きい方を採用。
@@ -76,11 +80,19 @@ export function TriangleToolButton({ api, containerRef }: { api: any; containerR
     return () => { obs.disconnect(); btn.remove(); btnRef.current = null; };
   }, [api, containerRef]);
 
+  // ── 他の自前ツールがモードONになったら自分は解除（二重にオーバーレイが敷かれるのを防ぐ） ──
+  useEffect(() => {
+    const onOther = (e: Event) => { if ((e as CustomEvent).detail !== "triangle") setArmed(false); };
+    window.addEventListener(ARM_EVENT, onOther);
+    return () => window.removeEventListener(ARM_EVENT, onOther);
+  }, []);
+
   // ── モード中のボタン強調 / Esc解除 / 他ツール選択時の自動解除 ──
   useEffect(() => {
     const btn = btnRef.current;
     if (btn) btn.style.background = armed ? "#e0dfff" : "transparent";
     if (!armed) return;
+    window.dispatchEvent(new CustomEvent(ARM_EVENT, { detail: "triangle" })); // 他の自前ツールを解除させる
 
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setArmed(false); };
     window.addEventListener("keydown", onKey);
@@ -210,7 +222,8 @@ export function TriangleToolButton({ api, containerRef }: { api: any; containerR
     els.forEach((el) => { if (el.type === "line") normalizeLinear(el); });
     // コネクト追従（ENHA2-022）で三角形を識別するための印
     if (els[0]) els[0].customData = { ...(els[0].customData ?? {}), wbTriangle: true };
-    api.updateScene({ elements: [...api.getSceneElements(), ...els] });
+    // 三角形の追加は 1 undo ステップとして記録する（BRU7-058）
+    api.updateScene({ elements: [...api.getSceneElements(), ...els], ...COMMIT });
     const tri = els[0];
     if (tri) api.updateScene({ appState: { selectedElementIds: { [tri.id]: true } } });
   };

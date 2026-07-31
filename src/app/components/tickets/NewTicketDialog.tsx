@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Plus, X, Trash2, Check } from "lucide-react";
-import type { TicketCategory, TicketStatus, Priority } from "@/app/types";
+import type { TicketCategory, TicketStatus, Priority, Skill, DevScale } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { labelCls, inputCls, TICKET_STATUSES, getDefaultProgressForStatus } from "@/app/lib/helpers";
@@ -10,7 +10,7 @@ import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
-import { RichEditor } from "@/app/components/shared/RichEditor";
+import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 // CustomSelect コンポーネントをインポート
@@ -18,6 +18,12 @@ import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomS
 // 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { escStack } from "@/app/lib/escStack";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+// ENHA2-034 担当者レコメンド（自動アサイン）
+import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
+import { fetchSkills } from "@/app/lib/skillsApi";
+import { Sparkles } from "lucide-react";
 
 // 優先度の選択肢と色を定義
 const PRIORITY_OPTIONS: SelectOption[] = [
@@ -28,8 +34,8 @@ const PRIORITY_OPTIONS: SelectOption[] = [
 
 const CACHE_KEY_PREFIX = "new_ticket_draft_";
 
-export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 200, currentTicketCount }: {
-  sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: () => void;
+export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 300, currentTicketCount }: {
+  sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: (wbs?: string) => void;
   sprintStartDate?: string; sprintEndDate?: string;
   parentTicketId?: string; parentWbs?: string;
   zIndexBase?: number;
@@ -52,10 +58,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [sprintError, setSprintError] = useState(false);
 
   const [currentProjectMembers, setCurrentProjectMembers] = useState<string[]>([]);
-  const [projectTickets, setProjectTickets] = useState<{ wbs: string; title: string }[]>([]);
-  const [projectBacklogItems, setProjectBacklogItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectWikiItems, setProjectWikiItems] = useState<{ id: string; title: string }[]>([]);
-  const [projectMinuteItems, setProjectMinuteItems] = useState<{ id: string; title: string }[]>([]);
 
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -78,6 +80,12 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
   // --- ラベル（プレフィックス）---
+  // ── ENHA2-034 担当者レコメンド（自動アサイン） ──
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [requiredSkills, setRequiredSkills] = useState<RequiredSkill[]>([]);
+  const [devScale, setDevScale] = useState<DevScale | null>(null);
+  const [showRecommend, setShowRecommend] = useState(false);
+
   const [prefixes, setPrefixes] = useState<string[]>([]);
   const [allProjectPrefixLabels, setAllProjectPrefixLabels] = useState<string[]>([]);
   const [showPrefixInput, setShowPrefixInput] = useState(false);
@@ -90,6 +98,17 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const selectedSprintData = availableSprints.find(s => s.id === selectedSprintId);
   const effectiveSprintStart = sprintStartDate || selectedSprintData?.startDate;
   const effectiveSprintEnd = sprintEndDate || selectedSprintData?.endDate;
+
+  // メンション候補(チケット/バックログ/Wiki/議事録)。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const {
+    tickets: projectTickets,
+    backlogItems: projectBacklogItems,
+    wikiItems: projectWikiItems,
+    minuteItems: projectMinuteItems,
+    fileItems: projectFileItems,
+    prefixLabels: fetchedPrefixLabels,
+  } = useLinkSuggestions(effectiveProjectId);
 
   const savedSprintIdRef = useRef<string>("");
 
@@ -239,29 +258,16 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   }, [needsSelection, effectiveProjectId, contextKey]);
 
-  // チケットメンション等の関連アイテムロード
+  // フックが取得したプレフィックスを取り込む。ここで入力しただけでまだ保存していない
+  // ラベルが再取得で消えないよう、置き換えではなくマージする。
   useEffect(() => {
-    if (!isSupabaseEnabled || !effectiveProjectId) { setProjectTickets([]); return; }
-    (async () => {
-      const { data: sprintData } = await supabase!.from("sprints").select("id").eq("project_id", effectiveProjectId);
-      if (!sprintData?.length) return;
-      const { data } = await supabase!.from("sprint_tickets")
-        .select("wbs, title, prefixes")
-        .in("sprint_id", sprintData.map((s: { id: string }) => s.id))
-        .order("wbs");
-      if (data) {
-        setProjectTickets(data as { wbs: string; title: string }[]);
-        const labels = [...new Set((data as { prefixes?: string[] }[]).flatMap(r => r.prefixes ?? []))].sort();
-        setAllProjectPrefixLabels(labels);
-      }
-    })();
-    supabase!.from("backlog_items").select("id, title").eq("project_id", effectiveProjectId).order("id")
-      .then(({ data }) => { if (data) setProjectBacklogItems(data as { id: string; title: string }[]); });
-    supabase!.from("wiki_pages").select("id, title").eq("project_id", effectiveProjectId).eq("is_folder", false)
-      .then(({ data }) => { if (data) setProjectWikiItems(data as { id: string; title: string }[]); });
-    supabase!.from("meeting_minutes").select("id, title").eq("project_id", effectiveProjectId).order("meeting_date", { ascending: false })
-      .then(({ data }) => { if (data) setProjectMinuteItems(data as { id: string; title: string }[]); });
-  }, [effectiveProjectId]);
+    if (!fetchedPrefixLabels.length) return;
+    setAllProjectPrefixLabels(prev => {
+      const merged = [...new Set([...prev, ...fetchedPrefixLabels])].sort();
+      const same = merged.length === prev.length && merged.every((l, i) => l === prev[i]);
+      return same ? prev : merged;
+    });
+  }, [fetchedPrefixLabels]);
 
   const calcHours = (start: string, due: string) => {
     if (!start || !due) return 0;
@@ -378,6 +384,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   // document レベルでキャプチャして画像だけ処理する
   useEffect(() => {
     const handler = (e: ClipboardEvent) => {
+      // 🌟 BRU9-044: Excel等の表コピーは表HTMLと画像が同時にクリップボードに載るため、
+      //   表があれば画像は拾わない（詳細欄に表としてそのまま貼り付けられるようにする）。
+      if (clipboardHasTable(e.clipboardData)) return;
       const items = Array.from(e.clipboardData?.items ?? []);
       const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
       if (imgFiles.length === 0) return;
@@ -387,6 +396,21 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     document.addEventListener("paste", handler);
     return () => document.removeEventListener("paste", handler);
   }, [addImages]);
+
+  // ENHA2-034: 組織のスキルマスタを読む。未登録の組織では入力欄自体が出ない（邪魔をしない）。
+  useEffect(() => {
+    if (!userOrgId) return;
+    fetchSkills(userOrgId).then(setSkills).catch(() => setSkills([]));
+  }, [userOrgId]);
+
+  /** ENHA2-034: チケットの必要スキルを保存する。②レコメンドの学習材料にもなる。 */
+  const saveRequiredSkills = async (tid: string) => {
+    if (!isSupabaseEnabled || requiredSkills.length === 0) return;
+    const { error } = await supabase!.from("ticket_required_skills").insert(
+      requiredSkills.map(r => ({ ticket_id: tid, skill_id: r.skillId, importance: r.importance })),
+    );
+    if (error) console.error("[ticket_required_skills] insert failed:", error.message);
+  };
 
   const handleSave = async () => {
     let valid = true;
@@ -427,22 +451,26 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     };
 
     setSaving(true);
+    let createdWbs: string | undefined; // 作成成功したチケットのWBS（作成後の一覧スクロール&強調用・BRU5-034）
 
     if (isSupabaseEnabled) {
       let wbs: string;
       if (isChildMode && parentTicketId && parentWbs) {
-        const { data: maxChildRow } = await supabase!
+        // 🌟 修正(BRU4-058): 子チケットの枝番はゼロ埋めしていないため、DB側の
+        // 文字列ソート(order by wbs)だと "…-9" > "…-10" と誤判定され、子が10個を
+        // 超えると連番が10で頭打ちになり重複していた。全子チケットを取得して
+        // メモリ上で枝番を数値比較し、最大値+1を次の番号とする。
+        const { data: childRows } = await supabase!
           .from("sprint_tickets")
           .select("wbs")
           .eq("parent_id", parentTicketId)
-          .like("wbs", `${parentWbs}-%`)
-          .order("wbs", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+          .like("wbs", `${parentWbs}-%`);
 
-        const nextNum = maxChildRow?.wbs
-          ? (parseInt(maxChildRow.wbs.slice(parentWbs.length + 1), 10) || 0) + 1
-          : 1;
+        const maxChildNum = (childRows ?? []).reduce((max, row) => {
+          const n = parseInt(String(row.wbs).slice(parentWbs.length + 1), 10);
+          return Number.isNaN(n) ? max : Math.max(max, n);
+        }, 0);
+        const nextNum = maxChildNum + 1;
 
         wbs = `${parentWbs}-${nextNum}`;
         if (!effectiveSprintId) {
@@ -460,8 +488,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               images: images.length ? images : [],
               parent_id: parentTicketId,
               prefixes,
+              dev_scale: devScale,
             });
             if (!insErr) {
+              await saveRequiredSkills(ticketId.current);
               if (finalAssignee && effectiveProjectSlug) {
                 const { error: nErr } = await supabase!.from("notifications").insert({
                   user_name: finalAssignee, type: "assign",
@@ -478,7 +508,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             try { localStorage.removeItem(contextKey); } catch (e) { }
             savedSprintIdRef.current = "";
             setSaving(false);
-            onCreated?.();
+            emitLinkItemsChanged(effectiveProjectId, "ticket"); // 他タブの # サジェストへ即時反映
+            onCreated?.(wbs);
             onClose();
             return;
           }
@@ -503,6 +534,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
         wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
       }
+      createdWbs = wbs; // 作成後スクロール&強調のため親へ返す（BRU5-034）
       const { error: insErr2 } = await supabase!.from("sprint_tickets").insert({
         id: ticketId.current, sprint_id: effectiveSprintId, wbs,
         title, status, priority, assignee: finalAssignee,
@@ -514,8 +546,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         images: images.length ? images : [],
         parent_id: parentTicketId || null,
         prefixes,
+        dev_scale: devScale,
       });
       if (!insErr2) {
+        await saveRequiredSkills(ticketId.current);
         if (finalAssignee && effectiveProjectSlug) {
           const { error: nErr2 } = await supabase!.from("notifications").insert({
             user_name: finalAssignee, type: "assign",
@@ -532,12 +566,13 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
+      emitLinkItemsChanged(effectiveProjectId, "ticket"); // 他タブの # サジェストへ即時反映
     } else {
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
     }
-    onCreated?.();
+    onCreated?.(createdWbs);
     onClose();
   };
 
@@ -834,14 +869,54 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             })()}
           </div>
 
+          {/* ENHA2-034: 担当者。右の「自動アサイン」ボタンでレコメンドのモーダルを開く。 */}
           <div>
             <label className={labelCls}>担当者</label>
-            <CustomSelect
-              value={assignee}
-              options={assigneeList.map(m => ({ value: m.name, label: m.name }))}
-              onChange={v => setAssignee(v)}
-            />
+            <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <CustomSelect
+                  value={assignee}
+                  options={assigneeList.map(m => ({ value: m.name, label: m.name }))}
+                  onChange={v => setAssignee(v)}
+                />
+              </div>
+              {userOrgId && skills.length > 0 && (
+                <button type="button" onClick={() => setShowRecommend(true)}
+                  title="AIにおすすめ担当者を提案してもらう"
+                  style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 5, padding: "0 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 10, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: "pointer", whiteSpace: "nowrap" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
+                  <Sparkles style={{ width: 14, height: 14 }} />自動アサイン
+                </button>
+              )}
+            </div>
           </div>
+
+          {showRecommend && userOrgId && (
+            <AssigneeRecommendModal
+              orgId={userOrgId}
+              skills={skills}
+              estimatedHours={estimatedHours}
+              priority={priority}
+              candidateNames={currentProjectMembers.length > 0 ? currentProjectMembers : undefined}
+              initialRequired={requiredSkills}
+              initialScale={devScale}
+              ticketTitle={title}
+              ticketDescription={description}
+              ticketPrefixes={prefixes}
+              ticketId={ticketId.current}
+              ticketStartDate={startDate}
+              ticketDueDate={dueDate}
+              onClose={() => setShowRecommend(false)}
+              onPick={(name, req, scale) => {
+                // 選んだ担当者をセットしつつ、モーダルで選んだ必要スキル・開発規模も
+                // チケットに反映する（②レコメンドの学習材料としてDBに保存される）。
+                setAssignee(name);
+                setRequiredSkills(req);
+                setDevScale(scale);
+              }}
+            />
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <DatePicker label="開始日" value={startDate}
@@ -862,7 +937,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} />
+            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} />
           </div>
 
           <div>

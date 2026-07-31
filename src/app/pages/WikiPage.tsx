@@ -25,6 +25,8 @@ function titleToPathSegment(title: string): string {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 
 interface TreeNode extends WikiPageType {
   children: TreeNode[];
@@ -301,6 +303,7 @@ export function WikiPage() {
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("view");
   const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("view");
+  // ENHA2-035: 後追い追加のため未設定時は "edit"（既存プロジェクトでも即使える）
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
 
@@ -312,6 +315,10 @@ export function WikiPage() {
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = effectiveWikiPerm === "edit";
   const { open: openPreview } = usePreviewPanel();
+
+  // $(Wiki/バックログ/議事録) / #(チケット) / @(メンバー) のサジェスト候補。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const suggest = useLinkSuggestions(project?.id);
 
   // URLからUUIDを確実に抜き出す共通関数
   const getUUIDFromURL = useCallback(() => {
@@ -459,13 +466,17 @@ export function WikiPage() {
   const scheduleSave = useCallback((nextTitle: string, nextContent: string) => {
     if (!selectedId || loading) return; // 🌟 修正: 読み込み完了前は自動保存をガード
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const titleChanged = pages.find(p => p.id === selectedId)?.title !== nextTitle;
+    const pid = project?.id;
     saveTimer.current = setTimeout(async () => {
       await supabase!.from("wiki_pages").update({
         title: nextTitle, content: nextContent, updated_by: userName || null, updated_at: new Date().toISOString(),
       }).eq("id", selectedId);
       setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title: nextTitle, content: nextContent } : p));
+      // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
+      if (titleChanged) emitLinkItemsChanged(pid, "wiki");
     }, 600);
-  }, [selectedId, userName, loading]);
+  }, [selectedId, userName, loading, pages, project?.id]);
 
   const handleTreeItemRename = useCallback(async (id: string, nextTitle: string) => {
     setPages(prev => prev.map(p => p.id === id ? { ...p, title: nextTitle } : p));
@@ -488,6 +499,7 @@ export function WikiPage() {
         if (freshData) {
           setPages(freshData.map(mapWikiPage));
         }
+        emitLinkItemsChanged(project?.id, "wiki"); // 他タブのサジェスト表示名を更新
       }
     }
   }, [selectedId, userName, project?.id, load, toast]);
@@ -551,11 +563,14 @@ export function WikiPage() {
       return;
     }
     await load();
+    // 他タブで開いているエディタの $ サジェストへ即時反映(フォルダは候補外なので通知しない)
+    if (!isFolder) emitLinkItemsChanged(project.id, "wiki");
     if (!isFolder) handleSelectPage(id);
   };
 
   const handleDelete = async (page: WikiPageType) => {
     await supabase!.from("wiki_pages").delete().eq("id", page.id);
+    emitLinkItemsChanged(project?.id, "wiki");
     if (selectedId === page.id) {
       setSelectedId(null);
       navigate(`/${projectSlug}/wiki`);
@@ -742,9 +757,16 @@ export function WikiPage() {
                   onChange={v => { setContent(v); scheduleSave(title, v); }}
                   placeholder="ページの内容を入力..." minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
+                  members={suggest.members}
+                  tickets={suggest.tickets}
+                  backlogItems={suggest.backlogItems}
+                  wikiItems={suggest.wikiItems}
+                  minuteItems={suggest.minuteItems}
+                  fileItems={suggest.fileItems}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
+                  onFileClick={id => openPreview("file", id)}
                   onImageUpload={canEdit ? async (file) => {
                     if (plan.maxImagesPerItem !== null) {
                       const currentCount = (content.match(/<img/g) ?? []).length;

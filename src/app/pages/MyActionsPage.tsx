@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardList, RefreshCw, ChevronDown, Plus, X, Hash, Maximize2, Minimize2, ExternalLink, Pencil, Check } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -8,6 +8,8 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
 import type { SprintTicket, ActionMemo, ActionMemoCategory, TicketStatus } from "@/app/types";
 
@@ -454,8 +456,11 @@ function MemoDetailModal({
   onToggleDone,
   onSave,
   onNavigateTicket,
+  projectIds,
 }: {
   memo: ActionMemo;
+  /** 候補取得の対象。マイアクションは横断画面なのでアクセス可能なPJを全て渡す */
+  projectIds: string[];
   ticketStatus: string | null;
   anchorPos?: { left: number; top: number };
   onClose: () => void;
@@ -469,19 +474,14 @@ function MemoDetailModal({
   const [editTitle, setEditTitle] = useState(memo.title);
   const [editContent, setEditContent] = useState(memo.content);
   const [saving, setSaving] = useState(false);
-  const [tickets, setTickets] = useState<{ wbs: string; title: string }[]>([]);
+  const suggest = useLinkSuggestions(projectIds);
+  const { open: openPreview } = usePreviewPanel();
   const meta = CATEGORY_META[memo.category];
 
   useEffect(() => {
     escStack.push(onClose);
     return () => escStack.pop(onClose);
   }, [onClose]);
-
-  useEffect(() => {
-    if (!isSupabaseEnabled || !editing) return;
-    supabase!.from("sprint_tickets").select("wbs, title").order("wbs")
-      .then(({ data }) => { if (data) setTickets(data as { wbs: string; title: string }[]); });
-  }, [editing]);
 
   const handleSaveEdit = async () => {
     if (!editTitle.trim()) return;
@@ -615,7 +615,7 @@ function MemoDetailModal({
                     # でチケットサジェスト
                   </span>
                 </div>
-                <RichEditor value={editContent} onChange={setEditContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={expanded ? 160 : 80} maxHeight={expanded ? 280 : 120} tickets={tickets} toolbar={false} />
+                <RichEditor value={editContent} onChange={setEditContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={expanded ? 160 : 80} maxHeight={expanded ? 280 : 120} tickets={suggest.tickets} backlogItems={suggest.backlogItems} wikiItems={suggest.wikiItems} minuteItems={suggest.minuteItems} fileItems={suggest.fileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} toolbar={false} />
               </div>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button
@@ -634,7 +634,7 @@ function MemoDetailModal({
               {memo.content ? (
                 memo.content.startsWith("<") ? (
                   <div style={{ marginBottom: 12 }}>
-                    <RichEditor value={memo.content} readOnly minHeight={20} onTicketClick={onNavigateTicket} />
+                    <RichEditor value={memo.content} readOnly minHeight={20} onTicketClick={onNavigateTicket} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} />
                   </div>
                 ) : (
                   <p style={{ fontSize: 12, color: "#4A4540", lineHeight: 1.7, margin: "0 0 12px", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const }}>
@@ -911,26 +911,23 @@ function MentionTextarea({
 
 // ─── アクションメモ追加モーダル ───────────────────────────────
 function AddMemoModal({
-  onSave, onCancel,
+  onSave, onCancel, projectIds,
 }: {
   onSave: (title: string, content: string, category: ActionMemoCategory) => Promise<boolean>;
   onCancel: () => void;
+  /** 候補取得の対象。マイアクションは横断画面なのでアクセス可能なPJを全て渡す */
+  projectIds: string[];
 }) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [category, setCategory] = useState<ActionMemoCategory>("memo");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [tickets, setTickets] = useState<{ wbs: string; title: string }[]>([]);
+  const suggest = useLinkSuggestions(projectIds);
+  const { open: openPreview } = usePreviewPanel();
   const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { titleRef.current?.focus(); }, []);
-
-  useEffect(() => {
-    if (!isSupabaseEnabled) return;
-    supabase!.from("sprint_tickets").select("wbs, title").order("wbs")
-      .then(({ data }) => { if (data) setTickets(data as { wbs: string; title: string }[]); });
-  }, []);
 
   const handleSave = async () => {
     if (!title.trim()) return;
@@ -1028,7 +1025,7 @@ function AddMemoModal({
             # でチケットサジェスト
           </span>
         </div>
-        <RichEditor value={content} onChange={setContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={100} maxHeight={200} tickets={tickets} toolbar={false} />
+        <RichEditor value={content} onChange={setContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={100} maxHeight={200} tickets={suggest.tickets} backlogItems={suggest.backlogItems} wikiItems={suggest.wikiItems} minuteItems={suggest.minuteItems} fileItems={suggest.fileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} toolbar={false} />
       </div>
 
       {/* エラー表示 */}
@@ -1072,6 +1069,8 @@ export function MyActionsPage() {
   const [closedAssigned, setClosedAssigned] = useState<ActionTicket[]>([]);
   const [closedReview, setClosedReview] = useState<ActionTicket[]>([]);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
+  // マイアクションはPJ横断の画面なので、候補は参加している全PJから集める
+  const accessibleProjectIds = useMemo(() => projects.map(p => p.id), [projects]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedTicket, setSelectedTicket] = useState<ActionTicket | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1579,6 +1578,7 @@ export function MyActionsPage() {
         <AddMemoModal
           onSave={handleSaveMemo}
           onCancel={() => setShowAddMemo(false)}
+          projectIds={accessibleProjectIds}
         />
       )}
 
@@ -1627,6 +1627,7 @@ export function MyActionsPage() {
           onNavigateTicket={(wbs) => { handleNavigateWbs(wbs, selectedMemo!); setSelectedMemo(null); setMemoAnchorPos(undefined); }}
           onToggleDone={handleToggleDone}
           onSave={handleMemoEdit}
+          projectIds={accessibleProjectIds}
         />
       )}
     </div>

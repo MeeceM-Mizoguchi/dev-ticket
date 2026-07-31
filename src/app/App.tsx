@@ -1,5 +1,7 @@
-import { Routes, Route, Navigate } from "react-router";
+import { useEffect } from "react";
+import { Routes, Route, Navigate, useNavigate } from "react-router";
 import { Capacitor } from "@capacitor/core";
+import { setWebNavigate } from "@/app/contexts/TabContext";
 import { ToastProvider } from "@/app/contexts/ToastContext";
 import { AlertProvider } from "@/app/contexts/AlertContext";
 import { AuthProvider } from "@/app/contexts/AuthContext";
@@ -23,6 +25,19 @@ import { PlanProvider } from "@/app/contexts/PlanContext";
 // ネイティブアプリ(macOS/iPad)では営業用LPを表示せず、
 // ログイン済みならダッシュボード、未ログインならログイン画面へ直行する。
 // Web版は従来どおりLPを表示する。
+// Web(非タブ)環境で BrowserRouter の navigate をモジュールブリッジへ登録する。
+// これにより navigateInActiveTab がフルリロードなしで SPA 遷移でき、通話中の
+// 画面遷移で CallProvider がアンマウント→通話が切れる問題を防ぐ。
+// タブモード(ネイティブ)では navigateInActiveTab がタブ遷移を優先するため無害。
+function WebNavBridge() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    setWebNavigate(navigate);
+    return () => setWebNavigate(null);
+  }, [navigate]);
+  return null;
+}
+
 function RootRoute() {
   if (Capacitor.isNativePlatform()) {
     const loggedIn = sessionStorage.getItem("isLoggedIn") === "true";
@@ -37,6 +52,7 @@ export default function App() {
       <AlertProvider>
         <AuthProvider>
           <PreviewPanelProvider>
+          <WebNavBridge />
           <LinkPreviewPanel />
           <ExportProgressOverlay />
           <Routes>

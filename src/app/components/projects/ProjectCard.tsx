@@ -10,9 +10,12 @@ import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
 export function ProjectCard({
   project, onNavigate, onOpenNewTab, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo,
+  highlight = false,
 }: {
   project: Project;
   onNavigate: () => void;
+  /** 作成直後などに強調表示する。画面外なら自動でスクロールして見せる */
+  highlight?: boolean;
   // Mac/iPad のタブモードでのみ渡される。⌘/中/右クリック・長押しで新規タブを開く。
   // 未指定(Web/iPhone)のときは従来どおり通常クリックのみ。
   onOpenNewTab?: () => void;
@@ -33,6 +36,14 @@ export function ProjectCard({
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // 強調表示になったら、画面外でも見えるところまでスクロールする
+  useEffect(() => {
+    if (!highlight) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    cardRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+  }, [highlight]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -48,6 +59,7 @@ export function ProjectCard({
 
   return (
     <div
+      ref={cardRef}
       onClick={(e) => {
         if (longPressedRef.current) { longPressedRef.current = false; return; }
         if ((e.metaKey || e.ctrlKey) && onOpenNewTab) onOpenNewTab();
@@ -62,7 +74,13 @@ export function ProjectCard({
       } : undefined}
       onTouchEnd={onOpenNewTab ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
       onTouchMove={onOpenNewTab ? () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null; } } : undefined}
-      style={{ background: "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}
+      style={{
+        background: highlight ? "#F0FDF4" : "#FFFFFF", borderRadius: 16, cursor: "pointer", transition: "all 0.2s",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06)",
+        // ホバー時のハンドラが boxShadow を直接書き換えるので、強調は outline で描く
+        outline: highlight ? "3px solid #059669" : "3px solid transparent", outlineOffset: 2,
+        display: "flex", flexDirection: "column",
+      }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
       <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)`, borderRadius: "16px 16px 0 0" }} />

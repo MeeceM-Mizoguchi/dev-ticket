@@ -1,7 +1,10 @@
 // フレーム選択時に出る書式パネル（背景色 / 枠線ON・OFF / 枠線色）。
-// 書式は frame.customData.wbFrame に保存する（要素なのでYjs同期される）。描画は FrameDecorLayer。
+// 書式は frame.customData.wbFrame に保存する（要素なのでYjs同期される）。
+// 描画は syncFrameDecorRects が実 rectangle 要素として敷く（BRU5-063）。
 import { useEffect, useRef, useState } from "react";
-import type { WbFrameFormat } from "./FrameDecorLayer";
+import { type WbFrameFormat, isFrameDecorRect } from "@/app/lib/whiteboardFrameBg";
+import { resolveParent } from "@/app/lib/whiteboardFrames";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 interface Props {
   api: any;
@@ -17,19 +20,8 @@ const LINE_COLORS = ["#343a40", "#e5484d", "#1971c2", "#2f9e44", "#f08c00", "#ae
 const isFrame = (e: any) => e?.type === "frame" || e?.type === "magicframe";
 const rand = () => Math.floor(Math.random() * 0x7fffffff);
 
-function sceneToLocal(api: any, containerRef: React.RefObject<HTMLDivElement | null>, sx: number, sy: number) {
-  const st = api.getAppState();
-  const rect = containerRef.current?.getBoundingClientRect();
-  const zoom = st.zoom?.value ?? 1;
-  return {
-    x: sx * zoom + st.scrollX * zoom + (st.offsetLeft ?? 0) - (rect?.left ?? 0),
-    y: sy * zoom + st.scrollY * zoom + (st.offsetTop ?? 0) - (rect?.top ?? 0),
-  };
-}
-
 export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
   const [frame, setFrame] = useState<any | null>(null);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
   const raf = useRef<number>(0);
   const sigRef = useRef<string>("");
 
@@ -46,11 +38,13 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
           : null;
         if (el) {
           const fmt = el.customData?.wbFrame ?? {};
-          const sig = `${el.id}:${el.x}:${el.y}:${el.width}:${st.zoom?.value}:${st.scrollX}:${st.scrollY}:${fmt.bg}:${fmt.border}:${fmt.borderColor}`;
+          // 子要素数も署名に含める。グループ解除で子の所属(wbParent)が変わってもフレーム自体の
+          // 書式は不変なため、これが無いとボタン表示(件数)が再描画されない（BRU4-054）。
+          // パネルは左側固定なので座標/ズームは署名に含めない（タイトルに重ならないよう常時左ドック）。
+          const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === el.id && !e.isDeleted && !isFrameDecorRect(e)).length;
+          const sig = `${el.id}:${fmt.bg}:${fmt.border}:${fmt.borderColor}:${fmt.sharp}:${childCount}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
-            const p = sceneToLocal(api, containerRef, el.x, el.y);
-            setPos({ x: p.x, y: p.y });
             setFrame(el);
           }
         } else if (sigRef.current !== "") {
@@ -74,7 +68,21 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
         ? { ...e, customData: { ...(e.customData ?? {}), wbFrame: next }, version: (e.version ?? 1) + 1, versionNonce: rand() }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // 書式変更は 1 undo ステップ（BRU7-058）
+  };
+
+  // このフレームに属する子要素数（グループ解除ボタンの活性判定・表示用）。装飾の影矩形は数えない。
+  const childCount = api.getSceneElements().filter((e: any) => resolveParent(e) === frame.id && !e.isDeleted && !isFrameDecorRect(e)).length;
+
+  // グループ解除: 直下の子要素の所属(wbParent)を外し、以後フレームを動かしても追従しないようにする
+  // （BRU4-054 / BRU5-040）。入れ子フレームは無所属化され独立したフレームに戻る。
+  const ungroup = () => {
+    const els = api.getSceneElements().map((e: any) =>
+      resolveParent(e) === frame.id && !e.isDeleted && !isFrameDecorRect(e)
+        ? { ...e, frameId: null, customData: { ...(e.customData ?? {}), wbParent: null }, version: (e.version ?? 1) + 1, versionNonce: rand() }
+        : e,
+    );
+    api.updateScene({ elements: els, ...COMMIT }); // グループ解除は 1 undo ステップ（BRU7-058）
   };
 
   const swatch = (color: string, active: boolean, onClick: () => void, none = false) => (
@@ -114,36 +122,86 @@ export function FrameFormatPanel({ api, containerRef, canEdit }: Props) {
 
   const bgIsCustom = !!fmt.bg && !BG_COLORS.includes(fmt.bg);
   const borderIsCustom = !!fmt.borderColor && !LINE_COLORS.includes(fmt.borderColor);
+  const borderOn = fmt.border !== false; // 既定ON（色未指定はグレー枠）。明示 false のみOFF。
+
+  // セクション見出し（画像2の図形パネルに合わせた淡いグレーのラベル）
+  const heading = (label: string) => (
+    <span style={{ fontSize: 11, fontWeight: 600, color: "#868e96" }}>{label}</span>
+  );
 
   return (
     <div style={{ position: "absolute", inset: 0, zIndex: 21, pointerEvents: "none" }}>
+      {/* 四角/三角などの図形パネルと同じく、フレームのタイトルに重ならないよう左端に固定して縦並びで集約する */}
       <div
         onMouseDown={(e) => e.stopPropagation()}
         style={{
-          position: "absolute", left: pos.x, top: pos.y - 96, pointerEvents: "auto",
-          background: "#fff", border: "1px solid rgba(0,0,0,0.12)", borderRadius: 10,
-          boxShadow: "0 6px 20px rgba(0,0,0,0.15)", padding: "8px 10px",
-          display: "flex", flexDirection: "column", gap: 6, fontSize: 11, color: "#444",
+          position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "auto",
+          background: "#fff", border: "1px solid rgba(0,0,0,0.12)", borderRadius: 12,
+          boxShadow: "0 6px 20px rgba(0,0,0,0.15)", padding: "14px 16px",
+          display: "flex", flexDirection: "column", gap: 14, fontSize: 11, color: "#444",
+          width: 200, maxHeight: "calc(100% - 24px)", overflowY: "auto",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 34 }}>背景</span>
-          {BG_COLORS.map((c) => swatch(c, (fmt.bg ?? "") === c, () => update({ bg: c || undefined }), c === ""))}
-          {picker(fmt.bg, (c) => update({ bg: c }), bgIsCustom)}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("背景")}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {BG_COLORS.map((c) => swatch(c, (fmt.bg ?? "") === c, () => update({ bg: c || undefined }), c === ""))}
+            {picker(fmt.bg, (c) => update({ bg: c }), bgIsCustom)}
+          </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 34 }}>枠線</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("枠線")}
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            {/* 既定は「あり」（色未指定ならグレー枠）。明示的に「なし」にした時だけ枠線を消す。 */}
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => update({ border: fmt.border === false })}
+              style={{
+                padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+                border: "1px solid rgba(0,0,0,0.15)",
+                background: borderOn ? "#1971c2" : "#fff", color: borderOn ? "#fff" : "#444",
+              }}
+            >{borderOn ? "あり" : "なし"}</button>
+            {borderOn && LINE_COLORS.map((c) => swatch(c, fmt.borderColor === c, () => update({ borderColor: c })))}
+            {borderOn && picker(fmt.borderColor, (c) => update({ borderColor: c }), borderIsCustom)}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("角")}
+          <div style={{ display: "flex", gap: 6 }}>
+            {([["角丸", false], ["角あり", true]] as const).map(([label, sharp]) => {
+              const active = (fmt.sharp !== false) === sharp; // 未設定は既定で角あり
+
+              return (
+                <button
+                  key={label}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => update({ sharp })}
+                  style={{
+                    padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    background: active ? "#1971c2" : "#fff", color: active ? "#fff" : "#444",
+                  }}
+                >{label}</button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {heading("グループ")}
           <button
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => update({ border: !fmt.border })}
+            onClick={ungroup}
+            disabled={childCount === 0}
+            title={childCount === 0 ? "このフレームに含まれる図形はありません" : "フレーム内の図形のグループを解除し、フレームを動かしても追従しないようにします"}
             style={{
-              padding: "2px 10px", borderRadius: 6, cursor: "pointer", fontSize: 11,
+              padding: "2px 10px", borderRadius: 6, fontSize: 11, alignSelf: "flex-start",
               border: "1px solid rgba(0,0,0,0.15)",
-              background: fmt.border ? "#1971c2" : "#fff", color: fmt.border ? "#fff" : "#444",
+              background: childCount === 0 ? "#f1f3f5" : "#fff",
+              color: childCount === 0 ? "#adb5bd" : "#e5484d",
+              cursor: childCount === 0 ? "not-allowed" : "pointer",
             }}
-          >{fmt.border ? "あり" : "なし"}</button>
-          {fmt.border && LINE_COLORS.map((c) => swatch(c, (fmt.borderColor ?? "#343a40") === c, () => update({ borderColor: c })))}
-          {fmt.border && picker(fmt.borderColor ?? "#343a40", (c) => update({ borderColor: c }), borderIsCustom)}
+          >グループ解除{childCount > 0 ? `（${childCount}）` : ""}</button>
         </div>
       </div>
     </div>

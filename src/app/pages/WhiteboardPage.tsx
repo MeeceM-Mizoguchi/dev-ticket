@@ -6,11 +6,16 @@ import { FolderKanban, ChevronRight, PenTool } from "lucide-react";
 import { isSupabaseEnabled, supabase } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
+import { BoardListToggle } from "@/app/components/whiteboard/BoardListToggle";
 import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject } from "@/app/lib/whiteboardService";
 import type { AccessLevel, UserPermissions, Whiteboard } from "@/app/types";
 
 const WhiteboardCanvas = lazy(() => import("@/app/components/whiteboard/WhiteboardCanvas"));
+
+// ボード一覧をたたんだ状態の保存キー（BRU9-046）。プロジェクト横断の「好み」として1キーで持つ。
+const COLLAPSE_LS_KEY = "wb_board_list_collapsed";
 
 // userId から安定した色を生成
 function colorFromId(id: string): string {
@@ -33,6 +38,11 @@ export function WhiteboardPage() {
   const [perms, setPerms] = useState<Perms>({ whiteboard: "view", wiki: "view", backlog: "view", minutes: "view" });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 初期値は useState 初期化関数で同期的に読む。useEffect で後から反映すると
+  // リロード時にサイドバーが一瞬出て消える（チカチカ）ため。
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(COLLAPSE_LS_KEY) === "1"; } catch { return false; }
+  });
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
@@ -65,6 +75,14 @@ export function WhiteboardPage() {
 
   const canEdit = perms.whiteboard === "edit";
 
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((v) => {
+      const next = !v;
+      try { localStorage.setItem(COLLAPSE_LS_KEY, next ? "1" : "0"); } catch { /* プライベートモード等では保存だけ諦める */ }
+      return next;
+    });
+  }, []);
+
   const handleCreate = useCallback(async () => {
     if (!projectId) return;
     const b = await createBoard(projectId, "無題のボード", userId);
@@ -86,6 +104,9 @@ export function WhiteboardPage() {
   if (!loading && perms.whiteboard === "none") return <Navigate to="/dashboard" replace />;
 
   const user = { id: userId, name: userName || "匿名", color: colorFromId(userId || "anon") };
+
+  // ボード未選択のときは、たたむ設定でも一覧を出す（一覧が無いとボードを選べず操作不能になる）。
+  const sidebarHidden = collapsed && !!boardId;
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
@@ -112,21 +133,36 @@ export function WhiteboardPage() {
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
-        <BoardListSidebar
-          boards={boards} selectedId={boardId ?? null} canEdit={canEdit}
-          onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
-          onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
-        />
-        <div style={{ flex: 1, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", overflow: "hidden" }}>
+        {/* たたんだ時は width:0 で残さず外す（非表示の検索inputにTabフォーカスが入るのを防ぐ）。
+            アニメーションは付けない: transition 中に Excalidraw の ResizeObserver が毎フレーム
+            発火してcanvas再描画がジャンクするため、即時切替にする（BRU9-046）。 */}
+        {!sidebarHidden && (
+          <BoardListSidebar
+            boards={boards} selectedId={boardId ?? null} canEdit={canEdit} loading={loading}
+            onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
+            onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
+            onCollapse={toggleCollapsed}
+          />
+        )}
+        <div style={{ position: "relative", flex: 1, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", overflow: "hidden" }}>
           {boardId ? (
-            <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
-              <WhiteboardCanvas key={boardId} boardId={boardId} title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"} user={user} canEdit={canEdit} />
-            </Suspense>
+            // ボード切替時は resetKeys で境界を自動リセットし、前ボードの例外を持ち越さない（BRU7-043）。
+            <ErrorBoundary resetKeys={[boardId]}>
+              <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
+                <WhiteboardCanvas key={boardId} boardId={boardId} title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"} user={user} canEdit={canEdit} />
+              </Suspense>
+            </ErrorBoundary>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", gap: 10 }}>
               <PenTool style={{ width: 34, height: 34, color: "#D8D3CC" }} />
               <span style={{ fontSize: 13 }}>ボードを選択または作成してください</span>
             </div>
+          )}
+          {/* たたんだ状態の展開ボタン。キャンバス左上（Excalidraw標準ハンバーガーはCSSで非表示・
+              左プロパティ島は margin-top:52px）に浮かせる。Canvasルートは isolation:isolate なので
+              zIndex:1 で十分に前面へ出るうえ、疑似全画面(zIndex:3000)時は自動的に隠れる。 */}
+          {sidebarHidden && (
+            <BoardListToggle collapsed onToggle={toggleCollapsed} variant="floating" />
           )}
         </div>
       </div>

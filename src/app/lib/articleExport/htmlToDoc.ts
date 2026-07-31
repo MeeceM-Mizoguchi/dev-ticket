@@ -133,7 +133,15 @@ function walkBlocks(parent: Node): Block[] {
         imgs.forEach(img => blocks.push({ type: "image", url: img.getAttribute("src") ?? "", alt: img.getAttribute("alt") ?? undefined }));
         break;
       }
-      case "div": blocks.push(...walkBlocks(el)); break;
+      case "div": {
+        // Mermaid図ノード（<div data-type="mermaid" data-code="...">）は図として扱う。
+        if (el.getAttribute("data-type") === "mermaid") {
+          blocks.push({ type: "mermaid", code: el.getAttribute("data-code") ?? "" });
+        } else {
+          blocks.push(...walkBlocks(el));
+        }
+        break;
+      }
       default: {
         const runs = runsOf(el.childNodes, {});
         if (runs.some(r => r.text.trim())) blocks.push({ type: "paragraph", runs });

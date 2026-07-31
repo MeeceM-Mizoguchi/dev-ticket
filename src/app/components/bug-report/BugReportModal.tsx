@@ -6,6 +6,7 @@ import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { mapBugReport } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
 import { APP_VERSION } from "@/lib/version";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import type { BugCategory, BugSeverity, BugReport } from "@/app/types";
 
 const CATEGORY_OPTIONS: { value: BugCategory; label: string }[] = [
@@ -189,6 +190,7 @@ export function BugReportModal({ onClose }: Props) {
           if (backlogData?.id) {
             await supabase!.from("bug_reports").update({ backlog_item_id: backlogData.id }).eq("id", reportId);
           }
+          emitLinkItemsChanged(proj.id, "backlog"); // 他タブの $ サジェストへ即時反映
         }
       }
 

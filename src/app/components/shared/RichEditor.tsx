@@ -7,6 +7,8 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableMap } from "@tiptap/pm/tables";
 import Mention from "@tiptap/extension-mention";
+import { MermaidNode } from "./MermaidNode";
+import { MermaidEditModal } from "./MermaidEditModal";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { NodeViewProps } from "@tiptap/react";
@@ -181,6 +183,49 @@ const NormalizeTableWidths = Extension.create({
   },
 });
 
+// 🌟 BRU9-044: クリップボードのHTMLに表が含まれるか判定する。
+//   Excel / Googleスプレッドシート / Word / Notion などから表をコピーすると、
+//   クリップボードには「表のHTML」と「セル範囲を描画したビットマップ画像」が同時に載る。
+//   画像を優先すると表が画像として貼り付いてしまうため、表があれば画像側は捨てる。
+//   コピー元によっては <table> ではなく <tr> から始まる断片が載るので、そちらも表とみなす
+//   （ProseMirror の readHTML が <table><tbody> を補ってくれるため、どちらでも表として貼れる）。
+export function clipboardHasTable(data: DataTransfer | null): boolean {
+  const html = data?.getData("text/html") ?? "";
+  return /<table[\s>]/i.test(html) || (/<tr[\s>]/i.test(html) && /<t[dh][\s>]/i.test(html));
+}
+
+// 🌟 BRU9-044: タブ区切りテキストを表のHTMLに変換する。表のHTMLをクリップボードに載せない
+//   表計算ソフト向けのフォールバック。誤検知（タブを含むコードの貼り付けなど）を避けるため、
+//   「2行以上」「2列以上」「全行の列数が一致」を満たすときだけ表とみなす。
+//   セル内改行は Excel の TSV と同じくダブルクォートで囲まれるので、その解除も行う。
+export function tsvToTableHtml(text: string): string | null {
+  if (!text.includes("\t")) return null;
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch !== '"') { cell += ch; continue; }
+      if (text[i + 1] === '"') { cell += '"'; i++; continue; }
+      quoted = false;
+      continue;
+    }
+    if (ch === '"' && cell === "") { quoted = true; continue; }
+    if (ch === "\t") { row.push(cell); cell = ""; continue; }
+    if (ch === "\r") continue;
+    if (ch === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; continue; }
+    cell += ch;
+  }
+  if (cell !== "" || row.length > 0) { row.push(cell); rows.push(row); }
+  const cols = rows[0]?.length ?? 0;
+  if (rows.length < 2 || cols < 2 || rows.some(r => r.length !== cols)) return null;
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const cellHtml = (s: string) => `<td>${s.split("\n").map(line => `<p>${esc(line)}</p>`).join("")}</td>`;
+  return `<table><tbody>${rows.map(r => `<tr>${r.map(cellHtml).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
 // ---- インライン画像 NodeView（ホバーでコピー/削除、クリックで拡大表示） ----
 function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
   const [hovered, setHovered] = useState(false);
@@ -266,6 +311,7 @@ const SuggestionStore = Extension.create({
       backlogItems: [] as { id: string; title: string }[],
       wikiItems: [] as { id: string; title: string }[],
       minuteItems: [] as { id: string; title: string }[],
+      fileItems: [] as { id: string; title: string }[],
     };
   },
 });
@@ -324,7 +370,7 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 MentionList.displayName = "MentionList";
 
 // ---- LinkMentionList popup: バックログ・Wiki・議事録の統合 $メンション ----
-interface LinkMentionOption { id: string; title: string; type: "backlog" | "wiki" | "minute" }
+interface LinkMentionOption { id: string; title: string; sub?: string; type: "backlog" | "wiki" | "minute" }
 interface LinkMentionListProps {
   items: LinkMentionOption[];
   command: (p: { id: string; label: string }) => void;
@@ -393,6 +439,12 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
             }}>
               {item.title}
             </span>
+            {/* プロジェクト横断で候補を出す画面では、同名を区別できるようPJ名を添える */}
+            {item.sub && (
+              <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0, whiteSpace: "nowrap" as const }}>
+                {item.sub}
+              </span>
+            )}
           </button>
         );
       })}
@@ -400,6 +452,72 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
   );
 });
 LinkMentionList.displayName = "LinkMentionList";
+
+// ---- FileMentionList popup: ファイルボックスの %メンション (ENHA2-035) ----
+interface FileMentionListProps {
+  items: { id: string; title: string; sub?: string }[];
+  command: (p: { id: string; label: string }) => void;
+}
+
+const FileMentionList = forwardRef<MentionListHandle, FileMentionListProps>(({ items, command }, ref) => {
+  const [sel, setSel] = useState(0);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  useEffect(() => { setSel(0); }, [items]);
+  useEffect(() => { itemRefs.current[sel]?.scrollIntoView({ block: "nearest" }); }, [sel]);
+
+  useImperativeHandle(ref, () => ({
+    onKeyDown: ({ event }) => {
+      if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
+      if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
+      if (event.key === "Enter") {
+        const item = items[sel];
+        if (item) command({ id: item.id, label: item.title });
+        return true;
+      }
+      return false;
+    },
+  }));
+
+  if (!items.length) return (
+    <div style={{ padding: "10px 14px", fontSize: 11, color: "#B0A9A4" }}>該当なし</div>
+  );
+
+  return (
+    <>
+      {items.map((item, i) => (
+        <button key={item.id}
+          ref={el => { itemRefs.current[i] = el; }}
+          onMouseDown={e => { e.preventDefault(); command({ id: item.id, label: item.title }); }}
+          onMouseEnter={() => setSel(i)}
+          style={{
+            width: "100%", padding: "7px 12px", textAlign: "left" as const,
+            background: i === sel ? "#ECFEFF" : "transparent",
+            border: "none", cursor: "pointer", fontSize: 12,
+            color: i === sel ? "#0891B2" : "#1A1714",
+            display: "flex", alignItems: "center", gap: 8,
+            transition: "background 0.1s", boxSizing: "border-box" as const,
+          }}>
+          <span style={{
+            padding: "1px 6px", borderRadius: 4, background: "#CFFAFE",
+            fontSize: 10, fontWeight: 700, color: "#0891B2",
+            flexShrink: 0, whiteSpace: "nowrap" as const,
+          }}>ファイル</span>
+          <span style={{
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
+            flex: 1, color: "#6B6458", fontSize: 11,
+          }}>{item.title}</span>
+          {item.sub && (
+            <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0, whiteSpace: "nowrap" as const }}>
+              {item.sub}
+            </span>
+          )}
+        </button>
+      ))}
+    </>
+  );
+});
+FileMentionList.displayName = "FileMentionList";
 
 // ---- TicketMentionList popup component --------------------------------------
 interface TicketItem { wbs: string; title: string }
@@ -545,24 +663,29 @@ function makeSuggestionPopup<T>(
 
 // ---- RichEditor -------------------------------------------------------------
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onImageUpload, style,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], fileItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick, onImageUpload, style,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
   members?: string[];
   tickets?: { wbs: string; title: string }[];
-  backlogItems?: { id: string; title: string }[];
-  wikiItems?: { id: string; title: string }[];
-  minuteItems?: { id: string; title: string }[];
+  // sub はプロジェクト横断で候補を出す画面(マイアクション等)の所属PJ名
+  backlogItems?: { id: string; title: string; sub?: string }[];
+  wikiItems?: { id: string; title: string; sub?: string }[];
+  minuteItems?: { id: string; title: string; sub?: string }[];
+  fileItems?: { id: string; title: string; sub?: string }[];
   onTicketClick?: (wbs: string) => void;
   onBacklogClick?: (id: string) => void;
   onWikiClick?: (id: string) => void;
   onMinuteClick?: (id: string) => void;
+  onFileClick?: (id: string) => void;
   onImageUpload?: (file: File) => Promise<string>;
   style?: React.CSSProperties;
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
+  // Mermaid挿入モーダルの開閉（本文中はコードを見せず、入力はモーダルに集約する）
+  const [mermaidModalOpen, setMermaidModalOpen] = useState(false);
 
   const editor = useEditor({
     extensions: [
@@ -580,6 +703,8 @@ export function RichEditor({
           },
         },
       }),
+      // Mermaid図の専用ノード（本文中は図だけ表示、コードはモーダルで編集）。
+      MermaidNode,
       CustomImage,
       // 🌟 BRU4-049: 列幅ドラッグ可変。両端固定はやめ、表は左寄せで右方向へ伸縮。最小列幅60px。
       Table.configure({ resizable: true, cellMinWidth: 60 }),
@@ -591,6 +716,7 @@ export function RichEditor({
         renderText({ node, suggestion }) {
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") return `#${node.attrs.id ?? ""}`;
+          if (char === "%") return `%${node.attrs.label ?? node.attrs.id ?? ""}`;
           if (char === "$") {
             const rawId = node.attrs.id ?? "";
             const label = node.attrs.label ?? rawId.split(":").slice(1).join(":") ?? rawId;
@@ -602,6 +728,9 @@ export function RichEditor({
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") {
             return ["span", { ...options.HTMLAttributes, class: "ticket-mention" }, `#${node.attrs.id ?? ""}`];
+          }
+          if (char === "%") {
+            return ["span", { ...options.HTMLAttributes, class: "file-mention" }, `%${node.attrs.label ?? node.attrs.id ?? ""}`];
           }
           if (char === "$") {
             const rawId = node.attrs.id ?? "";
@@ -668,6 +797,16 @@ export function RichEditor({
             },
             render: makeSuggestionPopup(LinkMentionList, 320),
           },
+          {
+            // %ファイルメンション (ENHA2-035)
+            char: "%",
+            items: ({ query, editor: ed }: { query: string; editor: any }) => {
+              const f: { id: string; title: string }[] = ed?.storage?.suggestionStore?.fileItems ?? [];
+              const q = query.toLowerCase();
+              return q ? f.filter(i => i.title.toLowerCase().includes(q)) : f;
+            },
+            render: makeSuggestionPopup(FileMentionList, 320),
+          },
         ],
       }),
     ],
@@ -677,13 +816,29 @@ export function RichEditor({
     onUpdate: ({ editor }) => { if (!editor.isEditable) return; onChange?.(editor.getHTML()); },
     editorProps: {
       handlePaste: onImageUpload ? (_view, event) => {
-        const items = Array.from(event.clipboardData?.items ?? []);
+        const data = event.clipboardData;
+        // 🌟 BRU9-044: Excel等の表をコピーすると、クリップボードには text/html(表のHTML) と
+        //   image/png(セル範囲のビットマップ)の両方が載る。ここで image/* を無条件に拾って
+        //   アップロードしていたため、表が画像として貼り付けられてしまっていた。
+        //   HTMLに表が含まれるときは画像を無視し、ProseMirror標準のHTMLパース(=表として貼付)に任せる。
+        if (clipboardHasTable(data)) return false;
+        const items = Array.from(data?.items ?? []);
         const imgFiles = items.filter(i => i.type.startsWith("image/")).map(i => i.getAsFile()).filter(Boolean) as File[];
         if (imgFiles.length === 0) return false;
+        // 🌟 BRU9-044: 表のHTMLをクリップボードに載せない表計算ソフトもある。画像と一緒に
+        //   タブ区切りテキストが載っていれば表計算のセル範囲なので、そこから表を組み立てる。
+        const tsvTable = tsvToTableHtml(data?.getData("text/plain") ?? "");
+        if (tsvTable) {
+          event.preventDefault();
+          editor?.chain().focus().insertContent(tsvTable).run();
+          return true;
+        }
         event.preventDefault();
         imgFiles.forEach(async (file) => {
           const url = await onImageUpload(file);
           if (url) editor?.chain().focus().setImage({ src: url }).run();
+          // アップロードが失敗すると「貼り付けたのに何も起きない」状態になるので必ず記録する
+          else console.warn("[RichEditor] 画像を貼り付けられませんでした（アップロード先がURLを返しませんでした）", { type: file.type, size: file.size, clipboardTypes: data?.types });
         });
         return true;
       } : undefined,
@@ -758,7 +913,8 @@ export function RichEditor({
             const level: number = node.attrs?.level ?? 1;
             return '#'.repeat(level) + ' ' + inline(node).trim() + '\n';
           }
-          if (t === 'codeBlock') return '```\n' + (node.textContent ?? '') + '\n```\n';
+          if (t === 'codeBlock') return '```' + (node.attrs?.language ?? '') + '\n' + (node.textContent ?? '') + '\n```\n';
+          if (t === 'mermaid') return '```mermaid\n' + (node.attrs?.code ?? '') + '\n```\n';
           if (t === 'blockquote') {
             let inner = '';
             node.forEach((c: any) => { inner += block(c); });
@@ -796,6 +952,7 @@ export function RichEditor({
     editor.storage.suggestionStore.backlogItems = backlogItems;
     editor.storage.suggestionStore.wikiItems = wikiItems;
     editor.storage.suggestionStore.minuteItems = minuteItems;
+    editor.storage.suggestionStore.fileItems = fileItems;
   }, [editor, members, tickets, backlogItems, wikiItems, minuteItems]);
 
   useEffect(() => {
@@ -855,11 +1012,17 @@ export function RichEditor({
         const id = rawId.startsWith("minute:") ? rawId.slice(7) : rawId;
         e.preventDefault(); e.stopPropagation();
         onMinuteClick(id);
+        return;
+      }
+      const fileEl = el.closest(".file-mention[data-id]");
+      if (fileEl && onFileClick) {
+        e.preventDefault(); e.stopPropagation();
+        onFileClick(fileEl.getAttribute("data-id") ?? "");
       }
     };
     dom.addEventListener("click", handler);
     return () => dom.removeEventListener("click", handler);
-  }, [editor, onBacklogClick, onWikiClick, onMinuteClick]);
+  }, [editor, onBacklogClick, onWikiClick, onMinuteClick, onFileClick]);
 
   // 🌟 BRU4-049: 縦罫線をダブルクリックで、その列の最長1行の自然幅に自動フィット
   useEffect(() => {
@@ -983,6 +1146,12 @@ export function RichEditor({
     ensureColWidths();
   };
 
+  // Mermaid 図を挿入（モーダルで入力 → 図ノードとして挿入。本文中はコードを見せない）。
+  const insertMermaid = (code: string) => {
+    editor.chain().focus().insertContent({ type: "mermaid", attrs: { code } }).run();
+    setMermaidModalOpen(false);
+  };
+
   const handleLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest("a");
     if (!anchor) return;
@@ -1009,6 +1178,11 @@ export function RichEditor({
         .tiptap code { background: #F4F5F6; padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; color: #D97706; }
         .tiptap pre { background: #1A1714; color: #F4F5F6; padding: 12px 14px; border-radius: 8px; margin: 8px 0; overflow-x: auto; }
         .tiptap pre code { background: none; color: inherit; padding: 0; font-size: 12px; }
+        /* 🌟 Mermaid図ノード（本文中は図だけ表示・ホバーで操作ボタン・クリックで拡大） */
+        .tiptap .mermaid-node { margin: 8px 0; }
+        .tiptap .mermaid-node-inner { position: relative; border: 1px solid rgba(26,23,20,0.12); border-radius: 8px; padding: 12px; background: #FFFFFF; }
+        .tiptap .mermaid-svg svg { max-width: 100%; height: auto; }
+        .tiptap .mermaid-node.ProseMirror-selectednode .mermaid-node-inner { outline: 2px solid #059669; outline-offset: 1px; }
         /* 🌟 BRU4-049: 列幅リサイズ対応。表は左寄せ・内容幅(width:auto)。合計がエディタ幅を超えたら
            clampプラグインが全列を比例縮小してフィットさせるので、横スクロールは基本発生しない。
            (列数が多く最小幅60pxでも収まらない極端なケースのみラッパーで横スクロール) */
@@ -1035,6 +1209,8 @@ export function RichEditor({
         .tiptap .wiki-mention:hover { background: #BAE6FD; }
         .tiptap .minute-mention { color: #059669; font-weight: 700; background: #D1FAE5; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .minute-mention:hover { background: #A7F3D0; }
+        .tiptap .file-mention { color: #0891B2; font-weight: 700; background: #CFFAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .file-mention:hover { background: #A5F3FC; }
         .tiptap img { max-width: 100%; }
       `}</style>
       {!readOnly && toolbar && (
@@ -1051,6 +1227,7 @@ export function RichEditor({
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle(editor.isActive("code"))} onClick={() => editor.chain().focus().toggleCode().run()}>{'<>'}</button>
           <button type="button" style={btnStyle(editor.isActive("codeBlock"))} onClick={() => editor.chain().focus().toggleCodeBlock().run()}>コード</button>
+          <button type="button" style={btnStyle(editor.isActive("mermaid"))} onClick={() => setMermaidModalOpen(true)} title="Mermaid図を挿入（フロー図・シーケンス図など）">Mermaid</button>
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={handleInsertTable}>表</button>
@@ -1089,6 +1266,15 @@ export function RichEditor({
           <style>{`.tiptap p.is-editor-empty:first-child::before { content: "${placeholder}"; }`}</style>
         )}
       </div>
+      {mermaidModalOpen && (
+        <MermaidEditModal
+          initialCode=""
+          title="Mermaid図を挿入"
+          saveLabel="挿入"
+          onSave={insertMermaid}
+          onClose={() => setMermaidModalOpen(false)}
+        />
+      )}
     </div>
   );
 }

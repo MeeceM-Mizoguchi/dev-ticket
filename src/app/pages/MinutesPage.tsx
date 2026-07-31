@@ -22,6 +22,8 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
+import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
+import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 
 function formatDate(d: string) {
   if (!d) return "";
@@ -137,6 +139,7 @@ export function MinutesPage() {
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("view");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("view");
   const [effectiveWhiteboardPerm, setEffectiveWhiteboardPerm] = useState<AccessLevel>("view");
+  // ENHA2-035: 後追い追加のため未設定時は "edit"（既存プロジェクトでも即使える）
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -144,6 +147,10 @@ export function MinutesPage() {
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = effectiveMinutesPerm === "edit";
   const { open: openPreview } = usePreviewPanel();
+
+  // $(Wiki/バックログ/議事録) / #(チケット) のサジェスト候補。
+  // 別タブでの作成・改題に追随して再取得される。(BRU5-032)
+  const suggest = useLinkSuggestions(project?.id);
 
   const handlePendingCountChange = useCallback((count: number) => {
     if (!selectedId) return;
@@ -213,14 +220,18 @@ export function MinutesPage() {
   const scheduleSave = useCallback((patch: Partial<{ title: string; meetingDate: string; attendees: string[]; content: string }>) => {
     if (!selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const titleChanged = patch.title !== undefined && minutes.find(m => m.id === selectedId)?.title !== patch.title;
+    const pid = project?.id;
     saveTimer.current = setTimeout(async () => {
       await supabase!.from("meeting_minutes").update({
         title: patch.title, meeting_date: patch.meetingDate, attendees: patch.attendees, content: patch.content,
         updated_at: new Date().toISOString(),
       }).eq("id", selectedId);
       setMinutes(prev => prev.map(m => m.id === selectedId ? { ...m, ...patch } as MeetingMinute : m));
+      // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
+      if (titleChanged) emitLinkItemsChanged(pid, "minute");
     }, 600);
-  }, [selectedId]);
+  }, [selectedId, minutes, project?.id]);
 
   const handleImagesChange = useCallback(async (next: string[]) => {
     if (!selectedId) return;
@@ -241,12 +252,14 @@ export function MinutesPage() {
     }).select("created_at").single();
     if (error) { toast("議事録の作成に失敗しました", "error"); return; }
     await load();
+    emitLinkItemsChanged(project.id, "minute"); // 他タブの $ サジェストへ即時反映
     const slug = toMinuteSlug(inserted?.created_at) || id;
     navigate(`/${projectSlug ?? project?.slug}/minutes/${slug}`);
   };
 
   const handleDelete = async (m: MeetingMinute) => {
     await supabase!.from("meeting_minutes").delete().eq("id", m.id);
+    emitLinkItemsChanged(project?.id, "minute");
     if (selectedId === m.id) {
       setSelectedId(null);
       navigate(`/${projectSlug ?? project?.slug}/minutes`);
@@ -453,9 +466,15 @@ export function MinutesPage() {
                   onChange={v => { setContent(v); scheduleSave({ title, meetingDate, attendees, content: v }); }}
                   placeholder="議事内容を入力..." members={project?.members ?? []} minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
+                  tickets={suggest.tickets}
+                  backlogItems={suggest.backlogItems}
+                  wikiItems={suggest.wikiItems}
+                  minuteItems={suggest.minuteItems}
+                  fileItems={suggest.fileItems}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
+                  onFileClick={id => openPreview("file", id)}
                   onImageUpload={canEdit ? async (file) => {
                     if (plan.maxImagesPerItem !== null) {
                       const currentCount = (content.match(/<img/g) ?? []).length;

@@ -138,6 +138,55 @@ export function PermissionsPage() {
     return [...all];
   };
 
+  // グループのメンバー構成が変わったとき、そのグループがアサイン済みの全プロジェクトの
+  // materialized な members 配列を再計算して反映する。
+  // projects.members はグループアサイン時点のメンバー名スナップショットなので、
+  // group_members だけを更新しても既存プロジェクトへ反映されない（← 本バグの原因）。
+  // prevMemberships: 変更前の所属。どの名前がグループ由来で覆われていたかの判定に使う
+  //   （残存したグループ専用の名前を個別アサインと誤認しないため。removeGroupFromProject と同じ考え方）。
+  // nextMemberships: 変更後の所属。members 配列の再構築はこちらを真として行う。
+  // 戻り値: 実際に更新されたプロジェクト（members 反映済み）。
+  const recomputeProjectsForGroup = async (
+    groupId: number,
+    prevMemberships: GroupMembership[],
+    nextMemberships: GroupMembership[],
+  ): Promise<Project[]> => {
+    const affected = projects.filter(p => (p.groupIds ?? []).includes(groupId));
+    if (affected.length === 0) return [];
+
+    const namesInGroups = (gids: number[], ms: GroupMembership[]) => {
+      const s = new Set<string>();
+      for (const gid of gids) {
+        ms.filter(gm => gm.group_id === gid).forEach(gm => {
+          const m = members.find(mm => mm.id === gm.member_id);
+          if (m) s.add(m.name);
+        });
+      }
+      return s;
+    };
+
+    const updated: Project[] = [];
+    for (const project of affected) {
+      const gids = project.groupIds ?? [];
+      // 変更前の所属でグループ由来の名前を割り出し、それを除いたものを個別アサインとみなす
+      const prevCovered = namesInGroups(gids, prevMemberships);
+      const individual = (project.members ?? []).filter(n => !prevCovered.has(n));
+      // 変更後の所属で全メンバー名を再構築
+      const nextCovered = namesInGroups(gids, nextMemberships);
+      const newMembers = [...new Set([...individual, ...nextCovered])];
+      if (isSupabaseEnabled) {
+        const { error } = await supabase!.from("projects")
+          .update({ members: newMembers }).eq("id", project.id);
+        if (error) { toast("グループ変更のプロジェクト反映に失敗しました", "error"); continue; }
+      }
+      updated.push({ ...project, members: newMembers });
+    }
+    if (updated.length) {
+      setProjects(prev => prev.map(p => updated.find(u => u.id === p.id) ?? p));
+    }
+    return updated;
+  };
+
   // ── Drag & Drop ──────────────────────────────────────────────────────────────
 
   const startDrag = (e: DragEvent, payload: DragPayload) => {
@@ -167,7 +216,40 @@ export function PermissionsPage() {
         .insert({ group_id: groupId, member_id: memberId });
       if (error) { toast("グループへの追加に失敗しました", "error"); return; }
     }
-    setGroupMemberships(prev => [...prev, { group_id: groupId, member_id: memberId }]);
+    const nextMemberships = [...groupMemberships, { group_id: groupId, member_id: memberId }];
+    setGroupMemberships(nextMemberships);
+
+    // このグループが既にアサインされているプロジェクトへ、新メンバーのアクセスを反映する
+    const updated = await recomputeProjectsForGroup(groupId, groupMemberships, nextMemberships);
+    if (isSupabaseEnabled && updated.length > 0) {
+      const group = groups.find(g => g.id === groupId);
+      const member = members.find(m => m.id === memberId);
+      for (const project of updated) {
+        // グループの権限を新メンバーの project_member_permissions に適用（commitGroupToProject と同じ）
+        if (group?.permissions) {
+          await supabase!.from("project_member_permissions")
+            .delete().eq("project_id", project.id).eq("member_id", memberId);
+          await supabase!.from("project_member_permissions")
+            .insert({ project_id: project.id, member_id: memberId, permissions: group.permissions });
+        }
+        // アサイン通知（本人が操作した場合は除く）
+        if (member && member.name !== userName) {
+          supabase!.from("notifications").insert({
+            user_name: member.name,
+            type: "assign",
+            title: `「${project.name}」にアサインされました`,
+            body: `${userName}さんがグループ経由でアサインしました`,
+            ticket_id: null,
+            ticket_wbs: "",
+            ticket_title: "",
+            project_slug: project.slug ?? "",
+            is_read: false,
+          }).then(({ error }) => {
+            if (error) console.error("[notifications] group member add failed:", error.message);
+          });
+        }
+      }
+    }
     toast("グループにメンバーを追加しました");
   };
 
@@ -176,7 +258,23 @@ export function PermissionsPage() {
       await supabase!.from("group_members")
         .delete().eq("group_id", groupId).eq("member_id", memberId);
     }
-    setGroupMemberships(prev => prev.filter(gm => !(gm.group_id === groupId && gm.member_id === memberId)));
+    const nextMemberships = groupMemberships.filter(gm => !(gm.group_id === groupId && gm.member_id === memberId));
+    setGroupMemberships(nextMemberships);
+
+    // グループから外れたメンバーを、そのグループがアサイン済みのプロジェクトからも外す
+    const updated = await recomputeProjectsForGroup(groupId, groupMemberships, nextMemberships);
+    if (isSupabaseEnabled && updated.length > 0) {
+      const member = members.find(m => m.id === memberId);
+      if (member) {
+        for (const project of updated) {
+          // 他グループ／個別アサインで残っていない場合のみ権限レコードを削除
+          if (!project.members.includes(member.name)) {
+            await supabase!.from("project_member_permissions")
+              .delete().eq("project_id", project.id).eq("member_id", memberId);
+          }
+        }
+      }
+    }
   };
 
   // Drop on project

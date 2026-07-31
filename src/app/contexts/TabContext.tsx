@@ -44,11 +44,27 @@ export function useTabs(): TabContextValue | null {
 // null になるため、モジュールレベルの参照経由でアクティブタブを操作する。
 let globalActiveNav: NavFn | null = null;
 let globalActivePath: string | null = null;
+// Web(非タブ)環境で SPA 遷移するための BrowserRouter navigate ブリッジ。
+// これが登録されていれば window.location.href によるフルリロードを回避でき、
+// 通話中に画面遷移しても CallProvider がアンマウントされず通話が維持される。
+let globalWebNav: NavFn | null = null;
 
-/** アクティブタブ内で遷移。タブモードでなければ false を返す(呼び出し側でフォールバック)。 */
+/** Web(非タブ)環境の BrowserRouter navigate を登録する(App 直下の WebNavBridge が呼ぶ)。 */
+export function setWebNavigate(fn: NavFn | null): void {
+  globalWebNav = fn;
+}
+
+/**
+ * アプリ内 SPA 遷移を行う。タブモードならアクティブタブ内で、Web なら BrowserRouter で遷移する。
+ * どちらのルーターも未登録のときだけ false を返す(呼び出し側が window.location へフォールバック)。
+ */
 export function navigateInActiveTab(path: string): boolean {
   if (globalActiveNav) {
     globalActiveNav(path);
+    return true;
+  }
+  if (globalWebNav) {
+    globalWebNav(path);
     return true;
   }
   return false;

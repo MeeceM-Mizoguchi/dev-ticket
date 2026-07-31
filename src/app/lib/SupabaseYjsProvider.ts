@@ -89,7 +89,20 @@ export class SupabaseYjsProvider {
   destroy() {
     this.doc.off("update", this._onDocUpdate);
     this.awareness.off("update", this._onAwarenessUpdate);
-    removeAwarenessStates(this.awareness, [this.doc.clientID], "destroy");
-    void this.channel.unsubscribe();
+    // 自分の離脱を「即時」に周知する。これを送らずに購読解除すると、相手側では
+    // awareness の30秒タイムアウトまで自分のアバター(ゴースト)が残り続ける。
+    // ハンドラを先に外し、ここで削除更新を1回だけ手動送信 → 送信完了を待ってから購読解除する
+    // （送信を待たずに unsubscribe すると通知が飛ばずゴーストが残る）。
+    const clientId = this.doc.clientID;
+    removeAwarenessStates(this.awareness, [clientId], "destroy"); // ローカル状態を削除（metaのclockは進む）
+    const finish = () => { void this.channel.unsubscribe(); };
+    if (this.ready) {
+      const payload = { a: bytesToBase64(encodeAwarenessUpdate(this.awareness, [clientId])), s: this.senderId };
+      Promise.resolve(this.channel.send({ type: "broadcast", event: "y-awareness", payload }))
+        .catch(() => {})
+        .finally(finish);
+    } else {
+      finish();
+    }
   }
 }

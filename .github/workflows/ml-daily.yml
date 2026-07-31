@@ -1,0 +1,79 @@
+# ENHA2-034 毎日の自動更新（深夜3時 JST）
+#
+# 毎日 AM3:00 (Asia/Tokyo) に無人で走る。ユーザーのログインは不要で、
+# 「学習ボタン」を押す必要もない。誰も使っていない時間帯に裏で終わっている。
+#
+# ★①→②を必ずこの順で直列に実行する★
+#   ② モデル学習は、① スキル分析が出したスキル・レベルを学習材料にする。
+#   別々の仕組みで並行起動すると、②が古いスキルで学習してしまう。
+#
+# ★差分検知★
+#   前回から変更のない組織は①も②もスキップされる。1000組織あっても、
+#   昨日チケットが動いたのは一部だけなので、日次でも実質的な負荷は軽い。
+#
+# なぜ学習(②)が Vercel cron ではなく GitHub Actions か:
+#   LightGBM/numpy はサーバレス関数のバンドルサイズ上限にとって重すぎる。
+#   毎日1回・数分でよい処理なので、実行環境の制約が緩いこちらに置く。
+#
+# 必要な Secrets:
+#   APP_URL                    … 例 https://dev-ticket.vercel.app（末尾スラッシュなし）
+#   CRON_SECRET                … Vercel 側の環境変数と同じ値
+#   VITE_SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY  … RLSをバイパスするため service_role が必要
+
+name: ML daily (3AM JST)
+
+on:
+  schedule:
+    # cron は UTC。18:00 UTC = 翌 03:00 JST
+    - cron: "0 18 * * *"
+  workflow_dispatch:  # 「今すぐ再学習」から手動起動できるようにする
+    inputs:
+      org:
+        description: "この組織だけ学習する（空なら全組織）"
+        required: false
+      force:
+        description: "変更が無くても学習する"
+        required: false
+        default: "false"
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── ① スキル自動分析（全組織）── 先に必ずこれ
+      # 実績 → メンバーのスキル・レベルを更新する。
+      # skill_auto_update が OFF のメンバーと、source='manual' の行は触らない。
+      - name: Analyze skills (all orgs)
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sS -f -X POST "$APP_URL/api/ml/analyze-skills" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{}' | head -c 2000
+          echo
+
+      # ── ② モデル学習（全組織）── ①の結果を材料にする
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml/requirements.txt
+
+      - run: pip install -r ml/requirements.txt
+
+      - name: Train models (all orgs)
+        working-directory: ml
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.org }}" ]; then ARGS="$ARGS --org ${{ github.event.inputs.org }}"; fi
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          python train.py $ARGS

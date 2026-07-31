@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -15,7 +15,7 @@ export function mapSprintTicket(r: any): SprintTicket {
   const assignee: string = Array.isArray(r.assignees) && r.assignees.length > 0
     ? r.assignees[0] : (r.assignee || "");
   // 🌟 追加: 末尾に closedAt: r.closed_at ?? null を追加してDBデータを紐づけ
-  return { id: r.id, wbs: r.wbs || "", title: r.title, status: r.status, priority: r.priority, assignee, startDate: r.start_date || "", dueDate: r.due_date || "", estimatedHours: r.estimated_hours || 0, progress: r.progress || 0, description: r.description || "", reviewerName: r.reviewer_name || "", reviewRound: r.review_round || 0, images: Array.isArray(r.images) ? r.images : [], categoryId: r.category_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", parentId: r.parent_id ?? null, startedAt: r.started_at ?? null, reviewRequestedAt: r.review_requested_at ?? null, reviewApprovedAt: r.review_approved_at ?? null, stgCompletedAt: r.stg_completed_at ?? null, uatCompletedAt: r.uat_completed_at ?? null, releasedAt: r.released_at ?? null, closedAt: r.closed_at ?? null, releaseDate: r.release_date ?? null, isReleaseDateUndecided: r.is_release_date_undecided ?? false, actualWorkHours: r.actual_work_hours ?? null, isOperationVerified: r.is_operation_verified ?? false, prefixes: Array.isArray(r.prefixes) ? r.prefixes : [] } as SprintTicket;
+  return { id: r.id, wbs: r.wbs || "", title: r.title, status: r.status, priority: r.priority, assignee, startDate: r.start_date || "", dueDate: r.due_date || "", estimatedHours: r.estimated_hours || 0, progress: r.progress || 0, description: r.description || "", reviewerName: r.reviewer_name || "", reviewRound: r.review_round || 0, images: Array.isArray(r.images) ? r.images : [], categoryId: r.category_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", parentId: r.parent_id ?? null, startedAt: r.started_at ?? null, reviewRequestedAt: r.review_requested_at ?? null, reviewApprovedAt: r.review_approved_at ?? null, stgCompletedAt: r.stg_completed_at ?? null, uatCompletedAt: r.uat_completed_at ?? null, releasedAt: r.released_at ?? null, closedAt: r.closed_at ?? null, releaseDate: r.release_date ?? null, isReleaseDateUndecided: r.is_release_date_undecided ?? false, actualWorkHours: r.actual_work_hours ?? null, isOperationVerified: r.is_operation_verified ?? false, prefixes: Array.isArray(r.prefixes) ? r.prefixes : [], devScale: r.dev_scale ?? null } as SprintTicket;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,9 +43,37 @@ export function mapSourceFile(r: any): TicketSourceFile {
   return { id: r.id, ticketId: r.ticket_id, fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", uploadedBy: r.uploaded_by, reviewRound: r.review_round || 1, fileUrl: r.file_url || "", createdAt: r.created_at || "" };
 }
 
+// ── ENHA2-035 ファイルボックス ──
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapProjectFile(r: any): ProjectFile {
+  return { id: r.id, projectId: r.project_id, folderPath: r.folder_path || "", fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", filePath: r.file_path || "", version: r.version || 1, uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "" };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMember(r: any): Member {
-  return { id: r.id, name: r.name, email: r.email, role: r.role, group: r.group_name || "", status: r.status || "active", projects: r.project_count || 0, tickets: r.ticket_count || 0, permission_group_id: r.permission_group_id || null, organizationId: r.organization_id ?? null };
+  return { id: r.id, name: r.name, email: r.email, role: r.role, group: r.group_name || "", status: r.status || "active", projects: r.project_count || 0, tickets: r.ticket_count || 0, permission_group_id: r.permission_group_id || null, organizationId: r.organization_id ?? null, skillAutoUpdate: r.skill_auto_update ?? true, mlNoticeDismissed: r.ml_notice_dismissed ?? false };
+}
+
+// ── ENHA2-034 スキル ──
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapSkill(r: any): Skill {
+  return { id: r.id, organizationId: r.organization_id, layer: r.layer, name: r.name, keywords: Array.isArray(r.keywords) ? r.keywords : [], sortOrder: r.sort_order ?? 0 };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapMemberSkill(r: any): MemberSkill {
+  return { profileId: r.profile_id, skillId: r.skill_id, level: r.level, source: r.source || "auto", evidence: r.evidence ?? {}, updatedAt: r.updated_at || "" };
+}
+
+// ── BRU9-041 スキル更新の履歴 ──
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapSkillUpdateRun(r: any): SkillUpdateRun {
+  return { id: r.id, organizationId: r.organization_id, kind: r.kind, actorProfileId: r.actor_profile_id ?? null, targetProfileId: r.target_profile_id ?? null, restoredFromAt: r.restored_from_at ?? null, summary: r.summary ?? {}, createdAt: r.created_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapMemberSkillChange(r: any): MemberSkillChange {
+  return { id: r.id, runId: r.run_id, organizationId: r.organization_id, profileId: r.profile_id, skillId: r.skill_id, changeType: r.change_type, oldLevel: r.old_level ?? null, newLevel: r.new_level ?? null, oldSource: r.old_source ?? null, newSource: r.new_source ?? null, evidence: r.evidence ?? {}, changedAt: r.changed_at || "" };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

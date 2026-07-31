@@ -124,6 +124,8 @@ function Blocks({ blocks, images }: { blocks: Block[]; images: Map<string, Loade
           case "list": return <List key={i} block={b} />;
           case "blockquote": return <View key={i} style={s.quote}><Blocks blocks={b.blocks} images={images} /></View>;
           case "codeblock": return <View key={i} style={s.code}><Text>{b.text}</Text></View>;
+          // 通常は render() 前に画像化されるが、変換失敗時の保険としてコード表示。
+          case "mermaid": return <View key={i} style={s.code}><Text>{b.code}</Text></View>;
           case "table": return <Table key={i} block={b} />;
           case "image": return <Img key={i} url={b.url} images={images} />;
           default: return null;

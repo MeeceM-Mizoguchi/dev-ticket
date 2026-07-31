@@ -28,13 +28,21 @@ function EnvMemoTag({ m }: { m: EnvMemo }) {
   const show = () => { if (timer.current) clearTimeout(timer.current); setOpen(true); };
   const hide = () => { timer.current = setTimeout(() => setOpen(false), 120); };
 
+  const chipStyle = { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: open ? "#E0F2FE" : "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none", cursor: m.url ? "pointer" : "default" } as const;
+  const icon = m.url
+    ? <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+    : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>;
+  const label = m.name || m.url || "メモ";
+
   return (
     <div style={{ position: "relative", display: "inline-flex" }} onMouseEnter={show} onMouseLeave={hide}>
-      <a href={m.url} target="_blank" rel="noopener noreferrer"
-        style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: open ? "#E0F2FE" : "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none" }}>
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        {m.name || m.url}
-      </a>
+      {m.url ? (
+        <a href={m.url} target="_blank" rel="noopener noreferrer" style={chipStyle}>
+          {icon}{label}
+        </a>
+      ) : (
+        <span style={chipStyle}>{icon}{label}</span>
+      )}
       {open && m.memo && (
         <div onMouseEnter={show} onMouseLeave={hide}
           style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 9999, background: "#1A1714", color: "#F9FAFB", borderRadius: 9, padding: "8px 12px", fontSize: 11, lineHeight: 1.6, whiteSpace: "pre-wrap", minWidth: 160, maxWidth: 300, maxHeight: "calc(1.6em * 4 + 16px)", overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.28)", userSelect: "text", cursor: "text" }}>
@@ -57,6 +65,10 @@ export function SprintPage() {
     return v;
   });
   const [closedHighlightWbs, setClosedHighlightWbs] = useState<string | null>(null);
+  // 作成直後のチケットへスクロール&強調するための対象WBS（詳細は開かず一覧で強調のみ・BRU5-034）
+  const [createdHighlightWbs, setCreatedHighlightWbs] = useState<string | null>(null);
+  // 作成直後のスプリントへスクロール&強調するための対象スプリントID（BRU5-034）
+  const [createdHighlightSprintId, setCreatedHighlightSprintId] = useState<string | null>(null);
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
@@ -91,6 +103,31 @@ export function SprintPage() {
   const [isParentNav, setIsParentNav] = useState(false);
   const deletedIdsRef = useRef<Set<string>>(new Set());
 
+  // 🌟 BRU5-043: 上部ブロック(パンくず〜ビュー切替)を画面上部に固定し、その実高さを測って
+  //             各ビューの sticky ヘッダーへオフセットとして渡す。高さは環境メモ折返し等で可変のため測定する。
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerH, setHeaderH] = useState(0);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const update = () => setHeaderH(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // 🌟 ボード表示時はスクロール領域(<main>)を先頭へ戻す。
+  //    スクロールコンテナ(<main>)はビュー切替・遷移で位置がリセットされないため、
+  //    前画面のスクロール位置を保持したままボードを開くと、ボードのタブ・情報バー・ステータスヘッダー
+  //    (通常フロー)が不透明な固定ヘッダーの裏に隠れ「ボードが表示されない」ように見える不具合を防ぐ。
+  //    リスト/ガントは対象チケットへ scrollIntoView する設計のため対象外(ボード限定)。
+  useEffect(() => {
+    if (loading || viewMode !== "board") return;
+    const scroller = headerRef.current?.closest("main") as HTMLElement | null;
+    if (scroller) scroller.scrollTop = 0;
+  }, [viewMode, loading]);
+
   const projectId = project?.id ?? null;
 
   useEffect(() => {
@@ -99,14 +136,14 @@ export function SprintPage() {
     }
   }, [selectedTicketWbs, isParentNav]);
 
-  const refreshSprints = () => {
+  const refreshSprints = async () => {
     if (!isSupabaseEnabled || !projectId) return;
-    supabase!.from("projects").select("*").eq("id", projectId).single()
-      .then(({ data: p }) => { if (p) setProject(mapProject(p)); });
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" })
-      .then(({ data }) => {
-        if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
-      });
+    const [{ data: p }, { data }] = await Promise.all([
+      supabase!.from("projects").select("*").eq("id", projectId).single(),
+      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }),
+    ]);
+    if (p) setProject(mapProject(p));
+    if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
   };
 
   useEffect(() => {
@@ -215,7 +252,11 @@ export function SprintPage() {
   const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
 
   return (
-    <div style={{ padding: "24px", minWidth: 1100 }}>
+    <div style={{ minWidth: 1100 }}>
+      {/* 🌟 BRU5-043: パンくず〜ビュー切替までを画面上部に固定。下へスクロールしても
+          バックログ/ホワイトボード等のタブとビュー切替へ常時アクセスできるようにする。
+          headerRef の実高さ(headerH)を各ビューの sticky ヘッダーへオフセットとして渡し段重ねする。 */}
+      <div ref={headerRef} style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", padding: "24px 24px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -238,7 +279,7 @@ export function SprintPage() {
           </div>
           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
             <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
-            {project?.envMemos?.filter(m => m.url).map((m, i) => (
+            {project?.envMemos?.filter(m => m.url || m.memo).map((m, i) => (
               <EnvMemoTag key={i} m={m} />
             ))}
           </div>
@@ -253,7 +294,7 @@ export function SprintPage() {
         />
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 0 }}>
         <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3 }}>
           {viewBtns.map(({ mode, label, Icon }) => (
             <button key={mode} onClick={() => setViewMode(mode)}
@@ -276,12 +317,15 @@ export function SprintPage() {
           );
         })()}
       </div>
+      </div>{/* 🌟 BRU5-043: 固定バー(headerRef)ここまで */}
 
-      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? highlightWbs} onOpenMyFilter={setMyFilterSprintId} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} />}
+      {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
+      <div style={{ padding: "0 24px 24px" }}>
+      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} stickyTop={headerH} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} stickyTop={headerH} />}
 
-      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={refreshSprints} currentSprintCount={sprints.length} />}
+      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
       
       {bulkCreateForSprintId && (() => {
         const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
@@ -305,7 +349,7 @@ export function SprintPage() {
           projectId={projectId ?? undefined}
           projectSlug={projectSlug}
           onClose={() => setCreateForSprintId(null)}
-          onCreated={() => { refreshSprints(); setCreateForSprintId(null); }}
+          onCreated={(createdWbs) => { refreshSprints(); if (createdWbs) { setClosedHighlightWbs(null); setSelectedTicketWbs(null); setCreatedHighlightWbs(createdWbs); } setCreateForSprintId(null); }}
           sprintStartDate={createForSprint.startDate || undefined}
           sprintEndDate={createForSprint.endDate || undefined}
           currentTicketCount={createForSprint.tickets.length}
@@ -326,7 +370,11 @@ export function SprintPage() {
           onClose={() => setShowEditIdentifiers(false)}
           onUpdated={(newSlug) => {
             setShowEditIdentifiers(false);
-            navigate(`/${newSlug}`);
+            if (project && newSlug !== project.slug) {
+              navigate(`/${newSlug}`);
+            } else {
+              refreshSprints();
+            }
           }} />
       )}
 
@@ -421,6 +469,7 @@ export function SprintPage() {
         projectPermissions={projectPermissions ?? undefined}
         forceNoAnim={isParentNav}
       />
+      </div>{/* 🌟 BRU5-043: 通常スクロール領域ここまで */}
     </div>
   );
 }

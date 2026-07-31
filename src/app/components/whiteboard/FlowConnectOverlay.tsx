@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { elementBBox, isTriangle } from "@/app/lib/whiteboardSnap";
+import { isTableCell } from "@/app/lib/whiteboardTable";
+import { COMMIT } from "@/app/lib/whiteboardHistory";
 
 type Dir = "up" | "down" | "left" | "right";
 type SpawnType = "rectangle" | "diamond" | "ellipse";
@@ -10,6 +12,25 @@ const GAP = 90;
 const SOFT_BLACK = "#343a40"; // WhiteboardCanvas の既定色と揃える
 const FLOW_TYPES: SpawnType[] = ["rectangle", "diamond", "ellipse"];
 const SHAPE_LABEL: Record<SpawnType, string> = { rectangle: "□ 四角", diamond: "◇ ひし形", ellipse: "○ 楕円" };
+// 角丸(roundness)の型は図形の種類ごとに違う（四角=ADAPTIVE_RADIUS、ひし形/楕円=PROPORTIONAL_RADIUS）。
+// 元図形の「角丸かどうか」だけを引き継ぎ、型は作る図形に合わせて付け直す（BRU7-056-1）。
+const ROUNDNESS_TYPE: Record<SpawnType, number> = { rectangle: 3, diamond: 2, ellipse: 2 };
+const roundnessFor = (type: SpawnType, rounded: boolean) => (rounded ? { type: ROUNDNESS_TYPE[type] } : null);
+
+// 元図形から引き継ぐ見た目（Excalidraw の「スタイルのコピー」と同じ項目）。
+// ＋ボタンで生やした図形が元と違う色・線・角になってしまうのを防ぐ（BRU7-056-1）。
+// undefined のキーは convertToExcalidrawElements の cloneJSON(JSON) で落ちるため既定値が効く。
+function inheritStyle(src: any) {
+  return {
+    strokeColor: src?.strokeColor ?? SOFT_BLACK,
+    backgroundColor: src?.backgroundColor ?? "#ffffff",
+    fillStyle: src?.fillStyle,
+    strokeWidth: src?.strokeWidth ?? 1,
+    strokeStyle: src?.strokeStyle,
+    roughness: src?.roughness ?? 0,
+    opacity: src?.opacity,
+  };
+}
 
 interface Props {
   api: any;
@@ -34,15 +55,30 @@ function normalizeLinear(el: any) {
   el.height = Math.max(...ys) - Math.min(...ys);
 }
 
-// 三角形要素を生成（TriangleToolButton と同型。line + wbTriangle 印）。
-function makeTriangle(x: number, y: number, w: number, h: number): any {
+// 矢印の両端を「指定どおりの座標」に置き直す（BRU7-056-1）。
+// convertToExcalidrawElements は矢印の両端を 0.5px だけ内側へ縮める（ネイティブbind用の遊び）。
+// その 0.5px で端点が図形の外側へ出てしまい、autoConnectLines の接続先選定
+// （端点を内包する図形＞近くの図形）が“元図形／新図形”ではなく、それらを囲んでいる
+// 外側の大きな図形を接続先に選ぶ。すると両端が同じ辺の中点へ吸着して矢印が長さ0になり、
+// 「＋を押したのに矢印が消えている」ように見える。端点は図形のエッジ上ちょうどに戻す。
+function setLinearEnds(el: any, sx: number, sy: number, ex: number, ey: number) {
+  if (!el) return;
+  el.x = sx;
+  el.y = sy;
+  el.points = [[0, 0], [ex - sx, ey - sy]];
+  el.width = Math.abs(ex - sx);
+  el.height = Math.abs(ey - sy);
+}
+
+// 三角形要素を生成（TriangleToolButton と同型。line + wbTriangle 印）。style は元図形から引き継ぐ見た目。
+function makeTriangle(x: number, y: number, w: number, h: number, style: any): any {
   const els = convertToExcalidrawElements([
     {
       type: "line",
       id: `wb_tri_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       x, y,
       points: [[w / 2, 0], [w, h], [0, h], [w / 2, 0]],
-      roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "#ffffff",
+      ...style,
     } as any,
   ], { regenerateIds: false }) as any[];
   els.forEach((e) => { if (e.type === "line") normalizeLinear(e); });
@@ -78,7 +114,9 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
         const el = ids.length === 1 && !interacting
           ? api.getSceneElements().find((e: any) => e.id === ids[0] && !e.isDeleted)
           : null;
-        const isShape = el && (el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse");
+        // 表（BRU5-042）のセルも rectangle だが、フロー接続の対象外。表には行/列の追加・削除UI
+        // （TableRowColControls）を別途出すため、こちらの＋ボタン・図形変換メニューは表では出さない。
+        const isShape = el && (el.type === "rectangle" || el.type === "diamond" || el.type === "ellipse") && !isTableCell(el);
         const isTri = el && isTriangle(el);
         if (isShape || isTri) {
           // 三角形は element.x/y が bbox 左上でないため elementBBox を使う
@@ -122,32 +160,37 @@ export function FlowConnectOverlay({ api, containerRef, canEdit }: Props) {
     if (dir === "up") { sx = sb.x + w / 2; sy = sb.y; ex = nx + w / 2; ey = ny + h; }
 
     // 新図形（元と同種）＋素の矢印を生成。両端の接続(customData)・固定・追従は autoConnect/follow に任せる。
+    // 見た目（色・塗り・線・角丸）は元図形から引き継ぐ（BRU7-056-1）。
+    const style = inheritStyle(src);
     const shape = srcTri
-      ? makeTriangle(nx, ny, w, h)
+      ? makeTriangle(nx, ny, w, h, { ...style, roundness: src.roundness ?? null })
       : (convertToExcalidrawElements([
           { type: spawnType, id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            x: nx, y: ny, width: w, height: h, roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, backgroundColor: "#ffffff" } as any,
+            x: nx, y: ny, width: w, height: h, ...style,
+            roundness: roundnessFor(spawnType, !!src.roundness) } as any,
         ]) as any[])[0];
     const arrow = (convertToExcalidrawElements([
       { type: "arrow", x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]],
         roughness: 0, strokeWidth: 1, strokeColor: SOFT_BLACK, endArrowhead: "triangle" } as any,
     ]) as any[])[0];
-    normalizeLinear(arrow);
-    api.updateScene({ elements: [...api.getSceneElements(), shape, arrow] });
+    setLinearEnds(arrow, sx, sy, ex, ey);
+    // 図形＋矢印の生成は 1 undo ステップとして記録する（BRU7-058）
+    api.updateScene({ elements: [...api.getSceneElements(), shape, arrow], ...COMMIT });
     if (shape) api.updateScene({ appState: { selectedElementIds: { [shape.id]: true } } });
   };
 
-  // 選択中の図形の種類を変更（四角/ひし形/楕円は同構造なので type 差し替えで変換）
+  // 選択中の図形の種類を変更（四角/ひし形/楕円は同構造なので type 差し替えで変換）。
+  // 角丸は「丸いかどうか」を保ったまま、変換後の種類に合う roundness 型へ付け替える（BRU7-056-1）。
   const changeShapeType = (t: SpawnType) => {
     setSpawnType(t);
     const src = box?.el;
     if (!src) return;
     const els = api.getSceneElements().map((e: any) =>
       e.id === src.id
-        ? { ...e, type: t, version: (e.version ?? 1) + 1, versionNonce: Math.floor(Math.random() * 0x7fffffff) }
+        ? { ...e, type: t, roundness: roundnessFor(t, !!e.roundness), version: (e.version ?? 1) + 1, versionNonce: Math.floor(Math.random() * 0x7fffffff) }
         : e,
     );
-    api.updateScene({ elements: els });
+    api.updateScene({ elements: els, ...COMMIT }); // 図形の種類変更は 1 undo ステップ（BRU7-058）
   };
 
   if (!box) return null;
