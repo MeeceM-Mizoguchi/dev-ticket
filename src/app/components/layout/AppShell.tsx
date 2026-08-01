@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Navigate, Outlet } from "react-router";
+import { Navigate, Outlet, useLocation } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { TabbedShell } from "./TabbedShell";
@@ -11,6 +11,7 @@ import { CallProvider } from "@/app/contexts/CallContext";
 import { RefreshProvider, useRefresh } from "@/app/contexts/RefreshContext";
 import { CallLayer } from "@/app/components/call/CallLayer";
 import { MlSetupGate } from "@/app/components/members/MlSetupGate";
+import { clearRedirect, rememberRedirect } from "@/app/lib/authRedirect";
 
 export function AppShell() {
   useVersionCheck();
@@ -72,7 +73,18 @@ export function ProtectedShell() {
   // 自動ログアウト(ENHA2-027)。Web/ネイティブ両シェルの親で常時マウントする
   // (早期returnより前にフックを呼ぶ。未ログイン時は内部で no-op)。
   useAutoLogout();
-  if (sessionStorage.getItem("isLoggedIn") !== "true") return <Navigate to="/login" replace />;
+
+  // 共有されたURL(チケット/ホワイトボードのオブジェクトリンク等)を未ログインで開いた時、
+  // ログイン後にそのURLへ戻れるよう退避しておく。isLoggedIn は sessionStorage＝タブ単位なので、
+  // 「リンクを新しいタブで開く」は必ずここを通る。
+  const location = useLocation();
+  const loggedIn = sessionStorage.getItem("isLoggedIn") === "true";
+  useEffect(() => { if (loggedIn) clearRedirect(); }, [loggedIn]);
+
+  if (!loggedIn) {
+    rememberRedirect(location.pathname + location.search);
+    return <Navigate to="/login" replace />;
+  }
   return (
     <CallProvider>
       <RefreshProvider>

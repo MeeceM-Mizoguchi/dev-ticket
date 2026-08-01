@@ -1,7 +1,7 @@
 // ホワイトボードの Supabase 永続化レイヤ（CRUD / doc_state 保存復元 / 画像アップロード）。
 // リアルタイム同期そのものは SupabaseYjsProvider が担い、ここは DB との橋渡しのみ。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import type { Whiteboard } from "@/app/types";
+import type { AccessLevel, UserPermissions, Whiteboard } from "@/app/types";
 
 interface WhiteboardRow {
   id: string;
@@ -52,6 +52,52 @@ export async function resolveProject(projectSlug: string): Promise<{ id: string;
   if (bySlug?.[0]) return bySlug[0] as any;
   const { data: byId } = await supabase!.from("projects").select("id, name, slug").eq("id", projectSlug).maybeSingle();
   return (byId as any) ?? null;
+}
+
+// ── ボード単体のメタ情報（リンクから開く時に、所属プロジェクトを逆引きする） ──
+export interface BoardMeta { id: string; title: string; projectId: string; projectSlug: string; projectName: string }
+
+export async function getBoardMeta(boardId: string): Promise<BoardMeta | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data: b } = await supabase!.from("whiteboards").select("id, title, project_id").eq("id", boardId).maybeSingle();
+  if (!b) return null;
+  const { data: p } = await supabase!.from("projects").select("id, name, slug").eq("id", (b as any).project_id).maybeSingle();
+  if (!p) return null;
+  return {
+    id: (b as any).id,
+    title: (b as any).title ?? "",
+    projectId: (p as any).id,
+    projectSlug: (p as any).slug,
+    projectName: (p as any).name,
+  };
+}
+
+// ── ホワイトボードの権限解決 ──
+// whiteboards の RLS は authenticated 全許可（supabase/add_whiteboard.sql）なので、
+// 「見せる/編集させる」の判断はアプリ側のこの関数が唯一の防壁。
+// ホワイトボード画面とリンクプレビューの両方から必ずここを通す。
+export interface WhiteboardPerms { whiteboard: AccessLevel; wiki: AccessLevel; backlog: AccessLevel; minutes: AccessLevel }
+
+export async function loadWhiteboardPerms(projectId: string, userId: string, isAdminRole: boolean): Promise<WhiteboardPerms> {
+  if (isAdminRole) return { whiteboard: "edit", wiki: "edit", backlog: "edit", minutes: "edit" };
+  if (!isSupabaseEnabled) return { whiteboard: "none", wiki: "none", backlog: "none", minutes: "none" };
+  const { data } = await supabase!
+    .from("project_member_permissions").select("permissions")
+    .eq("project_id", projectId).eq("member_id", userId).maybeSingle();
+  const up = (data as any)?.permissions as Partial<UserPermissions> | undefined;
+  return {
+    whiteboard: (up?.whiteboardPermission as AccessLevel) ?? "none",
+    wiki: (up?.wikiPermission as AccessLevel) ?? "none",
+    backlog: (up?.backlogPermission as AccessLevel) ?? "none",
+    minutes: (up?.minutesPermission as AccessLevel) ?? "none",
+  };
+}
+
+// userId から安定した色を生成（カーソル/アバターの色。画面とプレビューで同じ色にする）
+export function wbUserColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
+  return `hsl(${h}, 70%, 45%)`;
 }
 
 // ── CRUD ──

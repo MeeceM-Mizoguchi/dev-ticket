@@ -17,6 +17,10 @@ import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
 import { Copy, X, CheckCheck, Trash2 } from "lucide-react";
 // 🌟 追加: 外部リンクを開く共通ヘルパー（ネイティブはアプリ内ブラウザ、Webは別タブ）
 import { openExternalUrl } from "@/lib/openExternal";
+// ホワイトボードのオブジェクトリンクは外部ブラウザではなく、右半分のプレビューで開く
+import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
+import { parseWhiteboardLink } from "@/app/lib/whiteboardLink";
+import { requestWhiteboardFocus } from "@/app/lib/whiteboardFocusBus";
 import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
@@ -686,6 +690,8 @@ export function RichEditor({
   const id = idRef.current;
   // Mermaid挿入モーダルの開閉（本文中はコードを見せず、入力はモーダルに集約する）
   const [mermaidModalOpen, setMermaidModalOpen] = useState(false);
+  // ホワイトボードのオブジェクトリンク用。Provider の外(LP等)で使われても既定値が no-op なので安全。
+  const { open: openPreviewPanel } = usePreviewPanel();
 
   const editor = useEditor({
     extensions: [
@@ -1157,6 +1163,25 @@ export function RichEditor({
     if (!anchor) return;
     const href = anchor.getAttribute("href");
     if (!href) return;
+
+    // ホワイトボードのオブジェクトリンクは外部ブラウザではなくアプリ内で開く。
+    //   ・そのボードが既に見えている（＝ホワイトボード画面を開いている）→ その場で対象へ移動
+    //     （同じボードを2枚マウントすると Yjs/保存が二重化するため）
+    //   ・それ以外 → 右半分のプレビューパネルで開く
+    //
+    // ※編集中(readOnly=false)でも「素のクリック」で開く。外部リンクは誤爆防止のため
+    //   Cmd/Ctrl+クリックを要求しているが、こちらは $メンションのチップと同じ
+    //   「アプリ内の参照」なので、同じ感覚で開けるほうが自然（本文を書きながら参照できる）。
+    const wb = parseWhiteboardLink(href);
+    if (wb) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (requestWhiteboardFocus(wb.boardId, wb.elementId)) return;
+      openPreviewPanel("whiteboard", wb.boardId, { elementId: wb.elementId, projectSlug: wb.projectSlug });
+      return;
+    }
+
+    // 外部リンク: 編集中の誤クリックでページを離れないよう Cmd/Ctrl 併用を要求する（従来どおり）
     if (!readOnly && !(e.metaKey || e.ctrlKey)) return;
     e.preventDefault();
     e.stopPropagation();
