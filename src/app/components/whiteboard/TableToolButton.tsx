@@ -7,80 +7,16 @@
 //   グループ化する（＝一体で移動・リサイズできる）。各セルはダブルクリックで Excalidraw
 //   ネイティブのテキスト編集ができる。矩形なので自動接続/フレーム等の onChange 補助処理には
 //   触られない（isConnector は line/arrow のみ対象）。印として customData.wbTable を付ける。
+//
+// 生成の実体は whiteboardTableCreate.ts に集約してある（Markdown の貼り付けでも同じ表を作るため）。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { convertToExcalidrawElements, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import { overlayMount } from "@/app/lib/whiteboardPortal";
+import { insertTableAtCenter } from "@/app/lib/whiteboardTableCreate";
 
 const BTN_ID = "wb-table-tool";
-const SOFT_BLACK = "#343a40";     // 白板の既定線色（CLEAN_DEFAULTS と揃える）
-const HEADER_FILL = "#f1f3f5";    // 先頭行（ヘッダー）の薄いグレー
-const CELL_W = 120;               // セル既定幅
-const CELL_H = 44;                // セル既定高
 const MAX_COLS = 8;               // グリッドピッカーの最大列
 const MAX_ROWS = 8;               // グリッドピッカーの最大行
-
-// 現在のビューポート中心（scene座標）。WhiteboardToolbar / MermaidToolButton と同じ算出。
-function viewportCenter(api: any): { cx: number; cy: number } {
-  const st = api.getAppState();
-  const zoom = st.zoom?.value ?? 1;
-  return {
-    cx: (st.width ?? 800) / 2 / zoom - st.scrollX,
-    cy: (st.height ?? 600) / 2 / zoom - st.scrollY,
-  };
-}
-
-// rows×cols の表をビューポート中央に生成する。
-function insertTable(api: any, rows: number, cols: number) {
-  if (!api || rows < 1 || cols < 1) return;
-  const groupId = `wb_table_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const { cx, cy } = viewportCenter(api);
-  const totalW = cols * CELL_W, totalH = rows * CELL_H;
-  const ox = cx - totalW / 2, oy = cy - totalH / 2;
-
-  // セル(r,c) を skeleton で作成。customData.wbTable に格子座標を持たせ、再レイアウトの識別子にする。
-  const skeleton: any[] = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      skeleton.push({
-        type: "rectangle",
-        x: ox + c * CELL_W,
-        y: oy + r * CELL_H,
-        width: CELL_W,
-        height: CELL_H,
-        strokeColor: SOFT_BLACK,
-        strokeWidth: 1,
-        roughness: 0,
-        // 複数行のときは先頭行をヘッダーとして薄グレー、他は不透明の白（背後の図が透けない）
-        backgroundColor: rows > 1 && r === 0 ? HEADER_FILL : "#ffffff",
-        fillStyle: "solid",
-        customData: { wbTable: { tid: groupId, r, c } },
-      });
-    }
-  }
-
-  const els = convertToExcalidrawElements(skeleton) as any[];
-  // convertToExcalidrawElements は customData を保持しないことがあるため、行/列順で確実に再付与する。
-  let i = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const e = els[i++];
-      if (!e) continue;
-      e.roundness = null;                 // 角あり（表の罫線は角丸にしない）
-      e.roughness = 0;                    // 直線罫線
-      e.fillStyle = "solid";
-      e.groupIds = [groupId];             // 全セルを1グループに（一体で移動・削除）
-      e.customData = { ...(e.customData ?? {}), wbTable: { tid: groupId, r, c } };
-    }
-  }
-
-  // 生成を undo 履歴の1ステップとして記録（IMMEDIATELY）。MermaidToolButton と同方針。
-  api.updateScene({ elements: [...api.getSceneElements(), ...els], captureUpdate: CaptureUpdateAction.IMMEDIATELY });
-  // 生成直後は表全体を選択（選択のみは履歴に残さない・NEVER）
-  const ids: Record<string, boolean> = {};
-  els.forEach((e) => { if (e?.id) ids[e.id] = true; });
-  api.updateScene({ appState: { selectedElementIds: ids }, captureUpdate: CaptureUpdateAction.NEVER });
-}
 
 // ボタン直下に開くグリッドピッカー（Google ドキュメント風・ホバーで行×列を選ぶ）。
 function GridPicker({ onPick, onClose }: { onPick: (rows: number, cols: number) => void; onClose: () => void }) {
@@ -184,7 +120,7 @@ export function TableToolButton({ api, containerRef }: { api: any; containerRef:
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <GridPicker onPick={(rows, cols) => insertTable(api, rows, cols)} onClose={() => setOpen(false)} />
+        <GridPicker onPick={(rows, cols) => insertTableAtCenter(api, rows, cols)} onClose={() => setOpen(false)} />
       </div>
     </>,
     // 全画面中は body 直下だと描画されないので、全画面要素の中へ取り付ける（BRU7-056-9）

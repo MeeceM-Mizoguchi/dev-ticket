@@ -19,6 +19,9 @@ import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
+import { hasRichBlocks, htmlToBlocks, looksLikeMarkdown, parseMarkdown } from "@/app/lib/markdown";
+import { pasteBlocksToWhiteboard } from "@/app/lib/whiteboardPasteMarkdown";
+import { viewportCenter } from "@/app/lib/whiteboardTableCreate";
 import { handleIndentKey } from "@/app/lib/whiteboardIndent";
 import { reflowIndentWrap } from "@/app/lib/whiteboardIndentWrap";
 import { activateWbInstance, isActiveWbInstance, registerWbInstance, unregisterWbInstance } from "@/app/lib/whiteboardInstance";
@@ -638,6 +641,59 @@ export default function WhiteboardCanvas({
       if (copyToastTimer.current) clearTimeout(copyToastTimer.current);
     };
   }, [api, instanceKey, showToast]);
+
+  // ── 書式つき貼り付け（ブラウザで選択コピー / Claude のコピーボタン 等） ──
+  // Excalidraw は text/html を一切見ず、text/plain を「1個のテキスト要素」にするだけなので、
+  // どちらの経路でも表・見出しがただの文字列になる。そこで
+  //   ① text/html があればそれを IR へ（ブラウザ上で選択してコピーした場合はここに書式がある）
+  //   ② 無ければ text/plain を Markdown として解釈（コピーボタン・ターミナル由来）
+  // の順で解釈し、書式として意味のある中身のときだけ横取りする。
+  // Excalidraw の paste は document のバブル段階(App.pasteFromClipboard)で処理されるため、
+  // window のキャプチャ段階で受ければ必ず先に取れる。
+  // 素通しする条件（＝Excalidraw 既定の挙動に任せる）:
+  //   閲覧専用 / 入力欄・キャンバスのテキスト編集中 / 画像やExcalidraw独自形式 /
+  //   書式が無い（ただの文章）/ Shift を押しながらの貼り付け（＝素の文字で貼りたい時の逃げ道）
+  useEffect(() => {
+    if (!api || !canEdit) return;
+    const onPaste = (e: ClipboardEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return; // 2枚あるとき（プレビューパネル）取り合わない
+      if (shiftRef.current) return;
+      const dt = e.clipboardData;
+      if (!dt) return;
+      const t = e.target as HTMLElement | null;
+      // 入力欄・リッチエディタ(contentEditable)へ貼っているときは触らない
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      // キャンバス内のどこか、または（フォーカスが無い時の）body 宛て以外は対象外
+      const el = containerRef.current;
+      if (!(t === document.body || (el && t && el.contains(t)))) return;
+      // 図形のテキスト編集中は素通し（テキスト要素は1つの書式しか持てない）
+      if (el?.querySelector(".excalidraw-wysiwyg")) return;
+      const text = dt.getData("text/plain");
+      if (text.includes('"type":"excalidraw')) return;
+      const html = dt.getData("text/html");
+      // 画像はそのまま Excalidraw に任せる。ただしブラウザから表をコピーすると
+      // 「表のHTML＋セル範囲のビットマップ」が同時に載るので、HTMLがあるときは画像を無視する
+      // （リッチエディタ側の BRU9-044 と同じ考え方）。
+      if (!html && Array.from(dt.items ?? []).some((i) => i.type.startsWith("image/"))) return;
+
+      // ブラウザ上で選択してコピーした場合、書式は text/html 側にしか無い（text/plain は素の文字）。
+      // Excalidraw は text/html を一切見ないので、ここで IR へ変換して同じレンダラーへ流す。
+      let blocks = html ? htmlToBlocks(html) : [];
+      if (!hasRichBlocks(blocks)) {
+        // HTML が無い / ただの文章だった場合は、text/plain を Markdown として解釈する
+        blocks = text && text.length <= 200_000 && looksLikeMarkdown(text) ? parseMarkdown(text) : [];
+      }
+      if (!blocks.length) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const at = lastPointerScene.current ?? (() => { const { cx, cy } = viewportCenter(api); return { x: cx - 320, y: cy - 120 }; })();
+      void pasteBlocksToWhiteboard(api, blocks, at).then((ok) => {
+        if (ok) showToast("書式つきで貼り付けました");
+      });
+    };
+    window.addEventListener("paste", onPaste, true);
+    return () => window.removeEventListener("paste", onPaste, true);
+  }, [api, canEdit, instanceKey, showToast]);
 
   // 全画面(ネイティブ)中は Esc をブラウザ既定の「即・全画面解除」ではなく自前で処理するため、
   // Keyboard Lock API で Esc を横取りする（BRU6-004-2）。これがないと図形にフォーカスがあっても
