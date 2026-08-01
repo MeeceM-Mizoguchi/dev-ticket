@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -313,9 +314,13 @@ def build_dataset(
         # 「PMがこの人を選ばなかった」は弱い負のシグナルだが、
         # 必要スキルを持たない人は明確な負例になる。
         others = [q for q in all_pids if q != pid]
-        # 決定的に選ぶ（学習の再現性のため乱数を使わない）: チケットIDのハッシュで回転させる
+        # 決定的に選ぶ（学習の再現性のため乱数を使わない）: チケットIDのハッシュで回転させる。
+        # ★ 組み込みの hash() は使わない ★
+        #   Python の文字列ハッシュは PYTHONHASHSEED でプロセスごとに変わるため、
+        #   実行の度に別の負例が選ばれ「再現性のため」という意図と裏腹に非決定的だった。
+        #   crc32 はプロセスをまたいでも常に同じ値を返す。
         if others:
-            offset = hash(t["id"]) % len(others)
+            offset = zlib.crc32(t["id"].encode("utf-8")) % len(others)
             picked = [others[(offset + i) % len(others)] for i in range(min(NEGATIVES_PER_TICKET, len(others)))]
             for q in picked:
                 pairs.append((q, build_features(t, required, levels.get(q, {}), states[q]), 0))

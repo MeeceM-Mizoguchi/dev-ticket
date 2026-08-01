@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun } from "@/app/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {
@@ -74,6 +74,32 @@ export function mapSkillUpdateRun(r: any): SkillUpdateRun {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMemberSkillChange(r: any): MemberSkillChange {
   return { id: r.id, runId: r.run_id, organizationId: r.organization_id, profileId: r.profile_id, skillId: r.skill_id, changeType: r.change_type, oldLevel: r.old_level ?? null, newLevel: r.new_level ?? null, oldSource: r.old_source ?? null, newSource: r.new_source ?? null, evidence: r.evidence ?? {}, changedAt: r.changed_at || "" };
+}
+
+// ── 夜間バッチの学習ログ ──
+// finished_at が無い＝終了記録が残らないまま落ちた。緑で流さず「問題あり」として扱う。
+// ただし実行中はまだ finished_at が無いのが正常なので、ワークフローの
+// timeout-minutes と同じ30分は「実行中」として見逃す（開いた瞬間に赤くしない）。
+const BATCH_TIMEOUT_MS = 30 * 60 * 1000;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapMlBatchRun(r: any): MlBatchRun {
+  const startedMs = r.started_at ? new Date(r.started_at).getTime() : 0;
+  const unfinished = !r.finished_at && Date.now() - startedMs > BATCH_TIMEOUT_MS;
+  return {
+    id: r.id,
+    organizationId: r.organization_id,
+    batchId: r.batch_id || "",
+    trigger: r.trigger || "daily",
+    startedAt: r.started_at || "",
+    finishedAt: r.finished_at ?? null,
+    result: unfinished ? "failed" : (r.result || "not_run"),
+    summary: unfinished
+      ? (r.summary || "途中で異常終了しました（タイムアウトの可能性があります）")
+      : (r.summary || (r.finished_at ? "" : "実行中です")),
+    detail: r.detail ?? {},
+    skillRunId: r.skill_run_id ?? null,
+  };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

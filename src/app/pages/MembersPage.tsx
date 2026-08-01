@@ -300,12 +300,12 @@ export function MembersPage() {
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFFFFF"; }}>
                 <Settings2 style={{ width: 12, height: 12 }} />スキル管理
               </button>
-              {/* BRU9-041 組織全体のスキル更新履歴（閲覧専用） */}
-              <button onClick={() => setShowSkillHistory(true)} title="組織全体のスキル更新履歴を見る"
+              {/* BRU9-041 組織全体のスキル変更履歴 ＋ 夜間バッチの学習ログ（閲覧専用） */}
+              <button onClick={() => setShowSkillHistory(true)} title="組織全体のスキル変更履歴と、夜間バッチの学習ログを見る"
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 12px", fontSize: 11.5, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.08)", background: "#FFFFFF", color: "#6B6458", cursor: "pointer" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFFFFF"; }}>
-                <History style={{ width: 12, height: 12 }} />スキル更新履歴
+                <History style={{ width: 12, height: 12 }} />スキル自動更新の記録
               </button>
             </>
           )}

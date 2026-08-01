@@ -1250,10 +1250,17 @@ export function TicketDetailPanel({
   const persistTicketSkills = async (req: RequiredSkill[], scale: string | null) => {
     if (!ticket?.id || !isSupabaseEnabled) return;
     await save({ dev_scale: scale });
-    await supabase!.from("ticket_required_skills").delete().eq("ticket_id", ticket.id);
+    // ★ 自動付与行(source='auto')ごと消さない ★
+    //   夜間バッチがキーワードから付けた行まで消すと、次の実行でまた生えて
+    //   「消したのに戻る」ように見える。人が設定した行だけを入れ替える。
+    //   なお手動行が1件でもあるチケットは、バッチ側が対象外にする。
+    await supabase!.from("ticket_required_skills")
+      .delete().eq("ticket_id", ticket.id).eq("source", "manual");
     if (req.length > 0) {
-      await supabase!.from("ticket_required_skills").insert(
-        req.map(r => ({ ticket_id: ticket.id, skill_id: r.skillId, importance: r.importance })),
+      // 同じスキルが自動付与済みのことがあるので upsert（insert だと主キー衝突する）
+      await supabase!.from("ticket_required_skills").upsert(
+        req.map(r => ({ ticket_id: ticket.id, skill_id: r.skillId, importance: r.importance, source: "manual" })),
+        { onConflict: "ticket_id,skill_id" },
       );
     }
   };
