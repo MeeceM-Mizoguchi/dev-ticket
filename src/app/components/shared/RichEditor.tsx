@@ -11,6 +11,9 @@ import { MermaidNode } from "./MermaidNode";
 import { MermaidEditModal } from "./MermaidEditModal";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
+// 貼り付けた Markdown テキスト（Claude のコピーボタン等）を書式つきで取り込む
+import { markdownToHtml } from "@/app/lib/markdown";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
 // 🌟 修正: ゴミ箱アイコン (Trash2) を lucide-react から追加インポート
@@ -858,6 +861,22 @@ export function RichEditor({
         });
         return true;
       } : undefined,
+      // 🌟 テキスト（text/plain）で貼られた Markdown を書式つきで取り込む。
+      //   ProseMirror の parseFromClipboard は「text/html が無い」「Cmd+Shift+V」「コードブロック内」の
+      //   ときだけテキスト経路に入り、このフックを呼ぶ（prosemirror-view: parseFromClipboard）。つまり
+      //     ・ブラウザ選択コピー(HTMLあり) → 従来どおり HTML 経路（二重変換にならない）
+      //     ・plain=true(Cmd/Ctrl+Shift+V) → ここで変換せず素の文字として貼る
+      //     ・コードブロック内 → そもそも呼ばれない（貼ったコードが勝手に整形されない）
+      //   が構造的に保証される。undefined を返すと ProseMirror の既定（改行で段落分割）に落ちる。
+      clipboardTextParser: (text, $context, plain, view) => {
+        if (plain) return undefined as any;
+        // 表計算ソフト由来のタブ区切り(BRU9-044)も、画像を伴わない貼り付けでここに来る
+        const html = tsvToTableHtml(text) ?? markdownToHtml(text);
+        if (!html) return undefined as any;
+        const dom = document.createElement("div");
+        dom.innerHTML = html;
+        return PMDOMParser.fromSchema(view.state.schema).parseSlice(dom, { context: $context });
+      },
       clipboardTextSerializer: (slice) => {
         function inline(node: any): string {
           if (node.isText) {

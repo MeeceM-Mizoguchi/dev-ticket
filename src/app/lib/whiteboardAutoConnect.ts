@@ -27,7 +27,9 @@ const isPolyShape = (e: any) => isTriangle(e) || isBrace(e);
 // Elbow arrow(elbowed)は Excalidraw のエルボー・ルーターが中間点を直交に保つため、
 // 端点だけを書き換える自前コネクト方式とは相容れない（斜め/波打ちに崩れる・BRU5-050系）。
 // elbow はネイティブ結合＋ルーターに任せ、自前の接続/追従の対象から外す。
-const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !e?.elbowed && !isPolyShape(e) && !e?.customData?.wbMermaid;
+// Markdown 貼り付けで作る飾りの線(customData.wbDecor: 水平線・引用の縦線)も、意図せず
+// 近くの図形へ吸着して曲がらないよう自動接続の対象外にする（whiteboardPasteMarkdown）。
+const isConnector = (e: any) => (e?.type === "line" || e?.type === "arrow") && !e?.elbowed && !isPolyShape(e) && !e?.customData?.wbMermaid && !e?.customData?.wbDecor;
 // 接続先になれる図形（四角/ひし形/楕円/三角形/大括弧/テキストボックス）。全て「辺上の相対位置を固定」する自前方式でつなぐ。
 // テキストボックスは矩形外周として扱い、四辺（上下左右）どこにでも端点を貼り付けられる（BRU5-054）。
 // 図形内に埋め込まれたラベルテキスト(containerId あり)は、コンテナ図形側が接続対象なので除外する。

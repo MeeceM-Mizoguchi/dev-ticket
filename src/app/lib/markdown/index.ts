@@ -1,0 +1,23 @@
+// 貼り付けテキスト（Markdown）をリッチな中身へ変換する共通入口。
+// 詳細は parse.ts / toHtml.ts を参照。ホワイトボード側は IR を直接使う（whiteboardPasteMarkdown.ts）。
+export type { MdBlock, MdInline, MdListItem } from "./types";
+export { looksLikeMarkdown, parseMarkdown, parseInline } from "./parse";
+export { mdBlocksToHtml } from "./toHtml";
+export { htmlToBlocks, hasRichBlocks } from "./fromHtml";
+
+import { looksLikeMarkdown, parseMarkdown } from "./parse";
+import { mdBlocksToHtml } from "./toHtml";
+
+/** 極端に長い貼り付けは変換しない（解析コストと事故を避ける） */
+export const MD_MAX_LENGTH = 200_000;
+
+/**
+ * Markdown とみなせるテキストなら HTML を返す。対象外なら null（＝呼び出し側は既定動作に任せる）。
+ */
+export function markdownToHtml(text: string): string | null {
+  if (!text || text.length > MD_MAX_LENGTH) return null;
+  if (!looksLikeMarkdown(text)) return null;
+  const blocks = parseMarkdown(text);
+  if (!blocks.length) return null;
+  return mdBlocksToHtml(blocks);
+}

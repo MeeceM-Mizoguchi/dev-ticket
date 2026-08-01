@@ -1,7 +1,7 @@
 # 書式つき貼り付け（Markdown → リッチ）設計書
 
 > 対象: 外部（Claude 等）でコピーした「表・見出し・箇条書き入りテキスト」を、wiki / 議事録 / チケット説明 / コメント / ホワイトボードに貼ったときに**書式のまま**入るようにする
-> ステータス: 設計のみ（実装未着手）
+> ステータス: **Phase 1・2 実装済み**（2026-08-01・`pnpm build` 緑・未検証/未コミット）。Phase 3 は未着手
 
 ---
 
@@ -175,6 +175,19 @@ clipboardTextParser: (text, $context, plain, view) => {
 
 ## 6. ホワイトボード側の配線
 
+### 6-0. 入力は 2 経路（text/html を先に見る）
+
+**当初 text/plain(Markdown) だけを見ていたが、これは穴だった。** ブラウザ上で選択して Cmd+C した場合、
+書式は **text/html 側にしかない**（text/plain は素の文字＝表はタブ区切りに潰れている）。
+リッチエディタは ProseMirror が text/html を解釈するので気づかないが、ホワイトボードは
+text/html を一切見ないため「見出しも表もただの文字」になる。そこで解釈の順序を:
+
+1. `text/html` があれば `htmlToBlocks()`（[markdown/fromHtml.ts](../src/app/lib/markdown/fromHtml.ts)）で IR へ
+2. 無い / ただの段落だけだった場合は `text/plain` を Markdown として解釈
+
+とし、どちらも同じ IR → Excalidraw レンダラーへ合流させる。`hasRichBlocks()`（段落以外のブロックを
+含むか）が false なら横取りせず Excalidraw の既定に任せる ＝ 単なる文章や画像単体の貼り付けは従来どおり。
+
 ### 6-1. 横取りの方法
 
 Excalidraw は `document` に `paste` を張って自前処理する（テキスト→テキスト要素、TSV→グラフ化ダイアログ、画像→画像要素）。これより**先**に処理するため、キャンバスのラッパー要素に**キャプチャ段階**で `paste` を張り、変換したときだけ `preventDefault()` ＋ `stopImmediatePropagation()` する。既存の [WhiteboardCanvas.tsx:414](../src/app/components/whiteboard/WhiteboardCanvas.tsx#L414) 等の keydown キャプチャと同じ流儀。
@@ -204,6 +217,19 @@ Excalidraw は `document` に `paste` を張って自前処理する（テキス
 - ヘッダー行は既存と同じ薄グレー `#f1f3f5`
 - 各セルに**バウンドテキスト**を持たせる（`containerId`）。列幅は文字幅計測から初期値を決め、最終的な整形は既存 `reflowTables()` に任せる
 - **既存の表機能（列幅ドラッグ、行列挿入/削除、`reflowTables`）がそのまま使える**のが要点
+
+### 6-3b. リンク
+
+Excalidraw には**インラインのリンク（文中の一部だけをリンクにする）が無く**、持てるのは
+「要素1つにつき URL 1本」（`element.link`。クリックで開ける・リンクアイコンが出る）だけ。
+そこで:
+
+- **表のセル**: セル内のリンクが**ちょうど1本**なら、そのセル矩形の `element.link` にする
+- **見出し / 段落 / リスト / 引用**: そのブロック内のリンクが**ちょうど1本**なら、テキスト要素の `element.link` にする
+- どちらも「文字全体がそのリンク」のときは**文字色を青(#1971c2)** にして、wiki と同じく“リンクである”ことを見せる
+  （色の"正"は `customData.wbTextColor` に書く。書かないと `pinBoundTextColor` が線色から決め直して青が消える）
+- 相対URL(`/PROJxxx/wiki/...`)は `new URL(href, location.href)` で絶対URLに直す。`javascript:` 等は捨てる
+- リンクが2本以上あるブロック（例: 1つの段落に複数リンク）は、要素リンクを付けない（どれを選ぶべきか決まらないため）
 
 ### 6-4. mermaid
 
@@ -238,7 +264,7 @@ Excalidraw は `document` に `paste` を張って自前処理する（テキス
 |---|---|---|
 | **1** | `markdown/` コア（parse / toHtml / 判定）＋ RichEditor の `clipboardTextParser` 配線 | Claude のコピーボタンで取った「見出し＋表＋箇条書き」を wiki / 議事録 / チケット / コメントに貼って、そのままの書式で入る。Cmd+Shift+V で素の文字。 |
 | **2** | ホワイトボード貼り付け（表・見出し・段落・リスト・mermaid・区切り線） | 同じクリップボードを WB に貼ると、表は WB の表、mermaid は図、見出しは大きい文字で入る。undo 1 回で全消え。 |
-| **3**（任意） | ターミナル由来の**罫線表**（`│ ─ ├`）の検出、`#WBS` / `@名前` の**メンション復元**、`transformPastedHTML` の掃除、WB テキスト編集中の記号除去、TaskList 拡張の導入 | 個別に判断 |
+| **3**（任意・未着手） | ターミナル由来の**罫線表**（`│ ─ ├`）の検出、`#WBS` / `@名前` の**メンション復元**、`transformPastedHTML` の掃除、WB テキスト編集中の記号除去、TaskList 拡張の導入 | 個別に判断 |
 
 Phase 1 だけで体感課題（表と見出しが崩れる）はほぼ解消する。Phase 2 は独立して後追い可能。
 
@@ -246,16 +272,18 @@ Phase 1 だけで体感課題（表と見出しが崩れる）はほぼ解消す
 
 ## 9. 影響ファイル
 
-**新規**
-- `src/app/lib/markdown/types.ts` / `parse.ts` / `toHtml.ts`
+**新規**（実装済み）
+- `src/app/lib/markdown/types.ts` / `parse.ts` / `toHtml.ts` / `fromHtml.ts` / `index.ts`
 - `src/app/lib/whiteboardPasteMarkdown.ts`
 - `src/app/lib/whiteboardTableCreate.ts`
+- `src/app/lib/whiteboardMermaid.ts`（mermaid 変換を MermaidToolButton から切り出し）
 
-**変更**
+**変更**（実装済み）
 - [RichEditor.tsx](../src/app/components/shared/RichEditor.tsx) — `editorProps` に `clipboardTextParser`（＋Phase2 で `transformPastedHTML`）。既存 `handlePaste` は無変更
 - [WhiteboardCanvas.tsx](../src/app/components/whiteboard/WhiteboardCanvas.tsx) — キャプチャ段階の `paste` リスナー登録（1 つの `useEffect`）
 - [TableToolButton.tsx](../src/app/components/whiteboard/TableToolButton.tsx) — `insertTable` を共通関数へ委譲（**挙動不変**のリファクタ）
 - [MermaidToolButton.tsx](../src/app/components/whiteboard/MermaidToolButton.tsx) — mermaid 展開部を共通関数へ委譲（同上）
+- [whiteboardAutoConnect.ts](../src/app/lib/whiteboardAutoConnect.ts) — 貼り付けで作る飾りの線（`customData.wbDecor`＝水平線・引用の縦線）を自動接続の対象外に（1行）
 
 DB 変更・環境変数・依存追加は**なし**。
 
