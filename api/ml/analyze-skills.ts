@@ -5,14 +5,27 @@
 //
 // 呼ばれる経路は3つ:
 //   1. 初回セットアップ … 組織の ml_setup_done が false のとき、アプリから即時実行（未明を待たない）
-//   2. 日次バッチ      … .github/workflows/ml-daily.yml（cron "0 18 * * *" UTC = 翌03:00 JST）
+//   2. 日次バッチ      … .github/workflows/ml-daily.yml（cron "45 16 * * *" UTC = 翌01:45 JST 狙い）
 //        ※ Vercel cron ではない。LightGBM を使う②学習と直列に走らせる必要があるため
 //          GitHub Actions 側に集約している。vercel.json に crons は無い。
-//        ※ GitHub の schedule は best-effort で、実際の起動は JST 3:00〜4:40 程度にばらつく。
+//        ※ GitHub の schedule は best-effort。過去17回の実測で +56〜+98分（中央値+66分）
+//          遅れていたため、cron 自体を約1時間前倒ししてある（着地は JST 02:41〜03:23）。
 //   3. 手動            … 管理者の「今すぐ再学習」ボタン
 //
 // 差分検知: 前回分析以降にチケットが動いていない組織はスキップする。
 //   1000組織あっても、昨日チケットが動いたのは一部だけ。ここが効いて日次でも軽い。
+//   判定は sprint_tickets.updated_at（トリガで自動更新）を使う。
+//   ※ 以前はマイルストーン日時の最大値で近似していたが、それだと
+//     「マイルストーン日時を持たないまま closed になったチケット」や
+//     「タイトル・担当者・実績工数の編集」を検知できず、再計算をサボっていた。
+//
+// ★ 必要スキル(ticket_required_skills)の自動付与 ★
+//   ②モデル学習は「必要スキルが付いているチケット」しか学習材料にできない。
+//   入力は画面からの任意なので実運用ではほぼ埋まらず（実測: 完了657件中9件）、
+//   学習データが63行しか作れず MIN_TRAIN_ROWS(100) に届かないまま
+//   モデルが一度も学習されない状態が続いていた。
+//   メンバー集計でどのみち検出しているキーワードを、そのまま source='auto' で書く。
+//   手動行があるチケットは触らない（member_skills の source 保護と同じ考え方）。
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
@@ -168,14 +181,40 @@ interface TicketRow {
   stg_completed_at: string | null;
   review_approved_at: string | null;
   created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 1回のリクエストで返る行数には上限があるので、必ず分割して全件取る。 */
+const PAGE = 1000;
+async function fetchAllPages<T>(
+  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<{ rows: T[]; error?: string }> {
+  const rows: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1);
+    if (error) return { rows, error: error.message };
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < PAGE) return { rows };
+  }
+}
+
+/** id の配列を where in で使うときの分割単位（URLが長くなりすぎるのを防ぐ） */
+const IN_CHUNK = 200;
+function chunk<T>(xs: T[], size = IN_CHUNK): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size));
+  return out;
 }
 
 /**
- * チケットの「最終活動日時」。
- * ※ sprint_tickets には updated_at 列が無いため、作成日時とマイルストーン日時の
- *   最大値で「最後に動いた時刻」を近似する（差分検知に使う）。
+ * チケットの「最終活動日時」。差分検知に使う。
+ *
+ * updated_at（トリガで自動更新）があればそれが最も正確。
+ * 移行直後などで null の行だけ、従来どおり作成日時とマイルストーン日時の最大値で近似する。
  */
 function lastActivityMs(t: TicketRow): number {
+  if (t.updated_at) return new Date(t.updated_at).getTime();
   const ts = [t.created_at, t.started_at, t.review_approved_at, t.stg_completed_at, t.uat_completed_at, t.released_at]
     .map(x => (x ? new Date(x).getTime() : 0));
   return Math.max(0, ...ts);
@@ -232,11 +271,122 @@ async function ensureSkillMaster(sb: SupabaseClient, orgId: string, tickets: Tic
   return data ?? [];
 }
 
+type SkillRow = { id: string; name: string; keywords: string[] };
+
+/**
+ * 完了チケットに「必要スキル」を自動付与する（②モデル学習の材料づくり）。
+ *
+ * ★ここが無いと②は永久に学習できない★
+ *   build_dataset は必要スキルの付いていないチケットを丸ごと捨てる。
+ *   画面からの入力は任意なので実運用では埋まらず、学習データが常に不足していた。
+ *
+ * ルール:
+ *   ・手動行(source='manual')が1件でもあるチケットは一切触らない
+ *   ・タイトルで当たったスキルは importance=3(必須)、説明/プレフィクスだけなら 2(推奨)
+ *   ・検出されなくなった自動行は消す（タイトルを直したら追従させるため）
+ */
+async function syncRequiredSkills(
+  sb: SupabaseClient,
+  tickets: TicketRow[],
+  skills: SkillRow[],
+  debug: Record<string, unknown>,
+): Promise<number> {
+  const doneTickets = tickets.filter(t => DONE_STATUSES.includes(t.status));
+  if (doneTickets.length === 0 || skills.length === 0) return 0;
+
+  const ticketIds = doneTickets.map(t => t.id);
+
+  // 既存の付与状況を読む。
+  // ★必ず全件取る★ 1チケットに複数スキルが付くので行数は簡単に上限を超える。
+  //   ここが切れると手動行(source='manual')を見落とし、人が設定した必要スキルを
+  //   自動判定で上書きしてしまう。
+  type ReqRow = { ticket_id: string; skill_id: string; importance: number; source: string };
+  const existing: ReqRow[] = [];
+  for (const ids of chunk(ticketIds)) {
+    const { rows, error } = await fetchAllPages<ReqRow>((from, to) =>
+      sb.from("ticket_required_skills")
+        .select("ticket_id, skill_id, importance, source")
+        .in("ticket_id", ids)
+        .order("ticket_id").order("skill_id")
+        .range(from, to));
+    if (error) { debug.requiredSelectError = error; return 0; }
+    existing.push(...rows);
+  }
+
+  const manualTickets = new Set(existing.filter(r => r.source === "manual").map(r => r.ticket_id));
+  const autoNow = new Map<string, Map<string, number>>();   // ticketId -> skillId -> importance
+  for (const r of existing) {
+    if (r.source !== "auto") continue;
+    if (!autoNow.has(r.ticket_id)) autoNow.set(r.ticket_id, new Map());
+    autoNow.get(r.ticket_id)!.set(r.skill_id, r.importance);
+  }
+
+  const toUpsert: { ticket_id: string; skill_id: string; importance: number; source: string }[] = [];
+  const toDelete: { ticketId: string; skillIds: string[] }[] = [];
+
+  for (const t of doneTickets) {
+    if (manualTickets.has(t.id)) continue;   // 人が設定したチケットは自動判定の対象外
+
+    // タイトル一致は「そのチケットの主題」とみなして必須(3)、それ以外は推奨(2)。
+    const titleHits = new Set(detectSkillKeywords(t.title ?? "", skills));
+    const allHits = detectSkillKeywords(
+      ticketSearchText({ title: t.title ?? "", description: t.description ?? "", prefixes: t.prefixes ?? [] }),
+      skills,
+    );
+
+    const desired = new Map<string, number>();
+    for (const sid of allHits) desired.set(sid, titleHits.has(sid) ? 3 : 2);
+
+    const current = autoNow.get(t.id) ?? new Map<string, number>();
+
+    for (const [sid, imp] of desired) {
+      if (current.get(sid) !== imp) {
+        toUpsert.push({ ticket_id: t.id, skill_id: sid, importance: imp, source: "auto" });
+      }
+    }
+    const gone = [...current.keys()].filter(sid => !desired.has(sid));
+    if (gone.length > 0) toDelete.push({ ticketId: t.id, skillIds: gone });
+  }
+
+  for (const rows of chunk(toUpsert, 500)) {
+    const { error } = await sb
+      .from("ticket_required_skills")
+      .upsert(rows, { onConflict: "ticket_id,skill_id" });
+    if (error) debug.requiredUpsertError = error.message;
+  }
+  for (const d of toDelete) {
+    const { error } = await sb
+      .from("ticket_required_skills")
+      .delete()
+      .eq("ticket_id", d.ticketId)
+      .eq("source", "auto")
+      .in("skill_id", d.skillIds);
+    if (error) debug.requiredDeleteError = error.message;
+  }
+
+  debug.requiredUpserted = toUpsert.length;
+  debug.requiredDeleted = toDelete.reduce((a, d) => a + d.skillIds.length, 0);
+  debug.requiredManualTickets = manualTickets.size;
+  return toUpsert.length;
+}
+
+interface AnalyzeResult {
+  orgId: string;
+  skipped: boolean;
+  /** 自動更新の対象メンバー数 */
+  members: number;
+  /** 実際にスキルが変わったメンバー数（学習ログのサマリに出す） */
+  changedMembers?: number;
+  skillsWritten: number;
+  requiredWritten?: number;
+  skillRunId?: string | null;
+  reason?: string;
+  error?: string;
+  debug?: Record<string, unknown>;
+}
+
 /** 1組織を分析する */
-async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Promise<{
-  orgId: string; skipped: boolean; members: number; skillsWritten: number;
-  reason?: string; debug?: Record<string, unknown>;
-}> {
+async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Promise<AnalyzeResult> {
   // どこで・なぜ止まったかを必ず返す（握りつぶさない）
   const debug: Record<string, unknown> = {};
 
@@ -247,6 +397,12 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     .maybeSingle();
   if (orgErr) debug.orgError = orgErr.message;
 
+  // 「変更が無かった」場合でも、チェックしたこと自体は必ず残す。
+  // これが無いと「バッチが動かなかった」のか「動いたが変更が無かった」のか区別できない。
+  const markChecked = async () => {
+    await sb.from("organizations").update({ ml_last_checked_at: new Date().toISOString() }).eq("id", orgId);
+  };
+
   const since = new Date(Date.now() - LOOKBACK_MONTHS * 30 * 864e5).toISOString();
 
   // 対象チケット（この組織のプロジェクト配下、直近LOOKBACK_MONTHS）
@@ -254,51 +410,68 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   if (projErr) debug.projectsError = projErr.message;
   const projectIds = (projects ?? []).map(p => p.id);
   debug.projectCount = projectIds.length;
-  if (projectIds.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "projects=0", debug };
+  if (projectIds.length === 0) { await markChecked(); return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "プロジェクトがまだありません", debug }; }
 
-  const { data: sprints, error: sprErr } = await sb.from("sprints").select("id").in("project_id", projectIds);
-  if (sprErr) debug.sprintsError = sprErr.message;
-  const sprintIds = (sprints ?? []).map(s => s.id);
+  const sprintIds: string[] = [];
+  for (const ids of chunk(projectIds)) {
+    const { data, error } = await sb.from("sprints").select("id").in("project_id", ids);
+    if (error) debug.sprintsError = error.message;
+    sprintIds.push(...(data ?? []).map(s => s.id));
+  }
   debug.sprintCount = sprintIds.length;
-  if (sprintIds.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "sprints=0", debug };
+  if (sprintIds.length === 0) { await markChecked(); return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "スプリントがまだありません", debug }; }
 
-  const { data: ticketsRaw, error: tktErr } = await sb
-    .from("sprint_tickets")
-    .select("id, title, description, prefixes, status, assignee, reviewer_name, due_date, dev_scale, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, created_at")
-    .in("sprint_id", sprintIds)
-    .gte("created_at", since);
-  if (tktErr) debug.ticketsError = tktErr.message;
-
-  const tickets = (ticketsRaw ?? []) as TicketRow[];
+  // ★ 全件取る ★ 1回のリクエストで返る行数には上限があるため、分割して読む。
+  //   ここで静かに切れると、欠けたチケットで判定して誤ったスキルを書いてしまう。
+  const tickets: TicketRow[] = [];
+  for (const ids of chunk(sprintIds)) {
+    const { rows, error } = await fetchAllPages<TicketRow>((from, to) =>
+      sb.from("sprint_tickets")
+        .select("id, title, description, prefixes, status, assignee, reviewer_name, due_date, dev_scale, estimated_hours, actual_work_hours, started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, created_at, updated_at")
+        .in("sprint_id", ids)
+        .gte("created_at", since)
+        .order("id")
+        .range(from, to));
+    if (error) debug.ticketsError = error;
+    tickets.push(...rows);
+  }
   debug.ticketCount = tickets.length;
-  if (tickets.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "tickets=0", debug };
+  if (tickets.length === 0) { await markChecked(); return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "対象チケットがありません", debug }; }
 
   // ── 差分検知 ──
   // 前回分析以降にチケットが1件も動いていなければ、分析するだけ無駄なのでスキップする。
   const lastAnalyzed = org?.ml_last_analyzed_at ? new Date(org.ml_last_analyzed_at).getTime() : 0;
   if (!force && lastAnalyzed > 0) {
     const changed = tickets.some(t => lastActivityMs(t) > lastAnalyzed);
-    if (!changed) return { orgId, skipped: true, members: 0, skillsWritten: 0 };
+    if (!changed) { await markChecked(); return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "前回から変更がありません", debug }; }
   }
 
   const skills = await ensureSkillMaster(sb, orgId, tickets, debug);
   debug.skillMasterCount = skills.length;
-  if (skills.length === 0) return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "skillMaster=0", debug };
+  if (skills.length === 0) { await markChecked(); return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "スキルマスタが空です", debug }; }
+
+  // ── ②モデル学習の材料づくり ──
+  // メンバー集計より先に走らせる。ここが埋まらないと②は永久に学習できない。
+  const requiredWritten = await syncRequiredSkills(sb, tickets, skills as SkillRow[], debug);
 
   // ── メンバー ──
   // ★ skill_auto_update が ON のメンバーだけがスキル自動更新の対象。
   //   OFF のメンバーは手動で設定した値を守る（ただしレコメンドの対象からは外さない）。
+  //   招待中(invited)など在籍していないメンバーは対象外にする。
   const { data: profiles, error: profErr } = await sb
     .from("profiles")
-    .select("id, name, skill_auto_update")
+    .select("id, name, status, skill_auto_update")
     .eq("organization_id", orgId);
   if (profErr) debug.profilesError = profErr.message;
 
-  const autoMembers = (profiles ?? []).filter(p => p.skill_auto_update !== false);
+  const autoMembers = (profiles ?? []).filter(p => p.skill_auto_update !== false && p.status === "active");
   debug.autoMemberCount = autoMembers.length;
   if (autoMembers.length === 0) {
-    await sb.from("organizations").update({ ml_setup_done: true, ml_last_analyzed_at: new Date().toISOString() }).eq("id", orgId);
-    return { orgId, skipped: false, members: 0, skillsWritten: 0, reason: "autoMembers=0", debug };
+    const ts = new Date().toISOString();
+    await sb.from("organizations")
+      .update({ ml_setup_done: true, ml_last_analyzed_at: ts, ml_last_checked_at: ts })
+      .eq("id", orgId);
+    return { orgId, skipped: false, members: 0, skillsWritten: 0, requiredWritten, reason: "自動更新の対象メンバーがいません", debug };
   }
 
   // assignee は名前の文字列（UUIDではない）ので、名前 → profile の名寄せをする。
@@ -357,14 +530,18 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   //   差分を取ることでこの3つが同時に解決する。
   //
   // source='manual'（人が設定した）行は上書きしない。自動判定が人の意思を潰さないため。
-  const { data: existingRows, error: exMsErr } = await sb
-    .from("member_skills")
-    .select("profile_id, skill_id, level, source")
-    .in("profile_id", autoMembers.map(m => m.id));
-  if (exMsErr) debug.memberSkillsSelectError = exMsErr.message;
+  const existingRows: { profile_id: string; skill_id: string; level: number; source: string }[] = [];
+  for (const ids of chunk(autoMembers.map(m => m.id))) {
+    const { data, error } = await sb
+      .from("member_skills")
+      .select("profile_id, skill_id, level, source")
+      .in("profile_id", ids);
+    if (error) debug.memberSkillsSelectError = error.message;
+    existingRows.push(...(data ?? []));
+  }
 
   const existing = new Map<string, { level: number; source: string }>();
-  for (const r of existingRows ?? []) {
+  for (const r of existingRows) {
     existing.set(keyOf(r.profile_id, r.skill_id), { level: r.level, source: r.source });
   }
 
@@ -406,6 +583,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
 
   debug.matchedPairs = stats.size;   // チケット文章からスキル検出できた(メンバー×スキル)の数
   debug.candidateRows = rows.length;
+  let skillRunId: string | null = null;
   if (rows.length > 0) {
     const { error: msErr } = await sb.from("member_skills").upsert(rows, { onConflict: "profile_id,skill_id" });
     if (msErr) debug.memberSkillsUpsertError = msErr.message;
@@ -424,6 +602,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
       if (runErr) debug.runInsertError = runErr.message;
 
       if (run?.id) {
+        skillRunId = run.id;
         const { error: chErr } = await sb
           .from("member_skill_changes")
           .insert(changes.map(c => ({ ...c, run_id: run.id })));
@@ -435,10 +614,75 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   }
 
   await sb.from("organizations")
-    .update({ ml_setup_done: true, ml_last_analyzed_at: now })
+    .update({ ml_setup_done: true, ml_last_analyzed_at: now, ml_last_checked_at: now })
     .eq("id", orgId);
 
-  return { orgId, skipped: false, members: autoMembers.length, skillsWritten: rows.length, debug };
+  return {
+    orgId, skipped: false, members: autoMembers.length,
+    changedMembers: new Set(changes.map(c => c.profile_id)).size,
+    skillsWritten: rows.length, requiredWritten, skillRunId,
+    debug,
+  };
+}
+
+// ============================================================
+// 学習ログ（ml_batch_runs）
+//
+// ★①と②を1行にまとめる★
+//   ①はここ(TypeScript/Vercel)、②は ml/train.py(Python/GitHub Actions) と
+//   別プロセスなので、GitHub Actions の run_id を batch_id にして同じ行を更新する。
+//   ②が走らない経路（アプリからの手動実行）では、ここで行を完結させる。
+// ============================================================
+
+/** アプリからの手動実行など、②が続かない場合の総合判定 */
+function analyzeOnlyResult(r: AnalyzeResult): { result: string; summary: string } {
+  if (r.error) return { result: "failed", summary: r.error };
+  if (r.skillsWritten > 0) {
+    return { result: "completed", summary: `スキル修正あり（${r.changedMembers ?? 0}名・${r.skillsWritten}件）` };
+  }
+  if (r.skipped) return { result: "not_run", summary: r.reason ?? "変更がないためスキップしました" };
+  return { result: "completed", summary: "スキル修正なし" };
+}
+
+async function recordAnalyzePhase(
+  sb: SupabaseClient,
+  batchId: string,
+  trigger: string,
+  r: AnalyzeResult,
+  finalize: boolean,
+): Promise<void> {
+  const analyze = {
+    status: r.error ? "failed" : r.skipped ? "skipped" : "done",
+    changed: r.skillsWritten,
+    changedMembers: r.changedMembers ?? 0,
+    members: r.members,
+    requiredWritten: r.requiredWritten ?? 0,
+    reason: r.reason ?? null,
+    error: r.error ?? null,
+    debug: r.debug ?? {},
+  };
+
+  const row: Record<string, unknown> = {
+    organization_id: r.orgId,
+    batch_id: batchId,
+    trigger,
+    started_at: new Date().toISOString(),
+    detail: { analyze },
+    skill_run_id: r.skillRunId ?? null,
+  };
+
+  // ②が続かない経路ではここで確定させる（finished_at を残さないと「異常終了」に見えるため）
+  if (finalize) {
+    const { result, summary } = analyzeOnlyResult(r);
+    row.finished_at = new Date().toISOString();
+    row.result = result;
+    row.summary = summary;
+    row.detail = { analyze, train: { status: "skipped", reason: "スキル分析のみ実行（モデル学習は夜間バッチで行います）" } };
+  }
+
+  // 学習ログの記録に失敗しても分析そのものは成立させる（ログが欠けるだけ）
+  const { error } = await sb.from("ml_batch_runs").upsert(row, { onConflict: "organization_id,batch_id" });
+  if (error && r.debug) r.debug.batchLogError = error.message;
 }
 
 export default async function handler(req: any, res: any) {
@@ -454,6 +698,15 @@ export default async function handler(req: any, res: any) {
   const orgId: string | undefined = req.body?.organizationId ?? req.query?.organizationId;
   const force: boolean = Boolean(req.body?.force);
 
+  // 学習ログを ②train.py と同じ行に書くための鍵。バッチからは GitHub の run_id が渡る。
+  // アプリからの手動実行では発行されないので、ここで時刻ベースの鍵を作る。
+  const batchId: string = String(req.body?.batchId ?? `manual-${new Date().toISOString()}`);
+  const trigger: string = ["daily", "deploy", "manual"].includes(String(req.body?.trigger))
+    ? String(req.body.trigger)
+    : "manual";
+  // ②モデル学習が後続するのはバッチ経由のときだけ。手動実行はここで完結させる。
+  const finalize = !req.body?.batchId;
+
   if (!isCron && !orgId) return res.status(400).json({ error: "organizationId is required" });
 
   const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
@@ -461,21 +714,35 @@ export default async function handler(req: any, res: any) {
   try {
     if (orgId) {
       const r = await analyzeOrg(sb, orgId, force);
+      await recordAnalyzePhase(sb, batchId, trigger, r, finalize);
       return res.json({ ok: true, results: [r] });
     }
 
     // cron: 全組織を回す。変更のない組織は差分検知でスキップされるので実質的な負荷は軽い。
-    const { data: orgs } = await sb.from("organizations").select("id");
-    const results = [];
+    //
+    // ★ setupOnly ★ デプロイ時(ml-bootstrap)は「まだ一度も分析していない組織」だけを見る。
+    //   以前は毎デプロイで全組織を分析しており、ml_last_analyzed_at が日中に進んでしまうため
+    //   夜間バッチが毎晩「変更なし」で空振りしていた。初期セットアップという本来の役割に戻す。
+    const setupOnly = Boolean(req.body?.setupOnly);
+    let orgQuery = sb.from("organizations").select("id");
+    if (setupOnly) orgQuery = orgQuery.eq("ml_setup_done", false);
+    const { data: orgs } = await orgQuery;
+    const results: AnalyzeResult[] = [];
     for (const o of orgs ?? []) {
+      let r: AnalyzeResult;
       try {
-        results.push(await analyzeOrg(sb, o.id, false));
+        r = await analyzeOrg(sb, o.id, force);
       } catch (e) {
-        results.push({ orgId: o.id, skipped: true, members: 0, skillsWritten: 0, error: String(e) });
+        r = { orgId: o.id, skipped: true, members: 0, skillsWritten: 0, error: String(e), debug: {} };
       }
+      // 1組織の記録失敗で全体を止めない
+      try {
+        await recordAnalyzePhase(sb, batchId, trigger, r, finalize);
+      } catch { /* 記録できなくても分析結果は返す */ }
+      results.push(r);
     }
     const analyzed = results.filter(r => !r.skipped).length;
-    return res.json({ ok: true, orgs: results.length, analyzed, results });
+    return res.json({ ok: true, orgs: results.length, analyzed, batchId, results });
   } catch (e) {
     return res.status(500).json({ error: String(e) });
   }

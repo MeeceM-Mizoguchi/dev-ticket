@@ -743,10 +743,15 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           await supabase!.from("sprint_tickets")
             .update({ assignee: chosen.name, assignees: [chosen.name], dev_scale: r.scale })
             .eq("id", r.ticket.id);
-          await supabase!.from("ticket_required_skills").delete().eq("ticket_id", r.ticket.id);
+          // ★ 自動付与行(source='auto')は消さない ★ 消すと夜間バッチが翌日また生やして
+          //   「消したのに戻る」ように見える。人が確定した行だけを入れ替える。
+          await supabase!.from("ticket_required_skills")
+            .delete().eq("ticket_id", r.ticket.id).eq("source", "manual");
           if (r.required.length > 0) {
-            await supabase!.from("ticket_required_skills").insert(
-              r.required.map(s => ({ ticket_id: r.ticket.id, skill_id: s.skillId, importance: s.importance })),
+            // 同じスキルが自動付与済みのことがあるので upsert（insert だと主キー衝突する）
+            await supabase!.from("ticket_required_skills").upsert(
+              r.required.map(s => ({ ticket_id: r.ticket.id, skill_id: s.skillId, importance: s.importance, source: "manual" })),
+              { onConflict: "ticket_id,skill_id" },
             );
           }
           if (rec) void logRecommendationAccepted({ organizationId: userOrgId, ticketId: r.ticket.id, candidates: rec.candidates, chosen, source: rec.source });

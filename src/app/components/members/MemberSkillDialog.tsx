@@ -5,20 +5,26 @@
 // 保存すると source='manual' になり、以降は自動判定に上書きされなくなる。
 //
 // BRU9-041 で追加:
-//   ・「履歴」タブ … このメンバーのスキルがいつ何に変わったかを時系列で見る／過去の時点へ戻す
+//   ・「変更履歴」タブ … このメンバーのスキルがいつ何に変わったかを時系列で見る／過去の時点へ戻す
 //   ・スキル自動更新トグル … 従来はメンバーカードにしか無く、スキルを直す文脈で見つからなかった
+//
+// 学習ログタブ:
+//   変更履歴は「スキルが変わったときだけ」残るので、
+//   「動いたが変更が無かった」と「そもそも動かなかった」を区別できなかった。
+//   夜間バッチが毎晩ちゃんと動いているかは、こちらのタブで確認する。
 
 import { useEffect, useMemo, useState } from "react";
-import { X, Trash2, Sparkles, Check, History, Zap } from "lucide-react";
-import type { Member, Skill, MemberSkill, SkillLevel, SkillLayer } from "@/app/types";
+import { X, Trash2, Sparkles, Check, History, Zap, ClipboardList } from "lucide-react";
+import type { Member, Skill, MemberSkill, SkillLevel, SkillLayer, MlBatchRun, MlBatchTrigger } from "@/app/types";
 import { SKILL_LAYERS, SKILL_LEVELS, evidenceText } from "@/app/lib/skills";
 import {
   fetchSkills, fetchMemberSkills, saveMemberSkills, createSkill,
-  fetchSkillHistory, setSkillAutoUpdate, type SkillHistoryEntry,
+  fetchSkillHistory, fetchMlBatchLogs, setSkillAutoUpdate, type SkillHistoryEntry,
 } from "@/app/lib/skillsApi";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { SkillHistoryView } from "@/app/components/members/SkillHistoryView";
+import { MlBatchLogView, BatchLogFilter } from "@/app/components/members/MlBatchLogView";
 import { SkillRestoreDialog } from "@/app/components/members/SkillRestoreDialog";
 
 interface Row {
@@ -38,7 +44,7 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
 }) {
   const { toast } = useToast();
   const { userId } = useAuth();
-  const [tab, setTab] = useState<"skills" | "history">("skills");
+  const [tab, setTab] = useState<"skills" | "history" | "batchlog">("skills");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [removed, setRemoved] = useState<string[]>([]);
@@ -53,6 +59,10 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
   const [historyLoading, setHistoryLoading] = useState(false);
   const [restoreAt, setRestoreAt] = useState<string | null>(null);
   const [autoUpdate, setAutoUpdate] = useState<boolean>(member.skillAutoUpdate !== false);
+  // ── 学習ログ（夜間バッチが動いているかの確認用） ──
+  const [batchRuns, setBatchRuns] = useState<MlBatchRun[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchTrigger, setBatchTrigger] = useState<MlBatchTrigger | "all">("daily");
 
   const reload = async () => {
     const [sk, ms] = await Promise.all([fetchSkills(orgId), fetchMemberSkills([member.id])]);
@@ -89,6 +99,18 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
   useEffect(() => {
     if (tab === "history" && history.length === 0 && !historyLoading) void loadHistory();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 学習ログは組織単位（メンバーによらず同じ内容）。絞り込みを変えたら取り直す。
+  useEffect(() => {
+    if (tab !== "batchlog") return;
+    let cancelled = false;
+    setBatchLoading(true);
+    fetchMlBatchLogs(orgId, { trigger: batchTrigger })
+      .then(r => { if (!cancelled) setBatchRuns(r); })
+      .catch(() => { if (!cancelled) setBatchRuns([]); })
+      .finally(() => { if (!cancelled) setBatchLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, orgId, batchTrigger]);
 
   const toggleAuto = async () => {
     const next = !autoUpdate;
@@ -234,7 +256,8 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
           <div style={{ display: "flex", gap: 2, marginTop: 14 }}>
             {([
               { key: "skills" as const, label: "スキル", Icon: Zap },
-              { key: "history" as const, label: "履歴", Icon: History },
+              { key: "history" as const, label: "変更履歴", Icon: History },
+              { key: "batchlog" as const, label: "学習ログ", Icon: ClipboardList },
             ]).map(t => (
               <button key={t.key} onClick={() => setTab(t.key)}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 14px", fontSize: 12, fontWeight: 700, border: "none", background: "transparent", cursor: "pointer", color: tab === t.key ? "#059669" : "#A09790", borderBottom: tab === t.key ? "2px solid #059669" : "2px solid transparent", marginBottom: -1 }}>
@@ -266,7 +289,15 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
 
         {/* 本体 */}
         <div style={{ flex: 1, overflowY: "auto", padding: "16px 22px" }}>
-          {tab === "history" ? (
+          {tab === "batchlog" ? (
+            <>
+              <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.6, marginBottom: 10 }}>
+                毎晩の自動更新が実行された結果です。組織全体で共通の内容を表示しています。
+              </p>
+              <BatchLogFilter value={batchTrigger} onChange={setBatchTrigger} />
+              <MlBatchLogView runs={batchRuns} loading={batchLoading} />
+            </>
+          ) : tab === "history" ? (
             <SkillHistoryView
               entries={history}
               skills={skills}

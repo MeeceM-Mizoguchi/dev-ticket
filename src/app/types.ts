@@ -197,6 +197,31 @@ export interface MemberSkillChange {
   changedAt: string;
 }
 
+/**
+ * 夜間バッチ1回分の実行ログ（メンバー画面の「学習ログ」タブ）。
+ *
+ *   completed … ①スキル分析も②モデル学習も走りきった
+ *   failed    … どちらかが落ちた（summary にエラー内容）
+ *   not_run   … 学習条件を満たさず②が実行されなかった（summary に理由）
+ *   missing   … その日の記録自体が無い＝バッチが起動しなかった。
+ *               DBには行が無いので画面側で日付の穴を検出して合成する。
+ */
+export type MlBatchResult = "completed" | "failed" | "not_run" | "missing";
+export type MlBatchTrigger = "daily" | "deploy" | "manual";
+
+export interface MlBatchRun {
+  id: string;
+  organizationId: string;
+  batchId: string;
+  trigger: MlBatchTrigger;
+  startedAt: string;
+  finishedAt: string | null;
+  result: MlBatchResult;
+  summary: string;
+  detail: Record<string, unknown>;
+  skillRunId: string | null;
+}
+
 /** 復元プレビュー（restore_member_skills の dry run）の1行 */
 export interface SkillRestoreChange {
   skillId: string;

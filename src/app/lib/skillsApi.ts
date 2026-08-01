@@ -1,7 +1,7 @@
 // ENHA2-034 スキル関連のデータアクセス
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { mapSkill, mapMemberSkill, mapSkillUpdateRun, mapMemberSkillChange } from "@/app/lib/mappers";
-import type { Skill, MemberSkill, SkillLayer, SkillLevel, AssigneeRecommendation, DevScale, Priority, SkillUpdateRun, MemberSkillChange, SkillRestoreChange } from "@/app/types";
+import { mapSkill, mapMemberSkill, mapSkillUpdateRun, mapMemberSkillChange, mapMlBatchRun } from "@/app/lib/mappers";
+import type { Skill, MemberSkill, SkillLayer, SkillLevel, AssigneeRecommendation, DevScale, Priority, SkillUpdateRun, MemberSkillChange, SkillRestoreChange, MlBatchRun, MlBatchTrigger } from "@/app/types";
 
 /** 組織のスキルマスタ */
 export async function fetchSkills(orgId: string): Promise<Skill[]> {
@@ -181,6 +181,93 @@ export async function fetchSkillHistory(
       return { run, changes: changes.filter(c => c.runId === id) };
     })
     .filter((x): x is SkillHistoryEntry => x !== null);
+}
+
+// ============================================================
+// 夜間バッチの学習ログ
+// ============================================================
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+/**
+ * 「その日のバッチが終わっているはずの時刻」= JST 05:00。
+ *
+ * GitHub の schedule は best-effort で遅れる。過去17回の実測で最大 +98分だったため、
+ * cron を 01:45 JST 狙いに前倒ししたうえで、判定境界には十分な余裕を取ってある。
+ * これより前は「まだ動いていないだけ」なので未実行と決めつけない。
+ */
+const DUE_HOUR_JST = 5;
+
+/** ISO日時 → JSTの日付キー（YYYY-MM-DD） */
+function jstDateKey(iso: string): string {
+  return new Date(new Date(iso).getTime() + JST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * 夜間バッチの実行ログを新しい順に取得する。
+ *
+ * ★「記録が無い日」を作って返す★
+ *   バッチが起動しなければDBには何も書けない。行が無いことこそが異常なので、
+ *   日付の穴を検出して result='missing' の行を合成する。
+ *   これが無いと「動かなかった日」が画面から消えてしまい、監視にならない。
+ */
+export async function fetchMlBatchLogs(
+  orgId: string,
+  opts: { days?: number; trigger?: MlBatchTrigger | "all" } = {},
+): Promise<MlBatchRun[]> {
+  if (!isSupabaseEnabled || !orgId) return [];
+  const days = opts.days ?? 30;
+  const trigger = opts.trigger ?? "daily";
+
+  const since = new Date(Date.now() - days * 864e5).toISOString();
+  let q = supabase!
+    .from("ml_batch_runs").select("*")
+    .eq("organization_id", orgId)
+    .gte("started_at", since);
+  if (trigger !== "all") q = q.eq("trigger", trigger);
+
+  const { data } = await q.order("started_at", { ascending: false }).limit(200);
+  const runs = (data ?? []).map(mapMlBatchRun);
+
+  // 「起動しなかった日」を出せるのは、毎晩動くはずの daily だけ。
+  // デプロイ時・手動実行は毎日あるものではないので穴埋めしない。
+  if (trigger === "deploy" || trigger === "manual") return runs;
+
+  const daily = runs.filter(r => r.trigger === "daily");
+  // ★記録が始まる前まで遡って「未実行」と言わない★
+  //   この機能を入れる前の期間はログが存在しないだけで、バッチ自体は動いていた。
+  //   遡って一律「バッチが起動しませんでした」と出すのは事実に反するので、
+  //   最初の記録より前の日付は穴埋めの対象にしない。
+  if (daily.length === 0) return runs;
+  const oldestKey = daily
+    .map(r => jstDateKey(r.startedAt))
+    .reduce((a, b) => (a < b ? a : b));
+
+  const seen = new Set(daily.map(r => jstDateKey(r.startedAt)));
+
+  const now = Date.now();
+  const missing: MlBatchRun[] = [];
+  for (let i = 0; i < days; i++) {
+    const key = new Date(now + JST_OFFSET_MS - i * 864e5).toISOString().slice(0, 10);
+    if (seen.has(key) || key < oldestKey) continue;
+    // その日の締め（JST 05:00）をまだ迎えていないなら、未実行と決めつけない
+    const dueAt = new Date(`${key}T${String(DUE_HOUR_JST).padStart(2, "0")}:00:00+09:00`).getTime();
+    if (now < dueAt) continue;
+    missing.push({
+      id: `missing-${key}`,
+      organizationId: orgId,
+      batchId: "",
+      trigger: "daily",
+      // 並べ替え用。画面では日付だけ出して時刻は「—」にする。
+      startedAt: `${key}T00:00:00+09:00`,
+      finishedAt: null,
+      result: "missing",
+      summary: "バッチが起動しませんでした",
+      detail: {},
+      skillRunId: null,
+    });
+  }
+
+  return [...runs, ...missing].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
 
 /**

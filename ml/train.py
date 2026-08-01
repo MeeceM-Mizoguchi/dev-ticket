@@ -1,6 +1,6 @@
 """ENHA2-034 ②担当者レコメンド ─ 学習ジョブ
 
-これが「実際に学習する」本体。毎日 AM3:00 (Asia/Tokyo) に GitHub Actions から無人で走る。
+これが「実際に学習する」本体。毎晩 GitHub Actions から無人で走る。
 ユーザーのログインは不要で、ボタンを押す必要もない。
 
 流れ:
@@ -18,6 +18,11 @@
   昨日の差分だけを追加学習すると、直近データに過剰適合してモデルが壊れる（GBDTの性質）。
   そして全件でも数秒で終わるので、差分学習する必要がそもそも無い。
   差分検知は「変更のない組織を丸ごとスキップする」ために使う。
+
+★実行結果は必ず ml_batch_runs に残す★
+  ①スキル分析が2週間ずっと素通りしていたのに緑で流れ続けた事故を受けて、
+  「動いたのか / 動いて何もしなかったのか / 落ちたのか」を画面から見えるようにしている。
+  ①が作った同じ batch_id の行を、ここで更新して確定させる。
 
 使い方:
     python ml/train.py              # 全組織（変更のあった組織だけ）
@@ -53,12 +58,36 @@ MIN_DONE_TICKETS = 50
 MIN_TRAIN_ROWS = 100
 
 
+# 1回のリクエストで返る行数には上限があるので、必ず分割して全件取る。
+# ここで静かに切れると、欠けたデータで学習して精度が落ちる（しかも気付けない）。
+PAGE = 1000
+# where in で使う id の分割単位（URLが長くなりすぎるのを防ぐ）
+IN_CHUNK = 200
+
+
 def sb_client() -> Client:
     url = os.environ.get("VITE_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
         sys.exit("VITE_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が設定されていません")
     return create_client(url, key)
+
+
+def chunked(xs: list, size: int = IN_CHUNK):
+    for i in range(0, len(xs), size):
+        yield xs[i : i + size]
+
+
+def fetch_all(build) -> list[dict]:
+    """build(start, end) が返すクエリを、全件取れるまでページングする。"""
+    rows: list[dict] = []
+    start = 0
+    while True:
+        page = build(start, start + PAGE - 1).execute().data or []
+        rows += page
+        if len(page) < PAGE:
+            return rows
+        start += PAGE
 
 
 def fetch_org_data(sb: Client, org_id: str) -> dict:
@@ -70,46 +99,58 @@ def fetch_org_data(sb: Client, org_id: str) -> dict:
     if not project_ids:
         return {"tickets": [], "profiles": [], "skills": [], "member_skills": [], "required": {}}
 
-    sprints = sb.table("sprints").select("id").in_("project_id", project_ids).execute().data
+    sprints: list[dict] = []
+    for ids in chunked(project_ids):
+        sprints += sb.table("sprints").select("id").in_("project_id", ids).execute().data
     sprint_ids = [s["id"] for s in sprints]
     if not sprint_ids:
         return {"tickets": [], "profiles": [], "skills": [], "member_skills": [], "required": {}}
 
-    tickets = (
-        sb.table("sprint_tickets")
-        # ※ sprint_tickets には updated_at 列が無いので選択しない
-        .select(
-            "id, title, description, prefixes, status, priority, assignee, reviewer_name, review_round, "
-            "due_date, dev_scale, estimated_hours, actual_work_hours, is_operation_verified, "
-            "started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, "
-            "created_at"
+    tickets: list[dict] = []
+    for ids in chunked(sprint_ids):
+        tickets += fetch_all(
+            lambda a, b, ids=ids: sb.table("sprint_tickets")
+            .select(
+                "id, title, description, prefixes, status, priority, assignee, reviewer_name, review_round, "
+                "due_date, dev_scale, estimated_hours, actual_work_hours, is_operation_verified, "
+                "started_at, released_at, uat_completed_at, stg_completed_at, review_approved_at, "
+                "created_at, updated_at"
+            )
+            .in_("sprint_id", ids)
+            .gte("created_at", since)
+            .order("id")
+            .range(a, b)
         )
-        .in_("sprint_id", sprint_ids)
-        .gte("created_at", since)
-        .execute()
-        .data
-    )
-    profiles = sb.table("profiles").select("id, name, status").eq("organization_id", org_id).execute().data
+
+    # ★在籍しているメンバーだけを候補にする★
+    #   招待中(invited)や退職者を負例に混ぜると、実在しない候補で学習してしまう。
+    profiles = [
+        p
+        for p in sb.table("profiles").select("id, name, status").eq("organization_id", org_id).execute().data
+        if p.get("status") == "active"
+    ]
     skills = sb.table("skills").select("id, name, layer").eq("organization_id", org_id).execute().data
 
     skill_ids = [s["id"] for s in skills]
-    member_skills = (
-        sb.table("member_skills").select("profile_id, skill_id, level").in_("skill_id", skill_ids).execute().data
-        if skill_ids
-        else []
-    )
+    member_skills: list[dict] = []
+    for ids in chunked(skill_ids):
+        member_skills += fetch_all(
+            lambda a, b, ids=ids: sb.table("member_skills")
+            .select("profile_id, skill_id, level")
+            .in_("skill_id", ids)
+            .order("profile_id")
+            .range(a, b)
+        )
 
     ticket_ids = [t["id"] for t in tickets]
-    required_rows = []
-    # in_ は要素数が多いとURLが長くなりすぎるので分割して引く
-    for i in range(0, len(ticket_ids), 200):
-        chunk = ticket_ids[i : i + 200]
-        required_rows += (
-            sb.table("ticket_required_skills")
+    required_rows: list[dict] = []
+    for ids in chunked(ticket_ids):
+        required_rows += fetch_all(
+            lambda a, b, ids=ids: sb.table("ticket_required_skills")
             .select("ticket_id, skill_id, importance")
-            .in_("ticket_id", chunk)
-            .execute()
-            .data
+            .in_("ticket_id", ids)
+            .order("ticket_id")
+            .range(a, b)
         )
 
     required: dict[str, list[dict]] = {}
@@ -206,9 +247,12 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
         )
         if latest:
             last = parse_ts(latest[0]["created_at"])
-            # sprint_tickets に updated_at が無いので、作成日時とマイルストーン日時の
-            # 最大値で「最後に動いた時刻」を近似する。
+
+            # updated_at（トリガで自動更新）が最も正確。
+            # 移行直後などで null の行だけ、作成日時とマイルストーン日時の最大値で近似する。
             def last_activity(t: dict) -> datetime:
+                if t.get("updated_at"):
+                    return parse_ts(t["updated_at"])
                 cands = [
                     parse_ts(t.get(k))
                     for k in ("created_at", "started_at", "review_approved_at",
@@ -227,7 +271,11 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
         boosted_ticket_ids=data.get("accepted_ticket_ids"),
     )
     if len(X) < MIN_TRAIN_ROWS:
-        return {"org": org_id, "trained": False, "reason": f"学習データが{len(X)}行（{MIN_TRAIN_ROWS}行未満）"}
+        return {
+            "org": org_id,
+            "trained": False,
+            "reason": f"学習データが{len(X)}行（{MIN_TRAIN_ROWS}行未満）のため見送り",
+        }
 
     Xa = np.array(X, dtype=np.float64)
     ya = np.array(y, dtype=np.int32)
@@ -322,6 +370,91 @@ def train_org(sb: Client, org_id: str, force: bool) -> dict:
     return {"org": org_id, "trained": True, "version": version, "active": is_active, "metrics": metrics}
 
 
+# ============================================================
+# 学習ログ（ml_batch_runs）
+#
+# ①スキル分析が作った同じ batch_id の行に②の結果を書き足し、総合判定を確定させる。
+# 画面の「学習ログ」タブはこの result / summary をそのまま表示する。
+#
+# 総合判定:
+#   問題あり(failed)    … ①か②が落ちた            → エラー内容を出す
+#   完了(completed)     … ②がモデルを学習した       → スキル修正あり/なし＋モデル情報を出す
+#   未実行(not_run)     … ②が学習条件を満たさなかった → その理由を出す
+# ============================================================
+def record_train_phase(sb: Client, batch_id: str, trigger: str, org_id: str, r: dict) -> None:
+    if not batch_id:
+        return
+
+    train = {
+        "status": "failed" if r.get("error") else ("done" if r.get("trained") else "skipped"),
+        "version": r.get("version"),
+        "active": r.get("active"),
+        "metrics": r.get("metrics"),
+        "reason": r.get("reason"),
+        "error": r.get("error"),
+    }
+
+    # ①が書いた内容（スキル修正の件数など）を読み、消さずにマージする
+    analyze: dict = {}
+    row_id = None
+    try:
+        rows = (
+            sb.table("ml_batch_runs")
+            .select("id, detail")
+            .eq("organization_id", org_id)
+            .eq("batch_id", batch_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            row_id = rows[0]["id"]
+            analyze = (rows[0].get("detail") or {}).get("analyze") or {}
+    except Exception:
+        pass
+
+    changed = analyze.get("changed") or 0
+    changed_members = analyze.get("changedMembers") or 0
+    skill_part = (
+        f"スキル修正あり（{changed_members}名・{changed}件）" if changed else "スキル修正なし"
+    )
+
+    if analyze.get("status") == "failed" or train["status"] == "failed":
+        result = "failed"
+        summary = train.get("error") or analyze.get("error") or "エラーが発生しました"
+    elif train["status"] == "done":
+        result = "completed"
+        model_part = (
+            f"モデル学習 v{train['version']} を{'採用' if train.get('active') else '見送り'}"
+        )
+        summary = f"{skill_part} ／ {model_part}"
+    else:
+        result = "not_run"
+        reason = train.get("reason") or "モデル学習は実行されませんでした"
+        # スキルは直っているのに理由だけ出すと成果が見えないので、あれば併記する
+        summary = f"{skill_part} ／ {reason}" if changed else reason
+
+    payload = {
+        "organization_id": org_id,
+        "batch_id": batch_id,
+        "trigger": trigger,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "result": result,
+        "summary": summary[:2000],
+        "detail": {"analyze": analyze, "train": train},
+    }
+
+    # ログを残せなくても学習そのものは成立させる（ログが欠けるだけ）
+    try:
+        if row_id:
+            sb.table("ml_batch_runs").update(payload).eq("id", row_id).execute()
+        else:
+            payload["started_at"] = payload["finished_at"]
+            sb.table("ml_batch_runs").upsert(payload, on_conflict="organization_id,batch_id").execute()
+    except Exception as e:
+        print(f"[warn] 学習ログを記録できませんでした ({org_id}): {e}", file=sys.stderr)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--org", help="この組織だけ学習する")
@@ -329,6 +462,10 @@ def main() -> None:
     args = ap.parse_args()
 
     sb = sb_client()
+
+    # ①スキル分析と同じ鍵。ワークフローが GitHub の run_id を渡してくる。
+    batch_id = os.environ.get("BATCH_ID", "")
+    trigger = os.environ.get("TRIGGER", "daily")
 
     if args.org:
         org_ids = [args.org]
@@ -340,12 +477,19 @@ def main() -> None:
         try:
             r = train_org(sb, org_id, args.force)
         except Exception as e:  # 1組織の失敗で全体を止めない
-            r = {"org": org_id, "trained": False, "reason": f"エラー: {e}"}
+            r = {"org": org_id, "trained": False, "error": f"モデル学習でエラーが発生しました: {e}"}
         if r.get("trained"):
             trained += 1
         print(json.dumps(r, ensure_ascii=False))
+        record_train_phase(sb, batch_id, trigger, org_id, r)
 
     print(f"\n=== {len(org_ids)}組織中 {trained}組織を学習しました ===")
+
+    # ワークフローの実行サマリ（ログを開かなくても結果が分かるように）
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a", encoding="utf-8") as f:
+            f.write(f"\n### ② モデル学習\n\n{len(org_ids)}組織中 **{trained}組織**を学習しました。\n")
 
 
 if __name__ == "__main__":
