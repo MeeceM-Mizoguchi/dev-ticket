@@ -4,12 +4,17 @@ import { Ticket, AlertTriangle, ArrowRight, Fingerprint } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { biometricAuth } from "@/lib/biometricAuth";
 import { FieldInput } from "@/app/components/shared/FieldInput";
+import { peekRedirect } from "@/app/lib/authRedirect";
 
 const RECENT_USERS_KEY = "dt_recent_users";
 
 export function LoginPage() {
   const { login, loginWithBiometric } = useAuth();
   const navigate = useNavigate();
+  // 未ログインで共有URLを開いた場合の戻り先（無ければダッシュボード）。
+  // 消すのは着地側(ProtectedShell)。ここで消すとレンダー中の副作用になり、
+  // 再レンダーで戻り先を見失う可能性があるため読むだけにする。
+  const afterLogin = () => peekRedirect() ?? "/dashboard";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [emailError, setEmailError] = useState("");
@@ -30,7 +35,7 @@ export function LoginPage() {
     try {
       const err = await loginWithBiometric();
       if (err) setError(err);
-      else navigate("/dashboard");
+      else navigate(afterLogin(), { replace: true });
     } catch (e: any) {
       setError(e?.message || "生体認証ログインに失敗しました。");
     } finally {
@@ -56,7 +61,7 @@ export function LoginPage() {
     return () => { cancelled = true; };
   }, [runBioLogin]);
 
-  if (sessionStorage.getItem("isLoggedIn") === "true") return <Navigate to="/dashboard" replace />;
+  if (sessionStorage.getItem("isLoggedIn") === "true") return <Navigate to={afterLogin()} replace />;
 
   const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
@@ -91,7 +96,7 @@ export function LoginPage() {
       const prev: string[] = (() => { try { return JSON.parse(localStorage.getItem(RECENT_USERS_KEY) || "[]"); } catch { return []; } })();
       const updated = [email, ...prev.filter(u => u !== email)].slice(0, 5);
       localStorage.setItem(RECENT_USERS_KEY, JSON.stringify(updated));
-      navigate("/dashboard");
+      navigate(afterLogin(), { replace: true });
     }
   };
 

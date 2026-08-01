@@ -21,8 +21,15 @@ import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whi
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
 import { handleIndentKey } from "@/app/lib/whiteboardIndent";
 import { reflowIndentWrap } from "@/app/lib/whiteboardIndentWrap";
+import { activateWbInstance, isActiveWbInstance, registerWbInstance, unregisterWbInstance } from "@/app/lib/whiteboardInstance";
+import { onWhiteboardFocusRequest } from "@/app/lib/whiteboardFocusBus";
+import { focusOnTargets, resolveFocusTargets } from "@/app/lib/whiteboardFocus";
+import { buildWhiteboardLink } from "@/app/lib/whiteboardLink";
 import { CursorChatLayer } from "./CursorChatLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
+import { CopyObjectLinkButton } from "./CopyObjectLinkButton";
+import { ContextMenuLabels } from "./ContextMenuLabels";
+import { FocusPulseLayer } from "./FocusPulseLayer";
 import { WhiteboardExportMenu } from "./WhiteboardExportMenu";
 import { WhiteboardToolbar } from "./WhiteboardToolbar";
 import { TriangleToolButton } from "./TriangleToolButton";
@@ -223,18 +230,43 @@ interface Props {
   title: string;
   user: WbUser;
   canEdit: boolean;
+  /** リンク生成に使うプロジェクトslug（/{slug}/whiteboard/{boardId}?element=...） */
+  projectSlug: string;
+  /** リンクで指定されたオブジェクト。ロード後にそこへ移動して強調する */
+  focusElementId?: string | null;
+  /** フォーカスの成否（false=削除済み等で見つからなかった）。URLの後始末・トースト用 */
+  onFocusResult?: (found: boolean) => void;
+  /**
+   * 同時に複数のキャンバスが存在し得る（画面＋リンクプレビューパネル）ため、
+   * どれが「今の操作対象か」を識別するキー。省略時はページ側。
+   */
+  instanceKey?: string;
 }
 
 const CURSOR_THROTTLE_MS = 30;
 const UNDO_GRACE = 300;      // undo/redo 直後に「記録どおりのアンカーへ復元」する猶予(ms)
 const UNDO_MAX_GRACE = 3000; // 収束しない時に猶予窓を開きっぱなしにしない絶対上限(ms)
+const FOCUS_RETRY_MS = 200;  // リンク着地: 対象が現れるまでの再探索間隔
+const FOCUS_RETRY_MAX = 30;  // 同 最大回数（= 約6秒。Yjsの後追い差分を待つ）
 
-export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Props) {
+export default function WhiteboardCanvas({
+  boardId, title, user, canEdit, projectSlug,
+  focusElementId, onFocusResult, instanceKey = "page",
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [api, setApi] = useState<any>(null);
   const [pseudoFull, setPseudoFull] = useState(false); // iPad等でネイティブFS非対応時のCSS全画面
   const [copyToast, setCopyToast] = useState<string | null>(null); // 選択コピーの結果トースト
   const copyToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pulse, setPulse] = useState<{ ids: string[]; nonce: number } | null>(null); // リンク着地の強調
+  const pulseNonce = useRef(0);
+
+  // キャンバス内の簡易トースト（選択コピー・リンクコピーの結果表示）
+  const showToast = useCallback((msg: string) => {
+    setCopyToast(msg);
+    if (copyToastTimer.current) clearTimeout(copyToastTimer.current);
+    copyToastTimer.current = setTimeout(() => setCopyToast(null), 1800);
+  }, []);
   const [foldMode, setFoldMode] = useState(false); // 折れ矢印モード（トグル・BRU5-064）
   const foldModeRef = useRef(false);               // onChangeから参照する用（stale回避）
   const shiftRef = useRef(false);                  // Shift押下中か
@@ -260,6 +292,71 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   } = useWhiteboardSync(boardId, user);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
+
+  // このキャンバスを「アクティブなインスタンス」として登録する（whiteboardInstance.ts の説明を参照）。
+  // リンクプレビューのパネルが開くとキャンバスが2枚になるため、window レベルの処理や
+  // 自動レイアウトは最後に触られた1枚だけが担当する。
+  useEffect(() => {
+    registerWbInstance(instanceKey);
+    const el = containerRef.current;
+    const onTouch = () => activateWbInstance(instanceKey);
+    el?.addEventListener("pointerdown", onTouch, true);
+    el?.addEventListener("focusin", onTouch, true);
+    return () => {
+      el?.removeEventListener("pointerdown", onTouch, true);
+      el?.removeEventListener("focusin", onTouch, true);
+      unregisterWbInstance(instanceKey);
+    };
+  }, [instanceKey]);
+
+  // ── リンクで指定されたオブジェクトへの着地（?element= / 同一ボードへのリンククリック）──
+  // 対象がまだシーンに無いことがある（Yjsの後追い差分が到着中）ので、見つかるまで再探索する。
+  const focusTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const runFocus = useCallback((elementId: string | null) => {
+    if (!api) return;
+    if (focusTimer.current) { clearInterval(focusTimer.current); focusTimer.current = null; }
+    if (!elementId) { onFocusResult?.(true); return; } // ボードを開くだけのリンク
+
+    const attempt = () => {
+      const targets = resolveFocusTargets(api.getSceneElements() as any[], elementId);
+      if (!targets) return false;
+      focusOnTargets(api, targets);
+      pulseNonce.current += 1;
+      setPulse({ ids: targets.elements.map((e: any) => e.id), nonce: pulseNonce.current });
+      onFocusResult?.(true);
+      return true;
+    };
+
+    if (attempt()) return;
+    let tries = 0;
+    focusTimer.current = setInterval(() => {
+      tries++;
+      if (attempt()) { clearInterval(focusTimer.current!); focusTimer.current = null; return; }
+      if (tries >= FOCUS_RETRY_MAX) {
+        clearInterval(focusTimer.current!); focusTimer.current = null;
+        onFocusResult?.(false); // 削除済み・別ボードのリンク
+      }
+    }, FOCUS_RETRY_MS);
+  }, [api, onFocusResult]);
+
+  useEffect(() => () => { if (focusTimer.current) clearInterval(focusTimer.current); }, []);
+
+  // URL の ?element= による初回着地
+  useEffect(() => {
+    if (!api || !docLoaded || !focusElementId) return;
+    runFocus(focusElementId);
+  }, [api, docLoaded, focusElementId, runFocus]);
+
+  // 同じボードが既に開いている状態でリンクを踏んだ時は、パネルを増やさずその場で移動する。
+  // 見えていない（タブモードの非アクティブタブ等）なら処理せず false を返し、呼び出し側に委ねる。
+  useEffect(() => onWhiteboardFocusRequest(boardId, (elementId) => {
+    const el = containerRef.current;
+    if (!api || !el) return false;
+    if (el.closest("[inert]")) return false;
+    if (typeof getComputedStyle === "function" && getComputedStyle(el).visibility === "hidden") return false;
+    runFocus(elementId);
+    return true;
+  }), [boardId, api, runFocus]);
 
   // 画像ファイルの共有（ローカル→Storage→Yjs files map）
   const syncLocalImages = useCallback(async () => {
@@ -402,6 +499,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   useEffect(() => {
     if (!api) return;
     const onDown = () => {
+      if (!isActiveWbInstance(instanceKey)) return; // 非アクティブなキャンバスは走査しない
       pointerDownNow.current = true;
       endpointDragId.current = null; // 新しいポインタ操作の開始（前回の取りこぼしを持ち越さない）
       copiedConnIds.current.clear(); // 前回のコピー操作の控えは持ち越さない（BRU7-056-7）
@@ -424,7 +522,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
     };
-  }, [api]);
+  }, [api, instanceKey]);
 
   // Arrow type の「Elbow」を押したら、ネイティブelbowではなく自前の折れ矢印モードに入る（BRU5-078）。
   //
@@ -436,6 +534,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   useEffect(() => {
     if (!api) return;
     const onClick = (e: MouseEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return; // 別キャンバスのツールバー操作を拾わない
       const t = e.target as HTMLElement | null;
       const input = t?.closest?.("label")?.querySelector?.("input[data-testid]") as HTMLInputElement | null;
       const id = input?.getAttribute("data-testid");
@@ -462,7 +561,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     };
     window.addEventListener("click", onClick, true);
     return () => window.removeEventListener("click", onClick, true);
-  }, [api]);
+  }, [api, instanceKey]);
 
   // undo/redo 検知（BRU5-066）。undo は線の点列だけを巻き戻すことがあり、図形は動いていないため
   // 追従ロジックが「ユーザーが線を動かした」と誤判定して接続を繋ぎ替え/解除してしまう。
@@ -480,18 +579,20 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     const isKey = (e: KeyboardEvent, k: "z" | "y") =>
       e.key?.toLowerCase() === k || e.code === (k === "z" ? "KeyZ" : "KeyY");
     const onKey = (e: KeyboardEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return;
       if (!(e.metaKey || e.ctrlKey)) return;
       // Ctrl/Cmd+Z（undo・Shift付きは redo）と、Windows の Ctrl+Y（redo）
       if (isKey(e, "z") || (!e.shiftKey && isKey(e, "y"))) armUndoGrace();
     };
     const onClick = (e: MouseEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest?.('[data-testid="button-undo"],[data-testid="button-redo"]')) armUndoGrace();
     };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("pointerdown", onClick, true);
     return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("pointerdown", onClick, true); };
-  }, [armUndoGrace]);
+  }, [armUndoGrace, instanceKey]);
 
   // ロード後に一度だけフレーム装飾矩形を生成する（BRU5-063）。
   // この機能以前に作られた既存フレームは装飾矩形を持たない。初回onChangeはリモート適用中で
@@ -515,18 +616,14 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
   //   効かないことがある（Capacitorネイティブアプリでは競合しないため確実に動作する）。
   useEffect(() => {
     if (!api) return;
-    const showToast = (msg: string) => {
-      setCopyToast(msg);
-      if (copyToastTimer.current) clearTimeout(copyToastTimer.current);
-      copyToastTimer.current = setTimeout(() => setCopyToast(null), 1800);
-    };
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return; // 2枚あるときクリップボードを奪い合わない
       // Cmd(Mac) または Ctrl(Win/Linux) + Shift + C。Altは除外（Cmd+Opt+C等と区別）。
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.code !== "KeyC") return;
       // テキスト編集中は通常のコピーを妨げない
       const t = e.target as HTMLElement | null;
       const editing = (!!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable))
-        || !!document.querySelector(".excalidraw-wysiwyg");
+        || !!containerRef.current?.querySelector(".excalidraw-wysiwyg");
       if (editing) return;
       e.preventDefault();
       e.stopPropagation();
@@ -540,7 +637,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
       window.removeEventListener("keydown", onKeyDown, true);
       if (copyToastTimer.current) clearTimeout(copyToastTimer.current);
     };
-  }, [api]);
+  }, [api, instanceKey, showToast]);
 
   // 全画面(ネイティブ)中は Esc をブラウザ既定の「即・全画面解除」ではなく自前で処理するため、
   // Keyboard Lock API で Esc を横取りする（BRU6-004-2）。これがないと図形にフォーカスがあっても
@@ -584,12 +681,13 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (!isActiveWbInstance(instanceKey)) return; // 裏のキャンバスの選択まで解除しない
       const inFull = isNativeFull() || pseudoFull;
 
       // テキスト編集中（wysiwygオーバーレイ／入力欄）は確定/キャンセルを Excalidraw に任せる。
       // 全画面は維持（ネイティブは Keyboard Lock、疑似は何もしないことで維持）。
       const t = e.target as HTMLElement | null;
-      const editingText = !!document.querySelector(".excalidraw-wysiwyg")
+      const editingText = !!containerRef.current?.querySelector(".excalidraw-wysiwyg")
         || (!!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable));
       if (editingText) return;
 
@@ -624,7 +722,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [api, pseudoFull, setPseudoFull]);
+  }, [api, pseudoFull, setPseudoFull, instanceKey]);
 
   // 表のセル編集中は Excalidraw の onChange が発火しない（＝シーンが確定まで凍結される）ため、
   // onChange 駆動の再レイアウトが編集中は一度も走らず、周囲セルが編集開始時の高さのまま固まって
@@ -635,7 +733,10 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
-      if (document.querySelector(".excalidraw-wysiwyg")) {
+      // 2枚目のキャンバス（リンクプレビュー）で編集中のテキストを、自分の盤面の編集と
+      // 誤認して再レイアウトしないよう、アクティブなインスタンスだけが回す。
+      if (!isActiveWbInstance(instanceKey)) return;
+      if (containerRef.current?.querySelector(".excalidraw-wysiwyg")) {
         try { reflowTables(api, false); } catch { /* noop */ }
         // 素の図形のラベル編集中も、改行の増減にライブで高さを追従させる（BRU6-011）。
         try { reflowBoundTextShapes(api, false); } catch { /* noop */ }
@@ -643,7 +744,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [api, canEdit]);
+  }, [api, canEdit, instanceKey]);
 
   const processedLines = useRef<Set<string>>(new Set());
   const knownElementIds = useRef<Set<string>>(new Set());      // これまでに見た要素id（複製された一群の検出用・BRU7-056-5）
@@ -664,7 +765,9 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     try {
     // 編集中テキスト要素を表の再レイアウトへ渡す（api.getAppState()には入らないことがあるため、
     // editingTextElementが確実に入るこのappStateで捕捉）。編集開始で set・終了(null)でクリアされる。
-    if (appState) setEditingTextEl(appState.editingTextElement ?? null);
+    // 編集中テキストはモジュール単位の共有値なので、アクティブなキャンバスだけが書き込む
+    // （2枚目のキャンバスが null で上書きすると、編集中の表レイアウトが崩れる）。
+    if (appState && isActiveWbInstance(instanceKey)) setEditingTextEl(appState.editingTextElement ?? null);
     // 自分のビューポート中心(cx,cy)+ズームを配信（追従される側・ENHA2-031）。
     // canEditガードより前に置き、閲覧専用ユーザーの表示も追従対象にできるようにする。
     if (appState) {
@@ -711,7 +814,9 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     // このブロック内の updateScene は commitフェーズ外(rAF)へ遅延させ、React の入れ子更新を断つ（BRU7-043）
     api?.__wbSetDefer?.(true);
     try {
-      if (api && !tooDeep) {
+      // 自動接続・追従・再レイアウトなどの自動処理は、アクティブな1枚だけが担当する
+      // （2枚同時に走ると、もう一方の編集状態を見て別ボードを壊しかねない）。
+      if (api && !tooDeep && isActiveWbInstance(instanceKey)) {
         // 【BRU7-056-3】自動接続は「今ユーザーが引いた／触った線」だけに効かせる。
         // 起動時点で盤面に在った線・矢印は接続情報(customData)を既に持っているので評価済みとして扱い、
         // 後から無関係な操作をした拍子に近くの図形へ吸着して向きが変わるのを防ぐ。
@@ -876,7 +981,7 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
     try { void syncLocalImages(); } catch { /* noop */ }
     } finally { onChangeDepth.current--; }
-  }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow, extendUndoGrace]);
+  }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow, extendUndoGrace, instanceKey]);
 
   const onPointerUpdate = useCallback((payload: any) => {
     // 折れ矢印(BRU5-064): 実カーソル位置(scene)を常に控える。Shiftの角度スナップで矢印端点が
@@ -913,11 +1018,16 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
         onUserFollow={(payload: any) => { if (payload?.action === "FOLLOW") snapToFollowed(); }}
         viewModeEnabled={!canEdit}
         langCode="ja-JP"
+        // 右クリック →「オブジェクトへのリンクをコピー」で作られるURL。
+        // 既定実装は window.location.href ベースで、タブモード(MemoryRouter)や
+        // ネイティブアプリ(capacitor://)では共有できないURLになるため必ず自前で組む。
+        generateLinkForSelection={(id: string) => buildWhiteboardLink(projectSlug, boardId, id)}
         initialData={{ ...CLEAN_DEFAULTS, elements: bridgeRef.current?.currentElements() ?? [] }}
         UIOptions={{ canvasActions: { toggleTheme: false } }}
         renderTopRightUI={() => (api ? (
-          // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: ヘルプ · エクスポート · 全画面
+          // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: リンク · ヘルプ · エクスポート · 全画面
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
+            <CopyObjectLinkButton api={api} projectSlug={projectSlug} boardId={boardId} onResult={showToast} />
             <HelpButton api={api} />
             <WhiteboardExportMenu api={api} title={title} containerRef={containerRef} />
             <FullscreenButton targetRef={containerRef} pseudoFull={pseudoFull} setPseudoFull={setPseudoFull} />
@@ -946,6 +1056,10 @@ export default function WhiteboardCanvas({ boardId, title, user, canEdit }: Prop
           {canEdit && <TableRowColControls api={api} containerRef={containerRef} canEdit={canEdit} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
+          {/* リンクで飛んできたオブジェクトを数秒だけ強調する（閲覧のみでも出す） */}
+          <FocusPulseLayer api={api} containerRef={containerRef} target={pulse} />
+          {/* 右クリックメニューの未翻訳項目（オブジェクトへのリンク系）を日本語にする */}
+          <ContextMenuLabels containerRef={containerRef} />
         </>
       )}
       {copyToast && (

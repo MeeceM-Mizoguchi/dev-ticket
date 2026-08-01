@@ -1,36 +1,36 @@
 // ホワイトボード画面。左にボード一覧、右にリアルタイム共同編集キャンバス（遅延ロード）。
 // 権限は議事録と同型（owner/admin=edit固定、他は project_member_permissions を参照）。
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { useParams, useNavigate, Navigate } from "react-router";
+import { useParams, useNavigate, useSearchParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, PenTool } from "lucide-react";
-import { isSupabaseEnabled, supabase } from "@/lib/supabase";
+import { isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { useToast } from "@/app/contexts/ToastContext";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
 import { BoardListToggle } from "@/app/components/whiteboard/BoardListToggle";
-import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject } from "@/app/lib/whiteboardService";
-import type { AccessLevel, UserPermissions, Whiteboard } from "@/app/types";
+import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor } from "@/app/lib/whiteboardService";
+import { ELEMENT_LINK_PARAM } from "@/app/lib/whiteboardLink";
+import type { AccessLevel, Whiteboard } from "@/app/types";
 
 const WhiteboardCanvas = lazy(() => import("@/app/components/whiteboard/WhiteboardCanvas"));
 
 // ボード一覧をたたんだ状態の保存キー（BRU9-046）。プロジェクト横断の「好み」として1キーで持つ。
 const COLLAPSE_LS_KEY = "wb_board_list_collapsed";
 
-// userId から安定した色を生成
-function colorFromId(id: string): string {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
-  return `hsl(${h}, 70%, 45%)`;
-}
-
 interface Perms { whiteboard: AccessLevel; wiki: AccessLevel; backlog: AccessLevel; minutes: AccessLevel }
 
 export function WhiteboardPage() {
   const { projectSlug, boardId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { toast } = useToast();
   const { userId, userName, userRole } = useAuth();
   const isAdminRole = userRole === "owner" || userRole === "admin";
+  // オブジェクトへのディープリンク（?element=）。着地したら消費して URL から取り除く
+  // （残すとボードを切り替えたりリロードするたびに再フォーカスが暴発するため・FileBoxPageと同型）。
+  const focusElementId = searchParams.get(ELEMENT_LINK_PARAM);
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
@@ -51,23 +51,14 @@ export function WhiteboardPage() {
     setProjectId(p.id);
     setProjectName(p.name);
 
-    const [boardRows, permRes] = await Promise.all([
+    // 権限判定はリンクプレビュー（WhiteboardLinkPreview）と共通の関数に集約している。
+    // whiteboards の RLS は authenticated 全許可なので、ここがアクセス制御の実体。
+    const [boardRows, nextPerms] = await Promise.all([
       listBoards(p.id),
-      isAdminRole ? Promise.resolve({ data: null }) :
-        supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
+      loadWhiteboardPerms(p.id, userId, isAdminRole),
     ]);
     setBoards(boardRows);
-    if (isAdminRole) {
-      setPerms({ whiteboard: "edit", wiki: "edit", backlog: "edit", minutes: "edit" });
-    } else {
-      const up = (permRes as any).data?.permissions as Partial<UserPermissions> | undefined;
-      setPerms({
-        whiteboard: (up?.whiteboardPermission as AccessLevel) ?? "none",
-        wiki: (up?.wikiPermission as AccessLevel) ?? "none",
-        backlog: (up?.backlogPermission as AccessLevel) ?? "none",
-        minutes: (up?.minutesPermission as AccessLevel) ?? "none",
-      });
-    }
+    setPerms(nextPerms);
     setLoading(false);
   }, [projectSlug, isAdminRole, userId]);
 
@@ -94,6 +85,16 @@ export function WhiteboardPage() {
     setBoards((prev) => prev.map((b) => (b.id === id ? { ...b, title } : b)));
   }, [userId]);
 
+  // リンク着地の結果。見つからなければ理由を伝え、いずれにせよ ?element= は URL から消す。
+  const handleFocusResult = useCallback((found: boolean) => {
+    if (!found) toast("リンク先のオブジェクトが見つかりませんでした（削除された可能性があります）", "info");
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete(ELEMENT_LINK_PARAM);
+      return next;
+    }, { replace: true });
+  }, [toast, setSearchParams]);
+
   const handleDelete = useCallback(async (id: string) => {
     await deleteBoard(id);
     setBoards((prev) => prev.filter((b) => b.id !== id));
@@ -103,7 +104,7 @@ export function WhiteboardPage() {
   if (!loading && notFound) return <Navigate to="/projects" replace />;
   if (!loading && perms.whiteboard === "none") return <Navigate to="/dashboard" replace />;
 
-  const user = { id: userId, name: userName || "匿名", color: colorFromId(userId || "anon") };
+  const user = { id: userId, name: userName || "匿名", color: wbUserColor(userId || "anon") };
 
   // ボード未選択のときは、たたむ設定でも一覧を出す（一覧が無いとボードを選べず操作不能になる）。
   const sidebarHidden = collapsed && !!boardId;
@@ -149,7 +150,16 @@ export function WhiteboardPage() {
             // ボード切替時は resetKeys で境界を自動リセットし、前ボードの例外を持ち越さない（BRU7-043）。
             <ErrorBoundary resetKeys={[boardId]}>
               <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
-                <WhiteboardCanvas key={boardId} boardId={boardId} title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"} user={user} canEdit={canEdit} />
+                <WhiteboardCanvas
+                  key={boardId}
+                  boardId={boardId}
+                  title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"}
+                  user={user}
+                  canEdit={canEdit}
+                  projectSlug={projectSlug ?? ""}
+                  focusElementId={focusElementId}
+                  onFocusResult={handleFocusResult}
+                />
               </Suspense>
             </ErrorBoundary>
           ) : (

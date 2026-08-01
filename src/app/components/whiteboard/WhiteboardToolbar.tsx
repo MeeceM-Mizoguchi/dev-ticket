@@ -52,22 +52,24 @@ export function WhiteboardToolbar({ api, foldMode, setFoldMode }: Props) {
   const groupBtn: React.CSSProperties = {
     display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", fontSize: 12, fontWeight: 600,
     color: "#374151", background: "#fff", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 7, cursor: "pointer",
+    // 幅の狭い場所（リンクプレビューのパネル等）でもラベルが縦積みにならないようにする
+    whiteSpace: "nowrap", flexShrink: 0,
   };
   const divider = <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.08)" }} />;
 
   // Excalidraw の左プロパティパネル・上部ツールバーと干渉しないよう下部中央に横並び配置（FigJam風）
   return (
     <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 25, pointerEvents: "auto",
-      display: "flex", alignItems: "center", gap: 8, padding: "6px 10px",
+      display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", whiteSpace: "nowrap",
       background: "#fff", borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 4px 16px rgba(0,0,0,0.12)" }}>
       <button onClick={() => addStickyNote(NOTE_COLORS[0])} title="付箋を追加"
         style={{ ...groupBtn, color: "#92700A", background: "#FFF9E6", border: "1px solid rgba(146,112,10,0.25)" }}>
         <StickyNote style={{ width: 13, height: 13 }} />付箋
       </button>
-      <div style={{ display: "flex", gap: 5 }}>
+      <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
         {NOTE_COLORS.map((c) => (
           <button key={c} onClick={() => addStickyNote(c)} title="この色の付箋を追加"
-            style={{ width: 20, height: 20, borderRadius: 5, background: c, border: "1px solid rgba(0,0,0,0.12)", cursor: "pointer", padding: 0 }} />
+            style={{ width: 20, height: 20, borderRadius: 5, background: c, border: "1px solid rgba(0,0,0,0.12)", cursor: "pointer", padding: 0, flexShrink: 0 }} />
         ))}
       </div>
       {divider}

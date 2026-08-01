@@ -7,6 +7,7 @@ import { htmlToMarkdown } from "@/app/lib/helpers";
 import { RichEditor } from "./RichEditor";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { FileLinkPreview } from "@/app/components/files/FileLinkPreview";
+import { WhiteboardLinkPreview } from "@/app/components/whiteboard/WhiteboardLinkPreview";
 // LinkPreviewPanel は TabProvider の外側(App.tsx 直下)に描画されるため、
 // useTabs() ではなくモジュールレベルのブリッジでアクティブタブを操作する。
 import { navigateInActiveTab, getActiveTabPath } from "@/app/contexts/TabContext";
@@ -224,8 +225,8 @@ export function LinkPreviewPanel() {
     setLoading(true);
     setData(null);
 
-    // ファイルは専用ビューア(FileLinkPreview)が自前で取得するのでここでは何もしない
-    if (target.type === "file") { setLoading(false); return; }
+    // ファイル/ホワイトボードは専用ビューアが自前で取得するのでここでは何もしない
+    if (target.type === "file" || target.type === "whiteboard") { setLoading(false); return; }
 
     if (target.type === "backlog") {
       supabase!.from("backlog_items").select("id, title, status, priority, description, images").eq("id", target.id).maybeSingle()
@@ -255,12 +256,14 @@ export function LinkPreviewPanel() {
   }, [target]);
 
   // ESC で閉じる
+  // ※ホワイトボードは除外。パネル内の Esc は Excalidraw の「選択解除／全画面解除」に使うため、
+  //   閉じる判定は WhiteboardLinkPreview 側（パネル外にフォーカスがある時だけ閉じる）に任せる。
   useEffect(() => {
-    if (!mounted) return;
+    if (!mounted || target?.type === "whiteboard") return;
     const h = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
-  }, [mounted, close]);
+  }, [mounted, close, target?.type]);
 
   if (!mounted) return null;
 
@@ -268,6 +271,18 @@ export function LinkPreviewPanel() {
   // 閉じても遷移しないので、直前に見ていた画面のまま戻る。
   if (target?.type === "file") {
     return <FileLinkPreview fileId={target.id} onClose={close} />;
+  }
+
+  // ホワイトボードは右半分に「操作できる本物のキャンバス」を出す（暗幕なし・専用パネル）。
+  if (target?.type === "whiteboard") {
+    return (
+      <WhiteboardLinkPreview
+        boardId={target.id}
+        elementId={target.elementId ?? null}
+        projectSlug={target.projectSlug}
+        onClose={close}
+      />
+    );
   }
 
   const typeLabel = target?.type === "backlog" ? "バックログ" : target?.type === "wiki" ? "Wiki" : "議事録";
