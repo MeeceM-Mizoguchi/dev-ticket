@@ -21,3 +21,15 @@ export function markdownToHtml(text: string): string | null {
   if (!blocks.length) return null;
   return mdBlocksToHtml(blocks);
 }
+
+/**
+ * .md ファイルの取り込み用。拡張子で Markdown だと分かっているので
+ * looksLikeMarkdown の推測は通さず必ず変換する。
+ * （記号が一つも無い素の文章でも、段落として取り込めるようにするため）
+ */
+export function markdownFileToHtml(text: string): string | null {
+  if (!text || text.length > MD_MAX_LENGTH) return null;
+  const blocks = parseMarkdown(text);
+  if (!blocks.length) return null;
+  return mdBlocksToHtml(blocks);
+}

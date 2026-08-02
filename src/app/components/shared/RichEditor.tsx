@@ -13,11 +13,12 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
 // 貼り付けた Markdown テキスト（Claude のコピーボタン等）を書式つきで取り込む
-import { markdownToHtml } from "@/app/lib/markdown";
+import { markdownToHtml, markdownFileToHtml } from "@/app/lib/markdown";
+import { useToast } from "@/app/contexts/ToastContext";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
 // 🌟 修正: ゴミ箱アイコン (Trash2) を lucide-react から追加インポート
-import { Copy, X, CheckCheck, Trash2 } from "lucide-react";
+import { Copy, X, CheckCheck, Trash2, FileUp } from "lucide-react";
 // 🌟 追加: 外部リンクを開く共通ヘルパー（ネイティブはアプリ内ブラウザ、Webは別タブ）
 import { openExternalUrl } from "@/lib/openExternal";
 // ホワイトボードのオブジェクトリンクは外部ブラウザではなく、右半分のプレビューで開く
@@ -26,6 +27,18 @@ import { parseWhiteboardLink } from "@/app/lib/whiteboardLink";
 import { requestWhiteboardFocus } from "@/app/lib/whiteboardFocusBus";
 import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+
+// ── Markdown ファイル取り込み ────────────────────────────────
+// 受け付ける拡張子。file.type は環境によって空文字や text/plain になり当てにならないため、
+// MIME ではなく拡張子で判定する（macOS/Windows/WKWebView で挙動が揃う）。
+const MD_FILE_EXTENSIONS = [".md", ".markdown", ".mdown", ".mkd", ".txt"];
+const MD_FILE_ACCEPT = MD_FILE_EXTENSIONS.join(",");
+// 解析コストと事故防止の上限。設計書クラス(数十KB)でも十分に余裕がある。
+const MD_FILE_MAX_BYTES = 2 * 1024 * 1024;
+function isMarkdownFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return MD_FILE_EXTENSIONS.some(ext => name.endsWith(ext));
+}
 
 // 🌟 BRU4-049: 表の列幅暴走(横スクロール)対策。
 //   prosemirror-tables は「先頭行のセルの colwidth」だけで表幅を決め、全列に幅があれば
@@ -695,6 +708,9 @@ export function RichEditor({
   const [mermaidModalOpen, setMermaidModalOpen] = useState(false);
   // ホワイトボードのオブジェクトリンク用。Provider の外(LP等)で使われても既定値が no-op なので安全。
   const { open: openPreviewPanel } = usePreviewPanel();
+  // Markdown ファイルの取り込み（ツールバーの「MD取込」／エディタへのドロップ）
+  const mdInputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
 
   const editor = useEditor({
     extensions: [
@@ -851,16 +867,29 @@ export function RichEditor({
         });
         return true;
       } : undefined,
-      handleDrop: onImageUpload ? (_view, event) => {
-        const files = Array.from(event.dataTransfer?.files ?? []).filter(f => f.type.startsWith("image/"));
+      // 画像ドロップに加えて、Markdown ファイルのドロップも受ける。
+      // MD 取り込みは画像アップロード先(onImageUpload)を持たないエディタでも動かしたいので、
+      // handleDrop 自体は常に登録し、中で経路を分ける。
+      handleDrop: (_view, event) => {
+        if (readOnly) return false;
+        const files = Array.from(event.dataTransfer?.files ?? []);
         if (files.length === 0) return false;
+        const mdFile = files.find(isMarkdownFile);
+        if (mdFile) {
+          event.preventDefault();
+          void importMarkdownFile(mdFile);
+          return true;
+        }
+        if (!onImageUpload) return false;
+        const imgFiles = files.filter(f => f.type.startsWith("image/"));
+        if (imgFiles.length === 0) return false;
         event.preventDefault();
-        files.forEach(async (file) => {
+        imgFiles.forEach(async (file) => {
           const url = await onImageUpload(file);
           if (url) editor?.chain().focus().setImage({ src: url }).run();
         });
         return true;
-      } : undefined,
+      },
       // 🌟 テキスト（text/plain）で貼られた Markdown を書式つきで取り込む。
       //   ProseMirror の parseFromClipboard は「text/html が無い」「Cmd+Shift+V」「コードブロック内」の
       //   ときだけテキスト経路に入り、このフックを呼ぶ（prosemirror-view: parseFromClipboard）。つまり
@@ -1177,6 +1206,37 @@ export function RichEditor({
     setMermaidModalOpen(false);
   };
 
+  // ── Markdown ファイルの取り込み ───────────────────────────────
+  // 貼り付け(clipboardTextParser)と同じ変換経路を通すので、見出し・表・リンク・
+  // コードブロック・Mermaid まで同じ結果になる。カーソル位置に挿入する（全置換はしない）。
+  const importMarkdownFile = async (file: File) => {
+    if (file.size > MD_FILE_MAX_BYTES) {
+      toast(`ファイルが大きすぎます（上限 ${Math.round(MD_FILE_MAX_BYTES / 1024 / 1024)}MB）`, "error");
+      return;
+    }
+    let text = "";
+    try {
+      text = await file.text();
+    } catch {
+      toast("ファイルを読み込めませんでした", "error");
+      return;
+    }
+    const html = markdownFileToHtml(text);
+    if (!html) {
+      toast("取り込める内容がありませんでした", "error");
+      return;
+    }
+    editor.chain().focus().insertContent(html).run();
+    toast(`「${file.name}」を取り込みました`);
+  };
+
+  const handleMdInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // 同じファイルを続けて選び直せるように値をクリアする
+    e.target.value = "";
+    if (file) void importMarkdownFile(file);
+  };
+
   const handleLinkClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest("a");
     if (!anchor) return;
@@ -1275,6 +1335,23 @@ export function RichEditor({
           <button type="button" style={btnStyle(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>"引用</button>
           <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
           <button type="button" style={btnStyle()} onClick={handleInsertTable}>表</button>
+          <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
+          <button
+            type="button"
+            style={btnStyle()}
+            onClick={() => mdInputRef.current?.click()}
+            title="Markdownファイル(.md)を取り込む。カーソル位置に書式つきで挿入されます（エディタへドラッグ＆ドロップでも可）"
+          >
+            <FileUp style={{ width: 11, height: 11, display: "inline-block", marginRight: 3, verticalAlign: "-1px" }} />
+            MD取込
+          </button>
+          <input
+            ref={mdInputRef}
+            type="file"
+            accept={MD_FILE_ACCEPT}
+            onChange={handleMdInputChange}
+            style={{ display: "none" }}
+          />
 
           {/* 🌟 修正: エディタ内に表のデータ(hasTableInContent)が存在していれば、どこを触っていてもツールバーを表示 */}
           {hasTableInContent && (
