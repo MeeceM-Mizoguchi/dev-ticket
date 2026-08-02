@@ -88,27 +88,28 @@
 
 ### 3-1. 構成図
 
+```mermaid
+flowchart TB
+    subgraph SB["Supabase（1プロジェクト）"]
+        direction TB
+        SH["共有テーブル<br/>organizations / profiles / roles<br/>plans / clients / notifications"]
+        DV["dev-ticket 専有<br/>projects / sprints / sprint_tickets<br/>wiki / minutes / whiteboards"]
+        SL["営業アプリ専有<br/>sales_deals / sales_quotes<br/>sales_activities / sales_documents"]
+    end
+    A["dv-ticket.com<br/>既存 dev-ticket<br/>Vercel Project A"]
+    B["sales.dv-ticket.com<br/>新規 営業アプリ<br/>Vercel Project B"]
+    A --> SH
+    A --> DV
+    B --> SH
+    B --> SL
+    B -. "RPC 1本のみ<br/>直接書き込み禁止" .-> DV
+    A <-. "Cookie domain=.dv-ticket.com<br/>セッション共有" .-> B
+    style SH fill:#D1FAE5,stroke:#059669
+    style DV fill:#E0E7FF,stroke:#4F46E5
+    style SL fill:#FEF3C7,stroke:#D97706
 ```
-                 ┌──────────────────────────────┐
-                 │   Supabase（1プロジェクト）    │
-                 │  auth.users / organizations   │
-                 │  profiles / roles / plans     │
-                 │  clients / notifications      │◀──共有
-                 │  ─────────────────────────    │
-                 │  projects / sprints /         │◀──dev-ticket 専有
-                 │  sprint_tickets / wiki ...    │
-                 │  ─────────────────────────    │
-                 │  sales_deals / sales_quotes / │◀──営業アプリ専有
-                 │  sales_activities ...         │
-                 └──────────────────────────────┘
-                       ▲                   ▲
-       Vercel Project A│                   │Vercel Project B
-   ┌───────────────────┴──┐          ┌─────┴────────────────────┐
-   │   dv-ticket.com      │◀────────▶│  sales.dv-ticket.com     │
-   │   （既存 dev-ticket） │ 相互リンク │  （新規 営業アプリ）       │
-   └──────────────────────┘          └──────────────────────────┘
-              └────── Cookie domain=.dv-ticket.com でセッション共有 ──────┘
-```
+
+> 図 F-01　システム全体構成
 
 ### 3-2. サブドメインの設定（費用ゼロ）
 1. Vercel で新規プロジェクト `dev-ticket-sales` を作成
@@ -228,6 +229,60 @@ update plans set feature_sales_app = true where id = 'system-unlimited';
 ## 6. データモデル
 
 命名規則: 営業固有テーブルはすべて `sales_` prefix。全テーブルに `organization_id TEXT NOT NULL`（子テーブルも非正規化して持つ＝ポリシーが単純で速い）。
+
+### 6-0. 全体像（ER 図）
+
+```mermaid
+erDiagram
+    organizations ||--o{ profiles : "所属"
+    organizations ||--o{ clients : "保有"
+    clients ||--o{ sales_contacts : "担当者"
+    clients ||--o{ sales_deals : "商談"
+    sales_pipelines ||--o{ sales_stages : "ステージ"
+    sales_stages ||--o{ sales_deals : "現在地"
+    sales_deals ||--o{ sales_activities : "活動"
+    sales_deals ||--o{ sales_quotes : "見積"
+    sales_deals ||--o{ sales_documents : "提案書"
+    sales_quotes ||--o{ sales_quote_items : "明細"
+    profiles ||--o{ sales_deals : "担当"
+    profiles ||--o{ sales_activities : "記録"
+    profiles ||--o{ sales_daily_reports : "提出"
+    profiles ||--o{ sales_targets : "目標"
+```
+
+> 図 F-08　データモデル ① 営業ドメイン
+
+dev-ticket 側とつながる面だけを抜き出すと、次のようになります。`clients` が両アプリの共有マスタ、`sales_deals` ↔ `projects` が受注で結ばれる 1:1 のリンク、`sales_quote_items` → `backlog_items` が見積工数の受け渡し経路です。
+
+```mermaid
+erDiagram
+    clients ||--o{ sales_deals : "商談"
+    clients ||--o{ projects : "案件"
+    sales_deals |o--o| projects : "受注で生成"
+    sales_quote_items }o--o{ backlog_items : "受注時に取込"
+    projects ||--o{ backlog_items : "保持"
+    projects ||--o{ sprints : "開発"
+    sprints ||--o{ sprint_tickets : "チケット"
+    clients {
+        text id PK
+        text lifecycle_stage "lead/prospect/customer"
+        uuid owner_profile_id
+    }
+    sales_deals {
+        uuid id PK
+        text status "open/won/lost"
+        numeric amount
+        text project_id FK
+    }
+    projects {
+        text id PK
+        text slug
+        text client_id FK
+        uuid deal_id FK
+    }
+```
+
+> 図 F-09　データモデル ② dev-ticket との連携面
 
 ### 6-1. `clients` の拡張（共有マスタを育てる）
 
@@ -554,6 +609,37 @@ create policy "tenant_all_sales_deals" on sales_deals for all
      - ☑ 見積明細をバックログに取り込む
 3. 実行 → 成功トースト＋「開発管理で開く ↗」ボタン（`https://dv-ticket.com/{slug}`）
 
+```mermaid
+sequenceDiagram
+    actor S as 営業担当
+    participant SA as 営業アプリ
+    participant DB as Supabase
+    participant DT as dev-ticket
+    actor PM as 開発PM
+
+    S->>SA: 商談を「受注」へ
+    SA->>S: SD-05 受注ダイアログ
+    S->>SA: 実行
+    SA->>DB: rpc convert_deal_to_project()
+    rect rgb(254, 243, 199)
+        Note over DB: 単一トランザクション
+        DB->>DB: ① 権限・重複チェック
+        DB->>DB: ② projects を作成
+        DB->>DB: ③ 既定カテゴリ3件
+        DB->>DB: ④ 見積明細→backlog_items
+        DB->>DB: ⑤ 双方向リンク
+        DB->>DB: ⑥ clients を「顧客」へ
+        DB->>DB: ⑦ PM へ通知
+    end
+    DB-->>SA: project_id
+    SA->>S: 「開発管理で開く」
+    DB-->>DT: 通知ベルに着弾
+    PM->>DT: プロジェクトを開く
+    Note over SA,DT: 失敗すれば全ロールバック
+```
+
+> 図 F-06　受注 → 開発受け渡しシーケンス
+
 ### 7-2. RPC（唯一の越境書き込み口）
 
 ```sql
@@ -654,6 +740,222 @@ RPC は単一トランザクションなので、途中で例外が出れば**�
 
 ## 8. 画面設計
 
+メイン画面 22（うちタブ 3）、モーダル 11。Phase 0〜2 に限れば メイン 12・モーダル 7 で、その過半が dev-ticket からの流用です。
+
+### 8-1. 画面マップ
+
+```mermaid
+flowchart TB
+    L["SL-01 ログイン"] --> SH["SL-03 AppShell"]
+    L --> LK["SL-04 未契約ロック"]
+    IV["SL-02 招待受諾"] --> L
+    SH --> D["SL-10 ダッシュボード"]
+    SH --> P["SL-20 商談パイプライン"]
+    D --> DT["SL-21 商談詳細"]
+    P --> DT
+    DT --> T1["SL-21a 活動記録タブ"]
+    DT --> T2["SL-21b 見積タブ"]
+    DT --> T3["SL-21c 提案書タブ"]
+    style P fill:#D1FAE5,stroke:#059669
+    style DT fill:#D1FAE5,stroke:#059669
+```
+
+> 図 F-02　画面マップ ① 認証・ホーム・商談
+
+```mermaid
+flowchart TB
+    SH["SL-03 AppShell"] --> C["SL-30 取引先一覧"]
+    SH --> A["SL-40 活動記録"]
+    SH --> Q["SL-50 見積一覧"]
+    SH --> DOC["SL-60 提案書一覧"]
+    C --> CD["SL-31 取引先詳細"]
+    CD --> DT["SL-21 商談詳細"]
+    A --> R["SL-41 訪問日報"]
+    Q --> QE["SL-51 見積エディタ"]
+    DOC --> DE["SL-61 提案書エディタ"]
+    CD -. "読取専用" .-> PJ["dev-ticket の<br/>プロジェクト一覧"]
+    style PJ fill:#E0E7FF,stroke:#4F46E5
+```
+
+> 図 F-03　画面マップ ② 取引先・活動・見積・提案
+
+```mermaid
+flowchart TB
+    SH["SL-03 AppShell"] --> RP["SL-70 売上予測・分析"]
+    SH --> M["SL-80 メンバー管理"]
+    M --> S1["SL-81 パイプライン設定"]
+    M --> S2["SL-82 マスタ設定"]
+    M --> S3["SL-83 自社情報・見積設定"]
+    M --> S4["SL-84 売上目標設定"]
+    RP --> RT["① 月次予実<br/>② ファネル<br/>③ 担当者別<br/>④ 失注理由<br/>⑤ リードソース"]
+```
+
+> 図 F-04　画面マップ ③ 分析・設定
+
+### 8-2. 画面一覧（詳細）
+
+#### 認証・共通
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-01 | `/login` | ログイン | メール＋パスワード／生体認証。dev-ticket でログイン済みなら Cookie SSO で**素通り** | 0 |
+| SL-02 | `/accept-invite` | 招待受諾 | 招待メールからのパスワード設定。`profiles` 共有なので API 共用 | 0 |
+| SL-03 | （全画面共通） | AppShell | サイドバー／トップバー（通知ベル・検索・**開発管理へ ↗**・ユーザーメニュー） | 0 |
+| SL-04 | `/locked` | 未契約ロック | `plans.feature_sales_app = false` の組織に表示。問い合わせ導線 | 0 |
+
+#### ダッシュボード
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-10 | `/dashboard` | 営業ダッシュボード | 今月の着地見込み（加重）／目標達成率／**自分の次アクション**（期日順）／期日超過商談／ステージ別件数／最近の活動 | 1→5 |
+
+#### 商談（アプリの中心）
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-20 | `/deals` | 商談パイプライン | **カンバン**（ステージ列 × 商談カード、DnD でステージ移動）／リスト表示切替／担当者・期間・金額フィルタ | 1 |
+| SL-21 | `/deals/:id` | 商談詳細 | 左＝概要・取引先・金額・確度・ステージ履歴・次アクション／右＝タブ切替 | 1 |
+| SL-21a | `/deals/:id` | └ 活動記録タブ | この商談の活動を時系列表示＋その場で追加 | 1 |
+| SL-21b | `/deals/:id/quotes` | └ 見積タブ | 見積のバージョン一覧・ステータス | 3 |
+| SL-21c | `/deals/:id/docs` | └ 提案書タブ | 提案書一覧 | 4 |
+
+#### 取引先
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-30 | `/clients` | 取引先一覧 | 見込み客／商談中／顧客／取引終了をタブ分け。`clients.lifecycle_stage` で切替 | 1 |
+| SL-31 | `/clients/:id` | 取引先詳細 | 企業情報／担当者一覧／商談履歴／活動履歴／**dev-ticket のプロジェクト一覧（読取専用・進捗つき）** | 1（PJ 表示は 2） |
+
+#### 活動記録・日報
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-40 | `/activities` | 活動記録 | カレンダー／リスト切替。**当日入力を最短動線に**（モバイル前提） | 1 |
+| SL-41 | `/activities/report` | 訪問日報 | 日付選択 → その日の活動が自動で並ぶ＋所感入力＋提出 | 5 |
+
+#### 見積・提案書
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-50 | `/quotes` | 見積一覧 | 商談横断。ステータス（下書き／承認待ち／送付済／受注／失注）でフィルタ | 3 |
+| SL-51 | `/quotes/:id` | 見積エディタ | 明細行の追加・並べ替え・小計自動計算／税・端数設定／**工数(h) 列**／改訂・PDF 出力 | 3 |
+| SL-60 | `/documents` | 提案書一覧 | 商談横断。テンプレから新規作成 | 4 |
+| SL-61 | `/documents/:id` | 提案書エディタ | RichEditor。PDF／Word／Excel 出力 | 4 |
+
+#### 分析・設定
+
+| ID | ルート | 画面名 | 主な内容 | Phase |
+|----|--------|--------|----------|-------|
+| SL-70 | `/reports` | 売上予測・分析 | タブ＝① 月次予実 ② ステージ別ファネル ③ 担当者別実績 ④ 失注理由内訳 ⑤ リードソース別 | 5 |
+| SL-80 | `/members` | メンバー管理 | 営業メンバー招待・ロール割当。`profiles` 共有なので**dev-ticket 側と同じ人が並ぶ** | 0 |
+| SL-81 | `/settings/pipeline` | パイプライン設定 | ステージの追加・並べ替え・確度・受注/失注の指定 | 1 |
+| SL-82 | `/settings/masters` | マスタ設定 | 失注理由／流入経路／活動種別 | 1 |
+| SL-83 | `/settings/company` | 自社情報・見積設定 | 社名・住所・インボイス番号・ロゴ・角印・振込先・見積番号採番・既定税率・支払条件 | 3 |
+| SL-84 | `/settings/targets` | 売上目標設定 | 月次 × 全社／担当者別 | 5 |
+
+### 8-3. モーダル・ダイアログ一覧
+
+| ID | 名称 | 呼び出し元 | 主な内容 | Phase |
+|----|------|-----------|----------|-------|
+| SD-01 | 商談 新規作成／編集 | SL-20, SL-31 | 取引先・タイトル・担当者・金額・確度・受注予定日・流入経路 | 1 |
+| SD-02 | 取引先 新規作成／編集 | SL-30, SD-01 | 企業情報＋ライフサイクル段階 | 1 |
+| SD-03 | 担当者（コンタクト）追加／編集 | SL-31 | 氏名・役職・連絡先・主担当フラグ | 1 |
+| SD-04 | 活動記録 入力 | SL-40, SL-21a | 種別・日時・所要時間・本文（RichEditor）・画像・次アクション | 1 |
+| **SD-05** | **受注ダイアログ** | SL-20, SL-21 | 受注日・最終金額／☑ **開発プロジェクトを作成**（名称・スラッグ・WBS プレフィックス・期間・PM）／☑ 見積明細をバックログへ取込 | **2** |
+| SD-06 | 失注ダイアログ | SL-20, SL-21 | 失注理由（マスタ選択）・補足メモ | 1 |
+| SD-07 | 見積 改訂確認 | SL-51 | 現行版を保存して version+1 の新版を作る | 3 |
+| SD-08 | 見積 PDF プレビュー | SL-51 | 出力前の確認＋ダウンロード | 3 |
+| SD-09 | 提案書 テンプレ選択 | SL-60 | テンプレ一覧から複製起票 | 4 |
+| SD-10 | メンバー招待 | SL-80 | メール招待。[api/invite.ts](../api/invite.ts) 共用 | 0 |
+| SD-11 | 削除確認 | 各所 | 既存 [ConfirmDialog](../src/app/components/shared/ConfirmDialog.tsx) 流用 | 0 |
+
+### 8-4. 主要動線（問い合わせ → 受注）
+
+```mermaid
+flowchart TB
+    subgraph R1[" "]
+        direction LR
+        A["問い合わせ<br/>紹介"] --> B["SD-02<br/>取引先を登録<br/>段階=見込み客"] --> C["SD-01<br/>商談を作成"]
+    end
+    subgraph R2[" "]
+        direction LR
+        D["SL-20<br/>パイプラインに並ぶ"] --> E["SD-04<br/>訪問・活動を記録"] --> F["SL-61<br/>提案書を作成"]
+    end
+    subgraph R3[" "]
+        direction LR
+        G["SL-51<br/>見積を作成<br/>明細に工数h"] --> H{"結果は?"}
+    end
+    R1 --> R2 --> R3
+    H -->|受注| I["SD-05<br/>受注ダイアログ"]
+    H -->|失注| J["SD-06<br/>失注ダイアログ<br/>理由を記録"]
+    I --> K["convert_deal_to_project<br/>RPC 1トランザクション"]
+    K --> L["dev-ticket に<br/>プロジェクト自動生成"]
+    K --> M["見積明細 →<br/>バックログに取込"]
+    style I fill:#FEF3C7,stroke:#D97706
+    style K fill:#FEF3C7,stroke:#D97706,stroke-width:3px
+    style L fill:#D1FAE5,stroke:#059669
+    style M fill:#D1FAE5,stroke:#059669
+```
+
+> 図 F-05　主要動線
+
+### 8-5. 商談のステータス遷移
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open
+    state Open {
+        direction TB
+        s1: 初回接触 10%
+        s2: ヒアリング 25%
+        s3: 提案 45%
+        s4: 見積提出 65%
+        s5: クロージング 85%
+        s1 --> s2
+        s2 --> s3
+        s3 --> s4
+        s4 --> s5
+        s5 --> s4
+        s4 --> s3
+    }
+    Open --> Won: SD-05 受注
+    Open --> Lost: SD-06 失注
+    state Won {
+        w1: 受注 100%
+        w2: プロジェクト作成済
+        w1 --> w2: RPC 実行
+    }
+    state Lost {
+        l1: 失注 0%
+        l2: 理由を記録
+        l1 --> l2
+    }
+    Lost --> Open: 再アプローチ
+    Won --> [*]
+```
+
+> 図 F-07　商談のステータス遷移
+
+確度（%）は `sales_stages.probability` の既定値で、商談ごとに上書きできます。ダッシュボードの「加重着地見込み」は `sales_deals.amount × probability` の合計です。
+
+### 8-6. dev-ticket からの流用マップ
+
+| 営業アプリ画面 | 流用元 | 流用度 |
+|---------------|--------|--------|
+| SL-01 ログイン | [LoginPage.tsx](../src/app/pages/LoginPage.tsx) | ほぼそのまま |
+| SL-02 招待受諾 | [AcceptInvitePage.tsx](../src/app/pages/AcceptInvitePage.tsx) ＋ [api/invite.ts](../api/invite.ts) | ほぼそのまま |
+| SL-03 AppShell | [layout/](../src/app/components/layout/) | 色とメニュー項目だけ差替 |
+| SL-20 パイプライン | [ProjectBoard.tsx](../src/app/components/projects/ProjectBoard.tsx)（react-dnd） | 構造流用・中身は新規 |
+| SL-30/31 取引先 | [ClientsPage.tsx](../src/app/pages/ClientsPage.tsx) | 一覧は流用・詳細は新規 |
+| SL-40 活動記録 | [MinutesPage.tsx](../src/app/pages/MinutesPage.tsx)（議事録） | 構造がほぼ同じ |
+| SL-51 見積エディタ | 新規（明細表は自前） | 低 |
+| SL-61 提案書 | [RichEditor.tsx](../src/app/components/shared/RichEditor.tsx) ＋ [articleExport/](../src/app/lib/articleExport/) | **ほぼそのまま／出力機能も込み** |
+| SL-70 分析 | [ReportsPage.tsx](../src/app/pages/ReportsPage.tsx)（recharts） | グラフ部品流用 |
+| SL-80 メンバー | [MembersPage.tsx](../src/app/pages/MembersPage.tsx) | ほぼそのまま |
+| SD-05 受注ダイアログ | [NewProjectDialog.tsx](../src/app/components/projects/NewProjectDialog.tsx)（スラッグ自動生成） | ロジック移植 |
+
+### 8-7. ルート早見表
+
 | ルート | 画面 | 主な内容 |
 |--------|------|----------|
 | `/dashboard` | ダッシュボード | 今月の着地見込み（加重）／目標達成率／自分の次アクション（期日順）／期日超過商談／最近の活動／ステージ別件数 |
@@ -669,7 +971,9 @@ RPC は単一トランザクションなので、途中で例外が出れば**�
 | `/settings` | 設定 | パイプライン・ステージ定義／失注理由／自社情報・見積テンプレ／目標設定 |
 | `/login` `/accept-invite` | 認証 | dev-ticket から移植（招待は同じ `profiles` に入るので API も共用） |
 
-**見た目**: dev-ticket と同一のデザイントークン（プライマリ `#059669`、フォント、角丸、影）を使い、**サイドバーのアクセントカラーだけ変える**（例: 営業＝ティール `#0D9488`）ことで「姉妹アプリだが別のアプリ」だと一目でわかるようにします。
+### 8-8. 見た目
+
+dev-ticket と同一のデザイントークン（プライマリ `#059669`、フォント、角丸、影）を使い、**サイドバーのアクセントカラーだけ変える**（例: 営業＝ティール `#0D9488`）ことで「姉妹アプリだが別のアプリ」だと一目でわかるようにします。
 
 ---
 
@@ -689,6 +993,24 @@ RPC は単一トランザクションなので、途中で例外が出れば**�
 ---
 
 ## 10. 段階的リリース計画
+
+```mermaid
+flowchart LR
+    P0["Phase 0<br/>基盤<br/>―――<br/>Vercel/ドメイン<br/>Cookie SSO<br/>AppShell 移植<br/>プランゲート"]
+    P1["Phase 1 ⭐<br/>営業の芯<br/>―――<br/>取引先・担当者<br/>商談パイプライン<br/>活動記録<br/>ステージ設定"]
+    P2["Phase 2 ⭐<br/>受け渡し<br/>―――<br/>変換RPC<br/>受注ダイアログ<br/>相互リンク"]
+    P3["Phase 3<br/>見積<br/>―――<br/>明細エディタ<br/>見積PDF<br/>→バックログ"]
+    P4["Phase 4<br/>提案書<br/>―――<br/>RichEditor<br/>PDF/Word出力"]
+    P5["Phase 5<br/>分析<br/>―――<br/>ダッシュボード<br/>予測・ファネル<br/>日報・目標"]
+    P6["Phase 6<br/>外販<br/>―――<br/>営業アプリLP<br/>iPad/Macアプリ<br/>自動リード化"]
+    P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6
+    P2 -.-> G["🎯 コンセプト図の<br/>課題が解消"]
+    style P1 fill:#D1FAE5,stroke:#059669,stroke-width:3px
+    style P2 fill:#FEF3C7,stroke:#D97706,stroke-width:3px
+    style G fill:#FEF3C7,stroke:#D97706,stroke-width:3px
+```
+
+> 図 F-10　Phase ロードマップ
 
 | Phase | 内容 | 完成時に何ができるか |
 |-------|------|---------------------|
