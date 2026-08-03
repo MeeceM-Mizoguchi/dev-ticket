@@ -2,7 +2,7 @@
 
 > 対象: Markdown/テキスト資料を取り込み、**言葉が一致しなくても該当箇所を引ける**検索を提供する新機能
 > 位置づけ: 既存の wiki / チケット / ファイルボックスとは**独立した箱**。既存テーブルには一切触れない
-> ステータス: 設計確定待ち（実装未着手）
+> ステータス: 実装済み（画面名は「ナレッジノート」。§1-2 参照）
 > 作成日: 2026-08-02
 
 ---
@@ -115,7 +115,7 @@ DDL は `supabase/add_knowledge_folders.sql`。
 |-------------|------|
 | **LLM による回答生成** | dev-ticket の「AI API を機能に組み込まない」方針。対話はするが、返すのは**資料の原文**であって生成した文章ではない（§1-2） |
 | **複数箇所の統合・要約・言い換え** | 抽出型QAの原理的な限界。「つまり？」「3行でまとめて」には答えられない |
-| **ブラウザ内 LLM での生成** | 初回 2〜5GB のDLが必要で iPad では動かない。埋め込みモデル（約110MB）とは規模が2桁違う |
+| **ブラウザ内 LLM での生成** | 初回 2〜5GB のDLが必要で iPad では動かない。埋め込みモデル（約266MB）とは規模が1桁違う |
 | **PDF / Word / Excel の取り込み** | 本文抽出の難易度が跳ね上がる（レイアウト崩れ・スキャンPDF）。まず Markdown で体験を固める |
 | **wiki / チケットの索引** | ①の決定どおり。構造だけ残す |
 | **OCR・画像内テキスト** | 費用対効果が合わない |
@@ -128,19 +128,19 @@ DDL は `supabase/add_knowledge_folders.sql`。
 flowchart TB
     subgraph BROWSER["ブラウザ / ネイティブアプリ"]
         UI["ナレッジAI画面<br/>/:projectSlug/knowledge"]
-        WORKER["Web Worker<br/>埋め込みモデル<br/>multilingual-e5-small"]
+        WORKER["Web Worker<br/>埋め込みモデル<br/>multilingual-e5-base"]
         UI <--> WORKER
     end
 
     subgraph SB["Supabase（既存プロジェクト）"]
         DOC["knowledge_documents<br/>原文をそのまま保持"]
-        CHUNK["knowledge_chunks<br/>本文断片 + vector(384)"]
+        CHUNK["knowledge_chunks<br/>本文断片 + vector(768)"]
         RPC["RPC knowledge_search()<br/>ベクトル + キーワードの合成"]
         DOC --> CHUNK
         CHUNK --> RPC
     end
 
-    MODEL["モデルファイル<br/>Supabase Storage<br/>約110MB・初回のみ"]
+    MODEL["モデルファイル<br/>Supabase Storage<br/>約266MB・初回のみ"]
 
     UI -->|"① .md を投入"| DOC
     WORKER -->|"② 断片ごとのベクトル"| CHUNK
@@ -203,7 +203,7 @@ create table if not exists knowledge_chunks (
   content       text not null,                     -- 断片本文
   char_start    int  not null default 0,           -- 原文内の開始位置（ハイライト用）
   char_end      int  not null default 0,
-  embedding     vector(384),                       -- multilingual-e5-small の次元数
+  embedding     vector(768),                       -- multilingual-e5-base の次元数
   created_at    timestamptz not null default now()
 );
 
@@ -276,7 +276,7 @@ sequenceDiagram
     Note over UI,DB: ここまでで「全文検索は効く」状態になる
 
     UI->>W: chunk 本文をまとめて渡す
-    Note over W: 初回のみモデルDL（約110MB）
+    Note over W: 初回のみモデルDL（約266MB）
     loop 100件ずつ
         W->>W: ベクトル化
         W-->>UI: 進捗（n/total）
@@ -314,13 +314,22 @@ Markdown の構造を活かして切ります。単純な文字数分割は文�
 
 | 項目 | 内容 |
 |------|------|
-| モデル | `multilingual-e5-small`（ONNX 量子化版） |
-| 次元数 | 384 |
-| サイズ | 約 110MB（初回のみDL、以後ブラウザにキャッシュ） |
+| モデル | `multilingual-e5-base`（ONNX 量子化版 q8） |
+| 次元数 | 768 |
+| サイズ | 約 266MB（初回のみDL、以後ブラウザにキャッシュ） |
 | 実行 | transformers.js。WebGPU が使えれば GPU、無ければ WASM にフォールバック |
 | 日本語 | 多言語モデルのため対応。日本語専用モデルより軽く、実用十分 |
 
-**LLM（2〜5GB）とは規模が2桁違う**点が重要です。110MB なら初回数十秒で済み、iPad のメモリにも収まります。
+**LLM（2〜5GB）とは規模が1桁違う**点が重要です。266MB なら初回数十秒で済み、iPad のメモリにも収まります。
+
+当初は `multilingual-e5-small`（384次元・110MB）を採用していましたが、**日本語の技術文書で意味を捉えられず差し替えました**。同じ資料・同じ質問で比較した実測値は次のとおりです。
+
+| 質問 | small（384） | base（768） |
+|------|--------------|-------------|
+| データベース | 2位に「11. リスクと対策」（無関係）。スコアの幅 3.6pt | 1位「6. データモデル」2位「6-0. 全体像（ER図）」。幅 5.8pt |
+| DB | 1位「3-1. 構成図」（無関係） | 1位「6-0. 全体像（ER図）」 |
+
+量子化の変更（q8 → fp32）でも、見出しパスの与え方を変えても改善しませんでした。**モデルの表現力そのものが不足**していたということです。代償は初回ダウンロードが 110MB → 266MB に増えること。移行手順は `supabase/add_knowledge_embedding_768.sql` にあります。
 
 ### 6-2. 実装上の必須事項
 
@@ -341,7 +350,7 @@ const query = `query: ${userInput}`;
 Hugging Face の CDN を直接叩くと、社内ファイアウォールや将来の CSP 強化で落ちる可能性があります。
 **Supabase Storage の公開バケット（`models`）に置いて自前配信**します。
 
-- バージョンをパスに含める（`models/e5-small-v1/...`）
+- バージョンをパスに含める（`models/e5-base-v1/...`）
 - モデルを差し替えたら `embedding_model` 列で判定し、**全チャンクの再索引**が必要になる（§11 参照）
 
 ---
@@ -353,56 +362,19 @@ Hugging Face の CDN を直接叩くと、社内ファイアウォールや将�
 ベクトル検索だけでは、**固有名詞や識別子に弱い**という既知の弱点があります（「BRU10-043」「convert_deal_to_project」など）。
 キーワード検索と合成します。
 
-```sql
-create or replace function knowledge_search(
-  p_project_id text,
-  p_query_vec  vector(384),
-  p_query_text text,
-  p_limit      int default 20
-)
-returns table (
-  chunk_id     uuid,
-  document_id  uuid,
-  title        text,
-  heading_path text,
-  content      text,
-  char_start   int,
-  char_end     int,
-  score        float
-)
-language sql stable security definer as $$
-  with vec as (
-    select c.id, 1 - (c.embedding <=> p_query_vec) as s
-    from knowledge_chunks c
-    where c.project_id = p_project_id and c.embedding is not null
-    order by c.embedding <=> p_query_vec
-    limit 50
-  ),
-  kw as (
-    select c.id, similarity(c.content, p_query_text) as s
-    from knowledge_chunks c
-    where c.project_id = p_project_id and c.content ilike '%' || p_query_text || '%'
-    limit 50
-  ),
-  merged as (
-    select id, sum(w) as score from (
-      select id, s * 0.7 as w from vec
-      union all
-      select id, s * 0.3 as w from kw
-    ) t group by id
-  )
-  select c.id, c.document_id, d.title, c.heading_path, c.content,
-         c.char_start, c.char_end, m.score
-  from merged m
-  join knowledge_chunks c on c.id = m.id
-  join knowledge_documents d on d.id = c.document_id
-  where can_access_project(c.project_id)
-  order by m.score desc
-  limit p_limit;
-$$;
+実装は `supabase/add_knowledge_ai.sql` にあり、その後 `add_knowledge_search_v2.sql`（件数上限の撤廃）、`add_knowledge_embedding_768.sql`（768次元化）で置き換えています。RPC は意味スコア（`vec_score`）と語句スコア（`kw_score`）を**別々に返す**のが要点です。画面はこれを2つのタブに振り分けます。
+
+```
+knowledge_search(p_project_id, p_query_text, p_query_vec, p_limit, p_vec_weight, p_document_ids, p_min_vec)
+  → chunk_id, document_id, title, heading_path, content, char_start, char_end,
+    score, vec_score, kw_score
 ```
 
-重み `0.7 / 0.3` は初期値です。使ってみて調整できるよう、**設定値として外に出しておく**か、少なくとも1箇所にまとめます。
+**件数で切らない。** 語句検索は「一致するかどうか」が明確なので全件返します。意味検索は全断片が何らかの距離を持つため、件数ではなく関連度で切ります。当初は上限30件にしていましたが、「なぜ30件までなのか」に答えられる根拠が無く、実際に取りこぼしが起きました。
+
+**しきい値は絶対値ではなく相対値。** e5 の余弦類似度は値域が圧縮されていて、無関係な日本語同士でも 0.70〜0.78 が出ます。そのため「0.78以上」のような固定値では実質何も切れず、全断片が関連ありと判定されて本文が丸ごと塗られました。**その検索の最高スコアからの差**（`SEMANTIC_MARGIN = 0.03`）で切ります。クエリごとにスコアの絶対値が変わるため、語ごとの調整が不要になります。
+
+重み `0.7 / 0.3` は初期値で、RPC の引数として外に出しています。
 
 ### 7-2. 結果の見せ方
 
@@ -478,7 +450,7 @@ alter table plans add column if not exists max_knowledge_docs_per_project int;
 |---|-------|------|---------------|
 | ① | **iPad / WKWebView で transformers.js が動くか** | 動かなければネイティブ版で意味検索が使えない | **実装前に実機で最小検証する**（最大の未知数）。WASM フォールバックで動く見込みだが速度は要実測 |
 | ② | Supabase で `vector` / `pg_trgm` 拡張が有効化できるか | 設計の土台が崩れる | ダッシュボードの Extensions で確認。pgvector は標準搭載の認識だが**未確認** |
-| ③ | 初回 110MB のDL体験 | 「重いアプリ」という印象 | ナレッジAI画面を開いた時点で先読み開始。検索を押した瞬間から待たせない |
+| ③ | 初回 266MB のDL体験 | 「重いアプリ」という印象 | ナレッジAI画面を開いた時点で先読み開始。検索を押した瞬間から待たせない |
 | ④ | モデル差し替え時の全再索引 | 資料が増えるほど再計算が重い | `embedding_model` 列で世代管理。再索引はバックグラウンドで逐次実行 |
 | ⑤ | `projects.members` の実データ形式 | RLS が正しく効かない | §4-4 のとおり実装前に確認 |
 | ⑥ | 日本語の trigram 検索精度 | キーワード側が弱い | pg_bigm 等が使えるか併せて確認。使えなければベクトル比重を上げる |

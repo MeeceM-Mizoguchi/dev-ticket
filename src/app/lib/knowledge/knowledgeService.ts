@@ -49,6 +49,24 @@ export function isSetupMissingError(e: unknown): boolean {
   return touchesKnowledge && looksMissing;
 }
 
+/**
+ * DBから返る英語メッセージを、次に何をすべきかが分かる日本語に置き換える。
+ *
+ * SQL を4本すべて実行していない状態は、テーブルが無いのとは違って
+ * 404 にならず「次元が違う」「関数が違う」という形で表面化する。
+ * 生のメッセージのままだと、SQLの実行漏れだと気づけない。
+ */
+export function explainKnowledgeError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("dimension")) {
+    return "埋め込みの次元が合っていません。supabase/add_knowledge_embedding_768.sql を実行してください";
+  }
+  if (m.includes("vec_score") || m.includes("kw_score")) {
+    return "検索の関数が古いままです。supabase/add_knowledge_search_v2.sql を実行してください";
+  }
+  return message;
+}
+
 function requireClient() {
   if (!isSupabaseEnabled || !supabase) throw new Error("Supabase が未設定です");
   return supabase;
@@ -314,7 +332,7 @@ export async function indexDocument(
     .eq("document_id", doc.id)
     .is("embedding", null)
     .order("seq");
-  if (error) return { indexed: false, note: error.message };
+  if (error) return { indexed: false, note: explainKnowledgeError(error.message) };
 
   const rows = (data ?? []) as any[];
   if (rows.length === 0) {
@@ -343,7 +361,7 @@ export async function indexDocument(
     notify({ phase: "done", done: rows.length, total: rows.length });
     return { indexed: true };
   } catch (e) {
-    const note = e instanceof Error ? e.message : String(e);
+    const note = explainKnowledgeError(e instanceof Error ? e.message : String(e));
     notify({ phase: "error", message: note });
     return { indexed: false, note };
   }
@@ -401,7 +419,7 @@ export async function search(
     p_document_ids: opts.documentIds && opts.documentIds.length > 0 ? opts.documentIds : null,
     p_min_vec: opts.minVec ?? 0.78,
   });
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(explainKnowledgeError(error.message));
 
   return {
     hits: (data ?? []).map(mapKnowledgeHit),

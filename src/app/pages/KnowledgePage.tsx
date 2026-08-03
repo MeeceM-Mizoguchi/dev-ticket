@@ -726,15 +726,24 @@ export function KnowledgePage() {
             <div style={{ fontSize: 15, fontWeight: 800, color: "#1A1714" }}>ナレッジノートの初期設定が完了していません</div>
           </div>
           <p style={{ fontSize: 13, color: "#6B6458", lineHeight: 1.8, marginBottom: 14 }}>
-            この機能が使うテーブルがデータベースに作成されていません。<br />
-            Supabase の <strong>SQL Editor</strong> で、次の2つを順に実行してください。
+            この機能が使うテーブル・関数がデータベースに作成されていません。<br />
+            Supabase の <strong>SQL Editor</strong> で、次の4つを<strong>この順に</strong>実行してください。
           </p>
-          <code style={{ display: "block", background: "#F6F8FA", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginBottom: 6 }}>
-            supabase/add_knowledge_ai.sql
-          </code>
-          <code style={{ display: "block", background: "#F6F8FA", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8, padding: "10px 14px", fontSize: 12.5, marginBottom: 14 }}>
-            supabase/add_knowledge_folders.sql
-          </code>
+          {/* 途中まで実行して止まると原因が分かりにくいので、4本すべてを並べる。
+              1本でも欠けると「検索できない」「索引が作れない」の形で表面化する */}
+          {[
+            { file: "supabase/add_knowledge_ai.sql", note: "テーブル・RLS・検索の土台" },
+            { file: "supabase/add_knowledge_folders.sql", note: "フォルダ" },
+            { file: "supabase/add_knowledge_search_v2.sql", note: "検索結果の件数上限を撤廃" },
+            { file: "supabase/add_knowledge_embedding_768.sql", note: "埋め込みを768次元へ" },
+          ].map(({ file, note }, i) => (
+            <div key={file} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <span style={{ width: 18, height: 18, flexShrink: 0, borderRadius: "50%", background: "#FEF3C7", color: "#92400E", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{i + 1}</span>
+              <code style={{ flex: 1, background: "#F6F8FA", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8, padding: "9px 12px", fontSize: 12.5 }}>{file}</code>
+              <span style={{ fontSize: 11, color: "#A09790", flexShrink: 0 }}>{note}</span>
+            </div>
+          ))}
+          <div style={{ height: 8 }} />
           <p style={{ fontSize: 12, color: "#A09790", lineHeight: 1.8 }}>
             1つめは <code>vector</code> と <code>pg_trgm</code> 拡張の有効化から始まります。<br />
             拡張の作成でエラーになる場合は、先に Database → Extensions で両方を有効化してください。
