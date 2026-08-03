@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import zlib
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 # ★ recommendCore.ts の FEATURE_NAMES と同じ順序
@@ -47,16 +47,52 @@ PRIORITY_NUM = {"low": 1, "medium": 2, "high": 3}
 # （組織が10年使っても学習データが数万行に収まるようにするための上限）
 NEGATIVES_PER_TICKET = 6
 
+# 納期は「その日のうち(JST)に終わっていればセーフ」で判定する。
+# ★ここを変えたら api/ml/recommend.ts と api/ml/analyze-skills.ts の同名ロジックも合わせること★
+#   （学習と推論で納期遵守率の定義がズレると、静かに精度が落ちる）
+JST = timezone(timedelta(hours=9))
+# 期限超過を何日まで見逃すか。0 = due_date 当日中(JST)に終わっていればオンタイム。
+ON_TIME_GRACE_DAYS = 0
+
 
 def parse_ts(v: Any) -> datetime | None:
+    """日時文字列を「必ずタイムゾーン付き」の datetime にする。
+
+    ★ここで必ず aware に揃える★
+      sprint_tickets の日時列はほぼ timestamptz だが、due_date だけは date 型で、
+      PostgREST は "2026-08-15" というオフセットの無い文字列を返す。
+      これをそのまま fromisoformat すると naive になり、timestamptz 由来の
+      aware な日時と比較した瞬間に
+      「can't compare offset-naive and offset-aware datetimes」で落ちる。
+      （実際にこれで夜間バッチの②モデル学習が全組織falseになった）
+
+      オフセットが無いものは UTC とみなす。これは JS の new Date("2026-08-15") と
+      同じ解釈で、推論側(api/ml/*.ts)との挙動を一致させるためでもある。
+    """
     if not v:
         return None
     if isinstance(v, datetime):
         return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
     try:
-        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     except ValueError:
         return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def due_deadline(v: Any) -> datetime | None:
+    """due_date(日付) → 「これを過ぎたら遅延」という時刻(JST基準)。
+
+    due_date は date 型で時刻を持たない。ユーザーが画面で入力しているのは JST の暦日なので、
+    「その日の 24:00 JST」を期限とする（＝翌日 00:00 JST 未満ならオンタイム）。
+    """
+    if not v:
+        return None
+    try:
+        d = date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+    return datetime(d.year, d.month, d.day, tzinfo=JST) + timedelta(days=1 + ON_TIME_GRACE_DAYS)
 
 
 def actual_hours(t: dict) -> float:
@@ -86,13 +122,13 @@ def completed_at(t: dict) -> datetime | None:
 
 
 def is_on_time(t: dict) -> bool:
-    due = parse_ts(t.get("due_date"))
-    if not due:
-        return True
+    deadline = due_deadline(t.get("due_date"))
+    if not deadline:
+        return True   # 期限が無いものは減点しない
     end = completed_at(t)
     if not end:
         return True
-    return end <= due + timedelta(days=1)
+    return end < deadline
 
 
 def outcome_label(t: dict) -> int:

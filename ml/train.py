@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from datetime import datetime, timedelta, timezone
 
 import lightgbm as lgb
@@ -455,6 +456,21 @@ def record_train_phase(sb: Client, batch_id: str, trigger: str, org_id: str, r: 
         print(f"[warn] 学習ログを記録できませんでした ({org_id}): {e}", file=sys.stderr)
 
 
+def error_location(e: BaseException) -> str:
+    """例外が起きた場所を "features.py:95 is_on_time" の形で1行にする。
+
+    ★型と場所を必ず残す★
+      学習ログには例外メッセージしか出ていなかったため、
+      「can't compare offset-naive and offset-aware datetimes」とだけ表示され、
+      どのファイルのどの行で落ちたのかを画面から追えなかった。
+    """
+    frames = traceback.extract_tb(e.__traceback__)
+    if not frames:
+        return "場所不明"
+    fr = frames[-1]
+    return f"{os.path.basename(fr.filename)}:{fr.lineno} {fr.name}()"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--org", help="この組織だけ学習する")
@@ -473,23 +489,47 @@ def main() -> None:
         org_ids = [o["id"] for o in sb.table("organizations").select("id").execute().data]
 
     trained = 0
+    failures: list[dict] = []
     for org_id in org_ids:
         try:
             r = train_org(sb, org_id, args.force)
-        except Exception as e:  # 1組織の失敗で全体を止めない
-            r = {"org": org_id, "trained": False, "error": f"モデル学習でエラーが発生しました: {e}"}
+        except Exception as e:  # 1組織の失敗で全体を止めない（が、最後に必ず赤で落とす）
+            # 原因調査用にスタックトレース全文を Actions のログへ
+            traceback.print_exc()
+            r = {
+                "org": org_id,
+                "trained": False,
+                "error": f"モデル学習でエラーが発生しました: {type(e).__name__}: {e}"
+                         f"（{error_location(e)}）",
+            }
         if r.get("trained"):
             trained += 1
+        if r.get("error"):
+            failures.append(r)
         print(json.dumps(r, ensure_ascii=False))
         record_train_phase(sb, batch_id, trigger, org_id, r)
 
-    print(f"\n=== {len(org_ids)}組織中 {trained}組織を学習しました ===")
+    skipped = len(org_ids) - trained - len(failures)
+    print(f"\n=== {len(org_ids)}組織中 学習{trained} / スキップ{skipped} / 失敗{len(failures)} ===")
 
     # ワークフローの実行サマリ（ログを開かなくても結果が分かるように）
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
         with open(step_summary, "a", encoding="utf-8") as f:
-            f.write(f"\n### ② モデル学習\n\n{len(org_ids)}組織中 **{trained}組織**を学習しました。\n")
+            f.write(
+                f"\n### ② モデル学習\n\n"
+                f"{len(org_ids)}組織中 **学習 {trained} / スキップ {skipped} / 失敗 {len(failures)}**\n"
+            )
+            for r in failures:
+                f.write(f"\n- ❌ `{r['org']}` … {r['error']}\n")
+
+    # ★1組織でも落ちたらワークフローを赤にする★
+    #   組織ごとに例外を握って exit 0 のままだったため、全組織が
+    #   「can't compare offset-naive and offset-aware datetimes」で失敗していた夜も
+    #   Actions は緑で、学習ログを開くまで誰も気付けなかった。
+    if failures:
+        print(f"::error::{len(failures)}組織でモデル学習に失敗しました", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
