@@ -14,7 +14,7 @@ import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
 import { healEscapedBoundText } from "@/app/lib/whiteboardBoundText";
 import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
-import { isHistoryGestureActive } from "@/app/lib/whiteboardHistory";
+import { isHistoryGestureActive, noteGestureTouched } from "@/app/lib/whiteboardHistory";
 import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
@@ -141,9 +141,11 @@ const CLEAN_DEFAULTS = {
  *   ユーザー操作そのもの（書式パネル・図形追加・折れ点ドラッグの確定など）は
  *   呼び出し側で明示的に IMMEDIATELY を渡し、1操作＝1undo ステップにする。
  *
- * ※ NEVER でもドラッグ中の要素が undo 不能になることはない。Excalidraw 側の
- *   filterUncomittedElements が「ローカルで未コミットの変更を持つ要素」をスナップショット更新
- *   から自動的に除外するため、ユーザーが操作中の要素は元の値のまま保たれる。
+ * ※【BRU10-044・訂正】Excalidraw 側の filterUncomittedElements は「操作中の要素を守ってくれる」
+ *   ものではない。守るどころか、シーンの version がスナップショットより先行している要素を
+ *   **記録対象から丸ごと差し戻す**ため、自前オーバーレイのドラッグは確定の IMMEDIATELY を
+ *   投げても1ステップも履歴に残らなかった（＝ドラッグ直後の Ctrl+Z が効かない）。
+ *   対策は commitSceneToHistory 側の2段階確定。詳細は whiteboardHistory の説明を参照。
  */
 function guardApi(api: any): any {
   if (!api || api.__wbGuarded) return api;
@@ -210,9 +212,24 @@ function guardApi(api: any): any {
     // ただし自前オーバーレイのドラッグ中だけは EVENTUALLY にする。NEVER でスナップショットを
     // 進めてしまうと、離した時の IMMEDIATELY が差分ゼロになり“そのドラッグが undo できない”。
     // 保留へ積む前に正規化しておく（集約で他の呼び出しの captureUpdate を引き継がないようにする）。
+    const gesture = isHistoryGestureActive();
     const data = raw && raw.captureUpdate === undefined
-      ? { ...raw, captureUpdate: isHistoryGestureActive() ? CaptureUpdateAction.EVENTUALLY : CaptureUpdateAction.NEVER }
+      ? { ...raw, captureUpdate: gesture ? CaptureUpdateAction.EVENTUALLY : CaptureUpdateAction.NEVER }
       : raw;
+    // 【BRU10-044】ドラッグ中に書き換えた要素を控える。確定時にこの要素だけ version を巻き戻して
+    // Excalidraw の filterUncomittedElements（＝未コミット扱いで記録対象から外す関門）を通す。
+    // これが無いと自前オーバーレイのドラッグは1ステップも履歴に残らない（詳細は whiteboardHistory）。
+    // 判定は versionNonce の変化。rAFへ保留される更新も「呼ばれた時点」で数えるためここで行う。
+    if (gesture && data?.elements) {
+      try {
+        const cur = new Map<string, number>(
+          ((api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements()) as any[])
+            .map((e) => [e.id, e.versionNonce]));
+        const ids = (data.elements as any[])
+          .filter((e) => cur.get(e.id) !== e.versionNonce).map((e) => e.id);
+        if (ids.length) noteGestureTouched(ids);
+      } catch { /* noop */ }
+    }
     if (deferring) {
       // onChange(commitフェーズ)内の更新は rAF へ集約（elements/appState を last-write-wins）
       pending = pending ? { ...pending, ...data } : data;

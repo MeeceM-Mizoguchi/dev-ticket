@@ -121,9 +121,13 @@ scene 座標をそのまま `x, y, points` へ書き戻す（[whiteboardAutoConn
 グループを回した瞬間に矢印だけ明後日の方向へ飛ぶ。
 
 そこで、コネクタは各点を scene 座標へ展開 → `C` まわりに `delta` 回転 → 先頭点を新しい `x,y` にして
-相対化し、`width/height` を取り直す。angle は 0 のまま据え置く。
-図形側は angle で回り、コネクタの端点はアンカーから再導出されるので**両者の結果が一致し**、
-追従パスと綱引きにならない（＝ジッタしない）。
+相対化し、`width/height` を取り直す。angle は 0 のまま据え置く。手で打った折れ点
+（`customData.wbVias`・始点相対のベクトル）も同じ角度だけ回す。
+
+選択中のコネクタは `followTriangleConnections` の追従対象から外れる
+（[whiteboardAutoConnect.ts:688](../src/app/lib/whiteboardAutoConnect.ts#L688)）ため、ドラッグ中は
+こちらの剛体回転が唯一の書き手になり綱引きが起きない。そして選択を外した後の追従は
+`triStart/triEnd`（bbox比率のアンカー＋図形の angle）から再導出されるので、剛体回転した結果と一致する。
 
 - `angle !== 0` のコネクタ（通常発生しない）は保険として angle 回転へフォールバックする。
 - `normalizeBraces` は「変形中」を本体の appState フラグで判定しており、自前オーバーレイのドラッグ中は
@@ -143,6 +147,47 @@ scene 座標をそのまま `x, y, points` へ書き戻す（[whiteboardAutoConn
 ---
 
 ## 5. 履歴・共同編集
+
+### 5.1 【追記】ドラッグが1ステップも undo できなかった件（実装中に判明）
+
+回した直後の Ctrl+Z / Cmd+Z が効かない、という報告から判明した**別の既存バグ**。回転に限らず
+自前オーバーレイのドラッグ（表の列幅・括弧の先端・折れ点）すべてが同じ穴に落ちていた。
+
+原因は Excalidraw の **公開 API の `updateScene` だけ**が履歴記録の直前に通す
+`filterUncomittedElements`（`chunk-4FTI6OG3.js:16812`）。
+
+```js
+for (const [id, prevElement] of 現在のシーン) {
+  const snap = store.snapshot.elements.get(id);
+  if (snap.version < prevElement.version) next.set(id, snap); // ← 記録対象から差し戻す
+}
+```
+
+「シーンの version がスナップショットより先＝ローカルで編集中（未コミット）なので、
+リモート反映のついでに確定してはいけない」という共同編集向けの安全弁で、見ているのは
+**渡した配列ではなく“現在のシーン”の version**。
+
+ドラッグ中の中間フレームは version を上げながら EVENTUALLY で書く（＝スナップショットは進めない）
+ので、離した時点で必ず「シーンの version > スナップショットの version」になる。つまり確定の
+IMMEDIATELY を投げても触った要素が丸ごと差し戻され、**差分ゼロ＝履歴エントリが作られない**。
+ユーザーから見ると「ドラッグ直後の Ctrl+Z は無反応。別の操作を1回はさんでから Ctrl+Z すると
+その操作もろとも戻る」という挙動になる。Excalidraw 本体のドラッグはこの関門を通らない
+`store.commit` 経由で記録しているため無傷で、自前オーバーレイだけが踏む穴だった。
+
+**対策（`commitSceneToHistory` の2段階確定）**
+
+1. ドラッグで触った要素の `version` をシーン上でいったん `1` まで下げる（`EVENTUALLY`＝
+   スナップショットには触らない）。これで「未コミット」判定が外れる
+2. 改めて `version` を「元の値＋1」にした配列を `IMMEDIATELY` で渡す → 差分が1エントリ記録される
+
+②で version を上げ直すのは Yjs への配信条件（`syncFromExcalidraw` の version/versionNonce 比較）を
+満たすため。①の `1` のままにすると、他メンバーが持つ古い版のほうが新しいと判定されて回転が
+巻き戻る。
+
+どの要素を触ったかは `guardApi` が `noteGestureTouched` で控える（versionNonce の変化で判定）。
+オーバーレイ側の書き込みは全て `api.updateScene` を通るので、4つのオーバーレイすべてが同時に直る。
+
+
 
 既存の作法をそのまま踏襲する（BRU7-058）。
 
@@ -188,6 +233,8 @@ scene 座標をそのまま `x, y, points` へ書き戻す（[whiteboardAutoConn
 ## 8. 既知の制限（意図的に残すもの）
 
 - 折れ矢印そのものは回らない（Excalidraw 本体と同じ）。未接続の折れ矢印はグループ回転で取り残される
+- 折れ点つきコネクタ（`wbFolded`）は、選択を外した後の追従で**世界軸の直交ルート**へ引き直される。
+  直交ルートは定義上 x/y 軸に沿うため、斜めに回した状態を保てない（回転角ぶん折れ点は移動する）
 - 表・フレームを含む選択はグループ回転できない（本体の回転つまみでも同様に壊れるため、
   むしろゾーンを出さないことで事故を防いでいる）
 - グループの選択枠自体は回らず軸平行のまま（本体仕様。Figma と同じにするには本体改修が必要）
