@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -229,6 +229,9 @@ function parseSprintSegment(segment: string): { sprintIdentifier: string; ticket
 export function SprintDetailPage() {
   const { projectSlug, segment = "" } = useParams<{ projectSlug: string; segment?: string }>();
   const { sprintIdentifier, ticketWbs } = parseSprintSegment(segment);
+  // ?anchor=comment:<id> / ?anchor=description（コメントリンク・メンション通知・全文検索からの着地）
+  const [searchParams] = useSearchParams();
+  const anchor = searchParams.get("anchor") ?? undefined;
   const navigate = useNavigate();
   const { toast } = useToast();
   const { showAlert } = useAlert();
@@ -824,6 +827,7 @@ export function SprintDetailPage() {
         sprintId={sprint?.id}
         sprintSlug={sprint?.identifier || undefined}
         projectSlug={projectSlug}
+        anchor={anchor}
         onClose={() => {
           const wbs = selectedTicket?.wbs ?? null;
           if (wbs) {

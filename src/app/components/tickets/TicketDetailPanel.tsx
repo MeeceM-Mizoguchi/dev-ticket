@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
-import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
+import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
@@ -8,6 +8,7 @@ import { fetchSkills } from "@/app/lib/skillsApi";
 import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
+import { buildCommentAnchor, buildCommentLink, parseCommentAnchor } from "@/app/lib/commentLink";
 import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
 import { calcHoldHours, HOLD_START_MARKER, HOLD_END_MARKER } from "@/app/lib/holdHours";
 import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
@@ -136,6 +137,85 @@ function pointToComment(targetEl: HTMLElement) {
   void box.offsetWidth;
   box.classList.add("comment-ring-pulse");
   window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
+}
+
+// コメント右端の三点リーダーメニュー（BRU10-049）。現時点の項目は「リンクをコピー」のみ。
+// 開閉状態はこのコンポーネントが持つ。他の ⋯ を押した時点で前のメニューには
+// 「外側 mousedown」が届くので、同時に複数開くことはない。
+function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
+  projectSlug: string; wbs: string; commentId: string; onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    // Esc は escStack を使う。escStack は capture かつ先に登録済みなので、
+    // 自前の keydown を足すとパネル本体のEscハンドラが先に走って閉じてしまう。
+    const closeOnEsc = () => setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    escStack.push(closeOnEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      escStack.pop(closeOnEsc);
+    };
+  }, [open]);
+
+  const handleCopy = async () => {
+    const url = buildCommentLink(projectSlug, wbs, commentId);
+    if (!url) {
+      setOpen(false);
+      onError("共有URLの設定(VITE_PUBLIC_APP_ORIGIN)がないためリンクを作れません");
+      return;
+    }
+    if (await copyText(url)) {
+      setOpen(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      setOpen(false);
+      onError("クリップボードへのコピーに失敗しました");
+    }
+  };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", display: "flex" }}>
+      {copied && (
+        <div style={{
+          position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)", background: "#1E293B", color: "#fff", fontSize: 12, padding: "4px 8px", borderRadius: 6, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 9999,
+        }}>
+          コピーしました！
+          <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "#1E293B" }} />
+        </div>
+      )}
+      <button onClick={() => setOpen(o => !o)}
+        style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: open ? "#0284C7" : "#D5D0CB" }}
+        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
+        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = open ? "#0284C7" : "#D5D0CB"; }}
+        title="その他">
+        <MoreHorizontal style={{ width: 11, height: 11 }} />
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", right: 0, minWidth: 150, padding: 4,
+          background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 60,
+        }}>
+          <button onClick={handleCopy}
+            style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 9px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+            <Link2 style={{ width: 12, height: 12, color: "#0284C7" }} />
+            リンクをコピー
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // 子チケットの実績工数バッジ（BRU5-028）。0Hのときは自前ツールチップで理由を表示する。
@@ -831,12 +911,13 @@ export function TicketDetailPanel({
 
   useEffect(() => {
     if (!anchor || anchor === anchorScrolledRef.current) return;
-    const targetId = anchor.startsWith("comment:")
-      ? `panel-comment-${anchor.slice(8)}`
-      : "panel-description-section";
-    const el = document.getElementById(targetId);
+    const commentId = parseCommentAnchor(anchor);
+    const el = document.getElementById(commentId ? `panel-comment-${commentId}` : "panel-description-section");
     if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      // コメント指定のときは返信元ジャンプと同じ挙動（スクロール＋枠線パルス）にして、
+      // リンクで飛んできたときにどのコメントが対象か分かるようにする。
+      if (commentId) pointToComment(el);
+      else el.scrollIntoView({ behavior: "smooth", block: "start" });
       anchorScrolledRef.current = anchor;
     }
   }, [anchor, comments.length, ticket?.id]); // eslint-disable-line
@@ -1357,7 +1438,7 @@ export function TicketDetailPanel({
       if (error) { console.error("comment insert failed:", error); return; }
       await loadCommentFiles(ticket.id);
       emitMine(); // 他タブの同一チケットへコメント追加/ステータス変更を即時反映
-      await notifyMentions(content, ticket, `comment:${row.id}`);
+      await notifyMentions(content, ticket, buildCommentAnchor(row.id));
     } else {
       setComments(prev => [...prev, { ...row, ticketId: ticket.id, userName, ticketStatus: ts, commentType: type, createdAt: new Date().toISOString() }]);
     }
@@ -1377,7 +1458,7 @@ export function TicketDetailPanel({
       if (error) { console.error("reply insert failed:", error); return; }
       await loadCommentFiles(ticket.id);
       emitMine(); // 他タブの同一チケットへ返信を即時反映
-      await notifyMentions(content, ticket, `comment:${id}`);
+      await notifyMentions(content, ticket, buildCommentAnchor(id));
       if (parentComment.userName !== userName && projectSlug) {
         supabase!.from("notifications").insert({
           user_name: parentComment.userName, type: "comment",
@@ -3192,6 +3273,9 @@ export function TicketDetailPanel({
                                 title="返信">
                                 <CornerDownRight style={{ width: 11, height: 11 }} />
                               </button>
+                              {projectSlug && ticket.wbs && (
+                                <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} onError={showAlert} />
+                              )}
                             </div>
                           </div>
                           {editingId === c.id ? (
@@ -3284,6 +3368,9 @@ export function TicketDetailPanel({
                                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#D5D0CB"; }}>
                                         <Trash2 style={{ width: 11, height: 11 }} />
                                       </button>
+                                    )}
+                                    {projectSlug && ticket.wbs && (
+                                      <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} onError={showAlert} />
                                     )}
                                   </div>
                                 </div>
@@ -3515,6 +3602,9 @@ export function TicketDetailPanel({
                               title="返信">
                               <CornerDownRight style={{ width: 11, height: 11 }} />
                             </button>
+                            {projectSlug && ticket.wbs && (
+                              <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} onError={showAlert} />
+                            )}
                           </div>
                         </div>
 
@@ -3625,6 +3715,9 @@ export function TicketDetailPanel({
                                     title="返信">
                                     <CornerDownRight style={{ width: 11, height: 11 }} />
                                   </button>
+                                  {projectSlug && ticket.wbs && (
+                                    <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} onError={showAlert} />
+                                  )}
                                 </div>
                               </div>
                               {editingId === reply.id ? (
