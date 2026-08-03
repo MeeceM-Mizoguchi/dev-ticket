@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useRef, type ReactNode } from "react";
+import { createContext, useContext, useState, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { CheckCircle2, AlertTriangle, Bell } from "lucide-react";
 
 type ToastKind = "success" | "error" | "info";
@@ -12,7 +12,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [leaving, setLeaving] = useState<Set<number>>(new Set());
   const nextId = useRef(0);
 
-  const toast = (msg: string, kind: ToastKind = "success") => {
+  // 🌟 identity を固定する。
+  //   以前は毎レンダーで toast と context value を作り直していたため、
+  //   toast を useEffect / useCallback の依存に入れている箇所（FileBoxPage・WikiPage 等）で
+  //   「toast を出す → Provider 再レンダー → 依存が変化 → 再実行 → また toast」の
+  //   無限ループを起こし得た（ナレッジノート画面で実際に発生）。
+  //   setItems / setLeaving / nextId はいずれも安定なので、依存は空で問題ない。
+  const toast = useCallback((msg: string, kind: ToastKind = "success") => {
     const id = ++nextId.current;
     setItems(p => [...p, { id, msg, kind }]);
     setTimeout(() => {
@@ -22,7 +28,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         setLeaving(p => { const s = new Set(p); s.delete(id); return s; });
       }, 380);
     }, 4620);
-  };
+  }, []);
+
+  const ctxValue = useMemo(() => ({ toast }), [toast]);
 
   const styleMap: Record<ToastKind, { bg: string; border: string; icon: ReactNode }> = {
     success: { bg: "#ECFDF5", border: "#059669", icon: <CheckCircle2 style={{ width: 16, height: 16, color: "#059669", flexShrink: 0 }} /> },
@@ -31,7 +39,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <ToastContext.Provider value={{ toast }}>
+    <ToastContext.Provider value={ctxValue}>
       {children}
       <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, display: "flex", flexDirection: "column", gap: 10, pointerEvents: "none" }}>
         {items.map(t => {

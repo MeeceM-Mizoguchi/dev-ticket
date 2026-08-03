@@ -4,5 +4,10 @@ allowBuilds:
   '@tailwindcss/oxide': true
   core-js: true
   esbuild: true
+  # ナレッジAI で入れた @huggingface/transformers の Node 向け依存。
+  # 埋め込みはブラウザ(WebGPU/WASM)で動かすため、ネイティブビルドは不要。
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: false
 patchedDependencies:
   '@excalidraw/excalidraw@0.18.1': patches/@excalidraw__excalidraw@0.18.1.patch
