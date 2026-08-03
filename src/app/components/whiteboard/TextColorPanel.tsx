@@ -19,7 +19,10 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CustomColorSwatch, Swatch, swatchRow } from "./ColorSwatch";
 import { IndentField } from "./IndentField";
+import { CellAlignField } from "./CellAlignField";
 import { isPlainTextBox } from "@/app/lib/whiteboardTextBoxBg";
+import { commonCellFmt, type WbTextFmt } from "@/app/lib/whiteboardCellFormat";
+import { isTableCell } from "@/app/lib/whiteboardTable";
 import { TEXT_COLORS, boundTextOf, canHaveLabel, readLabelColor, readTextColor, setTextColor } from "@/app/lib/whiteboardTextColor";
 
 interface Props {
@@ -37,6 +40,7 @@ export const HIDE_NATIVE_STROKE = `
 
 // 対象: 実際に色を書き込む要素id群 / 現在色 / 標準「線」を隠すか / 既定色(currentItemStrokeColor)も更新するか
 // indentText / indentIds はインデント欄（BRU9-040）用。揃えの判定に使うテキスト要素と、書き換え対象。
+// cellIds / cellFmt は表セルの配置欄（BRU10-054-1）用。文字がまだ無い表セルだけを選んでいる時に入る。
 interface Target {
   ids: string[];
   colors: string[];
@@ -44,8 +48,10 @@ interface Target {
   currentItem: boolean;
   indentText: any | null;
   indentIds: string[];
+  cellIds: string[];
+  cellFmt: WbTextFmt;
 }
-const NO_TARGET: Target = { ids: [], colors: [], hideStroke: false, currentItem: false, indentText: null, indentIds: [] };
+const NO_TARGET: Target = { ids: [], colors: [], hideStroke: false, currentItem: false, indentText: null, indentIds: [], cellIds: [], cellFmt: {} };
 
 /**
  * 「背景」セクション（＝標準パネルの2つ目のカラーピッカー）の直後を差し込み位置として返す。
@@ -85,6 +91,7 @@ function collectTargets(api: any, appState: any): Target {
       currentItem: plain,  // 入力中の見た目を即座に切り替えるため（標準の「線」と同じ振る舞い）
       indentText: editing,
       indentIds: [editing.id],
+      cellIds: [], cellFmt: {},
     };
   }
 
@@ -111,23 +118,31 @@ function collectTargets(api: any, appState: any): Target {
       const t = isPlainTextBox(e) ? e : boundTextOf(e, byId);
       if (t) { indentText = t; break; }
     }
+    // 表セル（BRU10-054-1）: 選んだのが表セルだけ、かつどのセルにも文字が無いときは、Excalidraw が
+    // 「文字の配置」の節そのものを描かない（選択の中にテキスト要素が1つも無いため）。
+    // ＝作りたての表では列を選んで先に左寄せにしておけない。この時だけ自前の配置欄を出す。
+    const cells = picked.filter(isTableCell);
+    const emptyCells = cells.length === picked.length && picked.every((e) => !boundTextOf(e, byId));
     // テキストボックスだけを選んでいる時は、標準の「線」＝文字色なので隠す
     return {
       ids, colors, hideStroke: picked.every(isPlainTextBox), currentItem: false,
       indentText, indentIds: indentText ? picked.map((e) => e.id) : [],
+      cellIds: emptyCells ? cells.map((e) => e.id) : [],
+      cellFmt: emptyCells ? commonCellFmt(cells) : {},
     };
   }
 
   // 3. テキストツール選択中（まだ何も無い）: これから作るテキストの色を決める
   if (appState.activeTool?.type === "text") {
-    return { ids: [], colors: [appState.currentItemStrokeColor], hideStroke: true, currentItem: true, indentText: null, indentIds: [] };
+    return { ids: [], colors: [appState.currentItemStrokeColor], hideStroke: true, currentItem: true, indentText: null, indentIds: [], cellIds: [], cellFmt: {} };
   }
   return NO_TARGET;
 }
 
 export function TextColorPanel({ api, containerRef, canEdit }: Props) {
   const [target, setTarget] = useState<
-    { ids: string[]; color: string | undefined; hideStroke: boolean; currentItem: boolean; indentText: any | null; indentIds: string[] } | null
+    { ids: string[]; color: string | undefined; hideStroke: boolean; currentItem: boolean; indentText: any | null; indentIds: string[];
+      cellIds: string[]; cellFmt: WbTextFmt } | null
   >(null);
   const mountRef = useRef<HTMLDivElement | null>(null); // 標準パネルへ差し込む実ノード
   const raf = useRef<number>(0);
@@ -153,7 +168,7 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
         // 新規描画/リサイズ/範囲選択中はパネルを出さない（操作の邪魔をしない）。
         // テキスト入力中は逆に出す（入力しながら色を変えられるように・collectTargets が担当）。
         const interacting = !!(st.newElement || st.resizingElement || st.selectionElement);
-        const { ids, colors, hideStroke, currentItem, indentText, indentIds } = interacting ? NO_TARGET : collectTargets(api, st);
+        const { ids, colors, hideStroke, currentItem, indentText, indentIds, cellIds, cellFmt } = interacting ? NO_TARGET : collectTargets(api, st);
 
         if (colors.length && mount) {
           const host = containerRef.current?.querySelector(".App-menu__left .panelColumn") as HTMLElement | null;
@@ -164,12 +179,14 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
             else if (!mount.parentNode) host.appendChild(mount); // 万一アンカーが取れない時のフォールバック
           }
           // textAlign も署名に入れる: 揃えを変えた瞬間にインデント欄の活性/非活性を切り替えるため
-          const sig = `${ids.join(",")}:${colors.join(",")}:${hideStroke}:${!!anchor}:${!!host}:${indentText?.id}:${indentText?.textAlign}`;
+          // 表セルの配置欄は選択セルと記録内容が変わったら描き直す
+          const sig = `${ids.join(",")}:${colors.join(",")}:${hideStroke}:${!!anchor}:${!!host}:${indentText?.id}:${indentText?.textAlign}`
+            + `:${cellIds.length}:${cellFmt.textAlign}:${cellFmt.verticalAlign}`;
           if (sig !== sigRef.current) {
             sigRef.current = sig;
             // 複数選択で色が混在している時はどのスウォッチも光らせない（クリックで一括統一される）
             const uniq = new Set(colors);
-            setTarget({ ids, color: uniq.size === 1 ? [...uniq][0] : undefined, hideStroke, currentItem, indentText, indentIds });
+            setTarget({ ids, color: uniq.size === 1 ? [...uniq][0] : undefined, hideStroke, currentItem, indentText, indentIds, cellIds, cellFmt });
           }
         } else if (sigRef.current !== "") {
           sigRef.current = "";
@@ -185,7 +202,7 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
 
   if (!target || !mountRef.current) return null;
 
-  const { ids, color, hideStroke, currentItem, indentText, indentIds } = target;
+  const { ids, color, hideStroke, currentItem, indentText, indentIds, cellIds, cellFmt } = target;
   const isCustom = !!color && !TEXT_COLORS.includes(color);
   const apply = (c: string) => setTextColor(api, ids, c, currentItem);
 
@@ -200,6 +217,7 @@ export function TextColorPanel({ api, containerRef, canEdit }: Props) {
         </div>
       </fieldset>
       <IndentField api={api} text={indentText} ids={indentIds} />
+      <CellAlignField api={api} ids={cellIds} fmt={cellFmt} />
     </>,
     mountRef.current,
   );

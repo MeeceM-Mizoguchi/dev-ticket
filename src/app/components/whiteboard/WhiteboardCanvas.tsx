@@ -13,9 +13,10 @@ import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
 import { syncFrameDecorRects } from "@/app/lib/whiteboardFrameBg";
 import { healEscapedBoundText } from "@/app/lib/whiteboardBoundText";
 import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
+import { pinCellTextFormat, placeEditingCellText, seedNewCellText } from "@/app/lib/whiteboardCellFormat";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
 import { isHistoryGestureActive, noteGestureTouched } from "@/app/lib/whiteboardHistory";
-import { reflowTables, freezeSelectedTable } from "@/app/lib/whiteboardTable";
+import { reflowTables, freezeSelectedTable, isPartialTableCellSelection } from "@/app/lib/whiteboardTable";
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
@@ -660,6 +661,30 @@ export default function WhiteboardCanvas({
     };
   }, [api, instanceKey, showToast]);
 
+  // 表のセルを Delete/Backspace で消せないようにする（BRU10-054-1 追補）。
+  // セルは普通の矩形なので、列を選んで削除キーを押すとその矩形だけが消えて表が歯抜けになる。
+  // 行/列の削除（TableRowColControls）と違って残りのセルは詰められず、崩れたまま直せない。
+  // 一部のセルだけを選んでいるときは黙って握り潰す（行・列の削除ボタンから消してもらう）。
+  // 表を丸ごと選んでいるとき（クリック1回のグループ選択）は意図が明確なので従来どおり消せる。
+  useEffect(() => {
+    if (!api || !canEdit) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return;
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return; // 入力欄は素通し
+      if (containerRef.current?.querySelector(".excalidraw-wysiwyg")) return;                      // 文字編集中も素通し
+      try {
+        if (!isPartialTableCellSelection(api)) return;
+      } catch { return; }
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // Excalidraw の削除はバブル段階で処理されるため、window のキャプチャ段階で先に握る
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [api, canEdit, instanceKey]);
+
   // ── 書式つき貼り付け（ブラウザで選択コピー / Claude のコピーボタン 等） ──
   // Excalidraw は text/html を一切見ず、text/plain を「1個のテキスト要素」にするだけなので、
   // どちらの経路でも表・見出しがただの文字列になる。そこで
@@ -810,8 +835,17 @@ export default function WhiteboardCanvas({
       // 2枚目のキャンバス（リンクプレビュー）で編集中のテキストを、自分の盤面の編集と
       // 誤認して再レイアウトしないよう、アクティブなインスタンスだけが回す。
       if (!isActiveWbInstance(instanceKey)) return;
+      // 生まれたてのセルラベルへ、そのセルに記録された書式・文字色を着せる（BRU10-054-1）。
+      // 列を選んで左寄せ等にしても空セルには適用先が無く、あとから入力すると中央・既定色で
+      // 生まれてしまうため。再レイアウトの前に着せる（揃え・サイズが行高/列幅に効くため）。
+      // 編集していない間は内部で「判定済み」の記憶を畳むので、毎フレーム呼んで良い。
+      try { seedNewCellText(api); } catch { /* noop */ }
       if (containerRef.current?.querySelector(".excalidraw-wysiwyg")) {
         try { reflowTables(api, false); } catch { /* noop */ }
+        // 編集中のラベルを揃えどおりの位置へ置き直す（BRU10-054-1）。エディタの箱はテキスト要素の
+        // x で置かれるため、これが無いと「入力中は中央、確定した瞬間に左へ飛ぶ」になる。
+        // 編集中セルの特定は reflowTables が解決した値を使うので、必ずその後で呼ぶ。
+        try { placeEditingCellText(api); } catch { /* noop */ }
         // 素の図形のラベル編集中も、改行の増減にライブで高さを追従させる（BRU6-011）。
         try { reflowBoundTextShapes(api, false); } catch { /* noop */ }
       }
@@ -1026,7 +1060,10 @@ export default function WhiteboardCanvas({
           const frameUpdated = syncFrameDecorRects(api, appState, remote);
           const bgUpdated = frameUpdated || syncTextBoxBgRects(api, appState, remote);
           const textPinned = frameUpdated || bgUpdated || pinBoundTextColor(api, remote, appState);
-          if (!frameUpdated && !bgUpdated && !textPinned) healEscapedBoundText(api, remote, appState);
+          // 表セルのラベル書式の記録・伝播（BRU10-054-1）。選択したまま書式を変えた瞬間だけ、
+          // その項目を選択中の全セル（まだ文字が無いセルを含む）へ配る。
+          const cellFmtPinned = textPinned || pinCellTextFormat(api, remote, appState);
+          if (!frameUpdated && !bgUpdated && !textPinned && !cellFmtPinned) healEscapedBoundText(api, remote, appState);
         }
         // 表（BRU5-042）の再レイアウト。移動/リサイズ/テキスト編集中とリモート反映中は避け、
         // 操作確定後に整える。編集や列幅変更が終わるたびに行高・列幅を内容へフィットさせ、隙間なく
