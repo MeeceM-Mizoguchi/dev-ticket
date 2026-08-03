@@ -401,6 +401,12 @@ export function TicketDetailPanel({
 
   const [isEditingActualHours, setIsEditingActualHours] = useState(false); // 実績の打ち直し（修正モード）フラグ
 
+  // 子チケットの実績工数（かかった時間）の手直し。
+  // 子は完了時に「着手→完了の稼働時間」を自動計測するだけで（BRU5-028）、あとから直す手段が無かった。
+  // 実測が実態と合わない（着手を押し忘れた・別作業を挟んだ 等）ケースがあるため手入力できるようにする。
+  const [editChildHours, setEditChildHours] = useState(false);
+  const [childHoursInput, setChildHoursInput] = useState("");
+
   // レビューフロー アコーディオン
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
 
@@ -758,6 +764,7 @@ export function TicketDetailPanel({
     setIsOperationVerified(ticket.isOperationVerified ?? false);
     setShowCompletionOverlay(false);
     setShowHoursInputMode(ticket.status === "waiting-release" && (ticket.actualWorkHours == null));
+    setEditChildHours(false);
     setPrefixes(ticket.prefixes ?? []);
     setShowPrefixInput(false);
     setPrefixInputValue("");
@@ -2748,6 +2755,64 @@ export function TicketDetailPanel({
                   {estimatedH === 0 && <span style={{ fontSize: 11, color: "#C9C4BB", marginLeft: 8 }}>（開始日・終了日を入力すると自動計算されます）</span>}
                 </div>
               </div>
+
+              {/* 実績工数（子チケット）。完了時の自動計測（着手→完了の稼働時間・BRU5-028）を手で直せるようにする。
+                  着手を押し忘れた／別作業を挟んだ等で実測が実態と合わないことがあるため。
+                  手入力を消すと自動計測の値に戻る（actual_work_hours = null）。 */}
+              {ticket.parentId && (() => {
+                const autoH = Math.round(calcTicketActualHours({ ...ticket, actualWorkHours: null }) * 10) / 10;
+                const shownH = actualWorkHours ?? autoH;
+                const isManual = actualWorkHours != null;
+                // 空欄で保存 → null（自動計測へ戻す）。数値以外は無視する。
+                const commit = () => {
+                  const raw = childHoursInput.trim();
+                  const n = raw === "" ? null : Math.max(0, Math.round(Number(raw) * 10) / 10);
+                  if (n != null && !Number.isFinite(n)) return;
+                  setActualWorkHours(n);
+                  setEditChildHours(false);
+                  void save({ actual_work_hours: n });
+                };
+                return (
+                  <div>
+                    <label className={labelCls}>実績工数（かかった時間）</label>
+                    <div style={{ background: "#F4F5F6", borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {editChildHours ? (
+                        <>
+                          <input
+                            type="number" min={0} step={0.1} autoFocus
+                            value={childHoursInput}
+                            onChange={e => setChildHoursInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditChildHours(false); }}
+                            style={{ width: 90, padding: "6px 8px", fontSize: 14, fontWeight: 700, color: "#1A1714", background: "#FFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, fontFamily: "var(--font-mono)" }}
+                          />
+                          <button onClick={commit}
+                            style={{ padding: "6px 14px", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer", background: "#059669", color: "#FFF" }}>
+                            保存
+                          </button>
+                          <button onClick={() => setEditChildHours(false)}
+                            style={{ padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", cursor: "pointer", background: "#FFF", color: "#6B6458" }}>
+                            キャンセル
+                          </button>
+                          <span style={{ fontSize: 11, color: "#B0A9A4" }}>空欄で保存すると自動計測に戻ります</span>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{shownH}</span>
+                          <span style={{ fontSize: 13, color: "#6B6458", marginLeft: -4 }}>h</span>
+                          <span style={{ fontSize: 11, color: "#B0A9A4" }}>
+                            {isManual ? "手入力" : shownH > 0 ? "着手→完了から自動計測" : "着手開始から1分未満の場合は計測されません"}
+                          </span>
+                          <button
+                            onClick={() => { setChildHoursInput(String(shownH)); setEditChildHours(true); }}
+                            style={{ marginLeft: "auto", padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(5,150,105,0.30)", cursor: "pointer", background: "#ECFDF5", color: "#059669" }}>
+                            修正
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 起票者 | 起票日 */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>

@@ -52,6 +52,29 @@ export function selectedTableId(api: any): string | null {
   return tids.size === 1 ? [...tids][0] : null;
 }
 
+/**
+ * 選択が「表のセルを含み、かつ表を丸ごと消す選択ではない」か（BRU10-054-1 追補）。
+ *
+ * セルは普通の rectangle なので、列を選んで Delete/Backspace を押すとその矩形だけが消え、
+ * 表が歯抜けになる（行/列の削除と違って残りのセルは詰められないので、崩れたまま直せない）。
+ * そこで**一部のセルだけを選んでいるときは削除キーを無効化**し、行・列の削除ボタンへ誘導する。
+ * 表を丸ごと（その表の全セルを）選んでいる場合は「表を消したい」意図が明確なので従来どおり消せる。
+ */
+export function isPartialTableCellSelection(api: any): boolean {
+  const sel = api.getAppState?.()?.selectedElementIds ?? {};
+  const total = new Map<string, number>(); // tid -> セル総数
+  const on = new Map<string, number>();    // tid -> 選択されているセル数
+  for (const e of api.getSceneElements() as any[]) {
+    const m = cellMeta(e);
+    if (!m) continue;
+    total.set(m.tid, (total.get(m.tid) ?? 0) + 1);
+    if (sel[e.id]) on.set(m.tid, (on.get(m.tid) ?? 0) + 1);
+  }
+  if (!on.size) return false;                                        // 表のセルは選ばれていない
+  for (const [tid, n] of on) if (n < (total.get(tid) ?? 0)) return true; // 一部だけ選択 → 阻止
+  return false;                                                      // どの表も丸ごと選択 → 許可
+}
+
 // 指定 tid の格子（grid[r][c]=セル要素）と寸法を取り出す。整合が取れなければ null。
 export function tableGrid(elements: readonly any[], tid: string) {
   const cells = elements.filter((e) => { const m = cellMeta(e); return m && m.tid === tid; });
@@ -305,6 +328,8 @@ export function selectedTableRange(api: any, focused: { tid: string; r: number; 
 }
 
 // テンプレセル（見た目の継承元）から空セルを1つ生成する。列幅/行高の手動値は carry で引き継ぐ。
+// ラベルの書式（wbTextFmt・BRU10-054-1）と文字色（wbTextColor・BRU7-056-2）も引き継ぐ。
+// これが無いと、左寄せ／文字色を決めた列に行や列を足したとき、増えたセルだけ既定の中央・既定色に戻る。
 function makeCellFrom(tmpl: any, tid: string, r: number, c: number, carry: { cw?: number; rh?: number }): any {
   const [el] = convertToExcalidrawElements([{
     type: "rectangle",
@@ -314,7 +339,11 @@ function makeCellFrom(tmpl: any, tid: string, r: number, c: number, carry: { cw?
   }] as any) as any[];
   el.roundness = null; el.roughness = 0; el.fillStyle = "solid";       // 角あり・直線罫線
   el.groupIds = tmpl?.groupIds ? [...tmpl.groupIds] : [tid];           // 同一グループへ（一体で移動/削除）
-  el.customData = { ...(el.customData ?? {}), wbTable: { tid, r, c, ...carry } };
+  const inherit: Record<string, any> = {};
+  const fmt = tmpl?.customData?.wbTextFmt;
+  if (fmt && typeof fmt === "object") inherit.wbTextFmt = { ...fmt };
+  if (typeof tmpl?.customData?.wbTextColor === "string") inherit.wbTextColor = tmpl.customData.wbTextColor;
+  el.customData = { ...(el.customData ?? {}), ...inherit, wbTable: { tid, r, c, ...carry } };
   return el;
 }
 
@@ -589,6 +618,11 @@ export function reflowTables(api: any, skip: boolean): boolean {
           // 編集中セル: テキストは Excalidraw(エディタ)管理なので触らない。ただし高さは Excalidraw が
           // 編集中に縮めきらず余分な高さが残る（＝セル内の余白）ため、正しい rowH を強制設定して縮める。
           // 1行に収まる text なら Excalidraw もこの高さを受け入れる（fit と一致）ので取り合いにならない。
+          // ※ 逆に「行高 > 文字フィット高」（手動 rh・同じ行の別セルが複数行）のセルは、Excalidraw の
+          //   textWysiwyg.updateWysiwygStyle にある自動縮小が毎フレームここへ縮めに来て綱引きになり、
+          //   編集中だけ高さがちらついていた（BRU10-054-2）。表セルの高さの所有者は本関数ただ一つ、と
+          //   決めて pnpm patch で本体の自動縮小から表セルを除外している
+          //   → patches/@excalidraw__excalidraw@0.18.1.patch（customData.wbTable で判定）。
           if (Math.abs(cell.x - nx) > EPS || Math.abs(cell.y - ny) > EPS ||
               Math.abs(cell.width - nw) > EPS || Math.abs(cell.height - nh) > EPS) {
             patch.set(cell.id, { ...cell, x: nx, y: ny, width: nw, height: nh });
