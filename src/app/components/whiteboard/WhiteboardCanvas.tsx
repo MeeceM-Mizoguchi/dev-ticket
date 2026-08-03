@@ -49,6 +49,7 @@ import { FrameHighlightLayer } from "./FrameHighlightLayer";
 import { FrameFormatPanel } from "./FrameFormatPanel";
 import { TextBoxFormatPanel } from "./TextBoxFormatPanel";
 import { TextColorPanel } from "./TextColorPanel";
+import { ShapeColorPalette } from "./ShapeColorPalette";
 import { ConnectorFormatPanel } from "./ConnectorFormatPanel";
 import { ConnectorViaOverlay } from "./ConnectorViaOverlay";
 import { HelpButton } from "./HelpButton";
@@ -1114,6 +1115,7 @@ export default function WhiteboardCanvas({
           {canEdit && <FrameFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TextBoxFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TextColorPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
+          {canEdit && <ShapeColorPalette api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <ConnectorViaOverlay api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <ConnectorFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <SnapGuideLayer api={api} containerRef={containerRef} canEdit={canEdit} />}
