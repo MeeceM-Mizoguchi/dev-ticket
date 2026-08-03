@@ -362,6 +362,76 @@ export interface Whiteboard {
   id: string; projectId: string; title: string;
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
 }
+// ── ナレッジノート（プロジェクト単位の資料の保管・閲覧・検索） ──
+// 表示名は「ナレッジノート」。内部識別子は knowledge_ に統一する。
+// 回答生成はしない。見出しを辿って読む／該当箇所を探すまでが責務。
+/** 資料を種類で仕分けるフォルダ。階層は1段のみ */
+export interface KnowledgeFolder {
+  id: string;
+  projectId: string;
+  name: string;
+  sortOrder: number;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  projectId: string;
+  /** null = 未分類 */
+  folderId: string | null;
+  title: string;
+  fileName: string;
+  content: string;          // 原文。表示とハイライトに使う
+  contentHash: string;
+  byteSize: number;
+  tags: string[];
+  chunkCount: number;
+  indexedAt: string | null; // null = ベクトル未生成（キーワード検索のみ効く）
+  embeddingModel: string;
+  uploadedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 検索の実体。原文の断片。content は原文の [charStart, charEnd) と完全に一致する */
+export interface KnowledgeChunk {
+  id: string;
+  documentId: string;
+  projectId: string;
+  seq: number;
+  headingPath: string;      // 「3. インフラ > 3-3. セッション共有」
+  content: string;
+  charStart: number;
+  charEnd: number;
+}
+
+export interface KnowledgeSearchHit {
+  chunkId: string;
+  documentId: string;
+  title: string;
+  headingPath: string;
+  content: string;
+  charStart: number;
+  charEnd: number;
+  score: number;
+  vecScore: number;   // 意味の近さ 0〜1
+  kwScore: number;    // 語句の一致度 0〜1
+}
+
+/** 取り込み処理の進捗。UI のプログレス表示に使う */
+export type KnowledgeImportPhase =
+  | "reading" | "chunking" | "saving" | "modelLoading" | "embedding" | "done" | "error";
+
+export interface KnowledgeImportProgress {
+  phase: KnowledgeImportPhase;
+  fileName: string;
+  done: number;
+  total: number;
+  message?: string;
+}
+
 export interface TicketItem {
   id: string; title: string; project: string; status: TicketStatus;
   priority: Priority; assignee: string; dueDate: string;
@@ -385,6 +455,8 @@ export interface PlanSettings {
   featureActualMonitor: boolean;
   featureChildTickets: boolean;
   featureBulkCreate: boolean;
+  featureKnowledgeAi: boolean;
+  maxKnowledgeDocsPerProject: number | null;
 }
 
 export interface UserPermissions {

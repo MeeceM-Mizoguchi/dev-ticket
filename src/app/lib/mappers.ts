@@ -1,4 +1,26 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder } from "@/app/types";
+
+// ── ナレッジノート ──
+// 一覧では content を引かないため、無い場合は空文字にフォールバックする
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapKnowledgeDocument(r: any): KnowledgeDocument {
+  return { id: r.id, projectId: r.project_id, folderId: r.folder_id ?? null, title: r.title || "", fileName: r.file_name || "", content: r.content ?? "", contentHash: r.content_hash || "", byteSize: r.byte_size ?? 0, tags: Array.isArray(r.tags) ? r.tags : [], chunkCount: r.chunk_count ?? 0, indexedAt: r.indexed_at ?? null, embeddingModel: r.embedding_model || "", uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapKnowledgeFolder(r: any): KnowledgeFolder {
+  return { id: r.id, projectId: r.project_id, name: r.name || "", sortOrder: r.sort_order ?? 0, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapKnowledgeChunk(r: any): KnowledgeChunk {
+  return { id: r.id, documentId: r.document_id, projectId: r.project_id, seq: r.seq ?? 0, headingPath: r.heading_path || "", content: r.content || "", charStart: r.char_start ?? 0, charEnd: r.char_end ?? 0 };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapKnowledgeHit(r: any): KnowledgeSearchHit {
+  return { chunkId: r.chunk_id, documentId: r.document_id, title: r.title || "", headingPath: r.heading_path || "", content: r.content || "", charStart: r.char_start ?? 0, charEnd: r.char_end ?? 0, score: Number(r.score ?? 0), vecScore: Number(r.vec_score ?? 0), kwScore: Number(r.kw_score ?? 0) };
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProject(r: any): Project {

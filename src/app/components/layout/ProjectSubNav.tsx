@@ -2,8 +2,9 @@ import type { ElementType } from "react";
 import { useNavigate } from "react-router";
 import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen } from "lucide-react";
 import type { AccessLevel } from "@/app/types";
+import { usePlan } from "@/app/contexts/PlanContext";
 
-type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard" | "files";
+type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard" | "files" | "knowledge";
 
 // ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
 const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" }[] = [
@@ -13,6 +14,9 @@ const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: strin
   { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
   { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files" },
   { id: "whiteboard", label: "ホワイトボード", icon: PenTool,       path: "/whiteboard", permKey: "whiteboard" },
+  // ナレッジノートはファイルボックスと同様に個別の権限設定を持たない（プロジェクトメンバー全員）。
+  // 代わりにプラン（feature_knowledge_ai）で表示可否を切り替える。
+  { id: "knowledge",  label: "ナレッジノート", icon: BookOpen,      path: "/knowledge" },
 ];
 
 interface ProjectSubNavProps {
@@ -27,12 +31,14 @@ interface ProjectSubNavProps {
 
 export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm }: ProjectSubNavProps) {
   const navigate = useNavigate();
+  const { plan } = usePlan();
 
   const permMap: Record<string, AccessLevel | undefined> = {
     wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm,
   };
 
   const visibleItems = ITEMS.filter(item => {
+    if (item.id === "knowledge" && !plan.featureKnowledgeAi) return false;
     if (!item.permKey) return true;
     const p = permMap[item.permKey];
     return p === undefined || p !== "none";

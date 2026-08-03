@@ -20,6 +20,8 @@ export const UNLIMITED_PLAN: PlanSettings = {
   featureActualMonitor: true,
   featureChildTickets: true,
   featureBulkCreate: true,
+  featureKnowledgeAi: true,
+  maxKnowledgeDocsPerProject: null,
 };
 
 interface PlanContextValue {
@@ -52,6 +54,10 @@ function mapPlan(row: Record<string, unknown>): PlanSettings {
     featureActualMonitor: (row.feature_actual_monitor as boolean) ?? true,
     featureChildTickets: (row.feature_child_tickets as boolean) ?? true,
     featureBulkCreate: (row.feature_bulk_create as boolean) ?? true,
+    // 未適用の環境（列が無い）では false 扱いにせず true にする。
+    // SQL 未適用でサブナビから消えると「壊れた」ように見えるため。
+    featureKnowledgeAi: (row.feature_knowledge_ai as boolean | undefined) ?? true,
+    maxKnowledgeDocsPerProject: (row.max_knowledge_docs_per_project as number | null) ?? null,
   };
 }
 
