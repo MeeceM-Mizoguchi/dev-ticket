@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { parseXlsxDrawings, calloutTailPoints } from "@/app/lib/xlsxDrawing";
 import type { DrawingObject, Paragraph } from "@/app/lib/xlsxDrawing";
-import { parseThemePalette, resolveCellColor } from "@/app/lib/xlsxCellColor";
+import { parseThemePalette, resolveCellColor, resolveFill } from "@/app/lib/xlsxCellColor";
+import { textWidth, wrapHeight, spillExtents } from "@/app/lib/xlsxTextLayout";
 import { fetchFileWithRetry } from "@/app/lib/projectFiles";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) ビューア
@@ -25,6 +26,16 @@ export const PT_TO_PX = 4 / 3;
 const HEADER_W = 34;
 const HEADER_H = 20;
 
+// BRU10-055 セル内の文字レイアウト。計測（canvas）と CSS で同じ値を使う。
+export const CELL_FONT_FAMILY = `-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", Meiryo, system-ui, sans-serif`;
+const CELL_PAD_X = 3;
+const CELL_PAD_Y = 1;
+// 行送りは Excel と同じくフォントサイズの約1.2倍。既定(11pt=約15px)なら18pxで、
+// 既定の行高20pxに収まる＝1行のセルでは行が膨らまない。
+const lineHeightPx = (sizePx: number) => Math.round(sizePx * 1.2);
+// td の枠(左右1px)とパディングを除いた、文字を置ける幅
+const contentWidth = (cellW: number) => cellW - CELL_PAD_X * 2 - 2;
+
 function colLetter(n: number): string {
   let s = "";
   while (n > 0) {
@@ -40,9 +51,24 @@ interface CellData {
   bold: boolean; italic: boolean;
   sizePx: number; color: string; bg: string | null;
   align: "left" | "center" | "right";
+  vAlign: "top" | "middle" | "bottom";
+  wrap: boolean;     // 折り返し表示（Excel の wrapText）
+  spillL: number;    // はみ出し表示で左へ伸ばせる量(px)
+  spillR: number;    // 同じく右へ伸ばせる量(px)
   colSpan: number; rowSpan: number;
   hidden: boolean;   // 結合セルに飲み込まれたセル
 }
+
+const emptyCell = (): CellData => ({
+  text: "", bold: false, italic: false, sizePx: 11 * PT_TO_PX, color: "#1A1714", bg: null,
+  align: "left", vAlign: "middle", wrap: false, spillL: 0, spillR: 0,
+  colSpan: 1, rowSpan: 1, hidden: false,
+});
+
+const fontOf = (c: CellData) => ({ size: c.sizePx, bold: c.bold, italic: c.italic, family: CELL_FONT_FAMILY });
+const sumPx = (arr: number[], from: number, to: number) => arr.slice(from, to).reduce((a, b) => a + b, 0);
+// 折り返しなしのセルは CSS 上、改行が空白として1行に並ぶ
+const flatText = (s: string) => s.replace(/\n/g, " ");
 
 interface SheetData {
   name: string;
@@ -203,6 +229,57 @@ export function DrawingLayer({ objects, width, height, offsetLeft = HEADER_W, of
   );
 }
 
+// 1セルの描画。Excel と同じく3通りの見せ方をする。
+//  ・折り返し   … セル内で改行し、行はその高さまで伸びている
+//  ・はみ出し   … 隣の空セルの上に文字を重ねて表示（絶対配置の箱で必要な幅だけ許す）
+//  ・通常       … セル幅で切る
+function CellView({ cell, width }: { cell: CellData; width: number }) {
+  const base: CSSProperties = {
+    border: "1px solid #E5E7EA", boxSizing: "border-box",
+    background: cell.bg ?? undefined, textAlign: cell.align,
+    verticalAlign: cell.vAlign === "middle" ? "middle" : cell.vAlign,
+    fontWeight: cell.bold ? 700 : 400, fontStyle: cell.italic ? "italic" : "normal",
+    fontSize: cell.sizePx, color: cell.color, lineHeight: `${lineHeightPx(cell.sizePx)}px`,
+  };
+
+  if (cell.wrap) {
+    return (
+      <td colSpan={cell.colSpan} rowSpan={cell.rowSpan}
+        style={{ ...base, padding: `${CELL_PAD_Y}px ${CELL_PAD_X}px`, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+        {cell.text}
+      </td>
+    );
+  }
+
+  if (cell.spillL > 0 || cell.spillR > 0) {
+    const flex = cell.align === "center" ? "center" : cell.align === "right" ? "flex-end" : "flex-start";
+    const vFlex = cell.vAlign === "top" ? "flex-start" : cell.vAlign === "bottom" ? "flex-end" : "center";
+    return (
+      // overflow:visible + 絶対配置の内箱。内箱の幅がはみ出せる範囲そのものなので、
+      // 隣に文字があるセルの手前でぴたりと切れる。
+      <td colSpan={cell.colSpan} rowSpan={cell.rowSpan}
+        style={{ ...base, padding: 0, position: "relative", overflow: "visible" }}>
+        <div style={{
+          position: "absolute", top: 0, bottom: 0,
+          left: -cell.spillL, width: width + cell.spillL + cell.spillR,
+          display: "flex", alignItems: vFlex, justifyContent: flex,
+          padding: `0 ${CELL_PAD_X}px`, boxSizing: "border-box",
+          whiteSpace: "nowrap", overflow: "hidden", pointerEvents: "none",
+        }}>
+          {flatText(cell.text)}
+        </div>
+      </td>
+    );
+  }
+
+  return (
+    <td colSpan={cell.colSpan} rowSpan={cell.rowSpan}
+      style={{ ...base, padding: `0 ${CELL_PAD_X}px`, overflow: "hidden", whiteSpace: "nowrap" }}>
+      {flatText(cell.text)}
+    </td>
+  );
+}
+
 export function ExcelViewer({ url }: { url: string }) {
   const [sheets, setSheets] = useState<SheetData[] | null>(null);
   const [active, setActive] = useState(0);
@@ -228,24 +305,7 @@ export function ExcelViewer({ url }: { url: string }) {
             const w = ws.getColumn(i + 1)?.width ?? defColW;
             return Math.round(w * CHAR_PX + COL_PADDING_PX);
           };
-          const rowPx = (i: number) => Math.round((ws.getRow(i + 1)?.height ?? defRowH) * PT_TO_PX);
-
-          // 描画レイヤー（画像・図形・矢印）
-          let drawings: DrawingObject[] = [];
-          let dMaxCol = 0, dMaxRow = 0;
-          try {
-            const parsed = parseXlsxDrawings(buf, sheetIdx, { colPx, rowPx });
-            drawings = parsed.objects;
-            dMaxCol = parsed.maxCol; dMaxRow = parsed.maxRow;
-            const prev = disposeRef.current;
-            disposeRef.current = () => { prev(); parsed.dispose(); };
-          } catch (e) {
-            console.error("[ExcelViewer] drawing parse error:", e);
-          }
-
-          // 図形がセル範囲より外に広がるので、グリッドはその分まで伸ばす
-          const rowCount = Math.min(Math.max(ws.rowCount, dMaxRow + 2), MAX_ROWS);
-          const colCount = Math.min(Math.max(ws.columnCount, dMaxCol + 2), MAX_COLS);
+          const baseRowPx = (i: number) => Math.round((ws.getRow(i + 1)?.height ?? defRowH) * PT_TO_PX);
 
           // 結合セル: "A1:C3" → 左上に span を持たせ、それ以外は hidden
           const spans = new Map<string, { cs: number; rs: number }>();
@@ -261,25 +321,32 @@ export function ExcelViewer({ url }: { url: string }) {
             }
           }
 
+          // まず実データのある範囲だけ組み立てる（図形ぶんの余白は後から足す）。
+          // 折り返しの行高計算に中身が要るので、描画レイヤーの解析より先に行う。
+          const baseRows = Math.min(Math.max(ws.rowCount, 1), MAX_ROWS);
+          const baseCols = Math.min(Math.max(ws.columnCount, 1), MAX_COLS);
           const rows: CellData[][] = [];
-          for (let r = 1; r <= rowCount; r++) {
+          for (let r = 1; r <= baseRows; r++) {
             const row = ws.getRow(r);
             const cells: CellData[] = [];
-            for (let c = 1; c <= colCount; c++) {
+            for (let c = 1; c <= baseCols; c++) {
               const cell = row.getCell(c);
               const font = cell.font ?? {};
               // 塗りは argb 直指定とは限らない（テーマ色＋tint / インデックス色）ので解決する
-              const fillFg = (cell.fill as any)?.type === "pattern"
-                ? resolveCellColor((cell.fill as any)?.fgColor, themePalette) : null;
+              const fillFg = resolveFill(cell.fill, themePalette);
               const al = cell.alignment?.horizontal;
+              const va = cell.alignment?.vertical;
               const span = spans.get(`${r}:${c}`);
               cells.push({
+                ...emptyCell(),
                 text: cell.text ?? "",
                 bold: !!font.bold, italic: !!font.italic,
                 sizePx: (font.size ?? 11) * PT_TO_PX,
                 color: resolveCellColor(font.color as any, themePalette) ?? "#1A1714",
                 bg: fillFg,
                 align: al === "center" ? "center" : al === "right" ? "right" : "left",
+                vAlign: va === "top" ? "top" : va === "bottom" ? "bottom" : "middle",
+                wrap: !!cell.alignment?.wrapText,
                 colSpan: span?.cs ?? 1, rowSpan: span?.rs ?? 1,
                 hidden: covered.has(`${r}:${c}`),
               });
@@ -287,10 +354,65 @@ export function ExcelViewer({ url }: { url: string }) {
             rows.push(cells);
           }
 
+          const colWidths = Array.from({ length: baseCols }, (_, i) => colPx(i));
+
+          // 折り返しセルのぶん行高を広げる。
+          // Excel はファイルに計算済みの行高(ht)を持っているが、こちらは列幅もフォントも
+          // 完全一致ではないので、必要ならファイルの高さより広げる（＝絶対に見切れない）。
+          // 縦結合セルは Excel でも自動調整の対象外なので触らない。
+          const rowHeights: number[] = [];
+          for (let r = 0; r < baseRows; r++) {
+            let h = baseRowPx(r);
+            for (let c = 0; c < baseCols; c++) {
+              const cd = rows[r][c];
+              if (!cd || cd.hidden || !cd.wrap || !cd.text || cd.rowSpan > 1) continue;
+              const w = contentWidth(sumPx(colWidths, c, c + cd.colSpan));
+              h = Math.max(h, wrapHeight(cd.text, w, fontOf(cd), lineHeightPx(cd.sizePx), CELL_PAD_Y * 2 + 2));
+            }
+            rowHeights.push(h);
+          }
+          const rowPx = (i: number) => rowHeights[i] ?? baseRowPx(i);
+
+          // 描画レイヤー（画像・図形・矢印）
+          let drawings: DrawingObject[] = [];
+          let dMaxCol = 0, dMaxRow = 0;
+          try {
+            const parsed = parseXlsxDrawings(buf, sheetIdx, { colPx, rowPx });
+            drawings = parsed.objects;
+            dMaxCol = parsed.maxCol; dMaxRow = parsed.maxRow;
+            const prev = disposeRef.current;
+            disposeRef.current = () => { prev(); parsed.dispose(); };
+          } catch (e) {
+            console.error("[ExcelViewer] drawing parse error:", e);
+          }
+
+          // 図形がセル範囲より外に広がるので、グリッドはその分まで伸ばす
+          const rowCount = Math.min(Math.max(baseRows, dMaxRow + 2), MAX_ROWS);
+          const colCount = Math.min(Math.max(baseCols, dMaxCol + 2), MAX_COLS);
+          for (let i = baseCols; i < colCount; i++) colWidths.push(colPx(i));
+          for (let i = baseRows; i < rowCount; i++) rowHeights.push(baseRowPx(i));
+          for (const row of rows) while (row.length < colCount) row.push(emptyCell());
+          while (rows.length < rowCount) rows.push(Array.from({ length: colCount }, emptyCell));
+
+          // はみ出し表示：隣が空セルなら、そこまで文字を伸ばせる量を求めておく
+          for (const line of rows) {
+            const isEmpty = (c: number) => !!line[c] && !line[c].hidden && line[c].text === "";
+            for (let c = 0; c < line.length; c++) {
+              const cd = line[c];
+              if (cd.hidden || cd.wrap || !cd.text) continue;
+              const contentW = contentWidth(sumPx(colWidths, c, c + cd.colSpan));
+              const tw = textWidth(flatText(cd.text), fontOf(cd));
+              if (tw <= contentW) continue;
+              const { left, right } = spillExtents({
+                col: c, span: cd.colSpan, widths: colWidths, isEmpty,
+                align: cd.align, textW: tw, contentW,
+              });
+              cd.spillL = left; cd.spillR = right;
+            }
+          }
+
           return {
-            name: ws.name, rows, drawings,
-            colWidths: Array.from({ length: colCount }, (_, i) => colPx(i)),
-            rowHeights: Array.from({ length: rowCount }, (_, i) => rowPx(i)),
+            name: ws.name, rows, drawings, colWidths, rowHeights,
             truncated: ws.rowCount > MAX_ROWS || ws.columnCount > MAX_COLS,
           };
         });
@@ -331,7 +453,8 @@ export function ExcelViewer({ url }: { url: string }) {
       )}
       <div style={{ flex: 1, overflow: "auto", padding: 12, minHeight: 0, background: "#fff" }}>
         <div style={{ position: "relative", width: HEADER_W + totalW }}>
-          <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: HEADER_W + totalW }}>
+          {/* フォントは固定する。文字幅の計測(canvas)と実際の描画を一致させるため。 */}
+          <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: HEADER_W + totalW, fontFamily: CELL_FONT_FAMILY }}>
             <colgroup>
               <col style={{ width: HEADER_W }} />
               {sheet.colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
@@ -351,16 +474,7 @@ export function ExcelViewer({ url }: { url: string }) {
                 <tr key={r} style={{ height: sheet.rowHeights[r] }}>
                   <td style={{ background: "#EEF0F2", border: "1px solid #D9DCE0", fontSize: 10, color: "#6B6458", textAlign: "center" }}>{r + 1}</td>
                   {row.map((cell, c) => cell.hidden ? null : (
-                    <td key={c} colSpan={cell.colSpan} rowSpan={cell.rowSpan}
-                      style={{
-                        border: "1px solid #E5E7EA", padding: "0 3px", overflow: "hidden",
-                        whiteSpace: "nowrap", verticalAlign: "middle",
-                        background: cell.bg ?? undefined, textAlign: cell.align,
-                        fontWeight: cell.bold ? 700 : 400, fontStyle: cell.italic ? "italic" : "normal",
-                        fontSize: cell.sizePx, color: cell.color,
-                      }}>
-                      {cell.text}
-                    </td>
+                    <CellView key={c} cell={cell} width={sumPx(sheet.colWidths, c, c + cell.colSpan)} />
                   ))}
                 </tr>
               ))}

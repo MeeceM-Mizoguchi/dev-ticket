@@ -20,7 +20,8 @@ export interface CellEdit {
   row: number;
   /** 1始まりの列番号 */
   col: number;
-  kind: "number" | "string" | "formula" | "blank";
+  /** keep=値は触らず書式だけ変える（塗り・揃え・折り返しのみの変更） */
+  kind: "number" | "string" | "formula" | "blank" | "keep";
   /** number/string/formula の中身。formula は先頭 '=' を含めない */
   value: string;
   /** 数式の場合の表示キャッシュ値（あれば <v> に書く） */
@@ -31,6 +32,8 @@ export interface CellEdit {
   align?: "left" | "center" | "right";
   /** 垂直揃え */
   valign?: "top" | "middle" | "bottom";
+  /** 折り返し表示。undefined=変更なし / true=折り返す / false=はみ出す（BRU10-055） */
+  wrap?: boolean;
 }
 
 // ── 列番号 <-> 列文字 ──────────────────────────────────────────
@@ -140,9 +143,9 @@ class StyleEditor {
     return id;
   }
 
-  /** 既存 style index(baseS) を土台に、塗り/揃えを足した xf を返す */
-  ensureXf(baseS: number, opts: { fillColor?: string | null; alignH?: string; alignV?: string }): number {
-    const key = `${baseS}|${opts.fillColor ?? ""}|${opts.alignH ?? ""}|${opts.alignV ?? ""}`;
+  /** 既存 style index(baseS) を土台に、塗り/揃え/折り返しを足した xf を返す */
+  ensureXf(baseS: number, opts: { fillColor?: string | null; alignH?: string; alignV?: string; wrap?: boolean }): number {
+    const key = `${baseS}|${opts.fillColor ?? ""}|${opts.alignH ?? ""}|${opts.alignV ?? ""}|${opts.wrap ?? ""}`;
     const cached = this.xfCache.get(key);
     if (cached !== undefined) return cached;
 
@@ -155,11 +158,13 @@ class StyleEditor {
       xf.setAttribute("fillId", String(this.ensureFill(opts.fillColor)));
       xf.setAttribute("applyFill", "1");
     }
-    if (opts.alignH || opts.alignV) {
+    if (opts.alignH || opts.alignV || opts.wrap !== undefined) {
       let al = Array.from(xf.children).find(c => c.localName === "alignment") ?? null;
       if (!al) { al = el(this.doc, "alignment"); xf.insertBefore(al, xf.firstChild); }
       if (opts.alignH) al.setAttribute("horizontal", opts.alignH);
       if (opts.alignV) al.setAttribute("vertical", opts.alignV === "middle" ? "center" : opts.alignV);
+      if (opts.wrap === true) al.setAttribute("wrapText", "1");
+      else if (opts.wrap === false) al.removeAttribute("wrapText");
       xf.setAttribute("applyAlignment", "1");
     }
 
@@ -247,6 +252,8 @@ function inheritedStyle(row: Element, col: number, ranges: ReturnType<typeof col
 }
 
 function applyEdit(doc: Document, cell: Element, edit: CellEdit) {
+  // 書式だけの変更では値に触らない。共有文字列・日付・数値書式をそのまま残すため。
+  if (edit.kind === "keep") return;
   clearCellValue(cell);
   if (edit.kind === "blank") return;
 
@@ -303,8 +310,8 @@ export function patchXlsx(originalBytes: Uint8Array, edits: CellEdit[]): Uint8Ar
 
   const sheetPaths = resolveSheetPaths(files);
 
-  // スタイル(色/揃え)編集があるときだけ styles.xml を読み込む
-  const hasStyle = edits.some(e => (e.fill !== undefined && e.fill !== null) || e.align || e.valign);
+  // スタイル(色/揃え/折り返し)編集があるときだけ styles.xml を読み込む
+  const hasStyle = edits.some(e => (e.fill !== undefined && e.fill !== null) || e.align || e.valign || e.wrap !== undefined);
   const stylesPath = "xl/styles.xml";
   let styleEditor = hasStyle && files[stylesPath]
     ? new StyleEditor(strFromU8(files[stylesPath])) : null;
@@ -343,11 +350,11 @@ export function patchXlsx(originalBytes: Uint8Array, edits: CellEdit[]): Uint8Ar
         if (inherited) cell.setAttribute("s", inherited);
       }
       applyEdit(doc, cell, edit);
-      // 色・揃え
+      // 色・揃え・折り返し
       const wantFill = edit.fill !== undefined && edit.fill !== null;
-      if ((wantFill || edit.align || edit.valign) && styleEditor) {
+      if ((wantFill || edit.align || edit.valign || edit.wrap !== undefined) && styleEditor) {
         const baseS = Number(cell.getAttribute("s") || "0");
-        const xfId = styleEditor.ensureXf(baseS, { fillColor: wantFill ? edit.fill : undefined, alignH: edit.align, alignV: edit.valign });
+        const xfId = styleEditor.ensureXf(baseS, { fillColor: wantFill ? edit.fill : undefined, alignH: edit.align, alignV: edit.valign, wrap: edit.wrap });
         cell.setAttribute("s", String(xfId));
       }
     }

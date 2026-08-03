@@ -112,10 +112,12 @@ export function resolveCellColor(c: ExcelColor | null | undefined, theme: ThemeP
 
   let hex: string | null = null;
   if (typeof c.argb === "string") {
+    // ★先頭2桁(アルファ)は無視する。Excel も Google スプレッドシートも無視しており、
+    //   exceljs / openpyxl は 6桁で指定された色を "00RRGGBB" と書き出す。
+    //   00 を「透明」と解釈すると、それらが作った xlsx の塗りが丸ごと消える（BRU10-055）。
+    //   xlsx で「塗りなし」を表すのは patternType="none"（＝fgColor が無い）ほう。
     const h = c.argb.length === 8 ? c.argb.slice(2) : c.argb;
     if (/^[0-9a-fA-F]{6}$/.test(h)) hex = h.toUpperCase();
-    // argb の先頭2桁は不透明度。完全透明なら色を付けない
-    if (c.argb.length === 8 && c.argb.slice(0, 2) === "00") return null;
   } else if (typeof c.theme === "number") {
     hex = theme[c.theme] || null;
   } else if (typeof c.indexed === "number") {
@@ -124,4 +126,14 @@ export function resolveCellColor(c: ExcelColor | null | undefined, theme: ThemeP
   if (!hex) return null;
 
   return "#" + (c.tint ? applyTint(hex, c.tint) : hex);
+}
+
+/**
+ * exceljs の cell.fill を CSS 色へ。塗りが無ければ null。
+ * patternType="none"（塗りなし）と、色指定のないパターン塗りを弾く。
+ */
+export function resolveFill(fill: unknown, theme: ThemePalette): string | null {
+  const f = fill as { type?: string; pattern?: string; fgColor?: ExcelColor } | null | undefined;
+  if (!f || f.type !== "pattern" || f.pattern === "none") return null;
+  return resolveCellColor(f.fgColor, theme);
 }
