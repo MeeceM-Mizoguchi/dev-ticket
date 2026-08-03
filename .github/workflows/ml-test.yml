@@ -1,0 +1,49 @@
+# ENHA2-034 ②モデル学習 ─ PR時のスモークテスト
+#
+# ★なぜPRで走らせるか★
+#   ②モデル学習は毎晩GitHub Actionsで無人実行され、結果は翌朝アプリの「学習ログ」でしか
+#   見えない。date型の due_date が naive datetime になる不具合で全組織の学習が落ちた時も、
+#   気付けたのは本番の夜間バッチが動いた翌朝だった。
+#   DBに繋がない合成データのテストなら数十秒で回せるので、マージ前にここで落とす。
+#
+# ★学習と推論の定義ズレも見る★
+#   FEATURE_NAMES と納期判定は ml/features.py・src/app/lib/recommendCore.ts・
+#   api/ml/*.ts に複製されている（Vercelのサーバー関数が src/ を同梱できないため）。
+#   片方だけ直すと静かに精度が落ちるので、テスト側でファイルを読んで突き合わせている。
+#   → その3ファイルのどれかが変わったPRでも必ず走らせる。
+
+name: ML tests
+
+on:
+  pull_request:
+    paths:
+      - "ml/**"
+      - "api/ml/**"
+      - "src/app/lib/recommendCore.ts"
+      - ".github/workflows/ml-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ml/**"
+      - "api/ml/**"
+      - "src/app/lib/recommendCore.ts"
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # 夜間バッチ(ml-daily.yml)と同じバージョンで検証する
+          cache: pip
+          cache-dependency-path: ml/requirements.txt
+
+      - run: pip install -r ml/requirements.txt pytest
+
+      - name: pytest
+        working-directory: ml
+        run: python -m pytest -q

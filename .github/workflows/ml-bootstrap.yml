@@ -80,7 +80,12 @@ jobs:
           cache: pip
           cache-dependency-path: ml/requirements.txt
 
-      - run: pip install -r ml/requirements.txt
+      - run: pip install -r ml/requirements.txt pytest
+
+      # 学習の直前にスモークテスト（理由は ml-daily.yml と同じ）
+      - name: Smoke test (no DB)
+        working-directory: ml
+        run: python -m pytest -q
 
       - name: Train models (all orgs)
         working-directory: ml

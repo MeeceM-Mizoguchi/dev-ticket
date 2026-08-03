@@ -230,12 +230,27 @@ function ticketActualHours(t: TicketRow): number {
   return h > 0 ? h : (t.estimated_hours ?? 0);
 }
 
+// 納期は「その日のうち(JST)に終わっていればセーフ」で判定する。
+// ★ml/features.py の ON_TIME_GRACE_DAYS / due_deadline() / is_on_time() と同じ定義にすること★
+//   ここで出す納期遵守率はスキルのレベル判定に効き、
+//   ②モデル学習(features.py)は同じ定義で正解ラベルを作っている。
+const ON_TIME_GRACE_DAYS = 0;
+
+/** due_date(日付) → これを過ぎたら遅延、という時刻。due_date は JST の暦日として扱う */
+function dueDeadline(due: string | null): number | null {
+  if (!due) return null;
+  const start = Date.parse(`${due.slice(0, 10)}T00:00:00+09:00`);
+  if (Number.isNaN(start)) return null;
+  return start + (1 + ON_TIME_GRACE_DAYS) * 24 * 36e5;
+}
+
 /** 納期内に終わったか */
 function isOnTime(t: TicketRow): boolean {
-  if (!t.due_date) return true;   // 期限が無いものは減点しない
+  const deadline = dueDeadline(t.due_date);
+  if (deadline === null) return true;   // 期限が無いものは減点しない
   const end = t.released_at || t.uat_completed_at || t.stg_completed_at || t.review_approved_at;
   if (!end) return true;
-  return new Date(end).getTime() <= new Date(t.due_date).getTime() + 24 * 36e5;
+  return new Date(end).getTime() < deadline;
 }
 
 /**

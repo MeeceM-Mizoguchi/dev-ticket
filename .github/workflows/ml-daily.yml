@@ -125,7 +125,15 @@ jobs:
           cache: pip
           cache-dependency-path: ml/requirements.txt
 
-      - run: pip install -r ml/requirements.txt
+      - run: pip install -r ml/requirements.txt pytest
+
+      # ── 学習の直前にスモークテスト ──
+      # DBには繋がず、合成データで build_dataset → fit → 評価まで通す。
+      # 「毎晩無人で走り、翌朝アプリの学習ログを見るまで壊れたと分からない」構造なので、
+      # 壊れたコードをそのまま本番データに当てる前にここで止める。
+      - name: Smoke test (no DB)
+        working-directory: ml
+        run: python -m pytest -q
 
       - name: Train models (all orgs)
         working-directory: ml
