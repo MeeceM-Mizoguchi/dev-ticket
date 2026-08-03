@@ -31,6 +31,40 @@ function formatDateTime(d: string) {
   return new Date(d).toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
+// BRU10-055 読み込み中の表示。
+// 素のスピナー1個だとカードの左端に取り残されて見えるので、
+// 実際の一覧と同じ骨格（アイコン・ファイル名・メタ情報・操作ボタン）を
+// アプリ共通のスケルトン(.skeleton-shimmer)で出す。
+function Sk({ w, h, radius }: { w: number | string; h: number; radius?: number }) {
+  return <div className="skeleton-shimmer" style={{ width: w, height: h, borderRadius: radius ?? 6, flexShrink: 0 }} />;
+}
+
+function FileListSkeleton() {
+  const nameW = ["58%", "42%", "66%", "36%", "50%"];
+  return (
+    <div aria-busy="true" aria-label="ファイルを読み込み中">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px 10px" }}>
+        <span className="loading-dot" /><span className="loading-dot" /><span className="loading-dot" />
+        <span style={{ fontSize: 11, color: "#A09790" }}>ファイルを読み込み中…</span>
+      </div>
+      {nameW.map((w, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderBottom: "1px solid rgba(26,23,20,0.05)", opacity: 1 - i * 0.15 }}>
+          <Sk w={30} h={30} radius={7} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Sk w={w} h={13} />
+            <div style={{ height: 6 }} />
+            <Sk w="26%" h={10} />
+          </div>
+          {/* 実際の操作ボタン(padding:5)と同じ位置に合わせる */}
+          {[0, 1, 2].map(k => (
+            <span key={k} style={{ padding: 5, display: "flex", flexShrink: 0 }}><Sk w={13} h={13} radius={4} /></span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function FileBoxPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -242,7 +276,10 @@ export function FileBoxPage() {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>ファイルボックス</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${files.length} 件` : "..."}</p>
+          {/* 読み込み中に「0 件」と出てから件数が入れ替わるのを避ける */}
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>
+            {!project ? "..." : loading ? project.name : `${project.name} · ${files.length} 件`}
+          </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="files" marginBottom={0}
@@ -284,9 +321,7 @@ export function FileBoxPage() {
 
         {/* 一覧 */}
         {loading ? (
-          <div style={{ padding: "50px 0", textAlign: "center" }}>
-            <Loader2 style={{ width: 22, height: 22, color: "#D4CEC8", animation: "spin 1s linear infinite" }} />
-          </div>
+          <FileListSkeleton />
         ) : visible.length === 0 ? (
           <div style={{ padding: "50px 0", textAlign: "center" }}>
             <FileIcon style={{ width: 30, height: 30, color: "#D4CEC8", margin: "0 auto 10px" }} />

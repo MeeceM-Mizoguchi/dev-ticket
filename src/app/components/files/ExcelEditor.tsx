@@ -2,19 +2,20 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import { HotTable } from "@handsontable/react";
 import { registerAllModules } from "handsontable/registry";
 import { textRenderer } from "handsontable/renderers";
-import { Loader2, Save, PaintBucket, Square, Circle, MessageSquare, Minus, MoveRight, Type, Trash2, BringToFront, SendToBack, AlignLeft, AlignCenter, AlignRight, Undo2, Redo2 } from "lucide-react";
+import { Loader2, Save, PaintBucket, Square, Circle, MessageSquare, Minus, MoveRight, Type, Trash2, BringToFront, SendToBack, AlignLeft, AlignCenter, AlignRight, Undo2, Redo2, WrapText, MoveHorizontal } from "lucide-react";
 import type { ProjectFile } from "@/app/types";
 import { uploadProjectFile, fetchSignedUrl } from "@/app/lib/projectFiles";
 import { patchXlsx, colLetter, type CellEdit } from "@/app/lib/xlsxEdit";
 import { insertRows, removeRows, insertCols, removeCols, setColWidths, setRowHeights, addHyperlinks } from "@/app/lib/xlsxStructure";
 import { parseXlsxDrawings, type DrawingObject } from "@/app/lib/xlsxDrawing";
 import { patchXlsxDrawing, repairDrawings, findDrawingDefects } from "@/app/lib/xlsxDrawingWrite";
-import { parseThemePalette, resolveCellColor } from "@/app/lib/xlsxCellColor";
+import { parseThemePalette, resolveFill } from "@/app/lib/xlsxCellColor";
 import { unzipSync, strFromU8 } from "fflate";
 import { ShapeEditorOverlay, type ShapeEditorHandle, type SelectInfo } from "./ShapeEditorOverlay";
 import {
   CHAR_PX, COL_PADDING_PX, DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT_PT, PT_TO_PX,
 } from "./ExcelViewer";
+import { textWidth, wrapHeight, spillExtents } from "@/app/lib/xlsxTextLayout";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) 画面内エディタ
 //
@@ -30,6 +31,23 @@ const MAX_COLS = 80;
 // エディタ内部の「真の値」グリッド。formula は "=..." 文字列で保持する。
 type Grid = string[][];
 
+// BRU10-055 セル文字のレイアウト。Handsontable の既定スタイルに合わせた値で、
+// 文字幅の計測(canvas)と実際の描画を一致させる（CSS 側は CELL_CSS で固定）。
+const HOT_FONT_FAMILY = `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif`;
+const HOT_FONT_PX = 13;
+const HOT_LINE_H = 21;   // handsontable 既定の line-height
+const HOT_PAD_X = 4;     // handsontable 既定の padding: 0 4px
+const HOT_FONT = { size: HOT_FONT_PX, family: HOT_FONT_FAMILY };
+// セル幅から、文字を置ける幅（左右パディング＋右枠）を引く
+const contentWidth = (cellW: number) => cellW - HOT_PAD_X * 2 - 1;
+// 折り返しなしのセルは改行が空白になって1行に並ぶ
+const flatText = (s: string) => s.replace(/\n/g, " ");
+const CELL_CSS = `
+.xls-hot .htCore td { font-family: ${HOT_FONT_FAMILY}; font-size: ${HOT_FONT_PX}px; line-height: ${HOT_LINE_H}px; }
+.xls-hot .htCore td .xls-spill { position: absolute; top: 0; bottom: 0; display: flex; box-sizing: border-box;
+  padding: 0 ${HOT_PAD_X}px; white-space: nowrap; overflow: hidden; pointer-events: none; }
+`;
+
 interface SheetModel {
   name: string;
   raw: Grid;        // 編集中の真の値（数式は "=..."）
@@ -37,9 +55,12 @@ interface SheetModel {
   display: Grid;    // 数式を解決した表示値
   fills: (string | null)[][]; // 新規に塗ったセル色
   baseFills: (string | null)[][]; // 元ファイルが持つセル色（表示専用。保存では書き戻さない）
+  baseWrap: boolean[][];      // 元ファイルの折り返し設定（BRU10-055）
   truncated: boolean;
   colWidths: number[];  // px（Excel換算・描画レイヤーと座標系を一致させる）
   rowHeights: number[]; // px
+  baseRowHeights: number[]; // 折り返しを考えない素の行高（自動調整の下限）
+  autoRowH: boolean[];      // 行高が自動調整（＝Excel側で明示指定もドラッグ変更もされていない）
   drawings: DrawingObject[]; // 画像・図形（表示のみ）
   drawingPath: string | null; // 書き戻し先（xl/drawings/drawingN.xml）
   totalW: number; totalH: number;
@@ -188,6 +209,11 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   // シートごとのセル揃え（"r:c" -> {h,v}）
   type CellAlign = { h?: "left" | "center" | "right"; v?: "top" | "middle" | "bottom" };
   const cellAlignRef = useRef<Record<string, Map<string, CellAlign>>>({});
+  // シートごとの折り返し設定の変更（"r:c" -> true=折り返し / false=はみ出し）。
+  // 未登録のセルは元ファイル（baseWrap）のまま。
+  const cellWrapRef = useRef<Record<string, Map<string, boolean>>>({});
+  const [cellWrapSel, setCellWrapSel] = useState<boolean | null>(null); // ツールバーのハイライト用
+  const [, setLayoutTick] = useState(0); // 行高が変わったときに React 側も描き直すためのカウンタ
   // 構造編集・幅・リンク（保存時に xlsx へ反映）
   type StructOp = { type: "insertRow" | "removeRow" | "insertCol" | "removeCol"; at: number; count: number };
   const structOpsRef = useRef<Record<string, StructOp[]>>({});
@@ -248,7 +274,48 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           // 同じ関数を「描画レイヤーの座標」と「グリッドの列幅/行高」の両方に使うので、
           // 多少 Excel の実寸とズレても、グリッドと画像の相対位置は必ず一致する。
           const colPx = (i: number) => Math.max(30, Math.round((ws.getColumn(i + 1)?.width ?? defColW) * CHAR_PX + COL_PADDING_PX));
-          const rowPx = (i: number) => Math.max(24, Math.round((ws.getRow(i + 1)?.height ?? defRowH) * PT_TO_PX));
+          const baseRowPx = (i: number) => Math.max(24, Math.round((ws.getRow(i + 1)?.height ?? defRowH) * PT_TO_PX));
+
+          // 折り返しの行高計算に中身が要るので、実データ範囲を先に読む
+          // （図形ぶんの余白は後から足す）。
+          const baseRows = Math.min(Math.max(ws.rowCount, 1), MAX_ROWS);
+          const baseCols = Math.min(Math.max(ws.columnCount, 1), MAX_COLS);
+          const raw: Grid = [];
+          const baseFills: (string | null)[][] = [];
+          const baseWrap: boolean[][] = [];
+          for (let r = 1; r <= baseRows; r++) {
+            const line: string[] = [];
+            const fillLine: (string | null)[] = [];
+            const wrapLine: boolean[] = [];
+            for (let c = 1; c <= baseCols; c++) {
+              const cell = ws.getRow(r).getCell(c);
+              line.push(cellToRaw(cell));
+              // 元ファイルのセル色。テーマ色＋tint 指定が大半なので解決してから表示する
+              fillLine.push(resolveFill(cell.fill, themePalette));
+              wrapLine.push(!!cell.alignment?.wrapText);
+            }
+            raw.push(line);
+            baseFills.push(fillLine);
+            baseWrap.push(wrapLine);
+          }
+          const display = await recompute(raw, ws.name);
+          const colWidths = Array.from({ length: baseCols }, (_, i) => colPx(i));
+
+          // 折り返しセルのぶん行高を広げる。ファイルが持つ行高(ht)より狭くはしない
+          // ＝必要なら広げるだけなので、折り返した文字が見切れることはない。
+          const baseRowHeights = Array.from({ length: baseRows }, (_, i) => baseRowPx(i));
+          const autoRowH = Array.from({ length: baseRows }, () => true);
+          const rowHeights = baseRowHeights.map((h, r) => {
+            let out = h;
+            for (let c = 0; c < baseCols; c++) {
+              if (!baseWrap[r][c]) continue;
+              const t = display[r]?.[c] ?? "";
+              if (!t) continue;
+              out = Math.max(out, wrapHeight(t, contentWidth(colWidths[c]), HOT_FONT, HOT_LINE_H, 2));
+            }
+            return out;
+          });
+          const rowPx = (i: number) => rowHeights[i] ?? baseRowPx(i);
 
           // 描画レイヤー（画像・図形・矢印）。表示のみ、保存時は元ファイル側が保持する。
           let drawings: DrawingObject[] = [];
@@ -262,35 +329,30 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           } catch (e) { console.error("[ExcelEditor] drawing parse:", e); }
 
           // 図形がセル範囲より外に出ることがあるので、その分もグリッドを伸ばす
-          const rowCount = Math.min(Math.max(ws.rowCount, dMaxRow + 2, 1), MAX_ROWS);
-          const colCount = Math.min(Math.max(ws.columnCount, dMaxCol + 2, 1), MAX_COLS);
-          const raw: Grid = [];
-          const baseFills: (string | null)[][] = [];
-          for (let r = 1; r <= rowCount; r++) {
-            const line: string[] = [];
-            const fillLine: (string | null)[] = [];
-            for (let c = 1; c <= colCount; c++) {
-              const cell = ws.getRow(r).getCell(c);
-              line.push(cellToRaw(cell));
-              // 元ファイルのセル色。テーマ色＋tint 指定が大半なので解決してから表示する
-              fillLine.push((cell.fill as any)?.type === "pattern"
-                ? resolveCellColor((cell.fill as any)?.fgColor, themePalette) : null);
-            }
-            raw.push(line);
-            baseFills.push(fillLine);
+          const rowCount = Math.min(Math.max(baseRows, dMaxRow + 2), MAX_ROWS);
+          const colCount = Math.min(Math.max(baseCols, dMaxCol + 2), MAX_COLS);
+          for (let i = baseCols; i < colCount; i++) colWidths.push(colPx(i));
+          for (let i = baseRows; i < rowCount; i++) {
+            const h = baseRowPx(i);
+            baseRowHeights.push(h); rowHeights.push(h); autoRowH.push(true);
           }
-          const display = await recompute(raw, ws.name);
-          const colWidths = Array.from({ length: colCount }, (_, i) => colPx(i));
-          const rowHeights = Array.from({ length: rowCount }, (_, i) => rowPx(i));
+          for (const grid of [raw, display]) for (const line of grid) while (line.length < colCount) line.push("");
+          while (baseFills.length < rowCount) baseFills.push([]);
+          while (baseWrap.length < rowCount) baseWrap.push([]);
+          while (raw.length < rowCount) raw.push(Array.from({ length: colCount }, () => ""));
+          while (display.length < rowCount) display.push(Array.from({ length: colCount }, () => ""));
+          for (const line of baseFills) while (line.length < colCount) line.push(null);
+          for (const line of baseWrap) while (line.length < colCount) line.push(false);
+
           models.push({
             name: ws.name,
             raw,
             original: raw.map(row => row.slice()),
             display,
             fills: raw.map(row => row.map(() => null)),
-            baseFills,
+            baseFills, baseWrap,
             truncated: ws.rowCount > MAX_ROWS || ws.columnCount > MAX_COLS,
-            colWidths, rowHeights,
+            colWidths, rowHeights, baseRowHeights, autoRowH,
             drawings, drawingPath,
             totalW: colWidths.reduce((a, b) => a + b, 0),
             totalH: rowHeights.reduce((a, b) => a + b, 0),
@@ -352,11 +414,13 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     sheets: (sheetsRef.current ?? []).map(m => ({
       raw: m.raw.map(r => r.slice()), original: m.original.map(r => r.slice()),
       display: m.display.map(r => r.slice()), fills: m.fills.map(r => r.slice()),
-      baseFills: m.baseFills.map(r => r.slice()),
+      baseFills: m.baseFills.map(r => r.slice()), baseWrap: m.baseWrap.map(r => r.slice()),
       rowHeights: m.rowHeights.slice(), colWidths: m.colWidths.slice(),
+      baseRowHeights: m.baseRowHeights.slice(), autoRowH: m.autoRowH.slice(),
       drawings: m.drawings.map(o => ({ ...o })), totalW: m.totalW, totalH: m.totalH,
     })),
-    align: cloneMapRec(cellAlignRef.current), links: cloneMapRec(linksRef.current),
+    align: cloneMapRec(cellAlignRef.current), wrap: cloneMapRec(cellWrapRef.current),
+    links: cloneMapRec(linksRef.current),
     shapeEdits: cloneShapeEdits(shapeEditsRef.current), structOps: cloneStructOps(structOpsRef.current),
     colChg: cloneSetRec(colWidthChgRef.current), rowChg: cloneSetRec(rowHeightChgRef.current),
   }), []);
@@ -368,10 +432,13 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       m.raw = ms.raw.map((r: string[]) => r.slice()); m.original = ms.original.map((r: string[]) => r.slice());
       m.display = ms.display.map((r: string[]) => r.slice()); m.fills = ms.fills.map((r: any[]) => r.slice());
       m.baseFills = ms.baseFills.map((r: any[]) => r.slice());
+      m.baseWrap = ms.baseWrap.map((r: boolean[]) => r.slice());
       m.rowHeights = ms.rowHeights.slice(); m.colWidths = ms.colWidths.slice();
+      m.baseRowHeights = ms.baseRowHeights.slice(); m.autoRowH = ms.autoRowH.slice();
       m.drawings = ms.drawings.map((o: any) => ({ ...o })); m.totalW = ms.totalW; m.totalH = ms.totalH;
     });
-    cellAlignRef.current = cloneMapRec(snap.align); linksRef.current = cloneMapRec(snap.links);
+    cellAlignRef.current = cloneMapRec(snap.align); cellWrapRef.current = cloneMapRec(snap.wrap);
+    linksRef.current = cloneMapRec(snap.links);
     shapeEditsRef.current = cloneShapeEdits(snap.shapeEdits); structOpsRef.current = cloneStructOps(snap.structOps);
     colWidthChgRef.current = cloneSetRec(snap.colChg); rowHeightChgRef.current = cloneSetRec(snap.rowChg);
     setGridVersion(v => v + 1); setDirty(true);
@@ -407,6 +474,34 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     return () => window.removeEventListener("keydown", onKey, true);
   }, [undo, redo]);
 
+  // ── 折り返し／はみ出し（BRU10-055）──────────────────────────
+  // そのセルが折り返し表示か（ユーザー変更 > 元ファイル）
+  const wrapOf = useCallback((m: SheetModel, r: number, c: number): boolean =>
+    cellWrapRef.current[m.name]?.get(`${r}:${c}`) ?? m.baseWrap[r]?.[c] ?? false, []);
+
+  // 折り返しセルに合わせて行高を計算し直す（自動調整の行だけ）
+  const recalcRowHeights = useCallback((m: SheetModel, rows: number[]) => {
+    let changed = false;
+    for (const r of rows) {
+      if (!m.autoRowH[r]) continue;
+      let h = m.baseRowHeights[r] ?? 24;
+      for (let c = 0; c < m.colWidths.length; c++) {
+        if (!wrapOf(m, r, c)) continue;
+        const t = m.display[r]?.[c] ?? "";
+        if (!t) continue;
+        h = Math.max(h, wrapHeight(t, contentWidth(m.colWidths[c]), HOT_FONT, HOT_LINE_H, 2));
+      }
+      if (m.rowHeights[r] !== h) { m.rowHeights[r] = h; changed = true; }
+    }
+    if (changed) {
+      m.totalH = m.rowHeights.reduce((a, b) => a + b, 0);
+      const hot: any = (hotRef.current as any)?.hotInstance;
+      if (hot && !hot.isDestroyed) hot.updateSettings({ rowHeights: m.rowHeights.slice() });
+      setLayoutTick(v => v + 1);
+    }
+    return changed;
+  }, [wrapOf]);
+
   // 図形編集はドラッグ中に多数発火するため、連続編集は300msでまとめて1手に
   const onShapeDirty = useCallback((objects: DrawingObject[], changedAnchors: number[]) => {
     const m = sheetsRef.current?.[active]; if (!m) return;
@@ -439,10 +534,12 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         if (!grid[r]) grid[r] = [];
         for (let c = 0; c < disp[r].length; c++) grid[r][c] = disp[r][c];
       }
+      // 折り返しセルの中身が変わったら行高も追従させる（数式の再計算ぶんも含む）
+      recalcRowHeights(m, m.rowHeights.map((_, i) => i));
       const hot: any = (hotRef.current as any)?.hotInstance;
       if (hot && !hot.isDestroyed) hot.render();
     });
-  }, [active]);
+  }, [active, recalcRowHeights]);
 
   // ── セル色（新規塗り）────────────────────────────────────────
   const applyFill = useCallback((color: string | null) => {
@@ -477,6 +574,50 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     setOverlayOffset(prev => (prev.left === left && prev.top === top ? prev : { left, top }));
   }, []);
 
+  // BRU10-055 セル文字の見切れ対策。
+  // 折り返しなら td 内で改行し、そうでなければ隣が空セルの間だけ文字をはみ出させる。
+  // td は Handsontable が使い回すので、どの分岐でも必ず全プロパティを設定し直す。
+  const applyTextLayout = useCallback((td: HTMLElement, m: SheetModel, row: number, col: number, align: "left" | "center" | "right", valign: "top" | "middle" | "bottom") => {
+    td.style.position = "relative";
+    if (wrapOf(m, row, col)) {
+      td.style.whiteSpace = "pre-wrap";
+      td.style.overflowWrap = "anywhere";
+      td.style.overflow = "hidden";
+      return;
+    }
+    td.style.whiteSpace = "nowrap";
+    td.style.overflowWrap = "normal";
+    td.style.overflow = "hidden";
+
+    const line = m.display[row] ?? [];
+    const text = flatText(line[col] ?? "");
+    if (!text) return;
+    const contentW = contentWidth(m.colWidths[col] ?? 0);
+    const tw = textWidth(text, HOT_FONT);
+    if (tw <= contentW) return;
+
+    const { left, right } = spillExtents({
+      col, widths: m.colWidths, isEmpty: (c) => (line[c] ?? "") === "",
+      align, textW: tw, contentW,
+    });
+    if (left <= 0 && right <= 0) return;
+
+    // はみ出しぶんは絶対配置の内箱で描く。内箱の幅＝はみ出せる範囲なので、
+    // 隣に文字があるセルの手前でぴたりと切れる。
+    td.style.overflow = "visible";
+    td.textContent = "";
+    const box = document.createElement("div");
+    box.className = "xls-spill";
+    box.textContent = text;
+    box.style.left = `${-left}px`;
+    box.style.width = `${(m.colWidths[col] ?? 0) + left + right}px`;
+    box.style.justifyContent = align === "center" ? "center" : align === "right" ? "flex-end" : "flex-start";
+    box.style.alignItems = valign === "middle" ? "center" : valign === "bottom" ? "flex-end" : "flex-start";
+    box.style.color = td.style.color;
+    box.style.textDecoration = td.style.textDecoration;
+    td.appendChild(box);
+  }, [wrapOf]);
+
   const cells = useCallback(() => ({
     renderer(instance: any, td: HTMLElement, row: number, col: number, prop: any, value: any, cellProps: any) {
       textRenderer(instance, td, row, col, prop, value, cellProps);
@@ -490,8 +631,35 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       if (linksRef.current[m?.name ?? ""]?.has(`${row}:${col}`)) {
         td.style.color = "#2563EB"; td.style.textDecoration = "underline"; td.style.cursor = "pointer";
       }
+      if (m) applyTextLayout(td, m, row, col, al?.h ?? "left", al?.v ?? "top");
     },
-  }), [active]);
+  }), [active, applyTextLayout]);
+
+  // 選択範囲を「折り返し表示」「はみ出し表示」に切り替える
+  const applyCellWrap = useCallback((wrap: boolean) => {
+    const hot: any = (hotRef.current as any)?.hotInstance;
+    const m = sheetsRef.current?.[active];
+    if (!hot || !m) return;
+    const ranges = hot.getSelected() as number[][] | undefined;
+    if (!ranges) return;
+    pushUndo();
+    const map = cellWrapRef.current[m.name] ?? new Map<string, boolean>();
+    cellWrapRef.current[m.name] = map;
+    const rows = new Set<number>();
+    for (const [r1, c1, r2, c2] of ranges) {
+      for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
+        for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
+          if (r < 0 || c < 0) continue;
+          map.set(`${r}:${c}`, wrap);
+          rows.add(r);
+        }
+      }
+    }
+    setDirty(true);
+    setCellWrapSel(wrap);
+    recalcRowHeights(m, [...rows]);
+    hot.render();
+  }, [active, pushUndo, recalcRowHeights]);
 
   // セルの揃えを選択範囲へ適用
   const applyCellAlign = useCallback((h?: CellAlign["h"], v?: CellAlign["v"]) => {
@@ -522,7 +690,8 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     overlayRef.current?.deselect();
     const m = sheetsRef.current?.[active];
     setCellSel(m ? (cellAlignRef.current[m.name]?.get(`${r}:${c}`) ?? {}) : {});
-  }, [active]);
+    setCellWrapSel(m && r >= 0 && c >= 0 ? wrapOf(m, r, c) : null);
+  }, [active, wrapOf]);
 
   // セルの揃えを CellEdit に反映するための参照（handleSave 用）
   const alignFor = useCallback((sheetName: string, r: number, c: number): CellAlign | undefined => {
@@ -573,9 +742,13 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       m.raw.splice(index0, 0, emptyRow(ncol)); m.original.splice(index0, 0, emptyRow(ncol));
       m.display.splice(index0, 0, emptyRow(ncol)); m.fills.splice(index0, 0, Array.from({ length: ncol }, () => null));
       m.baseFills.splice(index0, 0, Array.from({ length: ncol }, () => null));
+      m.baseWrap.splice(index0, 0, Array.from({ length: ncol }, () => false));
       m.rowHeights.splice(index0, 0, 24);
+      m.baseRowHeights.splice(index0, 0, 24);
+      m.autoRowH.splice(index0, 0, true);
     }
     remapKeys(cellAlignRef.current[m.name], (r, c) => r >= index0 ? [r + cnt, c] : [r, c]);
+    remapKeys(cellWrapRef.current[m.name], (r, c) => r >= index0 ? [r + cnt, c] : [r, c]);
     remapKeys(linksRef.current[m.name], (r, c) => r >= index0 ? [r + cnt, c] : [r, c]);
     shiftDrawings(m, "y", boundary, cnt * 24);
     (structOpsRef.current[m.name] ??= []).push({ type: "insertRow", at: index0 + 1, count: cnt });
@@ -587,8 +760,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     pushUndo();
     const boundary = sumPx(m.rowHeights, 0, index0);
     const deleted = sumPx(m.rowHeights, index0, index0 + cnt);
-    [m.raw, m.original, m.display, m.fills, m.baseFills, m.rowHeights].forEach(a => a.splice(index0, cnt));
+    [m.raw, m.original, m.display, m.fills, m.baseFills, m.baseWrap, m.rowHeights, m.baseRowHeights, m.autoRowH]
+      .forEach(a => (a as any[]).splice(index0, cnt));
     remapKeys(cellAlignRef.current[m.name], (r, c) => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? [r - cnt, c] : [r, c]));
+    remapKeys(cellWrapRef.current[m.name], (r, c) => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? [r - cnt, c] : [r, c]));
     remapKeys(linksRef.current[m.name], (r, c) => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? [r - cnt, c] : [r, c]));
     shiftDrawings(m, "y", boundary, -deleted);
     (structOpsRef.current[m.name] ??= []).push({ type: "removeRow", at: index0 + 1, count: cnt });
@@ -601,8 +776,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     const boundary = sumPx(m.colWidths, 0, index0);
     for (const arr of [m.raw, m.original, m.display]) for (const row of arr) row.splice(index0, 0, ...Array.from({ length: cnt }, () => ""));
     for (const arr of [m.fills, m.baseFills]) for (const row of arr) row.splice(index0, 0, ...Array.from({ length: cnt }, () => null));
+    for (const row of m.baseWrap) row.splice(index0, 0, ...Array.from({ length: cnt }, () => false));
     m.colWidths.splice(index0, 0, ...Array.from({ length: cnt }, () => 64));
     remapKeys(cellAlignRef.current[m.name], (r, c) => c >= index0 ? [r, c + cnt] : [r, c]);
+    remapKeys(cellWrapRef.current[m.name], (r, c) => c >= index0 ? [r, c + cnt] : [r, c]);
     remapKeys(linksRef.current[m.name], (r, c) => c >= index0 ? [r, c + cnt] : [r, c]);
     shiftDrawings(m, "x", boundary, cnt * 64);
     (structOpsRef.current[m.name] ??= []).push({ type: "insertCol", at: index0 + 1, count: cnt });
@@ -614,9 +791,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     pushUndo();
     const boundary = sumPx(m.colWidths, 0, index0);
     const deleted = sumPx(m.colWidths, index0, index0 + cnt);
-    for (const arr of [m.raw, m.original, m.display, m.fills, m.baseFills]) for (const row of arr) row.splice(index0, cnt);
+    for (const arr of [m.raw, m.original, m.display, m.fills, m.baseFills, m.baseWrap]) for (const row of arr) (row as any[]).splice(index0, cnt);
     m.colWidths.splice(index0, cnt);
     remapKeys(cellAlignRef.current[m.name], (r, c) => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? [r, c - cnt] : [r, c]));
+    remapKeys(cellWrapRef.current[m.name], (r, c) => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? [r, c - cnt] : [r, c]));
     remapKeys(linksRef.current[m.name], (r, c) => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? [r, c - cnt] : [r, c]));
     shiftDrawings(m, "x", boundary, -deleted);
     (structOpsRef.current[m.name] ??= []).push({ type: "removeCol", at: index0 + 1, count: cnt });
@@ -645,12 +823,16 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     pushUndo();
     m.colWidths[column] = newSize; recalcTotals(m);
     (colWidthChgRef.current[m.name] ??= new Set()).add(column);
+    // 幅が変われば折り返しの行数も変わる
+    recalcRowHeights(m, m.rowHeights.map((_, i) => i));
     setDirty(true);
-  }, [active]);
+  }, [active, recalcRowHeights]);
   const afterRowResize = useCallback((newSize: number, row: number) => {
     const m = sheetsRef.current?.[active]; if (!m) return;
     pushUndo();
-    m.rowHeights[row] = newSize; recalcTotals(m);
+    // 手で高さを決めた行は、以後は折り返しでの自動調整をしない（Excel と同じ）
+    m.rowHeights[row] = newSize; m.baseRowHeights[row] = newSize; m.autoRowH[row] = false;
+    recalcTotals(m);
     (rowHeightChgRef.current[m.name] ??= new Set()).add(row);
     setDirty(true);
   }, [active]);
@@ -679,9 +861,12 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       al_m: { name: "中央（縦）", callback: () => applyCellAlign(undefined, "middle") },
       al_b: { name: "下寄せ", callback: () => applyCellAlign(undefined, "bottom") },
       sep4: { name: "---------" },
+      wrap_on: { name: "折り返して全体を表示", callback: () => applyCellWrap(true) },
+      wrap_off: { name: "折り返さない（はみ出し表示）", callback: () => applyCellWrap(false) },
+      sep5: { name: "---------" },
       link: { name: "リンクを挿入/編集", callback: (_k: any, sel: any[]) => insertLink(sel) },
     },
-  }), [doInsertRows, doRemoveRows, doInsertCols, doRemoveCols, applyCellAlign, insertLink]);
+  }), [doInsertRows, doRemoveRows, doInsertCols, doRemoveCols, applyCellAlign, applyCellWrap, insertLink]);
 
   // ── 保存 ────────────────────────────────────────────────────
   // doSave: 保存だけ行い成功可否を返す（閉じる処理はしない）
@@ -699,18 +884,23 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
             const orig = m.original[r][c] ?? "";
             const fill = m.fills[r]?.[c] ?? undefined;
             const al = alignFor(m.name, r, c);
+            // 折り返しはユーザーが明示的に切り替えたセルだけ書き戻す
+            const wrapU = cellWrapRef.current[m.name]?.get(`${r}:${c}`);
+            const wrap = (wrapU !== undefined && wrapU !== (m.baseWrap[r]?.[c] ?? false)) ? wrapU : undefined;
             const valueChanged = cur !== orig;
             const fillChanged = fill !== undefined && fill !== null;
             const alignChanged = !!(al?.h || al?.v);
-            if (!valueChanged && !fillChanged && !alignChanged) continue;
+            if (!valueChanged && !fillChanged && !alignChanged && wrap === undefined) continue;
 
             let kind: CellEdit["kind"]; let value = cur; let cached: string | undefined;
-            if (cur === "") kind = "blank";
+            // 値が変わっていないなら書式だけ当てる（日付・数値書式を壊さない）
+            if (!valueChanged) kind = "keep";
+            else if (cur === "") kind = "blank";
             else if (cur.startsWith("=")) { kind = "formula"; cached = m.display[r]?.[c]; }
             else if (isNumeric(cur)) kind = "number";
             else kind = "string";
 
-            edits.push({ sheet: m.name, row: r + 1, col: c + 1, kind, value, cached, fill, align: al?.h, valign: al?.v });
+            edits.push({ sheet: m.name, row: r + 1, col: c + 1, kind, value, cached, fill, align: al?.h, valign: al?.v, wrap });
           }
         }
       }
@@ -820,7 +1010,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {/* 右クリックメニューはフルスクリーンのモーダル(z-index:9999)より前面に出す */}
-      <style>{`.htMenu, .htContextMenu, .htContextMenu .wtHolder, .htDropdownMenu { z-index: 12000 !important; }`}</style>
+      <style>{`.htMenu, .htContextMenu, .htContextMenu .wtHolder, .htDropdownMenu { z-index: 12000 !important; }` + CELL_CSS}</style>
       {needsRepair && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#FEF3C7", color: "#92400E", fontSize: 12, fontWeight: 600, borderBottom: "1px solid #FDE68A", flexShrink: 0 }}>
           このファイルは以前の不具合で図形データが壊れており、Excel で開くと画像・図形が消えます。「保存（新バージョン）」を押すと修復されます。
@@ -860,6 +1050,12 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           );
         })()}
         <div style={sep} />
+        {/* 折り返し / はみ出しの切り替え（BRU10-055） */}
+        <button onMouseDown={keepSel} onClick={() => applyCellWrap(true)} style={abtn(cellWrapSel === true)}
+          title="折り返して全体を表示（セル幅で改行し、行の高さを広げる）"><WrapText style={sIc} /></button>
+        <button onMouseDown={keepSel} onClick={() => applyCellWrap(false)} style={abtn(cellWrapSel === false)}
+          title="折り返さない（隣が空セルならはみ出して表示）"><MoveHorizontal style={sIc} /></button>
+        <div style={sep} />
         {/* 図形の追加（いつでも） */}
         <button onClick={() => overlayRef.current?.addShape("rect")} style={shapeBtn} title="矩形を追加"><Square style={sIc} /></button>
         <button onClick={() => overlayRef.current?.addShape("roundRect")} style={shapeBtn} title="角丸矩形"><Square style={{ ...sIc, borderRadius: 3 }} /></button>
@@ -896,7 +1092,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
 
       {/* 注意バー */}
       <p style={{ margin: 0, padding: "5px 12px", fontSize: 11, color: "#92400E", background: "#FEF3C7", borderBottom: "1px solid rgba(217,119,6,0.2)", flexShrink: 0 }}>
-        右クリックで行/列の挿入・削除・コピー・リンク・揃え。境界ドラッグで列幅/行高を変更。図形はクリックで選択して編集。
+        右クリックで行/列の挿入・削除・コピー・リンク・揃え・折り返し。境界ドラッグで列幅/行高を変更。図形はクリックで選択して編集。
         ⚠ 行/列の挿入・削除では数式の参照は自動補正されません。図形編集の保存時は図形レイヤーが再生成されます。
         {sheet.truncated && `（大きいシートのため先頭 ${MAX_ROWS}行×${MAX_COLS}列 のみ編集対象）`}
       </p>
@@ -917,7 +1113,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           Handsontable を実サイズで描画し、外側 div でスクロールさせることで
           描画オーバーレイとセルが一緒にスクロールし、位置がズレない。 */}
       <div style={{ flex: 1, overflow: "auto", minHeight: 0, padding: "8px 12px 12px", background: "#fff" }}>
-        <div ref={wrapRef} className="bulk-hot-wrap" style={{ position: "relative", width: ROW_HEADER_W + sheet.totalW + 4 }}>
+        <div ref={wrapRef} className="bulk-hot-wrap xls-hot" style={{ position: "relative", width: ROW_HEADER_W + sheet.totalW + 4 }}>
           <HotTable
             key={sheet.name + ":" + gridVersion}
             ref={hotRef}
