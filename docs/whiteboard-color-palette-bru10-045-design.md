@@ -52,10 +52,19 @@ Excalidraw の 1 セクションの構造（`node_modules/@excalidraw/excalidraw
 </fieldset>
 ```
 
-- 挿入先: **`.color-picker-container` の末尾（`appendChild`）**。
-  この要素の子は常に「top-picks / 区切り / active-color」の3つ固定で増減しないため、
-  末尾に自前ノードを足しても Excalidraw 側の React 再調整と衝突しにくい。
-  （`.color-picker__top-picks` の中は色 key の可変リストなので避ける）
+- 挿入先: **`.color-picker__top-picks` の末尾（`appendChild`）**。
+  当初は `.color-picker-container` の末尾を想定したが、この要素は
+  `display:grid; grid-template-columns:1fr 20px 1.625rem` の **3列固定グリッド**で、
+  4つ目の子を足すと暗黙の2行目（左端）へ落ちてしまう。
+  top-picks 側は `display:flex; justify-content:space-between` なので、
+  定型色と同じ行に自然に並ぶ（文字色セクションと同じ見え方になる）。
+  中身は色をキーにした React の可変リストだが、末尾に足した非 React ノードは
+  参照ベースの再調整に巻き込まれない。
+- スウォッチの寸法は標準の定型色ボタン（`width/height:1.35rem`, `--radius:.25rem`）に合わせる。
+- **背景は常に虹色のまま**にする（`alwaysGradient`）。文字色セクション由来の
+  「選択中は選んだ色で塗る」挙動をそのまま使うと、定型色に無い色（線の既定 `#343a40`、
+  背景の `#ffffff` など）を使っている時にただの色見本と同じ見た目になり、
+  カラーピッカーの入口だと気付けない。選択中かどうかは青い枠だけで示す。
 - どのセクションが 線 / 背景 かの判定: `.App-menu__left .panelColumn` 内の
   `.color-picker-container` を **出現順** で 0=線 / 1=背景 とみなす。
   見出し文字はロケール依存、`color-picker-type-*` クラスはポップオーバーを開いた時しか出ないため、
@@ -107,22 +116,28 @@ setBackgroundColor(api, color): void
 現状の `CustomColorSwatch` はそれをそのまま `onPick` に流しており、
 図形に適用すると **undo スタックの汚染 ＋ Yjs ブロードキャストの過剰送信** になる。
 
-そこで `ColorSwatch.tsx` の `CustomColorSwatch` を拡張する（既存利用箇所も自動的に改善される）:
+そこで `ColorSwatch.tsx` の `CustomColorSwatch` の中で
+**requestAnimationFrame による間引き（1フレーム1回・最後の値は必ず適用）**を行う。
+呼び出し側の API は変えないので、既存3箇所も自動的に改善される。
 
-- ドラッグ中（`input`）… requestAnimationFrame で間引き、`COMMIT` **なし**でシーンへ反映（プレビュー）
-- 確定時（`change`）… `COMMIT` **あり**で 1 回だけ適用
-
-API は `onPick(color)` に加えて任意の `onPreview(color)` を足す形にし、
-`onPreview` 未指定の呼び出し元（既存3箇所）は今までどおり `onPick` のみが呼ばれる＝挙動不変。
+当初案の「ドラッグ中は `COMMIT` なしのプレビュー → 確定時に 1 回 `COMMIT`」は採らなかった。
+`captureUpdate` を伏せた更新を挟むと BRU10-044 の `filterUncomittedElements` の罠
+（[whiteboardHistory.ts:52〜](src/app/lib/whiteboardHistory.ts#L52)）に入り、
+`beginHistoryGesture` / `commitSceneToHistory` の 2 段階確定が必要になる。
+ところが `<input type="color">` はブラウザ/OS のピッカーで、
+ドラッグ終了を表す確実なイベントが取れず（Chrome は `input` と `change` を同時に連射する）、
+`window` の `pointerup` 保険リスナーがジェスチャを勝手に解除してしまうため、
+**「そのドラッグが丸ごと undo できない」** 側に倒れる危険がある。
+間引きだけなら履歴機構に触らず、送信量の問題（本来の懸念）は解消できる。
 
 ## 6. 変更ファイル
 
 | ファイル | 種別 | 内容 |
 |---|---|---|
-| `src/app/components/whiteboard/ShapeColorPalette.tsx` | 新規 | 標準 線／背景 の行へ虹色スウォッチを差し込む（rAF 監視＋portal、~120行） |
-| `src/app/lib/whiteboardShapeColor.ts` | 新規 | `setStrokeColor` / `setBackgroundColor`（~60行） |
-| `src/app/components/whiteboard/ColorSwatch.tsx` | 修正 | `CustomColorSwatch` に `onPreview`（間引きプレビュー）を追加 |
-| `src/app/components/whiteboard/WhiteboardCanvas.tsx` | 修正 | `{canEdit && <ShapeColorPalette … />}` を既存パネル群の並びに追加（L1097 付近） |
+| [ShapeColorPalette.tsx](src/app/components/whiteboard/ShapeColorPalette.tsx) | 新規 | 標準 線／背景 の行へ虹色スウォッチを差し込む（rAF 監視＋portal） |
+| [whiteboardShapeColor.ts](src/app/lib/whiteboardShapeColor.ts) | 新規 | `setShapeColor(api, kind, color)` |
+| [ColorSwatch.tsx](src/app/components/whiteboard/ColorSwatch.tsx) | 修正 | `CustomColorSwatch` に rAF 間引きと `size` / `radius` を追加 |
+| [WhiteboardCanvas.tsx](src/app/components/whiteboard/WhiteboardCanvas.tsx) | 修正 | `{canEdit && <ShapeColorPalette … />}` を既存パネル群の並びに追加 |
 
 DB 変更・マイグレーションなし。既存要素への後方互換性の問題なし（native フィールドのみを触る）。
 
