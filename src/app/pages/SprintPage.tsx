@@ -23,6 +23,9 @@ import type { BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+import { SprintSettingsMenu } from "@/app/components/sprints/SprintSettingsMenu";
+import { SprintOrderDialog } from "@/app/components/sprints/SprintOrderDialog";
+import { fetchSprintOrder, applySprintOrder, saveSprintOrder, type SprintOrderScope } from "@/app/lib/sprintOrder";
 
 function EnvMemoTag({ m }: { m: EnvMemo }) {
   const [open, setOpen] = useState(false);
@@ -72,6 +75,7 @@ export function SprintPage() {
   // 作成直後のスプリントへスクロール&強調するための対象スプリントID（BRU5-034）
   const [createdHighlightSprintId, setCreatedHighlightSprintId] = useState<string | null>(null);
   const { userName, userRole, userId, userOrgId, userPermissions } = useAuth();
+  const { toast } = useToast();
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager" || userRole === "owner";
   const isAdmin = userRole === "owner" || userRole === "admin";
@@ -99,6 +103,11 @@ export function SprintPage() {
   // 一括作成の直後に、作成した全チケットを各ビューで強調表示するための対象WBS
   const [bulkCreatedWbs, setBulkCreatedWbs] = useState<string[]>([]);
   const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
+  // 🌟 BRU10-068: 設定アイコンのメニュー（プロジェクト設定 / スプリント並び替え）と並び替えモーダル
+  const [settingsMenuRect, setSettingsMenuRect] = useState<DOMRect | null>(null);
+  const [showSprintOrder, setShowSprintOrder] = useState(false);
+  // 保存済みの表示順（sprints.id の配列）。個人設定 > 全体設定 の優先度で解決済みのもの
+  const [sprintOrder, setSprintOrder] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
   const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
@@ -144,12 +153,14 @@ export function SprintPage() {
 
   const refreshSprints = async () => {
     if (!isSupabaseEnabled || !projectId) return;
-    const [{ data: p }, { data }] = await Promise.all([
+    const [{ data: p }, { data }, order] = await Promise.all([
       supabase!.from("projects").select("*").eq("id", projectId).single(),
       supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", projectId).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }),
+      fetchSprintOrder(projectId, userId),
     ]);
     if (p) setProject(mapProject(p));
     if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
+    setSprintOrder(order);
   };
 
   const openBulkCreate = (sprintId: string, mode: BulkCreateMode) => {
@@ -191,11 +202,13 @@ export function SprintPage() {
         ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
       if (!p) { setNotFound(true); setLoading(false); return; }
       setProject(mapProject(p));
-      const [{ data: s }, { data: pmp }] = await Promise.all([
+      const [{ data: s }, { data: pmp }, order] = await Promise.all([
         supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", p.id).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }),
         userId ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle() : Promise.resolve({ data: null }),
+        fetchSprintOrder(p.id, userId),
       ]);
       if (s?.length) setSprints(s.map(mapSprint));
+      setSprintOrder(order);
       if (pmp?.permissions) setProjectPermissions(pmp.permissions as import("@/app/types").UserPermissions);
       setProjectPermissionsLoaded(true);
       setLoading(false);
@@ -219,6 +232,22 @@ export function SprintPage() {
     return () => window.removeEventListener('popstate', onPop);
   }, [projectSlug]);
 
+  // 🌟 BRU10-068: 保存された並び順を適用した一覧。未設定ならこれまで通り開始日順のまま。
+  const orderedSprints = useMemo(() => applySprintOrder(sprints, sprintOrder), [sprints, sprintOrder]);
+
+  const handleSaveSprintOrder = async (sprintIds: string[], scope: SprintOrderScope) => {
+    try {
+      if (projectId) await saveSprintOrder(projectId, userId, sprintIds, scope, userName);
+      setSprintOrder(sprintIds);
+      setShowSprintOrder(false);
+      // 保存後はデータを取り直して、新しい並び順の状態で画面を作り直す
+      await refreshSprints();
+      toast(scope === "all" ? "並び順をプロジェクトの全員に適用しました" : "並び順を保存しました（自分の画面のみ）");
+    } catch {
+      toast("並び順の保存に失敗しました", "error");
+    }
+  };
+
   const selectedTicket = useMemo<SprintTicket | null>(() => {
     if (!selectedTicketWbs) return null;
     for (const sprint of sprints) {
@@ -234,8 +263,8 @@ export function SprintPage() {
   );
 
   const otherSprints = useMemo(
-    () => deleteTarget ? sprints.filter(s => s.id !== deleteTarget.id) : [],
-    [deleteTarget, sprints]
+    () => deleteTarget ? orderedSprints.filter(s => s.id !== deleteTarget.id) : [],
+    [deleteTarget, orderedSprints]
   );
 
   const handleSelectTicket = (ticket: SprintTicket) => {
@@ -300,7 +329,8 @@ export function SprintPage() {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>スプリント管理</h1>
             {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
-            <button onClick={() => setShowEditIdentifiers(true)} title="識別子を編集"
+            {/* 🌟 BRU10-068: 設定アイコンはメニュー（プロジェクト設定 / スプリント並び替え）を開く */}
+            <button onClick={e => setSettingsMenuRect(e.currentTarget.getBoundingClientRect())} title="設定"
               style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
@@ -351,9 +381,9 @@ export function SprintPage() {
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={bulkCreatedWbs} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
+      {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={bulkCreatedWbs} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+      {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
       
@@ -398,6 +428,26 @@ export function SprintPage() {
           otherSprints={sprints.filter(s => s.id !== editTarget.id)}
           onClose={() => setEditTarget(null)}
           onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
+      )}
+
+      {/* 🌟 BRU10-068: 設定アイコンのメニューと、スプリント並び替えモーダル */}
+      {settingsMenuRect && (
+        <SprintSettingsMenu
+          anchorRect={settingsMenuRect}
+          onClose={() => setSettingsMenuRect(null)}
+          onSelect={action => {
+            if (action === "project") setShowEditIdentifiers(true);
+            else setShowSprintOrder(true);
+          }}
+        />
+      )}
+
+      {showSprintOrder && (
+        <SprintOrderDialog
+          sprints={orderedSprints}
+          onClose={() => setShowSprintOrder(false)}
+          onSave={handleSaveSprintOrder}
+        />
       )}
 
       {showEditIdentifiers && project && (
