@@ -1,20 +1,13 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
-import type { Sprint, SprintTicket, SortCol, DevScale } from "@/app/types";
+import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, sprintHasPending, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
-import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
-import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
-import { BulkActionBar } from "@/app/components/sprints/BulkActionBar";
-import { BulkAssignProgress, type BulkAssignPhase } from "@/app/components/sprints/BulkAssignProgress";
-import { bulkDeleteTickets, bulkMoveTickets } from "@/app/lib/bulkTicketOps";
-import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
-import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
-import { fireSlackNotify } from "@/app/utils/slackNotify";
+import { SelBox } from "@/app/components/sprints/SelBox";
+import { useBulkTicketActions } from "@/app/components/sprints/useBulkTicketActions";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { ProgressBar } from "@/app/components/shared/ProgressBar";
 import { SprintActualHours } from "@/app/components/sprints/SprintActualHours";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { copyText } from "@/lib/clipboard";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { MyFilterModal, addMyFilter, SaveFilterDialog, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
@@ -81,25 +74,6 @@ const BASE_CATEGORY_MAP: Record<string, string> = {
   "CAT-1780241120059": "改善",
   "CAT-1780293371590": "新規機能開発"
 };
-
-function estimateScale(hours: number): DevScale | null {
-  if (!hours || hours <= 0) return null;
-  if (hours <= 3) return "S";
-  if (hours <= 8) return "M";
-  if (hours <= 40) return "L";
-  return "XL";
-}
-
-function SelBox({ checked, indeterminate, onClick }: { checked: boolean; indeterminate?: boolean; onClick: (e: React.MouseEvent) => void }) {
-  return (
-    <div onClick={onClick} title="選択" style={{ display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", width: "100%" }}>
-      <div style={{ width: 15, height: 15, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", border: (checked || indeterminate) ? "none" : "1.5px solid rgba(26,23,20,0.28)", background: checked ? "#059669" : indeterminate ? "#9CA3AF" : "transparent", transition: "all 0.1s" }}>
-        {checked && <span style={{ color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1 }}>✓</span>}
-        {indeterminate && !checked && <span style={{ color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: 1 }}>−</span>}
-      </div>
-    </div>
-  );
-}
 
 function ColumnFilter({
   col, label, sortCol, sortDir, onSort, onClearSort,
@@ -323,9 +297,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   } | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const [selectedTicketIds, setSelectedTicketIds] = useState<Set<string>>(new Set());
-  const [bulkAction, setBulkAction] = useState<null | "delete" | "move">(null);
-  const [assignState, setAssignState] = useState<{ phase: BulkAssignPhase; current: number; total: number; message?: string } | null>(null);
   const [highlightedTicketIds, setHighlightedTicketIds] = useState<Set<string>>(new Set());
 
   const bulkMenu = useBulkCreateMenu();
@@ -659,167 +630,23 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   };
 
   const allTickets = useMemo(() => sprints.flatMap(s => s.tickets), [sprints]);
-  const selectedTickets = useMemo(() => allTickets.filter(t => selectedTicketIds.has(t.id)), [allTickets, selectedTicketIds]);
-  const bulkProjectId = sprints[0]?.projectId ?? null;
-
-  const clearSelection = () => setSelectedTicketIds(new Set());
-  const toggleTicketSel = (id: string) => setSelectedTicketIds(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
-  });
-  const setSprintSelection = (tickets: SprintTicket[], checked: boolean) => setSelectedTicketIds(prev => {
-    const n = new Set(prev); tickets.forEach(t => { checked ? n.add(t.id) : n.delete(t.id); }); return n;
-  });
 
   const flashTickets = (ids: string[]) => {
     setHighlightedTicketIds(new Set(ids));
     window.setTimeout(() => setHighlightedTicketIds(new Set()), 6000);
   };
 
-  const impliedChildCount = useMemo(
-    () => allTickets.filter(t => t.parentId && selectedTicketIds.has(t.parentId) && !selectedTicketIds.has(t.id)).length,
-    [allTickets, selectedTicketIds],
-  );
-
-  const runBulkDelete = async () => {
-    const ids = Array.from(selectedTicketIds);
-    const n = selectedTickets.length;
-    try {
-      await bulkDeleteTickets(ids);
-      clearSelection();
-      onUpdated?.();
-      setSuccessMessage(`${n}件のチケットを削除しました。`);
-    } catch (e) {
-      showAlert("削除に失敗しました。\n\n" + String(e), "エラー");
-    }
-  };
-
-  const runBulkCopyLinks = async () => {
-    if (!projectSlug) { showAlert("プロジェクト情報が取得できませんでした。", "エラー"); return; }
-    const targets = selectedTickets;
-    if (targets.length === 0) return;
-    const links = targets.map(t => `${window.location.origin}/${projectSlug}/${t.wbs}`).join("\n");
-    if (await copyText(links)) {
-      setSuccessMessage(`${targets.length}件のチケットのリンクをコピーしました。`);
-    } else {
-      showAlert("リンクのコピーに失敗しました。", "エラー");
-    }
-  };
-
-  const runBulkMove = async (targetSprintId: string) => {
-    if (!bulkProjectId) return;
-    const ids = Array.from(selectedTicketIds);
-    try {
-      const moved = await bulkMoveTickets({ ticketIds: ids, targetSprintId, projectId: bulkProjectId });
-      const target = sprints.find(s => s.id === targetSprintId);
-      await onUpdated?.();
-      clearSelection();
-      setBulkAction(null);
-      setSuccessMessage(`${moved}件のチケットを「${target?.name ?? "スプリント"}」へ移動しました。`);
-    } catch (e) {
-      showAlert("移動に失敗しました。\n\n" + String(e), "エラー");
-    }
-  };
-
-  const runBulkAssign = async () => {
-    if (!userOrgId) { showAlert("組織情報が取得できませんでした。", "エラー"); return; }
-    const targets = selectedTickets.slice();
-    if (targets.length === 0) return;
-
-    setAssignState({ phase: "analyzing", current: 0, total: targets.length });
-    try {
-      const skills = await fetchSkills(userOrgId);
-
-      const ids = targets.map(t => t.id);
-      const { data: savedSkills } = isSupabaseEnabled
-        ? await supabase!.from("ticket_required_skills").select("ticket_id, skill_id, importance").in("ticket_id", ids)
-        : { data: [] as any[] };
-      const savedByTicket = new Map<string, { skillId: string; importance: number }[]>();
-      for (const r of savedSkills ?? []) {
-        const arr = savedByTicket.get(r.ticket_id) ?? [];
-        arr.push({ skillId: r.skill_id, importance: r.importance ?? 3 });
-        savedByTicket.set(r.ticket_id, arr);
-      }
-
-      const resolved = targets.map(t => {
-        let required = savedByTicket.get(t.id) ?? [];
-        if (required.length === 0) {
-          required = detectSkillKeywords(
-            ticketSearchText({ title: t.title, description: (t.description ?? "").replace(/<[^>]*>/g, " "), prefixes: t.prefixes ?? [] }),
-            skills,
-          ).map(id => ({ skillId: id, importance: 3 }));
-        }
-        const scale = t.devScale ?? estimateScale(t.estimatedHours || 0);
-        return { ticket: t, required, scale };
-      });
-
-      const { results } = await fetchBulkRecommendations({
-        organizationId: userOrgId,
-        candidateNames: projectMembers,
-        tickets: resolved.map(r => ({
-          ticketId: r.ticket.id,
-          requiredSkillIds: r.required,
-          devScale: r.scale,
-          estimatedHours: r.ticket.estimatedHours || 0,
-          priority: r.ticket.priority,
-          startDate: r.ticket.startDate || null,
-          dueDate: r.ticket.dueDate || null,
-        })),
-      });
-      const byTicket = new Map(results.map(r => [r.ticketId, r]));
-
-      setAssignState({ phase: "saving", current: 0, total: targets.length });
-      const assignedIds: string[] = [];
-      const notifRows: Record<string, unknown>[] = [];
-      let done = 0;
-      for (const r of resolved) {
-        const rec = byTicket.get(r.ticket.id);
-        const chosen = rec?.chosen ?? null;
-        if (chosen && chosen.name && isSupabaseEnabled) {
-          const prev = r.ticket.assignee;
-          await supabase!.from("sprint_tickets")
-            .update({ assignee: chosen.name, assignees: [chosen.name], dev_scale: r.scale })
-            .eq("id", r.ticket.id);
-          // ★ 自動付与行(source='auto')は消さない ★ 消すと夜間バッチが翌日また生やして
-          //   「消したのに戻る」ように見える。人が確定した行だけを入れ替える。
-          await supabase!.from("ticket_required_skills")
-            .delete().eq("ticket_id", r.ticket.id).eq("source", "manual");
-          if (r.required.length > 0) {
-            // 同じスキルが自動付与済みのことがあるので upsert（insert だと主キー衝突する）
-            await supabase!.from("ticket_required_skills").upsert(
-              r.required.map(s => ({ ticket_id: r.ticket.id, skill_id: s.skillId, importance: s.importance, source: "manual" })),
-              { onConflict: "ticket_id,skill_id" },
-            );
-          }
-          if (rec) void logRecommendationAccepted({ organizationId: userOrgId, ticketId: r.ticket.id, candidates: rec.candidates, chosen, source: rec.source });
-          if (chosen.name !== prev && projectSlug) {
-            notifRows.push({
-              user_name: chosen.name, type: "assign", title: "チケットが割り当てられました",
-              body: `${r.ticket.wbs}: ${r.ticket.title}（担当: ${prev || "未割り当て"} → ${chosen.name}）`,
-              ticket_id: r.ticket.id, ticket_wbs: r.ticket.wbs, ticket_title: r.ticket.title,
-              project_slug: projectSlug, is_read: false,
-            });
-            fireSlackNotify({ recipientUserNames: [chosen.name], projectSlug, title: "チケットが割り当てられました", body: `${r.ticket.wbs}: ${r.ticket.title}` });
-          }
-          assignedIds.push(r.ticket.id);
-        }
-        done++;
-        setAssignState({ phase: "saving", current: done, total: targets.length });
-      }
-      if (notifRows.length > 0 && isSupabaseEnabled) {
-        await supabase!.from("notifications").insert(notifRows);
-      }
-
-      setAssignState(null);
-      clearSelection();
-      onUpdated?.();
-      flashTickets(assignedIds);
-      setSuccessMessage(assignedIds.length === 0
-        ? "推奨できる担当者が見つかりませんでした。スキルマスタや条件をご確認ください。"
-        : `${assignedIds.length}件のチケットに担当者を自動アサインしました。`);
-    } catch (e) {
-      setAssignState({ phase: "error", current: 0, total: 0, message: String(e) });
-    }
-  };
+  // 一括操作（選択・アサイン・移動・リンクコピー・削除）はスプリント詳細と共通のフック
+  const bulk = useBulkTicketActions({
+    tickets: allTickets,
+    moveTargets: sprints,
+    projectId: sprints[0]?.projectId ?? null,
+    projectSlug,
+    projectMembers,
+    onUpdated,
+    onFlash: flashTickets,
+  });
+  const selectedTicketIds = bulk.selectedIds;
 
   if (loading) return (
     <div>
@@ -969,7 +796,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                   return (
                   <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
                     <SelBox checked={allSel} indeterminate={someSel}
-                      onClick={e => { e.stopPropagation(); setSprintSelection(displayTickets, !allSel); }} />
+                      onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSel); }} />
                     {COLS.map((col, idx) => (
                       <ColumnFilter key={col} col={col}
                         label={COL_LABELS[idx]}
@@ -1064,7 +891,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
-                          <SelBox checked={isSel} onClick={e => { e.stopPropagation(); toggleTicketSel(t.id); }} />
+                          <SelBox checked={isSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(t.id); }} />
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                             {needsHours && (
                               <span
@@ -1136,7 +963,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                               style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.progress === -1 || child.progress === -2) ? 0.65 : 1 }}
                               onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.progress === -1 || child.progress === -2) ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
-                              <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); toggleTicketSel(child.id); }} />
+                              <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
                               <div style={{ display: "flex", justifyContent: "center" }}>
                                 <span style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                               </div>
@@ -1228,45 +1055,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         </DialogShell>
       )}
 
-      <BulkActionBar
-        count={selectedTicketIds.size}
-        disabled={!!assignState}
-        onAssign={runBulkAssign}
-        onMove={() => setBulkAction("move")}
-        onCopyLinks={runBulkCopyLinks}
-        onDelete={() => setBulkAction("delete")}
-        onClear={clearSelection}
-      />
-
-      {bulkAction === "delete" && (
-        <ConfirmDialog
-          title="チケットの一括削除"
-          message={`選択した ${selectedTickets.length}件 のチケットを削除します。`
-            + (impliedChildCount > 0 ? `\n（子チケット ${impliedChildCount}件 も一緒に削除されます）` : "")}
-          confirmLabel="削除する"
-          onConfirm={runBulkDelete}
-          onClose={() => setBulkAction(null)}
-        />
-      )}
-
-      {bulkAction === "move" && (
-        <MoveToSprintDialog
-          sprints={sprints}
-          count={selectedTickets.length}
-          onClose={() => setBulkAction(null)}
-          onConfirm={runBulkMove}
-        />
-      )}
-
-      {assignState && (
-        <BulkAssignProgress
-          phase={assignState.phase}
-          current={assignState.current}
-          total={assignState.total}
-          message={assignState.message}
-          onClose={() => setAssignState(null)}
-        />
-      )}
+      {bulk.ui}
 
       {bulkMenu.menu && (
         <BulkCreateMenu
