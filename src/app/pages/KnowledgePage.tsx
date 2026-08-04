@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 import {
-  BookOpen, Upload, Trash2, Loader2, Search, X, FolderPlus, Folder, FolderOpen, FolderKanban,
+  BookOpen, Upload, Download, Trash2, Loader2, Search, X, FolderPlus, Folder, FolderOpen, FolderKanban,
   FileText, ChevronRight, ChevronDown, ChevronLeft, AlertTriangle, CheckCircle2, RefreshCw, Pencil,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -33,8 +33,10 @@ import { markdownFileToHtml } from "@/app/lib/markdown";
 import {
   listDocuments, getDocument, importFile, deleteDocument, indexDocument, search,
   listFolders, createFolder, renameFolder, deleteFolder, moveDocument,
-  isKnowledgeFile, isSetupMissingError, KNOWLEDGE_FILE_ACCEPT, KNOWLEDGE_FILE_MAX_BYTES,
+  isKnowledgeFile, isSetupMissingError, downloadFileName,
+  KNOWLEDGE_FILE_ACCEPT, KNOWLEDGE_FILE_MAX_BYTES,
 } from "@/app/lib/knowledge/knowledgeService";
+import { downloadBlob } from "@/app/lib/articleExport/download";
 import { warmup, onModelDownload, getUnavailableReason } from "@/app/lib/knowledge/embed";
 import { outlineFromMarkdown, flattenOutline, resolveSection, type OutlineNode } from "@/app/lib/knowledge/outline";
 
@@ -280,6 +282,8 @@ export function KnowledgePage() {
   const [indexBatch, setIndexBatch] = useState<{ done: number; total: number } | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [deleteDocTarget, setDeleteDocTarget] = useState<KnowledgeDocument | null>(null);
+  // ダウンロード中の資料ID。本文を持っていない行は取得に一瞬かかるので、その間だけ印を出す
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<KnowledgeFolder | null>(null);
   const [importTargetFolder, setImportTargetFolder] = useState<string | null>(null);
   // フォルダ名の入力ダイアログ。null = 閉じている
@@ -542,6 +546,28 @@ export function KnowledgePage() {
   }, [project, docs.length, plan.maxKnowledgeDocsPerProject, isLimitReached, userName, toast, load]);
 
   /**
+   * 取り込んだ本文を Markdown ファイルとして取り出す。
+   *
+   * 一覧の行は本文を持っていない（listDocuments は転送量を抑えるため content を引かない）。
+   * そのため押されたときに1件だけ引き直す。開いている資料は既に本文が手元にあるので、
+   * その場合は取りに行かずそのまま保存する。
+   */
+  const runDownload = useCallback(async (doc: KnowledgeDocument) => {
+    setDownloadingId(doc.id);
+    try {
+      const content = doc.content.trim() ? doc.content : (await getDocument(doc.id))?.content ?? "";
+      if (!content.trim()) throw new Error("本文を取得できませんでした");
+      // BOM 無しの UTF-8。Markdown なので改行は取り込み時に正規化された LF のまま
+      downloadBlob(new Blob([content], { type: "text/markdown;charset=utf-8" }), downloadFileName(doc));
+    } catch (e) {
+      if (isSetupMissingError(e)) setSetupRequired(true);
+      else toast(e instanceof Error ? e.message : "ダウンロードに失敗しました", "error");
+    } finally {
+      setDownloadingId(null);
+    }
+  }, [toast]);
+
+  /**
    * 未索引の資料をまとめて索引する。
    * モデルの読み込みは1回で済むので、1件ずつ押すより速い。
    */
@@ -790,6 +816,17 @@ export function KnowledgePage() {
           <div style={{ fontSize: 10, color: "#B0A9A4", marginLeft: 16 }}>
             {formatSize(doc.byteSize)}{doc.indexedAt ? "" : " · 索引なし"}
           </div>
+        </button>
+        {/* 取り出しは閲覧できる人なら誰でもできる。canManage で囲わない */}
+        <button
+          onClick={() => void runDownload(doc)}
+          disabled={downloadingId === doc.id}
+          title={`「${downloadFileName(doc)}」をダウンロード`}
+          style={{ background: "none", border: "none", cursor: downloadingId === doc.id ? "default" : "pointer", color: "#C4BDB6", padding: 0, flexShrink: 0, display: "flex" }}
+        >
+          {downloadingId === doc.id
+            ? <Loader2 style={{ width: 11, height: 11, animation: "spin 1s linear infinite" }} />
+            : <Download style={{ width: 11, height: 11 }} />}
         </button>
         {canManage && (
           <button onClick={() => setDeleteDocTarget(doc)} title="削除"
@@ -1194,9 +1231,24 @@ export function KnowledgePage() {
                   </div>
                 )}
                 {(
-                  <div style={{ marginBottom: 14, paddingBottom: 10, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
-                    <div style={{ fontSize: 11, color: "#A09790", marginBottom: 4 }}>{openDoc.fileName || openDoc.title}</div>
-                    <h2 style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0 }}>{openDoc.title}</h2>
+                  <div style={{ marginBottom: 14, paddingBottom: 10, borderBottom: "1px solid rgba(26,23,20,0.06)", display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: "#A09790", marginBottom: 4 }}>{openDoc.fileName || openDoc.title}</div>
+                      <h2 style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0 }}>{openDoc.title}</h2>
+                    </div>
+                    <button
+                      onClick={() => void runDownload(openDoc)}
+                      disabled={downloadingId === openDoc.id}
+                      title={`「${downloadFileName(openDoc)}」をダウンロード`}
+                      style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, padding: "6px 12px", background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, color: "#3A342E", cursor: downloadingId === openDoc.id ? "default" : "pointer" }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "#F0F5F3"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
+                    >
+                      {downloadingId === openDoc.id
+                        ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
+                        : <Download style={{ width: 12, height: 12 }} />}
+                      ダウンロード
+                    </button>
                   </div>
                 )}
                 <Body
