@@ -6,9 +6,9 @@ import { X, Plus, TableProperties, AlertCircle, Check } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, MEMBERS } from "@/app/data/mock";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { escStack } from "@/app/lib/escStack";
-import { getDefaultProgressForStatus } from "@/app/lib/helpers";
-import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { insertBulkTickets, type BulkInsertTicket } from "@/app/lib/bulkTicketInsert";
 
 registerAllModules();
 
@@ -335,13 +335,15 @@ const HOT_CSS = `
 export function BulkTicketCreateDialog({
   sprintId, sprintName, projectId, projectSlug,
   sprintStartDate: _spStart, sprintEndDate: _spEnd,
-  onClose, onCreated,
+  currentTicketCount, onClose, onCreated,
 }: {
   sprintId: string; sprintName?: string; projectId?: string; projectSlug?: string;
   sprintStartDate?: string; sprintEndDate?: string;
-  onClose: () => void; onCreated: () => void;
+  currentTicketCount?: number;
+  onClose: () => void; onCreated: (createdWbs: string[]) => void;
 }) {
   const { userName } = useAuth();
+  const { plan } = usePlan();
   const hotRef = useRef<InstanceType<typeof HotTable>>(null);
   const lastSelRef = useRef<number[][] | null>(null);
   const mouseDownCoordsRef = useRef<{ row: number; col: number } | null>(null);
@@ -1042,61 +1044,27 @@ export function BulkTicketCreateDialog({
     setError(null);
     setSaving(true);
 
-    if (isSupabaseEnabled && projectId) {
-      const { data: sprintRows } = await supabase!.from("sprints").select("id, identifier").eq("project_id", projectId);
-      const sprintIds = sprintRows?.map(s => s.id) ?? [];
-      const identifier = sprintRows?.find(s => s.id === sprintId)?.identifier;
-      const prefix = identifier || "T";
-      let nextNum = 1;
-      if (sprintIds.length > 0) {
-        const { data: maxRow } = await supabase!
-          .from("sprint_tickets").select("wbs")
-          .in("sprint_id", sprintIds)
-          .like("wbs", `${prefix}-%`)
-          .not("wbs", "like", `${prefix}-%-_%`)
-          .order("wbs", { ascending: false }).limit(1).maybeSingle();
-        nextNum = (parseInt(maxRow?.wbs?.slice(prefix.length + 1) ?? "0", 10) || 0) + 1;
-      }
+    const tickets: BulkInsertTicket[] = validRows.map(row => ({
+      title: row.title.trim(),
+      status: (STATUS_MAP[row.status] ?? "todo") as BulkInsertTicket["status"],
+      priority: (PRIORITY_MAP[row.priority] ?? "medium") as BulkInsertTicket["priority"],
+      assignee: row.assignee || null,
+      startDate: toDbDate(row.startDate),
+      dueDate: toDbDate(row.dueDate),
+      estimatedHours: typeof row.estimatedHours === "number" && !isNaN(row.estimatedHours) ? row.estimatedHours : 0,
+      descriptionHtml: row.description ? textToHtml(row.description) : null,
+    }));
 
-      const inserts = validRows.map(row => {
-        const wbs = `${prefix}-${String(nextNum++).padStart(3, "0")}`;
-        const id = `TKT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const eh = typeof row.estimatedHours === "number" && !isNaN(row.estimatedHours)
-          ? row.estimatedHours : 0;
-        return {
-          id, sprint_id: sprintId, wbs,
-          title: row.title.trim(),
-          status: STATUS_MAP[row.status] ?? "todo",
-          priority: PRIORITY_MAP[row.priority] ?? "medium",
-          assignee: row.assignee || null,
-          start_date: toDbDate(row.startDate),
-          due_date: toDbDate(row.dueDate),
-          estimated_hours: eh, progress: getDefaultProgressForStatus(STATUS_MAP[row.status] ?? "todo"),
-          description: row.description ? textToHtml(row.description) : null,
-          created_by: userName || null,
-          images: [], parent_id: null,
-        };
-      });
-
-      await supabase!.from("sprint_tickets").insert(inserts);
-
-      const notifyInserts = inserts
-        .filter(t => t.assignee)
-        .map(t => ({
-          user_name: t.assignee!, type: "assign",
-          title: "チケットが割り当てられました",
-          body: `${t.wbs}: ${t.title}`,
-          ticket_id: t.id, ticket_wbs: t.wbs, ticket_title: t.title,
-          project_slug: projectSlug, is_read: false,
-        }));
-      if (notifyInserts.length > 0) {
-        await supabase!.from("notifications").insert(notifyInserts);
-      }
-      emitLinkItemsChanged(projectId, "ticket"); // 他タブの # サジェストへ即時反映
-    }
+    const result = await insertBulkTickets({
+      sprintId, projectId: projectId ?? "", projectSlug,
+      createdBy: userName || null,
+      tickets,
+      limit: currentTicketCount != null ? { max: plan.maxTicketsPerSprint, current: currentTicketCount } : undefined,
+    });
 
     setSaving(false);
-    onCreated();
+    if (result.error) { setError(result.error); return; }
+    onCreated(result.createdWbs);
     onClose();
   };
 

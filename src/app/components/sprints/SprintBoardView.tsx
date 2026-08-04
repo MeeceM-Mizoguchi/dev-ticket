@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight } from "lucide-react";
@@ -7,6 +7,7 @@ import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
+import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 
 // ステータスごとの進捗率（progress）を定義
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
@@ -92,9 +93,11 @@ function validateDrop(
   return null;
 }
 
-function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
+function TicketCard({ ticket, sprintId, onSelect, parentTicket, highlighted }: {
   ticket: SprintTicket; sprintId: string; onSelect?: (t: SprintTicket) => void;
   parentTicket?: SprintTicket;
+  /** 一括作成の直後に強調表示する */
+  highlighted?: boolean;
 }) {
   const [{ isDragging }, drag] = useDrag<DragItem, void, { isDragging: boolean }>(() => ({
     type: DRAG_TYPE,
@@ -111,7 +114,7 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
   const needsHours = ticket.status === "waiting-release" && (ticket.actualWorkHours == null);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div data-wbs={ticket.wbs} style={{ position: "relative" }}>
       {isChild && showParentTooltip && parentTicket && (
         <div style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, background: "#1A1714", color: "#FFF", borderRadius: 8, padding: "8px 10px", fontSize: 10, lineHeight: 1.5, boxShadow: "0 4px 16px rgba(0,0,0,0.25)", pointerEvents: "none" }}>
           <div style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", marginBottom: 2 }}>親チケット</div>
@@ -123,7 +126,7 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
       <div ref={drag} onClick={() => onSelect?.(ticket)}
         onMouseEnter={e => { if (!isDragging) { (e.currentTarget as HTMLElement).style.boxShadow = needsHours ? "0 0 0 2px rgba(239,68,68,0.35), 0 3px 10px rgba(0,0,0,0.10)" : "0 3px 10px rgba(0,0,0,0.10)"; if (isChild) setShowParentTooltip(true); } }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)"; setShowParentTooltip(false); }}
-        style={{ background: needsHours ? "#FFF5F5" : "#FFF", borderRadius: 9, padding: "10px 12px", border: needsHours ? "1px solid rgba(239,68,68,0.30)" : isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)" }}>
+        style={{ background: highlighted ? "#FFFBEB" : needsHours ? "#FFF5F5" : "#FFF", borderRadius: 9, padding: "10px 12px", border: needsHours ? "1px solid rgba(239,68,68,0.30)" : isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)", ...(highlighted ? { outline: "2px solid rgba(245,158,11,0.55)", outlineOffset: -1 } : null) }}>
         {isChild && (
           <div style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", marginBottom: 4, display: "flex", alignItems: "center", gap: 3 }}>
             <span style={{ width: 8, height: 8, border: "1px solid rgba(5,150,105,0.4)", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 6 }}>↳</span>
@@ -143,13 +146,14 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket }: {
   );
 }
 
-function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket, style: extraStyle }: {
+function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket, highlightWbs, style: extraStyle }: {
   sprintId: string;
   col: typeof TICKET_STATUSES[number];
   tickets: SprintTicket[];
   allTickets: SprintTicket[];
   onDrop: (item: DragItem, targetStatus: TicketStatus) => void;
   onSelectTicket?: (t: SprintTicket) => void;
+  highlightWbs?: Set<string>;
   style?: React.CSSProperties;
 }) {
   const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(() => ({
@@ -173,20 +177,22 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
       )}
       {tickets.map(t => {
         const parent = t.parentId ? allTickets.find(p => p.id === t.parentId) : undefined;
-        return <TicketCard key={t.id} ticket={t} sprintId={sprintId} onSelect={onSelectTicket} parentTicket={parent} />;
+        return <TicketCard key={t.id} ticket={t} sprintId={sprintId} onSelect={onSelectTicket} parentTicket={parent} highlighted={highlightWbs?.has(t.wbs)} />;
       })}
     </div>
   );
 }
 
-function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, stickyTop }: {
+function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, highlightWbsList, stickyTop }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
-  onBulkCreate?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  /** 一括作成の直後に強調表示するWBS（複数） */
+  highlightWbsList?: string[];
   // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
   stickyTop?: number;
 }) {
@@ -225,6 +231,25 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
       setSelectedSprintId(sprints[0].id);
     }
   }, [sprints, selectedSprintId]);
+
+  const bulkMenu = useBulkCreateMenu();
+  // 毎レンダーで作り直さないよう memo 化する（点滅防止）
+  const bulkHighlight = useMemo(() => new Set(highlightWbsList ?? []), [highlightWbsList]);
+
+  // 一括作成の直後: ボードは1スプリントしか表示しないため、対象スプリントへ切り替えてからスクロールする
+  const scrolledForBulk = useRef<string | null>(null);
+  useEffect(() => {
+    const first = highlightWbsList?.[0];
+    if (!first) { scrolledForBulk.current = null; return; }
+    const target = sprints.find(s => s.tickets.some(t => bulkHighlight.has(t.wbs)));
+    if (!target) return;
+    if (target.id !== selectedSprintId) { setSelectedSprintId(target.id); return; }
+    if (scrolledForBulk.current === first) return;
+    const el = document.querySelector(`[data-wbs="${first}"]`);
+    if (!el) return;
+    scrolledForBulk.current = first;
+    requestAnimationFrame(() => { el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  }, [highlightWbsList, bulkHighlight, sprints, selectedSprintId]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -413,7 +438,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
           )}
           {onBulkCreate && canCreateTicket && (
             <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-              <button onClick={plan.featureBulkCreate ? () => onBulkCreate(currentSprint.id) : undefined}
+              <button onClick={e => { if (plan.featureBulkCreate) bulkMenu.open(currentSprint.id, e.currentTarget); }}
                 style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureBulkCreate ? "#0284C7" : "#9CA3AF", background: plan.featureBulkCreate ? "#F0F9FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(2,132,199,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", flexShrink: 0 }}
                 onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
                 onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
@@ -458,7 +483,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
                     <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                      style={{ flex: 1 }} />
+                      highlightWbs={bulkHighlight} style={{ flex: 1 }} />
                   </div>
                 );
               })}
@@ -595,6 +620,14 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
           </div>
         </div>
       )}
+
+      {bulkMenu.menu && (
+        <BulkCreateMenu
+          anchorRect={bulkMenu.menu.rect}
+          onClose={bulkMenu.close}
+          onSelect={mode => onBulkCreate?.(bulkMenu.menu!.sprintId, mode)}
+        />
+      )}
     </div>
   );
 }
@@ -607,7 +640,8 @@ export default function SprintBoardView(props: {
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
-  onBulkCreate?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  highlightWbsList?: string[];
   // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
   stickyTop?: number;
 }) {

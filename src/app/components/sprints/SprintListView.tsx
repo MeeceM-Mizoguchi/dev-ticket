@@ -23,6 +23,7 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
 import { useAlert } from "@/app/contexts/AlertContext";
+import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 
 // 🌟 今日の日付（YYYY-MM-DD）を取得するヘルパー
 function getTodayString(): string {
@@ -284,7 +285,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, stickyTop, onUpdated, projectMembers, projectSlug }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, highlightWbsList, stickyTop, onUpdated, projectMembers, projectSlug }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -292,9 +293,11 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
-  onBulkCreate?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
   targetTicketWbs?: string;
   targetSprintId?: string | null;
+  /** 一括作成の直後に強調表示するWBS（複数） */
+  highlightWbsList?: string[];
   stickyTop?: number;
   onUpdated?: () => void | Promise<void>;
   projectMembers?: string[];
@@ -324,6 +327,10 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   const [bulkAction, setBulkAction] = useState<null | "delete" | "move">(null);
   const [assignState, setAssignState] = useState<{ phase: BulkAssignPhase; current: number; total: number; message?: string } | null>(null);
   const [highlightedTicketIds, setHighlightedTicketIds] = useState<Set<string>>(new Set());
+
+  const bulkMenu = useBulkCreateMenu();
+  // 一括作成の直後に強調表示するWBS。毎レンダーで作り直さないよう memo 化する（点滅防止）
+  const bulkHighlight = useMemo(() => new Set(highlightWbsList ?? []), [highlightWbsList]);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !userId || sprints.length === 0) return;
@@ -417,6 +424,35 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   }, [targetSprintId, sprints]);
 
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
+
+  // 一括作成の直後: 対象スプリントと、強調対象の子を持つ親を開いてから先頭のチケットへスクロールする
+  const scrolledForBulk = useRef<string | null>(null);
+  useEffect(() => {
+    const first = highlightWbsList?.[0];
+    if (!first) { scrolledForBulk.current = null; return; }
+
+    const sprint = sprints.find(s => s.tickets.some(t => bulkHighlight.has(t.wbs)));
+    if (!sprint) return;
+
+    setExpanded(prev => (prev.has(sprint.id) ? prev : new Set(prev).add(sprint.id)));
+    const parentIds = sprint.tickets
+      .filter(t => t.parentId && bulkHighlight.has(t.wbs))
+      .map(t => t.parentId!);
+    if (parentIds.length > 0) {
+      setExpandedTickets(prev => {
+        if (parentIds.every(id => prev.has(id))) return prev;
+        const next = new Set(prev);
+        parentIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+
+    if (scrolledForBulk.current === first) return;
+    const el = document.querySelector(`[data-wbs="${first}"]`);
+    if (!el) return;
+    scrolledForBulk.current = first;
+    requestAnimationFrame(() => { el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  }, [highlightWbsList, bulkHighlight, sprints, expanded, expandedTickets]);
 
   const [sprintSorts, setSprintSorts] = useState<Record<string, { col: SortCol | "closedDate" | ""; dir: "asc" | "desc" }>>({});
   const [sprintFilters, setSprintFilters] = useState<Record<string, Record<string, Set<string>>>>({});
@@ -887,7 +923,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     </PlanTooltip>
                     {onBulkCreate && (
                       <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-                        <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) onBulkCreate(sprint.id); }}
+                        <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) bulkMenu.open(sprint.id, e.currentTarget); }}
                           style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureBulkCreate ? "#7C3AED" : "#9CA3AF", background: plan.featureBulkCreate ? "#F5F3FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(124,58,237,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed" }}
                           onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
                           onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
@@ -1013,7 +1049,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     const toggleTicket = (e: React.MouseEvent) => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); };
 
                     const displayCategory = getCategoryLabel(t);
-                    const isHighlighted = t.wbs === targetTicketWbs || highlightedTicketIds.has(t.id);
+                    const isHighlighted = t.wbs === targetTicketWbs || highlightedTicketIds.has(t.id) || bulkHighlight.has(t.wbs);
                     const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? "#F5F5F4" : "#FFFFFF";
                     const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
                     const isSel = selectedTicketIds.has(t.id);
@@ -1087,7 +1123,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           const cPriColor = child.priority === "high" ? "#DC2626" : child.priority === "medium" ? "#D97706" : "#0284C7";
                           const cPriLabel = child.priority === "high" ? "高" : child.priority === "medium" ? "中" : "低";
                           const childCategory = getCategoryLabel(child);
-                          const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id);
+                          const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id) || bulkHighlight.has(child.wbs);
                           const isChildSel = selectedTicketIds.has(child.id);
                           const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
                           
@@ -1229,6 +1265,14 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           total={assignState.total}
           message={assignState.message}
           onClose={() => setAssignState(null)}
+        />
+      )}
+
+      {bulkMenu.menu && (
+        <BulkCreateMenu
+          anchorRect={bulkMenu.menu.rect}
+          onClose={bulkMenu.close}
+          onSelect={mode => onBulkCreate?.(bulkMenu.menu!.sprintId, mode)}
         />
       )}
     </div>

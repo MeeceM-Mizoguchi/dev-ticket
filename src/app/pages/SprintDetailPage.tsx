@@ -13,6 +13,8 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
+import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
+import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
@@ -257,6 +259,11 @@ export function SprintDetailPage() {
   const [openCol, setOpenCol] = useState<string>("");
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkCreate, setShowBulkCreate] = useState(false);
+  // 一括作成のメニューで選ばれた作成方法（表 / MDファイル）
+  const [bulkCreateMode, setBulkCreateMode] = useState<BulkCreateMode>("table");
+  // 一括作成の直後に、作成した全チケットを強調表示するための対象WBS
+  const [bulkCreatedWbs, setBulkCreatedWbs] = useState<string[]>([]);
+  const bulkMenu = useBulkCreateMenu();
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
   const [showMyFilterModal, setShowMyFilterModal] = useState(false);
   const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
@@ -305,6 +312,39 @@ export function SprintDetailPage() {
     if (!scrollTick || !scrollWbsRef.current) return;
     document.querySelector(`[data-wbs="${scrollWbsRef.current}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, [scrollTick]);
+
+  // 一括作成の直後に強調表示するWBS。毎レンダーで作り直さないよう memo 化する（点滅防止）
+  const bulkHighlight = useMemo(() => new Set(bulkCreatedWbs), [bulkCreatedWbs]);
+
+  // 強調表示は一定時間で自動的に解除する（一覧側の一括割当と同じ6秒）
+  useEffect(() => {
+    if (bulkCreatedWbs.length === 0) return;
+    const t = setTimeout(() => setBulkCreatedWbs([]), 6000);
+    return () => clearTimeout(t);
+  }, [bulkCreatedWbs]);
+
+  // 子チケットを作成した場合、その親行を開かないと強調表示が見えないので開いておく
+  useEffect(() => {
+    if (bulkCreatedWbs.length === 0 || !sprint) return;
+    const parentIds = sprint.tickets.filter(t => t.parentId && bulkHighlight.has(t.wbs)).map(t => t.parentId!);
+    if (parentIds.length === 0) return;
+    setExpandedTicketIds(prev => {
+      if (parentIds.every(id => prev.has(id))) return prev;
+      const next = new Set(prev);
+      parentIds.forEach(id => next.add(id));
+      return next;
+    });
+  }, [bulkCreatedWbs, bulkHighlight, sprint]);
+
+  // 一括作成の完了時: 再読み込みを待ってから強調表示を立て、先頭のチケットへスクロールする
+  const handleBulkCreated = async (createdWbs: string[]) => {
+    setShowBulkCreate(false);
+    await refreshSprint();
+    if (createdWbs.length === 0) return;
+    setBulkCreatedWbs(createdWbs);
+    scrollWbsRef.current = createdWbs[0];
+    setScrollTick(t => t + 1);
+  };
 
   const selectTicket = (wbs: string | null) => {
     if (wbs) {
@@ -360,10 +400,11 @@ export function SprintDetailPage() {
       .then(({ count }) => { setSavedFilterCount(count ?? 0); });
   }, [sprint?.id, userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const refreshSprint = () => {
+  // 一括作成後の強調表示は「再読み込みが終わってから」立てる必要があるため await できる形にしている
+  const refreshSprint = async () => {
     if (!isSupabaseEnabled || !sprint) return;
-    supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprint.id).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single()
-      .then(({ data }) => { if (data) setSprint(mapSprint(data)); });
+    const { data } = await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprint.id).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single();
+    if (data) setSprint(mapSprint(data));
   };
 
   const handleDeleteTicket = async (ticket: SprintTicket) => {
@@ -567,7 +608,7 @@ export function SprintDetailPage() {
           </button>
           {canCreateTicket && (
             <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-              <button onClick={plan.featureBulkCreate ? () => setShowBulkCreate(true) : undefined}
+              <button onClick={e => { if (plan.featureBulkCreate) bulkMenu.open(sprint.id, e.currentTarget); }}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", fontSize: 13, fontWeight: 600, color: plan.featureBulkCreate ? "#7C3AED" : "#9CA3AF", background: plan.featureBulkCreate ? "#F5F3FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(124,58,237,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 10, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", flexShrink: 0 }}
                 onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
                 onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
@@ -677,9 +718,9 @@ export function SprintDetailPage() {
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
                   data-wbs={ticket.wbs}
-                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: needsHours ? "#FFF5F5" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
+                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: bulkHighlight.has(ticket.wbs) ? "#FFFBEB" : needsHours ? "#FFF5F5" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isTerminal ? "#ECECEB" : "#FFF7F3"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent"; }}>
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = (bulkHighlight.has(ticket.wbs) || ticket.wbs === lastOpenedWbs) ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent"; }}>
                   <div style={{ display: "flex", justifyContent: "center", gap: 3, alignItems: "center" }}>
                     {needsHours && (
                       <span
@@ -751,11 +792,13 @@ export function SprintDetailPage() {
 
                   const childCategory = getCategoryLabel(child);
 
+                  const cChildBg = bulkHighlight.has(child.wbs) ? "#FFFBEB" : "#F9F8F6";
+
                   return (
-                    <div key={child.id} onClick={() => selectTicket(child.wbs || child.id)}
-                      style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: "#F9F8F6", transition: "background 0.1s", cursor: "pointer", opacity: cIsTerminal ? 0.65 : 1 }}
+                    <div key={child.id} data-wbs={child.wbs} onClick={() => selectTicket(child.wbs || child.id)}
+                      style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: cChildBg, transition: "background 0.1s", cursor: "pointer", opacity: cIsTerminal ? 0.65 : 1 }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}>
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = cChildBg; }}>
                       <div style={{ display: "flex", justifyContent: "center" }}>
                         <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                       </div>
@@ -806,7 +849,17 @@ export function SprintDetailPage() {
       </div>
 
       {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} currentTicketCount={sprint.tickets.length} />}
-      {showBulkCreate && (
+      {showBulkCreate && (bulkCreateMode === "md" ? (
+        <MdBulkCreateDialog
+          sprintId={sprint.id}
+          sprintName={sprint.name}
+          projectId={project?.id}
+          projectSlug={projectSlug}
+          currentTicketCount={sprint.tickets.length}
+          onClose={() => setShowBulkCreate(false)}
+          onCreated={handleBulkCreated}
+        />
+      ) : (
         <BulkTicketCreateDialog
           sprintId={sprint.id}
           sprintName={sprint.name}
@@ -814,8 +867,17 @@ export function SprintDetailPage() {
           projectSlug={projectSlug}
           sprintStartDate={sprint.startDate || undefined}
           sprintEndDate={sprint.endDate || undefined}
+          currentTicketCount={sprint.tickets.length}
           onClose={() => setShowBulkCreate(false)}
-          onCreated={() => { refreshSprint(); setShowBulkCreate(false); }}
+          onCreated={handleBulkCreated}
+        />
+      ))}
+
+      {bulkMenu.menu && (
+        <BulkCreateMenu
+          anchorRect={bulkMenu.menu.rect}
+          onClose={bulkMenu.close}
+          onSelect={mode => { setBulkCreateMode(mode); setShowBulkCreate(true); }}
         />
       )}
       {deleteTicketTarget && (

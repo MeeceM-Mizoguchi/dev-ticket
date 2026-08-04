@@ -106,6 +106,10 @@ async function activateIfInvited(uid: string, status: string) {
   }
 }
 
+// 起動処理がこの時間で終わらなければ、通信の完了を待たずに画面を出す。
+// （待ち続けるとスプラッシュから抜けられなくなるため）
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 5000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [userName, setUserName] = useState("");
   const [userRole, setUserRole] = useState<Role>("developer");
@@ -114,6 +118,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isSystemAdmin, setIsSystemAdmin] = useState(false);
   const [userPermissions, setUserPermissions] = useState<UserPermissions>({ ...DEFAULT_PERMISSIONS });
   const [authReady, setAuthReady] = useState(!isSupabaseEnabled);
+  // 起動時にネットワークへ繋がっていないことが分かっている状態（スプラッシュに理由を出す）
+  const [offline, setOffline] = useState(false);
 
   useEffect(() => {
     if (!isSupabaseEnabled) {
@@ -128,40 +134,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return;
     }
-    const authTimer = setTimeout(() => setAuthReady(true), 5000);
-    supabase!.auth.getSession().then(async ({ data: { session } }) => {
-      clearTimeout(authTimer);
-      if (session) {
-        // 自動ログアウト(ENHA2-027): 閉/スリープ中に夜中3時を跨いでいたら
-        // セッションを復元せずサインアウトする(ダッシュボードの一瞬の表示も防ぐ)。
-        if (shouldLogout()) {
-          await supabase!.auth.signOut();
-          clearLoginAt();
-          setAuthReady(true);
-          return;
+    // 起動が終わったことを1回だけ通知する。タイムアウト・正常終了・例外のどれから
+    // 呼ばれてもよいように冪等にしてある。
+    let settled = false;
+    const finish = () => { if (!settled) { settled = true; setAuthReady(true); } };
+
+    // 保険のタイムアウト。getSession() が返った時点では解除しない。
+    // 解除してしまうと、その後に続く profiles / roles / RPC の通信が
+    // (オフライン時などに) 応答しないまま止まったときに保険が効かず、
+    // スプラッシュが永久に回り続ける。解除はアンマウント時のみ。
+    const authTimer = setTimeout(finish, AUTH_BOOTSTRAP_TIMEOUT_MS);
+
+    // オフラインだと以降の通信はすべて失敗するので、待たずに未ログイン状態で先へ進める
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setOffline(true);
+      finish();
+    }
+
+    (async () => {
+      try {
+        const { data: { session } } = await supabase!.auth.getSession();
+        if (session) {
+          // 自動ログアウト(ENHA2-027): 閉/スリープ中に夜中3時を跨いでいたら
+          // セッションを復元せずサインアウトする(ダッシュボードの一瞬の表示も防ぐ)。
+          if (shouldLogout()) {
+            await supabase!.auth.signOut();
+            clearLoginAt();
+            return;
+          }
+          const p = await fetchProfile(session.user.id);
+          if (p) {
+            await activateIfInvited(session.user.id, p.status);
+            const role = p.role as Role;
+            const basePerms = await fetchRoleBasePermissions(role);
+            const perms = resolvePermissions(basePerms);
+            const sysAdmin = await fetchIsSystemAdmin();
+            setUserName(p.name); setUserRole(role); setUserId(session.user.id);
+            setUserOrgId(p.organization_id ?? null);
+            setIsSystemAdmin(sysAdmin);
+            setUserPermissions(perms);
+            sessionStorage.setItem("isLoggedIn", "true");
+            sessionStorage.setItem("userName", p.name);
+            sessionStorage.setItem("userRole", p.role);
+            sessionStorage.setItem("userId", session.user.id);
+            sessionStorage.setItem("userOrgId", p.organization_id ?? "");
+            sessionStorage.setItem("isSystemAdmin", String(sysAdmin));
+            sessionStorage.setItem("userPermissions", JSON.stringify(perms));
+          }
         }
-        const p = await fetchProfile(session.user.id);
-        if (p) {
-          await activateIfInvited(session.user.id, p.status);
-          const role = p.role as Role;
-          const basePerms = await fetchRoleBasePermissions(role);
-          const perms = resolvePermissions(basePerms);
-          const sysAdmin = await fetchIsSystemAdmin();
-          setUserName(p.name); setUserRole(role); setUserId(session.user.id);
-          setUserOrgId(p.organization_id ?? null);
-          setIsSystemAdmin(sysAdmin);
-          setUserPermissions(perms);
-          sessionStorage.setItem("isLoggedIn", "true");
-          sessionStorage.setItem("userName", p.name);
-          sessionStorage.setItem("userRole", p.role);
-          sessionStorage.setItem("userId", session.user.id);
-          sessionStorage.setItem("userOrgId", p.organization_id ?? "");
-          sessionStorage.setItem("isSystemAdmin", String(sysAdmin));
-          sessionStorage.setItem("userPermissions", JSON.stringify(perms));
-        }
+      } catch {
+        // ネットワーク断など。未ログイン状態のまま画面を表示する（ここで止めない）
+      } finally {
+        finish();
       }
-      setAuthReady(true);
-    }).catch(() => { clearTimeout(authTimer); setAuthReady(true); });
+    })();
 
     const { data: { subscription } } = supabase!.auth.onAuthStateChange((event, session) => {
       if (session) {
@@ -189,7 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             sessionStorage.setItem("isSystemAdmin", String(sysAdmin));
             sessionStorage.setItem("userPermissions", JSON.stringify(perms));
           }
-        });
+        }).catch(() => { /* ネットワーク断。プロフィールは次の復帰時に取り直す */ });
       } else {
         clearLoginAt();
         setUserName(""); setUserRole("developer"); setUserId(""); setUserOrgId(null);
@@ -299,6 +325,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             <div key={d} style={{ width:9, height:9, borderRadius:"50%", background:"#059669", animation:`sp-dot 1.4s ease-in-out ${d}s infinite` }} />
           ))}
         </div>
+
+        {/* オフライン時は「固まっている」ように見えないよう理由を出す */}
+        {offline && (
+          <div style={{ marginTop:24, display:"flex", flexDirection:"column", alignItems:"center", gap:10 }}>
+            <div style={{ fontSize:13, color:"#6B6458", fontWeight:600 }}>ネットワークに接続できません</div>
+            <div style={{ fontSize:11.5, color:"#9E9690" }}>接続を確認してから再読み込みしてください</div>
+            <button
+              onClick={() => window.location.reload()}
+              style={{ marginTop:2, padding:"7px 18px", fontSize:12.5, fontWeight:700, color:"#FFF", background:"#059669", border:"none", borderRadius:9, cursor:"pointer", boxShadow:"0 2px 8px rgba(5,150,105,0.25)" }}
+            >
+              再読み込み
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
