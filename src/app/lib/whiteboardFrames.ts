@@ -25,6 +25,40 @@ export function resolveParent(el: any): string | null {
   return typeof p === "string" && p ? p : null;
 }
 
+/**
+ * 選択中の要素に加え、「一緒に運ばないと壊れる連れ子」も集める（推移的に辿る）。
+ * 画像コピー（whiteboardCopySelection）と、フレームのコピー/切り取り（whiteboardFrameCopy）で共用する。
+ *  - コンテナに束縛されたテキスト（containerId が取込済み）… これが無いと文字が消える
+ *  - フレームの内包要素（wbParent / frameId が取込済み）… フレーム→入れ子フレーム→その中の図形まで
+ *  - テキストボックスの影の背景板（BRU5-062: customData.wbBgFor が取込済みテキスト）
+ *  - フレーム装飾の影矩形（BRU5-063: customData.wbFrameBg が取込済みフレーム）… 枠色/背景が消えないように
+ * ※wbParent は「直接の親」しか指さないため、入れ子フレームの孫要素を取りこぼさないよう
+ *   「取込済み集合が増えなくなるまで」繰り返し拡張する（不動点）。
+ * 返り値はシーンの並び順（fractional index 昇順）を保つ。
+ */
+export function collectSelectionClosure(api: any): any[] {
+  const all = api.getSceneElements() as any[];
+  const sel: Record<string, boolean> = api.getAppState().selectedElementIds || {};
+  const selectedIds = new Set(Object.keys(sel).filter((id) => sel[id]));
+  if (selectedIds.size === 0) return [];
+
+  const included = new Set<string>(selectedIds);
+  const has = (id?: string | null) => !!id && included.has(id);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const el of all) {
+      if (el.isDeleted || included.has(el.id)) continue;
+      const cd = el.customData || {};
+      if (has(el.containerId) || has(el.frameId) || has(cd.wbParent) || has(cd.wbBgFor) || has(cd.wbFrameBg)) {
+        included.add(el.id);
+        grew = true;
+      }
+    }
+  }
+  return all.filter((el) => !el.isDeleted && included.has(el.id));
+}
+
 // フレーム矩形を正規化（ドラッグ方向で width/height が負になり得る）。
 function normRect(f: any): { x: number; y: number; width: number; height: number } {
   const x = Math.min(f.x, f.x + f.width);

@@ -20,6 +20,7 @@ import { reflowTables, freezeSelectedTable, isPartialTableCellSelection, moveTab
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
+import { cutFrameSelection, expandSelectionToFrameChildren, isFrameSelected, writeFrameAwareClipboard, writeFrameAwareClipboardViaApi } from "@/app/lib/whiteboardFrameCopy";
 import { hasRichBlocks, htmlToBlocks, looksLikeMarkdown, parseMarkdown } from "@/app/lib/markdown";
 import { pasteBlocksToWhiteboard } from "@/app/lib/whiteboardPasteMarkdown";
 import { viewportCenter } from "@/app/lib/whiteboardTableCreate";
@@ -765,6 +766,142 @@ export default function WhiteboardCanvas({
     window.addEventListener("paste", onPaste, true);
     return () => window.removeEventListener("paste", onPaste, true);
   }, [api, canEdit, instanceKey, showToast]);
+
+  // ── フレームのコピー/切り取りは「中身ごと」運ぶ（BRU10-063）──
+  // Excalidraw はフレームの中身を frameId でしか集めないが、このボードの所属は customData.wbParent
+  // なので、標準のままでは空のフレームだけがクリップボードに載る（貼り付けても枠しか出ない）。
+  // フレームを選んでいるときだけ copy/cut を横取りし、中身を含む Excalidraw 形式の JSON を書き込む。
+  // 貼り付けは標準に任せる（id の再採番は標準が行い、customData の参照は貼り付け後に
+  // remapDuplicatedCustomRefs / captureFrameChildren が直す）。
+  useEffect(() => {
+    if (!api) return;
+    // 横取りしてよい状況か（Excalidraw 標準の onCopy と同じ「ボードにフォーカスがある」条件）。
+    // 入力欄・図形のテキスト編集中は通常の文字コピーを妨げない。
+    const onCanvas = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return false;
+      const root = containerRef.current;
+      if (!root || root.querySelector(".excalidraw-wysiwyg")) return false;
+      return root.contains(document.activeElement);
+    };
+    const onClipboard = (cut: boolean) => (e: ClipboardEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return; // 2枚あるときクリップボードを奪い合わない
+      if (cut && !canEdit) return;
+      if (!onCanvas(e.target) || !isFrameSelected(api)) return;
+      if (!writeFrameAwareClipboard(api, e)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // 標準の cut は選択中の要素しか消さず、フレームだけ消えて中身が取り残される
+      if (cut) cutFrameSelection(api);
+    };
+    const onCopy = onClipboard(false);
+    const onCut = onClipboard(true);
+    // Ctrl/Cmd+X は Excalidraw が keydown（actionCut）で処理して preventDefault するため、
+    // ブラウザの cut イベントまで届かない。キー段階で先に握って自前の切り取りに差し替える。
+    // （Ctrl/Cmd+C は Excalidraw 側にショートカット登録が無く copy イベント経由なので上の onCopy で足りる）
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!isActiveWbInstance(instanceKey) || !canEdit) return;
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.code !== "KeyX") return;
+      if (!onCanvas(e.target) || !isFrameSelected(api)) return;
+      if (!writeFrameAwareClipboardViaApi(api)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      cutFrameSelection(api);
+    };
+    // 右クリックメニューの「コピー」「切り取り」は ClipboardEvent を通らない（navigator.clipboard
+    // 直書き）ので、項目のクリックを React のハンドラ（バブル）より先に握る。握ると項目側の
+    // 「メニューを閉じる」も止まるため、閉じる/フォーカスを戻すところまで自分で面倒を見る。
+    const onMenuClick = (e: MouseEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return;
+      const li = (e.target as HTMLElement | null)?.closest?.('li[data-testid="copy"],li[data-testid="cut"]');
+      if (!li || !containerRef.current?.contains(li)) return;
+      const cut = li.getAttribute("data-testid") === "cut";
+      if (cut && !canEdit) return;
+      if (!isFrameSelected(api) || !writeFrameAwareClipboardViaApi(api)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (cut) cutFrameSelection(api);
+      api.updateScene({ appState: { contextMenu: null } });
+      containerRef.current?.querySelector<HTMLElement>(".excalidraw-container")?.focus();
+    };
+    window.addEventListener("copy", onCopy, true);
+    window.addEventListener("cut", onCut, true);       // ブラウザの編集メニュー等、キー以外の経路用
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("click", onMenuClick, true);
+    return () => {
+      window.removeEventListener("copy", onCopy, true);
+      window.removeEventListener("cut", onCut, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("click", onMenuClick, true);
+    };
+  }, [api, canEdit, instanceKey]);
+
+  // ── フレームの複製（Alt+ドラッグ / Ctrl・Cmd+D）も「中身ごと」（BRU10-063）──
+  // 複製は Excalidraw 内部（ポインタ移動中／アクション）で行われ、コピーのように差し替えられない。
+  // どちらも複製対象を「選択中の要素 ＋ その frameId の子」から決めるので、複製が走る直前に
+  // 選択をフレームの中身まで広げておき、標準の複製処理（id 再採番・グループ/接続の貼り替え）に
+  // そのまま乗せる。複製された側の customData 参照は既存の remapDuplicatedCustomRefs が直す。
+  useEffect(() => {
+    if (!api || !canEdit) return;
+    let altPending = false;  // このポインタ操作で Alt 複製用の選択拡張がまだ済んでいない
+    let dupResent = false;   // Ctrl/Cmd+D を選択拡張後に投げ直した分か（再入防止）
+    const active = () => isActiveWbInstance(instanceKey);
+
+    // Alt+ドラッグ: 複製は「Alt を押しながらの最初のポインタ移動」で走る。選択の拡張(setState)は
+    // 現在のイベント処理の後にしか反映されないため、pointerdown（＝Excalidraw が選択を更新した後の
+    // バブル段階）で先に広げておく。Alt を後から押した等で間に合わなかった場合の保険として、
+    // 最初の移動でも広げ、その1回分だけ移動を握り潰して複製を次の移動へ送る。
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      altPending = active() && !!t && !!containerRef.current?.contains(t);
+      if (altPending && e.altKey && expandSelectionToFrameChildren(api)) altPending = false;
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!altPending || !e.altKey || !e.buttons) return;
+      altPending = false;
+      if (!active() || !expandSelectionToFrameChildren(api)) return;
+      e.stopImmediatePropagation();
+    };
+    const onPointerUp = () => { altPending = false; };
+
+    // Ctrl/Cmd+D: Excalidraw の keydown アクションで即座に複製されるため、選択拡張が間に合わない。
+    // 一度握り潰して選択を広げ、反映後に同じキー操作を投げ直す。投げ直した分は拡張済みで
+    // expandSelectionToFrameChildren が false を返すので、そのまま標準の複製が走る（1回だけ）。
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (dupResent) { dupResent = false; return; }
+      if (!active()) return;
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.code !== "KeyD") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const root = containerRef.current;
+      if (!root || root.querySelector(".excalidraw-wysiwyg") || !root.contains(document.activeElement)) return;
+      if (!expandSelectionToFrameChildren(api)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const target = root.querySelector<HTMLElement>(".excalidraw-container");
+      const { ctrlKey, metaKey } = e;
+      requestAnimationFrame(() => {
+        dupResent = true;
+        target?.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "d", code: "KeyD", ctrlKey, metaKey, bubbles: true, cancelable: true,
+        }));
+        dupResent = false;
+      });
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);        // Excalidraw の選択更新後に読む＝バブル段階
+    window.addEventListener("pointermove", onPointerMove, true);  // Excalidraw の複製より先に握る＝キャプチャ段階
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerUp, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerUp, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [api, canEdit, instanceKey]);
 
   // 全画面(ネイティブ)中は Esc をブラウザ既定の「即・全画面解除」ではなく自前で処理するため、
   // Keyboard Lock API で Esc を横取りする（BRU6-004-2）。これがないと図形にフォーカスがあっても
