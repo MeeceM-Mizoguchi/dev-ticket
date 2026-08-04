@@ -18,6 +18,8 @@ import { EditSprintDialog } from "@/app/components/sprints/EditSprintDialog";
 import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
+import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
+import type { BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
@@ -92,6 +94,10 @@ export function SprintPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [createForSprintId, setCreateForSprintId] = useState<string | null>(null);
   const [bulkCreateForSprintId, setBulkCreateForSprintId] = useState<string | null>(null);
+  // 一括作成のメニューで選ばれた作成方法（表 / MDファイル）
+  const [bulkCreateMode, setBulkCreateMode] = useState<BulkCreateMode>("table");
+  // 一括作成の直後に、作成した全チケットを各ビューで強調表示するための対象WBS
+  const [bulkCreatedWbs, setBulkCreatedWbs] = useState<string[]>([]);
   const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
@@ -145,6 +151,30 @@ export function SprintPage() {
     if (p) setProject(mapProject(p));
     if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
   };
+
+  const openBulkCreate = (sprintId: string, mode: BulkCreateMode) => {
+    setBulkCreateMode(mode);
+    setBulkCreateForSprintId(sprintId);
+  };
+
+  // 一括作成の完了時: 再読み込みを待ってから強調表示を立てる（DOMに行が無いとスクロールできないため）
+  const handleBulkCreated = async (createdWbs: string[]) => {
+    setBulkCreateForSprintId(null);
+    await refreshSprints();
+    if (createdWbs.length === 0) return;
+    // 単体強調（既存機能）と競合させない
+    setSelectedTicketWbs(null);
+    setClosedHighlightWbs(null);
+    setCreatedHighlightWbs(null);
+    setBulkCreatedWbs(createdWbs);
+  };
+
+  // 強調表示は一定時間で自動的に解除する（既存の一括割当と同じ6秒）
+  useEffect(() => {
+    if (bulkCreatedWbs.length === 0) return;
+    const t = setTimeout(() => setBulkCreatedWbs([]), 6000);
+    return () => clearTimeout(t);
+  }, [bulkCreatedWbs]);
 
   useEffect(() => {
     if (!isSupabaseEnabled) {
@@ -321,26 +351,32 @@ export function SprintPage() {
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
-      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} stickyTop={headerH} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? setBulkCreateForSprintId : undefined} stickyTop={headerH} />}
+      {viewMode === "list" && <SprintListView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={bulkCreatedWbs} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+      {viewMode === "board" && <SprintBoardView sprints={sprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
+      {viewMode === "gantt" && <SprintGanttView sprints={sprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
 
       {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
       
       {bulkCreateForSprintId && (() => {
         const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
-        return (
-          <BulkTicketCreateDialog
-            sprintId={bulkCreateForSprintId}
-            sprintName={bulkSprint?.name}
-            projectId={projectId ?? undefined}
-            projectSlug={projectSlug}
-            sprintStartDate={bulkSprint?.startDate || undefined}
-            sprintEndDate={bulkSprint?.endDate || undefined}
-            onClose={() => setBulkCreateForSprintId(null)}
-            onCreated={() => { refreshSprints(); setBulkCreateForSprintId(null); }}
-          />
-        );
+        const common = {
+          sprintId: bulkCreateForSprintId,
+          sprintName: bulkSprint?.name,
+          projectId: projectId ?? undefined,
+          projectSlug,
+          currentTicketCount: bulkSprint?.tickets.length,
+          onClose: () => setBulkCreateForSprintId(null),
+          onCreated: handleBulkCreated,
+        };
+        return bulkCreateMode === "md"
+          ? <MdBulkCreateDialog {...common} />
+          : (
+            <BulkTicketCreateDialog
+              {...common}
+              sprintStartDate={bulkSprint?.startDate || undefined}
+              sprintEndDate={bulkSprint?.endDate || undefined}
+            />
+          );
       })()}
 
       {createForSprintId && createForSprint && (

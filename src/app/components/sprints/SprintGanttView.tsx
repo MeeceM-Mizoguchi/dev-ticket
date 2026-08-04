@@ -4,15 +4,51 @@ import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, getTicketStatusMeta, computeSprintStatus } from "@/app/lib/helpers";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
+import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 
-export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate, stickyTop }: {
-  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void; onBulkCreate?: (sprintId: string) => void;
+/** 一括作成の直後に強調表示する行の背景色 */
+const BULK_HL_BG = "#FFFBEB";
+
+export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate, highlightWbsList, stickyTop }: {
+  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
+  onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  /** 一括作成の直後に強調表示するWBS（複数） */
+  highlightWbsList?: string[];
   // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
   stickyTop?: number;
 }) {
   const { plan } = usePlan();
   const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
+  const bulkMenu = useBulkCreateMenu();
+  // 毎レンダーで作り直さないよう memo 化する（点滅防止）
+  const bulkHighlight = useMemo(() => new Set(highlightWbsList ?? []), [highlightWbsList]);
+
+  // 一括作成の直後: 対象スプリントと親行を開いてから、左ペインの先頭行へスクロールする
+  const scrolledForBulk = useRef<string | null>(null);
+  useEffect(() => {
+    const first = highlightWbsList?.[0];
+    if (!first) { scrolledForBulk.current = null; return; }
+    const sprint = sprints.find(s => s.tickets.some(t => bulkHighlight.has(t.wbs)));
+    if (!sprint) return;
+
+    setExpanded(prev => (prev.has(sprint.id) ? prev : new Set(prev).add(sprint.id)));
+    const parentIds = sprint.tickets.filter(t => t.parentId && bulkHighlight.has(t.wbs)).map(t => t.parentId!);
+    if (parentIds.length > 0) {
+      setExpandedTickets(prev => {
+        if (parentIds.every(id => prev.has(id))) return prev;
+        const next = new Set(prev);
+        parentIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+
+    if (scrolledForBulk.current === first) return;
+    const el = document.querySelector(`[data-wbs="${first}"]`);
+    if (!el) return;
+    scrolledForBulk.current = first;
+    requestAnimationFrame(() => { el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  }, [highlightWbsList, bulkHighlight, sprints, expanded, expandedTickets]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const headerScrollRef = useRef<HTMLDivElement>(null);
 
@@ -165,7 +201,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                   )}
                   {onBulkCreate && (
                     <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-                      <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) onBulkCreate(sprint.id); }}
+                      <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) bulkMenu.open(sprint.id, e.currentTarget); }}
                         title={plan.featureBulkCreate ? "一括作成" : undefined}
                         style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", color: plan.featureBulkCreate ? "#C9C4BB" : "#9CA3AF", flexShrink: 0, display: "flex", alignItems: "center", opacity: plan.featureBulkCreate ? 1 : 0.5 }}
                         onMouseEnter={e => { if (plan.featureBulkCreate) { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; } }}
@@ -181,12 +217,14 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                   const hasChildren = children.length > 0;
                   const isTicketExpanded = expandedTickets.has(t.id);
                   const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
+                  const isHl = bulkHighlight.has(t.wbs);
+                  const rowBg = isHl ? BULK_HL_BG : needsHours ? "rgba(239,68,68,0.06)" : "rgba(26,23,20,0.012)";
                   return (
                     <div key={t.id}>
-                      <div onClick={() => onSelectTicket?.(t)}
-                        style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 14px", display: "flex", alignItems: "center", gap: 5, background: needsHours ? "rgba(239,68,68,0.06)" : "rgba(26,23,20,0.012)", cursor: "pointer", outline: needsHours ? "1px solid rgba(239,68,68,0.25)" : "none", outlineOffset: "-1px" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "rgba(239,68,68,0.10)" : "#F0F9F5"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "rgba(239,68,68,0.06)" : "rgba(26,23,20,0.012)"; }}>
+                      <div data-wbs={t.wbs} onClick={() => onSelectTicket?.(t)}
+                        style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 14px", display: "flex", alignItems: "center", gap: 5, background: rowBg, cursor: "pointer", outline: needsHours ? "1px solid rgba(239,68,68,0.25)" : "none", outlineOffset: "-1px" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isHl ? "#FEF3C7" : needsHours ? "rgba(239,68,68,0.10)" : "#F0F9F5"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowBg; }}>
                         {hasChildren ? (
                           <button onClick={e => { e.stopPropagation(); setExpandedTickets(prev => { const n = new Set(prev); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; }); }}
                             style={{ padding: 1, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", display: "flex", alignItems: "center", flexShrink: 0 }}>
@@ -200,11 +238,13 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                       </div>
                       {hasChildren && isTicketExpanded && children.map(child => {
                         const ctsm = getTicketStatusMeta(child.status, child.progress);
+                        const isChildHl = bulkHighlight.has(child.wbs);
+                        const childRowBg = isChildHl ? BULK_HL_BG : "rgba(5,150,105,0.02)";
                         return (
-                          <div key={child.id} onClick={() => onSelectTicket?.(child)}
-                            style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 30px", display: "flex", alignItems: "center", gap: 5, background: "rgba(5,150,105,0.02)", cursor: "pointer" }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(5,150,105,0.02)"; }}>
+                          <div key={child.id} data-wbs={child.wbs} onClick={() => onSelectTicket?.(child)}
+                            style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", padding: "0 8px 0 30px", display: "flex", alignItems: "center", gap: 5, background: childRowBg, cursor: "pointer" }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isChildHl ? "#FEF3C7" : "#EEF7F3"; }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childRowBg; }}>
                             <div style={{ width: 1, height: 10, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
                             <div style={{ width: 4, height: 4, borderRadius: "50%", background: ctsm.color, flexShrink: 0 }} />
                             <span style={{ fontSize: 9, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1 }}>{child.title}</span>
@@ -263,7 +303,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     const isTicketExpanded = expandedTickets.has(t.id);
                     return (
                       <div key={t.id}>
-                        <div style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(26,23,20,0.012)" }}>
+                        <div style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: bulkHighlight.has(t.wbs) ? BULK_HL_BG : "rgba(26,23,20,0.012)" }}>
                           {hasBar && (
                             <div style={{ position: "absolute", left: tL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
                               <div style={{ width: tW, height: 12, borderRadius: 3, background: tsm.color + "25", border: `1px solid ${tsm.color}50`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
@@ -283,7 +323,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                           const cL = child.startDate ? getLeft(child.startDate) : 0;
                           const cW = cHasBar ? getWidth(child.startDate, child.dueDate) : 0;
                           return (
-                            <div key={child.id} style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: "rgba(5,150,105,0.02)" }}>
+                            <div key={child.id} style={{ height: TICK_ROW_H, borderBottom: "1px solid rgba(26,23,20,0.03)", position: "relative", background: bulkHighlight.has(child.wbs) ? BULK_HL_BG : "rgba(5,150,105,0.02)" }}>
                               {cHasBar && (
                                 <div style={{ position: "absolute", left: cL, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 4, zIndex: 1 }}>
                                   <div style={{ width: cW, height: 9, borderRadius: 3, background: ctsm.color + "20", border: `1px solid ${ctsm.color}40`, overflow: "hidden", flexShrink: 0, position: "relative" }}>
@@ -307,6 +347,14 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
           </div>
         </div>
       </div>
+
+      {bulkMenu.menu && (
+        <BulkCreateMenu
+          anchorRect={bulkMenu.menu.rect}
+          onClose={bulkMenu.close}
+          onSelect={mode => onBulkCreate?.(bulkMenu.menu!.sprintId, mode)}
+        />
+      )}
     </div>
   );
 }
