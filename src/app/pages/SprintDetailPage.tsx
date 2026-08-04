@@ -19,6 +19,8 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
+import { SelBox } from "@/app/components/sprints/SelBox";
+import { useBulkTicketActions } from "@/app/components/sprints/useBulkTicketActions";
 import { useAlert } from "@/app/contexts/AlertContext";
 
 // あらゆるIDパターンに安全に対応するためのフォールバック付き辞書
@@ -442,6 +444,41 @@ export function SprintDetailPage() {
 
   const serializedColFilters = useMemo(() => serializeFilters(colFilters), [colFilters]);
 
+  // ── 一括操作（チェックボックス選択 → 自動アサイン / スプリント移動 / リンクコピー / 削除）──
+  // スプリント一覧と同じ挙動にするため、共通フック useBulkTicketActions を使う。
+  const [projectSprints, setProjectSprints] = useState<Sprint[]>([]);
+  const [highlightedTicketIds, setHighlightedTicketIds] = useState<Set<string>>(new Set());
+
+  // 移動先スプリントは移動ダイアログを開くときにだけ取得する（画面表示時の余計な通信を避ける）
+  const loadProjectSprints = async () => {
+    if (!isSupabaseEnabled || !project?.id) return;
+    const { data } = await supabase!.from("sprints")
+      .select("*, sprint_tickets(id, status, progress)")
+      .eq("project_id", project.id)
+      .order("start_date");
+    if (data) setProjectSprints(data.map(mapSprint));
+  };
+
+  // 一括アサインした行を一定時間ハイライトする（スプリント一覧と同じ6秒）
+  const flashTickets = (ids: string[]) => {
+    setHighlightedTicketIds(new Set(ids));
+    window.setTimeout(() => setHighlightedTicketIds(new Set()), 6000);
+  };
+
+  // 毎レンダーで新しい配列を渡すと選択状態の再計算が走り続けるので memo 化する
+  const bulkTargetTickets = useMemo(() => sprint?.tickets ?? [], [sprint]);
+
+  const bulk = useBulkTicketActions({
+    tickets: bulkTargetTickets,
+    moveTargets: projectSprints,
+    projectId: project?.id ?? null,
+    projectSlug,
+    projectMembers: project?.members,
+    onUpdated: refreshSprint,
+    onFlash: flashTickets,
+    onBeforeMove: loadProjectSprints,
+  });
+
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
   if (!project || !sprint) return <Navigate to="/projects" replace />;
 
@@ -552,7 +589,13 @@ export function SprintDetailPage() {
     });
 
   const commonProps = { sortCol, sortDir, onSort: handleSort, onClearSort: clearSort, onClose: closeCol };
-  const GRID = "76px 1fr 1fr 100px 90px 60px 100px 72px 72px 72px 60px 52px 130px 52px";
+  // 先頭の 32px は一括操作用のチェックボックス列
+  const GRID = "32px 76px 1fr 1fr 100px 90px 60px 100px 72px 72px 72px 60px 52px 130px 52px";
+
+  // ヘッダーの全選択チェックボックス（表示中の親チケットが対象。子は削除・移動時に自動で追従する）
+  const visibleTicketIds = displayTickets.map(t => t.id);
+  const allSelected = visibleTicketIds.length > 0 && visibleTicketIds.every(id => bulk.selectedIds.has(id));
+  const someSelected = !allSelected && visibleTicketIds.some(id => bulk.selectedIds.has(id));
 
   const DETAIL_COL_DEFS = [
     { col: "wbs", label: "No" },
@@ -570,7 +613,7 @@ export function SprintDetailPage() {
   ];
 
   return (
-    <div style={{ padding: "24px", minWidth: 1100 }}>
+    <div style={{ padding: "24px", minWidth: 1140 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -637,6 +680,8 @@ export function SprintDetailPage() {
       <div style={{ borderRadius: 14, border: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", gap: 8, alignItems: "center", borderRadius: "14px 14px 0 0", position: "sticky", top: 0, zIndex: openCol ? 100 : 10, boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
+          <SelBox checked={allSelected} indeterminate={someSelected}
+            onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSelected); }} />
           {(["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const).map((col, idx) => (
             <ColumnFilter key={col} col={col}
               label={["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "終了日", "クローズ日"][idx]}
@@ -713,14 +758,19 @@ export function SprintDetailPage() {
 
             const displayCategory = getCategoryLabel(ticket);
             const needsHours = ticket.status === "waiting-release" && (ticket.actualWorkHours == null);
+            const isSel = bulk.selectedIds.has(ticket.id);
+            // 一括アサイン直後のハイライトも一括作成と同じ黄色で見せる
+            const isFlashed = bulkHighlight.has(ticket.wbs) || highlightedTicketIds.has(ticket.id);
+            const rowBg = isFlashed ? "#FFFBEB" : needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent";
 
             return (
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
                   data-wbs={ticket.wbs}
-                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: bulkHighlight.has(ticket.wbs) ? "#FFFBEB" : needsHours ? "#FFF5F5" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent", transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
+                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: rowBg, transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isTerminal ? "#ECECEB" : "#FFF7F3"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = (bulkHighlight.has(ticket.wbs) || ticket.wbs === lastOpenedWbs) ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent"; }}>
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowBg; }}>
+                  <SelBox checked={isSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(ticket.id); }} />
                   <div style={{ display: "flex", justifyContent: "center", gap: 3, alignItems: "center" }}>
                     {needsHours && (
                       <span
@@ -792,13 +842,15 @@ export function SprintDetailPage() {
 
                   const childCategory = getCategoryLabel(child);
 
-                  const cChildBg = bulkHighlight.has(child.wbs) ? "#FFFBEB" : "#F9F8F6";
+                  const isChildSel = bulk.selectedIds.has(child.id);
+                  const cChildBg = (bulkHighlight.has(child.wbs) || highlightedTicketIds.has(child.id)) ? "#FFFBEB" : isChildSel ? "#F0FDF4" : "#F9F8F6";
 
                   return (
                     <div key={child.id} data-wbs={child.wbs} onClick={() => selectTicket(child.wbs || child.id)}
                       style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: cChildBg, transition: "background 0.1s", cursor: "pointer", opacity: cIsTerminal ? 0.65 : 1 }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = cChildBg; }}>
+                      <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
                       <div style={{ display: "flex", justifyContent: "center" }}>
                         <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#059669", fontWeight: 700, whiteSpace: "nowrap" }}>{child.wbs}</span>
                       </div>
@@ -947,6 +999,9 @@ export function SprintDetailPage() {
           }}
         />
       )}
+
+      {/* 一括操作バー・各種ダイアログ（選択中のみ表示） */}
+      {bulk.ui}
     </div>
   );
 }
