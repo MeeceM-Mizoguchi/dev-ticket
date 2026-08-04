@@ -16,7 +16,7 @@ import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
 import { pinCellTextFormat, placeEditingCellText, seedNewCellText } from "@/app/lib/whiteboardCellFormat";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
 import { isHistoryGestureActive, noteGestureTouched } from "@/app/lib/whiteboardHistory";
-import { reflowTables, freezeSelectedTable, isPartialTableCellSelection } from "@/app/lib/whiteboardTable";
+import { reflowTables, freezeSelectedTable, isPartialTableCellSelection, moveTableCellSelection, type TableArrowDir } from "@/app/lib/whiteboardTable";
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
@@ -681,6 +681,34 @@ export default function WhiteboardCanvas({
       e.stopPropagation();
     };
     // Excalidraw の削除はバブル段階で処理されるため、window のキャプチャ段階で先に握る
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [api, canEdit, instanceKey]);
+
+  // 表のセルを選んでいる間の矢印キーは「隣のセルへ選択を移す」（BRU10-064）。
+  // セルは普通の矩形なので、既定のままだと矢印でそのセルだけが数px動いて表が崩れる。
+  // 表を丸ごと選んでいるとき（1クリックのグループ選択）や、表以外を選んでいるときは
+  // moveTableCellSelection が false を返し、従来どおり図形の移動／キャンバスのスクロールになる。
+  // Shift 付きも同じく1セル移動として扱う（既定の「大きく動かす」は表では崩す操作でしかないため）。
+  useEffect(() => {
+    if (!api || !canEdit) return;
+    const DIRS: Record<string, TableArrowDir> = {
+      ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!isActiveWbInstance(instanceKey)) return;
+      const dir = DIRS[e.key];
+      if (!dir || e.metaKey || e.ctrlKey || e.altKey) return; // 修飾キー付きは既定の操作に任せる
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return; // 入力欄はキャレット移動
+      if (containerRef.current?.querySelector(".excalidraw-wysiwyg")) return;                      // セルの文字編集中も同様
+      try {
+        if (!moveTableCellSelection(api, dir)) return;
+      } catch { return; }
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // Excalidraw の矢印移動もバブル段階のため、window のキャプチャ段階で先に握る
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [api, canEdit, instanceKey]);
