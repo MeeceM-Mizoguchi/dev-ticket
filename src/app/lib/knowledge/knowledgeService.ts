@@ -29,6 +29,21 @@ export function isKnowledgeFile(file: File): boolean {
 }
 
 /**
+ * 資料を取り出す（ダウンロードする）ときのファイル名。
+ *
+ * 取り込んだときの名前をそのまま返すのが基本。
+ * 資料名を変更していても、元のファイル名で保存された方が
+ * 手元の同じファイルを上書き・差し替えしやすい。
+ * file_name が空の古いデータもあるので、その場合はタイトルから作る。
+ */
+export function downloadFileName(doc: { fileName?: string | null; title?: string | null }): string {
+  const raw = (doc.fileName ?? "").trim() || `${(doc.title ?? "").trim() || "document"}.md`;
+  // Windows で使えない文字だけ落とす。拡張子が無ければ .md を付ける
+  const safe = raw.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim() || "document.md";
+  return KNOWLEDGE_FILE_EXTENSIONS.some(ext => safe.toLowerCase().endsWith(ext)) ? safe : `${safe}.md`;
+}
+
+/**
  * 「supabase/add_knowledge_ai.sql が未適用」に起因するエラーかどうか。
  *
  * この機能は専用テーブルとRPCを使うため、SQL 未適用だと PostgREST が
