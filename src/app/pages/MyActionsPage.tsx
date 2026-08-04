@@ -110,12 +110,35 @@ function MemoContent({ content, onNavigate }: { content: string; onNavigate: (wb
 }
 
 // ─── チケットチップ ───────────────────────────────────────────
+const CHIP_TOOLTIP_WIDTH = 260;
+
 function TicketChip({ ticket, onClick }: { ticket: ActionTicket; onClick: () => void }) {
   const c = STATUS_COLOR[ticket.status] ?? { bg: "#F4F5F6", text: "#9E9690", border: "#E0DDD9" };
+  // スクロール領域内にあるためポータルで body に描画する（親の overflow で切れないように）
+  const [tip, setTip] = useState<{ left: number; top: number; below: boolean } | null>(null);
+
+  const openTip = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const below = r.top < 96; // 上に出すスペースが無ければ下に出す
+    setTip({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - CHIP_TOOLTIP_WIDTH - 8)),
+      top: below ? r.bottom + 8 : r.top - 8,
+      below,
+    });
+  };
+
+  // 表示中にスクロールされたら位置がずれるので閉じる
+  useEffect(() => {
+    if (!tip) return;
+    const close = () => setTip(null);
+    window.addEventListener("scroll", close, true);
+    return () => window.removeEventListener("scroll", close, true);
+  }, [tip]);
+
   return (
+    <>
     <button
       onClick={onClick}
-      title={`${ticket.wbs}: ${ticket.title}\n${ticket.projectName}`}
       style={{
         display: "inline-flex", alignItems: "center",
         padding: "5px 18px 5px 10px",
@@ -131,15 +154,49 @@ function TicketChip({ ticket, onClick }: { ticket: ActionTicket; onClick: () => 
         const el = e.currentTarget as HTMLElement;
         el.style.transform = "translateY(-1px)";
         el.style.boxShadow = `0 4px 10px ${c.text}33`;
+        openTip(el);
       }}
       onMouseLeave={e => {
         const el = e.currentTarget as HTMLElement;
         el.style.transform = "translateY(0)";
         el.style.boxShadow = "none";
+        setTip(null);
       }}
     >
       {ticket.wbs}
     </button>
+    {tip && createPortal(
+      <div style={{
+        position: "fixed",
+        left: tip.left,
+        top: tip.top,
+        transform: tip.below ? "none" : "translateY(-100%)",
+        width: CHIP_TOOLTIP_WIDTH,
+        background: "#1A1714",
+        color: "#FFFFFF",
+        borderRadius: 8,
+        padding: "8px 10px",
+        boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
+        pointerEvents: "none",
+        zIndex: 9999,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+          <span style={{
+            fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", letterSpacing: "0.02em",
+            padding: "1px 5px", borderRadius: 3,
+            background: "rgba(255,255,255,0.12)", color: "#FFFFFF",
+          }}>{ticket.wbs}</span>
+          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.55)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+            {ticket.projectName}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.45, wordBreak: "break-word" as const }}>
+          {ticket.title}
+        </div>
+      </div>,
+      document.body
+    )}
+    </>
   );
 }
 
