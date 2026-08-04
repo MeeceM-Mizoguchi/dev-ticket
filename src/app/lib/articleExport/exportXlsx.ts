@@ -71,8 +71,23 @@ function writeImage(ws: ExcelJS.Worksheet, wb: ExcelJS.Workbook, cursor: number,
   // exceljs は png/jpeg/gif のみ。bmp は png として扱う（稀ケースのフォールバック）。
   const extension = im.ext === "bmp" ? "png" : im.ext;
   const id = wb.addImage({ base64: im.base64, extension });
-  ws.addImage(id, { tl: { col: 0, row: cursor - 1 }, ext: { width: w, height: h }, editAs: "oneCell" });
-  return cursor + Math.ceil(h / 18) + 1; // 画像高さぶん行を送る
+
+  // 画像の高さ(h)から必要な行数を計算（Excelの標準1行≒18px換算）
+  const imgRows = Math.max(1, Math.ceil(h / 18));
+
+  // 【重ね描画を100%防止するアンカー計算】
+  // cursor は「次にテキストを書く予定のExcel行番号（1始まり）」です。
+  // ・Excelの cursor 行目はテキストを書かず「完全な空行バッファ」として残します。
+  // ・tl.row に 0始まりインデックスとして `cursor` を指定すると、画像は「Excelの cursor + 1 行目」から描き始まります。
+  // これにより、直前の文章が自動折り返して縦に伸びても、空行がクッションになり画像上端と100%被りません。
+  ws.addImage(id, {
+    tl: { col: 0, row: cursor, colOff: 0, rowOff: 0 },
+    ext: { width: w, height: h },
+    editAs: "oneCell"
+  });
+
+  // (直前空行1行 + 画像描画領域 imgRows + 直後空行1行) の計 +2 行分を進めて次の行番号を返す
+  return cursor + imgRows + 2;
 }
 
 function writeBlocks(ws: ExcelJS.Worksheet, wb: ExcelJS.Workbook, cursor: number, blocks: Block[], images: Map<string, LoadedImage>): number {
@@ -106,22 +121,28 @@ function writeBlocks(ws: ExcelJS.Worksheet, wb: ExcelJS.Workbook, cursor: number
         break;
       }
       case "codeblock": {
-        const c = ws.getCell(row, 1);
-        c.value = b.text;
-        c.font = { name: "Consolas" };
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRAY } };
-        c.alignment = { wrapText: false, vertical: "top" };
-        row += 1;
+        const lines = b.text.split("\n");
+        for (const line of lines) {
+          const c = ws.getCell(row, 1);
+          c.value = line;
+          c.font = { name: "Consolas" };
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRAY } };
+          c.alignment = { wrapText: false, vertical: "top" };
+          row += 1;
+        }
         break;
       }
       // 通常は render() 前に画像化されるが、変換失敗時の保険としてコード表示。
       case "mermaid": {
-        const c = ws.getCell(row, 1);
-        c.value = b.code;
-        c.font = { name: "Consolas" };
-        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRAY } };
-        c.alignment = { wrapText: false, vertical: "top" };
-        row += 1;
+        const lines = b.code.split("\n");
+        for (const line of lines) {
+          const c = ws.getCell(row, 1);
+          c.value = line;
+          c.font = { name: "Consolas" };
+          c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRAY } };
+          c.alignment = { wrapText: false, vertical: "top" };
+          row += 1;
+        }
         break;
       }
       case "table": row = writeTable(ws, row, b); break;
