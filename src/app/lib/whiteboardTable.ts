@@ -291,6 +291,85 @@ export function distributeTableSizes(api: any, tid: string, kind: "col" | "row",
   return applyTableSizes(api, tid, kind, indices, value, true);
 }
 
+// ── 矢印キーによるセル移動（BRU10-064） ───────────────────────────────────────
+// セルは普通の rectangle なので、セルを選んだまま矢印キーを押すと Excalidraw の既定動作で
+// 「その矩形だけが数 px 動く」。表としては崩れでしかない（reflow が位置を戻すが、原点セル(0,0)を
+// 動かした場合は表ごとずれる）。表を扱う道具としては「隣のセルへ選択が移る」のが自然なので、
+// 表のセルを選んでいる間の矢印キーは選択の移動へ読み替える。
+//
+// 基点は選択範囲の端（表計算ソフトと同じで、範囲選択から矢印を押すと進行方向の端へ寄って1セルへ畳む）。
+// 表まるごと選択（1クリックのグループ選択）は従来どおり＝矢印で表全体を動かせる。
+
+export type TableArrowDir = "up" | "down" | "left" | "right";
+
+// 移動先セルが画面外なら最小限だけスクロールして見えるようにする。
+// scene→viewport は Excalidraw と同じ (scene + scroll) * zoom（st.width/height と同じ座標系）。
+function scrollPatchForCell(st: any, cell: any): { scrollX: number; scrollY: number } | null {
+  const zoom = st?.zoom?.value ?? 1;
+  const vw = st?.width ?? 0, vh = st?.height ?? 0;
+  if (!vw || !vh || !zoom) return null;
+  const M = 24;                       // 画面端に貼り付かないための余白
+  let sx = st.scrollX ?? 0, sy = st.scrollY ?? 0;
+  const l = (cell.x + sx) * zoom, r = (cell.x + cell.width + sx) * zoom;
+  const t = (cell.y + sy) * zoom, b = (cell.y + cell.height + sy) * zoom;
+  if (l < M) sx += (M - l) / zoom;                    // 左が切れている → 右へ送る
+  else if (r > vw - M) sx -= (r - (vw - M)) / zoom;   // 右が切れている → 左へ送る（セルが画面より大きい時は左端合わせ）
+  if (t < M) sy += (M - t) / zoom;
+  else if (b > vh - M) sy -= (b - (vh - M)) / zoom;
+  return Math.abs(sx - (st.scrollX ?? 0)) > EPS || Math.abs(sy - (st.scrollY ?? 0)) > EPS ? { scrollX: sx, scrollY: sy } : null;
+}
+
+/**
+ * 選択中の表セルを矢印キーで隣のセルへ移す。戻り値 true = キーを消費した（既定の移動を止める）。
+ * 次のときは false（＝Excalidraw の既定動作に任せる）:
+ *   ・表のセルを選んでいない（未選択なら矢印でキャンバスがスクロールする）
+ *   ・表以外の要素も一緒に選んでいる
+ *   ・表を丸ごと選んでいる（表ごと動かしたい意図）
+ * 端で行き止まりの場合は何もせず true（＝セルがずれるのを防ぐ）。
+ */
+export function moveTableCellSelection(api: any, dir: TableArrowDir): boolean {
+  const tid = selectedTableId(api);
+  if (!tid) return false;
+  const els = api.getSceneElements() as any[];
+  const info = tableGrid(els, tid);
+  if (!info) return false;
+  const { grid, R, C } = info;
+  const sel = api.getAppState().selectedElementIds || {};
+  // 表以外の要素も選択に混じっていたら手を出さない（セルのラベル=bound text は選択の一部として無視）
+  for (const e of els) {
+    if (!sel[e.id] || e.isDeleted) continue;
+    if (e.type === "text" && e.containerId) continue;
+    const m = cellMeta(e);
+    if (!m || m.tid !== tid) return false;
+  }
+  const rows: number[] = [], cols: number[] = [];
+  let total = 0, on = 0;
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+    const cell = grid[r][c]; if (!cell) continue;
+    total++;
+    if (sel[cell.id]) { on++; rows.push(r); cols.push(c); }
+  }
+  if (!on || on >= total) return false;
+  // 進行方向の端を基点にする（範囲選択 → その端から1セルぶん動いた1セル選択になる）
+  const br = dir === "down" ? Math.max(...rows) : Math.min(...rows);
+  const bc = dir === "right" ? Math.max(...cols) : Math.min(...cols);
+  const nr = Math.max(0, Math.min(R - 1, br + (dir === "down" ? 1 : dir === "up" ? -1 : 0)));
+  const nc = Math.max(0, Math.min(C - 1, bc + (dir === "right" ? 1 : dir === "left" ? -1 : 0)));
+  const target = grid[nr][nc];
+  if (!target) return true;                                  // 欠けたセル（通常は無い）: 何もせずキーだけ消費
+  if (on === 1 && nr === br && nc === bc) return true;        // 端で行き止まり: 選択はそのまま
+  setTableAxisSel(null);                                      // 列/行の軸選択は畳む（1セル選択になるため）
+  const st = api.getAppState();
+  const scroll = scrollPatchForCell(st, target);
+  // 選択の変更だけなので履歴には残さない（NEVER）。editingGroupId は触らない
+  // （グループ内編集で入ったセル選択なら、その状態のまま隣へ移りたい）。
+  api.updateScene({
+    appState: { selectedElementIds: { [target.id]: true }, selectedGroupIds: {}, ...(scroll ?? {}) },
+    captureUpdate: CaptureUpdateAction.NEVER,
+  });
+  return true;
+}
+
 export interface TableSel { tid: string; rows: number[]; cols: number[]; R: number; C: number; single: boolean; focusedId: string | null; axis: "col" | "row" | null }
 
 // 追加・削除の基準となる「選択が跨る行・列」を返す。
