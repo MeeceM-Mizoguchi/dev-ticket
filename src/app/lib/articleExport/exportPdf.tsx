@@ -51,7 +51,11 @@ function runStyle(r: Run) {
 
 function Runs({ runs }: { runs: Run[] }) {
   if (!runs.length) return <Text> </Text>;
-  return <>{runs.map((r, i) => <Text key={i} style={runStyle(r)}>{r.text}</Text>)}</>;
+  return <>{runs.map((r, i) => {
+    // PDF（NotoSansJP）非対応の絵文字・アイコン文字による文字重ね（レイアウト崩れ）を防止するため除去
+    const safeText = r.text ? r.text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "") : "";
+    return <Text key={i} style={runStyle(r)}>{safeText}</Text>;
+  })}</>;
 }
 
 function List({ block, depth = 0 }: { block: ListBlock; depth?: number }) {
@@ -111,7 +115,12 @@ function Img({ url, images }: { url: string; images: Map<string, LoadedImage> })
   const ptW = im.width * 0.75; // px→pt 目安
   const w = Math.min(ptW || CONTENT_W, CONTENT_W);
   const h = im.width ? (w * im.height) / im.width : undefined;
-  return <Image src={im.dataUrl} style={{ width: w, height: h, marginVertical: 8 }} />;
+  // 画像直前のテキストとの重なり（レイアウト崩れ）を防ぐため、wrap={false} の View で囲む
+  return (
+    <View wrap={false} style={{ marginVertical: 8 }}>
+      <Image src={im.dataUrl} style={{ width: w, height: h }} />
+    </View>
+  );
 }
 
 function Blocks({ blocks, images }: { blocks: Block[]; images: Map<string, LoadedImage> }) {

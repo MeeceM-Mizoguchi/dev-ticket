@@ -89,8 +89,11 @@ function normalizeSvgSize(svg: string): { width: number; height: number; normali
     const el = doc.documentElement;
     if (el && el.nodeName.toLowerCase() === "svg") {
       const vb = (el.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
-      let width = parseFloat(el.getAttribute("width") || "");
-      let height = parseFloat(el.getAttribute("height") || "");
+      // "%" 指定時は parseFloat すると "100" 等の極小サイズになり解像度低下と巨大な余白を生むため無視する
+      const wAttr = el.getAttribute("width") || "";
+      const hAttr = el.getAttribute("height") || "";
+      let width = wAttr.includes("%") ? NaN : parseFloat(wAttr);
+      let height = hAttr.includes("%") ? NaN : parseFloat(hAttr);
       if ((!width || Number.isNaN(width)) && vb.length === 4) width = vb[2];
       if ((!height || Number.isNaN(height)) && vb.length === 4) height = vb[3];
       if (!width || Number.isNaN(width)) width = 800;
@@ -118,9 +121,9 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 /**
  * Mermaid の SVG を PNG(dataURL) にラスタライズする。エクスポート(PDF/Word/Excel)と
  * ホワイトボードの画像フォールバックで使用。背景は白で塗る（透過だと Word/PDF で見づらいため）。
- * @param scale 解像度倍率（既定2で高精細）。
+ * @param scale 解像度倍率（既定4に変更し、エクスポート時の文字可読性を確保）。
  */
-export async function mermaidSvgToPngDataUrl(svg: string, scale = 2): Promise<string> {
+export async function mermaidSvgToPngDataUrl(svg: string, scale = 4): Promise<string> {
   const { width, height, normalized } = normalizeSvgSize(svg);
   const blob = new Blob([normalized], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(blob);
