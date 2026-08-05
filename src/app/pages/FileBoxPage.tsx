@@ -17,6 +17,7 @@ import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR,
+  downloadProjectFile, // 👈 こちらを追加してください
 } from "@/app/lib/projectFiles";
 
 const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
@@ -140,7 +141,7 @@ export function FileBoxPage() {
     const base = files.find(f => f.id === wanted);
     const newest = base
       ? files.reduce<ProjectFile | null>((best, f) =>
-          f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
+        f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
       : null;
     if (newest) setPreviewTarget(newest);
     else toast("リンク先のファイルが見つかりません", "error");
@@ -198,9 +199,8 @@ export function FileBoxPage() {
   // ── 各アクション ────────────────────────────────────────────
   const handleDownload = useCallback(async (file: ProjectFile) => {
     try {
-      const url = await fetchSignedUrl(file.id, "download");
-      // download 指定の署名付きURLなので、遷移すると元のファイル名で保存される
-      window.location.href = url;
+      // 🌟 projectFiles.ts のデコード対応ダウンロード関数を呼び出す
+      await downloadProjectFile(file.id, file.fileName);
     } catch (e) {
       toast(e instanceof Error ? e.message : "ダウンロードに失敗しました", "error");
     }
