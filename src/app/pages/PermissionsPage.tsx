@@ -39,9 +39,9 @@ const ACCESS_LEVEL_OPTIONS: { value: AccessLevel; label: string }[] = [
 ];
 
 const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission" | "whiteboardPermission"; label: string; color: string }[] = [
-  { key: "backlogPermission",    label: "バックログ",     color: "#6D28D9" },
-  { key: "wikiPermission",       label: "Wiki",           color: "#0284C7" },
-  { key: "minutesPermission",    label: "議事録",         color: "#059669" },
+  { key: "backlogPermission", label: "バックログ", color: "#6D28D9" },
+  { key: "wikiPermission", label: "Wiki", color: "#0284C7" },
+  { key: "minutesPermission", label: "議事録", color: "#059669" },
   { key: "whiteboardPermission", label: "ホワイトボード", color: "#F59E0B" },
 ];
 
@@ -527,6 +527,19 @@ export function PermissionsPage() {
       const { error } = await supabase!.from("permission_groups")
         .update({ name, permissions: perms }).eq("id", groupId);
       if (error) { toast("グループ設定の保存に失敗しました", "error"); return; }
+
+      // このグループがアサインされているすべてのプロジェクトとメンバー権限を一括同期
+      const affectedProjects = projects.filter(p => (p.groupIds ?? []).includes(groupId));
+      const memberIds = getGroupMemberIds(groupId);
+
+      for (const project of affectedProjects) {
+        for (const mid of memberIds) {
+          await supabase!.from("project_member_permissions")
+            .delete().eq("project_id", project.id).eq("member_id", mid);
+          await supabase!.from("project_member_permissions")
+            .insert({ project_id: project.id, member_id: mid, permissions: perms });
+        }
+      }
     }
     setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name, permissions: perms } : g));
     setSettingsGroupId(null);
