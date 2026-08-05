@@ -163,9 +163,53 @@ export async function deleteProjectFile(fileId: string): Promise<void> {
   await postApi<{ ok: boolean }>("delete", { fileId });
 }
 
-/** ダウンロード（元のファイル名で保存される署名付きURLへ遷移する） */
-export async function downloadProjectFile(fileId: string): Promise<void> {
-  window.location.href = await fetchSignedUrl(fileId, "download");
+/** 
+ * ダウンロード（URLエンコードされた日本語ファイル名をデコードし、正しいファイル名で保存する）
+ */
+export async function downloadProjectFile(fileId: string, fileName?: string): Promise<void> {
+  const url = await fetchSignedUrl(fileId, "download");
+  try {
+    // 署名付きURLからBlobとしてファイルを取得
+    const res = await fetchFileWithRetry(url);
+    const blob = await res.blob();
+
+    // ファイル名の特定（引数 > Content-Dispositionヘッダー）
+    let name = fileName;
+    if (!name) {
+      const cd = res.headers.get("content-disposition");
+      if (cd) {
+        const match = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
+        if (match && match[1]) {
+          name = match[1].replace(/^["']|["']$/g, "");
+        }
+      }
+    }
+
+    // URLエンコードされている場合は safeDecode して本来の日本語ファイル名に戻す
+    if (name) {
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        // すでにデコード済みの場合はそのまま
+      }
+    }
+
+    // 同一オリジンの Blob URL を作成することで、a.download のファイル名設定を確実に適用させる
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    if (name) {
+      a.download = name;
+    }
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch (e) {
+    console.error("[downloadProjectFile] blob download error, fallbacking to direct url:", e);
+    // フォールバック: 直接URLへ遷移
+    window.location.href = url;
+  }
 }
 
 /**
