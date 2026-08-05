@@ -16,6 +16,7 @@ import {
   CHAR_PX, COL_PADDING_PX, DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT_PT, PT_TO_PX,
 } from "./ExcelViewer";
 import { textWidth, wrapHeight, spillExtents } from "@/app/lib/xlsxTextLayout";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) 画面内エディタ
 //
@@ -230,7 +231,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   const sheetsRef = useRef<SheetModel[] | null>(null);
   const hotRef = useRef<InstanceType<typeof HotTable>>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const disposeRef = useRef<() => void>(() => {});
+  const disposeRef = useRef<() => void>(() => { });
   // HotTable に渡す data 配列。ラッパーが再レンダーごとに data を再適用するため、
   // 別配列で差し替えず「同じ配列を in-place で書き換え」て編集が消えないようにする。
   const gridDataRef = useRef<Grid>([]);
@@ -972,7 +973,19 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       const ab = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
       const blob = new Blob([ab], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const newFile = new File([blob], file.fileName, { type: blob.type });
-      await uploadProjectFile(file.projectId, newFile);
+
+      let targetParentId = (file as any).parentId ?? (file as any).parent_id ?? (file as any).folderId ?? null;
+      if (isSupabaseEnabled && file.id) {
+        try {
+          const { data } = await supabase!.from("project_files").select("parent_id").eq("id", file.id).single();
+          if (data && data.parent_id) targetParentId = data.parent_id;
+        } catch (err) {
+          console.warn("parent_id fetch failed", err);
+        }
+      }
+
+      // APIに更新対象のファイルIDを明示的に伝える
+      await uploadProjectFile(file.projectId, newFile, { parentId: targetParentId, fileId: file.id });
       onSaved();
       setDirty(false);
       setNeedsRepair(false);
@@ -1066,13 +1079,15 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         <button onClick={() => overlayRef.current?.addShape("text")} style={shapeBtn} title="テキストボックス"><Type style={sIc} /></button>
         <div style={{ flex: 1 }} />
         {/* 編集が無くても、壊れた描画の修復のために保存できるようにする */}
-        {(() => { const canSave = dirty || needsRepair; return (
-          <button onClick={handleSave} disabled={saving || !canSave}
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: canSave ? "#059669" : "#D4CEC8", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: canSave && !saving ? "pointer" : "default" }}>
-            {saving ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} /> : <Save style={{ width: 12, height: 12 }} />}
-            {saving ? "保存中..." : needsRepair && !dirty ? "修復して保存" : "保存（新バージョン）"}
-          </button>
-        ); })()}
+        {(() => {
+          const canSave = dirty || needsRepair; return (
+            <button onClick={handleSave} disabled={saving || !canSave}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: canSave ? "#059669" : "#D4CEC8", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: canSave && !saving ? "pointer" : "default" }}>
+              {saving ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} /> : <Save style={{ width: 12, height: 12 }} />}
+              {saving ? "保存中..." : needsRepair && !dirty ? "修復して保存" : "保存（新バージョン）"}
+            </button>
+          );
+        })()}
       </div>
 
       {/* 図形の書式ツールバー（図形選択時のみ） */}
