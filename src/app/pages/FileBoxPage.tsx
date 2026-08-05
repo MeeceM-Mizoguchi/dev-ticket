@@ -140,7 +140,7 @@ export function FileBoxPage() {
     const base = files.find(f => f.id === wanted);
     const newest = base
       ? files.reduce<ProjectFile | null>((best, f) =>
-          f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
+        f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
       : null;
     if (newest) setPreviewTarget(newest);
     else toast("リンク先のファイルが見つかりません", "error");
@@ -249,10 +249,6 @@ export function FileBoxPage() {
     emitLinkItemsChanged(file.projectId, "file");
   }, [toast]);
 
-  // ── ガード ─────────────────────────────────────────────────
-  if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
-
   // 保存や差し替えのたびに版が増えるので、一覧は同名ファイルの最新版だけを見せる。
   // (files は created_at 降順で取得済み。同名なら version が大きい方を残す)
   const latestOnly = files.filter(f =>
@@ -262,23 +258,19 @@ export function FileBoxPage() {
     ? latestOnly.filter(f => f.fileName.toLowerCase().includes(search.toLowerCase()) || f.uploadedBy.toLowerCase().includes(search.toLowerCase()))
     : latestOnly;
 
+  // ── ガード ─────────────────────────────────────────────────
+  if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
+  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
+
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
-        <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
-        </button>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
-      </div>
-
+      {/* ...省略... */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>ファイルボックス</h1>
           {/* 読み込み中に「0 件」と出てから件数が入れ替わるのを避ける */}
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>
-            {!project ? "..." : loading ? project.name : `${project.name} · ${files.length} 件`}
+            {!project ? "..." : loading ? project.name : `${project.name} · ${latestOnly.length} 件`}
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
