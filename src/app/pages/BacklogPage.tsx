@@ -34,9 +34,10 @@ const STATUS_META: Record<BacklogStatus, { label: string; color: string; bg: str
   archived: { label: "アーカイブ", color: "#9CA3AF", bg: "#F4F5F6" },
 };
 
-async function nextBacklogId(): Promise<string> {
+async function nextBacklogId(projectId: string): Promise<string> {
   const { data } = await supabase!
     .from("backlog_items").select("id")
+    .eq("project_id", projectId)
     .like("id", "B-%")
     .order("id", { ascending: false }).limit(1).maybeSingle();
   const next = (parseInt(data?.id?.slice(2) ?? "0", 10) || 0) + 1;
@@ -100,7 +101,7 @@ function ConvertToTicketModal({
       await supabase!.from("backlog_items").update({
         status: "converted", converted_ticket_id: ticketId, converted_ticket_wbs: wbs,
         updated_at: new Date().toISOString(),
-      }).eq("id", item.id);
+      }).eq("id", item.id).eq("project_id", project.id);
 
       emitLinkItemsChanged(project.id, "ticket"); // 他タブの # サジェストへ即時反映
 
@@ -358,7 +359,7 @@ export function BacklogPage() {
       if (patch.assignee !== undefined) updateData.assignee = patch.assignee;
       if (patch.estimatedHours !== undefined) updateData.estimated_hours = patch.estimatedHours;
       if ("categoryId" in patch) updateData.category_id = patch.categoryId ?? null;
-      await supabase!.from("backlog_items").update(updateData).eq("id", selectedId);
+      await supabase!.from("backlog_items").update(updateData).eq("id", selectedId).eq("project_id", pid);
       setItems(prev => prev.map(i => i.id === selectedId ? { ...i, ...patch } : i));
       // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
       if (titleChanged) emitLinkItemsChanged(pid, "backlog");
@@ -369,8 +370,8 @@ export function BacklogPage() {
     if (!selectedId) return;
     setEditImages(next);
     setItems(prev => prev.map(i => i.id === selectedId ? { ...i, images: next } : i));
-    if (isSupabaseEnabled) {
-      await supabase!.from("backlog_items").update({ images: next, updated_at: new Date().toISOString() }).eq("id", selectedId);
+    if (isSupabaseEnabled && project) {
+      await supabase!.from("backlog_items").update({ images: next, updated_at: new Date().toISOString() }).eq("id", selectedId).eq("project_id", project.id);
     }
   }, [selectedId]);
 
@@ -414,7 +415,7 @@ export function BacklogPage() {
 
   const handleAddItem = async () => {
     if (!project) return;
-    const id = await nextBacklogId();
+    const id = await nextBacklogId(project.id);
     const { error } = await supabase!.from("backlog_items").insert({
       id, project_id: project.id, title: "新規バックログ項目", description: "", priority: "medium",
       assignee: "", estimated_hours: 0, status: "open", rank: Date.now(), created_by: userName || null,
@@ -439,14 +440,16 @@ export function BacklogPage() {
       const r = newRanks.find(u => u.id === i.id);
       return r ? { ...i, rank: r.rank } : i;
     }));
+    if (!project) return;
     await Promise.all(newRanks.map(({ id, rank }) =>
-      supabase!.from("backlog_items").update({ rank }).eq("id", id)
+      supabase!.from("backlog_items").update({ rank }).eq("id", id).eq("project_id", project.id)
     ));
   }, [grouped.active]);
 
   const handleDelete = async (item: BacklogItem) => {
-    await supabase!.from("backlog_items").delete().eq("id", item.id);
-    emitLinkItemsChanged(project?.id, "backlog");
+    if (!project) return;
+    await supabase!.from("backlog_items").delete().eq("id", item.id).eq("project_id", project.id);
+    emitLinkItemsChanged(project.id, "backlog");
     setItems(prev => prev.filter(i => i.id !== item.id));
     if (selectedId === item.id) {
       setSelectedId(null);
