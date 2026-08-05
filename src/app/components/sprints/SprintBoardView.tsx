@@ -93,17 +93,19 @@ function validateDrop(
   return null;
 }
 
-function TicketCard({ ticket, sprintId, onSelect, parentTicket, highlighted }: {
+function TicketCard({ ticket, sprintId, onSelect, parentTicket, highlighted, canEdit = true }: {
   ticket: SprintTicket; sprintId: string; onSelect?: (t: SprintTicket) => void;
   parentTicket?: SprintTicket;
   /** 一括作成の直後に強調表示する */
   highlighted?: boolean;
+  canEdit?: boolean;
 }) {
   const [{ isDragging }, drag] = useDrag<DragItem, void, { isDragging: boolean }>(() => ({
     type: DRAG_TYPE,
+    canDrag: canEdit,
     item: { id: ticket.id, sprintId, currentStatus: ticket.status },
     collect: m => ({ isDragging: m.isDragging() }),
-  }), [ticket.id, sprintId, ticket.status]);
+  }), [ticket.id, sprintId, ticket.status, canEdit]);
 
   const [showParentTooltip, setShowParentTooltip] = useState(false);
 
@@ -126,7 +128,7 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket, highlighted }: {
       <div ref={drag} onClick={() => onSelect?.(ticket)}
         onMouseEnter={e => { if (!isDragging) { (e.currentTarget as HTMLElement).style.boxShadow = needsHours ? "0 0 0 2px rgba(239,68,68,0.35), 0 3px 10px rgba(0,0,0,0.10)" : "0 3px 10px rgba(0,0,0,0.10)"; if (isChild) setShowParentTooltip(true); } }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)"; setShowParentTooltip(false); }}
-        style={{ background: highlighted ? "#FFFBEB" : needsHours ? "#FFF5F5" : "#FFF", borderRadius: 9, padding: "10px 12px", border: needsHours ? "1px solid rgba(239,68,68,0.30)" : isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: "grab", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)", ...(highlighted ? { outline: "2px solid rgba(245,158,11,0.55)", outlineOffset: -1 } : null) }}>
+        style={{ background: highlighted ? "#FFFBEB" : needsHours ? "#FFF5F5" : "#FFF", borderRadius: 9, padding: "10px 12px", border: needsHours ? "1px solid rgba(239,68,68,0.30)" : isChild ? "1px solid rgba(5,150,105,0.20)" : "1px solid rgba(26,23,20,0.08)", marginBottom: 6, cursor: canEdit ? "grab" : "pointer", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s, box-shadow 0.15s", boxShadow: isDragging ? "none" : needsHours ? "0 0 0 2px rgba(239,68,68,0.25), 0 1px 3px rgba(0,0,0,0.04)" : "0 1px 3px rgba(0,0,0,0.04)", ...(highlighted ? { outline: "2px solid rgba(245,158,11,0.55)", outlineOffset: -1 } : null) }}>
         {isChild && (
           <div style={{ fontSize: 9, color: "#059669", fontFamily: "var(--font-mono)", marginBottom: 4, display: "flex", alignItems: "center", gap: 3 }}>
             <span style={{ width: 8, height: 8, border: "1px solid rgba(5,150,105,0.4)", borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 6 }}>↳</span>
@@ -146,7 +148,7 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket, highlighted }: {
   );
 }
 
-function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket, highlightWbs, style: extraStyle }: {
+function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket, highlightWbs, style: extraStyle, canEdit = true }: {
   sprintId: string;
   col: typeof TICKET_STATUSES[number];
   tickets: SprintTicket[];
@@ -155,13 +157,14 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
   onSelectTicket?: (t: SprintTicket) => void;
   highlightWbs?: Set<string>;
   style?: React.CSSProperties;
+  canEdit?: boolean;
 }) {
   const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(() => ({
     accept: DRAG_TYPE,
-    canDrop: item => item.sprintId === sprintId && item.currentStatus !== col.value && col.value !== "pending" && col.value !== "withdrawn",
+    canDrop: item => canEdit && item.sprintId === sprintId && item.currentStatus !== col.value && col.value !== "pending" && col.value !== "withdrawn",
     drop: item => onDrop(item, col.value),
     collect: m => ({ isOver: m.isOver(), canDrop: m.canDrop() }),
-  }), [sprintId, col.value, onDrop]);
+  }), [sprintId, col.value, onDrop, canEdit]);
 
   const isActive = isOver && canDrop;
 
@@ -177,15 +180,16 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
       )}
       {tickets.map(t => {
         const parent = t.parentId ? allTickets.find(p => p.id === t.parentId) : undefined;
-        return <TicketCard key={t.id} ticket={t} sprintId={sprintId} onSelect={onSelectTicket} parentTicket={parent} highlighted={highlightWbs?.has(t.wbs)} />;
+        return <TicketCard key={t.id} ticket={t} sprintId={sprintId} onSelect={onSelectTicket} parentTicket={parent} highlighted={highlightWbs?.has(t.wbs)} canEdit={canEdit} />;
       })}
     </div>
   );
 }
 
-function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, highlightWbsList, stickyTop }: {
+function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, highlightWbsList, stickyTop }: {
   sprints: Sprint[];
   loading?: boolean;
+  canEdit?: boolean;
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
@@ -320,6 +324,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
   }, [userName, onUpdated]);
 
   const handleDrop = useCallback((item: DragItem, newStatus: TicketStatus) => {
+    if (!canEdit) return;
     const sprint = currentSprintRef.current;
     if (!sprint) return;
     const ticket = sprint.tickets.find(t => t.id === item.id);
@@ -337,7 +342,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
     } else {
       applyStatusUpdate(item.id, newStatus, "");
     }
-  }, [applyStatusUpdate, userName, canSkipReview]);
+  }, [applyStatusUpdate, userName, canSkipReview, canEdit]);
 
   const confirmModal = () => {
     if (!pendingDrop || saving) return;
@@ -483,7 +488,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
                 return (
                   <div key={col.value} style={{ flex: "0 0 180px", display: "flex", flexDirection: "column" }}>
                     <DropColumn sprintId={currentSprint.id} col={col} tickets={colTickets} allTickets={currentSprint.tickets} onDrop={handleDrop} onSelectTicket={onSelectTicket}
-                      highlightWbs={bulkHighlight} style={{ flex: 1 }} />
+                      highlightWbs={bulkHighlight} style={{ flex: 1 }} canEdit={canEdit} />
                   </div>
                 );
               })}
@@ -636,6 +641,7 @@ function SprintBoardInner({ sprints, loading, onSelectSprint, onSelectTicket, on
 export default function SprintBoardView(props: {
   sprints: Sprint[];
   loading?: boolean;
+  canEdit?: boolean;
   onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;

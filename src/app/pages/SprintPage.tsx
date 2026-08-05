@@ -35,8 +35,8 @@ function EnvMemoTag({ m }: { m: EnvMemo }) {
 
   const chipStyle = { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: open ? "#E0F2FE" : "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none", cursor: m.url ? "pointer" : "default" } as const;
   const icon = m.url
-    ? <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-    : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>;
+    ? <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+    : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>;
   const label = m.name || m.url || "メモ";
 
   return (
@@ -316,245 +316,245 @@ export function SprintPage() {
           バックログ/ホワイトボード等のタブとビュー切替へ常時アクセスできるようにする。
           headerRef の実高さ(headerH)を各ビューの sticky ヘッダーへオフセットとして渡し段重ねする。 */}
       <div ref={headerRef} style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", padding: "24px 24px 12px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
-        <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
-        </button>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
-      </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+          <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+          </button>
+          <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+          <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
+        </div>
 
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>スプリント管理</h1>
-            {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
-            {/* 🌟 BRU10-068: 設定アイコンはメニュー（プロジェクト設定 / スプリント並び替え）を開く */}
-            <button onClick={e => setSettingsMenuRect(e.currentTarget.getBoundingClientRect())} title="設定"
-              style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-              <Settings2 style={{ width: 13, height: 13 }} />
-            </button>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>スプリント管理</h1>
+              {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
+              {/* 🌟 BRU10-068: 設定アイコンはメニュー（プロジェクト設定 / スプリント並び替え）を開く */}
+              <button onClick={e => setSettingsMenuRect(e.currentTarget.getBoundingClientRect())} title="設定"
+                style={{ padding: 4, borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", display: "flex", alignItems: "center" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                <Settings2 style={{ width: 13, height: 13 }} />
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
+              <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
+              {project?.envMemos?.filter(m => m.url || m.memo).map((m, i) => (
+                <EnvMemoTag key={i} m={m} />
+              ))}
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
-            <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
-            {project?.envMemos?.filter(m => m.url || m.memo).map((m, i) => (
-              <EnvMemoTag key={i} m={m} />
+          <ProjectSubNav
+            projectSlug={projectSlug ?? project?.slug ?? ""}
+            active="sprints" marginBottom={0}
+            wikiPerm={isAdmin ? "edit" : ((projectPermissions?.wikiPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+            backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+            minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+            whiteboardPerm={isAdmin ? "edit" : ((projectPermissions?.whiteboardPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
+          />
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 0 }}>
+          <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3 }}>
+            {viewBtns.map(({ mode, label, Icon }) => (
+              <button key={mode} onClick={() => setViewMode(mode)}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", fontSize: 11, fontWeight: 500, borderRadius: 6, border: "none", cursor: "pointer", transition: "all 0.15s", background: viewMode === mode ? "#FFFFFF" : "transparent", color: viewMode === mode ? "#1A1714" : "#9E9690", boxShadow: viewMode === mode ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>
+                <Icon style={{ width: 12, height: 12 }} />{label}
+              </button>
             ))}
           </div>
+          {canCreateSprint && (() => {
+            const atLimit = plan.maxSprintsPerProject !== null && sprints.length >= plan.maxSprintsPerProject;
+            return (
+              <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
+                <button onClick={atLimit ? undefined : () => setShowCreate(true)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
+                  onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                  onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+                  <Plus style={{ width: 15, height: 15 }} />新規スプリント
+                </button>
+              </PlanTooltip>
+            );
+          })()}
         </div>
-        <ProjectSubNav
-          projectSlug={projectSlug ?? project?.slug ?? ""}
-          active="sprints" marginBottom={0}
-          wikiPerm={isAdmin ? "edit" : ((projectPermissions?.wikiPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
-          backlogPerm={isAdmin ? "edit" : ((projectPermissions?.backlogPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
-          minutesPerm={isAdmin ? "edit" : ((projectPermissions?.minutesPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
-          whiteboardPerm={isAdmin ? "edit" : ((projectPermissions?.whiteboardPermission as AccessLevel | undefined) ?? (projectPermissionsLoaded ? "none" : "view"))}
-        />
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginBottom: 0 }}>
-        <div style={{ display: "flex", gap: 2, background: "#F0F0EE", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 9, padding: 3 }}>
-          {viewBtns.map(({ mode, label, Icon }) => (
-            <button key={mode} onClick={() => setViewMode(mode)}
-              style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 12px", fontSize: 11, fontWeight: 500, borderRadius: 6, border: "none", cursor: "pointer", transition: "all 0.15s", background: viewMode === mode ? "#FFFFFF" : "transparent", color: viewMode === mode ? "#1A1714" : "#9E9690", boxShadow: viewMode === mode ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>
-              <Icon style={{ width: 12, height: 12 }} />{label}
-            </button>
-          ))}
-        </div>
-        {canCreateSprint && (() => {
-          const atLimit = plan.maxSprintsPerProject !== null && sprints.length >= plan.maxSprintsPerProject;
-          return (
-            <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
-              <button onClick={atLimit ? undefined : () => setShowCreate(true)}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}
-                onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-                onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-                <Plus style={{ width: 15, height: 15 }} />新規スプリント
-              </button>
-            </PlanTooltip>
-          );
-        })()}
-      </div>
       </div>{/* 🌟 BRU5-043: 固定バー(headerRef)ここまで */}
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-      {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={bulkCreatedWbs} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
-      {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
-      {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
+        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={bulkCreatedWbs} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
+        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
 
-      {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
-      
-      {bulkCreateForSprintId && (() => {
-        const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
-        const common = {
-          sprintId: bulkCreateForSprintId,
-          sprintName: bulkSprint?.name,
-          projectId: projectId ?? undefined,
-          projectSlug,
-          currentTicketCount: bulkSprint?.tickets.length,
-          onClose: () => setBulkCreateForSprintId(null),
-          onCreated: handleBulkCreated,
-        };
-        return bulkCreateMode === "md"
-          ? <MdBulkCreateDialog {...common} />
-          : (
-            <BulkTicketCreateDialog
-              {...common}
-              sprintStartDate={bulkSprint?.startDate || undefined}
-              sprintEndDate={bulkSprint?.endDate || undefined}
-            />
-          );
-      })()}
+        {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
 
-      {createForSprintId && createForSprint && (
-        <NewTicketDialog
-          sprintId={createForSprintId}
-          projectId={projectId ?? undefined}
-          projectSlug={projectSlug}
-          onClose={() => setCreateForSprintId(null)}
-          onCreated={(createdWbs) => { refreshSprints(); if (createdWbs) { setClosedHighlightWbs(null); setSelectedTicketWbs(null); setCreatedHighlightWbs(createdWbs); } setCreateForSprintId(null); }}
-          sprintStartDate={createForSprint.startDate || undefined}
-          sprintEndDate={createForSprint.endDate || undefined}
-          currentTicketCount={createForSprint.tickets.length}
-        />
-      )}
+        {bulkCreateForSprintId && (() => {
+          const bulkSprint = sprints.find(s => s.id === bulkCreateForSprintId);
+          const common = {
+            sprintId: bulkCreateForSprintId,
+            sprintName: bulkSprint?.name,
+            projectId: projectId ?? undefined,
+            projectSlug,
+            currentTicketCount: bulkSprint?.tickets.length,
+            onClose: () => setBulkCreateForSprintId(null),
+            onCreated: handleBulkCreated,
+          };
+          return bulkCreateMode === "md"
+            ? <MdBulkCreateDialog {...common} />
+            : (
+              <BulkTicketCreateDialog
+                {...common}
+                sprintStartDate={bulkSprint?.startDate || undefined}
+                sprintEndDate={bulkSprint?.endDate || undefined}
+              />
+            );
+        })()}
 
-      {editTarget && (
-        <EditSprintDialog
-          sprint={editTarget}
-          otherSprints={sprints.filter(s => s.id !== editTarget.id)}
-          onClose={() => setEditTarget(null)}
-          onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
-      )}
+        {createForSprintId && createForSprint && (
+          <NewTicketDialog
+            sprintId={createForSprintId}
+            projectId={projectId ?? undefined}
+            projectSlug={projectSlug}
+            onClose={() => setCreateForSprintId(null)}
+            onCreated={(createdWbs) => { refreshSprints(); if (createdWbs) { setClosedHighlightWbs(null); setSelectedTicketWbs(null); setCreatedHighlightWbs(createdWbs); } setCreateForSprintId(null); }}
+            sprintStartDate={createForSprint.startDate || undefined}
+            sprintEndDate={createForSprint.endDate || undefined}
+            currentTicketCount={createForSprint.tickets.length}
+          />
+        )}
 
-      {/* 🌟 BRU10-068: 設定アイコンのメニューと、スプリント並び替えモーダル */}
-      {settingsMenuRect && (
-        <SprintSettingsMenu
-          anchorRect={settingsMenuRect}
-          onClose={() => setSettingsMenuRect(null)}
-          onSelect={action => {
-            if (action === "project") setShowEditIdentifiers(true);
-            else setShowSprintOrder(true);
-          }}
-        />
-      )}
+        {editTarget && (
+          <EditSprintDialog
+            sprint={editTarget}
+            otherSprints={sprints.filter(s => s.id !== editTarget.id)}
+            onClose={() => setEditTarget(null)}
+            onUpdated={() => { refreshSprints(); setEditTarget(null); }} />
+        )}
 
-      {showSprintOrder && (
-        <SprintOrderDialog
-          sprints={orderedSprints}
-          onClose={() => setShowSprintOrder(false)}
-          onSave={handleSaveSprintOrder}
-        />
-      )}
+        {/* 🌟 BRU10-068: 設定アイコンのメニューと、スプリント並び替えモーダル */}
+        {settingsMenuRect && (
+          <SprintSettingsMenu
+            anchorRect={settingsMenuRect}
+            onClose={() => setSettingsMenuRect(null)}
+            onSelect={action => {
+              if (action === "project") setShowEditIdentifiers(true);
+              else setShowSprintOrder(true);
+            }}
+          />
+        )}
 
-      {showEditIdentifiers && project && (
-        <ProjectSettingsDialog
-          project={project}
-          onClose={() => setShowEditIdentifiers(false)}
-          onUpdated={(newSlug) => {
-            setShowEditIdentifiers(false);
-            if (project && newSlug !== project.slug) {
-              navigate(`/${newSlug}`);
-            } else {
+        {showSprintOrder && (
+          <SprintOrderDialog
+            sprints={orderedSprints}
+            onClose={() => setShowSprintOrder(false)}
+            onSave={handleSaveSprintOrder}
+          />
+        )}
+
+        {showEditIdentifiers && project && (
+          <ProjectSettingsDialog
+            project={project}
+            onClose={() => setShowEditIdentifiers(false)}
+            onUpdated={(newSlug) => {
+              setShowEditIdentifiers(false);
+              if (project && newSlug !== project.slug) {
+                navigate(`/${newSlug}`);
+              } else {
+                refreshSprints();
+              }
+            }} />
+        )}
+
+        {deleteTarget && (
+          <DeleteSprintDialog
+            sprint={deleteTarget}
+            otherSprints={otherSprints}
+            projectId={projectId!}
+            onClose={() => setDeleteTarget(null)}
+            onDeleted={() => {
+              const deletedId = deleteTarget.id;
+              deletedIdsRef.current.add(deletedId);
+              setSprints(prev => prev.filter(s => s.id !== deletedId));
+              setDeleteTarget(null);
               refreshSprints();
+              setTimeout(() => deletedIdsRef.current.delete(deletedId), 15000);
+            }} />
+        )}
+
+        {myFilterSprintId && (
+          <MyFilterModal
+            onClose={() => setMyFilterSprintId(null)}
+            onApply={(filters) => {
+              console.log("Apply filter for sprint:", myFilterSprintId, filters);
+              setMyFilterSprintId(null);
+            }}
+          />
+        )}
+
+        <TicketDetailPanel
+          ticket={selectedTicket}
+          projectId={projectId ?? undefined}
+          sprintId={ticketSprint?.id}
+          sprintSlug={ticketSprint?.identifier || undefined}
+          projectSlug={projectSlug}
+          anchor={anchor}
+          onClose={() => {
+            const currentTicketWbs = selectedTicketWbs;
+            const parentWbsToRestore = backgroundParentWbs;
+
+            setClosedHighlightWbs(currentTicketWbs);
+            setBackgroundParentWbs(null);
+
+            if (parentWbsToRestore) {
+              window.history.pushState(null, '', `/${projectSlug}/${parentWbsToRestore}`);
+              setSelectedTicketWbs(parentWbsToRestore);
+              setIsParentNav(true);
+            } else {
+              window.history.pushState(null, '', `/${projectSlug}`);
+              setSelectedTicketWbs(null);
             }
-          }} />
-      )}
-
-      {deleteTarget && (
-        <DeleteSprintDialog
-          sprint={deleteTarget}
-          otherSprints={otherSprints}
-          projectId={projectId!}
-          onClose={() => setDeleteTarget(null)}
-          onDeleted={() => {
-            const deletedId = deleteTarget.id;
-            deletedIdsRef.current.add(deletedId);
-            setSprints(prev => prev.filter(s => s.id !== deletedId));
-            setDeleteTarget(null);
-            refreshSprints();
-            setTimeout(() => deletedIdsRef.current.delete(deletedId), 15000);
-          }} />
-      )}
-
-      {myFilterSprintId && (
-        <MyFilterModal
-          onClose={() => setMyFilterSprintId(null)}
-          onApply={(filters) => {
-            console.log("Apply filter for sprint:", myFilterSprintId, filters);
-            setMyFilterSprintId(null);
+            if (currentTicketWbs) {
+              requestAnimationFrame(() => {
+                document.querySelector(`[data-wbs="${currentTicketWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              });
+            }
           }}
-        />
-      )}
-
-      <TicketDetailPanel
-        ticket={selectedTicket}
-        projectId={projectId ?? undefined}
-        sprintId={ticketSprint?.id}
-        sprintSlug={ticketSprint?.identifier || undefined}
-        projectSlug={projectSlug}
-        anchor={anchor}
-        onClose={() => {
-          const currentTicketWbs = selectedTicketWbs;
-          const parentWbsToRestore = backgroundParentWbs;
-
-          setClosedHighlightWbs(currentTicketWbs);
-          setBackgroundParentWbs(null);
-
-          if (parentWbsToRestore) {
-            window.history.pushState(null, '', `/${projectSlug}/${parentWbsToRestore}`);
-            setSelectedTicketWbs(parentWbsToRestore);
-            setIsParentNav(true);
-          } else {
+          onUpdated={refreshSprints}
+          onDeleted={() => {
+            setClosedHighlightWbs(null);
+            setBackgroundParentWbs(null);
             window.history.pushState(null, '', `/${projectSlug}`);
             setSelectedTicketWbs(null);
-          }
-          if (currentTicketWbs) {
-            requestAnimationFrame(() => {
-              document.querySelector(`[data-wbs="${currentTicketWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            });
-          }
-        }}
-        onUpdated={refreshSprints}
-        onDeleted={() => {
-          setClosedHighlightWbs(null);
-          setBackgroundParentWbs(null);
-          window.history.pushState(null, '', `/${projectSlug}`);
-          setSelectedTicketWbs(null);
-          refreshSprints();
-        }}
-        onSelectTicket={t => {
-          if (t.wbs) {
-            const prevWbs = selectedTicketWbs;
-            window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
-            if (t.wbs === backgroundParentWbs) {
-              setBackgroundParentWbs(null);
-              setIsParentNav(true);
-              setClosedHighlightWbs(prevWbs);
-              if (prevWbs) {
-                requestAnimationFrame(() => {
-                  document.querySelector(`[data-wbs="${prevWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                });
+            refreshSprints();
+          }}
+          onSelectTicket={t => {
+            if (t.wbs) {
+              const prevWbs = selectedTicketWbs;
+              window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${t.wbs}`);
+              if (t.wbs === backgroundParentWbs) {
+                setBackgroundParentWbs(null);
+                setIsParentNav(true);
+                setClosedHighlightWbs(prevWbs);
+                if (prevWbs) {
+                  requestAnimationFrame(() => {
+                    document.querySelector(`[data-wbs="${prevWbs}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  });
+                }
+              } else if (selectedTicket && t.parentId === selectedTicket.id) {
+                setBackgroundParentWbs(selectedTicketWbs);
+                setIsParentNav(false);
+                setClosedHighlightWbs(null);
+              } else {
+                setBackgroundParentWbs(null);
+                setIsParentNav(false);
+                setClosedHighlightWbs(null);
               }
-            } else if (selectedTicket && t.parentId === selectedTicket.id) {
-              setBackgroundParentWbs(selectedTicketWbs);
-              setIsParentNav(false);
-              setClosedHighlightWbs(null);
-            } else {
-              setBackgroundParentWbs(null);
-              setIsParentNav(false);
-              setClosedHighlightWbs(null);
+              setSelectedTicketWbs(t.wbs);
             }
-            setSelectedTicketWbs(t.wbs);
-          }
-        }}
-        showParentBackground={!!backgroundParentWbs}
-        projectPermissions={projectPermissions ?? undefined}
-        forceNoAnim={isParentNav}
-      />
+          }}
+          showParentBackground={!!backgroundParentWbs}
+          projectPermissions={projectPermissions ?? undefined}
+          forceNoAnim={isParentNav}
+        />
       </div>{/* 🌟 BRU5-043: 通常スクロール領域ここまで */}
     </div>
   );

@@ -248,6 +248,7 @@ export function TicketDetailPanel({
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
   const effectivePermissions = (userRole === "owner") ? userPermissions : (projectPermissions ?? userPermissions);
+  const canEdit = userRole === "owner" || userRole === "admin" || userRole === "project-manager" || !!effectivePermissions?.canEditDelete || !!effectivePermissions?.canEdit;
   const hasReviewPermission = effectivePermissions.canReview;
   const hasSkipReviewPermission = effectivePermissions.canSkipReview;
 
@@ -1848,7 +1849,7 @@ export function TicketDetailPanel({
   //   すでに保留/取下中(progress < 0)のときは、解除できるよう終端でも必ずボタンを出す。
   const isChildTicket = !!ticket.parentId;
   const isTerminalForHold = isChildTicket ? status === "closed" : status === "released";
-  const canToggleHold = isAssignee && (progress < 0 || !isTerminalForHold);
+  const canToggleHold = canEdit && isAssignee && (progress < 0 || !isTerminalForHold);
   const reviewRequestComments = comments.filter(c => c.commentType === "review_request");
   const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
@@ -2132,7 +2133,7 @@ export function TicketDetailPanel({
           </div>
 
           {/* プレフィックス */}
-          {(prefixes.length > 0 || showPrefixInput) && (() => {
+          {(prefixes.length > 0 || (canEdit && showPrefixInput)) && (() => {
             const PREFIX_COLORS = [
               { color: "#4F46E5", bg: "#EEF2FF" },
               { color: "#059669", bg: "#ECFDF5" },
@@ -2158,19 +2159,21 @@ export function TicketDetailPanel({
                   return (
                     <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: bg, color, border: `1px solid ${color}22` }}>
                       {p}
-                      <button
-                        onClick={() => {
-                          const next = prefixes.filter((_, j) => j !== i);
-                          setPrefixes(next);
-                          save({ prefixes: next });
-                        }}
-                        style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", border: "none", background: "transparent", cursor: "pointer", color, padding: 0, lineHeight: 1, fontSize: 13, fontWeight: 700 }}
-                        title="削除"
-                      >×</button>
+                      {canEdit && (
+                        <button
+                          onClick={() => {
+                            const next = prefixes.filter((_, j) => j !== i);
+                            setPrefixes(next);
+                            save({ prefixes: next });
+                          }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", border: "none", background: "transparent", cursor: "pointer", color, padding: 0, lineHeight: 1, fontSize: 13, fontWeight: 700 }}
+                          title="削除"
+                        >×</button>
+                      )}
                     </span>
                   );
                 })}
-                {showPrefixInput && (() => {
+                {canEdit && showPrefixInput && (() => {
                   const trimmed = prefixInputValue.trim();
                   // 入力中のみドロップダウン表示
                   const showDropdown = trimmed.length > 0;
@@ -2260,7 +2263,7 @@ export function TicketDetailPanel({
                   );
                 })()}
                 {/* ラベル追加ボタン（ラベルの右側に配置） */}
-                {prefixes.length < 3 && !showPrefixInput && (
+                {canEdit && prefixes.length < 3 && !showPrefixInput && (
                   <button
                     onClick={() => setShowPrefixInput(true)}
                     title="プレフィックスを追加（最大3つ）"
@@ -2342,7 +2345,7 @@ export function TicketDetailPanel({
                   </button>
                 )}
                 {/* プレフィックス追加ボタン（ラベル未設定時のみバッジ行に表示） */}
-                {prefixes.length === 0 && !showPrefixInput && (
+                {canEdit && prefixes.length === 0 && !showPrefixInput && (
                   <button
                     onClick={() => setShowPrefixInput(true)}
                     title="プレフィックスを追加（最大3つ）"
@@ -2362,13 +2365,14 @@ export function TicketDetailPanel({
               </div>
               <input
                 value={title}
+                disabled={!canEdit}
                 onChange={e => setTitle(e.target.value)}
                 onBlur={e => {
                   (e.currentTarget as HTMLElement).style.borderBottomColor = "transparent";
-                  if (e.target.value.trim()) save({ title: e.target.value });
+                  if (canEdit && e.target.value.trim()) save({ title: e.target.value });
                 }}
-                style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3, background: "transparent", border: "none", outline: "none", width: "100%", padding: 0, borderBottom: "1.5px solid transparent", transition: "border-color 0.15s" }}
-                onFocus={e => { (e.currentTarget as HTMLElement).style.borderBottomColor = "#059669"; }}
+                style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3, background: "transparent", border: "none", outline: "none", width: "100%", padding: 0, borderBottom: "1.5px solid transparent", transition: "border-color 0.15s", cursor: canEdit ? "text" : "default" }}
+                onFocus={e => { if (canEdit) (e.currentTarget as HTMLElement).style.borderBottomColor = "#059669"; }}
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
@@ -2430,7 +2434,7 @@ export function TicketDetailPanel({
                   </button>
                 </PlanTooltip>
               )}
-              {!ticket.parentId && (
+              {canEdit && !ticket.parentId && (
                 <button onClick={() => setShowCreateChild(true)} title="子チケットを作成"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
@@ -2438,7 +2442,7 @@ export function TicketDetailPanel({
                   <GitBranch style={{ width: 15, height: 15 }} />
                 </button>
               )}
-              {!ticket.parentId && (
+              {canEdit && !ticket.parentId && (
                 <button onClick={openMoveModal} title="別のスプリントへ移動"
                   style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
@@ -2446,12 +2450,14 @@ export function TicketDetailPanel({
                   <ArrowRightLeft style={{ width: 15, height: 15 }} />
                 </button>
               )}
-              <button onClick={() => setShowDeleteConfirm(true)} title="チケットを削除"
-                style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
-                <Trash2 style={{ width: 15, height: 15 }} />
-              </button>
+              {canEdit && (
+                <button onClick={() => setShowDeleteConfirm(true)} title="チケットを削除"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <Trash2 style={{ width: 15, height: 15 }} />
+                </button>
+              )}
               <button onClick={stableEscHandler} style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
@@ -2623,18 +2629,19 @@ export function TicketDetailPanel({
                     </div>
                   )}
                 </div>
-                <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+                <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", opacity: canEdit ? 1 : 0.65, pointerEvents: canEdit ? "auto" : "none" }}>
                   <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>優先度</p>
                   <CustomSelect
                     value={priority}
                     options={PRIORITY_OPTIONS}
-                    onChange={v => { setPriority(v as Priority); save({ priority: v }); }}
+                    onChange={v => { if (canEdit) { setPriority(v as Priority); save({ priority: v }); } }}
+                    disabled={!canEdit}
                   />
                 </div>
               </div>
 
               {/* 分類 */}
-              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", opacity: canEdit ? 1 : 0.65, pointerEvents: canEdit ? "auto" : "none" }}>
                 <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>分類</p>
                 <CustomSelect
                   value={categoryId ?? ""}
@@ -2642,8 +2649,9 @@ export function TicketDetailPanel({
                     { value: "", label: "分類なし" },
                     ...categories.map(c => ({ value: c.id, label: c.name })),
                   ]}
-                  onChange={v => { const val = v || null; setCategoryId(val); save({ category_id: val }); }}
+                  onChange={v => { if (canEdit) { const val = v || null; setCategoryId(val); save({ category_id: val }); } }}
                   placeholder="分類なし"
+                  disabled={!canEdit}
                   // 🌟 修正: プロジェクト画面(CategorySettingsModal)と完全に同一のIDフォーマットを生成
                   onAddOption={async (newLabel) => {
                     if (!isSupabaseEnabled || !projectId) return null;
@@ -2674,10 +2682,10 @@ export function TicketDetailPanel({
               </div>
 
               {/* 担当者 */}
-              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative" }}>
+              <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px", position: "relative", opacity: canEdit ? 1 : 0.65 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                   <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>担当者</p>
-                  {userOrgId && skills.length > 0 && (
+                  {canEdit && userOrgId && skills.length > 0 && (
                     <button onClick={e => { e.stopPropagation(); setShowRecommend(true); }}
                       title="AIにおすすめ担当者を提案してもらう"
                       style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 9px", fontSize: 10.5, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.35)", background: "#ECFDF5", color: "#059669", cursor: "pointer", whiteSpace: "nowrap" }}
@@ -2687,18 +2695,19 @@ export function TicketDetailPanel({
                     </button>
                   )}
                 </div>
-                <button onClick={e => { e.stopPropagation(); setAssigneeOpen(o => !o); }}
-                  style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
+                <button onClick={e => { e.stopPropagation(); if (canEdit) setAssigneeOpen(o => !o); }}
+                  disabled={!canEdit}
+                  style={{ width: "100%", background: "transparent", border: "none", outline: "none", fontSize: 13, fontWeight: 600, color: !assignee ? "#C9C4BB" : "#1A1714", cursor: canEdit ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textAlign: "left" }}>{assigneeLabel}</span>
-                  <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneeOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                  {canEdit && <CaretDown style={{ width: 12, height: 12, color: "#B0A9A4", flexShrink: 0, transform: assigneeOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />}
                 </button>
-                {assigneeOpen && (
+                {canEdit && assigneeOpen && (
                   <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden", marginTop: 4 }}>
                     {projectMemberNames.length === 0
                       ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
                       : projectMemberNames.map(n => (
                         <button key={n} onClick={() => { saveAssignee(n); setAssigneeOpen(false); }}
-                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.1s", textAlign: "left" }}
+                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.10s", textAlign: "left" }}
                           onMouseEnter={e => { const target = e.currentTarget as HTMLElement; if (assignee !== n) target.style.background = "#F4F5F6"; }}
                           onMouseLeave={e => { const target = e.currentTarget as HTMLElement; target.style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
                           <Avatar name={n} size="xs" />
@@ -2742,8 +2751,8 @@ export function TicketDetailPanel({
 
               {/* 開始日 | 期限日 */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" />
-                <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" />
+                <DatePicker label="開始日" value={startDate} onChange={v => handleDate("start_date", v)} placeholder="年/月/日" disabled={!canEdit} />
+                <DatePicker label="期限日" value={dueDate} onChange={v => handleDate("due_date", v)} placeholder="年/月/日" disabled={!canEdit} />
               </div>
 
               {/* 見積工数 (全幅) */}
@@ -2802,11 +2811,13 @@ export function TicketDetailPanel({
                           <span style={{ fontSize: 11, color: "#B0A9A4" }}>
                             {isManual ? "手入力" : shownH > 0 ? "着手→完了から自動計測" : "着手開始から1分未満の場合は計測されません"}
                           </span>
-                          <button
-                            onClick={() => { setChildHoursInput(String(shownH)); setEditChildHours(true); }}
-                            style={{ marginLeft: "auto", padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(5,150,105,0.30)", cursor: "pointer", background: "#ECFDF5", color: "#059669" }}>
-                            修正
-                          </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => { setChildHoursInput(String(shownH)); setEditChildHours(true); }}
+                              style={{ marginLeft: "auto", padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(5,150,105,0.30)", cursor: "pointer", background: "#ECFDF5", color: "#059669" }}>
+                              修正
+                            </button>
+                          )}
                         </>
                       )}
                     </div>
@@ -2842,19 +2853,21 @@ export function TicketDetailPanel({
                       })()})
                     </span>
                   </p>
-                  {plan.featureChildTickets ? (
-                    <button onClick={() => setShowCreateChild(true)}
-                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                      <Plus style={{ width: 11, height: 11 }} />子チケット作成
-                    </button>
-                  ) : (
-                    <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
-                      <button style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#F4F5F6", color: "#C9C4BB", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "not-allowed", opacity: 0.6 }}>
+                  {canEdit && (
+                    plan.featureChildTickets ? (
+                      <button onClick={() => setShowCreateChild(true)}
+                        style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", color: "#059669", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(5,150,105,0.20)", cursor: "pointer" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
                         <Plus style={{ width: 11, height: 11 }} />子チケット作成
                       </button>
-                    </PlanTooltip>
+                    ) : (
+                      <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
+                        <button style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#F4F5F6", color: "#C9C4BB", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "not-allowed", opacity: 0.6 }}>
+                          <Plus style={{ width: 11, height: 11 }} />子チケット作成
+                        </button>
+                      </PlanTooltip>
+                    )
                   )}
                 </div>
                 {childTickets.length === 0 ? (
@@ -2912,16 +2925,18 @@ export function TicketDetailPanel({
                 <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
               </div>
               <div id="panel-description-section">
-                <RichEditor value={description} onChange={v => { setDescription(v); saveDescriptionDebounced(v); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                <RichEditor value={description} readOnly={!canEdit} onChange={v => { if (canEdit) { setDescription(v); saveDescriptionDebounced(v); } }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
               </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
-                <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
-                <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
-                  {imageDragOver ? "ドロップして追加" : "クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ"}
-                </span>
-                <input type="file" accept="image/*" multiple style={{ display: "none" }}
-                  onChange={e => { addTicketImages(e.target.files || []); e.target.value = ""; }} />
-              </label>
+              {canEdit && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
+                  <ImageIcon style={{ width: 13, height: 13, color: imageDragOver ? "#059669" : "#B0A9A4" }} />
+                  <span style={{ fontSize: 12, color: imageDragOver ? "#059669" : "#B0A9A4" }}>
+                    {imageDragOver ? "ドロップして追加" : "クリックして画像を追加、または Ctrl+V / ドラッグ&ドロップ"}
+                  </span>
+                  <input type="file" accept="image/*" multiple style={{ display: "none" }}
+                    onChange={e => { addTicketImages(e.target.files || []); e.target.value = ""; }} />
+                </label>
+              )}
               {ticketImages.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                   {ticketImages.map((img, i) => (
@@ -2933,10 +2948,12 @@ export function TicketDetailPanel({
                         title="画像をコピー">
                         {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
                       </button>
-                      <button onClick={() => removeTicketImage(i)}
-                        style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <X style={{ width: 9, height: 9, color: "#FFF" }} />
-                      </button>
+                      {canEdit && (
+                        <button onClick={() => removeTicketImage(i)}
+                          style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <X style={{ width: 9, height: 9, color: "#FFF" }} />
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
