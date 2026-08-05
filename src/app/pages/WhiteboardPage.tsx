@@ -106,8 +106,9 @@ export function WhiteboardPage() {
 
   const user = { id: userId, name: userName || "匿名", color: wbUserColor(userId || "anon") };
 
-  // ボード未選択のときは、たたむ設定でも一覧を出す（一覧が無いとボードを選べず操作不能になる）。
-  const sidebarHidden = collapsed && !!boardId;
+  // ボード選択状態にかかわらず、collapsed が true のときはサイドバーを折りたたむ
+  // （折りたたんだ状態でも再展開用のボタン BoardListToggle が表示されるため展開可能）
+  const sidebarHidden = collapsed;
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
