@@ -68,7 +68,7 @@ export function mapSourceFile(r: any): TicketSourceFile {
 // ── ENHA2-035 ファイルボックス ──
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProjectFile(r: any): ProjectFile {
-  return { id: r.id, projectId: r.project_id, folderPath: r.folder_path || "", fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", filePath: r.file_path || "", version: r.version || 1, uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "" };
+  return { id: r.id, projectId: r.project_id, folderPath: r.folder_path || "", fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", filePath: r.file_path || "", version: r.version || 1, uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "", parentId: r.parent_id ?? null, isFolder: r.is_folder ?? false };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

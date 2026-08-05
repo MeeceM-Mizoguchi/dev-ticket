@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams, Navigate } from "react-router"
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
+  Folder, FolderPlus, Plus, Pencil,
 } from "lucide-react";
 import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -13,10 +14,11 @@ import type { Project, ProjectFile, AccessLevel, UserPermissions } from "@/app/t
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { DialogShell } from "@/app/components/shared/DialogShell";
 import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
-  officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR,
+  officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
 } from "@/app/lib/projectFiles";
 
 const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
@@ -82,6 +84,19 @@ export function FileBoxPage() {
   const [deleteTarget, setDeleteTarget] = useState<ProjectFile | null>(null);
   const [previewTarget, setPreviewTarget] = useState<ProjectFile | null>(null);
 
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+
+  const [renameTarget, setRenameTarget] = useState<ProjectFile | null>(null);
+  const [renameFolderName, setRenameFolderName] = useState("");
+  const [renamingFolder, setRenamingFolder] = useState(false);
+
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+  const [draggingFile, setDraggingFile] = useState<ProjectFile | null>(null);
+
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("edit");
@@ -140,7 +155,7 @@ export function FileBoxPage() {
     const base = files.find(f => f.id === wanted);
     const newest = base
       ? files.reduce<ProjectFile | null>((best, f) =>
-          f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
+        f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
       : null;
     if (newest) setPreviewTarget(newest);
     else toast("リンク先のファイルが見つかりません", "error");
@@ -161,10 +176,12 @@ export function FileBoxPage() {
   // ── アップロード ────────────────────────────────────────────
   // 保存キーの採番・DB登録・版番号はすべてサーバー(api/project-files)側で行う。
   // ブラウザは署名付きアップロードURLへ直接送るだけなので storage のRLS設定が不要。
-  const uploadFiles = useCallback(async (incoming: FileList | File[]) => {
+  const uploadFiles = useCallback(async (incoming: FileList | File[], targetFolderId?: string | null) => {
     if (!project) return;
     const list = Array.from(incoming);
     if (list.length === 0) return;
+
+    const folderId = targetFolderId !== undefined ? targetFolderId : currentFolderId;
 
     setUploading(true);
     let ok = 0;
@@ -176,7 +193,14 @@ export function FileBoxPage() {
       }
       try {
         // 同名でも上書き（新バージョン）にせず、別ファイルとして残す
-        const stored = await uploadProjectFile(project.id, f, { uniqueName: true });
+        const stored = await uploadProjectFile(project.id, f, { uniqueName: true, parentId: folderId });
+        // API側で parent_id が登録されない場合に備えて、DBを確実に更新
+        if (folderId) {
+          await supabase!.from("project_files")
+            .update({ parent_id: folderId })
+            .eq("project_id", project.id)
+            .eq("file_name", stored);
+        }
         if (stored !== f.name) renamed.push(`「${f.name}」→「${stored}」`);
         ok++;
       } catch (e) {
@@ -193,7 +217,111 @@ export function FileBoxPage() {
       emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
       load();
     }
-  }, [project, toast, load]);
+  }, [project, toast, load, currentFolderId]);
+
+  const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null) => {
+    if (!project) return;
+    if (file.isFolder && file.id === targetFolderId) return;
+    try {
+      const { error } = await supabase!
+        .from("project_files")
+        .update({ parent_id: targetFolderId })
+        .eq("project_id", project.id)
+        .eq("file_name", file.fileName);
+      if (error) throw error;
+      const targetFolder = files.find(f => f.id === targetFolderId);
+      toast(`「${file.fileName}」を「${targetFolder?.fileName ?? "ファイルボックス（ルート）"}」へ移動しました`);
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "ファイルの移動に失敗しました", "error");
+    }
+  }, [project, files, toast, load]);
+
+  const handleCreateFolder = useCallback(async () => {
+    if (!project || !newFolderName.trim()) return;
+    const inputName = newFolderName.trim();
+    setCreatingFolder(true);
+    try {
+      const createdName = await createProjectFolder(project.id, inputName, currentFolderId, userName);
+      if (createdName !== inputName) {
+        toast(`同名のフォルダがあるため名前を変更しました：「${inputName}」→「${createdName}」`);
+      }
+      toast(`フォルダ「${createdName}」を作成しました`);
+      setNewFolderName("");
+      setShowFolderModal(false);
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "フォルダ作成に失敗しました", "error");
+    } finally {
+      setCreatingFolder(false);
+    }
+  }, [project, newFolderName, currentFolderId, userName, toast, load]);
+
+  const handleRenameFolder = useCallback(async () => {
+    if (!project || !renameTarget || !renameFolderName.trim()) return;
+    const inputName = renameFolderName.trim();
+    setRenamingFolder(true);
+    try {
+      const targetParentId = renameTarget.parentId ?? null;
+      let query = supabase!
+        .from("project_files")
+        .select("file_name")
+        .eq("project_id", project.id)
+        .neq("id", renameTarget.id);
+
+      if (targetParentId === null) {
+        query = query.is("parent_id", null);
+      } else {
+        query = query.eq("parent_id", targetParentId);
+      }
+
+      const { data: existingItems } = await query;
+      const existingNames = new Set((existingItems ?? []).map(item => item.file_name));
+
+      let finalName = inputName;
+      if (existingNames.has(finalName)) {
+        let counter = 1;
+        while (existingNames.has(`${inputName} (${counter})`)) {
+          counter++;
+        }
+        finalName = `${inputName} (${counter})`;
+      }
+
+      const { error } = await supabase!
+        .from("project_files")
+        .update({ file_name: finalName })
+        .eq("id", renameTarget.id);
+      if (error) throw error;
+
+      if (finalName !== inputName) {
+        toast(`同名のフォルダがあるため名前を変更しました：「${inputName}」→「${finalName}」`);
+      }
+      toast(`フォルダ名を「${finalName}」に変更しました`);
+      setRenameTarget(null);
+      setRenameFolderName("");
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "フォルダ名の変更に失敗しました", "error");
+    } finally {
+      setRenamingFolder(false);
+    }
+  }, [project, renameTarget, renameFolderName, toast, load]);
+
+  const handleOpenFolder = useCallback((folder: ProjectFile) => {
+    setCurrentFolderId(folder.id);
+    setBreadcrumbs(prev => [...prev, { id: folder.id, name: folder.fileName }]);
+  }, []);
+
+  const handleNavigateBreadcrumb = useCallback((index: number) => {
+    if (index < 0) {
+      setCurrentFolderId(null);
+      setBreadcrumbs([]);
+    } else {
+      const target = breadcrumbs[index];
+      setCurrentFolderId(target.id);
+      setBreadcrumbs(breadcrumbs.slice(0, index + 1));
+    }
+  }, [breadcrumbs]);
 
   // ── 各アクション ────────────────────────────────────────────
   const handleDownload = useCallback(async (file: ProjectFile) => {
@@ -258,9 +386,11 @@ export function FileBoxPage() {
   const latestOnly = files.filter(f =>
     !files.some(o => o.fileName === f.fileName && o.version > f.version));
 
-  const visible = search
+  const currentLevelItems = search
     ? latestOnly.filter(f => f.fileName.toLowerCase().includes(search.toLowerCase()) || f.uploadedBy.toLowerCase().includes(search.toLowerCase()))
-    : latestOnly;
+    : latestOnly.filter(f => (f.parentId ?? null) === currentFolderId);
+
+  const visible = currentLevelItems;
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
@@ -289,16 +419,49 @@ export function FileBoxPage() {
       </div>
 
       <div style={{ background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 14 }}>
-        {/* 検索 */}
-        <div style={{ position: "relative", marginBottom: 12, maxWidth: 320 }}>
-          <Search style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: search ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="ファイル名・アップロード者で検索..."
-            style={{ width: "100%", boxSizing: "border-box", padding: "7px 28px", fontSize: 12, background: "#F4F5F6", border: `1px solid ${search ? "rgba(5,150,105,0.25)" : "transparent"}`, borderRadius: 8, outline: "none", fontFamily: "inherit" }} />
-          {search && (
-            <button onClick={() => setSearch("")} style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 2, color: "#A09790", display: "flex", alignItems: "center" }}>
-              <X style={{ width: 11, height: 11 }} />
-            </button>
-          )}
+        {/* 検索・フォルダ作成・パンくず */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+          <div style={{ position: "relative", width: 320 }}>
+            <Search style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: search ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="ファイル名・アップロード者で検索..."
+              style={{ width: "100%", boxSizing: "border-box", padding: "7px 28px", fontSize: 12, background: "#F4F5F6", border: `1px solid ${search ? "rgba(5,150,105,0.25)" : "transparent"}`, borderRadius: 8, outline: "none", fontFamily: "inherit" }} />
+            {search && (
+              <button onClick={() => setSearch("")} style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 2, color: "#A09790", display: "flex", alignItems: "center" }}>
+                <X style={{ width: 11, height: 11 }} />
+              </button>
+            )}
+          </div>
+          <button onClick={() => setShowFolderModal(true)}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            <FolderPlus style={{ width: 14, height: 14 }} /> フォルダ作成
+          </button>
+        </div>
+
+        {/* パンくずナビゲーション */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, fontSize: 12, flexWrap: "wrap" }}>
+          <button onClick={() => handleNavigateBreadcrumb(-1)}
+            onDragOver={e => e.preventDefault()}
+            onDrop={e => {
+              e.preventDefault();
+              if (draggingFile) { handleMoveFile(draggingFile, null); setDraggingFile(null); }
+            }}
+            style={{ background: "none", border: "none", cursor: "pointer", color: breadcrumbs.length === 0 ? "#1A1714" : "#059669", fontWeight: breadcrumbs.length === 0 ? 700 : 600, padding: 0, fontSize: 12 }}>
+            ファイルボックス
+          </button>
+          {breadcrumbs.map((b, idx) => (
+            <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+              <button onClick={() => handleNavigateBreadcrumb(idx)}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                  e.preventDefault();
+                  if (draggingFile) { handleMoveFile(draggingFile, b.id); setDraggingFile(null); }
+                }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: idx === breadcrumbs.length - 1 ? "#1A1714" : "#059669", fontWeight: idx === breadcrumbs.length - 1 ? 700 : 600, padding: 0, fontSize: 12 }}>
+                {b.name}
+              </button>
+            </div>
+          ))}
         </div>
 
         {/* アップロード */}
@@ -332,11 +495,70 @@ export function FileBoxPage() {
         ) : (
           <div>
             {visible.map(f => {
+              if (f.isFolder) {
+                const isFolderHover = dragOverFolderId === f.id;
+                return (
+                  <div key={f.id} onClick={() => handleOpenFolder(f)}
+                    onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOverFolderId(f.id); }}
+                    onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setDragOverFolderId(null); }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOverFolderId(null);
+                      if (e.dataTransfer.files.length > 0) {
+                        uploadFiles(e.dataTransfer.files, f.id);
+                      } else if (draggingFile) {
+                        handleMoveFile(draggingFile, f.id);
+                        setDraggingFile(null);
+                      }
+                    }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 8, cursor: "pointer", borderBottom: "1px solid rgba(26,23,20,0.05)",
+                      background: isFolderHover ? "#FEF3C7" : "transparent",
+                      outline: isFolderHover ? "2px dashed #D97706" : "none",
+                      outlineOffset: -2,
+                      transition: "background 0.15s",
+                    }}>
+                    <span style={{ width: 30, height: 30, borderRadius: 7, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#FEF3C7" }}>
+                      <Folder style={{ width: 15, height: 15, color: "#D97706" }} />
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {f.fileName}
+                        {isFolderHover && (
+                          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#D97706" }}>ここへ追加・移動</span>
+                        )}
+                      </p>
+                      <p style={{ margin: "2px 0 0", fontSize: 11, color: "#A09790" }}>
+                        フォルダ · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
+                      </p>
+                    </div>
+                    <button onClick={e => { e.stopPropagation(); setRenameTarget(f); setRenameFolderName(f.fileName); }} title="名前を変更"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Pencil style={{ width: 13, height: 13 }} />
+                    </button>
+                    <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Trash2 style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                );
+              }
+
               const kind = getFileKind(f.fileName);
               const Icon = KIND_ICON[kind];
               return (
                 <div key={f.id} onClick={() => setPreviewTarget(f)}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 8, cursor: "pointer", borderBottom: "1px solid rgba(26,23,20,0.05)" }}>
+                  draggable
+                  onDragStart={e => {
+                    setDraggingFile(f);
+                    e.dataTransfer.setData("text/plain", f.id);
+                  }}
+                  onDragEnd={() => setDraggingFile(null)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 8, cursor: "grab", borderBottom: "1px solid rgba(26,23,20,0.05)",
+                    opacity: draggingFile?.id === f.id ? 0.4 : 1,
+                  }}>
                   <span style={{ width: 30, height: 30, borderRadius: 7, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: `${KIND_COLOR[kind]}14` }}>
                     <Icon style={{ width: 14, height: 14, color: KIND_COLOR[kind] }} />
                   </span>
@@ -377,14 +599,68 @@ export function FileBoxPage() {
       )}
       {deleteTarget && (
         <ConfirmDialog
-          title="ファイルを削除"
-          message={deleteTarget.version > 1
-            ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
-            : `「${deleteTarget.fileName}」を削除します。`}
+          title={deleteTarget.isFolder ? "フォルダを削除" : "ファイルを削除"}
+          message={deleteTarget.isFolder
+            ? `フォルダ「${deleteTarget.fileName}」を削除します。フォルダ内のフォルダとファイルもすべて削除されます。`
+            : deleteTarget.version > 1
+              ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
+              : `「${deleteTarget.fileName}」を削除します。`}
           confirmLabel="削除する"
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={closeDelete}
         />
+      )}
+      {showFolderModal && (
+        <DialogShell title="新規フォルダ作成" onClose={() => setShowFolderModal(false)} size="sm"
+          footer={<>
+            <button type="button" onClick={() => setShowFolderModal(false)} disabled={creatingFolder}
+              style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
+              キャンセル
+            </button>
+            <button type="button" onClick={handleCreateFolder} disabled={creatingFolder || !newFolderName.trim()}
+              style={{ padding: "8px 16px", background: creatingFolder || !newFolderName.trim() ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: creatingFolder || !newFolderName.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              {creatingFolder ? "作成中..." : "作成"}
+            </button>
+          </>}>
+          <div style={{ padding: "8px 0" }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>フォルダ名</label>
+            <input
+              type="text"
+              value={newFolderName}
+              onChange={e => setNewFolderName(e.target.value)}
+              placeholder="新しいフォルダ名"
+              autoFocus
+              onKeyDown={e => { if (e.key === "Enter" && newFolderName.trim()) handleCreateFolder(); }}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", fontSize: 13, border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, outline: "none", fontFamily: "inherit" }}
+            />
+          </div>
+        </DialogShell>
+      )}
+      {renameTarget && (
+        <DialogShell title="フォルダ名の変更" onClose={() => setRenameTarget(null)} size="sm"
+          footer={<>
+            <button type="button" onClick={() => setRenameTarget(null)} disabled={renamingFolder}
+              style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
+              キャンセル
+            </button>
+            <button type="button" onClick={handleRenameFolder} disabled={renamingFolder || !renameFolderName.trim()}
+              style={{ padding: "8px 16px", background: renamingFolder || !renameFolderName.trim() ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: renamingFolder || !renameFolderName.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              {renamingFolder ? "保存中..." : "保存"}
+            </button>
+          </>}>
+          <div style={{ padding: "8px 0" }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>フォルダ名</label>
+            <input
+              type="text"
+              value={renameFolderName}
+              onChange={e => setRenameFolderName(e.target.value)}
+              placeholder="フォルダ名を入力"
+              autoFocus
+              onKeyDown={e => { if (e.key === "Enter" && renameFolderName.trim()) handleRenameFolder(); }}
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", fontSize: 13, border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, outline: "none", fontFamily: "inherit" }}
+            />
+          </div>
+        </DialogShell>
       )}
     </div>
   );

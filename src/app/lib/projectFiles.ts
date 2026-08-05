@@ -132,7 +132,7 @@ export async function fetchSignedUrl(fileId: string, mode: "inline" | "download"
  * @returns 実際に登録されたファイル名（改名された場合はその名前）
  */
 export async function uploadProjectFile(
-  projectId: string, file: File, opts?: { uniqueName?: boolean },
+  projectId: string, file: File, opts?: { uniqueName?: boolean; parentId?: string | null },
 ): Promise<string> {
   const fileName = file.name;
   const { path, token } = await postApi<{ path: string; token: string }>(
@@ -145,6 +145,7 @@ export async function uploadProjectFile(
   const res = await postApi<{ file: unknown; fileName?: string }>("register", {
     projectId, path, fileName, fileSize: file.size, fileType: file.type || "",
     uniqueName: !!opts?.uniqueName,
+    parentId: opts?.parentId ?? null,
   });
   return res.fileName ?? fileName;
 }
@@ -177,4 +178,48 @@ export async function openProjectFileInApp(fileId: string, fileName: string): Pr
   if (!proto) return false;
   window.location.href = proto;
   return true;
+}
+
+/** フォルダを作成する */
+export async function createProjectFolder(
+  projectId: string, folderName: string, parentId?: string | null, userName?: string,
+): Promise<string> {
+  const targetParentId = parentId ?? null;
+  let query = supabase!
+    .from("project_files")
+    .select("file_name")
+    .eq("project_id", projectId);
+
+  if (targetParentId === null) {
+    query = query.is("parent_id", null);
+  } else {
+    query = query.eq("parent_id", targetParentId);
+  }
+
+  const { data: existingItems } = await query;
+  const existingNames = new Set((existingItems ?? []).map((item) => item.file_name));
+
+  let finalName = folderName;
+  if (existingNames.has(finalName)) {
+    let counter = 1;
+    while (existingNames.has(`${folderName} (${counter})`)) {
+      counter++;
+    }
+    finalName = `${folderName} (${counter})`;
+  }
+
+  const { error } = await supabase!.from("project_files").insert({
+    project_id: projectId,
+    file_name: finalName,
+    folder_path: "",
+    file_size: 0,
+    file_type: "folder",
+    file_path: "",
+    version: 1,
+    uploaded_by: userName || "",
+    parent_id: targetParentId,
+    is_folder: true,
+  });
+  if (error) throw new Error(error.message);
+  return finalName;
 }

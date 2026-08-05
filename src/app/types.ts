@@ -264,6 +264,8 @@ export interface ProjectFile {
   fileName: string; fileSize: number; fileType: string;
   filePath: string; version: number;
   uploadedBy: string; createdAt: string;
+  parentId?: string | null;
+  isFolder?: boolean;
 }
 export interface Sprint {
   id: string; projectId: string; name: string; goal: string;
