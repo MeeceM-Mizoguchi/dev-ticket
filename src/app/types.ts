@@ -53,6 +53,8 @@ export interface RoleDefinition {
   name: string;
   label: string;
   base_permissions: UserPermissions;
+  organization_id?: string | null;
+  organizationId?: string | null;
 }
 export type ProjectStatus = "planning" | "in-progress" | "completed" | "on-hold";
 export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed" | "waiting-release" | "released";
@@ -310,6 +312,7 @@ export interface Member {
 export interface PermissionGroup {
   id: number; name: string; description: string;
   permissions?: UserPermissions | null;
+  organizationId?: string | null;
 }
 export interface GroupProjectPermission {
   group_id: number; project_id: string; permission_type: PermissionType;

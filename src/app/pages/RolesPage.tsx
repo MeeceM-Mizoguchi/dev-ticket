@@ -24,18 +24,19 @@ const DEFAULT_PERMS: UserPermissions = {
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; meeceOnly?: boolean }[] = [
-  { key: "canSkipReview",          label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
-  { key: "canAccessMembers",       label: "メンバー管理",     desc: "メンバー管理画面へのアクセスが可能" },
-  { key: "canAccessRoles",         label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
-  { key: "canAccessGroups",        label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
-  { key: "canAccessAdminSettings", label: "通知管理",         desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
-  { key: "canAccessReports",       label: "レポート管理",     desc: "レポート管理画面へのアクセスが可能（進捗・予定・生産性レポートの閲覧/出力）" },
-  { key: "canUpdateAnnouncement",  label: "お知らせ更新",     desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
+  { key: "canSkipReview", label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
+  { key: "canAccessMembers", label: "メンバー管理", desc: "メンバー管理画面へのアクセスが可能" },
+  { key: "canAccessRoles", label: "ロール設定", desc: "ロール設定画面へのアクセスが可能" },
+  { key: "canAccessGroups", label: "アサイン計画", desc: "アサイン計画画面へのアクセスが可能" },
+  { key: "canAccessAdminSettings", label: "通知管理", desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
+  { key: "canAccessReports", label: "レポート管理", desc: "レポート管理画面へのアクセスが可能（進捗・予定・生産性レポートの閲覧/出力）" },
+  { key: "canUpdateAnnouncement", label: "お知らせ更新", desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
 ];
 
 export function RolesPage() {
-  const { userPermissions } = useAuth();
+  const { userPermissions, userOrgId } = useAuth();
   const { selectedOrgId, selectedOrgName } = useOrg();
+  const currentOrgId = selectedOrgId || userOrgId;
   const { toast } = useToast();
   const { plan } = usePlan();
   const isMeeceOrg = selectedOrgName === MEECE_ORG_NAME;
@@ -55,21 +56,25 @@ export function RolesPage() {
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
-    // 標準ロール（organization_id = NULL）＋選択中の組織固有ロールを表示
+    // 標準ロール（organization_id = NULL）＋選択中の組織固有ロールのみを表示
     let q = supabase!.from("roles").select("*").order("id");
-    if (selectedOrgId) q = (q as any).or(`organization_id.eq.${selectedOrgId},organization_id.is.null`);
+    if (currentOrgId) {
+      q = (q as any).or(`organization_id.eq.${currentOrgId},organization_id.is.null`);
+    } else {
+      q = q.is("organization_id", null);
+    }
     q.then(({ data }) => { if (data) setRoles(data as RoleDefinition[]); setLoading(false); });
-  }, [selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCreate = async (name: string, label: string, perms: UserPermissions) => {
     if (isSupabaseEnabled) {
       const { data, error } = await supabase!.from("roles")
-        .insert({ name, label, base_permissions: perms, organization_id: selectedOrgId || null }).select().single();
+        .insert({ name, label, base_permissions: perms, organization_id: currentOrgId || null }).select().single();
       if (error) { toast("ロールの作成に失敗しました", "error"); return; }
       if (data) setRoles(prev => [...prev, data as RoleDefinition]);
     } else {
       const newId = roles.length > 0 ? Math.max(...roles.map(r => r.id)) + 1 : 1;
-      setRoles(prev => [...prev, { id: newId, name, label, base_permissions: perms }]);
+      setRoles(prev => [...prev, { id: newId, name, label, base_permissions: perms, organization_id: currentOrgId || null }]);
     }
     setShowNewModal(false);
     toast(`ロール「${label}」を作成しました`);
