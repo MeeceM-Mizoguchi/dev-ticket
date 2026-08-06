@@ -464,6 +464,7 @@ export interface PlanSettings {
 export interface UserPermissions {
   canCreateTicket: boolean;
   canCreateSprint: boolean;
+  canCreateProject: boolean;
   canEditDelete: boolean;
   canReview: boolean;
   canSkipReview: boolean;
