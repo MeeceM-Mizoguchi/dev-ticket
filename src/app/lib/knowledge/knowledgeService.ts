@@ -60,7 +60,7 @@ export function isSetupMissingError(e: unknown): boolean {
   const looksMissing =
     m.includes("schema cache") || m.includes("could not find") ||
     m.includes("does not exist") || m.includes("undefined function") ||
-    m.includes("relation") ;
+    m.includes("relation");
   return touchesKnowledge && looksMissing;
 }
 
@@ -190,6 +190,120 @@ export async function renameDocument(id: string, title: string): Promise<void> {
     .update({ title, updated_at: new Date().toISOString() })
     .eq("id", id);
   if (error) throw new Error(error.message);
+}
+
+// ── 編集・更新 ────────────────────────────────────────────────
+
+/**
+ * Markdown/テキストファイルの内容を更新する。
+ * 本文を上書き後、既存のチャンク・ベクトルを破棄し、再生成（再インデックス）を行う。
+ */
+export async function updateDocumentContent(
+  id: string,
+  projectId: string,
+  newContentRaw: string,
+  onProgress?: (p: KnowledgeImportProgress) => void,
+): Promise<ImportResult> {
+  const db = requireClient();
+  const notify = (p: Partial<KnowledgeImportProgress>) =>
+    onProgress?.({ phase: "reading", fileName: "保存処理", done: 0, total: 0, ...p } as KnowledgeImportProgress);
+
+  const content = normalizeText(newContentRaw);
+  if (content.trim().length === 0) throw new Error("中身が空です");
+  const contentHash = await hashContent(content);
+
+  // 同一内容の重複チェック（自分自身は除外）
+  const { data: dup } = await db
+    .from("knowledge_documents")
+    .select("id, title")
+    .eq("project_id", projectId)
+    .eq("content_hash", contentHash)
+    .neq("id", id)
+    .limit(1);
+  if (dup && dup && dup.length > 0) {
+    throw new Error(`同じ内容の資料が既にあります（「${(dup[0] as any).title}」）`);
+  }
+
+  // バイトサイズの再計算
+  const byteSize = new Blob([newContentRaw]).size;
+
+  notify({ phase: "chunking" });
+  const drafts = chunkMarkdown(content);
+  if (drafts.length === 0) throw new Error("保存できる本文がありませんでした");
+
+  notify({ phase: "saving", total: drafts.length });
+
+  // ① 古いチャンクの削除（インデックスも CASCADE で消えます）
+  await db.from("knowledge_chunks").delete().eq("document_id", id);
+
+  // ② 資料本体の更新（indexed_at を一旦リセット）
+  const { error: docErr } = await db
+    .from("knowledge_documents")
+    .update({
+      content,
+      content_hash: contentHash,
+      byte_size: byteSize,
+      chunk_count: drafts.length,
+      updated_at: new Date().toISOString(),
+      indexed_at: null,
+    })
+    .eq("id", id);
+  if (docErr) throw new Error(docErr.message ?? "資料の更新に失敗しました");
+
+  // ③ 新しいチャンクの保存
+  const chunkIds: string[] = [];
+  try {
+    for (let i = 0; i < drafts.length; i += CHUNK_INSERT_BATCH) {
+      const batch = drafts.slice(i, i + CHUNK_INSERT_BATCH).map(d => ({
+        document_id: id,
+        project_id: projectId,
+        seq: d.seq,
+        heading_path: d.headingPath,
+        content: d.content,
+        char_start: d.charStart,
+        char_end: d.charEnd,
+      }));
+      const { data, error } = await db.from("knowledge_chunks").insert(batch).select("id, seq");
+      if (error) throw new Error(error.message);
+      (data ?? []).forEach((r: any) => { chunkIds[r.seq] = r.id; });
+      notify({ phase: "saving", done: Math.min(i + batch.length, drafts.length), total: drafts.length });
+    }
+  } catch (e) {
+    throw e;
+  }
+
+  // ④ 埋め込み（AIベクトルの再生成）
+  const unavailable = getUnavailableReason();
+  if (unavailable) {
+    return { documentId: id, chunkCount: drafts.length, indexed: false, indexNote: unavailable };
+  }
+
+  try {
+    notify({ phase: "modelLoading", total: drafts.length });
+    const inputs = drafts.map(d => toPassageInput(d.headingPath, d.content));
+    const vectors = await embedAll(inputs, (done, total) => notify({ phase: "embedding", done, total }));
+
+    for (let i = 0; i < vectors.length; i += EMBED_WRITE_BATCH) {
+      const rows = vectors.slice(i, i + EMBED_WRITE_BATCH).map((vec, k) => ({
+        id: chunkIds[i + k],
+        embedding: vec,
+      })).filter(r => !!r.id);
+      if (rows.length === 0) continue;
+      const { error } = await db.rpc("knowledge_set_embeddings", { p_rows: rows });
+      if (error) throw new Error(error.message);
+    }
+
+    await db.from("knowledge_documents")
+      .update({ indexed_at: new Date().toISOString(), embedding_model: EMBEDDING_MODEL })
+      .eq("id", id);
+
+    notify({ phase: "done", done: drafts.length, total: drafts.length });
+    return { documentId: id, chunkCount: drafts.length, indexed: true };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    notify({ phase: "error", message });
+    return { documentId: id, chunkCount: drafts.length, indexed: false, indexNote: message };
+  }
 }
 
 // ── 取り込み ──────────────────────────────────────────────────

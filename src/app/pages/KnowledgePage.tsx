@@ -15,7 +15,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams, Navigate } from "react-router";
 import {
   BookOpen, Upload, Download, Trash2, Loader2, Search, X, FolderPlus, Folder, FolderOpen, FolderKanban,
-  FileText, ChevronRight, ChevronDown, ChevronLeft, AlertTriangle, CheckCircle2, RefreshCw, Pencil,
+  FileText, ChevronRight, ChevronDown, ChevronLeft, AlertTriangle, CheckCircle2, RefreshCw, Pencil, Save,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -34,7 +34,7 @@ import {
   listDocuments, getDocument, importFile, deleteDocument, indexDocument, search,
   listFolders, createFolder, renameFolder, deleteFolder, moveDocument,
   isKnowledgeFile, isSetupMissingError, downloadFileName,
-  KNOWLEDGE_FILE_ACCEPT, KNOWLEDGE_FILE_MAX_BYTES,
+  KNOWLEDGE_FILE_ACCEPT, KNOWLEDGE_FILE_MAX_BYTES, updateDocumentContent,
 } from "@/app/lib/knowledge/knowledgeService";
 import { downloadBlob } from "@/app/lib/articleExport/download";
 import { warmup, onModelDownload, getUnavailableReason } from "@/app/lib/knowledge/embed";
@@ -117,7 +117,7 @@ function highlightInDom(root: HTMLElement, needle: string): HTMLElement[] {
     const value = text.textContent ?? "";
     const frag = document.createDocumentFragment();
     let from = 0;
-    for (;;) {
+    for (; ;) {
       const at = value.toLowerCase().indexOf(q.toLowerCase(), from);
       if (at < 0) break;
       if (at > from) frag.appendChild(document.createTextNode(value.slice(from, at)));
@@ -289,6 +289,10 @@ export function KnowledgePage() {
   // フォルダ名の入力ダイアログ。null = 閉じている
   const [folderDialog, setFolderDialog] = useState<{ mode: "create" | "rename"; target?: KnowledgeFolder } | null>(null);
 
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
@@ -383,6 +387,7 @@ export function KnowledgePage() {
         if (!alive) return;
         setOpenDoc(d);
         setSelectedNodeId(null);
+        setIsEditing(false);
       } catch (e) {
         if (!alive) return;
         if (isSetupMissingError(e)) setSetupRequired(true);
@@ -690,6 +695,24 @@ export function KnowledgePage() {
     }
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (files.length > 0) void runImport(files, folderId);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!openDoc || !project) return;
+    setSavingEdit(true);
+    try {
+      await updateDocumentContent(openDoc.id, project.id, editContent, setProgress);
+      const updatedDoc = await getDocument(openDoc.id);
+      if (updatedDoc) setOpenDoc(updatedDoc);
+      setIsEditing(false);
+      toast("資料を更新しました");
+      await load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "更新に失敗しました", "error");
+    } finally {
+      setProgress(null);
+      setSavingEdit(false);
+    }
   };
 
   // ── 画面 ────────────────────────────────────────────────────
@@ -1236,30 +1259,91 @@ export function KnowledgePage() {
                       <div style={{ fontSize: 11, color: "#A09790", marginBottom: 4 }}>{openDoc.fileName || openDoc.title}</div>
                       <h2 style={{ fontSize: 17, fontWeight: 800, color: "#1A1714", margin: 0 }}>{openDoc.title}</h2>
                     </div>
-                    <button
-                      onClick={() => void runDownload(openDoc)}
-                      disabled={downloadingId === openDoc.id}
-                      title={`「${downloadFileName(openDoc)}」をダウンロード`}
-                      style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0, padding: "6px 12px", background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, color: "#3A342E", cursor: downloadingId === openDoc.id ? "default" : "pointer" }}
-                      onMouseEnter={e => { e.currentTarget.style.background = "#F0F5F3"; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
-                    >
-                      {downloadingId === openDoc.id
-                        ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
-                        : <Download style={{ width: 12, height: 12 }} />}
-                      ダウンロード
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                      {isEditing ? (
+                        <>
+                          <button
+                            onClick={() => setIsEditing(false)}
+                            disabled={savingEdit}
+                            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, color: "#6B6458", cursor: savingEdit ? "default" : "pointer" }}
+                            onMouseEnter={e => { e.currentTarget.style.background = "#F4F5F6"; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
+                          >
+                            キャンセル
+                          </button>
+                          <button
+                            onClick={handleSaveEdit}
+                            disabled={savingEdit}
+                            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#059669", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, color: "#fff", cursor: savingEdit ? "default" : "pointer" }}
+                          >
+                            {savingEdit ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} /> : <Save style={{ width: 12, height: 12 }} />}
+                            保存
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {canManage && (
+                            <button
+                              onClick={() => setDeleteDocTarget(openDoc)}
+                              title="削除"
+                              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#fff", border: "1px solid rgba(220,38,38,0.2)", borderRadius: 8, fontSize: 12, color: "#DC2626", cursor: "pointer" }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "#FEF2F2"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
+                            >
+                              <Trash2 style={{ width: 12, height: 12 }} />
+                              削除
+                            </button>
+                          )}
+                          {canManage && (
+                            <button
+                              onClick={() => { setEditContent(openDoc.content); setIsEditing(true); }}
+                              title="編集"
+                              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, color: "#3A342E", cursor: "pointer" }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "#F0F5F3"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
+                            >
+                              <Pencil style={{ width: 12, height: 12 }} />
+                              編集
+                            </button>
+                          )}
+                          <button
+                            onClick={() => void runDownload(openDoc)}
+                            disabled={downloadingId === openDoc.id}
+                            title={`「${downloadFileName(openDoc)}」をダウンロード`}
+                            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, color: "#3A342E", cursor: downloadingId === openDoc.id ? "default" : "pointer" }}
+                            onMouseEnter={e => { e.currentTarget.style.background = "#F0F5F3"; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = "#fff"; }}
+                          >
+                            {downloadingId === openDoc.id
+                              ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
+                              : <Download style={{ width: 12, height: 12 }} />}
+                            ダウンロード
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
-                <Body
-                  markdown={openDoc.content}
-                  highlight={highlightWord}
-                  onHeadings={handleHeadings}
-                  anchorIndex={jumpAnchor?.index}
-                  anchorMode={jumpAnchor?.mode}
-                  scrollNonce={jumpAnchor?.nonce}
-                  relatedSections={relatedSections}
-                />
+                {isEditing ? (
+                  <textarea
+                    value={editContent}
+                    onChange={e => setEditContent(e.target.value)}
+                    placeholder="Markdown形式で本文を入力してください"
+                    style={{ width: "100%", minHeight: "500px", resize: "vertical", padding: 16, fontSize: 13, lineHeight: 1.6, color: "#1A1714", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", fontFamily: "var(--font-mono, monospace)" }}
+                    onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.4)"; }}
+                    onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.12)"; }}
+                  />
+                ) : (
+                  <Body
+                    markdown={openDoc.content}
+                    highlight={highlightWord}
+                    onHeadings={handleHeadings}
+                    anchorIndex={jumpAnchor?.index}
+                    anchorMode={jumpAnchor?.mode}
+                    scrollNonce={jumpAnchor?.nonce}
+                    relatedSections={relatedSections}
+                  />
+                )}
 
               </>
             )}
