@@ -46,7 +46,7 @@ export function ProjectsPage() {
       return [];
     }
   });
-  
+
   const [menuOpen, setMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [tagSearchQuery, setTagSearchQuery] = useState("");
@@ -77,7 +77,7 @@ export function ProjectsPage() {
       const localTagsStore = localStorage.getItem("local_project_tags_map");
       if (!localTagsStore) return projectList;
       const tagMap = JSON.parse(localTagsStore);
-      
+
       return projectList.map(p => {
         const projectTags = tagMap[p.id] || (p.slug ? tagMap[p.slug] : []) || [];
         return { ...p, tags: projectTags } as any;
@@ -96,9 +96,26 @@ export function ProjectsPage() {
       if (!map.has(pid)) map.set(pid, { done: 0, inProgress: 0, todo: 0 });
       const counts = map.get(pid)!;
       for (const t of (sprint.sprint_tickets ?? [])) {
-        if (t.status === "done" || t.status === "closed") counts.done++;
-        else if (t.status === "todo") counts.todo++;
-        else counts.inProgress++;
+        const s = String(t.status || "").toLowerCase().trim();
+
+        const isDoneStatus =
+          s.includes("done") || s.includes("close") || s.includes("releas") ||
+          s.includes("withdraw") || s.includes("cancel") || s.includes("complet") ||
+          s.includes("resolv") || s.includes("drop") || s.includes("reject") ||
+          s.includes("取下") || s.includes("取り下げ") || s.includes("キャンセル");
+
+        const isDoneFlag = t.is_withdrawn || t.archived || t.is_deleted || !!t.deleted_at;
+
+        // 🌟 修正: 取下は progress: -2 として管理されているため、これを緑のチェック(done)へ加算する
+        const isDoneProgress = Number(t.progress) >= 100 || Number(t.progress) === -2;
+
+        if (isDoneStatus || isDoneFlag || isDoneProgress) {
+          counts.done++;
+        } else if (s === "todo" || s === "open" || s.includes("未着手") || s.includes("pending")) {
+          counts.todo++;
+        } else {
+          counts.inProgress++;
+        }
       }
     }
     return map;
@@ -130,7 +147,8 @@ export function ProjectsPage() {
     }
     Promise.all([
       buildProjectQuery(),
-      supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
+      // 🌟 修正: 取下フラグなどを確実に拾うため、sprint_ticketsの全カラム(*)を取得
+      supabase!.from("sprints").select("project_id, sprint_tickets(*)").order("id"),
     ]).then(([{ data: p }, { data: s }]) => {
       if (p) {
         // Supabaseのprojects.tagsカラムから直接タグを取得（mapProject内でマッピング済み）
@@ -154,7 +172,8 @@ export function ProjectsPage() {
         else if (userOrgId) q = (q as any).or(`organization_id.eq.${userOrgId},organization_id.is.null`);
         return q;
       })(),
-      supabase!.from("sprints").select("project_id, sprint_tickets(status)").order("id"),
+      // 🌟 修正: 取下フラグなどを確実に拾うため、sprint_ticketsの全カラム(*)を取得
+      supabase!.from("sprints").select("project_id, sprint_tickets(*)").order("id"),
     ]).then(([{ data: p }, { data: c }, { data: s }]) => {
       if (p) {
         // Supabaseのprojects.tagsカラムから直接タグを取得（mapProject内でマッピング済み）
@@ -275,7 +294,7 @@ export function ProjectsPage() {
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="名前、クライアントで検索..."
             style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px 8px 30px", fontSize: 12, color: "#1A1714", outline: "none", width: 240 }} />
         </div>
-        
+
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           {statusOpts.map(opt => (
             <button key={opt.value} onClick={() => setStatusFilter(opt.value)}
@@ -287,20 +306,20 @@ export function ProjectsPage() {
           {/* 複数タグ選択対応のマルチセレクトプルダウン */}
           <div ref={dropdownRef} style={{ position: "relative", marginLeft: 6 }}>
             <button type="button" onClick={() => { setMenuOpen(!menuOpen); setTagSearchQuery(""); }}
-              style={{ 
-                display: "flex", 
-                alignItems: "center", 
-                gap: 4, 
-                padding: "6px 12px", 
-                fontSize: 12, 
-                fontWeight: 500, 
-                borderRadius: 8, 
-                border: "1px solid", 
-                cursor: "pointer", 
-                transition: "all 0.15s", 
-                background: hasActiveTags ? "#059669" : "#FFFFFF", 
-                color: hasActiveTags ? "#FFFFFF" : "#6B6458", 
-                borderColor: hasActiveTags ? "#059669" : "rgba(26,23,20,0.10)" 
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "6px 12px",
+                fontSize: 12,
+                fontWeight: 500,
+                borderRadius: 8,
+                border: "1px solid",
+                cursor: "pointer",
+                transition: "all 0.15s",
+                background: hasActiveTags ? "#059669" : "#FFFFFF",
+                color: hasActiveTags ? "#FFFFFF" : "#6B6458",
+                borderColor: hasActiveTags ? "#059669" : "rgba(26,23,20,0.10)"
               }}>
               {selectedTags.length === 0 ? "すべてのタグ" : selectedTags.length === 1 ? `#${selectedTags[0]}` : `タグ: ${selectedTags.length}`}
               <ChevronDown style={{ width: 12, height: 12, opacity: 0.7, marginLeft: 2 }} />
@@ -308,23 +327,23 @@ export function ProjectsPage() {
 
             {/* 🌟 修正: 影の階層、ボーダー、余白をスプリントページのフィルタポップアップ（リッチシャドウ仕様）と完璧に同一化 */}
             {menuOpen && (
-              <div style={{ 
-                position: "absolute", 
-                top: "calc(100% + 4px)", 
-                left: 0, 
-                zIndex: 100, 
-                background: "#FFFFFF", 
-                borderRadius: 10, 
+              <div style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                left: 0,
+                zIndex: 100,
+                background: "#FFFFFF",
+                borderRadius: 10,
                 // スプリントページやパネル等と共通の、柔らかく馴染むクリーンなシャドウ設計
-                boxShadow: "0 4px 20px rgba(26,23,20,0.08), 0 2px 6px rgba(26,23,20,0.04)", 
-                border: "1px solid rgba(26,23,20,0.06)", 
-                padding: "5px", 
-                minWidth: 200, 
-                maxHeight: 280, 
-                overflowY: "auto", 
-                display: "flex", 
-                flexDirection: "column", 
-                gap: "2px" 
+                boxShadow: "0 4px 20px rgba(26,23,20,0.08), 0 2px 6px rgba(26,23,20,0.04)",
+                border: "1px solid rgba(26,23,20,0.06)",
+                padding: "5px",
+                minWidth: 200,
+                maxHeight: 280,
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: "2px"
               }}>
                 {/* 検索窓領域 */}
                 <div style={{ position: "relative", marginBottom: "4px", padding: "2px" }} onClick={e => e.stopPropagation()}>
@@ -352,31 +371,31 @@ export function ProjectsPage() {
                     const isChecked = selectedTags.includes(tag);
                     return (
                       <div key={tag} onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleToggleTag(tag); }}
-                        style={{ 
-                          width: "100%", 
-                          padding: "6px 10px", 
-                          fontSize: 12, 
-                          fontWeight: isChecked ? 600 : 500, 
-                          borderRadius: 6, 
-                          cursor: "pointer", 
-                          background: isChecked ? "rgba(5,150,105,0.03)" : "transparent", 
-                          color: isChecked ? "#1A1714" : "#6B6458", 
-                          display: "flex", 
-                          alignItems: "center", 
+                        style={{
+                          width: "100%",
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          fontWeight: isChecked ? 600 : 500,
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          background: isChecked ? "rgba(5,150,105,0.03)" : "transparent",
+                          color: isChecked ? "#1A1714" : "#6B6458",
+                          display: "flex",
+                          alignItems: "center",
                           gap: "10px",
                           transition: "all 0.1s"
                         }}
                         onMouseEnter={e => { e.currentTarget.style.background = isChecked ? "rgba(5,150,105,0.06)" : "#F4F5F6"; }}
                         onMouseLeave={e => { e.currentTarget.style.background = isChecked ? "rgba(5,150,105,0.03)" : "transparent"; }}>
-                        <div style={{ 
-                          width: "15px", 
-                          height: "15px", 
-                          borderRadius: "4px", 
-                          border: isChecked ? "1px solid #059669" : "1px solid #C9C4BB", 
-                          background: isChecked ? "#059669" : "#FFFFFF", 
-                          display: "flex", 
-                          alignItems: "center", 
-                          justifyContent: "center", 
+                        <div style={{
+                          width: "15px",
+                          height: "15px",
+                          borderRadius: "4px",
+                          border: isChecked ? "1px solid #059669" : "1px solid #C9C4BB",
+                          background: isChecked ? "#059669" : "#FFFFFF",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
                           flexShrink: 0,
                           transition: "all 0.1s"
                         }}>
@@ -463,9 +482,9 @@ function ProjectTagsEditDialog({ project, allTags, onClose, onUpdated }: { proje
   const trimmedInput = inputTag.trim();
   const suggestions = trimmedInput
     ? allTags
-        .filter(t => t.toLowerCase().includes(trimmedInput.toLowerCase()))
-        .map(t => ({ tag: t, added: tagsList.includes(t) }))
-        .sort((a, b) => Number(a.added) - Number(b.added))
+      .filter(t => t.toLowerCase().includes(trimmedInput.toLowerCase()))
+      .map(t => ({ tag: t, added: tagsList.includes(t) }))
+      .sort((a, b) => Number(a.added) - Number(b.added))
     : [];
 
   // 既存タグと完全一致するものがあれば、それを優先して適用する（重複登録を防ぐ）
@@ -534,7 +553,7 @@ function ProjectTagsEditDialog({ project, allTags, onClose, onUpdated }: { proje
       <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: "440px", background: "#FFFFFF", borderRadius: "14px", padding: "22px", zIndex: 301, boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "#1A1714", marginBottom: "4px" }}>プロジェクトのタグ編集</h3>
         <p style={{ fontSize: "12px", color: "#A09790", marginBottom: "18px" }}>「{project.name}」の属性タグを設定します。</p>
-        
+
         <div style={{ marginBottom: "16px" }}>
           <label style={{ display: "block", fontSize: "11px", fontWeight: 700, color: "#6B6458", marginBottom: "6px" }}>新しいタグを追加</label>
           <div style={{ display: "flex", gap: "6px", position: "relative" }}>
