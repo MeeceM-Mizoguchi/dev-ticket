@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search, MoreVertical, Download } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search, MoreVertical, Download, FileUp, Upload, Loader2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -27,6 +27,7 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { readWikiMarkdownFiles, WIKI_MD_ACCEPT } from "@/app/lib/wikiMdImport";
 
 interface TreeNode extends WikiPageType {
   children: TreeNode[];
@@ -49,18 +50,23 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onDelete, onMoveNode, onOpenMoveModal, onRename, onExport, canEdit,
+  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onImportMd, onDelete, onMoveNode, onOpenMoveModal, onRename, onExport, canEdit, highlightIds, scrollToId,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
   onSelectPage: (id: string) => void;
   onSelectFolder: (id: string) => void;
   onAddChild: (parentId: string, isFolder: boolean) => void;
+  onImportMd: (parentId: string, multiple: boolean) => void;
   onDelete: (node: WikiPageType) => void;
   onMoveNode: (draggedId: string, targetParentId: string | null) => Promise<void>;
   onOpenMoveModal: (node: WikiPageType) => void;
   onRename: (id: string, newTitle: string) => Promise<void>;
   onExport: (node: WikiPageType, format: ExportFormat) => void;
   canEdit: boolean;
+  /** 作成直後に一時的に色を付けるノード。BRU10-080 */
+  highlightIds: string[];
+  /** 作成直後にここまでスクロールするノード（ハイライトの先頭1件） */
+  scrollToId: string | null;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
@@ -68,10 +74,29 @@ function TreeItem({
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title);
   const inputRef = useRef<HTMLInputElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
 
   const hasChildren = node.children.length > 0;
   const isFolder = node.isFolder;
   const isSelected = selectedId === node.id;
+  const isHighlighted = highlightIds.includes(node.id);
+
+  // 作成したものが畳んだフォルダの中だと見えないので、子孫がハイライト対象なら開く。
+  // 親が開く → 子がマウント → 子のスクロール effect が走る、の順になる。
+  const hasHighlightedDescendant = useMemo(() => {
+    if (highlightIds.length === 0) return false;
+    const walk = (nodes: TreeNode[]): boolean => nodes.some(n => highlightIds.includes(n.id) || walk(n.children));
+    return walk(node.children);
+  }, [highlightIds, node.children]);
+
+  useEffect(() => {
+    if (hasHighlightedDescendant) setExpanded(true);
+  }, [hasHighlightedDescendant]);
+
+  useEffect(() => {
+    if (scrollToId !== node.id) return;
+    rowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [scrollToId, node.id]);
 
   useEffect(() => {
     setEditTitle(node.title);
@@ -162,6 +187,13 @@ function TreeItem({
         <>
           <P.Item onSelect={() => onAddChild(node.id, false)}><Plus style={menuIconStyle} />サブページを追加</P.Item>
           <P.Item onSelect={() => onAddChild(node.id, true)}><FolderPlus style={menuIconStyle} />サブフォルダを追加</P.Item>
+          <P.Sub>
+            <P.SubTrigger><FileUp style={menuIconStyle} />MDから追加</P.SubTrigger>
+            <P.SubContent>
+              <P.Item onSelect={() => onImportMd(node.id, false)}><FileUp style={menuIconStyle} />MDファイルから作成</P.Item>
+              <P.Item onSelect={() => onImportMd(node.id, true)}><Upload style={menuIconStyle} />一括MD取り込み</P.Item>
+            </P.SubContent>
+          </P.Sub>
           <P.Item onSelect={() => onOpenMoveModal(node)}><FolderTree style={menuIconStyle} />移動</P.Item>
           <P.Item onSelect={() => setIsEditing(true)}><Pencil style={menuIconStyle} />名前を変更</P.Item>
         </>
@@ -193,6 +225,7 @@ function TreeItem({
       <ContextMenu onOpenChange={open => { if (open) selectNode(); }}>
         <ContextMenuTrigger asChild>
           <div
+            ref={rowRef}
             draggable={canEdit}
             onDragStart={handleDragStart}
             onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
@@ -201,7 +234,10 @@ function TreeItem({
             style={{
               display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
               borderRadius: 7, cursor: "pointer",
-              background: isSelected ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent"),
+              // 作成直後は琥珀色で数秒だけ光らせる。解除時は transition でそっと戻す。
+              background: isHighlighted ? "#FEF3C7" : (isSelected ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent")),
+              boxShadow: isHighlighted ? "0 0 0 2px rgba(217,119,6,0.45)" : "none",
+              transition: "background 0.45s ease, box-shadow 0.45s ease",
             }}>
             <span
               onClick={e => { e.stopPropagation(); if (hasChildren || isFolder) setExpanded(v => !v); }}
@@ -277,7 +313,8 @@ function TreeItem({
       </ContextMenu>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} onExport={onExport} canEdit={canEdit} />
+          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onImportMd={onImportMd} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} onExport={onExport} canEdit={canEdit}
+          highlightIds={highlightIds} scrollToId={scrollToId} />
       ))}
     </div>
   );
@@ -309,6 +346,19 @@ export function WikiPage() {
 
   const [movingNodeTarget, setMovingNodeTarget] = useState<WikiPageType | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
+
+  // MD取り込みの進捗（null=非実行中）。一括取り込み中は「+ 新規ページ」を進捗表示に差し替える。
+  const [mdImportProgress, setMdImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const singleMdInputRef = useRef<HTMLInputElement>(null);
+  const bulkMdInputRef = useRef<HTMLInputElement>(null);
+  // 取り込み先の親。サイドバーのボタンから開いたときは null（＝ルート直下）
+  const mdImportParentRef = useRef<string | null>(null);
+
+  // 作成直後のページ/フォルダを一時的にハイライトし、そこまでスクロールする。(BRU10-080)
+  // 件数が多いとツリーの下に追加されて見失うため。
+  const [highlightIds, setHighlightIds] = useState<string[]>([]);
+  const [scrollToId, setScrollToId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -547,6 +597,21 @@ export function WikiPage() {
     }
   }, [pages, userName, load, toast]);
 
+  // 作成したノードまでスクロールして数秒ハイライトする。複数件のときは先頭までスクロールし、
+  // 全件に色を付ける（一括MD取り込み用）。
+  const flashCreated = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    setHighlightIds(ids);
+    setScrollToId(ids[0]);
+    highlightTimer.current = setTimeout(() => {
+      setHighlightIds([]);
+      setScrollToId(null);
+    }, 2400);
+  }, []);
+
+  useEffect(() => () => { if (highlightTimer.current) clearTimeout(highlightTimer.current); }, []);
+
   const handleAddItem = async (parentId: string | null, isFolder: boolean) => {
     if (!project) return;
     const id = crypto.randomUUID();
@@ -566,6 +631,62 @@ export function WikiPage() {
     // 他タブで開いているエディタの $ サジェストへ即時反映(フォルダは候補外なので通知しない)
     if (!isFolder) emitLinkItemsChanged(project.id, "wiki");
     if (!isFolder) handleSelectPage(id);
+    flashCreated([id]);
+  };
+
+  // ── MDファイル取り込み（単体 / 一括） ──────────────────────────
+  // 1ファイル = 1ページ。ファイル名(拡張子除く)がタイトル、本文は貼り付け(RichEditor)と
+  // 同じ変換経路(markdownFileToHtml)を通すので、見出し・表・コードブロックまで揃う。
+  const handleImportMdFiles = useCallback(async (files: File[], parentId: string | null) => {
+    if (!project || files.length === 0) return;
+    setMdImportProgress({ done: 0, total: files.length });
+
+    const { pages: imported, skipped } = await readWikiMarkdownFiles(
+      files, (done, total) => setMdImportProgress({ done, total }),
+    );
+
+    if (imported.length === 0) {
+      setMdImportProgress(null);
+      toast(skipped[0]?.reason ?? "取り込める内容がありませんでした", "error");
+      return;
+    }
+
+    const baseOrder = pages.filter(p => p.parentId === parentId).length;
+    const rows = imported.map((page, i) => ({
+      id: crypto.randomUUID(), project_id: project.id, parent_id: parentId,
+      title: page.title, content: page.content, is_folder: false,
+      sort_order: baseOrder + i,
+      created_by: userName || null, updated_by: userName || null,
+    }));
+
+    const { error } = await supabase!.from("wiki_pages").insert(rows);
+    setMdImportProgress(null);
+    if (error) {
+      console.error("[WikiPage] md import insert error:", error);
+      toast("作成に失敗しました", "error");
+      return;
+    }
+
+    await load();
+    emitLinkItemsChanged(project.id, "wiki");
+    toast(`${rows.length}件のページを作成しました${skipped.length ? `（${skipped.length}件はスキップ）` : ""}`);
+    handleSelectPage(rows[0].id);
+    flashCreated(rows.map(r => r.id));
+  }, [project, pages, userName, load, toast, handleSelectPage, flashCreated]);
+
+  // ツリーのメニューから開いたときは、そのノードを親にして取り込む（サブページとして生成）。
+  const handleOpenMdPicker = useCallback((parentId: string | null, multiple: boolean) => {
+    mdImportParentRef.current = parentId;
+    (multiple ? bulkMdInputRef : singleMdInputRef).current?.click();
+  }, []);
+
+  const handleMdInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
+    // 同じファイルを続けて選び直せるように値をクリアする
+    e.target.value = "";
+    const parentId = mdImportParentRef.current;
+    mdImportParentRef.current = null;
+    if (picked.length > 0) void handleImportMdFiles(picked, parentId);
   };
 
   const handleDelete = async (page: WikiPageType) => {
@@ -587,6 +708,7 @@ export function WikiPage() {
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
+      <style>{"@keyframes wiki-md-spin { to { transform: rotate(360deg); } }"}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -625,6 +747,15 @@ export function WikiPage() {
             padding: 10, overflowY: "auto", transition: "all 0.15s"
           }}
         >
+          {/* MD取り込み用の隠しinput。単体/一括で multiple だけが違う。
+              ツリーのメニューからも開くので、ボタン表示の条件(検索中は非表示)には含めない。 */}
+          {canEdit && (
+            <>
+              <input ref={singleMdInputRef} type="file" accept={WIKI_MD_ACCEPT} onChange={handleMdInputChange} style={{ display: "none" }} />
+              <input ref={bulkMdInputRef} type="file" accept={WIKI_MD_ACCEPT} multiple onChange={handleMdInputChange} style={{ display: "none" }} />
+            </>
+          )}
+
           {/* 検索バー */}
           <div style={{ position: "relative", marginBottom: 8 }}>
             <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
@@ -643,10 +774,35 @@ export function WikiPage() {
 
           {canEdit && !sidebarSearch && (
             <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-              <button onClick={() => handleAddItem(null, false)}
-                style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                <Plus style={{ width: 12, height: 12 }} />新規ページ
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
+                  <button
+                    style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
+                    {mdImportProgress ? (
+                      <>
+                        <Loader2 style={{ width: 12, height: 12, animation: "wiki-md-spin 1s linear infinite" }} />
+                        取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
+                      </>
+                    ) : (
+                      <>
+                        <Plus style={{ width: 12, height: 12 }} />新規ページ
+                        <ChevronDown style={{ width: 11, height: 11 }} />
+                      </>
+                    )}
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
+                  <DropdownMenuItem onSelect={() => handleAddItem(null, false)}>
+                    <FileText style={{ width: 14, height: 14 }} />新規ページ作成
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => handleOpenMdPicker(null, false)}>
+                    <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => handleOpenMdPicker(null, true)}>
+                    <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <button onClick={() => handleAddItem(null, true)}
                 title="新規フォルダ"
                 style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, padding: "7px 10px", background: "#FFFBEB", color: "#D97706", border: "1.5px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -694,12 +850,15 @@ export function WikiPage() {
               onSelectPage={handleSelectPage}
               onSelectFolder={handleSelectFolder}
               onAddChild={canEdit ? handleAddItem : () => {}}
+              onImportMd={canEdit ? handleOpenMdPicker : () => {}}
               onDelete={canEdit ? setDeleteTarget : () => {}}
               onMoveNode={handleMoveNode}
               onOpenMoveModal={setMovingNodeTarget}
               onRename={handleTreeItemRename}
               onExport={handleTreeExport}
               canEdit={canEdit}
+              highlightIds={highlightIds}
+              scrollToId={scrollToId}
             />
           ))}
         </div>
