@@ -118,7 +118,7 @@ export function TableResizeOverlay({ api, containerRef, canEdit }: Props) {
     // 後段でカーソル移動量を k で割り、掴んだ境界がカーソルにぴたりと追従するようにする。
     const startResize = (kind: "col" | "row", index: number, e: PointerEvent, layout: NonNullable<ReturnType<typeof readLayout>>) => {
       const targets = resolveSizeTargets(api, layout.tid, kind, index);
-      beginHistoryGesture(); // 離すまでの中間状態は EVENTUALLY で溜める（BRU7-058）
+      beginHistoryGesture(api); // 離すまでの中間状態は EVENTUALLY で溜める（BRU7-058）
       dragRef.current = {
         kind, index, tid: layout.tid, targets,
         k: Math.max(1, targets.filter((i) => i <= index).length),
@@ -192,7 +192,7 @@ export function TableResizeOverlay({ api, containerRef, canEdit }: Props) {
         return;
       }
       if (kind === "corner") {
-        beginHistoryGesture();
+        beginHistoryGesture(api);
         dragRef.current = {
           kind: "corner", corner: el.dataset.corner as Corner, tid: layout.tid,
           startCX: e.clientX, startCY: e.clientY,
@@ -253,8 +253,10 @@ export function TableResizeOverlay({ api, containerRef, canEdit }: Props) {
       }
       e.preventDefault(); e.stopPropagation();
       // 選択中の全列/全行を自動フィットへ戻す。1 undo ステップとして記録（BRU7-058）。
-      applyTableSizes(api, layout.tid, axis, resolveSizeTargets(api, layout.tid, axis, index), 0);
-      commitSceneToHistory(api);
+      // commit=true で IMMEDIATELY＋版上げの経路に乗せる（BRU10-073）。ドラッグを伴わないので
+      // beginHistoryGesture を通っておらず、commit=false だと既定の NEVER でスナップショットが
+      // 先に進んでしまい、後から IMMEDIATELY を投げても差分ゼロ＝この操作が undo できなかった。
+      applyTableSizes(api, layout.tid, axis, resolveSizeTargets(api, layout.tid, axis, index), 0, true);
     };
 
     // つまみ div を生成（構成が変わった時のみ作り直す）。

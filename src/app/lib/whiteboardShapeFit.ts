@@ -131,7 +131,12 @@ export function freezeSelectedShapeHeights(api: any): boolean {
 // 素の図形の高さをテキストにフィットさせる。1つでも変えたら true。
 // skip=true（リモート反映中・移動/リサイズ中・elbow 修復直後）のときは何もしない。
 // 編集中の図形は「高さのみ」調整する（テキスト配置は Excalidraw のエディタが管理するため触らない）。
-export function reflowBoundTextShapes(api: any, skip: boolean): boolean {
+//
+// undoing=true（undo/redo 直後の猶予窓・BRU10-073）は、復元された実高さを「ユーザー意図の高さ」の
+// 正とみなして台帳（_emptyH / customData.wbBaseH）を書き直す。台帳は履歴に載らない NEVER 更新なので
+// undo では戻らず、そのままだと直後の targetH = max(台帳, fitH) がリサイズ後の高さへ図形を押し戻して
+// 「ラベル付きの図形はサイズを変えて戻るを押しても戻らない」ように見えていた。
+export function reflowBoundTextShapes(api: any, skip: boolean, undoing = false): boolean {
   if (skip || _shapeReflowing) return false;
   const els = api.getSceneElements() as any[];
 
@@ -177,12 +182,19 @@ export function reflowBoundTextShapes(api: any, skip: boolean): boolean {
     // 値、最後に現在高さ。※現在高さを wbBaseH より前に置くと、テキストで既に伸びた高さを下限に焼いて
     // しまい「改行を減らしても縮まない」＝BRU6-011 の核が壊れるため、この順序は変えないこと。
     // 改修前からの既存図形（どちらも無い）は現在高さを下限にして縮めない（誤縮小の回帰を避ける）。
+    // undo/redo 直後（undoing）は台帳を無視し、復元された実高さを基準にする＝台帳が undo に逆らわない。
+    // 合わせてセッション台帳もその場で実高さへ同期する（猶予窓が閉じた後も押し戻しが起きないように）。
     const savedBase = typeof c.customData?.wbBaseH === "number" ? c.customData.wbBaseH : undefined;
-    const base = _emptyH.get(c.id) ?? savedBase ?? c.height;
+    const base = undoing ? c.height : (_emptyH.get(c.id) ?? savedBase ?? c.height);
+    if (undoing) _emptyH.set(c.id, c.height);
     const targetH = Math.max(base, fitH);
 
     const needH = Math.abs(c.height - targetH) > EPS;
-    const needBaseWrite = savedBase == null && _emptyH.has(c.id); // テキスト獲得時に一度だけ基準を永続化
+    // 通常はテキスト獲得時に一度だけ基準を永続化。undo 中は焼き込み済みの基準が実高さとズレていたら直す
+    // （持っていない図形には書かない＝自動のままの図形を勝手に手動基準へ変質させない）。
+    const needBaseWrite = undoing
+      ? savedBase != null && Math.abs(savedBase - c.height) > EPS
+      : savedBase == null && _emptyH.has(c.id);
     if (!needH && !needBaseWrite) continue;
 
     const nc = {

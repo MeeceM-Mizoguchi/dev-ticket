@@ -241,7 +241,7 @@ export function CornerRotateOverlay({ api, containerRef, canEdit }: Props) {
       const cx = t.box.x + t.box.w / 2, cy = t.box.y + t.box.h / 2;
       const p = viewportCoordsToSceneCoords({ clientX: e.clientX, clientY: e.clientY }, api.getAppState());
       const startPointer = Math.atan2(p.y - cy, p.x - cx);
-      beginHistoryGesture();
+      beginHistoryGesture(api);
       if (t.mode === "single") {
         dragRef.current = { mode: "single", id: t.el.id, cx, cy, startAngle: t.el.angle || 0, startPointer };
       } else {
