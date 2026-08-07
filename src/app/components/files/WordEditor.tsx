@@ -11,6 +11,7 @@ import type { ProjectFile } from "@/app/types";
 import { uploadProjectFile, fetchFileWithRetry } from "@/app/lib/projectFiles";
 import { htmlToDocxBlob } from "@/app/lib/htmlToDocx";
 import type { EditorHandle } from "./ExcelEditor";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 // ENHA2-035 Word(.docx) 画面内エディタ
 //
@@ -79,7 +80,19 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
     try {
       const blob = await htmlToDocxBlob(editor.getHTML());
       const newFile = new File([blob], file.fileName, { type: blob.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-      await uploadProjectFile(file.projectId, newFile);
+
+      let targetParentId = (file as any).parentId ?? (file as any).parent_id ?? (file as any).folderId ?? null;
+      if (isSupabaseEnabled && file.id) {
+        try {
+          const { data } = await supabase!.from("project_files").select("parent_id").eq("id", file.id).single();
+          if (data && data.parent_id) targetParentId = data.parent_id;
+        } catch (err) {
+          console.warn("parent_id fetch failed", err);
+        }
+      }
+
+      // APIに更新対象のファイルIDを明示的に伝える
+      await uploadProjectFile(file.projectId, newFile, { parentId: targetParentId, fileId: file.id });
       onSaved();
       setDirty(false);
       return true;

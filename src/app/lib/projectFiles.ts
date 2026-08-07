@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 // ENHA2-035 ファイルボックス共通ロジック
 // 「ブラウザで閲覧」は全てクライアント内(自前ビューア)で完結させ、
@@ -132,9 +132,10 @@ export async function fetchSignedUrl(fileId: string, mode: "inline" | "download"
  * @returns 実際に登録されたファイル名（改名された場合はその名前）
  */
 export async function uploadProjectFile(
-  projectId: string, file: File, opts?: { uniqueName?: boolean; parentId?: string | null },
+  projectId: string, file: File, opts?: { uniqueName?: boolean; parentId?: string | null; fileId?: string },
 ): Promise<string> {
   const fileName = file.name;
+  const targetParentId = opts?.parentId ?? (opts as any)?.parent_id ?? null;
   const { path, token } = await postApi<{ path: string; token: string }>(
     "upload-url", { projectId, fileName });
 
@@ -142,11 +143,43 @@ export async function uploadProjectFile(
     .uploadToSignedUrl(path, token, file, { contentType: file.type || "application/octet-stream" });
   if (error) throw new Error(error.message);
 
-  const res = await postApi<{ file: unknown; fileName?: string }>("register", {
+  const res = await postApi<{ file: any; fileName?: string }>("register", {
     projectId, path, fileName, fileSize: file.size, fileType: file.type || "",
     uniqueName: !!opts?.uniqueName,
-    parentId: opts?.parentId ?? null,
+    parentId: targetParentId,
+    parent_id: targetParentId,
+    folderId: targetParentId,
+    fileId: opts?.fileId,
+    file_id: opts?.fileId,
+    id: opts?.fileId,
   });
+
+  // バックエンド非同期処理による親フォルダのリセットを完全に防ぐため、
+  // 即時および遅延実行でSupabaseから強制的に元の親フォルダへ紐付け直す
+  if (isSupabaseEnabled && targetParentId) {
+    const finalFileName = res.fileName ?? fileName;
+    const forceRestore = async () => {
+      try {
+        if (opts?.fileId) {
+          await supabase!.from("project_files").update({ parent_id: targetParentId }).eq("id", opts.fileId);
+        }
+        if (res.file?.id && res.file.id !== opts?.fileId) {
+          await supabase!.from("project_files").update({ parent_id: targetParentId }).eq("id", res.file.id);
+        }
+        const { data: latest } = await supabase!.from("project_files")
+          .select("id").eq("project_id", projectId).eq("file_name", finalFileName)
+          .order("created_at", { ascending: false }).limit(1);
+        if (latest && latest.length > 0) {
+          await supabase!.from("project_files").update({ parent_id: targetParentId }).eq("id", latest[0].id);
+        }
+      } catch (e) {
+        console.warn("Restore parent_id failed:", e);
+      }
+    };
+    await forceRestore();
+    setTimeout(forceRestore, 1200);
+  }
+
   return res.fileName ?? fileName;
 }
 
