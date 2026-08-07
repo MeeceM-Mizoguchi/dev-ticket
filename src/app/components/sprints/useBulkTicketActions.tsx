@@ -32,7 +32,7 @@ function estimateScale(hours: number): DevScale | null {
 }
 
 export function useBulkTicketActions({
-  tickets, moveTargets, projectId, projectSlug, projectMembers, onUpdated, onFlash, onBeforeMove,
+  tickets, moveTargets, projectId, projectSlug, projectMembers, onUpdated, onFlash, onMoved, onBeforeMove,
 }: {
   /** 選択対象になりうるチケット（親・子を含む全件） */
   tickets: SprintTicket[];
@@ -44,6 +44,13 @@ export function useBulkTicketActions({
   onUpdated?: () => void | Promise<void>;
   /** 一括アサイン後に対象行を強調表示したい場合のコールバック */
   onFlash?: (ticketIds: string[]) => void;
+  /**
+   * 🌟 BRU10-077: スプリント移動が完了したときのコールバック。
+   * 移動後（採番し直し後）のWBSと移動先スプリントIDを渡す。呼び出し側で
+   * 移動先までスクロールして強調表示するために使う。
+   * 完了ダイアログを閉じた直後に呼ぶ（ダイアログで隠れている間に強調が消えないようにするため）。
+   */
+  onMoved?: (movedWbs: string[], targetSprintId: string) => void;
   /** 移動先候補を遅延取得したい場合に使う。移動ダイアログを開く前に await される */
   onBeforeMove?: () => void | Promise<void>;
 }) {
@@ -54,6 +61,8 @@ export function useBulkTicketActions({
   const [bulkAction, setBulkAction] = useState<null | "delete" | "move">(null);
   const [assignState, setAssignState] = useState<{ phase: BulkAssignPhase; current: number; total: number; message?: string } | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  // 🌟 BRU10-077: 完了ダイアログを閉じたあとに実行する「移動先の強調表示」の予約
+  const [pendingMoved, setPendingMoved] = useState<{ wbsList: string[]; targetSprintId: string } | null>(null);
 
   const selectedTickets = useMemo(() => tickets.filter(t => selectedIds.has(t.id)), [tickets, selectedIds]);
 
@@ -100,11 +109,13 @@ export function useBulkTicketActions({
     if (!projectId) return;
     const ids = Array.from(selectedIds);
     try {
-      const moved = await bulkMoveTickets({ ticketIds: ids, targetSprintId, projectId });
+      const { moved, movedWbs } = await bulkMoveTickets({ ticketIds: ids, targetSprintId, projectId });
       const target = (moveTargets ?? []).find(s => s.id === targetSprintId);
       await onUpdated?.();
       clearSelection();
       setBulkAction(null);
+      // 完了ダイアログを閉じた時点で移動先へスクロール＆強調する（BRU10-077）
+      if (movedWbs.length > 0) setPendingMoved({ wbsList: movedWbs, targetSprintId });
       setSuccessMessage(`${moved}件のチケットを「${target?.name ?? "スプリント"}」へ移動しました。`);
     } catch (e) {
       showAlert("移動に失敗しました。\n\n" + String(e), "エラー");
@@ -212,6 +223,16 @@ export function useBulkTicketActions({
     }
   };
 
+  // 完了ダイアログを閉じる。スプリント移動の直後なら、そのタイミングで強調表示を始める。
+  const closeSuccess = () => {
+    setSuccessMessage(null);
+    if (pendingMoved) {
+      const { wbsList, targetSprintId } = pendingMoved;
+      setPendingMoved(null);
+      onMoved?.(wbsList, targetSprintId);
+    }
+  };
+
   const ui = (
     <>
       <BulkActionBar
@@ -257,9 +278,9 @@ export function useBulkTicketActions({
       {successMessage && (
         <DialogShell
           title="完了"
-          onClose={() => setSuccessMessage(null)}
+          onClose={closeSuccess}
           size="sm"
-          footer={<BtnPrimary onClick={() => setSuccessMessage(null)}>OK</BtnPrimary>}
+          footer={<BtnPrimary onClick={closeSuccess}>OK</BtnPrimary>}
         >
           <p style={{ fontSize: 13, color: "#1A1714", margin: 0, lineHeight: 1.5 }}>{successMessage}</p>
         </DialogShell>

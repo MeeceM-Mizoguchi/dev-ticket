@@ -284,6 +284,11 @@ export function SprintDetailPage() {
   });
   const [scrollTick, setScrollTick] = useState(0);
   const scrollWbsRef = useRef<string | null>(null);
+  // 🌟 BRU10-077: スプリント移動の直後。移動したチケットはこの画面から消えるため、
+  //    移動先スプリントの画面へ遷移し、読み込み完了後に対象チケットを強調表示する。
+  const [pendingMovedHighlight, setPendingMovedHighlight] = useState<{ sprintId: string; wbsList: string[] } | null>(null);
+  // 詳細パネルからの移動でパネルが閉じるとき、通常の「閉じたチケットへ戻る」処理を飛ばすための目印
+  const movedAwayRef = useRef(false);
   const [backgroundParentWbs, setBackgroundParentWbs] = useState<string | null>(null);
   const [isParentNav, setIsParentNav] = useState(false);
 
@@ -347,6 +352,31 @@ export function SprintDetailPage() {
     scrollWbsRef.current = createdWbs[0];
     setScrollTick(t => t + 1);
   };
+
+  // 🌟 BRU10-077: スプリント移動の完了時。移動先スプリントの画面へ遷移する。
+  //    URLは identifier 優先（無ければ id）。移動ダイアログ用に取得済みの一覧から解決し、
+  //    単体移動などで未取得のときだけ問い合わせる。
+  const handleTicketsMoved = async (wbsList: string[], targetSprintId: string) => {
+    if (wbsList.length === 0 || !targetSprintId) return;
+    let segmentForUrl = projectSprints.find(s => s.id === targetSprintId)?.identifier || "";
+    if (!segmentForUrl && isSupabaseEnabled) {
+      const { data } = await supabase!.from("sprints").select("identifier").eq("id", targetSprintId).maybeSingle();
+      segmentForUrl = data?.identifier ?? "";
+    }
+    setPendingMovedHighlight({ sprintId: targetSprintId, wbsList });
+    navigate(`/${projectSlug}/${segmentForUrl || targetSprintId}`);
+  };
+
+  // 移動先スプリントの読み込みが終わったら、既存の強調表示（6秒で自動解除）に相乗りして
+  // 対象チケットを強調し、その行までスクロールする。
+  useEffect(() => {
+    if (!pendingMovedHighlight || sprint?.id !== pendingMovedHighlight.sprintId) return;
+    const { wbsList } = pendingMovedHighlight;
+    setPendingMovedHighlight(null);
+    setBulkCreatedWbs(wbsList);
+    scrollWbsRef.current = wbsList[0];
+    setScrollTick(t => t + 1);
+  }, [pendingMovedHighlight, sprint]);
 
   const selectTicket = (wbs: string | null) => {
     if (wbs) {
@@ -476,6 +506,7 @@ export function SprintDetailPage() {
     projectMembers: project?.members,
     onUpdated: refreshSprint,
     onFlash: flashTickets,
+    onMoved: handleTicketsMoved,
     onBeforeMove: loadProjectSprints,
   });
 
@@ -942,7 +973,15 @@ export function SprintDetailPage() {
         sprintSlug={sprint?.identifier || undefined}
         projectSlug={projectSlug}
         anchor={anchor}
+        onMoved={(movedTicketWbs, targetSprintId) => { movedAwayRef.current = true; void handleTicketsMoved([movedTicketWbs], targetSprintId); }}
         onClose={() => {
+          // 🌟 BRU10-077: スプリント移動で閉じた場合は移動先の画面へ遷移済み。
+          //    移動元のチケットはもう無いので、通常の「閉じた行へ戻る」処理はしない。
+          if (movedAwayRef.current) {
+            movedAwayRef.current = false;
+            setBackgroundParentWbs(null);
+            return;
+          }
           const wbs = selectedTicket?.wbs ?? null;
           if (wbs) {
             setLastOpenedWbs(wbs);

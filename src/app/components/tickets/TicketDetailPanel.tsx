@@ -240,8 +240,15 @@ function ChildHoursBadge({ hours }: { hours: number }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void; onDeleted?: () => void; onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
+  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onMoved, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
+}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void | Promise<void>; onDeleted?: () => void;
+  /**
+   * 🌟 BRU10-077: 別スプリントへ移動したときに呼ばれる。移動後（採番し直し後）のWBSと
+   * 移動先スプリントIDを渡すので、呼び出し側で移動先までスクロールして強調表示する。
+   * onUpdated の完了後・onClose の直前に呼ぶ。
+   */
+  onMoved?: (movedWbs: string, targetSprintId: string) => void;
+  onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
 
   const { userName, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
@@ -1798,8 +1805,10 @@ export function TicketDetailPanel({
         }
       }
 
-      onUpdated?.();
+      // 🌟 BRU10-077: 移動先で強調表示するには一覧の再読み込み完了を待つ必要があるため await する
+      await onUpdated?.();
       setShowMoveModal(false);
+      onMoved?.(newWbs, moveTargetSprintId);
       onClose();
     } finally {
       setIsMoveLoading(false);

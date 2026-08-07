@@ -102,6 +102,8 @@ export function SprintPage() {
   const [bulkCreateMode, setBulkCreateMode] = useState<BulkCreateMode>("table");
   // 一括作成の直後に、作成した全チケットを各ビューで強調表示するための対象WBS
   const [bulkCreatedWbs, setBulkCreatedWbs] = useState<string[]>([]);
+  // 🌟 BRU10-077: スプリント移動の直後に、移動先までスクロールして対象チケットを強調表示するためのWBS
+  const [movedWbs, setMovedWbs] = useState<string[]>([]);
   const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
   // 🌟 BRU10-068: 設定アイコンのメニュー（プロジェクト設定 / スプリント並び替え）と並び替えモーダル
   const [settingsMenuRect, setSettingsMenuRect] = useState<DOMRect | null>(null);
@@ -117,6 +119,9 @@ export function SprintPage() {
   const [backgroundParentWbs, setBackgroundParentWbs] = useState<string | null>(null);
   const [isParentNav, setIsParentNav] = useState(false);
   const deletedIdsRef = useRef<Set<string>>(new Set());
+  // 🌟 BRU10-077: 詳細パネルからのスプリント移動でパネルが閉じるとき、
+  //    「閉じたチケットを強調」する通常処理を飛ばすための目印（移動元のWBSはもう存在しないため）
+  const movedAwayRef = useRef(false);
 
   // 🌟 BRU5-043: 上部ブロック(パンくず〜ビュー切替)を画面上部に固定し、その実高さを測って
   //             各ビューの sticky ヘッダーへオフセットとして渡す。高さは環境メモ折返し等で可変のため測定する。
@@ -186,6 +191,28 @@ export function SprintPage() {
     const t = setTimeout(() => setBulkCreatedWbs([]), 6000);
     return () => clearTimeout(t);
   }, [bulkCreatedWbs]);
+
+  // 🌟 BRU10-077: スプリント移動の完了時。移動先スプリントの行を強調表示の対象にすると、
+  //    各ビュー(リスト/ボード/ガント)が既存の強調ロジックで移動先を開き・スクロールする。
+  //    移動元のチケットは消えているので、競合する単体強調はここで落としておく。
+  const handleTicketsMoved = (wbsList: string[]) => {
+    if (wbsList.length === 0) return;
+    setSelectedTicketWbs(null);
+    setClosedHighlightWbs(null);
+    setCreatedHighlightWbs(null);
+    setBulkCreatedWbs([]);
+    setMovedWbs(wbsList);
+  };
+
+  // 移動後の強調表示も一定時間で解除する（一括作成と同じ6秒）
+  useEffect(() => {
+    if (movedWbs.length === 0) return;
+    const t = setTimeout(() => setMovedWbs([]), 6000);
+    return () => clearTimeout(t);
+  }, [movedWbs]);
+
+  // 各ビューへ渡す強調対象。移動直後は移動先を優先する。
+  const highlightWbsList = movedWbs.length > 0 ? movedWbs : bulkCreatedWbs;
 
   useEffect(() => {
     if (!isSupabaseEnabled) {
@@ -394,9 +421,9 @@ export function SprintPage() {
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={bulkCreatedWbs} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
-        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
-        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={bulkCreatedWbs} stickyTop={headerH} />}
+        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
+        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
 
         {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
 
@@ -510,9 +537,20 @@ export function SprintPage() {
           sprintSlug={ticketSprint?.identifier || undefined}
           projectSlug={projectSlug}
           anchor={anchor}
+          onMoved={movedTicketWbs => { movedAwayRef.current = true; handleTicketsMoved([movedTicketWbs]); }}
           onClose={() => {
             const currentTicketWbs = selectedTicketWbs;
             const parentWbsToRestore = backgroundParentWbs;
+
+            // 🌟 BRU10-077: スプリント移動で閉じた場合は、移動先の強調(handleTicketsMoved)に任せる。
+            //    移動元のWBSはもう存在しないため、閉じたチケットの強調・スクロールは行わない。
+            if (movedAwayRef.current) {
+              movedAwayRef.current = false;
+              setBackgroundParentWbs(null);
+              window.history.pushState(null, '', `/${projectSlug}`);
+              setSelectedTicketWbs(null);
+              return;
+            }
 
             setClosedHighlightWbs(currentTicketWbs);
             setBackgroundParentWbs(null);
