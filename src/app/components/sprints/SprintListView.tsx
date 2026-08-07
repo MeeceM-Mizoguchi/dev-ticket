@@ -259,7 +259,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, highlightWbsList, stickyTop, onUpdated, projectMembers, projectSlug }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -270,8 +270,10 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
   targetTicketWbs?: string;
   targetSprintId?: string | null;
-  /** 一括作成の直後に強調表示するWBS（複数） */
+  /** 一括作成・スプリント移動の直後に強調表示するWBS（複数） */
   highlightWbsList?: string[];
+  /** 🌟 BRU10-077: 一括スプリント移動の完了時。移動後のWBS（採番し直し後）を親へ渡す */
+  onMoved?: (movedWbs: string[], targetSprintId: string) => void;
   stickyTop?: number;
   onUpdated?: () => void | Promise<void>;
   projectMembers?: string[];
@@ -645,6 +647,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
     projectMembers,
     onUpdated,
     onFlash: flashTickets,
+    onMoved,
   });
   const selectedTicketIds = bulk.selectedIds;
 

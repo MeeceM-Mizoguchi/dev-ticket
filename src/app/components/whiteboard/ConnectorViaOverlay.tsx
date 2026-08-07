@@ -117,7 +117,7 @@ export function ConnectorViaOverlay({ api, containerRef, canEdit }: Props) {
       e.stopPropagation();
       h.setPointerCapture?.(e.pointerId);
       // ドラッグ確定(onUp)の1回で履歴に載せる。それまでの中間状態は EVENTUALLY で溜める（BRU7-058）。
-      beginHistoryGesture();
+      beginHistoryGesture(api);
       const vias = t.info.vias.map((v) => ({ ...v }));
       if (kind === "via") {
         dragRef.current = { id: t.id, viaIndex: Number(h.dataset.index), vias };

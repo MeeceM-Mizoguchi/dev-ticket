@@ -38,15 +38,20 @@ export async function bulkDeleteTickets(ticketIds: string[]): Promise<number> {
  * - すでに移動先スプリントにあるチケットは対象外（採番の無駄打ちを避ける）。
  * - WBS は移動先スプリントで連番採番する。複数件を一度に処理するため、
  *   現在の最大採番を一度だけ取得し、メモリ上でインクリメントして衝突を防ぐ。
- * 戻り値: 実際に移動したルートチケット数。
+ * 戻り値: 実際に移動したルートチケット数と、採番し直した後のWBS一覧
+ *         （BRU10-077: 移動先へスクロール＆強調表示するために呼び出し側が使う）。
+ *         movedWbs はルート → その子 の順で、先頭が必ずルートになるよう並べる。
  */
+export type BulkMoveResult = { moved: number; movedWbs: string[] };
+
 export async function bulkMoveTickets(params: {
   ticketIds: string[];
   targetSprintId: string;
   projectId: string;
-}): Promise<number> {
+}): Promise<BulkMoveResult> {
   const { ticketIds, targetSprintId, projectId } = params;
-  if (!isSupabaseEnabled || ticketIds.length === 0 || !targetSprintId || !projectId) return 0;
+  const empty: BulkMoveResult = { moved: 0, movedWbs: [] };
+  if (!isSupabaseEnabled || ticketIds.length === 0 || !targetSprintId || !projectId) return empty;
 
   // 選択チケットの現行情報を取得（親/子・現在スプリント）
   const { data: selRows } = await supabase!
@@ -59,7 +64,7 @@ export async function bulkMoveTickets(params: {
     .from("sprint_tickets").select("id, wbs, sprint_id").in("id", Array.from(parentIds));
   const roots = (rootRows ?? []).filter(r => r.sprint_id !== targetSprintId) as
     { id: string; wbs: string; sprint_id: string }[];
-  if (roots.length === 0) return 0;
+  if (roots.length === 0) return empty;
 
   // 採番用プレフィックスと、移動先スプリントを含むプロジェクト全体の現在最大番号を取得
   const [{ data: sprintRows }, { data: projectRow }, { data: targetSprint }] = await Promise.all([
@@ -100,10 +105,12 @@ export async function bulkMoveTickets(params: {
   // 直列 await だと 1 件ごとに通信往復を待って数十件で数秒かかっていた。
   // 採番(nextNum)は同期的にこのループで確定するため、通信自体は順序非依存で並列化できる。
   const updates: PromiseLike<unknown>[] = [];
+  const movedWbs: string[] = [];
   for (const root of roots) {
     const newWbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
     nextNum++;
     const oldWbs = root.wbs;
+    movedWbs.push(newWbs);
 
     updates.push(
       supabase!.from("sprint_tickets")
@@ -114,6 +121,7 @@ export async function bulkMoveTickets(params: {
     const children = childrenByParent.get(root.id) ?? [];
     for (const child of children) {
       const suffix = child.wbs.slice(oldWbs.length);   // 例: "-01" を維持
+      movedWbs.push(`${newWbs}${suffix}`);
       updates.push(
         supabase!.from("sprint_tickets")
           .update({ sprint_id: targetSprintId, wbs: `${newWbs}${suffix}` })
@@ -122,5 +130,5 @@ export async function bulkMoveTickets(params: {
     }
   }
   await Promise.all(updates);
-  return roots.length;
+  return { moved: roots.length, movedWbs };
 }

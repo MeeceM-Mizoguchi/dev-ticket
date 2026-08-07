@@ -114,7 +114,7 @@ export function BraceTipHandle({ api, containerRef, canEdit }: Props) {
       e.stopPropagation();
       handle.setPointerCapture?.(e.pointerId);
       dragId.current = el.id;
-      beginHistoryGesture(); // 離すまでの中間状態は EVENTUALLY で溜める（BRU7-058）
+      beginHistoryGesture(api); // 離すまでの中間状態は EVENTUALLY で溜める（BRU7-058）
     };
     const onMove = (e: PointerEvent) => {
       if (!dragId.current) return;

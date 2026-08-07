@@ -22,6 +22,8 @@
 //    ドラッグ中の中間状態には付けないこと（1ドラッグが何十もの undo ステップに割れる）。
 import { CaptureUpdateAction } from "@excalidraw/excalidraw";
 
+const rand = () => Math.floor(Math.random() * 0x7fffffff);
+
 /** ユーザー操作を 1 undo ステップとして履歴へ記録する。`api.updateScene({ elements, ...COMMIT })` */
 export const COMMIT = { captureUpdate: CaptureUpdateAction.IMMEDIATELY } as const;
 
@@ -30,6 +32,41 @@ export const NO_HISTORY = { captureUpdate: CaptureUpdateAction.NEVER } as const;
 
 /** 履歴のスナップショットを一切動かさない更新（＝次の COMMIT でまとめて記録される） */
 const PENDING = { captureUpdate: CaptureUpdateAction.EVENTUALLY } as const;
+
+// ── 【大前提】Excalidraw の変更検知は versionNonce だけ（BRU10-073）───────────
+//
+// Snapshot.detectChangedElements は要素の中身を一切見ず、`prev.versionNonce !== next.versionNonce`
+// だけで「変わったか」を判定する。captureIncrement は差分の無いスナップショットに対しては
+// increment を emit しないので、
+//
+//   **versionNonce を上げずに要素を書き換えると、その変更は履歴から丸ごと消える**
+//
+// （IMMEDIATELY を投げても履歴エントリが1つも作られない）。表の列幅/行高を書く経路が
+// 版を据え置きにしていたため「行幅を変えて Ctrl+Z しても戻らない」＝BRU10-073 の症状になった。
+// 個々の呼び出し元の上げ忘れに頼らないよう、下の commitSceneToHistory は
+// 「ドラッグ開始時のベースラインとのコンテンツ差分」で変更要素を割り出し、確定時に必ず版を振り直す。
+// 単発の IMMEDIATELY（書式パネル等）は WhiteboardCanvas の guardApi が同じ関数で保険をかける。
+
+/** 差分判定から除く（Excalidraw の ElementsChange.stripIrrelevantProps と同じ顔ぶれ＋index） */
+const META_KEYS = new Set(["version", "versionNonce", "updated", "seed", "index"]);
+
+/**
+ * 2つの要素が「中身として」違うか。参照が同じなら即 false（走査コストは実質ゼロ）。
+ * 版・更新時刻など履歴の差分に含まれないメタ項目は無視する。
+ */
+export function elementContentChanged(prev: any, next: any): boolean {
+  if (prev === next) return false;
+  if (!prev || !next) return true;
+  for (const k of Object.keys(next)) {
+    if (META_KEYS.has(k)) continue;
+    if (prev[k] !== next[k]) return true;
+  }
+  for (const k of Object.keys(prev)) {
+    if (META_KEYS.has(k)) continue;
+    if (!(k in next)) return true;
+  }
+  return false;
+}
 
 // ── 自前オーバーレイのドラッグ操作（BRU7-058）─────────────────────────────
 //
@@ -46,7 +83,7 @@ const PENDING = { captureUpdate: CaptureUpdateAction.EVENTUALLY } as const;
 // 同じ要素を書くとやはりスナップショットが進んでしまう。captureUpdate は呼び出し単位なので、
 // 「ドラッグ中は updateScene の既定を NEVER ではなく EVENTUALLY にする」のが確実。
 //
-// 使い方: つまみの pointerdown で beginHistoryGesture()、離したフレームで COMMIT 付きの
+// 使い方: つまみの pointerdown で beginHistoryGesture(api)、離したフレームで COMMIT 付きの
 // updateScene（または commitSceneToHistory）を1回。解除は下の保険リスナーが必ず行う。
 //
 // ── ここまでだと「そのドラッグが1ステップも記録されない」（BRU10-044）─────────────
@@ -73,14 +110,26 @@ const PENDING = { captureUpdate: CaptureUpdateAction.EVENTUALLY } as const;
 // → 確定は2段階にする。①ドラッグで触った要素の version をシーン上でいったん 1 まで下げて
 //   「未コミット」判定を外し、②改めて version を上げた配列を IMMEDIATELY で渡す。
 //   ①は EVENTUALLY なのでスナップショットに触らず、②で初めて差分が記録される。
-//   どの要素を触ったかは guardApi が noteGestureTouched で控える（全オーバーレイ共通）。
+//
+// ── どの要素を触ったかの数え方（BRU10-073・訂正）─────────────────────────
+//
+// 旧実装は guardApi で「updateScene に渡された versionNonce がシーンと違う要素」を数えていたが、
+// これは**呼び出し元が版を上げている場合しか成立しない**。表のリサイズのように版を据え置きで書く
+// 経路では1件も集まらず、上のフォールバック（素の IMMEDIATELY）へ落ちて履歴エントリが0になっていた。
+// → ドラッグ開始時のシーンをベースラインとして控え、確定時に**中身を突き合わせて**変更要素を割り出す。
+//   これなら呼び出し元が版を上げているかどうかに依存しない。
+//   ベースラインは浅いコピーで持つ（Excalidraw 本体は mutateElement で要素を in-place 更新することが
+//   あり、参照だけ持つとベースラインまで一緒に書き換わって差分が消えるため）。
 let gestureActive = false;
-const gestureTouched = new Set<string>(); // このドラッグで書き換えた要素
+let gestureBase: Map<string, any> | null = null; // ドラッグ開始時のシーン（id -> 要素の浅いコピー）
 
 /** 自前オーバーレイのドラッグ開始。以後 captureUpdate 未指定の更新は EVENTUALLY になる。 */
-export const beginHistoryGesture = () => { gestureActive = true; gestureTouched.clear(); };
-/** ドラッグ中に書き換えた要素を控える（guardApi から。確定時の version 巻き戻しに使う） */
-export const noteGestureTouched = (ids: Iterable<string>) => { for (const id of ids) gestureTouched.add(id); };
+export const beginHistoryGesture = (api?: any) => {
+  gestureActive = true;
+  gestureBase = null;
+  const els = (api?.getSceneElementsIncludingDeleted?.() ?? api?.getSceneElements?.()) as readonly any[] | undefined;
+  if (els) gestureBase = new Map(els.map((e) => [e.id, { ...e }]));
+};
 /** ドラッグ終了（明示解除。pointerup/blur でも自動解除される） */
 export const endHistoryGesture = () => { gestureActive = false; };
 /** 自前オーバーレイのドラッグ中か（guardApi が既定の captureUpdate を決めるのに使う） */
@@ -104,13 +153,24 @@ if (typeof window !== "undefined") {
  * ②で version を「現在値＋1」にするのは Yjs への配信条件（version/versionNonce の大小比較・
  * ExcalidrawYjsBridge.syncFromExcalidraw）を満たすため。①の 1 のまま放置すると、他メンバーが
  * 持っている古い版のほうが新しいと判定され、回した結果が巻き戻される。
+ *
+ * ②で versionNonce も必ず振り直すのが BRU10-073 の肝。Excalidraw は versionNonce の変化でしか
+ * 「変わった」と判定しないため、これが無いと（ドラッグ中に版を上げない経路では）
+ * IMMEDIATELY を投げても履歴エントリが1つも作られない。
  */
 export function commitSceneToHistory(api: any): void {
   const els = (api?.getSceneElementsIncludingDeleted?.() ?? api?.getSceneElements?.()) as readonly any[] | undefined;
   if (!els?.length) return;
-  const touched = new Set(gestureTouched);
-  gestureTouched.clear();
-  if (!touched.size) { api.updateScene({ elements: els, ...COMMIT }); return; }
+  const base = gestureBase;
+  gestureBase = null;
+  // ドラッグ開始時のベースラインと中身を突き合わせて「このドラッグで変わった要素」を割り出す。
+  // ベースラインが無い（beginHistoryGesture に api を渡していない等）ときは全要素を対象にする。
+  const touched = new Set<string>();
+  for (const e of els) {
+    const b = base?.get(e.id);
+    if (!base || !b || b.versionNonce !== e.versionNonce || elementContentChanged(b, e)) touched.add(e.id);
+  }
+  if (!touched.size) return; // 何も変わっていない＝記録するものが無い
   // ① 「未コミット」判定を外す（EVENTUALLY＝スナップショットには触らない）
   api.updateScene({
     elements: els.map((e) => (touched.has(e.id) ? { ...e, version: 1 } : e)),
@@ -118,7 +178,7 @@ export function commitSceneToHistory(api: any): void {
   });
   // ② 確定。ここで初めて「スナップショット ↔ 現在」の差分が1エントリとして記録される
   api.updateScene({
-    elements: els.map((e) => (touched.has(e.id) ? { ...e, version: (e.version ?? 1) + 1 } : e)),
+    elements: els.map((e) => (touched.has(e.id) ? { ...e, version: (e.version ?? 1) + 1, versionNonce: rand() } : e)),
     ...COMMIT,
   });
 }

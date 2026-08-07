@@ -15,7 +15,7 @@ import { healEscapedBoundText } from "@/app/lib/whiteboardBoundText";
 import { pinBoundTextColor } from "@/app/lib/whiteboardTextColor";
 import { pinCellTextFormat, placeEditingCellText, seedNewCellText } from "@/app/lib/whiteboardCellFormat";
 import { isConnectSuppressed } from "@/app/lib/whiteboardNoConnect";
-import { isHistoryGestureActive, noteGestureTouched } from "@/app/lib/whiteboardHistory";
+import { isHistoryGestureActive, elementContentChanged } from "@/app/lib/whiteboardHistory";
 import { reflowTables, freezeSelectedTable, isPartialTableCellSelection, moveTableCellSelection, type TableArrowDir } from "@/app/lib/whiteboardTable";
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
@@ -150,6 +150,13 @@ const CLEAN_DEFAULTS = {
  *   **記録対象から丸ごと差し戻す**ため、自前オーバーレイのドラッグは確定の IMMEDIATELY を
  *   投げても1ステップも履歴に残らなかった（＝ドラッグ直後の Ctrl+Z が効かない）。
  *   対策は commitSceneToHistory 側の2段階確定。詳細は whiteboardHistory の説明を参照。
+ *
+ * ※【BRU10-073】さらに手前に落とし穴がある。Excalidraw の変更検知（detectChangedElements）は
+ *   要素の中身を見ず **versionNonce の変化だけ** で判断する。版を上げずに書き換えた変更は
+ *   IMMEDIATELY を投げても「何も起きていない」と判定され、履歴エントリが1つも作られない
+ *   （＝表の行高/列幅の変更が丸ごと undo から消えていた）。
+ *   → ドラッグは commitSceneToHistory がベースライン差分で拾って確定時に版を振り直す。
+ *     単発の IMMEDIATELY は下の updateScene ラッパが保険として版を振り直す。
  */
 function guardApi(api: any): any {
   if (!api || api.__wbGuarded) return api;
@@ -217,21 +224,30 @@ function guardApi(api: any): any {
     // 進めてしまうと、離した時の IMMEDIATELY が差分ゼロになり“そのドラッグが undo できない”。
     // 保留へ積む前に正規化しておく（集約で他の呼び出しの captureUpdate を引き継がないようにする）。
     const gesture = isHistoryGestureActive();
-    const data = raw && raw.captureUpdate === undefined
+    let data = raw && raw.captureUpdate === undefined
       ? { ...raw, captureUpdate: gesture ? CaptureUpdateAction.EVENTUALLY : CaptureUpdateAction.NEVER }
       : raw;
-    // 【BRU10-044】ドラッグ中に書き換えた要素を控える。確定時にこの要素だけ version を巻き戻して
-    // Excalidraw の filterUncomittedElements（＝未コミット扱いで記録対象から外す関門）を通す。
-    // これが無いと自前オーバーレイのドラッグは1ステップも履歴に残らない（詳細は whiteboardHistory）。
-    // 判定は versionNonce の変化。rAFへ保留される更新も「呼ばれた時点」で数えるためここで行う。
-    if (gesture && data?.elements) {
+    // 【BRU10-073】版の上げ忘れに対する保険。
+    // Excalidraw の変更検知は versionNonce だけを見るため、中身を書き換えても版が同じなら
+    // 「何も起きていない」と判定され、IMMEDIATELY を投げても履歴エントリが作られない
+    // （＝その操作が黙って undo から消える。詳細は whiteboardHistory 冒頭）。
+    // ユーザー操作そのもの（IMMEDIATELY）に限り、「シーンと versionNonce が同じなのに中身が違う」
+    // 要素へ版を振り直してから適用する。既に版を上げている呼び出し（書式パネル各種）は
+    // versionNonce が違うので素通り＝挙動不変。自動導出（NEVER）やリモート反映には触れないので、
+    // 余計な更新が Yjs へ流れることもない。ドラッグ中（EVENTUALLY）は確定時に
+    // commitSceneToHistory がベースラインとの差分で拾うため、ここでは何もしない。
+    if (data?.captureUpdate === CaptureUpdateAction.IMMEDIATELY && data?.elements) {
       try {
-        const cur = new Map<string, number>(
-          ((api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements()) as any[])
-            .map((e) => [e.id, e.versionNonce]));
-        const ids = (data.elements as any[])
-          .filter((e) => cur.get(e.id) !== e.versionNonce).map((e) => e.id);
-        if (ids.length) noteGestureTouched(ids);
+        const cur = new Map<string, any>(
+          ((api.getSceneElementsIncludingDeleted?.() ?? api.getSceneElements()) as any[]).map((e) => [e.id, e]));
+        let bumped = false;
+        const els = (data.elements as any[]).map((e) => {
+          const c = cur.get(e.id);
+          if (!c || c.versionNonce !== e.versionNonce || !elementContentChanged(c, e)) return e;
+          bumped = true;
+          return { ...e, version: (e.version ?? 1) + 1, versionNonce: Math.floor(Math.random() * 0x7fffffff) };
+        });
+        if (bumped) data = { ...data, elements: els };
       } catch { /* noop */ }
     }
     if (deferring) {
@@ -1268,10 +1284,13 @@ export default function WhiteboardCanvas({
         // 移動/リサイズ中とリモート/焼き込み直後はスキップ。テキスト編集中は reflow 内部でエディタ
         // textarea を検出して「ライブモード」で再レイアウトする（入力しながら列幅を可変に・BRU5-042）。
         const hardInteract = !!(appState?.selectedElementsAreBeingDragged || resizingNow || appState?.draggingElement);
-        reflowTables(api, remote || hardInteract || frozen || elbowHealed || dupRemapped);
+        // undoing を渡すのは、履歴に載らない「手動サイズの台帳」(表の cw/rh・図形の wbBaseH)が
+        // undo で戻らず、直後の再レイアウトが図形/表をリサイズ後のサイズへ押し戻すのを防ぐため。
+        // 猶予窓の間は復元された実寸法を正として台帳のほうを書き直す（BRU10-073）。
+        reflowTables(api, remote || hardInteract || frozen || elbowHealed || dupRemapped, undoing);
         // 素の図形のバインドテキスト高さフィット（BRU6-011）。改行を減らすと元の高さへ戻す。
         // 新規作成中(newElement)は触らない（作成中の要素を updateScene で壊さない）。
-        reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || dupRemapped || !!appState?.newElement);
+        reflowBoundTextShapes(api, remote || hardInteract || shapeFrozen || elbowHealed || dupRemapped || !!appState?.newElement, undoing);
         // インデントを入れた行が端で折り返したとき、続きの行も同じインデント位置から始める（BRU9-053）。
         // 表示用の text だけを組み直す（生テキストは触らない）。高さは上の reflowBoundTextShapes が追従。
         reflowIndentWrap(api, remote || hardInteract || shapeFrozen || elbowHealed || dupRemapped || !!appState?.newElement);

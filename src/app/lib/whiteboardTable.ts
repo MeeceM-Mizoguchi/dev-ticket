@@ -562,12 +562,46 @@ export function deleteTableRows(api: any, tid: string, rows: number[]): boolean 
 let _reflowing = false; // 再入ガード。updateScene が同期的に onChange→reflow を呼び戻しても、
                         // ネストした reflow は即 return させ「Maximum update depth exceeded(白画面)」を構造的に防ぐ。
 let _lastEditingId: string | null = null; // 直近に特定した編集中セル。特定がフレーム毎に一瞬失敗しても保持する。
-export function reflowTables(api: any, skip: boolean): boolean {
+
+/**
+ * 手動サイズ（cw/rh）を、復元されたセルの実寸法へ合わせ直す（BRU10-073・undo/redo 直後のみ）。
+ * 1つでも直したら true（呼び出し元はその tick のタイル処理を見送り、次 tick で整った値からタイルする）。
+ *
+ * cw/rh は freezeSelectedTable が NEVER で焼き込む「ユーザー意図サイズの台帳」で、履歴には載らない。
+ * Excalidraw 標準の四隅ハンドルで表をリサイズした後に undo すると、セルの寸法だけが戻って cw/rh は
+ * リサイズ後のまま残るため、直後のタイル処理が表を元のサイズへ広げ直してしまう＝「戻るが効かない」。
+ * 台帳のほうを実寸法へ追従させることで、台帳が undo に逆らわないようにする。
+ */
+function resyncFrozenCellSizes(api: any, els: readonly any[]): boolean {
+  const patch = new Map<string, any>();
+  for (const e of els) {
+    const m = cellMeta(e);
+    if (!m) continue;
+    const cw = (m.cw ?? 0) > 0 && Math.abs(m.cw! - e.width) > EPS ? Math.round(e.width) : undefined;
+    const rh = (m.rh ?? 0) > 0 && Math.abs(m.rh! - e.height) > EPS ? Math.round(e.height) : undefined;
+    if (cw === undefined && rh === undefined) continue;
+    patch.set(e.id, {
+      ...e,
+      customData: { ...e.customData, wbTable: { ...m, ...(cw !== undefined && { cw }), ...(rh !== undefined && { rh }) } },
+    });
+  }
+  if (!patch.size) return false;
+  _reflowing = true; // 本体のタイル処理と同じ再入ガード（同期的な onChange 呼び戻しで多重更新しない）
+  try { api.updateScene({ elements: els.map((e) => patch.get(e.id) ?? e) }); } finally { _reflowing = false; }
+  return true;
+}
+export function reflowTables(api: any, skip: boolean, undoing = false): boolean {
   if (skip || _reflowing) return false;
   const els = api.getSceneElements() as any[];
   const tids = new Set<string>();
   for (const e of els) { const m = cellMeta(e); if (m) tids.add(m.tid); }
   if (!tids.size) return false;
+
+  // 【BRU10-073】undo/redo 直後は、復元されたセルの実寸法を「手動サイズ」の正とみなして cw/rh を直す。
+  // cw/rh は履歴に載らない NEVER 更新（freezeSelectedTable）で焼き込まれるため undo では戻らず、
+  // そのままだと下のタイル処理が焼き込み済みのサイズへ表を広げ直して「戻るが効かない」ように見える。
+  // 対象は既に cw/rh を持つ（＝手動サイズの）セルだけ。自動フィットのセルには書かない。
+  if (undoing && resyncFrozenCellSizes(api, els)) return true;
 
   // container.id -> 束ねられたテキスト要素
   const textByContainer = new Map<string, any>();
