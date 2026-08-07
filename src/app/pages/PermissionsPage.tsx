@@ -502,8 +502,21 @@ export function PermissionsPage() {
 
   const handleDeleteGroup = async (groupId: number) => {
     if (isSupabaseEnabled) {
-      await supabase!.from("group_members").delete().eq("group_id", groupId);
-      await supabase!.from("permission_groups").delete().eq("id", groupId);
+      const { error: gmErr } = await supabase!.from("group_members").delete().eq("group_id", groupId);
+      if (gmErr) console.error("[group_members] delete error:", gmErr.message);
+
+      // .select() を追加して実際に削除された行数を検証する
+      const { data: deletedRows, error: gErr } = await supabase!
+        .from("permission_groups")
+        .delete()
+        .eq("id", groupId)
+        .select();
+
+      if (gErr || !deletedRows || deletedRows.length === 0) {
+        console.error("[permission_groups] delete error or 0 rows deleted:", gErr?.message);
+        toast("グループの削除に失敗しました（削除権限がないか、データが存在しません）", "error");
+        return;
+      }
     }
     // Remove group from all projects
     const affectedProjects = projects.filter(p => (p.groupIds ?? []).includes(groupId));
