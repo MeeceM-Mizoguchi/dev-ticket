@@ -31,6 +31,7 @@ import { onWhiteboardFocusRequest } from "@/app/lib/whiteboardFocusBus";
 import { focusOnTargets, resolveFocusTargets } from "@/app/lib/whiteboardFocus";
 import { buildWhiteboardLink } from "@/app/lib/whiteboardLink";
 import { CursorChatLayer } from "./CursorChatLayer";
+import { CommentLayer } from "./CommentLayer";
 import { FlowConnectOverlay } from "./FlowConnectOverlay";
 import { CopyObjectLinkButton } from "./CopyObjectLinkButton";
 import { ContextMenuLabels } from "./ContextMenuLabels";
@@ -255,10 +256,18 @@ interface Props {
   canEdit: boolean;
   /** リンク生成に使うプロジェクトslug（/{slug}/whiteboard/{boardId}?element=...） */
   projectSlug: string;
+  /** コメントの @メンション候補（projects.members）を引くために使う */
+  projectId?: string | null;
   /** リンクで指定されたオブジェクト。ロード後にそこへ移動して強調する */
   focusElementId?: string | null;
-  /** フォーカスの成否（false=削除済み等で見つからなかった）。URLの後始末・トースト用 */
-  onFocusResult?: (found: boolean) => void;
+  /** リンクで指定されたコメント（?comment=&reply=・ENHA2-039）。ピンへ移動して固定表示する */
+  focusCommentId?: string | null;
+  focusReplyId?: string | null;
+  /**
+   * フォーカスの成否（false=削除済み等で見つからなかった）。URLの後始末・トースト用。
+   * kind でオブジェクト/コメントのどちらの着地かを伝える。
+   */
+  onFocusResult?: (found: boolean, kind?: "element" | "comment") => void;
   /**
    * 同時に複数のキャンバスが存在し得る（画面＋リンクプレビューパネル）ため、
    * どれが「今の操作対象か」を識別するキー。省略時はページ側。
@@ -273,8 +282,8 @@ const FOCUS_RETRY_MS = 200;  // リンク着地: 対象が現れるまでの再�
 const FOCUS_RETRY_MAX = 30;  // 同 最大回数（= 約6秒。Yjsの後追い差分を待つ）
 
 export default function WhiteboardCanvas({
-  boardId, title, user, canEdit, projectSlug,
-  focusElementId, onFocusResult, instanceKey = "page",
+  boardId, title, user, canEdit, projectSlug, projectId,
+  focusElementId, focusCommentId, focusReplyId, onFocusResult, instanceKey = "page",
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [api, setApi] = useState<any>(null);
@@ -290,6 +299,8 @@ export default function WhiteboardCanvas({
     if (copyToastTimer.current) clearTimeout(copyToastTimer.current);
     copyToastTimer.current = setTimeout(() => setCopyToast(null), 1800);
   }, []);
+  const [commentMode, setCommentMode] = useState(false); // コメントモード（ENHA2-039・ピンボタン/「c」）
+  const [commentListOpen, setCommentListOpen] = useState(false); // コメント一覧ポップアップ
   const [foldMode, setFoldMode] = useState(false); // 折れ矢印モード（トグル・BRU5-064）
   const foldModeRef = useRef(false);               // onChangeから参照する用（stale回避）
   const shiftRef = useRef(false);                  // Shift押下中か
@@ -338,7 +349,7 @@ export default function WhiteboardCanvas({
   const runFocus = useCallback((elementId: string | null) => {
     if (!api) return;
     if (focusTimer.current) { clearInterval(focusTimer.current); focusTimer.current = null; }
-    if (!elementId) { onFocusResult?.(true); return; } // ボードを開くだけのリンク
+    if (!elementId) { onFocusResult?.(true, "element"); return; } // ボードを開くだけのリンク
 
     const attempt = () => {
       const targets = resolveFocusTargets(api.getSceneElements() as any[], elementId);
@@ -346,7 +357,7 @@ export default function WhiteboardCanvas({
       focusOnTargets(api, targets);
       pulseNonce.current += 1;
       setPulse({ ids: targets.elements.map((e: any) => e.id), nonce: pulseNonce.current });
-      onFocusResult?.(true);
+      onFocusResult?.(true, "element");
       return true;
     };
 
@@ -357,10 +368,22 @@ export default function WhiteboardCanvas({
       if (attempt()) { clearInterval(focusTimer.current!); focusTimer.current = null; return; }
       if (tries >= FOCUS_RETRY_MAX) {
         clearInterval(focusTimer.current!); focusTimer.current = null;
-        onFocusResult?.(false); // 削除済み・別ボードのリンク
+        onFocusResult?.(false, "element"); // 削除済み・別ボードのリンク
       }
     }, FOCUS_RETRY_MS);
   }, [api, onFocusResult]);
+
+  // コメントのリンク着地（?comment=）。CommentLayer 側が実際の移動と固定表示を担う。
+  // 同じリンクを続けて踏んでも再着地させたいので nonce を添える。
+  const [commentFocus, setCommentFocus] = useState<{ commentId: string | null; replyId: string | null; nonce: number }>(
+    { commentId: focusCommentId ?? null, replyId: focusReplyId ?? null, nonce: 0 },
+  );
+  useEffect(() => {
+    setCommentFocus((p) => ({ commentId: focusCommentId ?? null, replyId: focusReplyId ?? null, nonce: p.nonce + 1 }));
+  }, [focusCommentId, focusReplyId]);
+  const handleCommentFocusResult = useCallback((found: boolean) => {
+    onFocusResult?.(found, "comment");
+  }, [onFocusResult]);
 
   useEffect(() => () => { if (focusTimer.current) clearInterval(focusTimer.current); }, []);
 
@@ -372,12 +395,13 @@ export default function WhiteboardCanvas({
 
   // 同じボードが既に開いている状態でリンクを踏んだ時は、パネルを増やさずその場で移動する。
   // 見えていない（タブモードの非アクティブタブ等）なら処理せず false を返し、呼び出し側に委ねる。
-  useEffect(() => onWhiteboardFocusRequest(boardId, (elementId) => {
+  useEffect(() => onWhiteboardFocusRequest(boardId, (target) => {
     const el = containerRef.current;
     if (!api || !el) return false;
     if (el.closest("[inert]")) return false;
     if (typeof getComputedStyle === "function" && getComputedStyle(el).visibility === "hidden") return false;
-    runFocus(elementId);
+    if (target.commentId) setCommentFocus((p) => ({ commentId: target.commentId!, replyId: target.replyId ?? null, nonce: p.nonce + 1 }));
+    else runFocus(target.elementId);
     return true;
   }), [boardId, api, runFocus]);
 
@@ -1322,7 +1346,10 @@ export default function WhiteboardCanvas({
           {canEdit && <ConnectorFormatPanel api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <SnapGuideLayer api={api} containerRef={containerRef} canEdit={canEdit} />}
           {canEdit && <TriangleBindHint api={api} containerRef={containerRef} canEdit={canEdit} />}
-          {canEdit && <WhiteboardToolbar api={api} foldMode={foldMode} setFoldMode={setFoldMode} />}
+          {/* ツールバーは閲覧のみでも出す（コメント関連だけが並ぶ）。図形系は canEdit で内部的に隠す */}
+          <WhiteboardToolbar api={api} canEdit={canEdit} foldMode={foldMode} setFoldMode={setFoldMode}
+            commentMode={commentMode} setCommentMode={setCommentMode}
+            listOpen={commentListOpen} setListOpen={setCommentListOpen} />
           {canEdit && <TriangleToolButton api={api} containerRef={containerRef} />}
           {canEdit && <BraceToolButton api={api} containerRef={containerRef} />}
           {canEdit && <BraceTipHandle api={api} containerRef={containerRef} canEdit={canEdit} />}
@@ -1333,6 +1360,16 @@ export default function WhiteboardCanvas({
           {canEdit && <TableRowColControls api={api} containerRef={containerRef} canEdit={canEdit} />}
           <FlowConnectOverlay api={api} containerRef={containerRef} canEdit={canEdit} />
           <CursorChatLayer api={api} containerRef={containerRef} remoteChats={remoteChats} setChat={setChat} canEdit={canEdit} />
+          {/* コメント（ENHA2-039）。図形の編集権限とは切り離し、閲覧のみのメンバーも投稿・返信できる */}
+          <CommentLayer
+            api={api} containerRef={containerRef} docRef={docRef} user={user}
+            projectSlug={projectSlug} projectId={projectId} boardId={boardId} boardTitle={title}
+            instanceKey={instanceKey}
+            commentMode={commentMode} setCommentMode={setCommentMode}
+            listOpen={commentListOpen} setListOpen={setCommentListOpen}
+            focusCommentId={commentFocus.commentId} focusReplyId={commentFocus.replyId} focusNonce={commentFocus.nonce}
+            onFocusResult={handleCommentFocusResult} onToast={showToast}
+          />
           {/* リンクで飛んできたオブジェクトを数秒だけ強調する（閲覧のみでも出す） */}
           <FocusPulseLayer api={api} containerRef={containerRef} target={pulse} />
           {/* 右クリックメニューの未翻訳項目（オブジェクトへのリンク系）を日本語にする */}

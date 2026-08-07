@@ -32,11 +32,14 @@ const defaultWidth = () => clampWidth(Math.round(window.innerWidth * 0.5));
 interface Props {
   boardId: string;
   elementId: string | null;
+  /** コメント（ENHA2-039）へのリンクで開いた場合の飛び先 */
+  commentId?: string | null;
+  replyId?: string | null;
   projectSlug?: string;
   onClose: () => void;
 }
 
-export function WhiteboardLinkPreview({ boardId, elementId, onClose }: Props) {
+export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, replyId = null, onClose }: Props) {
   const navigate = useNavigate();
   const { userId, userName, userRole } = useAuth();
   const isAdminRole = userRole === "owner" || userRole === "admin";
@@ -132,10 +135,10 @@ export function WhiteboardLinkPreview({ boardId, elementId, onClose }: Props) {
 
   const openFullPage = useCallback(() => {
     if (!meta) return;
-    const path = buildWhiteboardPath(meta.projectSlug, boardId, elementId);
+    const path = buildWhiteboardPath(meta.projectSlug, boardId, elementId, commentId, replyId);
     onClose();
     if (!navigateInActiveTab(path)) navigate(path);
-  }, [meta, boardId, elementId, onClose, navigate]);
+  }, [meta, boardId, elementId, commentId, replyId, onClose, navigate]);
 
   const user = useMemo(
     () => ({ id: userId, name: userName || "匿名", color: wbUserColor(userId || "anon") }),
@@ -202,7 +205,7 @@ export function WhiteboardLinkPreview({ boardId, elementId, onClose }: Props) {
 
       {notFound && (
         <div style={{ padding: "8px 16px", background: "#FEF3C7", color: "#92400E", fontSize: 12, flexShrink: 0 }}>
-          リンク先のオブジェクトが見つかりませんでした（削除された可能性があります）
+          リンク先の{commentId ? "コメント" : "オブジェクト"}が見つかりませんでした（削除された可能性があります）
         </div>
       )}
 
@@ -226,7 +229,10 @@ export function WhiteboardLinkPreview({ boardId, elementId, onClose }: Props) {
                 user={user}
                 canEdit={canEdit}
                 projectSlug={meta.projectSlug}
+                projectId={meta.projectId}
                 focusElementId={elementId}
+                focusCommentId={commentId}
+                focusReplyId={replyId}
                 onFocusResult={handleFocusResult}
                 instanceKey="preview"
               />

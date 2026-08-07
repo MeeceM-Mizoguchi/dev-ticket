@@ -8,7 +8,16 @@
 // ハンドラは「自分が処理したか」を返す。タブモード(Mac/iPad)では非アクティブタブも
 // マウントされたまま(visibility:hidden + inert)なので、見えていないキャンバスは false を返し、
 // 呼び出し側はプレビューパネルを開くほうへフォールバックする。
-type FocusHandler = (elementId: string | null) => boolean;
+export interface WhiteboardFocusTarget {
+  /** 図形/グループ（?element=） */
+  elementId: string | null;
+  /** コメントのピン（?comment=・ENHA2-039） */
+  commentId?: string | null;
+  /** 返信（?reply=）。着地時に返信一覧を開く */
+  replyId?: string | null;
+}
+
+type FocusHandler = (target: WhiteboardFocusTarget) => boolean;
 
 const handlers = new Map<string, Set<FocusHandler>>();
 
@@ -26,12 +35,12 @@ export function onWhiteboardFocusRequest(boardId: string, handler: FocusHandler)
 }
 
 /** 開いているキャンバスへフォーカス要求を送る。どれかが処理したら true。 */
-export function requestWhiteboardFocus(boardId: string, elementId: string | null): boolean {
+export function requestWhiteboardFocus(boardId: string, target: WhiteboardFocusTarget): boolean {
   const set = handlers.get(boardId);
   if (!set || set.size === 0) return false;
   let handled = false;
   set.forEach((h) => {
-    try { handled = h(elementId) || handled; } catch { /* noop */ }
+    try { handled = h(target) || handled; } catch { /* noop */ }
   });
   return handled;
 }

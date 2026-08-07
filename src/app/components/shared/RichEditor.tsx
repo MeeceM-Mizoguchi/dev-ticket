@@ -1255,8 +1255,10 @@ export function RichEditor({
     if (wb) {
       e.preventDefault();
       e.stopPropagation();
-      if (requestWhiteboardFocus(wb.boardId, wb.elementId)) return;
-      openPreviewPanel("whiteboard", wb.boardId, { elementId: wb.elementId, projectSlug: wb.projectSlug });
+      if (requestWhiteboardFocus(wb.boardId, { elementId: wb.elementId, commentId: wb.commentId, replyId: wb.replyId })) return;
+      openPreviewPanel("whiteboard", wb.boardId, {
+        elementId: wb.elementId, commentId: wb.commentId, replyId: wb.replyId, projectSlug: wb.projectSlug,
+      });
       return;
     }
 

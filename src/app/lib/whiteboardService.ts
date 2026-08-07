@@ -93,6 +93,16 @@ export async function loadWhiteboardPerms(projectId: string, userId: string, isA
   };
 }
 
+// ── メンション候補（コメントの @メンバー名・ENHA2-039） ──
+// チケット側は useLinkSuggestions が一式まとめて取るが、ホワイトボードで要るのは名前だけなので
+// projects.members だけを引く軽いクエリにする。
+export async function loadProjectMemberNames(projectId: string): Promise<string[]> {
+  if (!isSupabaseEnabled || !projectId) return [];
+  const { data } = await supabase!.from("projects").select("members").eq("id", projectId).maybeSingle();
+  const members = (data as any)?.members as string[] | null | undefined;
+  return (members ?? []).filter((n): n is string => typeof n === "string" && n.length > 0);
+}
+
 // userId から安定した色を生成（カーソル/アバターの色。画面とプレビューで同じ色にする）
 export function wbUserColor(id: string): string {
   let h = 0;

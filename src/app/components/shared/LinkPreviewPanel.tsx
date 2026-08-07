@@ -279,6 +279,8 @@ export function LinkPreviewPanel() {
       <WhiteboardLinkPreview
         boardId={target.id}
         elementId={target.elementId ?? null}
+        commentId={target.commentId ?? null}
+        replyId={target.replyId ?? null}
         projectSlug={target.projectSlug}
         onClose={close}
       />
