@@ -1,17 +1,25 @@
-// ホワイトボードのオブジェクト(図形/フレーム/グループ)へのディープリンクの生成と解析。
+// ホワイトボードのオブジェクト(図形/フレーム/グループ)・コメントへのディープリンクの生成と解析。
 //
 // URL形式は Excalidraw ネイティブの「要素リンク」と完全互換にしてある。
 //   https://<公開オリジン>/<PROJECT_SLUG>/whiteboard/<boardId>?element=<elementId|groupId>
 // ・パラメータ名は element 固定。単体要素もグループも同じキーに入る（Excalidraw の仕様）。
 // ・?element= が無ければ「ボードを開くだけ」のリンクとして扱う。
+//
+// コメント（ENHA2-039）は要素ではないので別パラメータを使う。
+//   .../whiteboard/<boardId>?comment=<commentId>[&reply=<replyId>]
+// ・reply は「返信のリンク」用。着地時に返信一覧を開いた状態にするだけで、飛び先はピン。
 import { appOrigin, knownAppOrigins } from "./appOrigin";
 
 export const ELEMENT_LINK_PARAM = "element";
+export const COMMENT_LINK_PARAM = "comment";
+export const REPLY_LINK_PARAM = "reply";
 
 export interface WhiteboardLink {
   projectSlug: string;
   boardId: string;
   elementId: string | null;
+  commentId: string | null;
+  replyId: string | null;
 }
 
 // ボードID(UUID)らしさの判定。プロジェクトslugや他ページと取り違えないための最低限のガード。
@@ -25,9 +33,40 @@ export function buildWhiteboardLink(projectSlug: string, boardId: string, elemen
 }
 
 /** アプリ内遷移用の相対パス（タブ遷移/navigate に渡す）。 */
-export function buildWhiteboardPath(projectSlug: string, boardId: string, elementId?: string | null): string {
-  return `/${encodeURIComponent(projectSlug)}/whiteboard/${boardId}`
-    + (elementId ? `?${ELEMENT_LINK_PARAM}=${encodeURIComponent(elementId)}` : "");
+export function buildWhiteboardPath(
+  projectSlug: string, boardId: string, elementId?: string | null,
+  commentId?: string | null, replyId?: string | null,
+): string {
+  const q = new URLSearchParams();
+  if (elementId) q.set(ELEMENT_LINK_PARAM, elementId);
+  if (commentId) q.set(COMMENT_LINK_PARAM, commentId);
+  if (commentId && replyId) q.set(REPLY_LINK_PARAM, replyId);
+  const qs = q.toString();
+  return `/${encodeURIComponent(projectSlug)}/whiteboard/${boardId}` + (qs ? `?${qs}` : "");
+}
+
+/** コメント（または返信）を指す共有用の絶対URL。 */
+export function buildWhiteboardCommentLink(
+  projectSlug: string, boardId: string, commentId: string, replyId?: string | null,
+): string {
+  return `${appOrigin()}${buildWhiteboardPath(projectSlug, boardId, null, commentId, replyId)}`;
+}
+
+// ── 通知の飛び先（notifications.mention_context）────────────────────────
+// お知らせ（ベル）の飛び先は元々「チケット」前提の作り（/{slug}/{wbs}?anchor=…）なので、
+// ホワイトボードのコメント通知は mention_context に下の形で入れて Topbar に解釈させる。
+const WB_MENTION_PREFIX = "whiteboard:";
+
+export function buildWhiteboardMentionContext(boardId: string, commentId: string): string {
+  return `${WB_MENTION_PREFIX}${boardId}:${commentId}`;
+}
+
+/** mention_context がホワイトボードのコメント宛てなら中身を返す。 */
+export function parseWhiteboardMentionContext(context: string | null | undefined): { boardId: string; commentId: string } | null {
+  if (!context || !context.startsWith(WB_MENTION_PREFIX)) return null;
+  const [boardId, commentId] = context.slice(WB_MENTION_PREFIX.length).split(":");
+  if (!boardId || !commentId) return null;
+  return { boardId, commentId };
 }
 
 /**
@@ -56,5 +95,12 @@ export function parseWhiteboardLink(href: string): WhiteboardLink | null {
   if (!UUID_RE.test(boardId)) return null;
 
   const elementId = url.searchParams.get(ELEMENT_LINK_PARAM);
-  return { projectSlug, boardId, elementId: elementId || null };
+  const commentId = url.searchParams.get(COMMENT_LINK_PARAM);
+  const replyId = url.searchParams.get(REPLY_LINK_PARAM);
+  return {
+    projectSlug, boardId,
+    elementId: elementId || null,
+    commentId: commentId || null,
+    replyId: (commentId && replyId) || null,
+  };
 }

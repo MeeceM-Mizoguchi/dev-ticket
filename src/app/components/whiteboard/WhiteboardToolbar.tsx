@@ -1,9 +1,24 @@
-// ホワイトボード補助ツールバー（下部中央）。付箋(Miro風) / フレーム(Excalidraw標準) / 折れ矢印トグル。
+// ホワイトボード補助ツールバー（下部中央）。付箋(Miro風) / フレーム(Excalidraw標準) / 折れ矢印トグル / コメント。
+//
+// コメント関連（コメントモード・コメント一覧）は閲覧のみのメンバーも使えるため、
+// 図形を作るボタン群だけを canEdit で隠し、ツールバー自体は常に出す（ENHA2-039）。
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
-import { StickyNote, Frame, CornerDownRight } from "lucide-react";
+import { StickyNote, Frame, CornerDownRight, MessageSquare, List } from "lucide-react";
 import { COMMIT } from "@/app/lib/whiteboardHistory";
 
-interface Props { api: any; foldMode: boolean; setFoldMode: (v: boolean) => void }
+interface Props {
+  api: any;
+  /** 図形の編集権限。false ならコメント関連のボタンだけを出す */
+  canEdit: boolean;
+  foldMode: boolean;
+  setFoldMode: (v: boolean) => void;
+  /** コメントモード（ENHA2-039）。ピンボタン と 「c」キー の両方から切り替わる */
+  commentMode: boolean;
+  setCommentMode: (v: boolean) => void;
+  /** コメント一覧ポップアップ（未解決/解決済み） */
+  listOpen: boolean;
+  setListOpen: (v: boolean) => void;
+}
 
 const NOTE_SIZE = 180;
 const NOTE_COLORS = ["#FFE066", "#FFC9C9", "#B2F2BB", "#A5D8FF", "#FFD8A8"];
@@ -18,7 +33,7 @@ function viewportCenter(api: any) {
   };
 }
 
-export function WhiteboardToolbar({ api, foldMode, setFoldMode }: Props) {
+export function WhiteboardToolbar({ api, canEdit, foldMode, setFoldMode, commentMode, setCommentMode, listOpen, setListOpen }: Props) {
   // 折れ矢印モード: ON中に引いた矢印/線が、両端を図形の4点に繋いだ時だけ直交(カギ型)に折れる（BRU5-064）。
   const toggleFold = () => {
     const next = !foldMode;
@@ -62,27 +77,48 @@ export function WhiteboardToolbar({ api, foldMode, setFoldMode }: Props) {
     <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 25, pointerEvents: "auto",
       display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", whiteSpace: "nowrap",
       background: "#fff", borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 4px 16px rgba(0,0,0,0.12)" }}>
-      <button onClick={() => addStickyNote(NOTE_COLORS[0])} title="付箋を追加"
-        style={{ ...groupBtn, color: "#92700A", background: "#FFF9E6", border: "1px solid rgba(146,112,10,0.25)" }}>
-        <StickyNote style={{ width: 13, height: 13 }} />付箋
-      </button>
-      <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
-        {NOTE_COLORS.map((c) => (
-          <button key={c} onClick={() => addStickyNote(c)} title="この色の付箋を追加"
-            style={{ width: 20, height: 20, borderRadius: 5, background: c, border: "1px solid rgba(0,0,0,0.12)", cursor: "pointer", padding: 0, flexShrink: 0 }} />
-        ))}
-      </div>
-      {divider}
-      <button onClick={addFrame} title="フレームを作成（ドラッグで範囲指定）" style={groupBtn}>
-        <Frame style={{ width: 13, height: 13 }} />フレーム
-      </button>
-      {divider}
+      {canEdit && (
+        <>
+          <button onClick={() => addStickyNote(NOTE_COLORS[0])} title="付箋を追加"
+            style={{ ...groupBtn, color: "#92700A", background: "#FFF9E6", border: "1px solid rgba(146,112,10,0.25)" }}>
+            <StickyNote style={{ width: 13, height: 13 }} />付箋
+          </button>
+          <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+            {NOTE_COLORS.map((c) => (
+              <button key={c} onClick={() => addStickyNote(c)} title="この色の付箋を追加"
+                style={{ width: 20, height: 20, borderRadius: 5, background: c, border: "1px solid rgba(0,0,0,0.12)", cursor: "pointer", padding: 0, flexShrink: 0 }} />
+            ))}
+          </div>
+          {divider}
+          <button onClick={addFrame} title="フレームを作成（ドラッグで範囲指定）" style={groupBtn}>
+            <Frame style={{ width: 13, height: 13 }} />フレーム
+          </button>
+          {divider}
+          <button
+            onClick={toggleFold}
+            title="折れ矢印モード: ON中に引いた矢印は、両端を図形につなぐと自動でカギ型に折れます（Shiftを押しながら引いてもOK）"
+            style={{ ...groupBtn, ...(foldMode ? { color: "#fff", background: "#1971c2", border: "1px solid #1971c2" } : {}) }}
+          >
+            <CornerDownRight style={{ width: 13, height: 13 }} />折れ矢印
+          </button>
+          {divider}
+        </>
+      )}
+      {/* コメント（ENHA2-039）: ONにするとカーソルがピンになり、クリックした場所にコメントを残せる。
+          閲覧のみのメンバーも使える（図形は編集できなくても議論には参加できるようにする） */}
       <button
-        onClick={toggleFold}
-        title="折れ矢印モード: ON中に引いた矢印は、両端を図形につなぐと自動でカギ型に折れます（Shiftを押しながら引いてもOK）"
-        style={{ ...groupBtn, ...(foldMode ? { color: "#fff", background: "#1971c2", border: "1px solid #1971c2" } : {}) }}
+        onClick={() => setCommentMode(!commentMode)}
+        title="コメントモード（c）: ONにしてキャンバスをクリックすると、その場所にコメントを残せます"
+        style={{ ...groupBtn, ...(commentMode ? { color: "#fff", background: "#F59E0B", border: "1px solid #F59E0B" } : {}) }}
       >
-        <CornerDownRight style={{ width: 13, height: 13 }} />折れ矢印
+        <MessageSquare style={{ width: 13, height: 13 }} />コメント
+      </button>
+      <button
+        onClick={() => setListOpen(!listOpen)}
+        title="コメント一覧（未解決／解決済み）"
+        style={{ ...groupBtn, ...(listOpen ? { color: "#fff", background: "#F59E0B", border: "1px solid #F59E0B" } : {}) }}
+      >
+        <List style={{ width: 13, height: 13 }} />一覧
       </button>
     </div>
   );

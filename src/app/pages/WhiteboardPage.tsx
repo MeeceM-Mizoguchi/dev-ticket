@@ -11,7 +11,7 @@ import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
 import { BoardListToggle } from "@/app/components/whiteboard/BoardListToggle";
 import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor } from "@/app/lib/whiteboardService";
-import { ELEMENT_LINK_PARAM } from "@/app/lib/whiteboardLink";
+import { COMMENT_LINK_PARAM, ELEMENT_LINK_PARAM, REPLY_LINK_PARAM } from "@/app/lib/whiteboardLink";
 import type { AccessLevel, Whiteboard } from "@/app/types";
 
 const WhiteboardCanvas = lazy(() => import("@/app/components/whiteboard/WhiteboardCanvas"));
@@ -31,6 +31,9 @@ export function WhiteboardPage() {
   // オブジェクトへのディープリンク（?element=）。着地したら消費して URL から取り除く
   // （残すとボードを切り替えたりリロードするたびに再フォーカスが暴発するため・FileBoxPageと同型）。
   const focusElementId = searchParams.get(ELEMENT_LINK_PARAM);
+  // コメントへのディープリンク（?comment=&reply=・ENHA2-039）。同じく着地したら URL から消す。
+  const focusCommentId = searchParams.get(COMMENT_LINK_PARAM);
+  const focusReplyId = searchParams.get(REPLY_LINK_PARAM);
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
@@ -85,12 +88,17 @@ export function WhiteboardPage() {
     setBoards((prev) => prev.map((b) => (b.id === id ? { ...b, title } : b)));
   }, [userId]);
 
-  // リンク着地の結果。見つからなければ理由を伝え、いずれにせよ ?element= は URL から消す。
-  const handleFocusResult = useCallback((found: boolean) => {
-    if (!found) toast("リンク先のオブジェクトが見つかりませんでした（削除された可能性があります）", "info");
+  // リンク着地の結果。見つからなければ理由を伝え、いずれにせよ着地パラメータは URL から消す。
+  const handleFocusResult = useCallback((found: boolean, kind: "element" | "comment" = "element") => {
+    if (!found) {
+      toast(kind === "comment"
+        ? "リンク先のコメントが見つかりませんでした（削除された可能性があります）"
+        : "リンク先のオブジェクトが見つかりませんでした（削除された可能性があります）", "info");
+    }
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
-      next.delete(ELEMENT_LINK_PARAM);
+      if (kind === "comment") { next.delete(COMMENT_LINK_PARAM); next.delete(REPLY_LINK_PARAM); }
+      else next.delete(ELEMENT_LINK_PARAM);
       return next;
     }, { replace: true });
   }, [toast, setSearchParams]);
@@ -158,7 +166,10 @@ export function WhiteboardPage() {
                   user={user}
                   canEdit={canEdit}
                   projectSlug={projectSlug ?? ""}
+                  projectId={projectId}
                   focusElementId={focusElementId}
+                  focusCommentId={focusCommentId}
+                  focusReplyId={focusReplyId}
                   onFocusResult={handleFocusResult}
                 />
               </Suspense>

@@ -14,6 +14,7 @@ import { CallButton } from "@/app/components/call/CallButton";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
 import { APP_VERSION } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
+import { buildWhiteboardPath, parseWhiteboardMentionContext } from "@/app/lib/whiteboardLink";
 import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
 
 function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
@@ -292,7 +293,11 @@ export function Topbar() {
       await supabase!.from("notifications").update({ is_read: true }).eq("id", notif.id);
       setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
     }
-    if (notif.projectSlug && notif.ticketWbs) {
+    // ホワイトボードのコメント宛て（ENHA2-039）。チケットではないので専用の飛び先へ。
+    const wb = parseWhiteboardMentionContext(notif.mentionContext);
+    if (wb && notif.projectSlug) {
+      navigate(buildWhiteboardPath(notif.projectSlug, wb.boardId, null, wb.commentId));
+    } else if (notif.projectSlug && notif.ticketWbs) {
       const anchor = notif.mentionContext ? `?anchor=${encodeURIComponent(notif.mentionContext)}` : "";
       navigate(`/${notif.projectSlug}/${notif.ticketWbs}${anchor}`);
     } else if (notif.projectSlug) {
