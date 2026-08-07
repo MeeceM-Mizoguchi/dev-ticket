@@ -66,6 +66,25 @@ const emptyCell = (): CellData => ({
 });
 
 const fontOf = (c: CellData) => ({ size: c.sizePx, bold: c.bold, italic: c.italic, family: CELL_FONT_FAMILY });
+
+// exceljs の cell.text は文字列とは限らない。
+// 例えばハイパーリンクのセルは HyperlinkValue.toString() が model.text をそのまま返すため、
+// リンクの表示テキストが数値やリッチテキストのままここへ来る。後段の split/replace で落ちるので必ず文字列にする。
+function cellText(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (v instanceof Date) return v.toLocaleDateString("ja-JP");
+  if (typeof v === "object") {
+    const o = v as any;
+    if (Array.isArray(o)) return o.map(cellText).join("");
+    if (Array.isArray(o.richText)) return o.richText.map((t: any) => cellText(t?.text)).join("");
+    if (o.text !== undefined) return cellText(o.text);
+    if (o.result !== undefined) return cellText(o.result);
+    if (o.error !== undefined) return cellText(o.error);
+  }
+  return String(v);
+}
 const sumPx = (arr: number[], from: number, to: number) => arr.slice(from, to).reduce((a, b) => a + b, 0);
 // 折り返しなしのセルは CSS 上、改行が空白として1行に並ぶ
 const flatText = (s: string) => s.replace(/\n/g, " ");
@@ -339,7 +358,7 @@ export function ExcelViewer({ url }: { url: string }) {
               const span = spans.get(`${r}:${c}`);
               cells.push({
                 ...emptyCell(),
-                text: cell.text ?? "",
+                text: cellText(cell.text),
                 bold: !!font.bold, italic: !!font.italic,
                 sizePx: (font.size ?? 11) * PT_TO_PX,
                 color: resolveCellColor(font.color as any, themePalette) ?? "#1A1714",
