@@ -119,11 +119,18 @@ export default async function handler(req: any, res: any) {
     davHeaders(); res.statusCode = 200; return res.end();
   }
 
-  // ここから先はトークン必須。OPTIONS も例外にしない。
+  // ★ OPTIONS はトークン検証より前に、常に成功させる。
+  //   Office / Windows の WebDAV クライアントは対象ファイルを開く前に、その上位パスを
+  //   順に OPTIONS で探索する。ここで 401 を返すと「認証が必要だが手段が無い」と判断されて
+  //   WebDAV 接続そのものを諦め、ファイルを一時フォルダへダウンロードして
+  //   読み取り専用（保護ビュー）で開いてしまう。
+  //   OPTIONS は「このURLで使えるメソッド」を答えるだけでファイルの中身も存在有無も
+  //   漏らさないため、無条件に返して問題ない。
+  if (method === "OPTIONS") { davHeaders(); res.statusCode = 200; return res.end(); }
+
+  // ここから先はトークン必須。
   const payload = verifyDavToken(segs[0]);
   if (!payload) { res.statusCode = 401; return res.end("Unauthorized"); }
-
-  if (method === "OPTIONS") { davHeaders(); res.statusCode = 200; return res.end(); }
 
   let sb: SupabaseClient;
   try { sb = admin(); } catch { res.statusCode = 500; return res.end("Not configured"); }
@@ -146,7 +153,7 @@ export default async function handler(req: any, res: any) {
   // トークンが指すファイルの最新版を引く
   const latest = async () => {
     const { data } = await sb.from("project_files")
-      .select("id, file_name, file_size, file_path, version, created_at")
+      .select("id, file_name, file_size, file_path, folder_path, version, created_at")
       .eq("project_id", payload.p).eq("file_name", payload.n)
       .order("version", { ascending: false }).limit(1);
     return data?.[0] ?? null;
@@ -193,31 +200,65 @@ export default async function handler(req: any, res: any) {
   }
 
   if (method === "PROPFIND") {
+    // ★ /api/dav/<token> は「ファイルが1つ入っているフォルダ」として答える。
+    //   Office は保存できるかどうかを、ファイル単体ではなく "その親フォルダが
+    //   書き込めるコレクションか" で判断する。以前はここでも親をファイルとして
+    //   （resourcetype 空 + getcontentlength 付きで）返していたため、Office からは
+    //   「保存先のフォルダが存在しない」ように見えて読み取り専用に落ちていた。
+    const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const isCollection = segs.length === 1;
+    const dirHref = `/api/dav/${segs[0]}/`;
+    const fileHref = `/api/dav/${segs[0]}/${encodeURIComponent(payload.n)}`;
+    const lastMod = new Date(row!.created_at).toUTCString();
+
+    const supportedlock = `<D:supportedlock>
+          <D:lockentry>
+            <D:lockscope><D:exclusive/></D:lockscope>
+            <D:locktype><D:write/></D:locktype>
+          </D:lockentry>
+        </D:supportedlock>`;
+
+    const fileRes = `  <D:response>
+    <D:href>${fileHref}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:resourcetype/>
+        <D:displayname>${esc(payload.n)}</D:displayname>
+        <D:getcontentlength>${row!.file_size}</D:getcontentlength>
+        <D:getcontenttype>${contentType}</D:getcontenttype>
+        <D:getlastmodified>${lastMod}</D:getlastmodified>
+        <D:getetag>${etagOf(row!)}</D:getetag>
+        ${supportedlock}
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>`;
+
+    const dirRes = `  <D:response>
+    <D:href>${dirHref}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:resourcetype><D:collection/></D:resourcetype>
+        <D:displayname>DevTicket</D:displayname>
+        <D:getlastmodified>${lastMod}</D:getlastmodified>
+        ${supportedlock}
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>`;
+
+    // Depth:0 は自分自身だけ、Depth:1 はフォルダ＋中のファイルを返す（RFC 4918）
+    const depth = String(req.headers["depth"] ?? "1");
+    const body = isCollection
+      ? (depth === "0" ? dirRes : `${dirRes}\n${fileRes}`)
+      : fileRes;
+
     davHeaders();
     res.setHeader("Content-Type", 'application/xml; charset="utf-8"');
     res.statusCode = 207;
     return res.end(`<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
-  <D:response>
-    <D:href>${href}</D:href>
-    <D:propstat>
-      <D:prop>
-        <D:resourcetype/>
-        <D:displayname>${payload.n.replace(/[<&]/g, "")}</D:displayname>
-        <D:getcontentlength>${row!.file_size}</D:getcontentlength>
-        <D:getcontenttype>${contentType}</D:getcontenttype>
-        <D:getlastmodified>${new Date(row!.created_at).toUTCString()}</D:getlastmodified>
-        <D:getetag>${etagOf(row!)}</D:getetag>
-        <D:supportedlock>
-          <D:lockentry>
-            <D:lockscope><D:exclusive/></D:lockscope>
-            <D:locktype><D:write/></D:locktype>
-          </D:lockentry>
-        </D:supportedlock>
-      </D:prop>
-      <D:status>HTTP/1.1 200 OK</D:status>
-    </D:propstat>
-  </D:response>
+${body}
 </D:multistatus>`);
   }
 
@@ -262,8 +303,10 @@ export default async function handler(req: any, res: any) {
       .upload(path, body, { contentType, upsert: false });
     if (upErr) { res.statusCode = 500; return res.end(upErr.message); }
 
+    // フォルダは元の版から引き継ぐ。"" を固定で入れていたため、フォルダ内のファイルを
+    // アプリで開いて保存するとルート階層へ移動してしまっていた（画面側は 6c35e51 で対応済み）。
     const { data: inserted, error: insErr } = await sb.from("project_files").insert({
-      project_id: payload.p, folder_path: "", file_name: payload.n,
+      project_id: payload.p, folder_path: row?.folder_path ?? "", file_name: payload.n,
       file_size: body.length, file_type: contentType, file_path: path,
       version: (row?.version ?? 0) + 1, uploaded_by: payload.u,
     }).select("id, version, created_at").maybeSingle();
