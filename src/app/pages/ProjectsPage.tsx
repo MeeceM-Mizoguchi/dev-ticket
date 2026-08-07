@@ -25,7 +25,7 @@ const CACHE_STATUS_KEY = "projects_page_status_filter";
 const CACHE_TAGS_KEY = "projects_page_multiple_tags_filter";
 
 export function ProjectsPage() {
-  const { userRole, userName, userOrgId } = useAuth();
+  const { userRole, userName, userOrgId, userPermissions } = useAuth();
   const { toast } = useToast();
   const { selectedOrgId } = useOrg();
   const { plan } = usePlan();
@@ -62,7 +62,10 @@ export function ProjectsPage() {
 
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const isOwner = userRole === "owner";
-  const canManage = isOwner || userRole === "admin" || userRole === "project-manager";
+
+  // 🌟 修正: ハードコーディング（userRole === "project-manager" 等）を廃止し、
+  // ロールマスタで設定された canCreateProject フラグを見てボタンを表示する
+  const canManage = isOwner || userRole === "admin" || userPermissions?.canCreateProject;
 
   useEffect(() => {
     localStorage.setItem(CACHE_STATUS_KEY, statusFilter);

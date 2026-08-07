@@ -13,6 +13,8 @@ import { useToast } from "@/app/contexts/ToastContext";
 import { escStack } from "@/app/lib/escStack";
 
 const DEFAULT_PERMS: UserPermissions = {
+  // 🌟 追加: プロジェクト作成権限のデフォルトフラグ
+  canCreateProject: false,
   canCreateTicket: false, canCreateSprint: false,
   canEditDelete: false, canReview: false, canSkipReview: false,
   canAccessMembers: false, canAccessRoles: false, canAccessGroups: false,
@@ -24,13 +26,15 @@ const DEFAULT_PERMS: UserPermissions = {
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; meeceOnly?: boolean }[] = [
-  { key: "canSkipReview",          label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
-  { key: "canAccessMembers",       label: "メンバー管理",     desc: "メンバー管理画面へのアクセスが可能" },
-  { key: "canAccessRoles",         label: "ロール設定",       desc: "ロール設定画面へのアクセスが可能" },
-  { key: "canAccessGroups",        label: "アサイン計画",     desc: "アサイン計画画面へのアクセスが可能" },
-  { key: "canAccessAdminSettings", label: "通知管理",         desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
-  { key: "canAccessReports",       label: "レポート管理",     desc: "レポート管理画面へのアクセスが可能（進捗・予定・生産性レポートの閲覧/出力）" },
-  { key: "canUpdateAnnouncement",  label: "お知らせ更新",     desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
+  // 🌟 追加: 組織権限の一番上に「プロジェクト作成」を配置
+  { key: "canCreateProject", label: "プロジェクト作成", desc: "システム内で新しいプロジェクトを立ち上げることが可能" },
+  { key: "canSkipReview", label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
+  { key: "canAccessMembers", label: "メンバー管理", desc: "メンバー管理画面へのアクセスが可能" },
+  { key: "canAccessRoles", label: "ロール設定", desc: "ロール設定画面へのアクセスが可能" },
+  { key: "canAccessGroups", label: "アサイン計画", desc: "アサイン計画画面へのアクセスが可能" },
+  { key: "canAccessAdminSettings", label: "通知管理", desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
+  { key: "canAccessReports", label: "レポート管理", desc: "レポート管理画面へのアクセスが可能（進捗・予定・生産性レポートの閲覧/出力）" },
+  { key: "canUpdateAnnouncement", label: "お知らせ更新", desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
 ];
 
 export function RolesPage() {
@@ -135,7 +139,9 @@ export function RolesPage() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
           {roles.map(role => {
-            const activePerms = visiblePermFlags.filter(f => role.base_permissions?.[f.key]);
+            // 🌟 修正1: 管理者(admin)の場合は、一覧画面でも強制的にすべての権限バッジを表示する
+            const activePerms = visiblePermFlags.filter(f => role.name === "admin" || role.base_permissions?.[f.key]);
+
             return (
               <div
                 key={role.id}
@@ -167,12 +173,16 @@ export function RolesPage() {
                   >
                     <Pencil style={{ width: 12, height: 12 }} /> 編集
                   </button>
-                  <button
-                    onClick={() => setDeleteConfirm(role)}
-                    style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", fontSize: 12, fontWeight: 500, borderRadius: 7, cursor: "pointer" }}
-                  >
-                    <Trash2 style={{ width: 12, height: 12 }} /> 削除
-                  </button>
+
+                  {/* 🌟 修正2: 管理者(admin)の場合は削除ボタンを非表示にする */}
+                  {role.name !== "admin" && (
+                    <button
+                      onClick={() => setDeleteConfirm(role)}
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", fontSize: 12, fontWeight: 500, borderRadius: 7, cursor: "pointer" }}
+                    >
+                      <Trash2 style={{ width: 12, height: 12 }} /> 削除
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -263,10 +273,23 @@ function RoleModal({
   const isDuplicate = name.trim().length > 0 && existingNames.includes(name.trim());
   const canSave = label.trim().length > 0 && name.trim().length > 0 && !isDuplicate;
 
+  // 🌟 追加: 現在編集中のロールが「管理者（admin）」かどうかを判定
+  const isAdmin = role?.name === "admin" || name === "admin";
+
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
-    await onSave(name.trim(), label.trim(), perms);
+
+    // 🌟 修正: 管理者の場合は、設定画面上の権限を強制的にすべて true に上書きする
+    const finalPerms = { ...perms };
+    if (isAdmin) {
+      modalPermFlags.forEach(f => {
+        (finalPerms as any)[f.key] = true;
+      });
+      finalPerms.canAccessRoles = true; // ロックアウト防止のため念押し
+    }
+
+    await onSave(name.trim(), label.trim(), finalPerms);
     setSaving(false);
   };
 
@@ -311,9 +334,11 @@ function RoleModal({
               </label>
               <input
                 value={name}
+                // 🌟 修正: 既存のadminロールの場合は識別子を変更できないようにする
+                disabled={isEdit && role?.name === "admin"}
                 onChange={e => { setName(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, "")); setNameTouched(true); }}
                 placeholder="例: qa-engineer"
-                style={{ width: "100%", padding: "9px 11px", background: isDuplicate ? "#FEF2F2" : "#F9FAFB", border: `1px solid ${isDuplicate ? "#FECACA" : "#E5E7EB"}`, borderRadius: 8, fontSize: 12, outline: "none", boxSizing: "border-box" as const, fontFamily: "monospace", color: "#374151" }}
+                style={{ width: "100%", padding: "9px 11px", background: (isEdit && role?.name === "admin") ? "#E5E7EB" : (isDuplicate ? "#FEF2F2" : "#F9FAFB"), border: `1px solid ${isDuplicate ? "#FECACA" : "#E5E7EB"}`, borderRadius: 8, fontSize: 12, outline: "none", boxSizing: "border-box" as const, fontFamily: "monospace", color: "#374151" }}
                 onFocus={e => { if (!isDuplicate) { e.currentTarget.style.borderColor = "#7C3AED"; e.currentTarget.style.background = "#FFF"; } }}
                 onBlur={e => { e.currentTarget.style.borderColor = isDuplicate ? "#FECACA" : "#E5E7EB"; e.currentTarget.style.background = isDuplicate ? "#FEF2F2" : "#F9FAFB"; }}
               />
@@ -332,12 +357,16 @@ function RoleModal({
             <p style={{ fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 10 }}>権限設定</p>
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
               {modalPermFlags.map(f => {
-                const active = perms[f.key];
+                // 🌟 修正: 管理者なら強制的に true とし、クリックを無効化、半透明にして操作不可をアピール
+                const active = isAdmin ? true : perms[f.key];
                 return (
                   <label
                     key={f.key}
-                    onClick={() => setPerms(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, cursor: "pointer", background: active ? "#F5F3FF" : "#F9FAFB", border: `1px solid ${active ? "#DDD6FE" : "transparent"}`, transition: "all 0.15s" }}
+                    onClick={(e) => {
+                      if (isAdmin) { e.preventDefault(); return; }
+                      setPerms(prev => ({ ...prev, [f.key]: !prev[f.key] }));
+                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, cursor: isAdmin ? "not-allowed" : "pointer", background: active ? "#F5F3FF" : "#F9FAFB", border: `1px solid ${active ? "#DDD6FE" : "transparent"}`, transition: "all 0.15s", opacity: isAdmin ? 0.6 : 1 }}
                   >
                     <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? "#7C3AED" : "#D1D5DB", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
                       <div style={{ position: "absolute", top: 2, left: active ? 14 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.15)" }} />
