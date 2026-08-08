@@ -211,6 +211,31 @@ export interface MemberSkillChange {
 export type MlBatchResult = "completed" | "failed" | "not_run" | "missing";
 export type MlBatchTrigger = "daily" | "deploy" | "manual";
 
+/**
+ * BRU10-062 メンバー個別の実行結果。
+ *   updated   … このメンバーのスキルが変わった
+ *   unchanged … 対象だったが判定結果が前回と同じ（＝変更履歴には残らない）
+ *   excluded  … 対象外（スキル自動更新OFF など）
+ */
+export type MlBatchMemberStatus = "updated" | "unchanged" | "excluded";
+
+export interface MlBatchMemberChange {
+  skill: string;
+  changeType: SkillChangeType;
+  oldLevel: number | null;
+  newLevel: number | null;
+}
+
+export interface MlBatchMemberRun {
+  status: MlBatchMemberStatus;
+  changedCount: number;
+  evaluatedSkills: number;
+  matchedTickets: number;
+  protectedSkills: number;
+  reason: string | null;
+  changes: MlBatchMemberChange[];
+}
+
 export interface MlBatchRun {
   id: string;
   organizationId: string;
@@ -222,6 +247,12 @@ export interface MlBatchRun {
   summary: string;
   detail: Record<string, unknown>;
   skillRunId: string | null;
+  /**
+   * そのメンバーがこの実行でどう扱われたか。
+   * メンバー個別に開いたときだけ入る（組織全体の一覧では null）。
+   * 記録が始まる前の日や、組織ごとスキップした晩も null になる。
+   */
+  member?: MlBatchMemberRun | null;
 }
 
 /** 復元プレビュー（restore_member_skills の dry run）の1行 */
