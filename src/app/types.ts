@@ -1,4 +1,4 @@
-export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "release-notes" | "organization" | "announcement-settings" | "reports";
+export type Page = "login" | "dashboard" | "projects" | "clients" | "members" | "sprint" | "permissions" | "roles" | "admin-settings" | "my-actions" | "tasks" | "release-notes" | "organization" | "announcement-settings" | "reports";
 
 export interface AnnouncementItem {
   imageUrl: string;
@@ -381,6 +381,48 @@ export interface BugReport {
   createdAt: string;
   updatedAt: string;
 }
+// ── ENHA2-032 タスク管理 ──
+// チケット(sprint_tickets)とは別の軽量タスク。未着手/進行中/完了の3状態だけを扱う。
+// projectId が null なら個人タスク、値があればプロジェクト共有タスク。
+// 個人タスクでも shares に載せた相手には見える（担当者に指名すると自動で入る）。
+export type TaskStatus = "todo" | "in-progress" | "done";
+/** 一覧の絞り込み。project は「そのPJのタスクだけ」を出す専用ページで使う */
+export type TaskScope = "all" | "mine" | "shared" | "project";
+export type TaskView = "list" | "board" | "gantt";
+
+export interface TaskShare {
+  profileId: string;
+  /** 表示用。profiles を引けなかった場合は空文字 */
+  name: string;
+  canEdit: boolean;
+}
+
+export interface Task {
+  id: string;
+  ownerId: string;
+  createdBy: string;
+  projectId: string | null;
+  /** サブタスクの親。null = 親タスク。子チケットと同じく現在は1階層のみ */
+  parentId: string | null;
+  title: string;
+  description: string;
+  /** 分類。チケットの TicketCategory とは別の自由入力（個人タスクにも付けられるように） */
+  category: string;
+  status: TaskStatus;
+  priority: Priority;
+  assignee: string;
+  startDate: string;          // "" = 未設定
+  dueDate: string;
+  ticketId: string | null;
+  ticketWbs: string;
+  sortOrder: number;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** 一覧では空配列。詳細を開いたときだけ埋める */
+  shares: TaskShare[];
+}
+
 export interface WikiPage {
   id: string; projectId: string; parentId: string | null; title: string;
   content: string; sortOrder: number;

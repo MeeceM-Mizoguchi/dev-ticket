@@ -1,5 +1,5 @@
 import { useState, useEffect, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, FileText, Globe, Megaphone, FileBarChart2 } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, CheckSquare, FileText, Globe, Megaphone, FileBarChart2 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -11,6 +11,7 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "dashboard",  label: "ダッシュ",    icon: LayoutDashboard },
   { id: "projects",   label: "PJ一覧",      icon: FolderKanban },
   { id: "my-actions", label: "アクション",  icon: ClipboardList },
+  { id: "tasks",      label: "タスク",      icon: CheckSquare },
   { id: "release-notes", label: "リリースノート", icon: FileText },
   { id: "reports", label: "レポート管理", icon: FileBarChart2, permission: "canAccessReports" },
   { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager", "owner"] },
@@ -56,6 +57,8 @@ export function Sidebar() {
     if (p.startsWith("/admin-settings")) return "admin-settings";
     if (p.startsWith("/announcement-settings")) return "announcement-settings";
     if (p.startsWith("/my-actions")) return "my-actions";
+    // /:projectSlug/tasks はプロジェクト配下なので、ここでは拾わない(既定の "projects" になる)
+    if (p === "/tasks") return "tasks";
     if (p.startsWith("/release-notes")) return "release-notes";
     if (p.startsWith("/reports")) return "reports";
     if (p.startsWith("/organization")) return "organization";
