@@ -385,6 +385,27 @@ async function syncRequiredSkills(
   return toUpsert.length;
 }
 
+/**
+ * BRU10-062 メンバー1人ぶんの実行ログ（ml_batch_member_runs の1行）。
+ *
+ * 変更履歴は「変わったときだけ」残るので、
+ *   ・対象だったが変更が無かった
+ *   ・そもそも対象外だった（自動更新OFF）
+ * を区別できない。個人単位でも "実行のたびに必ず1行" 残すのがこれ。
+ */
+interface MemberBatchLog {
+  profileId: string;
+  status: "updated" | "unchanged" | "excluded";
+  changedCount: number;
+  evaluatedSkills: number;
+  matchedTickets: number;
+  protectedSkills: number;
+  reason: string | null;
+  detail: {
+    changes: { skill: string; changeType: string; oldLevel: number | null; newLevel: number }[];
+  };
+}
+
 interface AnalyzeResult {
   orgId: string;
   skipped: boolean;
@@ -398,6 +419,12 @@ interface AnalyzeResult {
   reason?: string;
   error?: string;
   debug?: Record<string, unknown>;
+  /**
+   * メンバー個別のログ。
+   * ★組織ごとスキップした晩は付けない★ 1000組織×30人を毎晩書くと年1000万行規模になる。
+   *   スキップ理由は組織の行(ml_batch_runs)が持っているので、画面はそちらを見ればよい。
+   */
+  memberLogs?: MemberBatchLog[];
 }
 
 /** 1組織を分析する */
@@ -479,14 +506,29 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     .eq("organization_id", orgId);
   if (profErr) debug.profilesError = profErr.message;
 
-  const autoMembers = (profiles ?? []).filter(p => p.skill_auto_update !== false && p.status === "active");
+  const activeMembers = (profiles ?? []).filter(p => p.status === "active");
+  const autoMembers = activeMembers.filter(p => p.skill_auto_update !== false);
   debug.autoMemberCount = autoMembers.length;
+
+  // 自動更新OFFのメンバーも「対象外だった」と個人ログに残す。
+  // 何も残さないと「バッチが動かなかった」のか「意図的に外していた」のか区別できない。
+  const excludedLogs: MemberBatchLog[] = activeMembers
+    .filter(p => p.skill_auto_update === false)
+    .map(p => ({
+      profileId: p.id, status: "excluded" as const,
+      changedCount: 0, evaluatedSkills: 0, matchedTickets: 0, protectedSkills: 0,
+      reason: "スキル自動更新がOFFです", detail: { changes: [] },
+    }));
+
   if (autoMembers.length === 0) {
     const ts = new Date().toISOString();
     await sb.from("organizations")
       .update({ ml_setup_done: true, ml_last_analyzed_at: ts, ml_last_checked_at: ts })
       .eq("id", orgId);
-    return { orgId, skipped: false, members: 0, skillsWritten: 0, requiredWritten, reason: "自動更新の対象メンバーがいません", debug };
+    return {
+      orgId, skipped: false, members: 0, skillsWritten: 0, requiredWritten,
+      reason: "自動更新の対象メンバーがいません", debug, memberLogs: excludedLogs,
+    };
   }
 
   // assignee は名前の文字列（UUIDではない）ので、名前 → profile の名寄せをする。
@@ -500,6 +542,13 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     const k = keyOf(pid, sid);
     if (!stats.has(k)) stats.set(k, { doneCount: 0, hours: [], onTimeCount: 0, reviewCount: 0, largeScaleCount: 0 });
     fn(stats.get(k)!);
+  };
+  // 個人ログ用。「判定材料が何件あったか」が分かると、変更が無かった理由
+  //（実績が少ないのか、実績はあるが判定が同じなのか）を後から説明できる。
+  const ticketsByMember = new Map<string, Set<string>>();
+  const touchTicket = (pid: string, tid: string) => {
+    if (!ticketsByMember.has(pid)) ticketsByMember.set(pid, new Set());
+    ticketsByMember.get(pid)!.add(tid);
   };
 
   for (const t of tickets) {
@@ -518,6 +567,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     // 担当者としての実績
     const assignee = t.assignee ? byName.get(t.assignee) : undefined;
     if (assignee) {
+      touchTicket(assignee.id, t.id);
       for (const sid of skillIds) {
         bump(assignee.id, sid, s => {
           s.doneCount++;
@@ -532,6 +582,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     // 「他人のチケットをレビュー・承認する側にいる」は既存DBにある強力なシグナル。
     const reviewer = t.reviewer_name ? byName.get(t.reviewer_name) : undefined;
     if (reviewer && t.review_approved_at && reviewer.id !== assignee?.id) {
+      touchTicket(reviewer.id, t.id);
       for (const sid of skillIds) bump(reviewer.id, sid, s => { s.reviewCount++; });
     }
   }
@@ -572,9 +623,16 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   }[] = [];
   const now = new Date().toISOString();
 
+  // 個人ログ用: 判定材料の組数と、手動設定のため見送った数をメンバーごとに数える
+  const evaluatedByMember = new Map<string, number>();
+  const protectedByMember = new Map<string, number>();
+  const countUp = (m: Map<string, number>, pid: string) => m.set(pid, (m.get(pid) ?? 0) + 1);
+
   for (const [k, s] of stats) {
     const prev = existing.get(k);
-    if (prev?.source === "manual") continue;   // 人が設定した行は触らない
+    const [pid] = k.split("::");
+    countUp(evaluatedByMember, pid);
+    if (prev?.source === "manual") { countUp(protectedByMember, pid); continue; }   // 人が設定した行は触らない
     const [profileId, skillId] = k.split("::");
     const inferred = inferSkillLevel(s);
     if (!inferred) continue;
@@ -632,11 +690,51 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     .update({ ml_setup_done: true, ml_last_analyzed_at: now, ml_last_checked_at: now })
     .eq("id", orgId);
 
+  // ── BRU10-062 メンバー個別の実行ログ ──
+  // 対象メンバー全員ぶんを、変更が無くても必ず1行作る。
+  // スキル名を埋め込んで持たせるので、表示側は skills を引き直さなくてよい
+  // （スキルが後から削除・改名されても、当時の記録がそのまま残る）。
+  const skillNameById = new Map((skills as SkillRow[]).map(s => [s.id, s.name]));
+  const changesByMember = new Map<string, typeof changes>();
+  for (const c of changes) {
+    if (!changesByMember.has(c.profile_id)) changesByMember.set(c.profile_id, []);
+    changesByMember.get(c.profile_id)!.push(c);
+  }
+
+  const memberLogs: MemberBatchLog[] = [
+    ...autoMembers.map(m => {
+      const mine = changesByMember.get(m.id) ?? [];
+      const evaluated = evaluatedByMember.get(m.id) ?? 0;
+      const matched = ticketsByMember.get(m.id)?.size ?? 0;
+      return {
+        profileId: m.id,
+        status: (mine.length > 0 ? "updated" : "unchanged") as MemberBatchLog["status"],
+        changedCount: mine.length,
+        evaluatedSkills: evaluated,
+        matchedTickets: matched,
+        protectedSkills: protectedByMember.get(m.id) ?? 0,
+        // 「変更なし」のとき、なぜ変わらなかったのかを一言で残す
+        reason: mine.length > 0 ? null
+          : matched === 0 ? "判定に使えるチケットがありませんでした"
+          : "判定結果が前回と同じでした",
+        detail: {
+          changes: mine.map(c => ({
+            skill: skillNameById.get(c.skill_id) ?? "（削除済み）",
+            changeType: c.change_type,
+            oldLevel: c.old_level,
+            newLevel: c.new_level,
+          })),
+        },
+      };
+    }),
+    ...excludedLogs,
+  ];
+
   return {
     orgId, skipped: false, members: autoMembers.length,
     changedMembers: new Set(changes.map(c => c.profile_id)).size,
     skillsWritten: rows.length, requiredWritten, skillRunId,
-    debug,
+    debug, memberLogs,
   };
 }
 
@@ -698,6 +796,37 @@ async function recordAnalyzePhase(
   // 学習ログの記録に失敗しても分析そのものは成立させる（ログが欠けるだけ）
   const { error } = await sb.from("ml_batch_runs").upsert(row, { onConflict: "organization_id,batch_id" });
   if (error && r.debug) r.debug.batchLogError = error.message;
+
+  // ── BRU10-062 メンバー個別のログ ──
+  //
+  // ★組織ごとスキップした晩は memberLogs が付かない＝ここは書かない★
+  //   スキップ理由は上の組織行が持っている。全組織×全メンバーを毎晩書くと
+  //   年1000万行規模になり、履歴機能がスナップショット方式を捨てたのと同じ理由で破綻する。
+  //
+  // 1組織ぶんをまとめて1クエリ。②モデル学習の再実行で同じ batch_id が来ても
+  // 二重にならないよう upsert にしてある。
+  if (r.memberLogs && r.memberLogs.length > 0) {
+    const startedAt = String(row.started_at);
+    const memberRows = r.memberLogs.map(m => ({
+      organization_id: r.orgId,
+      batch_id: batchId,
+      profile_id: m.profileId,
+      trigger,
+      started_at: startedAt,
+      status: m.status,
+      changed_count: m.changedCount,
+      evaluated_skills: m.evaluatedSkills,
+      matched_tickets: m.matchedTickets,
+      protected_skills: m.protectedSkills,
+      reason: m.reason,
+      detail: m.detail,
+      skill_run_id: r.skillRunId ?? null,
+    }));
+    const { error: mErr } = await sb
+      .from("ml_batch_member_runs")
+      .upsert(memberRows, { onConflict: "organization_id,batch_id,profile_id" });
+    if (mErr && r.debug) r.debug.memberBatchLogError = mErr.message;
+  }
 }
 
 export default async function handler(req: any, res: any) {

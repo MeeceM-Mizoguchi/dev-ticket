@@ -100,17 +100,18 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
     if (tab === "history" && history.length === 0 && !historyLoading) void loadHistory();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 学習ログは組織単位（メンバーによらず同じ内容）。絞り込みを変えたら取り直す。
+  // バッチの実行そのものは組織単位だが、profileId を渡すと
+  // 「その晩このメンバーがどう扱われたか」が各行に乗る（BRU10-062）。
   useEffect(() => {
     if (tab !== "batchlog") return;
     let cancelled = false;
     setBatchLoading(true);
-    fetchMlBatchLogs(orgId, { trigger: batchTrigger })
+    fetchMlBatchLogs(orgId, { trigger: batchTrigger, profileId: member.id })
       .then(r => { if (!cancelled) setBatchRuns(r); })
       .catch(() => { if (!cancelled) setBatchRuns([]); })
       .finally(() => { if (!cancelled) setBatchLoading(false); });
     return () => { cancelled = true; };
-  }, [tab, orgId, batchTrigger]);
+  }, [tab, orgId, batchTrigger, member.id]);
 
   const toggleAuto = async () => {
     const next = !autoUpdate;
@@ -292,10 +293,11 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
           {tab === "batchlog" ? (
             <>
               <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.6, marginBottom: 10 }}>
-                毎晩の自動更新が実行された結果です。組織全体で共通の内容を表示しています。
+                毎晩の自動更新が実行された結果です。日時・学習結果は組織全体で共通、
+                緑や灰色のラベルが {member.name} さん個別の結果です（行を開くと内訳が出ます）。
               </p>
               <BatchLogFilter value={batchTrigger} onChange={setBatchTrigger} />
-              <MlBatchLogView runs={batchRuns} loading={batchLoading} />
+              <MlBatchLogView runs={batchRuns} loading={batchLoading} memberName={member.name} />
             </>
           ) : tab === "history" ? (
             <SkillHistoryView

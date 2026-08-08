@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import { ChevronRight, CheckCircle2, AlertTriangle, MinusCircle } from "lucide-react";
-import type { MlBatchRun, MlBatchResult, MlBatchTrigger } from "@/app/types";
+import type { MlBatchRun, MlBatchResult, MlBatchTrigger, MlBatchMemberStatus, MlBatchMemberRun } from "@/app/types";
 
 /**
  * 表示範囲の切り替え。
@@ -56,6 +56,41 @@ function formatWhen(iso: string, withTime: boolean): string {
   return `${date} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+// ── BRU10-062 メンバー個別の結果 ──
+//
+// 組織のサマリ（例:「スキル修正あり 1名・4件」）だけだと、その1名が誰なのか分からない。
+// メンバーのモーダルから開いたときは、その人がどう扱われたかを行ごとに重ねて出す。
+const MEMBER_META: Record<MlBatchMemberStatus, { color: string; bg: string; border: string }> = {
+  updated:   { color: "#047857", bg: "#ECFDF5", border: "#A7F3D0" },
+  unchanged: { color: "#6B6458", bg: "#F5F4F2", border: "rgba(26,23,20,0.10)" },
+  excluded:  { color: "#B45309", bg: "#FFFBEB", border: "#FDE68A" },
+};
+
+function memberLabel(m: MlBatchMemberRun): string {
+  if (m.status === "updated") return `${m.changedCount}件を更新`;
+  if (m.status === "excluded") return "対象外";
+  return "変更なし";
+}
+
+/** 変更1件を「要件定義 追加Lv3」「React Lv2→Lv3」の形にする */
+function changeText(c: { skill: string; changeType: string; oldLevel: number | null; newLevel: number | null }): string {
+  if (c.changeType === "removed") return `${c.skill} 削除`;
+  if (c.oldLevel === null || c.oldLevel === undefined) return `${c.skill} 追加Lv${c.newLevel}`;
+  return `${c.skill} Lv${c.oldLevel}→Lv${c.newLevel}`;
+}
+
+/** 展開したときに出す「このメンバー」の補足（なぜ変わらなかったか等） */
+function memberNote(m: MlBatchMemberRun): string {
+  const parts: string[] = [];
+  if (m.status === "updated") parts.push(m.changes.map(changeText).join(" / "));
+  if (m.reason) parts.push(m.reason);
+  if (m.status !== "excluded") {
+    parts.push(`判定材料 ${m.matchedTickets}件のチケット・${m.evaluatedSkills}スキル`);
+    if (m.protectedSkills > 0) parts.push(`手動設定のため ${m.protectedSkills}件は対象外`);
+  }
+  return parts.join(" / ") || "—";
+}
+
 /** 内訳（detail.analyze / detail.train）を人が読める行にする */
 function phaseLines(run: MlBatchRun): { title: string; status: string; note: string }[] {
   const d = run.detail as { analyze?: Record<string, unknown>; train?: Record<string, unknown> };
@@ -94,9 +129,11 @@ function phaseLines(run: MlBatchRun): { title: string; status: string; note: str
   return out;
 }
 
-export function MlBatchLogView({ runs, loading }: {
+export function MlBatchLogView({ runs, loading, memberName }: {
   runs: MlBatchRun[];
   loading?: boolean;
+  /** メンバー個別に開いているときの名前。渡すと各行にその人の結果を重ねて出す。 */
+  memberName?: string;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -127,16 +164,19 @@ export function MlBatchLogView({ runs, loading }: {
         // 記録が無い日は開始時刻そのものが存在しないので、時刻は出さない
         const hasTime = run.result !== "missing";
         const lines = phaseLines(run);
+        const member = run.member ?? null;
+        const mMeta = member ? MEMBER_META[member.status] : null;
+        const who = memberName ? `${memberName}さん` : "このメンバー";
 
         return (
           <div key={run.id}
             style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, marginBottom: 6, background: "#FFFFFF", overflow: "hidden" }}>
             <button
               onClick={() => setOpenId(open ? null : run.id)}
-              disabled={lines.length === 0}
+              disabled={lines.length === 0 && !member}
               style={{
                 width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px", textAlign: "left",
-                background: "transparent", border: "none", cursor: lines.length === 0 ? "default" : "pointer",
+                background: "transparent", border: "none", cursor: lines.length === 0 && !member ? "default" : "pointer",
               }}>
               <span style={{ width: 176, flexShrink: 0, fontSize: 11.5, fontWeight: 600, color: "#1A1714", fontVariantNumeric: "tabular-nums" }}>
                 {formatWhen(run.startedAt, hasTime)}
@@ -148,17 +188,35 @@ export function MlBatchLogView({ runs, loading }: {
                 </span>
               </span>
 
-              <span style={{ flex: 1, fontSize: 11.5, color: "#6B6458", lineHeight: 1.5, wordBreak: "break-word" }}>
-                {run.summary}
+              <span style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+                <span style={{ fontSize: 11.5, color: "#6B6458", lineHeight: 1.5, wordBreak: "break-word" }}>
+                  {run.summary}
+                </span>
+                {member && mMeta && (
+                  <span style={{ alignSelf: "flex-start", padding: "2px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, color: mMeta.color, background: mMeta.bg, border: `1px solid ${mMeta.border}` }}>
+                    {who}: {memberLabel(member)}
+                  </span>
+                )}
               </span>
 
-              {lines.length > 0 && (
+              {(lines.length > 0 || member) && (
                 <ChevronRight style={{ width: 13, height: 13, color: "#C9C4BB", flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
               )}
             </button>
 
-            {open && lines.length > 0 && (
+            {open && (lines.length > 0 || member) && (
               <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", background: "#FAFAFA", padding: "10px 12px" }}>
+                {member && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 6 }}>
+                    <span style={{ width: 92, flexShrink: 0, fontSize: 11, fontWeight: 700, color: "#1A1714" }}>{who}</span>
+                    <span style={{ width: 56, flexShrink: 0, fontSize: 11, fontWeight: 600, color: MEMBER_META[member.status].color }}>
+                      {memberLabel(member)}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 11, color: "#6B6458", lineHeight: 1.6, wordBreak: "break-word" }}>
+                      {memberNote(member)}
+                    </span>
+                  </div>
+                )}
                 {lines.map(l => (
                   <div key={l.title} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 6 }}>
                     <span style={{ width: 92, flexShrink: 0, fontSize: 11, fontWeight: 700, color: "#1A1714" }}>{l.title}</span>

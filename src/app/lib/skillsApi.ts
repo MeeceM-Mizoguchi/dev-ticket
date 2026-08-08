@@ -1,6 +1,6 @@
 // ENHA2-034 スキル関連のデータアクセス
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { mapSkill, mapMemberSkill, mapSkillUpdateRun, mapMemberSkillChange, mapMlBatchRun } from "@/app/lib/mappers";
+import { mapSkill, mapMemberSkill, mapSkillUpdateRun, mapMemberSkillChange, mapMlBatchRun, mapMlBatchMemberRun } from "@/app/lib/mappers";
 import type { Skill, MemberSkill, SkillLayer, SkillLevel, AssigneeRecommendation, DevScale, Priority, SkillUpdateRun, MemberSkillChange, SkillRestoreChange, MlBatchRun, MlBatchTrigger } from "@/app/types";
 
 /** 組織のスキルマスタ */
@@ -212,7 +212,7 @@ function jstDateKey(iso: string): string {
  */
 export async function fetchMlBatchLogs(
   orgId: string,
-  opts: { days?: number; trigger?: MlBatchTrigger | "all" } = {},
+  opts: { days?: number; trigger?: MlBatchTrigger | "all"; profileId?: string } = {},
 ): Promise<MlBatchRun[]> {
   if (!isSupabaseEnabled || !orgId) return [];
   const days = opts.days ?? 30;
@@ -227,6 +227,21 @@ export async function fetchMlBatchLogs(
 
   const { data } = await q.order("started_at", { ascending: false }).limit(200);
   const runs = (data ?? []).map(mapMlBatchRun);
+
+  // ── BRU10-062 メンバー個別の結果を重ねる ──
+  //   組織の行は「バッチが動いたか」しか語らない。誰のモーダルを開いても同じ内容になり、
+  //   「学習ログには修正ありと出ているのに、この人の変更履歴には無い」という誤読を生んだ。
+  //   batch_id で突き合わせて、その人がどう扱われたかを各行に付ける。
+  if (opts.profileId && runs.length > 0) {
+    const { data: memberRows } = await supabase!
+      .from("ml_batch_member_runs").select("*")
+      .eq("organization_id", orgId)
+      .eq("profile_id", opts.profileId)
+      .gte("started_at", since)
+      .limit(500);
+    const byBatch = new Map((memberRows ?? []).map(r => [r.batch_id, mapMlBatchMemberRun(r)]));
+    for (const run of runs) run.member = byBatch.get(run.batchId) ?? null;
+  }
 
   // 「起動しなかった日」を出せるのは、毎晩動くはずの daily だけ。
   // デプロイ時・手動実行は毎日あるものではないので穴埋めしない。

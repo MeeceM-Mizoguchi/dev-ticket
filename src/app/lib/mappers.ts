@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder } from "@/app/types";
 
 // ── ナレッジノート ──
 // 一覧では content を引かないため、無い場合は空文字にフォールバックする
@@ -121,6 +121,28 @@ export function mapMlBatchRun(r: any): MlBatchRun {
       : (r.summary || (r.finished_at ? "" : "実行中です")),
     detail: r.detail ?? {},
     skillRunId: r.skill_run_id ?? null,
+    member: null,
+  };
+}
+
+/** BRU10-062 メンバー個別の実行ログ（ml_batch_member_runs の1行） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapMlBatchMemberRun(r: any): MlBatchMemberRun {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const changes = (r.detail?.changes ?? []) as any[];
+  return {
+    status: r.status || "unchanged",
+    changedCount: r.changed_count ?? 0,
+    evaluatedSkills: r.evaluated_skills ?? 0,
+    matchedTickets: r.matched_tickets ?? 0,
+    protectedSkills: r.protected_skills ?? 0,
+    reason: r.reason ?? null,
+    changes: changes.map(c => ({
+      skill: c.skill || "（削除済み）",
+      changeType: c.changeType || "added",
+      oldLevel: c.oldLevel ?? null,
+      newLevel: c.newLevel ?? null,
+    })),
   };
 }
 
