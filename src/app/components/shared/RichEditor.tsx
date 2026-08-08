@@ -14,6 +14,7 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
 // 貼り付けた Markdown テキスト（Claude のコピーボタン等）を書式つきで取り込む
 import { markdownToHtml, markdownFileToHtml } from "@/app/lib/markdown";
+import { isSubmitShortcut } from "@/app/lib/submitKey";
 import { useToast } from "@/app/contexts/ToastContext";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
@@ -617,6 +618,10 @@ const btnStyle = (active?: boolean): React.CSSProperties => ({
   cursor: "pointer", lineHeight: 1.4,
 });
 
+// メンション候補ポップアップの目印。候補が開いている間の Enter は「候補の確定」が優先。
+const SUGGESTION_POPUP_ATTR = "data-mention-suggestion";
+const isSuggestionOpen = () => !!document.querySelector(`[${SUGGESTION_POPUP_ATTR}]`);
+
 function makeSuggestionPopup<T>(
   Component: React.ComponentType<any>,
   width = 260,
@@ -652,6 +657,8 @@ function makeSuggestionPopup<T>(
     return {
       onStart: (props: any) => {
         wrapper = document.createElement("div");
+        // 候補が開いている間は ⌘/Ctrl+Enter の確定を抑止したいので、DOM から見分けられるようにする
+        wrapper.setAttribute(SUGGESTION_POPUP_ATTR, "");
         wrapper.style.cssText = [
           "position:fixed", "z-index:9999",
           "background:#FFF", "border:1px solid rgba(26,23,20,0.12)",
@@ -683,7 +690,7 @@ function makeSuggestionPopup<T>(
 
 // ---- RichEditor -------------------------------------------------------------
 export function RichEditor({
-  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], fileItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick, onImageUpload, style,
+  value, onChange, placeholder, minHeight = 120, maxHeight, readOnly = false, toolbar = true, members = [], tickets = [], backlogItems = [], wikiItems = [], minuteItems = [], fileItems = [], onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick, onImageUpload, onSubmit, style,
 }: {
   value?: string; onChange?: (html: string) => void;
   placeholder?: string; minHeight?: number | string; maxHeight?: number | string; readOnly?: boolean; toolbar?: boolean;
@@ -700,10 +707,15 @@ export function RichEditor({
   onMinuteClick?: (id: string) => void;
   onFileClick?: (id: string) => void;
   onImageUpload?: (file: File) => Promise<string>;
+  // ⌘(Mac) / Ctrl(Windows) + Enter で確定。渡した画面だけ有効になる（Enter 単体は改行のまま）
+  onSubmit?: () => void;
   style?: React.CSSProperties;
 }) {
   const idRef = useRef(`re-${Math.random().toString(36).slice(2, 8)}`);
   const id = idRef.current;
+  // useEditor は初回だけ生成されるので、editorProps の中から最新の onSubmit を見るために ref 経由にする
+  const onSubmitRef = useRef(onSubmit);
+  onSubmitRef.current = onSubmit;
   // Mermaid挿入モーダルの開閉（本文中はコードを見せず、入力はモーダルに集約する）
   const [mermaidModalOpen, setMermaidModalOpen] = useState(false);
   // ホワイトボードのオブジェクトリンク用。Provider の外(LP等)で使われても既定値が no-op なので安全。
@@ -840,6 +852,18 @@ export function RichEditor({
     // 🌟 BRU4-049: 読取専用では列幅補完(appendTransaction)による onChange を発火させない
     onUpdate: ({ editor }) => { if (!editor.isEditable) return; onChange?.(editor.getHTML()); },
     editorProps: {
+      // ⌘/Ctrl + Enter で確定（作成する・更新する・投稿する 等）。
+      // editorProps は拡張のプラグインより先に呼ばれるため、メンション候補が開いている間は
+      // 候補確定を優先させて false を返す。IME変換中(isComposing)も拾わない。
+      handleKeyDown: (_view, event) => {
+        const submit = onSubmitRef.current;
+        if (!submit) return false;
+        if (!isSubmitShortcut(event)) return false;
+        if (isSuggestionOpen()) return false;
+        event.preventDefault();
+        submit();
+        return true;
+      },
       handlePaste: onImageUpload ? (_view, event) => {
         const data = event.clipboardData;
         // 🌟 BRU9-044: Excel等の表をコピーすると、クリップボードには text/html(表のHTML) と

@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { MermaidView } from "./MermaidView";
+import { isSubmitShortcut } from "@/app/lib/submitKey";
 
 interface Props {
   initialCode: string;
@@ -53,7 +54,14 @@ export function MermaidEditModal({ initialCode, title = "Mermaid図", saveLabel 
             <textarea
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                // ⌘/Ctrl + Enter で保存（Enter 単体は改行のまま）
+                if (isSubmitShortcut({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, isComposing: e.nativeEvent.isComposing }) && canSave) {
+                  e.preventDefault();
+                  onSave(code);
+                }
+              }}
               spellCheck={false}
               autoFocus
               style={{ flex: 1, minHeight: 260, resize: "vertical", fontFamily: "var(--font-mono, monospace)", fontSize: 12.5, lineHeight: 1.6, padding: 10, borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", color: "#1A1714", background: "#FAFAF8", outline: "none" }}

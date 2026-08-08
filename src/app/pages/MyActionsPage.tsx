@@ -672,7 +672,7 @@ function MemoDetailModal({
                     # でチケットサジェスト
                   </span>
                 </div>
-                <RichEditor value={editContent} onChange={setEditContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={expanded ? 160 : 80} maxHeight={expanded ? 280 : 120} tickets={suggest.tickets} backlogItems={suggest.backlogItems} wikiItems={suggest.wikiItems} minuteItems={suggest.minuteItems} fileItems={suggest.fileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} toolbar={false} />
+                <RichEditor value={editContent} onChange={setEditContent} onSubmit={() => { if (!saving && editTitle.trim()) void handleSaveEdit(); }} placeholder="内容を入力... (# でチケットリンク)" minHeight={expanded ? 160 : 80} maxHeight={expanded ? 280 : 120} tickets={suggest.tickets} backlogItems={suggest.backlogItems} wikiItems={suggest.wikiItems} minuteItems={suggest.minuteItems} fileItems={suggest.fileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} toolbar={false} />
               </div>
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <button
@@ -1082,7 +1082,7 @@ function AddMemoModal({
             # でチケットサジェスト
           </span>
         </div>
-        <RichEditor value={content} onChange={setContent} placeholder="内容を入力... (# でチケットリンク)" minHeight={100} maxHeight={200} tickets={suggest.tickets} backlogItems={suggest.backlogItems} wikiItems={suggest.wikiItems} minuteItems={suggest.minuteItems} fileItems={suggest.fileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} toolbar={false} />
+        <RichEditor value={content} onChange={setContent} onSubmit={() => { if (!saving && title.trim()) void handleSave(); }} placeholder="内容を入力... (# でチケットリンク)" minHeight={100} maxHeight={200} tickets={suggest.tickets} backlogItems={suggest.backlogItems} wikiItems={suggest.wikiItems} minuteItems={suggest.minuteItems} fileItems={suggest.fileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} toolbar={false} />
       </div>
 
       {/* エラー表示 */}

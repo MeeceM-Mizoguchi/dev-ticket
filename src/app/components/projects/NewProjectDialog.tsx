@@ -265,7 +265,7 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
         </div>
 
         <div>
-          <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
+          <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} onSubmit={() => { if (!saving) void handleSave(); }} />
         </div>
         
       </div>

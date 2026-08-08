@@ -20,6 +20,7 @@ import { MEMBERS } from "@/app/data/mock";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
 import { escStack } from "@/app/lib/escStack";
+import { submitOnModEnter } from "@/app/lib/submitKey";
 
 const DRAG_TYPE = "SPRINT_TICKET";
 
@@ -558,6 +559,7 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
               <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>コメント（任意）</span>
             </div>
             <textarea value={modalComment} onChange={e => setModalComment(e.target.value)}
+              onKeyDown={submitOnModEnter(confirmModal)}
               placeholder={modalMeta.placeholder}
               style={{ width: "100%", minHeight: 80, padding: "10px 12px", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, fontSize: 13, color: "#1A1714", resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
               onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = "#059669"; (e.currentTarget as HTMLElement).style.background = "#FFF"; }}

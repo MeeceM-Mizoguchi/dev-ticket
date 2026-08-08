@@ -5,6 +5,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { mapBugReport } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
+import { submitOnModEnter } from "@/app/lib/submitKey";
 import { APP_VERSION } from "@/lib/version";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import type { BugCategory, BugSeverity, BugReport } from "@/app/types";
@@ -116,6 +117,11 @@ export function BugReportModal({ onClose }: Props) {
   const handleImagesChange = useCallback((next: string[]) => {
     setImages(next.slice(0, 5));
   }, []);
+
+  // ⌘(Mac) / Ctrl(Windows) + Enter で「送信する」
+  const submitByShortcut = submitOnModEnter<HTMLTextAreaElement>(() => {
+    if (phase !== "submitting") void handleSubmit();
+  });
 
   const handleSubmit = async () => {
     // 🌟 追加: 送信を試みたフラグを立てて個別エラー表示をONにする
@@ -479,6 +485,7 @@ export function BugReportModal({ onClose }: Props) {
                     <textarea 
                       value={steps} 
                       onChange={e => setSteps(e.target.value)} 
+                      onKeyDown={submitByShortcut} 
                       placeholder={"1. ○○ページを開く\n2. △△をクリックする\n3. □□が起きる"} 
                       style={textareaStyle} 
                       onFocus={focusStyle} 
@@ -494,6 +501,7 @@ export function BugReportModal({ onClose }: Props) {
                     <textarea 
                       value={actual} 
                       onChange={e => setActual(e.target.value)} 
+                      onKeyDown={submitByShortcut} 
                       placeholder="実際に何が起きているか" 
                       style={textareaStyle} 
                       onFocus={focusStyle} 
@@ -506,7 +514,7 @@ export function BugReportModal({ onClose }: Props) {
                   {/* 期待する動作 */}
                   <div>
                     <label style={labelStyle}>期待する動作 <span style={{ color:"#9E9690", fontWeight:500 }}>（任意）</span></label>
-                    <textarea value={expected} onChange={e => setExpected(e.target.value)} placeholder="本来どうなるべきか" style={{ ...textareaStyle, minHeight:56 }} onFocus={focusStyle} onBlur={blurStyle} />
+                    <textarea value={expected} onChange={e => setExpected(e.target.value)} onKeyDown={submitByShortcut} placeholder="本来どうなるべきか" style={{ ...textareaStyle, minHeight:56 }} onFocus={focusStyle} onBlur={blurStyle} />
                   </div>
 
                   {/* 発生URL */}
@@ -521,6 +529,7 @@ export function BugReportModal({ onClose }: Props) {
                     <textarea 
                       value={consoleLog} 
                       onChange={e => setConsoleLog(e.target.value)} 
+                      onKeyDown={submitByShortcut} 
                       placeholder={"デベロッパーツール（F12）の Console タブに表示されているエラーログ等があれば、ここにコピー＆ペーストしてください。"} 
                       style={{ ...textareaStyle, minHeight:90, fontFamily:"var(--font-mono)", fontSize:12 }} 
                       onFocus={focusStyle} 

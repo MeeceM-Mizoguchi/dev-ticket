@@ -82,7 +82,7 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
         </p>
         {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 3 }}>{slugError}</p>}
       </div>
-      <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} />
+      <FieldTextarea label="説明" placeholder="プロジェクトの概要を入力..." value={description} onChange={setDescription} onSubmit={() => { if (!saving) void handleSave(); }} />
       <div className="grid grid-cols-2 gap-3" style={{ marginBottom: 16 }}>
         <FieldInput label="開始日" type="date" value={startDate} onChange={setStartDate} />
         <FieldInput label="終了日" type="date" value={endDate} onChange={setEndDate} />

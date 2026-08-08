@@ -42,6 +42,7 @@ import {
 import { downloadBlob } from "@/app/lib/articleExport/download";
 import { warmup, onModelDownload, getUnavailableReason } from "@/app/lib/knowledge/embed";
 import { outlineFromMarkdown, flattenOutline, resolveSection, type OutlineNode } from "@/app/lib/knowledge/outline";
+import { submitOnModEnter } from "@/app/lib/submitKey";
 
 const PHASE_LABEL: Record<KnowledgeImportProgress["phase"], string> = {
   reading: "読み込み中", chunking: "分割中", saving: "保存中",
@@ -1427,6 +1428,7 @@ export function KnowledgePage() {
                   <textarea
                     value={editContent}
                     onChange={e => setEditContent(e.target.value)}
+                    onKeyDown={submitOnModEnter(() => { if (!savingEdit) void handleSaveEdit(); })}
                     placeholder="Markdown形式で本文を入力してください"
                     style={{ width: "100%", minHeight: "500px", resize: "vertical", padding: 16, fontSize: 13, lineHeight: 1.6, color: "#1A1714", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", fontFamily: "var(--font-mono, monospace)" }}
                     onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.4)"; }}

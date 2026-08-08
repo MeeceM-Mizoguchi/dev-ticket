@@ -233,7 +233,7 @@ export function DeleteSprintDialog({ sprint, otherSprints, projectId, onClose, o
       </>}>
       <p style={{ fontSize: 13, color: "#6B6458" }}>新しいスプリントを作成し、「{sprint.name}」のチケットを移動します。</p>
       <FieldInput label="スプリント名" placeholder="例: Sprint 6: 次のスプリント" required value={newName} onChange={setNewName} />
-      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={newGoal} onChange={setNewGoal} />
+      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={newGoal} onChange={setNewGoal} onSubmit={() => { if (!saving && newName.trim()) void createSprintAndMove(); }} />
       <div className="grid grid-cols-2 gap-3">
         <DatePicker label="開始日" value={newStartDate} onChange={setNewStartDate} placeholder="年/月/日" />
         <DatePicker label="終了日" value={newEndDate} onChange={setNewEndDate} placeholder="年/月/日" min={newStartDate || undefined} />
