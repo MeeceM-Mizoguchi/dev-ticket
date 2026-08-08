@@ -109,12 +109,11 @@ export function ProjectsPage() {
 
         const isDoneFlag = t.is_withdrawn || t.archived || t.is_deleted || !!t.deleted_at;
 
-        // 🌟 修正: 取下は progress: -2 として管理されているため、これを緑のチェック(done)へ加算する
-        const isDoneProgress = Number(t.progress) >= 100 || Number(t.progress) === -2;
+        const isDoneProgress = Number(t.progress) >= 100;
 
         if (isDoneStatus || isDoneFlag || isDoneProgress) {
           counts.done++;
-        } else if (s === "todo" || s === "open" || s.includes("未着手") || s.includes("pending")) {
+        } else if (s === "todo" || s === "open" || s.includes("未着手") || s.includes("pending") || s.includes("on-hold")) {
           counts.todo++;
         } else {
           counts.inProgress++;

@@ -28,9 +28,9 @@ function getTodayString(): string {
 }
 
 // 🌟 期限日当日以降かつ未完了（Done/Closed/Released/取下以外）か判定する関数
-function isOverdueOrToday(dueDate?: string, status?: string, progress?: number): boolean {
+function isOverdueOrToday(dueDate?: string, status?: string): boolean {
   if (!dueDate || !dueDate.trim()) return false;
-  if (status === "closed" || status === "done" || status === "released" || progress === -2) {
+  if (status === "closed" || status === "done" || status === "released" || status === "withdrawn") {
     return false;
   }
   const today = getTodayString();
@@ -596,7 +596,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
         wbs: t.wbs,
         title: t.title,
         description: htmlToText(t.description),
-        status: t.progress === -1 ? "pending" : t.progress === -2 ? "withdrawn" : t.status,
+        status: t.status,
         priority: t.priority,
         assignee: t.assignee || "",
         startDate: t.startDate || "",
@@ -691,8 +691,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
           const sm = getSprintStatusMeta(computedStatus);
           const showPendingBadge = computedStatus === "completed" && sprintHasPending(sprint);
           const progress = sprintProgress(sprint);
-          const terminalStatuses = ["done", "closed", "waiting-release", "released"];
-          const done = sprint.tickets.filter(t => terminalStatuses.includes(t.status) || t.progress === -2).length;
+          const terminalStatuses = ["done", "closed", "waiting-release", "released", "withdrawn"];
+          const done = sprint.tickets.filter(t => terminalStatuses.includes(t.status)).length;
           const totalHours = sprint.tickets.reduce((s, t) => s + t.estimatedHours, 0);
           const actualHours = Math.round(sprint.tickets.reduce((s, t) => s + calcTicketActualHours(t), 0) * 10) / 10;
 
@@ -797,67 +797,67 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                   const allSel = visibleIds.length > 0 && visibleIds.every(id => selectedTicketIds.has(id));
                   const someSel = !allSel && visibleIds.some(id => selectedTicketIds.has(id));
                   return (
-                  <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
-                    <SelBox checked={allSel} indeterminate={someSel}
-                      onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSel); }} />
-                    {COLS.map((col, idx) => (
-                      <ColumnFilter key={col} col={col}
-                        label={COL_LABELS[idx]}
-                        sortCol={sprintSort.col as SortCol | "closedDate" | ""}
-                        sortDir={sprintSort.dir}
-                        onSort={(c, d) => handleSort(sprint.id, c, d)}
-                        onClearSort={() => clearSort(sprint.id)}
-                        onClose={closeCol}
-                        options={getColOptions(sprint, col)}
-                        selected={getSelected(sprint.id, col)}
-                        onFilterChange={setColFilter(sprint.id, col)}
-                        open={openCol === `${sprint.id}:${col}`}
-                        onToggle={() => toggleCol(sprint.id, col)}
-                        alignRight={idx >= 7}
-                      />
-                    ))}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>実績</span>
+                    <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
+                      <SelBox checked={allSel} indeterminate={someSel}
+                        onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSel); }} />
+                      {COLS.map((col, idx) => (
+                        <ColumnFilter key={col} col={col}
+                          label={COL_LABELS[idx]}
+                          sortCol={sprintSort.col as SortCol | "closedDate" | ""}
+                          sortDir={sprintSort.dir}
+                          onSort={(c, d) => handleSort(sprint.id, c, d)}
+                          onClearSort={() => clearSort(sprint.id)}
+                          onClose={closeCol}
+                          options={getColOptions(sprint, col)}
+                          selected={getSelected(sprint.id, col)}
+                          onFilterChange={setColFilter(sprint.id, col)}
+                          open={openCol === `${sprint.id}:${col}`}
+                          onToggle={() => toggleCol(sprint.id, col)}
+                          alignRight={idx >= 7}
+                        />
+                      ))}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>実績</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        {hasAnyFilter && (
+                          <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                            <X style={{ width: 11, height: 11 }} />
+                          </button>
+                        )}
+                        {(hasAnyFilter || sprintSort.col) && (() => {
+                          const filterAtLimit = plan.maxFiltersPerSprint !== null && (filterCounts[sprint.id] ?? 0) >= plan.maxFiltersPerSprint;
+                          return (
+                            <PlanTooltip text="現在のプランではこれ以上作成できません" active={filterAtLimit} placement="bottom-left">
+                              <button
+                                onClick={filterAtLimit ? undefined : async (e) => {
+                                  e.stopPropagation();
+                                  const serialized: Record<string, string[]> = {};
+                                  Object.entries(currentFilters).forEach(([k, v]) => {
+                                    if (v && v.size > 0) serialized[k] = Array.from(v);
+                                  });
+                                  const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
+                                  if (dupTitle) {
+                                    showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
+                                    return;
+                                  }
+                                  setSaveFilterTarget({
+                                    sprintId: sprint.id,
+                                    serializedFilters: serialized,
+                                    sortCol: sprintSort.col,
+                                    sortDir: sprintSort.dir as "asc" | "desc",
+                                  });
+                                }}
+                                title={filterAtLimit ? undefined : "現在の絞り込み・並び替えを保存"}
+                                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: `1px solid ${filterAtLimit ? "rgba(156,163,175,0.30)" : "rgba(5,150,105,0.25)"}`, background: filterAtLimit ? "#F3F4F6" : "#ECFDF5", color: filterAtLimit ? "#9CA3AF" : "#059669", cursor: filterAtLimit ? "not-allowed" : "pointer", padding: 0, flexShrink: 0 }}
+                              >
+                                <Save style={{ width: 11, height: 11 }} />
+                              </button>
+                            </PlanTooltip>
+                          );
+                        })()}
+                      </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                      {hasAnyFilter && (
-                        <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                          <X style={{ width: 11, height: 11 }} />
-                        </button>
-                      )}
-                      {(hasAnyFilter || sprintSort.col) && (() => {
-                        const filterAtLimit = plan.maxFiltersPerSprint !== null && (filterCounts[sprint.id] ?? 0) >= plan.maxFiltersPerSprint;
-                        return (
-                          <PlanTooltip text="現在のプランではこれ以上作成できません" active={filterAtLimit} placement="bottom-left">
-                            <button
-                              onClick={filterAtLimit ? undefined : async (e) => {
-                                e.stopPropagation();
-                                const serialized: Record<string, string[]> = {};
-                                Object.entries(currentFilters).forEach(([k, v]) => {
-                                  if (v && v.size > 0) serialized[k] = Array.from(v);
-                                });
-                                const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
-                                if (dupTitle) {
-                                  showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
-                                  return;
-                                }
-                                setSaveFilterTarget({
-                                  sprintId: sprint.id,
-                                  serializedFilters: serialized,
-                                  sortCol: sprintSort.col,
-                                  sortDir: sprintSort.dir as "asc" | "desc",
-                                });
-                              }}
-                              title={filterAtLimit ? undefined : "現在の絞り込み・並び替えを保存"}
-                              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: `1px solid ${filterAtLimit ? "rgba(156,163,175,0.30)" : "rgba(5,150,105,0.25)"}`, background: filterAtLimit ? "#F3F4F6" : "#ECFDF5", color: filterAtLimit ? "#9CA3AF" : "#059669", cursor: filterAtLimit ? "not-allowed" : "pointer", padding: 0, flexShrink: 0 }}
-                            >
-                              <Save style={{ width: 11, height: 11 }} />
-                            </button>
-                          </PlanTooltip>
-                        );
-                      })()}
-                    </div>
-                  </div>
                   );
                 })()}
               </div>
@@ -880,18 +880,18 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
                     const displayCategory = getCategoryLabel(t);
                     const isHighlighted = t.wbs === targetTicketWbs || highlightedTicketIds.has(t.id) || bulkHighlight.has(t.wbs);
-                    const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? "#F5F5F4" : "#FFFFFF";
+                    const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn") ? "#F5F5F4" : "#FFFFFF";
                     const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
                     const isSel = selectedTicketIds.has(t.id);
 
                     // 🌟 期限日当日の赤文字判定
-                    const isDueAlert = isOverdueOrToday(t.dueDate, t.status, t.progress);
+                    const isDueAlert = isOverdueOrToday(t.dueDate, t.status);
 
                     return (
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           data-wbs={t.wbs}
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.progress === -1 || t.progress === -2) ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn") ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
                           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
                           <SelBox checked={isSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(t.id); }} />
@@ -932,11 +932,11 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
                           {/* 🌟 期限日の表示（当日以降かつ未完了なら赤文字・太字 / 未設定は『—』） */}
                           <div style={{ display: "flex", justifyContent: "center" }}>
-                            <span style={{ 
-                              fontSize: 10, 
-                              color: isDueAlert ? "#DC2626" : "#B0A9A4", 
-                              fontWeight: isDueAlert ? 800 : 400, 
-                              fontFamily: "var(--font-mono)" 
+                            <span style={{
+                              fontSize: 10,
+                              color: isDueAlert ? "#DC2626" : "#B0A9A4",
+                              fontWeight: isDueAlert ? 800 : 400,
+                              fontFamily: "var(--font-mono)"
                             }}>
                               {t.dueDate ? formatDate(t.dueDate) : "—"}
                             </span>
@@ -955,16 +955,16 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           const childCategory = getCategoryLabel(child);
                           const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id) || bulkHighlight.has(child.wbs);
                           const isChildSel = selectedTicketIds.has(child.id);
-                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
-                          
+                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? "#F5F5F4" : "#F9F8F6";
+
                           // 子チケットの期限日赤文字判定
-                          const isChildDueAlert = isOverdueOrToday(child.dueDate, child.status, child.progress);
+                          const isChildDueAlert = isOverdueOrToday(child.dueDate, child.status);
 
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
                               data-wbs={child.wbs}
-                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.progress === -1 || child.progress === -2) ? 0.65 : 1 }}
-                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.progress === -1 || child.progress === -2) ? "#ECECEB" : "#EEF7F3"; }}
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? 0.65 : 1 }}
+                              onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.status === "on-hold" || child.status === "withdrawn") ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
                               <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
                               <div style={{ display: "flex", justifyContent: "center" }}>
