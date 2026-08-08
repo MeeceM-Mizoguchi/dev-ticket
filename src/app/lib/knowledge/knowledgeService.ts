@@ -203,10 +203,12 @@ export async function updateDocumentContent(
   projectId: string,
   newContentRaw: string,
   onProgress?: (p: KnowledgeImportProgress) => void,
+  /** 進捗表示に出す名前。複数件をまとめて更新するときは資料名を渡す */
+  label = "保存処理",
 ): Promise<ImportResult> {
   const db = requireClient();
   const notify = (p: Partial<KnowledgeImportProgress>) =>
-    onProgress?.({ phase: "reading", fileName: "保存処理", done: 0, total: 0, ...p } as KnowledgeImportProgress);
+    onProgress?.({ phase: "reading", fileName: label, done: 0, total: 0, ...p } as KnowledgeImportProgress);
 
   const content = normalizeText(newContentRaw);
   if (content.trim().length === 0) throw new Error("中身が空です");
@@ -317,6 +319,18 @@ export interface ImportResult {
   indexNote?: string;
 }
 
+/** 取り込む中身。ファイル以外（Wiki 等）からも同じ経路を通すための入力 */
+export interface ImportSource {
+  /** 資料名（一覧に出る名前） */
+  title: string;
+  /** ダウンロードしたときのファイル名 */
+  fileName: string;
+  /** 生の Markdown。正規化はこの中で行う */
+  content: string;
+  /** 出所の目印。Wiki 由来は ["wiki", "wiki:<pageId>"] を入れて再取り込み時に見分ける */
+  tags?: string[];
+}
+
 /**
  * Markdown/テキストファイルを取り込む。
  *
@@ -330,19 +344,40 @@ export async function importFile(
   onProgress?: (p: KnowledgeImportProgress) => void,
   folderId?: string | null,
 ): Promise<ImportResult> {
-  const db = requireClient();
-  const notify = (p: Partial<KnowledgeImportProgress>) =>
-    onProgress?.({ phase: "reading", fileName: file.name, done: 0, total: 0, ...p } as KnowledgeImportProgress);
-
   if (file.size > KNOWLEDGE_FILE_MAX_BYTES) {
     throw new Error(`ファイルが大きすぎます（上限 ${Math.round(KNOWLEDGE_FILE_MAX_BYTES / 1024 / 1024)}MB）`);
   }
-
-  // ① 読み取り・正規化
-  notify({ phase: "reading" });
+  onProgress?.({ phase: "reading", fileName: file.name, done: 0, total: 0 });
   const raw = await file.text();
-  const content = normalizeText(raw);
-  if (content.trim().length === 0) throw new Error("中身が空のファイルです");
+  return importSource(
+    { title: file.name.replace(/\.(md|markdown|mdown|mkd|txt)$/i, ""), fileName: file.name, content: raw },
+    projectId, uploadedBy, onProgress, folderId,
+  );
+}
+
+/**
+ * Markdown テキストを新しい資料として取り込む。
+ * ファイル取り込みの実体でもあり、Wiki からの取り込みもここを通る。
+ */
+export async function importSource(
+  src: ImportSource,
+  projectId: string,
+  uploadedBy: string,
+  onProgress?: (p: KnowledgeImportProgress) => void,
+  folderId?: string | null,
+): Promise<ImportResult> {
+  const db = requireClient();
+  const notify = (p: Partial<KnowledgeImportProgress>) =>
+    onProgress?.({ phase: "reading", fileName: src.fileName, done: 0, total: 0, ...p } as KnowledgeImportProgress);
+
+  // ① 正規化
+  notify({ phase: "reading" });
+  const content = normalizeText(src.content);
+  if (content.trim().length === 0) throw new Error("中身が空です");
+  const byteSize = new Blob([content]).size;
+  if (byteSize > KNOWLEDGE_FILE_MAX_BYTES) {
+    throw new Error(`本文が大きすぎます（上限 ${Math.round(KNOWLEDGE_FILE_MAX_BYTES / 1024 / 1024)}MB）`);
+  }
   const contentHash = await hashContent(content);
 
   // 同一内容の重複投入を弾く
@@ -363,16 +398,16 @@ export async function importFile(
 
   // ③ 本文の保存（ここまで終われば全文検索は効く）
   notify({ phase: "saving", total: drafts.length });
-  const title = file.name.replace(/\.(md|markdown|mdown|mkd|txt)$/i, "");
   const { data: docRow, error: docErr } = await db
     .from("knowledge_documents")
     .insert({
       project_id: projectId,
-      title,
-      file_name: file.name,
+      title: src.title,
+      file_name: src.fileName,
       content,
       content_hash: contentHash,
-      byte_size: file.size,
+      byte_size: byteSize,
+      tags: src.tags ?? [],
       chunk_count: drafts.length,
       uploaded_by: uploadedBy,
       folder_id: folderId ?? null,
@@ -438,6 +473,89 @@ export async function importFile(
     notify({ phase: "error", message });
     return { documentId, chunkCount: drafts.length, indexed: false, indexNote: message };
   }
+}
+
+// ── Wiki からの取り込み ──────────────────────────────────────
+// Wiki の本文は TipTap の HTML。ナレッジノートは Markdown を前提に
+// 「見出しで分割 → 検索 → 見出しを辿って読む」を組んでいるので、
+// 画面側で Markdown に変換したものをここへ渡す（htmlDocToMarkdown）。
+
+/**
+ * Wiki ページ由来の資料に付ける目印。
+ *
+ * 出所を持つ列は無いので tags（元々空で未使用）に入れる。
+ * 資料名での突き合わせにしないのは、たまたま同名の別資料を
+ * 上書きしてしまう事故を避けるため。
+ */
+export function wikiSourceTag(pageId: string): string {
+  return `wiki:${pageId}`;
+}
+
+/** Wiki ページ由来の資料をダウンロードしたときのファイル名 */
+export function wikiFileName(title: string): string {
+  const safe = (title || "wiki").replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim() || "wiki";
+  return `${safe}.md`;
+}
+
+export interface WikiImportInput {
+  pageId: string;
+  title: string;
+  /** htmlDocToMarkdown で変換済みの本文 */
+  markdown: string;
+}
+
+export interface WikiImportOutcome extends ImportResult {
+  /** 既に取り込み済みのページを更新した */
+  updated: boolean;
+  /** 取り込み済みで、かつ Wiki 側に変更が無かった（何もしていない） */
+  unchanged: boolean;
+}
+
+/**
+ * Wiki ページを取り込む。同じページを取り込み済みなら新しく作らずに更新する。
+ * 中身が前回と同じなら何もしない（再チャンク・再ベクトル化はコストが高い）。
+ */
+export async function importWikiPage(
+  input: WikiImportInput,
+  projectId: string,
+  uploadedBy: string,
+  onProgress?: (p: KnowledgeImportProgress) => void,
+  folderId?: string | null,
+): Promise<WikiImportOutcome> {
+  const db = requireClient();
+  const tag = wikiSourceTag(input.pageId);
+  const fileName = wikiFileName(input.title);
+
+  const { data: existing, error } = await db
+    .from("knowledge_documents")
+    .select("id, content_hash, indexed_at")
+    .eq("project_id", projectId)
+    .contains("tags", [tag])
+    .limit(1);
+  if (error) throw new Error(error.message);
+
+  const prev = existing && existing.length > 0 ? (existing[0] as any) : null;
+  if (!prev) {
+    const res = await importSource(
+      { title: input.title, fileName, content: input.markdown, tags: ["wiki", tag] },
+      projectId, uploadedBy, onProgress, folderId,
+    );
+    return { ...res, updated: false, unchanged: false };
+  }
+
+  const nextHash = await hashContent(normalizeText(input.markdown));
+  if (nextHash === prev.content_hash) {
+    // 資料名だけは Wiki 側の見出しに追従させる
+    await db.from("knowledge_documents").update({ title: input.title, file_name: fileName }).eq("id", prev.id);
+    return {
+      documentId: prev.id, chunkCount: 0, indexed: !!prev.indexed_at,
+      updated: true, unchanged: true,
+    };
+  }
+
+  const res = await updateDocumentContent(prev.id, projectId, input.markdown, onProgress, input.title);
+  await db.from("knowledge_documents").update({ title: input.title, file_name: fileName }).eq("id", prev.id);
+  return { ...res, updated: true, unchanged: false };
 }
 
 /**
