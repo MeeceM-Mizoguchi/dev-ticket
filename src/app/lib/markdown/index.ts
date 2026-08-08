@@ -3,10 +3,13 @@
 export type { MdBlock, MdInline, MdListItem } from "./types";
 export { looksLikeMarkdown, parseMarkdown, parseInline } from "./parse";
 export { mdBlocksToHtml } from "./toHtml";
+export { mdBlocksToMarkdown } from "./toMarkdown";
 export { htmlToBlocks, hasRichBlocks } from "./fromHtml";
 
 import { looksLikeMarkdown, parseMarkdown } from "./parse";
 import { mdBlocksToHtml } from "./toHtml";
+import { mdBlocksToMarkdown } from "./toMarkdown";
+import { htmlToBlocks } from "./fromHtml";
 
 /** 極端に長い貼り付けは変換しない（解析コストと事故を避ける） */
 export const MD_MAX_LENGTH = 200_000;
@@ -32,4 +35,16 @@ export function markdownFileToHtml(text: string): string | null {
   const blocks = parseMarkdown(text);
   if (!blocks.length) return null;
   return mdBlocksToHtml(blocks);
+}
+
+/**
+ * 記事本文の HTML（TipTap が保存した Wiki / 議事録の content）を Markdown にする。
+ *
+ * helpers.ts の htmlToMarkdown とは別物。あちらは要約・プレビュー用で、
+ * 画像・リンク・h4以降・mermaid が落ちる。こちらは IR を経由するため
+ * 「Markdown として保存し、あとで読み戻す」用途に使える。
+ */
+export function htmlDocToMarkdown(html: string | null | undefined): string {
+  if (!html || !html.trim()) return "";
+  return mdBlocksToMarkdown(htmlToBlocks(html));
 }

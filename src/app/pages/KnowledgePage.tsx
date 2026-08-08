@@ -29,12 +29,15 @@ import type {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { FolderNameDialog } from "@/app/components/knowledge/FolderNameDialog";
+import { WikiImportDialog } from "@/app/components/knowledge/WikiImportDialog";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { markdownFileToHtml } from "@/app/lib/markdown";
 import {
   listDocuments, getDocument, importFile, deleteDocument, indexDocument, search,
   listFolders, createFolder, renameFolder, deleteFolder, moveDocument,
-  isKnowledgeFile, isSetupMissingError, downloadFileName,
+  isKnowledgeFile, isSetupMissingError, downloadFileName, importWikiPage,
   KNOWLEDGE_FILE_ACCEPT, KNOWLEDGE_FILE_MAX_BYTES, updateDocumentContent,
+  type WikiImportInput,
 } from "@/app/lib/knowledge/knowledgeService";
 import { downloadBlob } from "@/app/lib/articleExport/download";
 import { warmup, onModelDownload, getUnavailableReason } from "@/app/lib/knowledge/embed";
@@ -288,6 +291,9 @@ export function KnowledgePage() {
   const [importTargetFolder, setImportTargetFolder] = useState<string | null>(null);
   // フォルダ名の入力ダイアログ。null = 閉じている
   const [folderDialog, setFolderDialog] = useState<{ mode: "create" | "rename"; target?: KnowledgeFolder } | null>(null);
+  // Wiki から取り込むダイアログ。null = 閉じている（開くときの取り込み先フォルダを持つ）
+  const [wikiDialog, setWikiDialog] = useState<{ folderId: string | null } | null>(null);
+  const [wikiImporting, setWikiImporting] = useState(false);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -508,6 +514,19 @@ export function KnowledgePage() {
 
   const checkedIds = useMemo(() => [...checked].filter(id => docs.some(d => d.id === id)), [checked, docs]);
 
+  /**
+   * 既に取り込んである Wiki 記事のID。
+   * 出所を持つ列は無いので、資料の tags に入れた "wiki:<記事ID>" から拾う。
+   */
+  const importedWikiPageIds = useMemo(() => {
+    const ids = new Set<string>();
+    docs.forEach(d => d.tags.forEach(t => { if (t.startsWith("wiki:")) ids.add(t.slice(5)); }));
+    return ids;
+  }, [docs]);
+
+  // Wiki を見られない人には「Wiki から追加」を出さない（見られない中身を取り込めてしまう）
+  const canUseWiki = effectiveWikiPerm !== "none";
+
   // ── 操作 ────────────────────────────────────────────────────
   const toggleDoc = (id: string) =>
     setChecked(prev => {
@@ -549,6 +568,51 @@ export function KnowledgePage() {
     setProgress(null);
     await load();
   }, [project, docs.length, plan.maxKnowledgeDocsPerProject, isLimitReached, userName, toast, load]);
+
+  /**
+   * Wiki の記事を資料として取り込む。
+   *
+   * 既に取り込んだ記事は新しく作らずに更新する（同じ記事が2件並ぶのを避ける）。
+   * 出所は資料の tags に "wiki:<記事ID>" として残していて、それで見分けている。
+   */
+  const runWikiImport = useCallback(async (pages: WikiImportInput[], folderId: string | null) => {
+    if (!project) return;
+    // 新しく増える件数だけをプランの上限と突き合わせる（更新は増えない）
+    const adding = pages.filter(p => !importedWikiPageIds.has(p.pageId)).length;
+    if (adding > 0 && isLimitReached(plan.maxKnowledgeDocsPerProject, docs.length + adding - 1)) {
+      toast(`このプランで登録できる資料は ${plan.maxKnowledgeDocsPerProject} 件までです`, "error");
+      return;
+    }
+
+    setWikiImporting(true);
+    let added = 0, updated = 0, skipped = 0, failed = 0;
+    let lastError = "";
+    for (const page of pages) {
+      try {
+        const res = await importWikiPage(page, project.id, userName, setProgress, folderId);
+        if (res.unchanged) skipped++;
+        else if (res.updated) updated++;
+        else added++;
+      } catch (e) {
+        if (isSetupMissingError(e)) { setSetupRequired(true); break; }
+        failed++;
+        lastError = e instanceof Error ? e.message : "取り込みに失敗しました";
+      }
+    }
+    setProgress(null);
+    setWikiImporting(false);
+    setWikiDialog(null);
+
+    const parts: string[] = [];
+    if (added) parts.push(`${added} 件を追加`);
+    if (updated) parts.push(`${updated} 件を更新`);
+    if (skipped) parts.push(`${skipped} 件は変更なし`);
+    if (failed) parts.push(`${failed} 件は失敗`);
+    if (parts.length > 0) {
+      toast(`Wiki から ${parts.join(" / ")}しました${failed && lastError ? `（${lastError}）` : ""}`, failed ? "error" : "success");
+    }
+    await load();
+  }, [project, docs.length, importedWikiPageIds, plan.maxKnowledgeDocsPerProject, isLimitReached, userName, toast, load]);
 
   /**
    * 取り込んだ本文を Markdown ファイルとして取り出す。
@@ -959,10 +1023,26 @@ export function KnowledgePage() {
                   style={{ display: "flex", alignItems: "center", padding: "5px 7px", background: "#fff", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 7, cursor: "pointer", color: "#6B6458" }}>
                   <FolderPlus style={{ width: 13, height: 13 }} />
                 </button>
-                <button onClick={() => { setImportTargetFolder(null); fileInputRef.current?.click(); }} title="資料を追加"
-                  style={{ display: "flex", alignItems: "center", gap: 3, padding: "5px 9px", background: "#059669", color: "#fff", fontSize: 11.5, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer" }}>
-                  <Upload style={{ width: 11, height: 11 }} />追加
-                </button>
+                {/* 追加の入口は2つ（MDファイル / Wiki）。ボタンを増やさずメニューにまとめる */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button title="資料を追加"
+                      style={{ display: "flex", alignItems: "center", gap: 3, padding: "5px 9px", background: "#059669", color: "#fff", fontSize: 11.5, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer" }}>
+                      <Upload style={{ width: 11, height: 11 }} />追加
+                      <ChevronDown style={{ width: 11, height: 11 }} />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => { setImportTargetFolder(null); fileInputRef.current?.click(); }}>
+                      <Upload style={{ width: 15, height: 15 }} />
+                      MDファイルをアップロード
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setWikiDialog({ folderId: null })} disabled={!canUseWiki}>
+                      <BookOpen style={{ width: 15, height: 15 }} />
+                      Wiki から追加
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             )}
           </div>
@@ -977,6 +1057,11 @@ export function KnowledgePage() {
               <div style={{ textAlign: "center", padding: "26px 10px", color: "#A09790" }}>
                 <Upload style={{ width: 20, height: 20, marginBottom: 8 }} />
                 <div style={{ fontSize: 12, lineHeight: 1.7 }}>.md をここに<br />ドラッグ＆ドロップ</div>
+                {canManage && canUseWiki && (
+                  <div style={{ fontSize: 11, lineHeight: 1.7, marginTop: 8, color: "#C4BDB6" }}>
+                    「追加」から Wiki の<br />記事も取り込めます
+                  </div>
+                )}
               </div>
             ) : (
               <>
@@ -1015,10 +1100,24 @@ export function KnowledgePage() {
                         </button>
                         {canManage && (
                           <>
-                            <button onClick={() => { setImportTargetFolder(f.id); fileInputRef.current?.click(); }} title="このフォルダに追加"
-                              style={{ background: "none", border: "none", cursor: "pointer", color: "#C4BDB6", padding: 0 }}>
-                              <Upload style={{ width: 11, height: 11 }} />
-                            </button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button title="このフォルダに追加"
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: "#C4BDB6", padding: 0, display: "flex" }}>
+                                  <Upload style={{ width: 11, height: 11 }} />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onSelect={() => { setImportTargetFolder(f.id); fileInputRef.current?.click(); }}>
+                                  <Upload style={{ width: 15, height: 15 }} />
+                                  MDファイルをアップロード
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => setWikiDialog({ folderId: f.id })} disabled={!canUseWiki}>
+                                  <BookOpen style={{ width: 15, height: 15 }} />
+                                  Wiki から追加
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                             <button onClick={() => setFolderDialog({ mode: "rename", target: f })} title="名前を変更"
                               style={{ background: "none", border: "none", cursor: "pointer", color: "#C4BDB6", padding: 0 }}>
                               <Pencil style={{ width: 11, height: 11 }} />
@@ -1395,6 +1494,18 @@ export function KnowledgePage() {
           existingNames={folders.filter(f => f.id !== folderDialog.target?.id).map(f => f.name)}
           onSubmit={submitFolderName}
           onClose={() => setFolderDialog(null)}
+        />
+      )}
+
+      {wikiDialog && project && (
+        <WikiImportDialog
+          projectId={project.id}
+          folders={folders}
+          defaultFolderId={wikiDialog.folderId}
+          importedPageIds={importedWikiPageIds}
+          busy={wikiImporting}
+          onClose={() => { if (!wikiImporting) setWikiDialog(null); }}
+          onSubmit={runWikiImport}
         />
       )}
 
