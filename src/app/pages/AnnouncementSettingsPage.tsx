@@ -4,6 +4,7 @@ import { Navigate } from "react-router";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
+import { submitOnModEnter } from "@/app/lib/submitKey";
 import type { Announcement, AnnouncementItem } from "@/app/types";
 
 const MAX_ITEMS = 3;
@@ -386,6 +387,7 @@ export function AnnouncementSettingsPage() {
               <textarea
                 value={item.description}
                 onChange={e => setItems(prev => prev.map((it, i) => i === idx ? { ...it, description: e.target.value } : it))}
+                onKeyDown={submitOnModEnter(() => { if (!saving && title.trim()) void handleSave(); })}
                 placeholder="説明を入力..."
                 rows={3}
                 style={{ flexShrink: 0, width: "100%", padding: "7px 10px", fontSize: 12, border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, outline: "none", resize: "none" as const, color: "#1A1714", background: "#fff", fontFamily: "inherit", boxSizing: "border-box" as const, lineHeight: 1.6 }}

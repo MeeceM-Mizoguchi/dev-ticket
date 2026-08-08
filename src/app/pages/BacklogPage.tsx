@@ -345,12 +345,12 @@ export function BacklogPage() {
   const scheduleSave = useCallback((patch: {
     title?: string; description?: string; priority?: Priority;
     status?: BacklogStatus; assignee?: string; estimatedHours?: number; categoryId?: string | null;
-  }) => {
+  }, immediate = false) => {
     if (!selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const titleChanged = patch.title !== undefined && items.find(i => i.id === selectedId)?.title !== patch.title;
     const pid = project?.id;
-    saveTimer.current = setTimeout(async () => {
+    const run = async () => {
       const updateData: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (patch.title !== undefined) updateData.title = patch.title;
       if (patch.description !== undefined) updateData.description = patch.description;
@@ -363,7 +363,10 @@ export function BacklogPage() {
       setItems(prev => prev.map(i => i.id === selectedId ? { ...i, ...patch } : i));
       // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
       if (titleChanged) emitLinkItemsChanged(pid, "backlog");
-    }, 600);
+    };
+    // ⌘/Ctrl + Enter の確定は自動保存(600ms待ち)を待たずに即書き込む
+    if (immediate) void run();
+    else saveTimer.current = setTimeout(run, 600);
   }, [selectedId, items, project?.id]);
 
   const handleImagesChange = useCallback(async (next: string[]) => {
@@ -656,6 +659,7 @@ export function BacklogPage() {
                   value={editDescription}
                   readOnly={!itemCanEdit}
                   onChange={v => { setEditDescription(v); scheduleSave({ description: v }); }}
+                  onSubmit={() => { if (itemCanEdit) scheduleSave({ description: editDescription }, true); }}
                   placeholder="背景や要件を入力..."
                   members={project?.members ?? []}
                   minHeight={120}

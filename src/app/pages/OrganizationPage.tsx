@@ -510,7 +510,7 @@ function OrgFormDialog({ org, plans, onClose, onSaved }: { org?: OrgWithStats; p
         <FieldInput label="住所" placeholder="例: 東京都渋谷区〇〇 1-2-3" value={address} onChange={setAddress} />
       </div>
 
-      <FieldTextarea label="概要・備考" placeholder="組織の概要や備考を入力..." value={description} onChange={setDescription} />
+      <FieldTextarea label="概要・備考" placeholder="組織の概要や備考を入力..." value={description} onChange={setDescription} onSubmit={() => { if (!saving && name.trim()) void handleSave(); }} />
 
       {/* システム管理会社フラグ（Meece）。ONにした組織のメンバーだけがバージョン履歴を閲覧できる */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", background: isSystemAdmin ? "#ECFDF5" : "#F8F8F7", border: `1px solid ${isSystemAdmin ? "rgba(5,150,105,0.25)" : "rgba(26,23,20,0.08)"}`, borderRadius: 10 }}>

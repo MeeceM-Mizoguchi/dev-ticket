@@ -513,19 +513,22 @@ export function WikiPage() {
     navigate(`/${slug}/wiki/folders/${targetFolderId}`);
   }, [projectSlug, navigate]);
 
-  const scheduleSave = useCallback((nextTitle: string, nextContent: string) => {
+  const scheduleSave = useCallback((nextTitle: string, nextContent: string, immediate = false) => {
     if (!selectedId || loading) return; // 🌟 修正: 読み込み完了前は自動保存をガード
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const titleChanged = pages.find(p => p.id === selectedId)?.title !== nextTitle;
     const pid = project?.id;
-    saveTimer.current = setTimeout(async () => {
+    const run = async () => {
       await supabase!.from("wiki_pages").update({
         title: nextTitle, content: nextContent, updated_by: userName || null, updated_at: new Date().toISOString(),
       }).eq("id", selectedId);
       setPages(prev => prev.map(p => p.id === selectedId ? { ...p, title: nextTitle, content: nextContent } : p));
       // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
       if (titleChanged) emitLinkItemsChanged(pid, "wiki");
-    }, 600);
+    };
+    // ⌘/Ctrl + Enter の確定は自動保存(600ms待ち)を待たずに即書き込む
+    if (immediate) void run();
+    else saveTimer.current = setTimeout(run, 600);
   }, [selectedId, userName, loading, pages, project?.id]);
 
   const handleTreeItemRename = useCallback(async (id: string, nextTitle: string) => {
@@ -914,6 +917,7 @@ export function WikiPage() {
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "12px 20px 16px", display: "flex", flexDirection: "column" }}>
                 <RichEditor value={content} readOnly={!canEdit}
                   onChange={v => { setContent(v); scheduleSave(title, v); }}
+                  onSubmit={() => { if (canEdit) scheduleSave(title, content, true); }}
                   placeholder="ページの内容を入力..." minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
                   members={suggest.members}

@@ -423,6 +423,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (error) console.error("[ticket_required_skills] insert failed:", error.message);
   };
 
+  // ⌘(Mac) / Ctrl(Windows) + Enter で「作成する」。保存中の二重送信は弾く
+  const submitByShortcut = () => { if (!saving) void handleSave(); };
+
   const handleSave = async () => {
     let valid = true;
     if (needsSelection && !selectedProjectId) { setProjectError(true); valid = false; }
@@ -977,7 +980,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
           <div>
             <label className={labelCls}>詳細</label>
-            <RichEditor value={description} onChange={setDescription} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} />
+            <RichEditor value={description} onChange={setDescription} onSubmit={submitByShortcut} placeholder="チケットの詳細説明、要件、受け入れ条件などを入力..." minHeight={300} maxHeight={300} members={currentProjectMembers} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onBacklogClick={id => openPreview("backlog", id)} onWikiClick={id => openPreview("wiki", id)} onMinuteClick={id => openPreview("minute", id)} onFileClick={id => openPreview("file", id)} />
           </div>
 
           <div>

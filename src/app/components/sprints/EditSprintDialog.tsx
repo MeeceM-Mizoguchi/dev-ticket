@@ -83,7 +83,7 @@ export function EditSprintDialog({ sprint, otherSprints = [], onClose, onUpdated
           </p>
         )}
       </div>
-      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} />
+      <FieldTextarea label="ゴール" placeholder="このスプリントで達成するゴールを入力..." value={goal} onChange={setGoal} onSubmit={() => { if (!saving && canSave) void handleSave(); }} />
       <div className="grid grid-cols-2 gap-3">
         <DatePicker label="開始日" value={startDate} onChange={setStartDate} placeholder="年/月/日" />
         <DatePicker label="終了日" value={endDate} onChange={setEndDate} placeholder="年/月/日" min={startDate || undefined} />

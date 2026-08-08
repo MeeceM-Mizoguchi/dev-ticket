@@ -217,12 +217,12 @@ export function MinutesPage() {
     setExternalInput("");
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const scheduleSave = useCallback((patch: Partial<{ title: string; meetingDate: string; attendees: string[]; content: string }>) => {
+  const scheduleSave = useCallback((patch: Partial<{ title: string; meetingDate: string; attendees: string[]; content: string }>, immediate = false) => {
     if (!selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const titleChanged = patch.title !== undefined && minutes.find(m => m.id === selectedId)?.title !== patch.title;
     const pid = project?.id;
-    saveTimer.current = setTimeout(async () => {
+    const run = async () => {
       await supabase!.from("meeting_minutes").update({
         title: patch.title, meeting_date: patch.meetingDate, attendees: patch.attendees, content: patch.content,
         updated_at: new Date().toISOString(),
@@ -230,7 +230,10 @@ export function MinutesPage() {
       setMinutes(prev => prev.map(m => m.id === selectedId ? { ...m, ...patch } as MeetingMinute : m));
       // タイトルが変わったときだけ、他タブのサジェスト表示名を更新させる
       if (titleChanged) emitLinkItemsChanged(pid, "minute");
-    }, 600);
+    };
+    // ⌘/Ctrl + Enter の確定は自動保存(600ms待ち)を待たずに即書き込む
+    if (immediate) void run();
+    else saveTimer.current = setTimeout(run, 600);
   }, [selectedId, minutes, project?.id]);
 
   const handleImagesChange = useCallback(async (next: string[]) => {
@@ -464,6 +467,7 @@ export function MinutesPage() {
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "12px 20px 16px", display: "flex", flexDirection: "column" }}>
                 <RichEditor value={content} readOnly={!canEdit}
                   onChange={v => { setContent(v); scheduleSave({ title, meetingDate, attendees, content: v }); }}
+                  onSubmit={() => { if (canEdit) scheduleSave({ title, meetingDate, attendees, content }, true); }}
                   placeholder="議事内容を入力..." members={project?.members ?? []} minHeight={120}
                   style={{ flex: 1, minHeight: 0 }}
                   tickets={suggest.tickets}

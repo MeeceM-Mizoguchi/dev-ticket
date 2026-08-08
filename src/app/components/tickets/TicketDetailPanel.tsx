@@ -880,49 +880,57 @@ export function TicketDetailPanel({
     timerRef.current = setTimeout(() => save(fields), 1200);
   }, [save]);
 
+  const saveDescriptionNow = useCallback(async (v: string) => {
+    if (!ticket || !isSupabaseEnabled) return;
+    await supabase!.from("sprint_tickets").update({ description: v }).eq("id", ticket.id);
+    onUpdated?.();
+    emitMine();
+    const stripped = v.replace(/<[^>]*>/g, " ");
+    const prevStripped = prevDescRef.current.replace(/<[^>]*>/g, " ");
+    const ctx = "description";
+    if (!notifiedMentionsRef.current.has(ctx)) notifiedMentionsRef.current.set(ctx, new Set());
+    const alreadyNotified = notifiedMentionsRef.current.get(ctx)!;
+    if (!projectSlug) { prevDescRef.current = v; return; }
+    const newlyMentioned = memberNamesRef.current.filter(name =>
+      name !== userName && stripped.includes(`@${name}`) && !prevStripped.includes(`@${name}`) && !alreadyNotified.has(name)
+    );
+    for (const name of newlyMentioned) {
+      alreadyNotified.add(name);
+      const { error } = await supabase!.from("notifications").insert({
+        user_name: name,
+        type: "mention",
+        title: `${userName}さんにメンションされました`,
+        body: `${ticket.wbs}: ${ticket.title}（チケット詳細）`,
+        ticket_id: ticket.id,
+        ticket_wbs: ticket.wbs,
+        ticket_title: ticket.title,
+        project_slug: projectSlug,
+        is_read: false,
+      });
+      if (error) console.error("[mention] description notification insert failed:", error.message);
+    }
+    if (newlyMentioned.length > 0) {
+      const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
+      fireSlackNotify({
+        recipientUserNames: newlyMentioned,
+        projectSlug,
+        title: `${userName}さんにメンションされました`,
+        body: `<${ticketUrl}|${ticket.wbs}: ${ticket.title}>（チケット詳細）`,
+      });
+    }
+    prevDescRef.current = v;
+  }, [save, ticket?.id, projectSlug, userName]); // eslint-disable-line
+
   const saveDescriptionDebounced = useCallback((v: string) => {
     clearTimeout(descTimerRef.current);
-    descTimerRef.current = setTimeout(async () => {
-      if (!ticket || !isSupabaseEnabled) return;
-      await supabase!.from("sprint_tickets").update({ description: v }).eq("id", ticket.id);
-      onUpdated?.();
-      emitMine();
-      const stripped = v.replace(/<[^>]*>/g, " ");
-      const prevStripped = prevDescRef.current.replace(/<[^>]*>/g, " ");
-      const ctx = "description";
-      if (!notifiedMentionsRef.current.has(ctx)) notifiedMentionsRef.current.set(ctx, new Set());
-      const alreadyNotified = notifiedMentionsRef.current.get(ctx)!;
-      if (!projectSlug) { prevDescRef.current = v; return; }
-      const newlyMentioned = memberNamesRef.current.filter(name =>
-        name !== userName && stripped.includes(`@${name}`) && !prevStripped.includes(`@${name}`) && !alreadyNotified.has(name)
-      );
-      for (const name of newlyMentioned) {
-        alreadyNotified.add(name);
-        const { error } = await supabase!.from("notifications").insert({
-          user_name: name,
-          type: "mention",
-          title: `${userName}さんにメンションされました`,
-          body: `${ticket.wbs}: ${ticket.title}（チケット詳細）`,
-          ticket_id: ticket.id,
-          ticket_wbs: ticket.wbs,
-          ticket_title: ticket.title,
-          project_slug: projectSlug,
-          is_read: false,
-        });
-        if (error) console.error("[mention] description notification insert failed:", error.message);
-      }
-      if (newlyMentioned.length > 0) {
-        const ticketUrl = `${window.location.origin}/${projectSlug}/${ticket.wbs}`;
-        fireSlackNotify({
-          recipientUserNames: newlyMentioned,
-          projectSlug,
-          title: `${userName}さんにメンションされました`,
-          body: `<${ticketUrl}|${ticket.wbs}: ${ticket.title}>（チケット詳細）`,
-        });
-      }
-      prevDescRef.current = v;
-    }, 1200);
-  }, [save, ticket?.id, projectSlug, userName]); // eslint-disable-line
+    descTimerRef.current = setTimeout(() => { void saveDescriptionNow(v); }, 1200);
+  }, [saveDescriptionNow]);
+
+  // ⌘/Ctrl + Enter は自動保存(1.2秒待ち)を待たずに即座に確定させる
+  const saveDescriptionImmediate = useCallback((v: string) => {
+    clearTimeout(descTimerRef.current);
+    void saveDescriptionNow(v);
+  }, [saveDescriptionNow]);
 
   useEffect(() => {
     if (!anchor || anchor === anchorScrolledRef.current) return;
@@ -1833,6 +1841,15 @@ export function TicketDetailPanel({
     setComments(prev => prev.map(c => c.id === id ? { ...c, content: editContent, images: editImages } : c));
     setEditingId(null);
     setEditImages([]);
+  };
+
+  // ⌘/Ctrl + Enter からの返信確定。返信欄は通常フロー／レビューフローの2箇所で描画されるので共通化する
+  const submitReply = (parent: TicketComment) => {
+    if (!replyText.trim()) return;
+    void (async () => {
+      await addReply(parent, replyText, replyImages);
+      setReplyingToId(null); setReplyText(""); setReplyImages([]);
+    })();
   };
 
   const handleDeleteSourceFile = async (id: string) => {
@@ -2934,7 +2951,7 @@ export function TicketDetailPanel({
                 <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
               </div>
               <div id="panel-description-section">
-                <RichEditor value={description} readOnly={!canEdit} onChange={v => { if (canEdit) { setDescription(v); saveDescriptionDebounced(v); } }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                <RichEditor value={description} readOnly={!canEdit} onChange={v => { if (canEdit) { setDescription(v); saveDescriptionDebounced(v); } }} onSubmit={() => { if (canEdit) saveDescriptionImmediate(description); }} placeholder="チケットの詳細説明、要件、受け入れ条件..." minHeight={300} maxHeight={300} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
               </div>
               {canEdit && (
                 <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1.5px dashed ${imageDragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.10)"}`, borderRadius: 9, cursor: "pointer", background: imageDragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", marginTop: 8, transition: "border-color 0.15s, background 0.15s" }}>
@@ -3208,7 +3225,7 @@ export function TicketDetailPanel({
                       <div style={{ marginBottom: 10 }}>
                         <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>レビュー依頼内容</p>
                         <div style={{ opacity: status === "in-review" ? 0.6 : 1, pointerEvents: status === "in-review" ? "none" : "auto" }}>
-                          <RichEditor value={reviewContent} onChange={setReviewContent} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                          <RichEditor value={reviewContent} onChange={setReviewContent} onSubmit={() => { if (canSendReview) void handleReviewRequest(); }} placeholder="レビューしてほしい内容・確認ポイントを入力..." minHeight={80} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                         </div>
                       </div>
                       {fileDragOver && (
@@ -3371,7 +3388,7 @@ export function TicketDetailPanel({
                           </div>
                           {editingId === c.id ? (
                             <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                              <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                              <RichEditor value={editContent} onChange={setEditContent} onSubmit={() => void handleSaveEdit(c.id)} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                               {editImages.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                   {editImages.map((img, i) => (
@@ -3467,7 +3484,7 @@ export function TicketDetailPanel({
                                 </div>
                                 {editingId === reply.id ? (
                                   <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                    <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                                    <RichEditor value={editContent} onChange={setEditContent} onSubmit={() => void handleSaveEdit(reply.id)} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                     {editImages.length > 0 && (
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                         {editImages.map((img, i) => (
@@ -3566,7 +3583,7 @@ export function TicketDetailPanel({
                           <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                             <Avatar name={userName} size="xs" />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                              <RichEditor value={replyText} onChange={setReplyText} onSubmit={() => submitReply(c)} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                               {replyImages.length > 0 && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                   {replyImages.map((img, i) => (
@@ -3701,7 +3718,7 @@ export function TicketDetailPanel({
 
                         {editingId === c.id ? (
                           <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                            <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                            <RichEditor value={editContent} onChange={setEditContent} onSubmit={() => void handleSaveEdit(c.id)} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                             {editImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {editImages.map((img, i) => (
@@ -3813,7 +3830,7 @@ export function TicketDetailPanel({
                               </div>
                               {editingId === reply.id ? (
                                 <div onPaste={e => pasteImage(e, setEditImages, `tickets/${ticket.id}/comments`)}>
-                                  <RichEditor value={editContent} onChange={setEditContent} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                                  <RichEditor value={editContent} onChange={setEditContent} onSubmit={() => void handleSaveEdit(reply.id)} minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                                   {editImages.length > 0 && (
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                       {editImages.map((img, i) => (
@@ -3911,7 +3928,7 @@ export function TicketDetailPanel({
                         <div id={`reply-form-${c.id}`} onPaste={e => pasteImage(e, setReplyImages, `tickets/${ticket.id}/comments`)} style={{ display: "flex", gap: 8, marginTop: 10, paddingLeft: 12, borderLeft: "2px solid rgba(26,23,20,0.07)" }}>
                           <Avatar name={userName} size="xs" />
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <RichEditor value={replyText} onChange={setReplyText} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                            <RichEditor value={replyText} onChange={setReplyText} onSubmit={() => submitReply(c)} placeholder="返信を入力..." minHeight={60} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                             {replyImages.length > 0 && (
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {replyImages.map((img, i) => (
@@ -3962,7 +3979,7 @@ export function TicketDetailPanel({
                     <StatusBadge status={status} />
                   </div>
                 </div>
-                <RichEditor value={commentText} onChange={setCommentText} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
+                <RichEditor value={commentText} onChange={setCommentText} onSubmit={() => void handleAddComment()} placeholder="コメントを入力..." minHeight={72} members={projectMemberNames.length > 0 ? [...new Set([...projectMemberNames, ...adminMemberNames])] : memberNames} tickets={projectTickets} backlogItems={projectBacklogItems} wikiItems={projectWikiItems} minuteItems={projectMinuteItems} fileItems={projectFileItems} onTicketClick={handleTicketMentionClick} onBacklogClick={handleBacklogMentionClick} onWikiClick={handleWikiMentionClick} onMinuteClick={handleMinuteMentionClick} onFileClick={handleFileMentionClick} />
                 {commentImages.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                     {commentImages.map((img, i) => (

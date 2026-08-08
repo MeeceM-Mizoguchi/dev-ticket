@@ -8,6 +8,7 @@ import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { inputCls, labelCls } from "@/app/lib/helpers";
+import { submitOnModEnter } from "@/app/lib/submitKey";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 const MAX_ENV_MEMOS = 10;
@@ -162,6 +163,7 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
                       placeholder="例: admin / password123&#10;本番DBに直接接続しているので注意"
                       value={memo.memo ?? ""}
                       onChange={e => updateMemo(idx, "memo", e.target.value)}
+                      onKeyDown={submitOnModEnter(() => { if (!saving) void handleSave(); })}
                       rows={2}
                       style={{ resize: "vertical", minHeight: 48, fontFamily: "inherit" }}
                     />
