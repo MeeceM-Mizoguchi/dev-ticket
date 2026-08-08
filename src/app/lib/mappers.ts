@@ -1,4 +1,29 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
+
+// ── ENHA2-032 タスク ──
+// shares は一覧では引かない（詳細を開いたときだけ埋める）ので既定は空配列。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapTask(r: any): Task {
+  return {
+    id: r.id, ownerId: r.owner_id || "", createdBy: r.created_by || "",
+    projectId: r.project_id ?? null, parentId: r.parent_id ?? null,
+    title: r.title || "", description: r.description || "", category: r.category || "",
+    status: r.status || "todo", priority: r.priority || "medium",
+    assignee: r.assignee || "",
+    startDate: r.start_date || "", dueDate: r.due_date || "",
+    ticketId: r.ticket_id ?? null, ticketWbs: r.ticket_wbs || "",
+    sortOrder: Number(r.sort_order ?? 0),
+    completedAt: r.completed_at ?? null,
+    createdAt: r.created_at || "", updatedAt: r.updated_at || "",
+    shares: Array.isArray(r.task_shares) ? r.task_shares.map(mapTaskShare) : [],
+  };
+}
+
+// profiles を埋め込み select した場合は r.profiles に名前が入る
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapTaskShare(r: any): TaskShare {
+  return { profileId: r.profile_id, name: r.profiles?.name || r.name || "", canEdit: r.can_edit !== false };
+}
 
 // ── ナレッジノート ──
 // 一覧では content を引かないため、無い場合は空文字にフォールバックする

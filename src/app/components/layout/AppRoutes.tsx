@@ -11,6 +11,8 @@ import { PermissionsPage } from "@/app/pages/PermissionsPage";
 import { RolesPage } from "@/app/pages/RolesPage";
 import { AdminSettingsPage } from "@/app/pages/AdminSettingsPage";
 import { MyActionsPage } from "@/app/pages/MyActionsPage";
+import { TasksPage } from "@/app/pages/TasksPage";
+import { ProjectTasksPage } from "@/app/pages/ProjectTasksPage";
 import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
 import { ReportsPage } from "@/app/pages/ReportsPage";
 import { BacklogPage } from "@/app/pages/BacklogPage";
@@ -35,6 +37,7 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/admin-settings", element: <AdminSettingsPage /> },
   { path: "/announcement-settings", element: <AnnouncementSettingsPage /> },
   { path: "/my-actions", element: <MyActionsPage /> },
+  { path: "/tasks", element: <TasksPage /> },
   { path: "/release-notes", element: <ReleaseNotesPage /> },
   { path: "/reports", element: <ReportsPage /> },
   { path: "/bug-reports", element: <BugReportsPage /> },
@@ -54,6 +57,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/minutes/:minuteId", element: <MinutesPage /> },
   // ENHA2-035 ファイルボックス（静的セグメントなので /:projectSlug/:segment より優先される）
   { path: "/:projectSlug/files", element: <FileBoxPage /> },
+  // ENHA2-032 タスク（同上。/:projectSlug/:segment より必ず前に置くこと）
+  { path: "/:projectSlug/tasks", element: <ProjectTasksPage /> },
   // ナレッジノート（静的セグメントなので /:projectSlug/:segment より優先される）
   { path: "/:projectSlug/knowledge", element: <KnowledgePage /> },
   { path: "/:projectSlug/knowledge/:docId", element: <KnowledgePage /> },

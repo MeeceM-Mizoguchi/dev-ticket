@@ -1,15 +1,17 @@
 import type { ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen } from "lucide-react";
+import { Layers, ClipboardList, CheckSquare, BookOpen, FileText, PenTool, FolderOpen } from "lucide-react";
 import type { AccessLevel } from "@/app/types";
 import { usePlan } from "@/app/contexts/PlanContext";
 
-type ProjectSubPage = "sprints" | "backlog" | "wiki" | "minutes" | "whiteboard" | "files" | "knowledge";
+type ProjectSubPage = "sprints" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "files" | "knowledge";
 
 // ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
 const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" }[] = [
   { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
   { id: "backlog",    label: "バックログ",     icon: ClipboardList, path: "/backlog",    permKey: "backlog" },
+  // タスク（ENHA2-032）はファイルボックスと同様に個別の権限設定を持たない（プロジェクトメンバー全員）
+  { id: "tasks",      label: "タスク",         icon: CheckSquare,   path: "/tasks" },
   { id: "wiki",       label: "Wiki",           icon: BookOpen,      path: "/wiki",       permKey: "wiki" },
   { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
   { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files" },

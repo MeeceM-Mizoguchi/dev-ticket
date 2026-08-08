@@ -15,6 +15,7 @@ import { AnnouncementModal } from "@/app/components/announcements/AnnouncementMo
 import { APP_VERSION } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
 import { buildWhiteboardPath, parseWhiteboardMentionContext } from "@/app/lib/whiteboardLink";
+import { parseTaskMentionContext } from "@/app/lib/taskNotify";
 import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
 
 function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
@@ -292,6 +293,12 @@ export function Topbar() {
     if (!notif.isRead && isSupabaseEnabled) {
       await supabase!.from("notifications").update({ is_read: true }).eq("id", notif.id);
       setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
+    }
+    // タスク宛て（ENHA2-032）。個人タスクは projectSlug が空なので、先に判定する。
+    const taskId = parseTaskMentionContext(notif.mentionContext);
+    if (taskId) {
+      navigate(`/tasks?task=${encodeURIComponent(taskId)}`);
+      return;
     }
     // ホワイトボードのコメント宛て（ENHA2-039）。チケットではないので専用の飛び先へ。
     const wb = parseWhiteboardMentionContext(notif.mentionContext);
