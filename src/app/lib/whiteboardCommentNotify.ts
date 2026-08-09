@@ -21,6 +21,12 @@ export interface WbNotifyBase {
   /** 返信のリンクを飛ばしたい時だけ */
   replyId?: string | null;
   fromUserName: string;
+  /**
+   * プライベートモードのボードか。true の間は通知を一切飛ばさない。
+   * 飛ばしても相手はボードを開けず（RLSで弾かれる）「見つかりませんでした」になるだけなので、
+   * 死にリンクを配らないために入口で止める。解除後の新規コメントからは通常どおり通知される。
+   */
+  isPrivate?: boolean;
 }
 
 // Slack本文は「リンク＋本文の抜粋」。素の改行はそのまま送る（slackNotify 側で長さを丸める）。
@@ -42,7 +48,7 @@ async function insertNotification(row: Record<string, unknown>): Promise<void> {
 export async function notifyWhiteboardMentions(
   base: WbNotifyBase, text: string, members: string[], prevText?: string,
 ): Promise<void> {
-  if (!isSupabaseEnabled || !base.projectSlug) return;
+  if (!isSupabaseEnabled || !base.projectSlug || base.isPrivate) return;
   const now = mentionedMembers(text, members, base.fromUserName);
   const before = prevText ? mentionedMembers(prevText, members, base.fromUserName) : [];
   const targets = now.filter((n) => !before.includes(n));
@@ -75,7 +81,7 @@ export async function notifyWhiteboardMentions(
 export async function notifyWhiteboardReply(
   base: WbNotifyBase, text: string, toUserName: string,
 ): Promise<void> {
-  if (!isSupabaseEnabled || !base.projectSlug) return;
+  if (!isSupabaseEnabled || !base.projectSlug || base.isPrivate) return;
   if (!toUserName || toUserName === base.fromUserName) return;
 
   await insertNotification({

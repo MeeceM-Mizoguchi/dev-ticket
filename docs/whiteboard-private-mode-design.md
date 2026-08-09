@@ -1,7 +1,8 @@
 # ホワイトボード プライベートモード 設計書
 
 > 対象: ボード単位で「作成者だけが見られる」モードを追加する
-> ステータス: **設計確定・実装未着手**（2026-08-08）
+> ステータス: **実装済み（2026-08-09・vite build 緑・未検証／未コミット）**
+> 残作業: `supabase/add_whiteboard_private.sql` の適用（ユーザー作業）
 
 ---
 
@@ -217,10 +218,19 @@ export interface Whiteboard {
 - `useWhiteboardSync(boardId, user, channelKey)` にトークンを渡し、`wb:${boardId}${channelKey ? `:${channelKey}` : ""}` を組む。
 - 解除時はトークンを空に戻すので、チャンネル名も元に戻る。
 
-**居座り対策（退去イベント）**: プライベート化の直前に旧チャンネルへ `wb-evict` を broadcast する。
-`SupabaseYjsProvider` に `onEvicted?: () => void` を 1 本足し（既存のイベント購読部 [SupabaseYjsProvider.ts:37](../src/app/lib/SupabaseYjsProvider.ts#L37) に 1 case 追加）、
-受け取った側は「このボードはプライベートに変更されました」をトーストしてボード一覧へ戻る。
-所有者自身は `s`（senderId）判定で無視する。
+**居座り対策（退去イベント）**: プライベート化の瞬間に `wb-evict` を broadcast し、
+受け取った側は「このボードはプライベートモードに変更されました」をトーストしてボード一覧へ戻る。
+
+- 図形同期チャンネル（`wb:{id}`）には相乗りさせず、**ボードIDだけで決まる別トピック `wb:{id}:evict`** を使う。
+  同期チャンネルはプライベート化した瞬間に名前が変わるので、「変更後に旧チャンネルへ送る」が成立しないため。
+  → `SupabaseYjsProvider` は無改修。
+- 所有者本人は payload の `by`（送信者のuserId）で自分発を弾く。
+- 切替時に自分がそのボードを開いていれば、既に張ってある購読チャンネルからそのまま送る
+  （同一ソケットで同じトピックへ二重 join しない）。開いていない時だけ単発チャンネルで送る。
+
+**キャンバスのマウント条件**: ボード行が揃うまでキャンバスをマウントしない。
+`private_key` はボード行に入っているので、先にマウントすると一瞬だけ公開チャンネル `wb:{id}` に繋がり、
+そこへ自分のドキュメント全体をブロードキャストしてしまう（`SupabaseYjsProvider` は購読直後に全stateを配る）。
 
 > **不採用**: Realtime Authorization（`realtime.messages` の RLS）。
 > 有効化はプロジェクト全体に効くため、音声通話 `call:*` など既存の全チャンネルにポリシーを書かないと止まる。
@@ -239,33 +249,40 @@ export interface Whiteboard {
 
 ## 5. 変更ファイル一覧
 
-| ファイル | 種別 | 概要 | 規模 |
-|---|---|---|---|
-| `supabase/add_whiteboard_private.sql` | 新規 | カラム3本＋RLS 4本の張り替え | ~45行 |
-| `src/app/types.ts` | 改修 | `Whiteboard` に 3 フィールド | 3行 |
-| `src/app/lib/whiteboardService.ts` | 改修 | Row/map/BoardMeta 拡張、`setBoardVisibility`、`broadcastBoardEvicted` | ~50行 |
-| `src/app/components/whiteboard/BoardListSidebar.tsx` | 改修 | 3点リーダー化＋錠アイコン＋「自分のみ」ラベル | ~70行 |
-| `src/app/pages/WhiteboardPage.tsx` | 改修 | 切替ハンドラ、key、ヘッダーバッジ、プロップ受け渡し | ~30行 |
-| `src/app/components/whiteboard/WhiteboardCanvas.tsx` | 改修 | `isPrivate`/`channelKey` プロップ、右上バッジ | ~20行 |
-| `src/app/hooks/useWhiteboardSync.ts` | 改修 | チャンネル名にトークン、`onEvicted` 配線 | ~10行 |
-| `src/app/lib/SupabaseYjsProvider.ts` | 改修 | `wb-evict` イベント | ~8行 |
-| `src/app/lib/whiteboardCommentNotify.ts` | 改修 | `isPrivate` で早期 return | ~4行 |
-| `src/app/components/whiteboard/CommentLayer.tsx` | 改修 | `isPrivate` を通知基底に渡す | ~3行 |
-| `src/app/components/whiteboard/WhiteboardLinkPreview.tsx` | 改修 | 所有者向けバッジのみ | ~8行 |
+| ファイル | 種別 | 概要 |
+|---|---|---|
+| `supabase/add_whiteboard_private.sql` | 新規 | カラム3本＋RLS 4本の張り替え |
+| `src/app/components/whiteboard/PrivateBadge.tsx` | 新規 | バッジ本体と紫の配色定数（3画面で共有） |
+| `src/app/lib/whiteboardControlBus.ts` | 新規 | 開いているキャンバスへ「今すぐ保存」「退去を送れ」を届ける軽量バス |
+| `src/app/types.ts` | 改修 | `Whiteboard` に `visibility` / `privateBy` / `privateKey` |
+| `src/app/lib/whiteboardService.ts` | 改修 | Row/map/BoardMeta 拡張、`setBoardVisibility`、`wbChannelName`、退去の送受信 |
+| `src/app/components/whiteboard/BoardListSidebar.tsx` | 改修 | 3点リーダー化＋錠アイコン＋「自分のみ」ラベル |
+| `src/app/pages/WhiteboardPage.tsx` | 改修 | 切替ハンドラ、解除の確認ダイアログ、key、ヘッダーバッジ、マウント条件 |
+| `src/app/components/whiteboard/WhiteboardCanvas.tsx` | 改修 | `isPrivate`/`channelKey`/`onEvicted` プロップ、右上バッジ |
+| `src/app/hooks/useWhiteboardSync.ts` | 改修 | チャンネル名にトークン、退去の購読、保存フラッシュの公開 |
+| `src/app/lib/whiteboardCommentNotify.ts` | 改修 | `isPrivate` で早期 return |
+| `src/app/components/whiteboard/CommentLayer.tsx` | 改修 | `isPrivate` を通知基底に渡す |
+| `src/app/components/whiteboard/WhiteboardLinkPreview.tsx` | 改修 | バッジ＋トークン受け渡し＋退去でパネルを閉じる |
 
-**合計 実質 250 行程度。** マイグレーション適用（Supabase SQL Editor 実行）はユーザー作業。
+**実質 300 行程度。** `SupabaseYjsProvider` は無改修。マイグレーション適用（Supabase SQL Editor 実行）はユーザー作業。
+
+### 実装時に足した保険
+- `getBoardMeta` は新カラムを select するが、**SQL 未適用のDBでは列が無くエラーになり、リンクプレビューが全滅する**。
+  エラー時は旧カラムだけで引き直すフォールバックを入れた。
+- ボード一覧の「名前変更」はドロップダウンから起動するため、`autoFocus` だけだと
+  Radix がメニューを閉じる際のフォーカス戻しで即 blur → 何もせず確定してしまう。
+  rAF でフォーカスを当て直し、「一度フォーカスが載るまで blur を無視する」ガードを入れた。
 
 ---
 
-## 6. 実装順序
+## 6. 動かすまでの手順
 
-1. `add_whiteboard_private.sql` を書いて **先に Supabase へ適用**（RLS 差し替えが先だと既存機能が壊れないことを確認できる）
-2. `types.ts` → `whiteboardService.ts`（`setBoardVisibility` まで）
-3. `BoardListSidebar` の 3点リーダー化（プライベート項目なしで先に既存機能を維持できるか確認）
-4. `WhiteboardPage` の切替配線＋バッジ
-5. リアルタイム遮断（チャンネルトークン＋`wb-evict`）
-6. 通知抑止
-7. `pnpm build`（このリポジトリでは `tsc` が通らないため **vite build が唯一のゲート**）
+1. **`supabase/add_whiteboard_private.sql` を Supabase の SQL Editor で実行**（これが済むまで切替は失敗する）
+2. 適用前に `select id, title, created_by from whiteboards where created_by = '';` を確認。
+   該当行があると、そのボードは作成者を判定できず永久にプライベート化できない
+3. アプリを再読み込みして §7 のチェックリストを流す
+
+`pnpm build` は緑（このリポジトリでは `tsc` が通らないため **vite build が唯一のゲート**）。
 
 ---
 

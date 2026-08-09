@@ -1,25 +1,43 @@
 // ホワイトボード一覧サイドバー（議事録の分割ペインUXに合わせる）。
-import { useState } from "react";
-import { Plus, Search, X, Trash2, Pencil, PenTool } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Plus, Search, X, Trash2, Pencil, PenTool, MoreVertical, Lock, LockOpen } from "lucide-react";
 import type { Whiteboard } from "@/app/types";
 import { BoardListToggle } from "./BoardListToggle";
+import { PRIVATE_BG, PRIVATE_BORDER, PRIVATE_COLOR } from "./PrivateBadge";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/app/components/ui/dropdown-menu";
 
 interface Props {
   boards: Whiteboard[];
   selectedId: string | null;
   canEdit: boolean;
   loading?: boolean;
+  /** プライベート切替を出すかの判定に使う（作成者本人にだけ出す） */
+  userId: string;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  onTogglePrivate: (id: string) => void;
   onCollapse: () => void;
 }
 
-export function BoardListSidebar({ boards, selectedId, canEdit, loading, onSelect, onCreate, onRename, onDelete, onCollapse }: Props) {
+export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId, onSelect, onCreate, onRename, onDelete, onTogglePrivate, onCollapse }: Props) {
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  // 入力欄に一度でもフォーカスが載ったか。ドロップダウンが閉じる時にトリガーへフォーカスを
+  // 戻そうとするので、autoFocus だけだと載る前に blur が飛んで即確定してしまう。
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    focusedRef.current = false;
+    if (!editingId) return;
+    const raf = requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select(); });
+    return () => cancelAnimationFrame(raf);
+  }, [editingId]);
 
   const filtered = boards.filter((b) => b.title.toLowerCase().includes(search.toLowerCase()));
 
@@ -72,29 +90,62 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, onSelec
         )}
         {!loading && filtered.map((b) => {
           const active = b.id === selectedId;
+          const isPrivate = b.visibility === "private";
+          // プライベート切替は作成者本人にだけ出す（実際の可否は RLS の with check が決める）。
+          const canTogglePrivate = !!userId && b.createdBy === userId;
+          const RowIcon = isPrivate ? Lock : PenTool;
+          const iconColor = isPrivate ? PRIVATE_COLOR : active ? "#059669" : "#C9C4BB";
           return (
             <div key={b.id} onClick={() => onSelect(b.id)}
               style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 9px", borderRadius: 8, cursor: "pointer", background: active ? "#ECFDF5" : "transparent", border: `1px solid ${active ? "rgba(5,150,105,0.25)" : "transparent"}` }}>
-              <PenTool style={{ width: 12, height: 12, color: active ? "#059669" : "#C9C4BB", flexShrink: 0 }} />
+              <RowIcon style={{ width: 12, height: 12, color: iconColor, flexShrink: 0 }} />
               {editingId === b.id ? (
-                <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
-                  onBlur={() => commitRename(b.id)} onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) commitRename(b.id); if (e.key === "Escape") setEditingId(null); }}
+                <input ref={inputRef} value={draft} onChange={(e) => setDraft(e.target.value)}
+                  onFocus={() => { focusedRef.current = true; }}
+                  onBlur={() => { if (focusedRef.current) commitRename(b.id); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) commitRename(b.id); if (e.key === "Escape") setEditingId(null); }}
                   onClick={(e) => e.stopPropagation()}
                   style={{ flex: 1, fontSize: 12, border: "1px solid rgba(5,150,105,0.3)", borderRadius: 5, padding: "2px 5px", outline: "none", fontFamily: "inherit" }} />
               ) : (
-                <span style={{ flex: 1, fontSize: 12, fontWeight: active ? 600 : 500, color: "#1A1714", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.title}</span>
+                <>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: active ? 600 : 500, color: "#1A1714", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.title}</span>
+                  {isPrivate && (
+                    <span title="自分だけが見られるボードです"
+                      style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: "3px 5px", borderRadius: 4, color: PRIVATE_COLOR, background: PRIVATE_BG, border: `1px solid ${PRIVATE_BORDER}` }}>
+                      自分のみ
+                    </span>
+                  )}
+                </>
               )}
               {canEdit && editingId !== b.id && (
-                <>
-                  <button onClick={(e) => { e.stopPropagation(); setEditingId(b.id); setDraft(b.title); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: "#C9C4BB", display: "flex" }}>
-                    <Pencil style={{ width: 11, height: 11 }} />
-                  </button>
-                  <button onClick={(e) => { e.stopPropagation(); onDelete(b.id); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: "#C9C4BB", display: "flex" }}>
-                    <Trash2 style={{ width: 11, height: 11 }} />
-                  </button>
-                </>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    {/* 行の onClick（ボード選択）へ抜けないよう、押下系のイベントは全部ここで止める */}
+                    <button onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
+                      title="メニュー" aria-label="メニュー"
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: "#C9C4BB", display: "flex", flexShrink: 0 }}>
+                      <MoreVertical style={{ width: 13, height: 13 }} />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenuItem onSelect={() => { setEditingId(b.id); setDraft(b.title); }}>
+                      <Pencil style={{ width: 13, height: 13 }} />名前変更
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => onDelete(b.id)}>
+                      <Trash2 style={{ width: 13, height: 13 }} />ボード削除
+                    </DropdownMenuItem>
+                    {canTogglePrivate && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onSelect={() => onTogglePrivate(b.id)}>
+                          {isPrivate
+                            ? <><LockOpen style={{ width: 13, height: 13 }} />プライベートモード解除</>
+                            : <><Lock style={{ width: 13, height: 13 }} />プライベートモード</>}
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
           );

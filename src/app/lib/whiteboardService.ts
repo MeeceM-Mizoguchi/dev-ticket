@@ -13,6 +13,10 @@ interface WhiteboardRow {
   updated_by: string;
   created_at: string;
   updated_at: string;
+  // プライベートモード（add_whiteboard_private.sql）。未適用のDBでも落ちないよう省略可にしておく。
+  visibility?: string | null;
+  private_by?: string | null;
+  private_key?: string | null;
 }
 
 export function mapWhiteboard(r: WhiteboardRow): Whiteboard {
@@ -24,6 +28,9 @@ export function mapWhiteboard(r: WhiteboardRow): Whiteboard {
     updatedBy: r.updated_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    visibility: r.visibility === "private" ? "private" : "project",
+    privateBy: r.private_by ?? "",
+    privateKey: r.private_key ?? "",
   };
 }
 
@@ -55,11 +62,24 @@ export async function resolveProject(projectSlug: string): Promise<{ id: string;
 }
 
 // ── ボード単体のメタ情報（リンクから開く時に、所属プロジェクトを逆引きする） ──
-export interface BoardMeta { id: string; title: string; projectId: string; projectSlug: string; projectName: string }
+export interface BoardMeta {
+  id: string; title: string; projectId: string; projectSlug: string; projectName: string;
+  /** プライベートモードのボードか（バッジ表示用。ここに来る時点で所有者本人と確定している） */
+  isPrivate: boolean;
+  /** Realtimeチャンネル名に混ぜるトークン。公開ボードは "" */
+  privateKey: string;
+}
 
 export async function getBoardMeta(boardId: string): Promise<BoardMeta | null> {
   if (!isSupabaseEnabled) return null;
-  const { data: b } = await supabase!.from("whiteboards").select("id, title, project_id").eq("id", boardId).maybeSingle();
+  // プライベートボードは RLS で行ごと消えるため、他人が開くと下の !b で「見つからない」に落ちる。
+  // 「存在するが見えない」と「存在しない」を区別しない（区別すると存在自体が漏れる）。
+  const res = await supabase!
+    .from("whiteboards").select("id, title, project_id, visibility, private_key").eq("id", boardId).maybeSingle();
+  // add_whiteboard_private.sql 未適用のDB（列が無い）でもプレビューが全滅しないようにする
+  const b: any = res.error
+    ? (await supabase!.from("whiteboards").select("id, title, project_id").eq("id", boardId).maybeSingle()).data
+    : res.data;
   if (!b) return null;
   const { data: p } = await supabase!.from("projects").select("id, name, slug").eq("id", (b as any).project_id).maybeSingle();
   if (!p) return null;
@@ -69,6 +89,8 @@ export async function getBoardMeta(boardId: string): Promise<BoardMeta | null> {
     projectId: (p as any).id,
     projectSlug: (p as any).slug,
     projectName: (p as any).name,
+    isPrivate: (b as any).visibility === "private",
+    privateKey: ((b as any).private_key as string | null) ?? "",
   };
 }
 
@@ -140,6 +162,88 @@ export async function renameBoard(id: string, title: string, userId: string): Pr
 export async function deleteBoard(id: string): Promise<void> {
   if (!isSupabaseEnabled) return;
   await supabase!.from("whiteboards").delete().eq("id", id);
+}
+
+// ── プライベートモード ──────────────────────────────────────
+// 切り替えの唯一の入口。実際に「作成者かどうか」を判定しているのは RLS の with check なので、
+// 作成者でない人がここを叩いても update が 0 行になり null が返る（＝UIでメニューを隠すのは補助）。
+export async function setBoardVisibility(
+  board: Whiteboard, makePrivate: boolean, userId: string,
+): Promise<Whiteboard | null> {
+  if (!isSupabaseEnabled) return null;
+  const patch = makePrivate
+    ? { visibility: "private", private_by: userId, private_key: newPrivateKey() }
+    : { visibility: "project", private_by: "", private_key: "" };
+  const { data, error } = await supabase!
+    .from("whiteboards")
+    .update({ ...patch, updated_by: userId, updated_at: new Date().toISOString() })
+    .eq("id", board.id)
+    .select("*")
+    .single();
+  if (error || !data) return null;
+  return mapWhiteboard(data as WhiteboardRow);
+}
+
+function newPrivateKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * Yjs の Realtime チャンネル名。
+ * プライベート中はトークンを混ぜる。トークンは RLS でボード行ごと隠れるため、
+ * 所有者以外はチャンネル名を計算できない＝Broadcast 経由で同期内容を覗けない。
+ */
+export function wbChannelName(boardId: string, privateKey?: string | null): string {
+  return privateKey ? `wb:${boardId}:${privateKey}` : `wb:${boardId}`;
+}
+
+// ── 退去通知（プライベート化した瞬間に、開いている他メンバーを閉じさせる） ──
+// これを送らないと、他メンバーの画面は編集できるのに保存だけ RLS に弾かれ、書いた内容が黙って消える。
+// 図形同期チャンネル（wb:{id}）に相乗りさせないのは、プライベート化するとチャンネル名が
+// 変わってしまい「変更後に旧チャンネルへ送る」ができなくなるため、ボードIDだけで決まる別トピックにする。
+const EVICT_EVENT = "wb-evict";
+const evictTopic = (boardId: string) => `wb:${boardId}:evict`;
+
+/**
+ * 退去通知の購読（ボードを開いている間だけ）。
+ * 戻り値の broadcast は「今このボードを開いている自分」が送る用。
+ * 既に張ってあるチャンネルから送るので、同じトピックへ二重 join せずに済む。
+ */
+export function subscribeBoardEvicted(boardId: string, selfUserId: string, onEvicted: () => void): {
+  broadcast: () => void; dispose: () => void;
+} {
+  if (!isSupabaseEnabled) return { broadcast: () => {}, dispose: () => {} };
+  const ch = supabase!.channel(evictTopic(boardId), { config: { broadcast: { self: false, ack: false } } });
+  ch.on("broadcast", { event: EVICT_EVENT }, ({ payload }) => {
+    if ((payload as any)?.by === selfUserId) return; // 自分がプライベート化した側なら無視
+    onEvicted();
+  }).subscribe();
+  return {
+    broadcast: () => { void ch.send({ type: "broadcast", event: EVICT_EVENT, payload: { by: selfUserId } }); },
+    dispose: () => { void ch.unsubscribe(); },
+  };
+}
+
+/**
+ * そのボードを開いていない状態から退去通知だけ送る（一覧から切り替えた時のフォールバック）。
+ * 開いている場合は subscribeBoardEvicted の broadcast を使う。
+ */
+export async function broadcastBoardEvicted(boardId: string, byUserId: string): Promise<void> {
+  if (!isSupabaseEnabled) return;
+  const ch = supabase!.channel(evictTopic(boardId), { config: { broadcast: { self: false, ack: false } } });
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; resolve(); };
+    const timer = setTimeout(finish, 2000); // 接続できない時に待ち続けない
+    ch.subscribe((status) => {
+      if (status !== "SUBSCRIBED") return;
+      Promise.resolve(ch.send({ type: "broadcast", event: EVICT_EVENT, payload: { by: byUserId } }))
+        .catch(() => {})
+        .finally(() => { clearTimeout(timer); finish(); });
+    });
+  });
+  void ch.unsubscribe();
 }
 
 export async function loadDocState(id: string): Promise<string> {
