@@ -57,6 +57,7 @@ import { ConnectorFormatPanel } from "./ConnectorFormatPanel";
 import { ConnectorViaOverlay } from "./ConnectorViaOverlay";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
+import { PrivateBadge } from "./PrivateBadge";
 
 // Excalidraw標準のハンバーガーメニュー/ヘルプ(?)/コラボボタンを非表示にする
 // （メニューは自前、ヘルプは右上アイコンに一本化、コラボは独自Yjs同期を使うため不要）
@@ -274,6 +275,12 @@ interface Props {
   projectSlug: string;
   /** コメントの @メンション候補（projects.members）を引くために使う */
   projectId?: string | null;
+  /** プライベートモードのボードか。右上にバッジを出し、コメントの通知を止める */
+  isPrivate?: boolean;
+  /** プライベートボードの Realtime チャンネル用トークン（公開ボードは未指定） */
+  channelKey?: string | null;
+  /** 自分が見ている間にこのボードがプライベート化された（＝締め出された） */
+  onEvicted?: () => void;
   /** リンクで指定されたオブジェクト。ロード後にそこへ移動して強調する */
   focusElementId?: string | null;
   /** リンクで指定されたコメント（?comment=&reply=・ENHA2-039）。ピンへ移動して固定表示する */
@@ -299,6 +306,7 @@ const FOCUS_RETRY_MAX = 30;  // 同 最大回数（= 約6秒。Yjsの後追い�
 
 export default function WhiteboardCanvas({
   boardId, title, user, canEdit, projectSlug, projectId,
+  isPrivate = false, channelKey = null, onEvicted,
   focusElementId, focusCommentId, focusReplyId, onFocusResult, instanceKey = "page",
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -339,7 +347,7 @@ export default function WhiteboardCanvas({
   const {
     bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat, docLoaded,
     setViewport, snapToFollowed, isApplyingFollow,
-  } = useWhiteboardSync(boardId, user);
+  } = useWhiteboardSync(boardId, user, channelKey, onEvicted);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
 
@@ -1344,8 +1352,11 @@ export default function WhiteboardCanvas({
         initialData={{ ...CLEAN_DEFAULTS, elements: bridgeRef.current?.currentElements() ?? [] }}
         UIOptions={{ canvasActions: { toggleTheme: false } }}
         renderTopRightUI={() => (api ? (
-          // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: リンク · ヘルプ · エクスポート · 全画面
+          // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: プライベート · リンク · ヘルプ · エクスポート · 全画面
+          // ※左上ではなくここに置くのは、左上はボード一覧の展開ボタン(BoardListToggle)と重なるのと、
+          //   このスロットはキャンバス内部なので疑似全画面(zIndex:3000)でもバッジが隠れないため。
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
+            {isPrivate && <PrivateBadge variant="canvas" />}
             <CopyObjectLinkButton api={api} projectSlug={projectSlug} boardId={boardId} onResult={showToast} />
             <HelpButton api={api} />
             <WhiteboardExportMenu api={api} title={title} containerRef={containerRef} />
@@ -1382,7 +1393,7 @@ export default function WhiteboardCanvas({
           {/* コメント（ENHA2-039）。図形の編集権限とは切り離し、閲覧のみのメンバーも投稿・返信できる */}
           <CommentLayer
             api={api} containerRef={containerRef} docRef={docRef} user={user}
-            projectSlug={projectSlug} projectId={projectId} boardId={boardId} boardTitle={title}
+            projectSlug={projectSlug} projectId={projectId} boardId={boardId} boardTitle={title} isPrivate={isPrivate}
             instanceKey={instanceKey}
             commentMode={commentMode} setCommentMode={setCommentMode}
             listOpen={commentListOpen} setListOpen={setCommentListOpen}

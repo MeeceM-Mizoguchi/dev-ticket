@@ -14,6 +14,7 @@ import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { escStack } from "@/app/lib/escStack";
 import { getBoardMeta, loadWhiteboardPerms, wbUserColor, type BoardMeta } from "@/app/lib/whiteboardService";
 import { buildWhiteboardPath } from "@/app/lib/whiteboardLink";
+import { PrivateBadge } from "./PrivateBadge";
 import type { AccessLevel } from "@/app/types";
 
 const WhiteboardCanvas = lazy(() => import("@/app/components/whiteboard/WhiteboardCanvas"));
@@ -186,6 +187,8 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
             {meta && <span style={{ fontWeight: 500, color: "#A09790" }}>{` · ${meta.projectName}`}</span>}
           </div>
         </div>
+        {/* ここに来られている＝RLSを通った＝所有者本人。他人には meta が null で返る */}
+        {meta?.isPrivate && <PrivateBadge />}
         {perm === "view" && (
           <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)", whiteSpace: "nowrap" }}>閲覧のみ</span>
         )}
@@ -223,13 +226,16 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
           <ErrorBoundary resetKeys={[boardId]}>
             <Suspense fallback={<Centered>ホワイトボードを読み込み中…</Centered>}>
               <WhiteboardCanvas
-                key={boardId}
+                key={`${boardId}:${meta.isPrivate ? "private" : "project"}`}
                 boardId={boardId}
                 title={meta.title || "whiteboard"}
                 user={user}
                 canEdit={canEdit}
                 projectSlug={meta.projectSlug}
                 projectId={meta.projectId}
+                isPrivate={meta.isPrivate}
+                channelKey={meta.privateKey || null}
+                onEvicted={onClose}
                 focusElementId={elementId}
                 focusCommentId={commentId}
                 focusReplyId={replyId}

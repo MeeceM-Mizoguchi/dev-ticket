@@ -52,6 +52,8 @@ interface Props {
   boardId: string;
   /** 通知の本文に出すボード名 */
   boardTitle: string;
+  /** プライベートモード中は通知（ベル/Slack）を飛ばさない。コメント自体は従来どおり書ける */
+  isPrivate?: boolean;
   /** コメントモード（ツールバーのピンボタンと共有するのでキャンバス側が持つ） */
   commentMode: boolean;
   setCommentMode: (v: boolean) => void;
@@ -307,7 +309,7 @@ function Composer({ value, onChange, onSubmit, onCancel, placeholder, submitLabe
 }
 
 export function CommentLayer({
-  api, containerRef, docRef, user, projectSlug, projectId, boardId, boardTitle,
+  api, containerRef, docRef, user, projectSlug, projectId, boardId, boardTitle, isPrivate = false,
   commentMode, setCommentMode, listOpen, setListOpen,
   focusCommentId, focusReplyId, focusNonce, onFocusResult, onToast, instanceKey,
 }: Props) {
@@ -611,8 +613,8 @@ export function CommentLayer({
   // ── 保存系 ─────────────────────────────────────────────
   const author = useMemo(() => ({ id: user.id, name: user.name }), [user.id, user.name]);
   const notifyBase = useCallback((commentId: string, replyId?: string | null) => ({
-    projectSlug, boardId, boardTitle, commentId, replyId, fromUserName: user.name,
-  }), [projectSlug, boardId, boardTitle, user.name]);
+    projectSlug, boardId, boardTitle, commentId, replyId, fromUserName: user.name, isPrivate,
+  }), [projectSlug, boardId, boardTitle, user.name, isPrivate]);
 
   const saveDraft = () => {
     const doc = docRef.current;

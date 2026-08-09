@@ -10,7 +10,10 @@ import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
 import { BoardListToggle } from "@/app/components/whiteboard/BoardListToggle";
-import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor } from "@/app/lib/whiteboardService";
+import { PrivateBadge } from "@/app/components/whiteboard/PrivateBadge";
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor, setBoardVisibility, broadcastBoardEvicted } from "@/app/lib/whiteboardService";
+import { getWbControl } from "@/app/lib/whiteboardControlBus";
 import { COMMENT_LINK_PARAM, ELEMENT_LINK_PARAM, REPLY_LINK_PARAM } from "@/app/lib/whiteboardLink";
 import type { AccessLevel, Whiteboard } from "@/app/types";
 
@@ -46,6 +49,8 @@ export function WhiteboardPage() {
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSE_LS_KEY) === "1"; } catch { return false; }
   });
+  // プライベート解除の確認（公開する側だけ確認する。プライベート化は取り返しがつくので即実行）
+  const [unprivateTarget, setUnprivateTarget] = useState<Whiteboard | null>(null);
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
@@ -103,6 +108,45 @@ export function WhiteboardPage() {
     }, { replace: true });
   }, [toast, setSearchParams]);
 
+  // ── プライベートモードの切替 ───────────────────────────────
+  // 実際の可否は RLS（wb_update の with check）が決める。作成者以外が叩くと update が 0 行になる。
+  const applyVisibility = useCallback(async (board: Whiteboard, makePrivate: boolean) => {
+    // 1) 保存デバウンス(1.5s)の取りこぼしを吐き出す。この直後にチャンネル名が変わり、
+    //    キャンバスが張り直って doc_state を読み直すため、待たせたままだとその分が消える。
+    const control = getWbControl(board.id);
+    await control?.flushSave();
+    // 2) 今このボードを開いている他メンバーを退去させる。
+    //    放置すると編集はできるのに保存だけ RLS に弾かれ、書いた内容が黙って消える。
+    //    自分がそのボードを開いていれば張ってあるチャンネルから、開いていなければ単発で送る。
+    if (makePrivate) {
+      if (control) control.broadcastEvict();
+      else await broadcastBoardEvicted(board.id, userId);
+    }
+    const next = await setBoardVisibility(board, makePrivate, userId);
+    if (!next) {
+      toast("切り替えできませんでした（ボードの作成者のみ変更できます）", "error");
+      return;
+    }
+    setBoards((prev) => prev.map((b) => (b.id === next.id ? next : b)));
+    toast(makePrivate
+      ? "プライベートモードにしました。このボードはあなただけが見られます"
+      : "プライベートモードを解除しました。プロジェクトのメンバーが見られます", "success");
+  }, [userId, toast]);
+
+  const handleTogglePrivate = useCallback((id: string) => {
+    const board = boards.find((b) => b.id === id);
+    if (!board) return;
+    if (board.visibility === "private") setUnprivateTarget(board);  // 公開に戻すので確認する
+    else void applyVisibility(board, true);
+  }, [boards, applyVisibility]);
+
+  // 開いている最中に、そのボードの作成者がプライベート化した（＝自分は締め出された）
+  const handleEvicted = useCallback(() => {
+    toast("このボードはプライベートモードに変更されました", "info");
+    navigate(`/${projectSlug}/whiteboard`);
+    void load();
+  }, [toast, navigate, projectSlug, load]);
+
   const handleDelete = useCallback(async (id: string) => {
     await deleteBoard(id);
     setBoards((prev) => prev.filter((b) => b.id !== id));
@@ -113,6 +157,8 @@ export function WhiteboardPage() {
   if (!loading && perms.whiteboard === "none") return <Navigate to="/dashboard" replace />;
 
   const user = { id: userId, name: userName || "匿名", color: wbUserColor(userId || "anon") };
+  const currentBoard = boardId ? boards.find((b) => b.id === boardId) ?? null : null;
+  const currentIsPrivate = currentBoard?.visibility === "private";
 
   // ボード選択状態にかかわらず、collapsed が true のときはサイドバーを折りたたむ
   // （折りたたんだ状態でも再展開用のボタン BoardListToggle が表示されるため展開可能）
@@ -134,6 +180,7 @@ export function WhiteboardPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{projectName ? `${projectName} · ${boards.length} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {!loading && currentIsPrivate && <PrivateBadge />}
           {!loading && perms.whiteboard === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
@@ -148,25 +195,43 @@ export function WhiteboardPage() {
             発火してcanvas再描画がジャンクするため、即時切替にする（BRU9-046）。 */}
         {!sidebarHidden && (
           <BoardListSidebar
-            boards={boards} selectedId={boardId ?? null} canEdit={canEdit} loading={loading}
+            boards={boards} selectedId={boardId ?? null} canEdit={canEdit} loading={loading} userId={userId}
             onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
             onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
+            onTogglePrivate={handleTogglePrivate}
             onCollapse={toggleCollapsed}
           />
         )}
         <div style={{ position: "relative", flex: 1, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", overflow: "hidden" }}>
-          {boardId ? (
+          {!boardId ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", gap: 10 }}>
+              <PenTool style={{ width: 34, height: 34, color: "#D8D3CC" }} />
+              <span style={{ fontSize: 13 }}>ボードを選択または作成してください</span>
+            </div>
+          ) : loading || !currentBoard ? (
+            // ボード行が揃うまでキャンバスをマウントしない。
+            // プライベートボードは行に入っている private_key がチャンネル名の一部なので、
+            // 先にマウントすると一瞬だけ公開チャンネル(wb:{id})へ繋がり、そこへ図形を配信してしまう。
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>
+              {loading ? "ホワイトボードを読み込み中…" : "ボードが見つかりませんでした"}
+            </div>
+          ) : (
             // ボード切替時は resetKeys で境界を自動リセットし、前ボードの例外を持ち越さない（BRU7-043）。
             <ErrorBoundary resetKeys={[boardId]}>
               <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
                 <WhiteboardCanvas
-                  key={boardId}
+                  // プライベート切替でチャンネル名が変わるので、キーに含めて丸ごと張り直す
+                  // （中途半端に生き残ったオーバーレイが古い api を掴むのを避ける）。
+                  key={`${boardId}:${currentBoard.visibility}`}
                   boardId={boardId}
-                  title={boards.find((b) => b.id === boardId)?.title ?? "whiteboard"}
+                  title={currentBoard.title}
                   user={user}
                   canEdit={canEdit}
                   projectSlug={projectSlug ?? ""}
                   projectId={projectId}
+                  isPrivate={currentIsPrivate}
+                  channelKey={currentBoard.privateKey || null}
+                  onEvicted={handleEvicted}
                   focusElementId={focusElementId}
                   focusCommentId={focusCommentId}
                   focusReplyId={focusReplyId}
@@ -174,11 +239,6 @@ export function WhiteboardPage() {
                 />
               </Suspense>
             </ErrorBoundary>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", gap: 10 }}>
-              <PenTool style={{ width: 34, height: 34, color: "#D8D3CC" }} />
-              <span style={{ fontSize: 13 }}>ボードを選択または作成してください</span>
-            </div>
           )}
           {/* たたんだ状態の展開ボタン。キャンバス左上（Excalidraw標準ハンバーガーはCSSで非表示・
               左プロパティ島は margin-top:52px）に浮かせる。Canvasルートは isolation:isolate なので
@@ -188,6 +248,17 @@ export function WhiteboardPage() {
           )}
         </div>
       </div>
+
+      {unprivateTarget && (
+        <ConfirmDialog
+          title="プライベートモードの解除"
+          message={`「${unprivateTarget.title}」をプロジェクトのメンバー全員が見られる状態に戻します。`}
+          confirmLabel="解除する"
+          confirmColor="#059669"
+          hasWarningText={false}
+          onConfirm={() => applyVisibility(unprivateTarget, false)}
+          onClose={() => setUnprivateTarget(null)} />
+      )}
     </div>
   );
 }

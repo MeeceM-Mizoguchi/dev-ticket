@@ -6,14 +6,22 @@ import { Awareness } from "y-protocols/awareness";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { SupabaseYjsProvider, REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvider";
 import { ExcalidrawYjsBridge } from "@/app/components/whiteboard/ExcalidrawYjsBridge";
-import { loadDocState, saveDocState, base64ToBytes, bytesToBase64 } from "@/app/lib/whiteboardService";
+import { loadDocState, saveDocState, base64ToBytes, bytesToBase64, wbChannelName, subscribeBoardEvicted } from "@/app/lib/whiteboardService";
+import { registerWbControl } from "@/app/lib/whiteboardControlBus";
 
 export interface WbUser { id: string; name: string; color: string }
 export interface RemoteChat { userId: string; name: string; color: string; x: number; y: number; text: string }
 
 const SAVE_DEBOUNCE_MS = 1500;
 
-export function useWhiteboardSync(boardId: string | null, user: WbUser) {
+/**
+ * @param channelKey プライベートモードのボードだけが持つ秘密トークン。
+ *   チャンネル名に混ぜることで、所有者以外は Broadcast のトピック名を計算できなくなる。
+ * @param onEvicted そのボードがプライベート化され、自分が締め出された時に呼ばれる。
+ */
+export function useWhiteboardSync(
+  boardId: string | null, user: WbUser, channelKey?: string | null, onEvicted?: () => void,
+) {
   const bridgeRef = useRef<ExcalidrawYjsBridge | null>(null);
   const awarenessRef = useRef<Awareness | null>(null);
   const apiRef = useRef<any>(null);
@@ -37,6 +45,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
   // 最新の user を参照するための ref（依存配列に入れず再購読を避ける）
   const userRef = useRef(user);
   userRef.current = user;
+  const onEvictedRef = useRef(onEvicted);
+  onEvictedRef.current = onEvicted;
 
   useEffect(() => {
     if (!boardId || !isSupabaseEnabled || !supabase) return;
@@ -61,21 +71,38 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       setDocLoaded(true);
 
       // 2) Broadcastプロバイダ接続 → 後入りは sync-req で差分同期
-      const provider = new SupabaseYjsProvider(supabase!, `wb:${boardId}`, doc, awareness);
+      //   プライベートモードのボードはチャンネル名に秘密トークンが入る（＝所有者しか名前を作れない）。
+      //   RLS はテーブルしか守らないので、これが無いと過去にURLを知っていた人が Broadcast を覗ける。
+      const provider = new SupabaseYjsProvider(supabase!, wbChannelName(boardId, channelKey), doc, awareness);
       provider.onSynced = () => { if (!disposed) setSynced(true); };
       if (apiRef.current) bridge.setApi(apiRef.current);
       bridge.applyInitial();
 
+      // 2-2) 締め出し通知。誰かがこのボードをプライベート化したら開いている画面を閉じる。
+      //      自分が切り替える側の時は、この同じチャンネルから送る（下の broadcastEvict）。
+      const evict = subscribeBoardEvicted(boardId, userRef.current.id, () => {
+        if (!disposed) onEvictedRef.current?.();
+      });
+
       // 3) 永続化（ローカル変更のみ・デバウンス保存）
       let saveTimer: ReturnType<typeof setTimeout> | null = null;
+      const persist = () => saveDocState(boardId, bytesToBase64(Y.encodeStateAsUpdate(doc)), userRef.current.id);
       const onDocUpdate = (_u: Uint8Array, origin: unknown) => {
         if (origin === REMOTE_ORIGIN) return;
         if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => {
-          void saveDocState(boardId, bytesToBase64(Y.encodeStateAsUpdate(doc)), userRef.current.id);
-        }, SAVE_DEBOUNCE_MS);
+        saveTimer = setTimeout(() => { saveTimer = null; void persist(); }, SAVE_DEBOUNCE_MS);
       };
       doc.on("update", onDocUpdate);
+
+      // 3-2) 外（ページ側のプライベート切替）から操作できるようにする・whiteboardControlBus。
+      const unregisterControl = registerWbControl(boardId, {
+        flushSave: async () => {
+          if (!saveTimer) return;           // 未保存の変更が無ければ何もしない
+          clearTimeout(saveTimer); saveTimer = null;
+          await persist();
+        },
+        broadcastEvict: () => evict.broadcast(),
+      });
 
       // 4) awareness → collaborators / チャット
       //   自分のカーソル更新でも "change" は発火するため、内容が実際に変わった時だけ
@@ -175,6 +202,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
         window.removeEventListener("blur", onLeave);
         document.removeEventListener("visibilitychange", onLeave);
         if (saveTimer) clearTimeout(saveTimer);
+        unregisterControl();
+        evict.dispose();
         provider.destroy();
         doc.destroy();
       };
@@ -195,7 +224,8 @@ export function useWhiteboardSync(boardId: string | null, user: WbUser) {
       appliedVpSigRef.current = "";
       onAwarenessRef.current = () => {};
     };
-  }, [boardId]);
+    // channelKey はプライベート切替でのみ変わる。変わったら別チャンネルへ張り直す。
+  }, [boardId, channelKey]);
 
   const setCursor = useCallback((x: number, y: number) => {
     awarenessRef.current?.setLocalStateField("cursor", { x, y });

@@ -439,6 +439,12 @@ export interface MeetingMinute {
 export interface Whiteboard {
   id: string; projectId: string; title: string;
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
+  /** 'project'=PJメンバーが見られる（既定） / 'private'=作成者だけが見られる */
+  visibility: "project" | "private";
+  /** プライベート所有者のuserId。公開時は "" */
+  privateBy: string;
+  /** Realtimeチャンネル名に混ぜる秘密トークン（RLSで所有者以外には見えない）。公開時は "" */
+  privateKey: string;
 }
 // ── ナレッジノート（プロジェクト単位の資料の保管・閲覧・検索） ──
 // 表示名は「ナレッジノート」。内部識別子は knowledge_ に統一する。
