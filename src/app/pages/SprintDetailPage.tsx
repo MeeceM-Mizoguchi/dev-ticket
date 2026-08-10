@@ -343,14 +343,27 @@ export function SprintDetailPage() {
     });
   }, [bulkCreatedWbs, bulkHighlight, sprint]);
 
+  // 対象チケットを強調表示（6秒で自動解除）し、その先頭行までスクロールする
+  const highlightAndScrollTo = (wbsList: string[]) => {
+    if (wbsList.length === 0) return;
+    setBulkCreatedWbs(wbsList);
+    scrollWbsRef.current = wbsList[0];
+    setScrollTick(t => t + 1);
+  };
+
   // 一括作成の完了時: 再読み込みを待ってから強調表示を立て、先頭のチケットへスクロールする
   const handleBulkCreated = async (createdWbs: string[]) => {
     setShowBulkCreate(false);
     await refreshSprint();
-    if (createdWbs.length === 0) return;
-    setBulkCreatedWbs(createdWbs);
-    scrollWbsRef.current = createdWbs[0];
-    setScrollTick(t => t + 1);
+    highlightAndScrollTo(createdWbs);
+  };
+
+  // 🌟 BRU11-022: 単体作成の完了時もスプリント一覧と同じ挙動にする。
+  //    再読み込みを待ってから作成したチケットを強調表示し、その行までスクロールする。
+  const handleTicketCreated = async (createdWbs?: string) => {
+    await refreshSprint();
+    if (!createdWbs) return;
+    highlightAndScrollTo([createdWbs]);
   };
 
   // 🌟 BRU10-077: スプリント移動の完了時。移動先スプリントの画面へ遷移する。
@@ -926,7 +939,7 @@ export function SprintDetailPage() {
         </div>
       </div>
 
-      {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={refreshSprint} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} currentTicketCount={sprint.tickets.length} />}
+      {showCreate && <NewTicketDialog sprintId={sprint.id} projectId={project?.id} onClose={() => setShowCreate(false)} onCreated={handleTicketCreated} sprintStartDate={sprint.startDate || undefined} sprintEndDate={sprint.endDate || undefined} currentTicketCount={sprint.tickets.length} />}
       {showBulkCreate && (bulkCreateMode === "md" ? (
         <MdBulkCreateDialog
           sprintId={sprint.id}
