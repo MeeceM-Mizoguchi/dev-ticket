@@ -324,6 +324,7 @@ export interface Project {
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
   organizationId?: string | null;
+  isManualStatus?: boolean;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
