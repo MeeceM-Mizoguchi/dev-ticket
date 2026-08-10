@@ -48,6 +48,20 @@ export function computeSortOrder(prev: number | null, next: number | null): numb
   return mid;
 }
 
+/**
+ * 分類の要素を DB へ入れる形に整える。
+ * 前後の空白を落とし、空と重複を消す（表記ゆれをこれ以上増やさないため、
+ * 大小の違いは残す＝入力欄の候補で既存の綴りを選んでもらう）。
+ */
+export function normalizeCategories(values: string[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    const s = v.trim();
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
 export interface ProjectOption { id: string; slug: string; name: string; members: string[] }
 export interface MemberOption { id: string; name: string }
 
@@ -85,7 +99,11 @@ export async function loadMyShareFlags(profileId: string): Promise<Record<string
   return out;
 }
 
-/** 詳細を開いたときだけ共有相手を引く（一覧では引かない） */
+/**
+ * そのタスクの共有相手。
+ * 共有を編集する画面は持たない（担当者に振ると自動で張られる）ので、
+ * いまはサブタスクへ親の共有を引き継ぐときだけ使う。
+ */
 export async function loadTaskShares(taskId: string): Promise<TaskShare[]> {
   if (!isSupabaseEnabled) return [];
   const { data, error } = await supabase!
@@ -154,7 +172,7 @@ export interface NewTaskInput {
   projectId?: string | null;
   parentId?: string | null;
   description?: string;
-  category?: string;
+  categories?: string[];
   status?: TaskStatus;
   priority?: Priority;
   assignee?: string;
@@ -176,7 +194,7 @@ export async function createTask(input: NewTaskInput): Promise<Task | null> {
     parent_id: input.parentId || null,
     title: input.title,
     description: input.description ?? "",
-    category: input.category ?? "",
+    categories: normalizeCategories(input.categories ?? []),
     status,
     priority: input.priority ?? "medium",
     assignee: input.assignee ?? "",
@@ -199,7 +217,7 @@ export async function updateTask(id: string, patch: Partial<Task>): Promise<bool
   const row: Record<string, any> = { updated_at: new Date().toISOString() };
   if (patch.title !== undefined)       row.title = patch.title;
   if (patch.description !== undefined) row.description = patch.description;
-  if (patch.category !== undefined)    row.category = patch.category;
+  if (patch.categories !== undefined)  row.categories = normalizeCategories(patch.categories);
   if (patch.priority !== undefined)    row.priority = patch.priority;
   if (patch.assignee !== undefined)    row.assignee = patch.assignee;
   if (patch.startDate !== undefined)   row.start_date = patch.startDate || null;
@@ -229,10 +247,14 @@ export async function updateTask(id: string, patch: Partial<Task>): Promise<bool
  * これをやらないと「共有されたタスクにサブタスクを足したら、相手から見えない」が起きる。
  */
 export async function createSubtask(
-  parent: Task, title: string, ownerId: string, createdBy: string, minSortOrder: number | null,
+  parent: Task,
+  input: Omit<NewTaskInput, "ownerId" | "createdBy" | "parentId" | "projectId" | "minSortOrder">,
+  ownerId: string, createdBy: string, minSortOrder: number | null,
 ): Promise<Task | null> {
   const child = await createTask({
-    title, ownerId, createdBy,
+    ...input,
+    ownerId, createdBy,
+    // プロジェクトは親と同じに固定する（別PJにすると親子で見える人が食い違う）
     projectId: parent.projectId,
     parentId: parent.id,
     minSortOrder,
@@ -272,14 +294,6 @@ export async function addTaskShare(taskId: string, profileId: string, canEdit = 
     .from("task_shares")
     .upsert({ task_id: taskId, profile_id: profileId, can_edit: canEdit }, { onConflict: "task_id,profile_id" });
   if (error) { console.error("[task_shares] upsert failed:", error.message); return false; }
-  return true;
-}
-
-export async function removeTaskShare(taskId: string, profileId: string): Promise<boolean> {
-  if (!isSupabaseEnabled) return true;
-  const { error } = await supabase!
-    .from("task_shares").delete().eq("task_id", taskId).eq("profile_id", profileId);
-  if (error) { console.error("[task_shares] delete failed:", error.message); return false; }
   return true;
 }
 

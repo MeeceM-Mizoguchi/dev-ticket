@@ -1,35 +1,84 @@
 // ENHA2-032 タスクのリストビュー（既定・最軽量）。
 //
-// 表として読めるように列見出しを持つ。見出し・データ行・追加行（TaskQuickAddRow）は
-// すべて TASK_COLS の同じ幅を使うので、3者が縦に揃う。
+// この表がタスク編集の場そのもの。詳細パネルは持たず、行のどのセルもその場で直せる。
+// 見出し・データ行・追加行（TaskQuickAddRow）はすべて TASK_COLS の同じ幅を使うので、
+// 3者が縦に揃う。セルの見た目は「素の文字」で、枠は出さない（.task-cell）。
+//
+// 文字のセル（タイトル・詳細）は打っている間は保存せず、Enter か欄から離れたときに
+// 確定する。選ぶだけのセル（PJ・優先度・担当・日付・ステータス）はその場で確定する。
 //
 // サブタスク（子チケットと同じく1階層のみ）は親行の下にぶら下げる。
 // 親行の ▸ で開閉し、開いた中に「サブタスクを追加」の入力行が生えている。
+// その追加行も表の最終行と同じ全項目ぶんの入力欄（renderSubtaskAdd で受け取る）。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, FolderKanban, Plus, Undo2 } from "lucide-react";
-import { Avatar } from "@/app/components/shared/Avatar";
-import { TASK_STATUSES, TASK_PRIORITIES, getTaskStatusMeta, getTaskPriorityMeta } from "@/app/lib/taskService";
-import { truncateName } from "@/app/lib/helpers";
-import type { Task, TaskStatus } from "@/app/types";
+import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { DatePicker } from "@/app/components/shared/DatePicker";
+import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
+import {
+  TASK_STATUSES, TASK_PRIORITIES, getTaskStatusMeta,
+  type MemberOption, type ProjectOption,
+} from "@/app/lib/taskService";
+import { descriptionToText, textToDescription, isRichDescription } from "@/app/lib/taskDescription";
+import { TaskCategoryField } from "@/app/components/tasks/TaskCategoryField";
+import type { Task, TaskStatus, Priority } from "@/app/types";
 
 /** 見出し・データ行・追加行で共有する列幅 */
 export const TASK_COLS = {
   toggle: 18,
   expand: 14,
-  category: 104,
+  category: 150,
   priority: 48,
   project: 132,
   assignee: 112,
   start: 106,
   due: 106,
   status: 86,
+  /** 行末の削除ボタン。追加行・見出しでは空けておく */
+  menu: 20,
   gap: 10,
   padX: 14,
 };
 
+/**
+ * タイトルと詳細は幅を固定せず、余った横幅を分け合う。
+ * 詳細のほうが長い文章が入るので、タイトルより広く取る（1 : 1.6）。
+ */
+export const TITLE_CELL: React.CSSProperties = { flex: "1 1 0", minWidth: 0 };
+export const DESC_CELL: React.CSSProperties = { flex: "1.6 1 0", minWidth: 0 };
+
+/** タイトルと詳細は同じ本文の文字。読むところなので、他のセルより大きく濃い */
+export const BODY_TEXT: React.CSSProperties = { fontSize: 13, color: "#1A1714", fontWeight: 500 };
+
+/** どのセルもタイトル欄と同じ「素の文字」。枠も背景も持たない（.task-cell） */
+export const CELL: React.CSSProperties = {
+  fontSize: 11, color: "#6B6458",
+  padding: 0, outline: "none", cursor: "pointer",
+  fontFamily: "inherit", flexShrink: 0, boxSizing: "border-box",
+  appearance: "none" as const,
+};
+
+/**
+ * 選択肢を持つセルの器。中身は素の文字のままで、マウスを乗せたときだけ ▼ を出す
+ * （枠を出さない代わりに「ここは選べる」と分かるようにするため）。
+ */
+export function SelectCell({ width, children }: { width: number; children: React.ReactNode }) {
+  return (
+    <span className="task-select"
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", width, flexShrink: 0 }}>
+      {children}
+      <ChevronDown className="task-select-arrow"
+        style={{ width: 10, height: 10, position: "absolute", right: 0, pointerEvents: "none", color: "#A09790" }} />
+    </span>
+  );
+}
+
 /** サブタスク1段ぶんの字下げ */
 const INDENT = 22;
+
+/** 優先度の選択肢。行ごとに作り直す必要はないので外に出す */
+const PRIORITY_OPTIONS: PickerOption[] = TASK_PRIORITIES.map(p => ({ value: p.value, label: p.label, color: p.color }));
 
 /** 期限切れ判定。完了したタスクは対象外 */
 export function isOverdue(t: Task): boolean {
@@ -37,19 +86,11 @@ export function isOverdue(t: Task): boolean {
   return t.dueDate < new Date().toLocaleDateString("sv-SE");
 }
 
-function formatDue(d: string): string {
-  if (!d) return "";
-  const [, m, day] = d.split("-");
-  return `${Number(m)}/${Number(day)}`;
-}
-
 /** メニュー1件ぶんの高さ（見積り）。下に入りきるかの判定に使う */
 const STATUS_MENU_ITEM_H = 33;
 
-function StatusPill({ status, onChange, disabled, dim }: {
+function StatusPill({ status, onChange, disabled }: {
   status: TaskStatus; onChange: (s: TaskStatus) => void; disabled?: boolean;
-  /** 完了行の減光。開いたメニューには掛けない */
-  dim?: React.CSSProperties;
 }) {
   // 表の外枠が overflow:hidden なので、メニューを行の中に描くと切れる。
   // CustomSelect と同じくポータルで body に出し、位置は実測して当てる。
@@ -92,11 +133,10 @@ function StatusPill({ status, onChange, disabled, dim }: {
   }, [open]);
 
   return (
-    <div style={{ position: "relative", width: TASK_COLS.status, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+    <div style={{ position: "relative", width: TASK_COLS.status, flexShrink: 0 }}>
       <button ref={btnRef} type="button" disabled={disabled}
         onClick={() => (open ? setPos(null) : place())}
         style={{
-          ...dim,
           display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 7px",
           fontSize: 10, fontWeight: 700, borderRadius: 99, width: "100%",
           background: meta.bg, color: meta.color, border: `1px solid ${meta.border}`,
@@ -129,47 +169,115 @@ function StatusPill({ status, onChange, disabled, dim }: {
   );
 }
 
-/** 親行の下に生える「サブタスクを追加」。タイトルだけ打って Enter */
-function SubtaskAddRow({ parent, onCreate }: {
-  parent: Task;
-  onCreate: (parent: Task, title: string) => Promise<boolean>;
+/**
+ * 文字のセル。1文字ごとに保存すると更新が飛びすぎるので、
+ * Enter か欄から離れたときにだけ確定する（Esc で打ちかけを捨てる）。
+ */
+function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = true, style }: {
+  value: string;
+  onCommit: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  /** 空を許すか。タイトルは空にできないので、空のまま離れたら元に戻す */
+  allowEmpty?: boolean;
+  style?: React.CSSProperties;
 }) {
-  const [title, setTitle] = useState("");
-  const [saving, setSaving] = useState(false);
-  const ref = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(value);
+  const [editing, setEditing] = useState(false);
 
-  const submit = async () => {
-    const v = title.trim();
-    if (!v || saving) return;
-    setSaving(true);
-    const ok = await onCreate(parent, v);
-    setSaving(false);
-    if (ok) { setTitle(""); ref.current?.focus(); }
+  // 他の場所（かんばんの D&D など）で書き換わったら、打っていない間は追従する
+  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
+
+  const commit = () => {
+    setEditing(false);
+    const v = draft.trim();
+    if (!v && !allowEmpty) { setDraft(value); return; }
+    if (v === value) return;
+    onCommit(v);
   };
 
+  if (disabled) {
+    return (
+      <span title={value} style={{ ...style, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {value || "—"}
+      </span>
+    );
+  }
+
   return (
-    <div onClick={e => e.stopPropagation()}
-      style={{
-        display: "flex", alignItems: "center", gap: TASK_COLS.gap,
-        padding: `6px ${TASK_COLS.padX}px 6px ${TASK_COLS.padX + INDENT}px`,
-        borderTop: "1px solid rgba(26,23,20,0.04)", background: "#FCFCFB",
-      }}>
-      <Plus style={{ width: 13, height: 13, color: title ? "#059669" : "#C9C4BB", flexShrink: 0 }} />
-      <input ref={ref} value={title}
-        onChange={e => setTitle(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
-          if (e.key === "Escape") { setTitle(""); (e.currentTarget as HTMLInputElement).blur(); }
-        }}
-        placeholder="サブタスクを入力して Enter で追加"
-        style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#1A1714", fontFamily: "inherit", background: "transparent", border: "none", outline: "none", padding: "2px 0" }} />
-    </div>
+    <input className="task-cell" value={draft} title={draft || placeholder}
+      onChange={e => { setEditing(true); setDraft(e.target.value); }}
+      onFocus={() => setEditing(true)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); (e.currentTarget as HTMLInputElement).blur(); }
+        if (e.key === "Escape") { setDraft(value); setEditing(false); (e.currentTarget as HTMLInputElement).blur(); }
+      }}
+      placeholder={placeholder}
+      style={{ ...style, cursor: "text" }} />
+  );
+}
+
+/**
+ * 詳細メモのセル。
+ *
+ * 詳細メモは HTML で持っている（箇条書き・表・画像なども入る）。1行の入力欄で
+ * 上書きするとその書式は落ちるので、書式つきのメモだけは一度確認を挟む。
+ */
+function DescriptionCell({ task, editable, onCommit, textStyle }: {
+  task: Task;
+  editable: boolean;
+  onCommit: (description: string) => void;
+  /** 完了行など、文字色の上書き */
+  textStyle?: React.CSSProperties;
+}) {
+  const text = useMemo(() => descriptionToText(task.description), [task.description]);
+  const rich = useMemo(() => isRichDescription(task.description), [task.description]);
+  const [flattenOk, setFlattenOk] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  // 別のタスクの行に使い回されたときのために、了承はタスクが変わったら忘れる
+  useEffect(() => { setFlattenOk(false); }, [task.id]);
+
+  if (editable && rich && !flattenOk) {
+    return (
+      <>
+        <span title={`${text}\n（書式つきのメモ。クリックすると1行テキストとして編集できます）`}
+          onClick={() => setConfirming(true)}
+          style={{
+            ...DESC_CELL, ...BODY_TEXT, ...textStyle, display: "inline-flex", alignItems: "center",
+            overflow: "hidden", textOverflow: "ellipsis",
+            whiteSpace: "nowrap" as const, cursor: "text",
+          }}>
+          {text}
+        </span>
+        {confirming && (
+          <ConfirmDialog
+            title="書式つきのメモを編集します"
+            message={"このメモには書式（箇条書き・表・画像など）が含まれています。\nここで編集すると1行のテキストになり、書式は失われます。"}
+            onConfirm={() => { setFlattenOk(true); setConfirming(false); }}
+            onClose={() => setConfirming(false)}
+            zIndex={300}
+          />
+        )}
+      </>
+    );
+  }
+
+  return (
+    <TextCell
+      value={text}
+      disabled={!editable}
+      placeholder="詳細"
+      onCommit={v => onCommit(textToDescription(v))}
+      style={{ ...DESC_CELL, ...BODY_TEXT, ...textStyle }} />
   );
 }
 
 function TaskRow({
-  task, depth, expanded, childCount, doneCount, editable, selected,
-  showProject, projectName, onToggleExpand, onSelect, onStatusChange,
+  task, depth, expanded, childCount, doneCount, editable, deletable, highlighted,
+  showProject, projectOptions, assigneeOptions, categoryOptions,
+  onToggleExpand, onPatch, onDelete,
 }: {
   task: Task;
   depth: number;
@@ -177,40 +285,42 @@ function TaskRow({
   childCount: number;
   doneCount: number;
   editable: boolean;
-  selected: boolean;
+  deletable: boolean;
+  /** お知らせやかんばんから飛んできた行。目印に色を付けるだけ */
+  highlighted: boolean;
   showProject: boolean;
-  projectName: string;
+  projectOptions: PickerOption[];
+  assigneeOptions: PickerOption[];
+  categoryOptions: string[];
   onToggleExpand: () => void;
-  onSelect: (t: Task) => void;
-  onStatusChange: (t: Task, s: TaskStatus) => void;
+  onPatch: (t: Task, patch: Partial<Task>) => void;
+  onDelete: (t: Task) => void;
 }) {
   const done = task.status === "done";
   const overdue = isOverdue(task);
-  const pri = getTaskPriorityMeta(task.priority);
 
-  // 完了行は「行まるごとグレーアウト」で片付いたことを示す。
-  // 文字だけ打ち消し線にすると行の左右で密度がちぐはぐに見えるので、
-  // 中身のセルすべてに同じ減光をかけ、操作できる部分（チェック・取り消す）だけ素の色で残す。
-  const dim: React.CSSProperties | undefined = done
-    ? { opacity: 0.4, filter: "grayscale(1)" }
-    : undefined;
-  const baseBg = selected ? "#F0FDF4" : done ? "#FAFAF9" : depth > 0 ? "#FCFCFB" : "transparent";
+  // 完了行は「背景をはっきりグレーにする」だけで示す。
+  // 透かしたり取り消し線を引いたりすると読みづらくなるので、文字は落ち着いた色に
+  // 変えるにとどめ、値はそのまま読めて触れる状態を保つ。
+  // ステータスの「完了」バッジとチェックは合図そのものなので色を落とさない。
+  const doneTitle: React.CSSProperties | undefined = done ? { color: "#6B6458" } : undefined;
+  const doneText: React.CSSProperties | undefined = done ? { color: "#8A837B" } : undefined;
+  const doneSub: React.CSSProperties | undefined = done ? { color: "#9E9690" } : undefined;
+  const baseBg = highlighted ? "#F0FDF4" : done ? "#E8E6E1" : depth > 0 ? "#FCFCFB" : "transparent";
 
   return (
-    <div onClick={() => onSelect(task)}
+    <div className="task-row" data-task-id={task.id}
       style={{
         display: "flex", alignItems: "center", gap: TASK_COLS.gap,
-        padding: `10px ${TASK_COLS.padX}px`,
+        padding: `8px ${TASK_COLS.padX}px`,
         borderTop: "1px solid rgba(26,23,20,0.05)",
         background: baseBg,
-        cursor: "pointer", transition: "background 0.12s",
-      }}
-      onMouseEnter={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-      onMouseLeave={e => { if (!selected) (e.currentTarget as HTMLElement).style.background = baseBg; }}>
+        transition: "background 0.12s",
+      }}>
 
       {/* 完了トグル */}
       <button type="button" disabled={!editable}
-        onClick={e => { e.stopPropagation(); onStatusChange(task, done ? "todo" : "done"); }}
+        onClick={() => onPatch(task, { status: done ? "todo" : "done" })}
         title={done ? "完了を取り消す" : "完了にする"}
         style={{
           width: TASK_COLS.toggle, height: TASK_COLS.toggle, borderRadius: 6, flexShrink: 0, padding: 0,
@@ -226,7 +336,7 @@ function TaskRow({
           ここを子持ちだけにすると最初の1件を足す入口が無くなる） */}
       <span style={{ width: TASK_COLS.expand, flexShrink: 0, display: "flex", justifyContent: "center" }}>
         {depth === 0 && (
-          <button type="button" onClick={e => { e.stopPropagation(); onToggleExpand(); }}
+          <button type="button" onClick={onToggleExpand}
             title={expanded ? "サブタスクを閉じる" : childCount > 0 ? "サブタスクを開く" : "サブタスクを追加"}
             style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0, display: "flex", color: childCount > 0 ? "#9E9690" : "#D5D0CB" }}>
             {expanded
@@ -236,14 +346,14 @@ function TaskRow({
         )}
       </span>
 
-      {/* タスク名 */}
-      <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, paddingLeft: depth * INDENT, ...dim }}>
+      {/* タイトル */}
+      <span style={{ ...TITLE_CELL, display: "flex", alignItems: "center", gap: 6, paddingLeft: depth * INDENT }}>
         {/* 親が絞り込みで消えている子は最上位に出るので、depth ではなく parentId で判定する */}
         {task.parentId && <CornerDownRight style={{ width: 11, height: 11, color: "#C9C4BB", flexShrink: 0 }} />}
-        <span style={{
-          minWidth: 0, fontSize: depth > 0 ? 12.5 : 13, color: "#1A1714", fontWeight: 500,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
-        }}>{task.title}</span>
+        <TextCell
+          value={task.title} disabled={!editable} allowEmpty={false} placeholder="タイトル"
+          onCommit={v => onPatch(task, { title: v })}
+          style={{ ...BODY_TEXT, ...doneTitle, flex: 1, minWidth: 0, fontSize: depth > 0 ? 12.5 : 13 }} />
         {childCount > 0 && (
           <span title="サブタスクの進捗"
             style={{ fontSize: 9.5, fontWeight: 700, color: doneCount === childCount ? "#059669" : "#9E9690", background: doneCount === childCount ? "#ECFDF5" : "#F4F5F6", borderRadius: 99, padding: "1px 6px", flexShrink: 0, fontFamily: "var(--font-mono)" }}>
@@ -251,106 +361,108 @@ function TaskRow({
           </span>
         )}
         {task.ticketWbs && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 10, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 4, padding: "1px 5px", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
+          <span title="紐付いているチケット"
+            style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 10, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 4, padding: "1px 5px", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
             <Hash style={{ width: 9, height: 9 }} />{task.ticketWbs}
           </span>
         )}
       </span>
 
-      {/* 取り消す。減光の外に置いて、完了行でも押せることが分かるようにする */}
-      {done && editable && (
-        <button type="button" onClick={e => { e.stopPropagation(); onStatusChange(task, "todo"); }}
-          title="完了を取り消して未着手に戻す"
-          style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, padding: "2px 8px", fontSize: 9.5, fontWeight: 700, color: "#6B6458", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 99, cursor: "pointer", fontFamily: "inherit" }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFFFFF"; }}>
-          <Undo2 style={{ width: 9, height: 9 }} />取り消す
-        </button>
-      )}
+      {/* 詳細メモ */}
+      <DescriptionCell task={task} editable={editable} textStyle={doneText}
+        onCommit={description => onPatch(task, { description })} />
 
-      {/* 分類 */}
-      <span style={{ width: TASK_COLS.category, flexShrink: 0, display: "inline-flex", alignItems: "center", ...dim }}>
-        {task.category ? (
-          <span title={task.category}
-            style={{ fontSize: 10, fontWeight: 600, color: "#6B6458", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 5, padding: "2px 6px", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {task.category}
-          </span>
-        ) : (
-          <span style={{ fontSize: 10.5, color: "#D5D0CB" }}>—</span>
-        )}
+      {/* 分類（複数） */}
+      <span title="分類"
+        style={{ width: TASK_COLS.category, flexShrink: 0, display: "inline-flex", alignItems: "center", boxSizing: "border-box" }}>
+        <TaskCategoryField
+          values={task.categories} options={categoryOptions} disabled={!editable} wrap={false}
+          placeholder="分類"
+          onChange={next => onPatch(task, { categories: next })} />
       </span>
 
-      {/* プロジェクト */}
+      {/* プロジェクト。付け替えるとチケット候補が変わるので、紐付けは外す */}
       {showProject && (
-        <span style={{ width: TASK_COLS.project, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, color: task.projectId ? "#6B6458" : "#C9C4BB", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, ...dim }}>
-          <FolderKanban style={{ width: 10, height: 10, flexShrink: 0 }} />
-          {projectName || "個人"}
-        </span>
+        <PickerCell width={TASK_COLS.project} value={task.projectId ?? ""} disabled={!editable} title="プロジェクト"
+          options={projectOptions} placeholder={task.projectId ? "プロジェクト" : "個人タスク"}
+          textStyle={doneSub}
+          onChange={v => onPatch(task, { projectId: v || null, ticketId: null, ticketWbs: "" })} />
       )}
 
-      {/* 優先度 */}
-      <span style={{ width: TASK_COLS.priority, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, ...dim }}>
-        <span style={{ width: 7, height: 7, borderRadius: "50%", background: pri.color, flexShrink: 0 }} />
-        <span style={{ fontSize: 10.5, color: "#6B6458" }}>{pri.label}</span>
+      <PickerCell width={TASK_COLS.priority} value={task.priority} disabled={!editable} title="優先度"
+        options={PRIORITY_OPTIONS} textStyle={doneSub}
+        onChange={v => onPatch(task, { priority: v as Priority })} />
+
+      <PickerCell width={TASK_COLS.assignee} value={task.assignee} disabled={!editable} title="担当者"
+        options={assigneeOptions} placeholder={task.assignee || "未割当"} textStyle={doneSub}
+        onChange={v => onPatch(task, { assignee: v })} />
+
+      <span style={{ width: TASK_COLS.start, flexShrink: 0 }}>
+        <DatePicker variant="cell" value={task.startDate} disabled={!editable}
+          cellStyle={doneSub}
+          onChange={v => onPatch(task, { startDate: v })} />
       </span>
 
-      {/* 担当 */}
-      <span style={{ width: TASK_COLS.assignee, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, ...dim }}>
-        {task.assignee ? (
-          <>
-            <Avatar name={task.assignee} size="xs" />
-            <span style={{ fontSize: 10.5, color: "#9E9690", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-              {truncateName(task.assignee, 10)}
-            </span>
-          </>
-        ) : (
-          <span style={{ fontSize: 10.5, color: "#C9C4BB" }}>未割当</span>
+      <span style={{ width: TASK_COLS.due, flexShrink: 0 }}>
+        <DatePicker variant="cell" value={task.dueDate} disabled={!editable}
+          min={task.startDate || undefined}
+          onChange={v => onPatch(task, { dueDate: v })}
+          cellStyle={overdue ? { color: "#DC2626", fontWeight: 700 } : doneSub} />
+      </span>
+
+      <StatusPill status={task.status} disabled={!editable}
+        onChange={s => onPatch(task, { status: s })} />
+
+      {/* 削除。行にマウスを乗せたときだけ出す（誤爆を減らす） */}
+      <span style={{ width: TASK_COLS.menu, flexShrink: 0, display: "flex", justifyContent: "center" }}>
+        {deletable && (
+          <button type="button" className="task-row-del" onClick={() => onDelete(task)} title="このタスクを削除"
+            style={{ border: "none", background: "transparent", padding: 0, cursor: "pointer", display: "flex", color: "#C9C4BB" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+            <Trash2 style={{ width: 12, height: 12 }} />
+          </button>
         )}
       </span>
-
-      {/* 開始日 */}
-      <span style={{
-        width: TASK_COLS.start, flexShrink: 0, display: "inline-flex", alignItems: "center",
-        fontSize: 10.5, color: task.startDate ? "#6B6458" : "#D5D0CB",
-        ...dim,
-      }}>
-        {task.startDate ? formatDue(task.startDate) : "—"}
-      </span>
-
-      {/* 期限 */}
-      <span style={{
-        width: TASK_COLS.due, flexShrink: 0, display: "inline-flex", alignItems: "center",
-        fontSize: 10.5, fontWeight: overdue ? 700 : 500,
-        color: overdue ? "#DC2626" : task.dueDate ? "#6B6458" : "#D5D0CB",
-        ...dim,
-      }}>
-        {task.dueDate ? formatDue(task.dueDate) : "—"}
-      </span>
-
-      <StatusPill status={task.status} disabled={!editable} dim={dim} onChange={s => onStatusChange(task, s)} />
     </div>
   );
 }
 
 export function TaskListView({
-  tasks, allTasks, projectNameOf, showProject, canEdit, selectedId,
-  onSelect, onStatusChange, onCreateSubtask, quickAdd,
+  tasks, allTasks, showProject, canEdit, canDelete, highlightId,
+  projects, members, categoryOptions,
+  onPatch, onDelete, renderSubtaskAdd, quickAdd,
 }: {
   /** 絞り込み後（画面に出す分） */
   tasks: Task[];
   /** 絞り込み前。サブタスクの件数を正しく数えるために使う */
   allTasks: Task[];
-  projectNameOf: (id: string | null) => string;
   showProject: boolean;
   canEdit: (t: Task) => boolean;
-  selectedId: string | null;
-  onSelect: (t: Task) => void;
-  onStatusChange: (t: Task, s: TaskStatus) => void;
-  onCreateSubtask: (parent: Task, title: string) => Promise<boolean>;
+  canDelete: (t: Task) => boolean;
+  /** お知らせやかんばんから飛んできた行。色を付けてその位置まで送る */
+  highlightId: string | null;
+  projects: ProjectOption[];
+  members: MemberOption[];
+  /** 分類の候補（既に使われている値） */
+  categoryOptions: string[];
+  onPatch: (t: Task, patch: Partial<Task>) => void;
+  onDelete: (t: Task) => void;
+  /** 親を開いたときに下へ生やす「サブタスクを追加」行（TaskQuickAddRow） */
+  renderSubtaskAdd: (parent: Task) => React.ReactNode;
   /** 表の最終行に生やす追加行（TaskQuickAddRow）。渡さなければ出ない */
   quickAdd?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // 選択肢は行ごとに作り直さない
+  const projectOptions = useMemo<PickerOption[]>(
+    () => [{ value: "", label: "個人タスク" }, ...projects.map(p => ({ value: p.id, label: p.name }))],
+    [projects]);
+  const assigneeOptions = useMemo<PickerOption[]>(
+    () => [{ value: "", label: "未割当" }, ...members.map(m => ({ value: m.name, label: m.name }))],
+    [members]);
 
   // 子の件数・完了数は絞り込み前で数える（完了を隠していても 2/3 が正しく出るように）
   const counts = useMemo(() => {
@@ -381,6 +493,13 @@ export function TaskListView({
     return { roots: top, childrenOf: kids };
   }, [tasks]);
 
+  // かんばん／ガント／お知らせから指定された行までスクロールする
+  useEffect(() => {
+    if (!highlightId) return;
+    const el = boxRef.current?.querySelector(`[data-task-id="${highlightId}"]`);
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [highlightId, tasks]);
+
   const toggle = (id: string) => setExpanded(prev => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -393,7 +512,7 @@ export function TaskListView({
   };
 
   return (
-    <div style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden" }}>
+    <div ref={boxRef} style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden" }}>
       {/* ── 列見出し ── */}
       <div style={{
         display: "flex", alignItems: "center", gap: TASK_COLS.gap,
@@ -402,7 +521,8 @@ export function TaskListView({
       }}>
         <span style={{ width: TASK_COLS.toggle, flexShrink: 0 }} />
         <span style={{ width: TASK_COLS.expand, flexShrink: 0 }} />
-        <span style={{ ...headCell, flex: 1, minWidth: 0 }}>タイトル</span>
+        <span style={{ ...headCell, ...TITLE_CELL }}>タイトル</span>
+        <span style={{ ...headCell, ...DESC_CELL }}>詳細</span>
         <span style={{ ...headCell, width: TASK_COLS.category }}>分類</span>
         {showProject && <span style={{ ...headCell, width: TASK_COLS.project }}>プロジェクト</span>}
         <span style={{ ...headCell, width: TASK_COLS.priority }}>優先度</span>
@@ -410,6 +530,7 @@ export function TaskListView({
         <span style={{ ...headCell, width: TASK_COLS.start }}>開始日</span>
         <span style={{ ...headCell, width: TASK_COLS.due }}>期限</span>
         <span style={{ ...headCell, width: TASK_COLS.status, textAlign: "center" as const }}>ステータス</span>
+        <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
       </div>
 
       {roots.map(t => {
@@ -420,22 +541,26 @@ export function TaskListView({
           <div key={t.id}>
             <TaskRow task={t} depth={0} expanded={isOpen}
               childCount={c.total} doneCount={c.done}
-              editable={canEdit(t)} selected={selectedId === t.id}
-              showProject={showProject} projectName={projectNameOf(t.projectId)}
+              editable={canEdit(t)} deletable={canDelete(t)} highlighted={highlightId === t.id}
+              showProject={showProject}
+              projectOptions={projectOptions} assigneeOptions={assigneeOptions}
+              categoryOptions={categoryOptions}
               onToggleExpand={() => toggle(t.id)}
-              onSelect={onSelect} onStatusChange={onStatusChange} />
+              onPatch={onPatch} onDelete={onDelete} />
 
             {isOpen && t.parentId === null && (
               <>
                 {kids.map(k => (
                   <TaskRow key={k.id} task={k} depth={1} expanded={false}
                     childCount={0} doneCount={0}
-                    editable={canEdit(k)} selected={selectedId === k.id}
-                    showProject={showProject} projectName={projectNameOf(k.projectId)}
+                    editable={canEdit(k)} deletable={canDelete(k)} highlighted={highlightId === k.id}
+                    showProject={showProject}
+                    projectOptions={projectOptions} assigneeOptions={assigneeOptions}
+                    categoryOptions={categoryOptions}
                     onToggleExpand={() => {}}
-                    onSelect={onSelect} onStatusChange={onStatusChange} />
+                    onPatch={onPatch} onDelete={onDelete} />
                 ))}
-                {canEdit(t) && <SubtaskAddRow parent={t} onCreate={onCreateSubtask} />}
+                {canEdit(t) && renderSubtaskAdd(t)}
               </>
             )}
           </div>

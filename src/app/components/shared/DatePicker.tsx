@@ -12,6 +12,15 @@ interface Props {
   max?: string;           // YYYY-MM-DD
   required?: boolean;
   disabled?: boolean;
+  /**
+   * 見た目。
+   *   field = 通常のフォーム欄（枠つき）
+   *   cell  = 表のセル（枠を出さず素の文字。カレンダーの絵は触ったときだけ出す）
+   * カレンダー本体はどちらも同じものを出す。
+   */
+  variant?: "field" | "cell";
+  /** cell のときの文字色など */
+  cellStyle?: React.CSSProperties;
 }
 
 const MONTH_NAMES = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
@@ -25,7 +34,7 @@ function parseDate(s: string): [number, number, number] | null {
   return [y, m - 1, d];
 }
 
-export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required, disabled }: Props) {
+export function DatePicker({ value, onChange, label, placeholder = "年/月/日", min, max, required, disabled, variant = "field", cellStyle }: Props) {
   // 🌟 修正：UTCベースの toISOString() ではなく、ローカルのタイムゾーン（JST）で「今日」を生成する
   const todayObj = new Date();
   const today = toStr(todayObj.getFullYear(), todayObj.getMonth(), todayObj.getDate());
@@ -167,13 +176,35 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
           {label}{required && <span style={{ color: "#DC2626", marginLeft: 2 }}>*</span>}
         </label>
       )}
-      <div ref={triggerRef} onClick={handleToggle}
-        onMouseEnter={() => !disabled && setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: disabled ? "#F4F5F6" : "#FFF", border: `1.5px solid ${disabled ? "rgba(26,23,20,0.07)" : (open || hovered) ? "#059669" : "rgba(5,150,105,0.35)"}`, borderRadius: 10, padding: "8.5px 11.5px", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, color: disabled ? "#C9C4BB" : displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.12)" : "none", opacity: disabled ? 0.6 : 1 }}>
-        <span>{displayValue || placeholder}</span>
-        <Calendar style={{ width: 14, height: 14, color: disabled ? "#B0A9A4" : "#059669", flexShrink: 0 }} />
-      </div>
+      {variant === "cell" ? (
+        // 表のセル。枠は出さず、カレンダーの絵は触ったときだけ出す
+        <div ref={triggerRef} onClick={handleToggle}
+          onMouseEnter={() => !disabled && setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4,
+            fontSize: 11, color: displayValue ? "#6B6458" : "#B7B1AA",
+            cursor: disabled ? "default" : "pointer", userSelect: "none" as const,
+            whiteSpace: "nowrap" as const, overflow: "hidden",
+            ...cellStyle,
+          }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayValue || placeholder}</span>
+          {!disabled && (
+            <Calendar style={{
+              width: 11, height: 11, color: "#A09790", flexShrink: 0,
+              opacity: open || hovered ? 0.9 : 0, transition: "opacity 0.12s",
+            }} />
+          )}
+        </div>
+      ) : (
+        <div ref={triggerRef} onClick={handleToggle}
+          onMouseEnter={() => !disabled && setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: disabled ? "#F4F5F6" : "#FFF", border: `1.5px solid ${disabled ? "rgba(26,23,20,0.07)" : (open || hovered) ? "#059669" : "rgba(5,150,105,0.35)"}`, borderRadius: 10, padding: "8.5px 11.5px", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, color: disabled ? "#C9C4BB" : displayValue ? "#1A1714" : "#B0A9A4", transition: "all 0.15s", userSelect: "none" as const, boxShadow: open ? "0 0 0 3px rgba(5,150,105,0.12)" : "none", opacity: disabled ? 0.6 : 1 }}>
+          <span>{displayValue || placeholder}</span>
+          <Calendar style={{ width: 14, height: 14, color: disabled ? "#B0A9A4" : "#059669", flexShrink: 0 }} />
+        </div>
+      )}
 
       {open && createPortal(calendarPopup, document.body)}
     </div>

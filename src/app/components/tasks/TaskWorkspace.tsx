@@ -6,23 +6,27 @@
 // データの流れは本アプリの他ページと同じ「マウント時に1回 fetch ＋ 楽観更新」。
 // ヘッダーの更新ボタン（RefreshContext）はページごと再マウントするので、
 // ここに購読やポーリングは要らない。
+//
+// 編集は詳細パネルを開かず、リストの行の中で完結する（TaskListView）。
+// かんばん／ガントで押されたタスクは、編集できるリストへ送って行に目印を付ける。
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckSquare, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw } from "lucide-react";
+import { Check, CheckSquare, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { PageLoader } from "@/app/components/shared/PageLoader";
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { TaskListView } from "@/app/components/tasks/TaskListView";
 import { TaskBoardView, type TaskDropHandler } from "@/app/components/tasks/TaskBoardView";
 import { TaskGanttView } from "@/app/components/tasks/TaskGanttView";
-import { TaskDetailPanel } from "@/app/components/tasks/TaskDetailPanel";
 import { TaskQuickAddRow } from "@/app/components/tasks/TaskQuickAddRow";
+import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import {
   loadTasks, loadTaskProjects, loadTaskMembers, loadMyShareFlags,
   createTask, createSubtask, updateTask, deleteTask, syncAssigneeShare,
   computeSortOrder, renumberColumn, SORT_GAP,
   type NewTaskInput, type ProjectOption, type MemberOption,
 } from "@/app/lib/taskService";
-import { notifyTaskAssigned, notifyTaskShared } from "@/app/lib/taskNotify";
+import { notifyTaskAssigned } from "@/app/lib/taskNotify";
 import type { Task, TaskStatus, TaskView } from "@/app/types";
 
 type OwnerFilter = "all" | "mine" | "shared";
@@ -35,11 +39,11 @@ const VIEWS: { value: TaskView; label: string; icon: React.ElementType }[] = [
 
 function viewStorageKey(scopeKey: string) { return `dt.taskView.${scopeKey}`; }
 
-const FILTER_SELECT: React.CSSProperties = {
-  padding: "7px 10px", fontSize: 11.5, fontWeight: 600, color: "#6B6458",
-  background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8,
-  cursor: "pointer", outline: "none",
-};
+const OWNER_FILTERS = [
+  { value: "all", label: "自分＋共有" },
+  { value: "mine", label: "自分のタスク" },
+  { value: "shared", label: "共有されたもの" },
+];
 
 export function TaskWorkspace({
   scopeKey, projectId = null, projectSlug, title, subtitle, initialTaskId, onConsumeInitialTask,
@@ -79,7 +83,10 @@ export function TaskWorkspace({
   const [hideDone, setHideDone] = useState(false);
   const [search, setSearch] = useState("");
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 詳細パネルは持たない（行の中で直接直す）。
+  // これは「かんばん／ガント／お知らせから飛んできた行」に色を付けて送るための目印
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
   // ヘッダーの「タスクを追加」から、表の追加行へフォーカスを飛ばすための合図
   const [addFocus, setAddFocus] = useState(0);
 
@@ -110,7 +117,9 @@ export function TaskWorkspace({
     if (!initialTaskId || tasks.length === 0) return;
     const hit = tasks.find(t => t.id === initialTaskId);
     if (hit) {
-      setSelectedId(hit.id);
+      // 編集できるのはリストだけなので、そこへ送って行に色を付ける
+      setView("list");
+      setHighlightId(hit.id);
       // 完了を隠している最中でも開けるようにする
       if (hit.status === "done") setHideDone(false);
     } else {
@@ -148,7 +157,10 @@ export function TaskWorkspace({
       if (assigneeFilter === "@me" && t.assignee !== userName) return false;
       if (assigneeFilter === "@none" && t.assignee) return false;
       if (assigneeFilter && !assigneeFilter.startsWith("@") && t.assignee !== assigneeFilter) return false;
-      if (q && !t.title.toLowerCase().includes(q) && !t.description.toLowerCase().includes(q)) return false;
+      if (q
+        && !t.title.toLowerCase().includes(q)
+        && !t.description.toLowerCase().includes(q)
+        && !t.categories.some(c => c.toLowerCase().includes(q))) return false;
       return true;
     });
   }, [tasks, hideDone, isProjectScope, ownerFilter, projectFilter, assigneeFilter, search, userId, userName]);
@@ -156,8 +168,8 @@ export function TaskWorkspace({
   const doneCount = useMemo(() => tasks.filter(t => t.status === "done").length, [tasks]);
 
   /** 分類の候補。既に使われている値をそのまま出す（自由入力なのでマスタは持たない） */
-  const categories = useMemo(
-    () => Array.from(new Set(tasks.map(t => t.category).filter(Boolean))).sort(),
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(tasks.flatMap(t => t.categories).filter(Boolean))).sort(),
     [tasks],
   );
 
@@ -172,33 +184,44 @@ export function TaskWorkspace({
     return shareFlags[t.id] === true;
   }, [userId, shareFlags]);
 
-  const selected = useMemo(() => tasks.find(t => t.id === selectedId) ?? null, [tasks, selectedId]);
-  // 詳細パネルは onClose を escStack に積むので、毎レンダー作り直さない
-  const closeDetail = useCallback(() => setSelectedId(null), []);
+  /** 消せるのは持ち主だけ（サブタスクも一緒に消えるため） */
+  const canDelete = useCallback((t: Task) => t.ownerId === userId, [userId]);
 
   // ── 更新 ────────────────────────────────────────────────────
   const applyLocal = useCallback((id: string, patch: Partial<Task>) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
   }, []);
 
+  /**
+   * 行のセルからの更新はすべてここを通る。
+   * 完了時刻の付け外しと、担当を振ったときの共有・お知らせもここでまとめて面倒を見る
+   * （詳細パネルが無くなったので、経路はこの1本だけ）。
+   */
   const patchTask = useCallback(async (task: Task, patch: Partial<Task>) => {
     if (!canEdit(task)) { toast("このタスクを編集する権限がありません", "error"); return; }
-    applyLocal(task.id, patch);
-    const ok = await updateTask(task.id, patch);
+    const full: Partial<Task> = { ...patch };
+    if (patch.status !== undefined) {
+      // 完了に入った時刻を残す。戻したら消す（ガント／振り返りで使う）
+      full.completedAt = patch.status === "done" ? new Date().toISOString() : null;
+    }
+    applyLocal(task.id, full);
+    const ok = await updateTask(task.id, full);
     if (!ok) {
       toast("更新に失敗しました", "error");
       reload(false);
       return;
     }
-    // 担当者に指名した相手には自動で共有を張る（振ったのに見えない事故を防ぐ）
-    if (patch.assignee) {
+    // 担当者に指名した相手には自動で共有を張る（振ったのに見えない事故を防ぐ）＋お知らせ
+    if (patch.assignee && patch.assignee !== task.assignee) {
       await syncAssigneeShare(task.id, patch.assignee, members, task.createdBy);
+      if (patch.assignee !== userName) {
+        await notifyTaskAssigned(
+          { taskId: task.id, taskTitle: task.title, fromUserName: userName, projectSlug: projectSlugOf(task.projectId) },
+          patch.assignee,
+        );
+      }
     }
-  }, [canEdit, applyLocal, toast, reload, members]);
-
-  const handleStatusChange = useCallback((task: Task, status: TaskStatus) => {
-    patchTask(task, { status, completedAt: status === "done" ? new Date().toISOString() : null });
-  }, [patchTask]);
+  }, [canEdit, applyLocal, toast, reload, members, userName, projectSlugOf]);
 
   // かんばんの D&D。落とした位置の前後から新しい sort_order を決める
   const handleDrop = useCallback<TaskDropHandler>(async (taskId, newStatus, beforeId) => {
@@ -232,7 +255,7 @@ export function TaskWorkspace({
   }, [tasks, visible, canEdit, applyLocal, toast, reload]);
 
   const handleDelete = useCallback(async (task: Task) => {
-    setSelectedId(null);
+    setPendingDelete(null);
     // 親を消すと DB 側でサブタスクも cascade で消えるので、手元からも一緒に落とす
     setTasks(prev => prev.filter(t => t.id !== task.id && t.parentId !== task.id));
     const ok = await deleteTask(task.id);
@@ -269,24 +292,43 @@ export function TaskWorkspace({
    * サブタスクを足す。可視性（project_id と共有）は親から引き継ぐ（taskService 側）。
    * 子チケットと同じく1階層のみなので、子に対しては呼ばせない。
    */
-  const handleCreateSubtask = useCallback(async (parent: Task, subTitle: string) => {
+  const handleCreateSubtask = useCallback(async (
+    parent: Task, input: Omit<NewTaskInput, "ownerId" | "createdBy">,
+  ) => {
     if (parent.parentId) { toast("サブタスクはさらに分割できません", "error"); return false; }
     if (!canEdit(parent)) { toast("このタスクを編集する権限がありません", "error"); return false; }
     const minSort = tasks
       .filter(t => t.parentId === parent.id)
       .reduce<number | null>((min, t) => (min === null || t.sortOrder < min ? t.sortOrder : min), null);
-    const child = await createSubtask(parent, subTitle, userId, userName, minSort ?? SORT_GAP);
+    const child = await createSubtask(parent, input, userId, userName, minSort ?? SORT_GAP);
     if (!child) { toast("サブタスクの作成に失敗しました", "error"); return false; }
     setTasks(prev => [...prev, child]);
     // 親の共有をコピーしたので、自分に対する編集可フラグも手元に反映しておく
     setShareFlags(prev => ({ ...prev, [child.id]: true }));
+    // 親タスクと同じく、担当に指名した相手には共有とお知らせを回す
+    if (child.assignee && child.assignee !== userName) {
+      await syncAssigneeShare(child.id, child.assignee, members, userName);
+      await notifyTaskAssigned(
+        { taskId: child.id, taskTitle: child.title, fromUserName: userName, projectSlug: projectSlugOf(child.projectId) },
+        child.assignee,
+      );
+    }
     return true;
-  }, [tasks, canEdit, userId, userName, toast]);
+  }, [tasks, canEdit, userId, userName, members, projectSlugOf, toast]);
 
   /** かんばんの列末尾からの追加。プロジェクトは画面のスコープに従う */
   const handleColumnCreate = useCallback((quickTitle: string, status: TaskStatus) =>
     handleCreate({ title: quickTitle, status, projectId, priority: "medium", assignee: "" }),
   [handleCreate, projectId]);
+
+  /**
+   * かんばん／ガントで押されたタスクをリストで開く。
+   * 編集できるのはリストの行だけなので、そこへ送って目印を付ける。
+   */
+  const openInList = useCallback((t: Task) => {
+    setView("list");
+    setHighlightId(t.id);
+  }, []);
 
   // ヘッダーの「タスクを追加」は、モーダルではなく表の追加行へ誘導する
   const focusQuickAdd = useCallback(() => {
@@ -297,7 +339,10 @@ export function TaskWorkspace({
   // ── 描画 ────────────────────────────────────────────────────
   if (loading) return <PageLoader label="タスクを読み込み中..." />;
 
-  const assigneeNames = Array.from(new Set(tasks.map(t => t.assignee).filter(Boolean))).sort();
+  const assigneeNames: string[] = tasks
+    .map(t => t.assignee)
+    .filter((n, i, all) => n && all.indexOf(n) === i)
+    .sort();
 
   return (
     <div style={{ padding: "0 4px 40px" }}>
@@ -342,30 +387,41 @@ export function TaskWorkspace({
 
         {!isProjectScope && (
           <>
-            <select value={ownerFilter} onChange={e => setOwnerFilter(e.target.value as OwnerFilter)} style={FILTER_SELECT}>
-              <option value="all">自分＋共有</option>
-              <option value="mine">自分のタスク</option>
-              <option value="shared">共有されたもの</option>
-            </select>
-            <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} style={FILTER_SELECT}>
-              <option value="">すべてのPJ</option>
-              <option value="none">個人タスク</option>
-              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <PickerCell variant="chip" width={128} value={ownerFilter} title="表示範囲"
+              options={OWNER_FILTERS}
+              onChange={v => setOwnerFilter(v as OwnerFilter)} />
+            <PickerCell variant="chip" width={168} value={projectFilter} title="プロジェクト"
+              options={[
+                { value: "", label: "すべてのPJ" },
+                { value: "none", label: "個人タスク" },
+                ...projects.map(p => ({ value: p.id, label: p.name })),
+              ]}
+              onChange={setProjectFilter} />
           </>
         )}
 
-        <select value={assigneeFilter} onChange={e => setAssigneeFilter(e.target.value)} style={FILTER_SELECT}>
-          <option value="">担当: すべて</option>
-          <option value="@me">自分の担当</option>
-          <option value="@none">未割当</option>
-          {assigneeNames.filter(n => n !== userName).map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
+        <PickerCell variant="chip" width={140} value={assigneeFilter} title="担当者"
+          options={[
+            { value: "", label: "担当: すべて" },
+            { value: "@me", label: "自分の担当" },
+            { value: "@none", label: "未割当" },
+            ...assigneeNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
+          ]}
+          onChange={setAssigneeFilter} />
 
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 600, color: "#6B6458", cursor: "pointer", padding: "7px 10px", background: "#FFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8 }}>
-          <input type="checkbox" checked={hideDone} onChange={e => setHideDone(e.target.checked)} style={{ accentColor: "#059669" }} />
+        {/* 標準のチェックボックスはOSごとに見た目が違うので自前で描く */}
+        <button type="button" onClick={() => setHideDone(v => !v)}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600, color: "#6B6458", cursor: "pointer", padding: "7px 10px", background: "#FFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8, fontFamily: "inherit" }}>
+          <span style={{
+            width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: hideDone ? "#059669" : "#FFF",
+            border: hideDone ? "none" : "1.5px solid rgba(26,23,20,0.18)",
+          }}>
+            {hideDone && <Check style={{ width: 10, height: 10, color: "#FFF" }} />}
+          </span>
           完了を隠す
-        </label>
+        </button>
 
         <div style={{ position: "relative", marginLeft: "auto" }}>
           <Search style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: "#B0A9A4" }} />
@@ -391,22 +447,30 @@ export function TaskWorkspace({
         </p>
       )}
       {view === "list" ? (
-        <TaskListView tasks={visible} allTasks={tasks} projectNameOf={projectNameOf} showProject={!isProjectScope}
-          canEdit={canEdit} selectedId={selectedId}
-          onSelect={t => setSelectedId(t.id)} onStatusChange={handleStatusChange}
-          onCreateSubtask={handleCreateSubtask}
+        <TaskListView tasks={visible} allTasks={tasks} showProject={!isProjectScope}
+          canEdit={canEdit} canDelete={canDelete} highlightId={highlightId}
+          projects={projects} members={members} categoryOptions={categoryOptions}
+          onPatch={patchTask} onDelete={setPendingDelete}
+          renderSubtaskAdd={parent => (
+            <TaskQuickAddRow
+              projects={projects} members={members} categoryOptions={categoryOptions}
+              showProject={!isProjectScope} fixedProjectId={parent.projectId} lockProject
+              indent={22} placeholder="サブタスクを入力して Enter で追加"
+              onCreate={input => handleCreateSubtask(parent, input)}
+            />
+          )}
           quickAdd={
             <TaskQuickAddRow
-              projects={projects} members={members} categories={categories}
+              projects={projects} members={members} categoryOptions={categoryOptions}
               showProject={!isProjectScope} fixedProjectId={projectId}
               focusSignal={addFocus} onCreate={handleCreate}
             />
           } />
       ) : view === "board" ? (
-        <TaskBoardView tasks={visible} canEdit={canEdit} selectedId={selectedId}
+        <TaskBoardView tasks={visible} canEdit={canEdit} selectedId={highlightId}
           showProject={!isProjectScope} projectNameOf={projectNameOf}
           parentTitleOf={parentTitleOf}
-          onSelect={t => setSelectedId(t.id)} onDrop={handleDrop}
+          onSelect={openInList} onDrop={handleDrop}
           onQuickCreate={handleColumnCreate} />
       ) : visible.length === 0 ? (
         <div style={{ background: "#FFFFFF", border: "1px dashed rgba(26,23,20,0.12)", borderRadius: 12, padding: "56px 20px", textAlign: "center" as const }}>
@@ -415,34 +479,21 @@ export function TaskWorkspace({
         </div>
       ) : (
         <TaskGanttView tasks={visible} projectNameOf={projectNameOf}
-          selectedId={selectedId} onSelect={t => setSelectedId(t.id)} />
+          selectedId={highlightId} onSelect={openInList} />
       )}
 
-      {selected && (
-        <TaskDetailPanel
-          task={selected}
-          projects={projects}
-          members={members}
-          categories={categories}
-          subtasks={tasks.filter(t => t.parentId === selected.id).sort((a, b) => a.sortOrder - b.sortOrder)}
-          parentTask={selected.parentId ? tasks.find(t => t.id === selected.parentId) ?? null : null}
-          currentUserId={userId}
-          currentUserName={userName}
-          canEdit={canEdit(selected)}
-          onPatch={patch => patchTask(selected, patch)}
-          onDelete={() => handleDelete(selected)}
-          onClose={closeDetail}
-          onCreateSubtask={handleCreateSubtask}
-          onPatchTask={patchTask}
-          onOpenTask={t => setSelectedId(t.id)}
-          onShared={name => notifyTaskShared(
-            { taskId: selected.id, taskTitle: selected.title, fromUserName: userName, projectSlug: projectSlugOf(selected.projectId) },
-            name,
-          )}
-          onAssigned={name => notifyTaskAssigned(
-            { taskId: selected.id, taskTitle: selected.title, fromUserName: userName, projectSlug: projectSlugOf(selected.projectId) },
-            name,
-          )}
+      {pendingDelete && (
+        <ConfirmDialog
+          title="タスクの削除"
+          message={(() => {
+            const kids = tasks.filter(t => t.parentId === pendingDelete.id).length;
+            return kids > 0
+              ? `「${pendingDelete.title}」を削除します。\nサブタスク ${kids}件も一緒に削除されます。`
+              : `「${pendingDelete.title}」を削除します。`;
+          })()}
+          onConfirm={() => handleDelete(pendingDelete)}
+          onClose={() => setPendingDelete(null)}
+          zIndex={300}
         />
       )}
 
