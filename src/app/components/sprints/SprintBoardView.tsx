@@ -13,6 +13,7 @@ import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/co
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 10, "in-review": 30,
   "review-done": 50, "stg-test": 70, uat: 90, done: 100, closed: 100,
+  "waiting-release": 100, released: 100, "on-hold": 0, withdrawn: 0,
 };
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -33,12 +34,11 @@ const MODAL_LABELS: Partial<Record<TicketStatus, { title: string; placeholder: s
 
 const STATUS_RANK: Record<TicketStatus, number> = {
   "todo": 0, "in-progress": 1, "in-review": 2, "review-done": 3,
-  "stg-test": 4, "uat": 5, "done": 6, "closed": 7,
+  "stg-test": 4, "uat": 5, "done": 6, "closed": 7, "waiting-release": 8, "released": 9,
+  "on-hold": -1, "withdrawn": -2,
 };
 
 function effectiveStatus(ticket: SprintTicket): string {
-  if (ticket.progress === -1) return "pending";
-  if (ticket.progress === -2) return "withdrawn";
   return ticket.status;
 }
 
@@ -162,7 +162,7 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
 }) {
   const [{ isOver, canDrop }, drop] = useDrop<DragItem, void, { isOver: boolean; canDrop: boolean }>(() => ({
     accept: DRAG_TYPE,
-    canDrop: item => canEdit && item.sprintId === sprintId && item.currentStatus !== col.value && col.value !== "pending" && col.value !== "withdrawn",
+    canDrop: item => canEdit && item.sprintId === sprintId && item.currentStatus !== col.value && col.value !== "on-hold" && col.value !== "withdrawn",
     drop: item => onDrop(item, col.value),
     collect: m => ({ isOver: m.isOver(), canDrop: m.canDrop() }),
   }), [sprintId, col.value, onDrop, canEdit]);
