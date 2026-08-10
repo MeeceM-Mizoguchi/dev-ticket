@@ -304,6 +304,7 @@ export interface Sprint {
   id: string; projectId: string; name: string; goal: string;
   status: SprintStatus; startDate: string; endDate: string;
   tickets: SprintTicket[]; identifier: string;
+  isManualStatus?: boolean;
 }
 export interface EnvMemo {
   name: string;

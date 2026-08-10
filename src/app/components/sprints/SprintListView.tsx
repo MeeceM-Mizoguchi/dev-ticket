@@ -713,6 +713,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, minWidth: 0, overflow: "hidden" }}>
                       <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sprint.name}</span>
                       <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
+                      {sprint.isManualStatus && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FFFBEB", color: "#D97706", border: "1px solid rgba(217,119,6,0.25)", whiteSpace: "nowrap" }}>手動</span>
+                      )}
                       {showPendingBadge && (
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", whiteSpace: "nowrap" }}>保留あり</span>
                       )}
@@ -797,67 +800,67 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                   const allSel = visibleIds.length > 0 && visibleIds.every(id => selectedTicketIds.has(id));
                   const someSel = !allSel && visibleIds.some(id => selectedTicketIds.has(id));
                   return (
-                  <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
-                    <SelBox checked={allSel} indeterminate={someSel}
-                      onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSel); }} />
-                    {COLS.map((col, idx) => (
-                      <ColumnFilter key={col} col={col}
-                        label={COL_LABELS[idx]}
-                        sortCol={sprintSort.col as SortCol | "closedDate" | ""}
-                        sortDir={sprintSort.dir}
-                        onSort={(c, d) => handleSort(sprint.id, c, d)}
-                        onClearSort={() => clearSort(sprint.id)}
-                        onClose={closeCol}
-                        options={getColOptions(sprint, col)}
-                        selected={getSelected(sprint.id, col)}
-                        onFilterChange={setColFilter(sprint.id, col)}
-                        open={openCol === `${sprint.id}:${col}`}
-                        onToggle={() => toggleCol(sprint.id, col)}
-                        alignRight={idx >= 7}
-                      />
-                    ))}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>実績</span>
+                    <div style={{ display: "grid", gridTemplateColumns: GRID, padding: "7px 16px", background: "#F4F5F6", gap: 8, alignItems: "center", borderBottom: "1px solid rgba(26,23,20,0.08)", boxShadow: "0 2px 4px rgba(0,0,0,0.04)" }}>
+                      <SelBox checked={allSel} indeterminate={someSel}
+                        onClick={e => { e.stopPropagation(); bulk.setSelection(displayTickets, !allSel); }} />
+                      {COLS.map((col, idx) => (
+                        <ColumnFilter key={col} col={col}
+                          label={COL_LABELS[idx]}
+                          sortCol={sprintSort.col as SortCol | "closedDate" | ""}
+                          sortDir={sprintSort.dir}
+                          onSort={(c, d) => handleSort(sprint.id, c, d)}
+                          onClearSort={() => clearSort(sprint.id)}
+                          onClose={closeCol}
+                          options={getColOptions(sprint, col)}
+                          selected={getSelected(sprint.id, col)}
+                          onFilterChange={setColFilter(sprint.id, col)}
+                          open={openCol === `${sprint.id}:${col}`}
+                          onToggle={() => toggleCol(sprint.id, col)}
+                          alignRight={idx >= 7}
+                        />
+                      ))}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>実績</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        {hasAnyFilter && (
+                          <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
+                            <X style={{ width: 11, height: 11 }} />
+                          </button>
+                        )}
+                        {(hasAnyFilter || sprintSort.col) && (() => {
+                          const filterAtLimit = plan.maxFiltersPerSprint !== null && (filterCounts[sprint.id] ?? 0) >= plan.maxFiltersPerSprint;
+                          return (
+                            <PlanTooltip text="現在のプランではこれ以上作成できません" active={filterAtLimit} placement="bottom-left">
+                              <button
+                                onClick={filterAtLimit ? undefined : async (e) => {
+                                  e.stopPropagation();
+                                  const serialized: Record<string, string[]> = {};
+                                  Object.entries(currentFilters).forEach(([k, v]) => {
+                                    if (v && v.size > 0) serialized[k] = Array.from(v);
+                                  });
+                                  const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
+                                  if (dupTitle) {
+                                    showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
+                                    return;
+                                  }
+                                  setSaveFilterTarget({
+                                    sprintId: sprint.id,
+                                    serializedFilters: serialized,
+                                    sortCol: sprintSort.col,
+                                    sortDir: sprintSort.dir as "asc" | "desc",
+                                  });
+                                }}
+                                title={filterAtLimit ? undefined : "現在の絞り込み・並び替えを保存"}
+                                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: `1px solid ${filterAtLimit ? "rgba(156,163,175,0.30)" : "rgba(5,150,105,0.25)"}`, background: filterAtLimit ? "#F3F4F6" : "#ECFDF5", color: filterAtLimit ? "#9CA3AF" : "#059669", cursor: filterAtLimit ? "not-allowed" : "pointer", padding: 0, flexShrink: 0 }}
+                              >
+                                <Save style={{ width: 11, height: 11 }} />
+                              </button>
+                            </PlanTooltip>
+                          );
+                        })()}
+                      </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                      {hasAnyFilter && (
-                        <button onClick={() => setSprintFilters(prev => ({ ...prev, [sprint.id]: {} }))} title="このテーブルのフィルタを全解除" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", padding: 0, flexShrink: 0 }}>
-                          <X style={{ width: 11, height: 11 }} />
-                        </button>
-                      )}
-                      {(hasAnyFilter || sprintSort.col) && (() => {
-                        const filterAtLimit = plan.maxFiltersPerSprint !== null && (filterCounts[sprint.id] ?? 0) >= plan.maxFiltersPerSprint;
-                        return (
-                          <PlanTooltip text="現在のプランではこれ以上作成できません" active={filterAtLimit} placement="bottom-left">
-                            <button
-                              onClick={filterAtLimit ? undefined : async (e) => {
-                                e.stopPropagation();
-                                const serialized: Record<string, string[]> = {};
-                                Object.entries(currentFilters).forEach(([k, v]) => {
-                                  if (v && v.size > 0) serialized[k] = Array.from(v);
-                                });
-                                const dupTitle = await checkDuplicateFilter(sprint.id, userId ?? "", serialized);
-                                if (dupTitle) {
-                                  showAlert(`同じ条件のフィルタ「${dupTitle}」がすでに保存されています。`, "重複エラー");
-                                  return;
-                                }
-                                setSaveFilterTarget({
-                                  sprintId: sprint.id,
-                                  serializedFilters: serialized,
-                                  sortCol: sprintSort.col,
-                                  sortDir: sprintSort.dir as "asc" | "desc",
-                                });
-                              }}
-                              title={filterAtLimit ? undefined : "現在の絞り込み・並び替えを保存"}
-                              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: `1px solid ${filterAtLimit ? "rgba(156,163,175,0.30)" : "rgba(5,150,105,0.25)"}`, background: filterAtLimit ? "#F3F4F6" : "#ECFDF5", color: filterAtLimit ? "#9CA3AF" : "#059669", cursor: filterAtLimit ? "not-allowed" : "pointer", padding: 0, flexShrink: 0 }}
-                            >
-                              <Save style={{ width: 11, height: 11 }} />
-                            </button>
-                          </PlanTooltip>
-                        );
-                      })()}
-                    </div>
-                  </div>
                   );
                 })()}
               </div>
@@ -932,11 +935,11 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
                           {/* 🌟 期限日の表示（当日以降かつ未完了なら赤文字・太字 / 未設定は『—』） */}
                           <div style={{ display: "flex", justifyContent: "center" }}>
-                            <span style={{ 
-                              fontSize: 10, 
-                              color: isDueAlert ? "#DC2626" : "#B0A9A4", 
-                              fontWeight: isDueAlert ? 800 : 400, 
-                              fontFamily: "var(--font-mono)" 
+                            <span style={{
+                              fontSize: 10,
+                              color: isDueAlert ? "#DC2626" : "#B0A9A4",
+                              fontWeight: isDueAlert ? 800 : 400,
+                              fontFamily: "var(--font-mono)"
                             }}>
                               {t.dueDate ? formatDate(t.dueDate) : "—"}
                             </span>
@@ -956,7 +959,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id) || bulkHighlight.has(child.wbs);
                           const isChildSel = selectedTicketIds.has(child.id);
                           const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.progress === -1 || child.progress === -2) ? "#F5F5F4" : "#F9F8F6";
-                          
+
                           // 子チケットの期限日赤文字判定
                           const isChildDueAlert = isOverdueOrToday(child.dueDate, child.status, child.progress);
 
