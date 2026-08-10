@@ -16,8 +16,8 @@ import {
 } from "@/app/components/ui/context-menu";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
-import { mapProject, mapWikiPage } from "@/app/lib/mappers";
-import type { Project, WikiPage as WikiPageType, AccessLevel, UserPermissions } from "@/app/types";
+import { mapProject, mapWikiPage, mapSprintTicket } from "@/app/lib/mappers";
+import type { Project, WikiPage as WikiPageType, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
 
 function titleToPathSegment(title: string): string {
   return encodeURIComponent(title || "無題のページ");
@@ -25,6 +25,7 @@ function titleToPathSegment(title: string): string {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { readWikiMarkdownFiles, WIKI_MD_ACCEPT } from "@/app/lib/wikiMdImport";
@@ -346,6 +347,49 @@ export function WikiPage() {
 
   const [movingNodeTarget, setMovingNodeTarget] = useState<WikiPageType | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
+  const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
+
+  const handleSelectTicketByWbs = useCallback(async (wbs: string) => {
+    if (!isSupabaseEnabled || !project) {
+      setSelectedTicket({
+        id: wbs, wbs, title: wbs, status: "todo", priority: "medium", assignee: "", startDate: "", dueDate: "", estimatedHours: 0, progress: 0
+      });
+      return;
+    }
+    const { data: sprintRows } = await supabase!
+      .from("sprints")
+      .select("id")
+      .eq("project_id", project.id);
+    const sprintIds = sprintRows?.map(s => s.id) ?? [];
+
+    let ticketRow: any = null;
+    if (sprintIds.length > 0) {
+      const { data } = await supabase!
+        .from("sprint_tickets")
+        .select("*")
+        .in("sprint_id", sprintIds)
+        .eq("wbs", wbs)
+        .maybeSingle();
+      ticketRow = data;
+    }
+
+    if (!ticketRow) {
+      const { data } = await supabase!
+        .from("sprint_tickets")
+        .select("*")
+        .eq("wbs", wbs)
+        .maybeSingle();
+      ticketRow = data;
+    }
+
+    if (ticketRow) {
+      setSelectedTicket(mapSprintTicket(ticketRow));
+      setSelectedTicketSprintId(ticketRow.sprint_id);
+    } else {
+      toast("該当するチケットが見つかりませんでした", "error");
+    }
+  }, [project, toast]);
 
   // MD取り込みの進捗（null=非実行中）。一括取り込み中は「+ 新規ページ」を進捗表示に差し替える。
   const [mdImportProgress, setMdImportProgress] = useState<{ done: number; total: number } | null>(null);
@@ -386,7 +430,7 @@ export function WikiPage() {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     // ロード開始時にloadingを確実にtrueにする（リロード対策）
     setLoading(true);
-    
+
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
@@ -396,7 +440,7 @@ export function WikiPage() {
       isAdminRole ? Promise.resolve({ data: null }) :
         supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
     ]);
-    
+
     const mappedPages = (data ?? []).map(mapWikiPage);
     setPages(mappedPages);
 
@@ -482,7 +526,7 @@ export function WikiPage() {
         return;
       }
     }
-    
+
     if (wikiPath && !activeId) {
       const parts = wikiPath.split("/").filter(Boolean);
       if (parts.length > 0) {
@@ -536,7 +580,7 @@ export function WikiPage() {
     if (id === selectedId) {
       setTitle(nextTitle);
     }
-    
+
     if (isSupabaseEnabled) {
       const { error } = await supabase!
         .from("wiki_pages")
@@ -852,9 +896,9 @@ export function WikiPage() {
             <TreeItem key={node.id} node={node} depth={0} selectedId={selectedId}
               onSelectPage={handleSelectPage}
               onSelectFolder={handleSelectFolder}
-              onAddChild={canEdit ? handleAddItem : () => {}}
-              onImportMd={canEdit ? handleOpenMdPicker : () => {}}
-              onDelete={canEdit ? setDeleteTarget : () => {}}
+              onAddChild={canEdit ? handleAddItem : () => { }}
+              onImportMd={canEdit ? handleOpenMdPicker : () => { }}
+              onDelete={canEdit ? setDeleteTarget : () => { }}
               onMoveNode={handleMoveNode}
               onOpenMoveModal={setMovingNodeTarget}
               onRename={handleTreeItemRename}
@@ -926,6 +970,7 @@ export function WikiPage() {
                   wikiItems={suggest.wikiItems}
                   minuteItems={suggest.minuteItems}
                   fileItems={suggest.fileItems}
+                  onTicketClick={handleSelectTicketByWbs}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
@@ -967,6 +1012,19 @@ export function WikiPage() {
             await handleMoveNode(movingNodeTarget.id, targetParentId);
             setMovingNodeTarget(null);
           }}
+        />
+      )}
+
+      {/* チケット詳細パネル */}
+      {selectedTicket && (
+        <TicketDetailPanel
+          ticket={selectedTicket}
+          projectId={project?.id}
+          sprintId={selectedTicketSprintId}
+          projectSlug={projectSlug}
+          onClose={() => setSelectedTicket(null)}
+          onUpdated={load}
+          onSelectTicket={t => handleSelectTicketByWbs(t.wbs)}
         />
       )}
     </div>

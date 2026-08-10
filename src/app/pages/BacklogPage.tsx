@@ -6,9 +6,10 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
-import { mapProject, mapBacklogItem, mapTicketCategory } from "@/app/lib/mappers";
+import { mapProject, mapBacklogItem, mapTicketCategory, mapSprintTicket } from "@/app/lib/mappers";
 import { getDefaultProgressForStatus } from "@/app/lib/helpers";
-import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions } from "@/app/types";
+import type { Project, BacklogItem, BacklogStatus, Priority, Sprint, TicketCategory, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
+import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -259,6 +260,49 @@ export function BacklogPage() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
+  const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
+
+  const handleSelectTicketByWbs = useCallback(async (wbs: string) => {
+    if (!isSupabaseEnabled || !project) {
+      setSelectedTicket({
+        id: wbs, wbs, title: wbs, status: "todo", priority: "medium", assignee: "", startDate: "", dueDate: "", estimatedHours: 0, progress: 0
+      });
+      return;
+    }
+    const { data: sprintRows } = await supabase!
+      .from("sprints")
+      .select("id")
+      .eq("project_id", project.id);
+    const sprintIds = sprintRows?.map(s => s.id) ?? [];
+
+    let ticketRow: any = null;
+    if (sprintIds.length > 0) {
+      const { data } = await supabase!
+        .from("sprint_tickets")
+        .select("*")
+        .in("sprint_id", sprintIds)
+        .eq("wbs", wbs)
+        .maybeSingle();
+      ticketRow = data;
+    }
+
+    if (!ticketRow) {
+      const { data } = await supabase!
+        .from("sprint_tickets")
+        .select("*")
+        .eq("wbs", wbs)
+        .maybeSingle();
+      ticketRow = data;
+    }
+
+    if (ticketRow) {
+      setSelectedTicket(mapSprintTicket(ticketRow));
+      setSelectedTicketSprintId(ticketRow.sprint_id);
+    } else {
+      toast("該当するチケットが見つかりませんでした", "error");
+    }
+  }, [project, toast]);
 
   // 右パネル編集ステート
   const [editTitle, setEditTitle] = useState("");
@@ -669,6 +713,7 @@ export function BacklogPage() {
                   wikiItems={suggest.wikiItems}
                   minuteItems={suggest.minuteItems}
                   fileItems={suggest.fileItems}
+                  onTicketClick={handleSelectTicketByWbs}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
@@ -700,6 +745,19 @@ export function BacklogPage() {
           message={`${deleteTarget.id}「${deleteTarget.title}」を削除します。`}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
+      )}
+
+      {/* チケット詳細パネル */}
+      {selectedTicket && (
+        <TicketDetailPanel
+          ticket={selectedTicket}
+          projectId={project?.id}
+          sprintId={selectedTicketSprintId}
+          projectSlug={projectSlug}
+          onClose={() => setSelectedTicket(null)}
+          onUpdated={load}
+          onSelectTicket={t => handleSelectTicketByWbs(t.wbs)}
+        />
       )}
     </div>
   );
