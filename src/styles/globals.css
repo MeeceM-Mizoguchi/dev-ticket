@@ -47,3 +47,40 @@
 
 .loading-dot:nth-child(2) { animation-delay: 0.2s; }
 .loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* ENHA2-032 タスク表のセル。
+   タイトル欄と同じ「ただの文字」。ホバーでもフォーカスでも枠や背景は出さない
+   （1行が入力フォームの寄せ集めに見えないようにするため）。 */
+.task-cell {
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+.task-cell:hover,
+.task-cell:focus,
+.task-cell:focus-visible,
+.task-cell:focus-within {
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+/* 削除は行にマウスを乗せたときだけ出す（常に出ていると誤爆しやすい） */
+.task-row .task-row-del {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.task-row:hover .task-row-del,
+.task-row:focus-within .task-row-del {
+  opacity: 1;
+}
+/* 選択肢を持つセルだけは、触ったときに ▼ を出して「選べる」ことを示す */
+.task-select .task-select-arrow {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.task-select:hover .task-select-arrow,
+.task-select:focus-within .task-select-arrow {
+  opacity: 1;
+}
