@@ -713,6 +713,9 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, minWidth: 0, overflow: "hidden" }}>
                       <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sprint.name}</span>
                       <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
+                      {sprint.isManualStatus && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FFFBEB", color: "#D97706", border: "1px solid rgba(217,119,6,0.25)", whiteSpace: "nowrap" }}>手動</span>
+                      )}
                       {showPendingBadge && (
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", whiteSpace: "nowrap" }}>保留あり</span>
                       )}

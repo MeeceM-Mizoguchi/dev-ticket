@@ -2,6 +2,7 @@ import type { ProjectStatus, TicketStatus, Priority, Role, Sprint, SprintStatus,
 
 // Compute sprint status dynamically from ticket states + deadline
 export function computeSprintStatus(sprint: Sprint): SprintStatus {
+  if (sprint.isManualStatus) return sprint.status;
   const today = new Date().toISOString().split("T")[0];
   const { tickets, endDate } = sprint;
   const active: TicketStatus[] = ["in-progress", "in-review", "review-done", "stg-test", "uat", "done", "waiting-release", "released"];

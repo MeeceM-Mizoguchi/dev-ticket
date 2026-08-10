@@ -82,7 +82,7 @@ export function mapSprint(r: any): Sprint {
       const d = (a.createdAt || "").localeCompare(b.createdAt || "");
       return d !== 0 ? d : a.id.localeCompare(b.id);
     });
-  return { id: r.id, projectId: r.project_id, name: r.name, goal: r.goal || "", status: r.status, startDate: r.start_date, endDate: r.end_date, identifier: r.identifier || "", tickets };
+  return { id: r.id, projectId: r.project_id, name: r.name, goal: r.goal || "", status: r.status, startDate: r.start_date, endDate: r.end_date, identifier: r.identifier || "", tickets, isManualStatus: r.is_manual_status ?? false };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
