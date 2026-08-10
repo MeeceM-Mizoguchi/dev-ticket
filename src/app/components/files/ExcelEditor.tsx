@@ -236,6 +236,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   // 別配列で差し替えず「同じ配列を in-place で書き換え」て編集が消えないようにする。
   const gridDataRef = useRef<Grid>([]);
   const [overlayOffset, setOverlayOffset] = useState({ left: ROW_HEADER_W, top: 26 });
+  const lastOverlayOffsetRef = useRef({ left: ROW_HEADER_W, top: 26 });
   sheetsRef.current = sheets;
 
   // ── 読み込み ────────────────────────────────────────────────
@@ -572,7 +573,17 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     const tr = td.getBoundingClientRect();
     const left = Math.round(tr.left - wr.left);
     const top = Math.round(tr.top - wr.top);
-    setOverlayOffset(prev => (prev.left === left && prev.top === top ? prev : { left, top }));
+
+    // 前回と同じ位置なら State 更新をスキップ（無限レンダリング Error #185 を防止）
+    if (lastOverlayOffsetRef.current.left === left && lastOverlayOffsetRef.current.top === top) {
+      return;
+    }
+
+    lastOverlayOffsetRef.current = { left, top };
+    // requestAnimationFrame で React のレンダリングサイクル外へ逃がす
+    requestAnimationFrame(() => {
+      setOverlayOffset({ left, top });
+    });
   }, []);
 
   // BRU10-055 セル文字の見切れ対策。

@@ -86,6 +86,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const [progressStep, setProgressStep] = useState(0);
   const [progressError, setProgressError] = useState<string | null>(null);
   const [titleError, setTitleError] = useState(false);
+  const [limitError, setLimitError] = useState<string | null>(null);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
   // --- ラベル（プレフィックス）---
@@ -432,7 +433,27 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     if (needsSelection && !selectedSprintId) { setSprintError(true); valid = false; }
     if (!title.trim()) { setTitleError(true); valid = false; }
     if (!valid) return;
-    if (plan.maxTicketsPerSprint !== null && currentTicketCount !== undefined && currentTicketCount >= plan.maxTicketsPerSprint) return;
+
+    setLimitError(null);
+    if (plan.maxTicketsPerSprint !== null) {
+      let count = currentTicketCount;
+      let targetSprintId = effectiveSprintId;
+      if (!targetSprintId && isChildMode && parentTicketId && isSupabaseEnabled) {
+        const { data: pRow } = await supabase!.from("sprint_tickets").select("sprint_id").eq("id", parentTicketId).single();
+        if (pRow?.sprint_id) targetSprintId = pRow.sprint_id;
+      }
+      if (count === undefined && isSupabaseEnabled && targetSprintId) {
+        const { count: dbCount } = await supabase!
+          .from("sprint_tickets")
+          .select("id", { count: "exact", head: true })
+          .eq("sprint_id", targetSprintId);
+        count = dbCount ?? 0;
+      }
+      if (count !== undefined && count >= plan.maxTicketsPerSprint) {
+        setLimitError(`プランの上限数（${plan.maxTicketsPerSprint}件）に達しているため作成できません。`);
+        return;
+      }
+    }
 
     const finalAssignee = (assignee === "担当者なし" || !assignee) ? "" : assignee;
 
@@ -739,25 +760,25 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               // 🌟 追加: 新規追加ボタン押下時に「CAT-タイムスタンプ」フォーマットのIDを自作してインサートする処理
               onAddOption={async (newLabel) => {
                 if (!isSupabaseEnabled || !effectiveProjectId) return null;
-                
+
                 const correctIdFormat = `CAT-${Date.now()}`;
-                
+
                 const { error } = await supabase!
                   .from("ticket_categories")
-                  .insert({ 
+                  .insert({
                     id: correctIdFormat,
-                    project_id: effectiveProjectId, 
-                    name: newLabel.trim() 
+                    project_id: effectiveProjectId,
+                    name: newLabel.trim()
                   });
-                
+
                 if (error) {
                   console.error("カテゴリーの追加に失敗しました:", error.message);
                   return null;
                 }
-                
+
                 // チケット作成モーダル内のカテゴリー一覧ステートを再取得
                 await refreshCategories();
-                
+
                 // 作成したIDを返してプルダウンで自動選択
                 return correctIdFormat;
               }}
@@ -1032,6 +1053,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 {!isValid && (
                   <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
                     {errs.join("・")}を入力してください
+                  </span>
+                )}
+                {limitError && (
+                  <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
+                    {limitError}
                   </span>
                 )}
               </>

@@ -84,13 +84,16 @@ export function ProjectCard({
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 28px rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-3px)"; }}
       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 3px rgba(26,23,20,0.06), 0 4px 12px rgba(26,23,20,0.04)"; (e.currentTarget as HTMLElement).style.transform = "none"; }}>
       <div style={{ height: 5, background: `linear-gradient(90deg, ${dotColor}, ${dotColor}CC)`, borderRadius: "16px 16px 0 0" }} />
-      
+
       <div style={{ padding: "16px 18px 18px", flex: 1, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
               <span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{project.id}</span>
               <span style={{ fontSize: 9, background: project.status === "in-progress" ? "#ECFDF5" : project.status === "completed" ? "#ECFDF5" : project.status === "on-hold" ? "#FFFBEB" : "#F4F5F6", color: project.status === "in-progress" ? "#059669" : project.status === "completed" ? "#059669" : project.status === "on-hold" ? "#D97706" : "#A09790", padding: "2px 7px", borderRadius: 20, fontWeight: 600 }}>{sm.label}</span>
+              {project.isManualStatus && (
+                <span style={{ fontSize: 9, background: "#FFFBEB", color: "#D97706", border: "1px solid rgba(217,119,6,0.25)", padding: "1px 6px", borderRadius: 20, fontWeight: 600 }}>手動</span>
+              )}
             </div>
             <h3 style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", lineHeight: 1.3, marginBottom: 3 }}>{project.name}</h3>
             <p style={{ fontSize: 11, color: "#B0A9A4", display: "flex", alignItems: "center", gap: 4 }}>
@@ -165,7 +168,7 @@ export function ProjectCard({
             </div>
           )}
         </div>
-        
+
         {/* フッター外枠ブロック */}
         <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 12, borderTop: "1px solid rgba(26,23,20,0.05)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

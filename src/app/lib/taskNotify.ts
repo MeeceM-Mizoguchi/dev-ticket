@@ -68,10 +68,3 @@ export async function notifyTaskAssigned(base: TaskNotifyBase, assignee: string)
     `${base.fromUserName}さんからタスクが割り当てられました`,
     base.taskTitle);
 }
-
-/** 自分以外にタスクを共有したとき */
-export async function notifyTaskShared(base: TaskNotifyBase, toUserName: string): Promise<void> {
-  await notify(base, toUserName,
-    `${base.fromUserName}さんからタスクが共有されました`,
-    base.taskTitle);
-}

@@ -57,7 +57,7 @@ export interface RoleDefinition {
   organizationId?: string | null;
 }
 export type ProjectStatus = "planning" | "in-progress" | "completed" | "on-hold";
-export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed" | "waiting-release" | "released";
+export type TicketStatus = "todo" | "in-progress" | "in-review" | "review-done" | "stg-test" | "uat" | "done" | "closed" | "waiting-release" | "released" | "on-hold" | "withdrawn";
 export type Priority = "low" | "medium" | "high";
 export type MemberStatus = "active" | "inactive" | "invited";
 export type NotificationType = "mention" | "assign" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status" | "comment";
@@ -325,6 +325,7 @@ export interface Project {
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
   organizationId?: string | null;
+  isManualStatus?: boolean;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
@@ -407,8 +408,11 @@ export interface Task {
   parentId: string | null;
   title: string;
   description: string;
-  /** 分類。チケットの TicketCategory とは別の自由入力（個人タスクにも付けられるように） */
-  category: string;
+  /**
+   * 分類。チケットの TicketCategory とは別の自由入力（個人タスクにも付けられるように）。
+   * 複数付けられる。過去に使った値が入力中の候補に出る
+   */
+  categories: string[];
   status: TaskStatus;
   priority: Priority;
   assignee: string;

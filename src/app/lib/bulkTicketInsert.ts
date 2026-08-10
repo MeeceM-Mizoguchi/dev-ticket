@@ -61,13 +61,11 @@ export async function insertBulkTickets(params: BulkInsertParams): Promise<BulkI
   if (total === 0) return { createdWbs: [], error: "登録するチケットがありません" };
 
   if (limit?.max != null) {
-    const remaining = limit.max - limit.current;
+    const remaining = Math.max(0, limit.max - limit.current);
     if (total > remaining) {
       return {
         createdWbs: [],
-        error: remaining > 0
-          ? `現在のプランでは、このスプリントにあと ${remaining} 件までしか作成できません（${total} 件を作成しようとしています）`
-          : "現在のプランでは、このスプリントにこれ以上チケットを作成できません",
+        error: `プランの上限数（${limit.max}件）を超えるため、一括作成できません。残り作成可能件数：${remaining}件（入力：${total}件）`,
       };
     }
   }

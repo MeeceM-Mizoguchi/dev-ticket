@@ -97,9 +97,6 @@ function formatTs(ts: string) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "pending") {
-    return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", flexShrink: 0, border: "1px solid rgba(220,38,38,0.2)" }}>保留中</span>;
-  }
   const s = TICKET_STATUSES.find(x => x.value === status);
   if (!s) return null;
   return <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: s.bg, color: s.color, flexShrink: 0 }}>{s.label}</span>;
@@ -139,11 +136,11 @@ function pointToComment(targetEl: HTMLElement) {
   window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
 }
 
-// コメント右端の三点リーダーメニュー（BRU10-049）。現時点の項目は「リンクをコピー」のみ。
+// コメント右端の三点リーダーメニュー（BRU10-049）。項目は「内容をコピー」「リンクをコピー」。
 // 開閉状態はこのコンポーネントが持つ。他の ⋯ を押した時点で前のメニューには
 // 「外側 mousedown」が届くので、同時に複数開くことはない。
-function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
-  projectSlug: string; wbs: string; commentId: string; onError: (message: string) => void;
+function CommentLinkMenu({ projectSlug, wbs, commentId, content, onError }: {
+  projectSlug: string; wbs: string; commentId: string; content: string; onError: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -164,6 +161,24 @@ function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
       escStack.pop(closeOnEsc);
     };
   }, [open]);
+
+  // コメント本文（HTML）をMarkdownテキストにしてコピーする
+  const handleCopyContent = async () => {
+    const text = htmlToMarkdown(content ?? "").trim();
+    if (!text) {
+      setOpen(false);
+      onError("コピーできる本文がありません");
+      return;
+    }
+    if (await copyText(text)) {
+      setOpen(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      setOpen(false);
+      onError("クリップボードへのコピーに失敗しました");
+    }
+  };
 
   const handleCopy = async () => {
     const url = buildCommentLink(projectSlug, wbs, commentId);
@@ -205,6 +220,13 @@ function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
           background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8,
           boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 60,
         }}>
+          <button onClick={handleCopyContent}
+            style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 9px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+            <Copy style={{ width: 12, height: 12, color: "#059669" }} />
+            内容をコピー
+          </button>
           <button onClick={handleCopy}
             style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 9px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}
@@ -216,6 +238,17 @@ function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
       )}
     </div>
   );
+}
+
+// 進捗率(progress)から元のステータスを逆引きするヘルパー
+function getStatusFromProgress(progress: number): TicketStatus {
+  if (progress >= 100) return "done";
+  if (progress >= 90) return "uat";
+  if (progress >= 70) return "stg-test";
+  if (progress >= 50) return "review-done";
+  if (progress >= 30) return "in-review";
+  if (progress > 0) return "in-progress";
+  return "todo";
 }
 
 // 子チケットの実績工数バッジ（BRU5-028）。0Hのときは自前ツールチップで理由を表示する。
@@ -241,14 +274,16 @@ function ChildHoursBadge({ hours }: { hours: number }) {
 
 export function TicketDetailPanel({
   ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onMoved, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void | Promise<void>; onDeleted?: () => void;
+}: {
+  ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void | Promise<void>; onDeleted?: () => void;
   /**
    * 🌟 BRU10-077: 別スプリントへ移動したときに呼ばれる。移動後（採番し直し後）のWBSと
    * 移動先スプリントIDを渡すので、呼び出し側で移動先までスクロールして強調表示する。
    * onUpdated の完了後・onClose の直前に呼ぶ。
    */
   onMoved?: (movedWbs: string, targetSprintId: string) => void;
-  onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
+  onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean
+}) {
 
   const { userName, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
@@ -283,8 +318,7 @@ export function TicketDetailPanel({
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
 
-  // 🌟 修正: pending も受け入れられるようにキャスト
-  const [status, setStatus] = useState<TicketStatus | "pending">((ticket?.status as any) ?? "todo");
+  const [status, setStatus] = useState<TicketStatus>(ticket?.status ?? "todo");
   const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
   const [assignee, setAssignee] = useState<string>(ticket?.assignee ?? "");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
@@ -1093,8 +1127,6 @@ export function TicketDetailPanel({
     syncSprint();
   };
 
-  // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
-  // 🌟 修正: データベースのステータス制約を回避するため、「progress」を -1 にすることで保留フラグとして扱う裏ワザ
   // 🌟 追加(BRU9-042): 子チケットではマイルストーン記録を呼ばない。
   //   recordMilestoneFromTicketStatus は closed → releasedAt にマップされ、未記録の工程を
   //   一括で現在時刻スタンプするため、レビューもSTGも通っていない子の実績列が壊れる。
@@ -1107,39 +1139,43 @@ export function TicketDetailPanel({
   const handleToggleHold = async () => {
     if (!ticket || !isSupabaseEnabled) return;
 
-    const isCurrentlyPending = progress === -1;
+    const isCurrentlyPending = status === "on-hold";
 
     if (!isCurrentlyPending) {
-      // 保留にする（progressを-1としてDBに保存）
-      setProgress(-1);
-      await supabase!.from("sprint_tickets").update({ progress: -1 }).eq("id", ticket.id);
-      recordMilestoneIfParent("保留");
-      await addComment(`<p>${HOLD_START_MARKER}</p>`, "status_change", [], status as TicketStatus);
+      const newStatus: TicketStatus = "on-hold";
+      setStatus(newStatus);
+      // 🌟 progress はリセットせずそのままDBに保持
+      await supabase!.from("sprint_tickets").update({ status: newStatus }).eq("id", ticket.id);
+      recordMilestoneIfParent(newStatus);
+      await addComment(`<p>${HOLD_START_MARKER}</p>`, "status_change", [], newStatus);
       onUpdated?.();
       syncSprint();
     } else {
-      // 保留を解除する（元のステータスに応じた正しいprogressを再計算してDBに保存）
-      const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
+      // 🌟 保留解除: 保持していた progress (10, 30等) から保留前のステータスを正確に復元
+      const restoredStatus = getStatusFromProgress(progress);
+      const restoredProgress = STATUS_PROGRESS[restoredStatus] ?? progress;
+      setStatus(restoredStatus);
       setProgress(restoredProgress);
-      await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
-      recordMilestoneIfParent(status);
-      const newLabel = statusLabelOf(status);
-      // 🌟 修正: ProjectMonitor側の判定ロジックと一致させるため、コメントテキストに「保留を解除しました」を確実に含める
-      await addComment(`<p>${HOLD_END_MARKER}（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], status as TicketStatus);
+      await supabase!.from("sprint_tickets").update({ status: restoredStatus, progress: restoredProgress }).eq("id", ticket.id);
+      recordMilestoneIfParent(restoredStatus);
+      const newLabel = statusLabelOf(restoredStatus);
+      await addComment(`<p>${HOLD_END_MARKER}（ステータスを「${newLabel}」に戻しました）</p>`, "status_change", [], restoredStatus);
       onUpdated?.();
       syncSprint();
     }
   };
 
-  // 🌟 追加: モーダルで「OK（取下する）」が押されたときの実処理
+  // 🌟 モーダルで「OK（取下する）」が押されたときの実処理
   const executeWithdraw = async () => {
     if (!ticket || !isSupabaseEnabled) return;
     setIsWithdrawLoading(true);
     try {
-      setProgress(-2);
-      await supabase!.from("sprint_tickets").update({ progress: -2 }).eq("id", ticket.id);
-      recordMilestoneIfParent("取下");
-      await addComment(`<p>チケットを取下げました</p>`, "status_change", [], status as TicketStatus);
+      const newStatus: TicketStatus = "withdrawn";
+      setStatus(newStatus);
+      // 🌟 progress はリセットせずそのままDBに保持
+      await supabase!.from("sprint_tickets").update({ status: newStatus }).eq("id", ticket.id);
+      recordMilestoneIfParent(newStatus);
+      await addComment(`<p>チケットを取下げました</p>`, "status_change", [], newStatus);
       onUpdated?.();
       syncSprint();
       setShowWithdrawConfirm(false);
@@ -1148,24 +1184,25 @@ export function TicketDetailPanel({
     }
   };
 
-  // 🌟 追加: データベースのステータス制約を回避しつつ、取下（progress: -2）を実装する裏ワザ
   const handleToggleWithdraw = async () => {
     if (!ticket || !isSupabaseEnabled) return;
 
-    const isCurrentlyWithdrawn = progress === -2;
+    const isCurrentlyWithdrawn = status === "withdrawn";
 
     if (!isCurrentlyWithdrawn) {
-      // 🌟 修正: window.confirm をやめて、専用のきれいなモーダルを表示するステートをON
       setShowWithdrawConfirm(true);
     } else {
       setIsWithdrawLoading(true);
       try {
-        const restoredProgress = STATUS_PROGRESS[status as TicketStatus] ?? 0;
+        // 🌟 取下解除: 保持していた progress から取下前のステータスを正確に復元
+        const restoredStatus = getStatusFromProgress(progress);
+        const restoredProgress = STATUS_PROGRESS[restoredStatus] ?? progress;
+        setStatus(restoredStatus);
         setProgress(restoredProgress);
-        await supabase!.from("sprint_tickets").update({ progress: restoredProgress }).eq("id", ticket.id);
-        recordMilestoneIfParent(status);
-        const newLabel = statusLabelOf(status);
-        await addComment(`<p>取下げを解除し、ステータスを「${newLabel}」に戻しました</p>`, "status_change", [], status as TicketStatus);
+        await supabase!.from("sprint_tickets").update({ status: restoredStatus, progress: restoredProgress }).eq("id", ticket.id);
+        recordMilestoneIfParent(restoredStatus);
+        const newLabel = statusLabelOf(restoredStatus);
+        await addComment(`<p>取下げを解除し、ステータスを「${newLabel}」に戻しました</p>`, "status_change", [], restoredStatus);
         onUpdated?.();
         syncSprint();
       } finally {
@@ -1867,7 +1904,7 @@ export function TicketDetailPanel({
   const filesByRound = sourceFiles.reduce<Record<number, TicketSourceFile[]>>((acc, f) => {
     (acc[f.reviewRound] = acc[f.reviewRound] || []).push(f); return acc;
   }, {});
-  const actionBtn = status !== "pending" ? ACTION_BUTTONS[status as TicketStatus] : null;
+  const actionBtn = ACTION_BUTTONS[status as TicketStatus] ?? null;
 
   const isAssignee = !assignee || assignee === userName;
   // 🌟 追加(BRU9-042): 保留・取下を子チケットにも開放する。
@@ -1875,7 +1912,7 @@ export function TicketDetailPanel({
   //   すでに保留/取下中(progress < 0)のときは、解除できるよう終端でも必ずボタンを出す。
   const isChildTicket = !!ticket.parentId;
   const isTerminalForHold = isChildTicket ? status === "closed" : status === "released";
-  const canToggleHold = canEdit && isAssignee && (progress < 0 || !isTerminalForHold);
+  const canToggleHold = canEdit && isAssignee && (status === "on-hold" || status === "withdrawn" || !isTerminalForHold);
   const reviewRequestComments = comments.filter(c => c.commentType === "review_request");
   const hasBeenApproved = comments.some(c => c.commentType === "review_approved");
   const isSelfReview = !!reviewerName && userName === reviewerName && isAssignee;
@@ -2316,7 +2353,7 @@ export function TicketDetailPanel({
                 <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", background: "#F4F5F6", padding: "2px 8px", borderRadius: 5 }}>{ticket.wbs || ticket.id}</span>
 
                 {/* 🌟 修正: progress が -1 なら保留中、-2 なら取下バッジを表示 */}
-                {progress === -1 ? <StatusBadge status="pending" /> : progress === -2 ? <StatusBadge status="withdrawn" /> : <StatusBadge status={status} />}
+                <StatusBadge status={status} />
 
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: pm.bg, color: pm.color }}>優先度: {pm.label}</span>
                 {isOverdue && <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "#FEF2F2", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)" }}>期限超過</span>}
@@ -2327,13 +2364,13 @@ export function TicketDetailPanel({
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
                       padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
-                      border: progress === -1 ? "1px solid rgba(220,38,38,0.3)" : "1px solid rgba(26,23,20,0.12)",
-                      background: progress === -1 ? "#FEF2F2" : "#FFF",
-                      color: progress === -1 ? "#DC2626" : "#6B6458",
+                      border: status === "on-hold" ? "1px solid rgba(220,38,38,0.3)" : "1px solid rgba(26,23,20,0.12)",
+                      background: status === "on-hold" ? "#FEF2F2" : "#FFF",
+                      color: status === "on-hold" ? "#DC2626" : "#6B6458",
                       transition: "all 0.15s"
                     }}>
-                    {progress === -1 ? <PlayCircle style={{ width: 11, height: 11 }} /> : <PauseCircle style={{ width: 11, height: 11 }} />}
-                    {progress === -1 ? "保留解除" : "保留する"}
+                    {status === "on-hold" ? <PlayCircle style={{ width: 11, height: 11 }} /> : <PauseCircle style={{ width: 11, height: 11 }} />}
+                    {status === "on-hold" ? "保留解除" : "保留する"}
                   </button>
                 )}
                 {canToggleHold && (
@@ -2341,13 +2378,13 @@ export function TicketDetailPanel({
                     style={{
                       display: "flex", alignItems: "center", gap: 4,
                       padding: "3px 10px", fontSize: 10, fontWeight: 700, borderRadius: 20, cursor: "pointer",
-                      border: progress === -2 ? "1px solid rgba(107,114,128,0.3)" : "1px solid rgba(26,23,20,0.12)",
-                      background: progress === -2 ? "#F3F4F6" : "#FFF",
-                      color: progress === -2 ? "#4B5563" : "#6B6458",
+                      border: status === "withdrawn" ? "1px solid rgba(107,114,128,0.3)" : "1px solid rgba(26,23,20,0.12)",
+                      background: status === "withdrawn" ? "#F3F4F6" : "#FFF",
+                      color: status === "withdrawn" ? "#4B5563" : "#6B6458",
                       transition: "all 0.15s"
                     }}>
                     <Ban style={{ width: 11, height: 11 }} />
-                    {progress === -2 ? "取下解除" : "取下する"}
+                    {status === "withdrawn" ? "取下解除" : "取下する"}
                   </button>
                 )}
                 {/* リリース済みのみ動作確認ボタンを表示 */}
@@ -2496,7 +2533,7 @@ export function TicketDetailPanel({
             // 🌟 修正: 保留時（-1）や取下時（-2）はバーの表示上は 0% とみなす
             // クローズ、完了、リリース済み等のステータスは無条件で 100% として扱う
             const isCompletedStatus = ["done", "closed", "waiting-release", "released"].includes(status);
-            const displayProgress = progress < 0 ? 0 : isCompletedStatus ? 100 : progress;
+            const displayProgress = (status === "on-hold" || status === "withdrawn") ? 0 : isCompletedStatus ? 100 : progress;
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
                 <div style={{ flex: 1, height: 6, background: "#EDE9E0", borderRadius: 99, overflow: "hidden" }}>
@@ -2508,33 +2545,33 @@ export function TicketDetailPanel({
           })()}
 
           {/* 子チケット: 着手開始 / 対応完了 / 未着手に戻す ボタン */}
-          {ticket.parentId && isAssignee && progress >= 0 && status === "todo" && (
+          {ticket.parentId && isAssignee && status === "todo" && (
             <button onClick={handleChildStart}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(217,119,6,0.33)", cursor: "pointer", background: "#FFF7ED", color: "#D97706", marginTop: 10 }}>
               着手開始 →
             </button>
           )}
-          {ticket.parentId && isAssignee && progress >= 0 && status === "in-progress" && (
+          {ticket.parentId && isAssignee && status === "in-progress" && (
             <button onClick={handleChildComplete}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(5,150,105,0.33)", cursor: "pointer", background: "#ECFDF5", color: "#059669", marginTop: 10 }}>
               対応完了 →
             </button>
           )}
           {/* 親チケット専用のアクションボタン群 */}
-          {!ticket.parentId && status === "in-review" && isAssignee && progress >= 0 && (
+          {!ticket.parentId && status === "in-review" && isAssignee && (
             <button disabled
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(13,148,136,0.20)", cursor: "not-allowed", background: "#F0FDFA", color: "#94A3B8", marginTop: 10 }}>
               STG完了 →
             </button>
           )}
-          {!ticket.parentId && actionBtn && isAssignee && status !== "pending" && progress >= 0 && (
+          {!ticket.parentId && actionBtn && isAssignee && status !== "on-hold" && status !== "withdrawn" && (
             <button onClick={() => { if (!showReReviewForm) handleStatusAction(actionBtn); }}
               disabled={showReReviewForm}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: `1.5px solid ${showReReviewForm ? "rgba(107,114,128,0.20)" : actionBtn.color + "33"}`, cursor: showReReviewForm ? "not-allowed" : "pointer", background: showReReviewForm ? "#F4F5F6" : actionBtn.bg, color: showReReviewForm ? "#B0A9A4" : actionBtn.color, marginTop: 10 }}>
               {actionBtn.label} →
             </button>
           )}
-          {!ticket.parentId && status === "uat" && isAssignee && progress >= 0 && !showReReviewForm && (
+          {!ticket.parentId && status === "uat" && isAssignee && !showReReviewForm && (
             <div style={{ marginTop: 10 }}>
               {/* 日付入力 + ボタン 横並び */}
               <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
@@ -2575,7 +2612,7 @@ export function TicketDetailPanel({
               </label>
             </div>
           )}
-          {!ticket.parentId && hasSkipReviewPermission && status === "in-progress" && progress >= 0 && (
+          {!ticket.parentId && hasSkipReviewPermission && status === "in-progress" && (
             <button onClick={handleSkipReview}
               style={{ width: "100%", padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "1.5px solid rgba(245,158,11,0.33)", cursor: "pointer", background: "#FFFBEB", color: "#F59E0B", marginTop: 8 }}>
               レビュースキップ →
@@ -2595,10 +2632,10 @@ export function TicketDetailPanel({
                 <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10, padding: "10px 12px" }}>
                   <p style={{ fontSize: 9, color: "#B0A9A4", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>ステータス</p>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: progress === -1 ? "#DC2626" : progress === -2 ? "#6B7280" : smeta?.color }}>{progress === -1 ? "保留中" : progress === -2 ? "取下" : smeta?.label}</span>
+                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: smeta?.color }} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: smeta?.color }}>{smeta?.label}</span>
                   </div>
-                  {status === "released" && progress !== -2 && (
+                  {status === "released" && (
                     <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", marginTop: 5, display: "inline-block", background: "#DCFCE7", borderRadius: 4, padding: "1px 6px" }}>リリース済み{releaseDate ? ` ${releaseDate.replace(/-/g, "/")}` : ""}</span>
                   )}
                   {status === "waiting-release" && actualWorkHours != null && (
@@ -2874,7 +2911,7 @@ export function TicketDetailPanel({
                     {/* 取下げた子は残作業ではないため、件数の内訳を出して誤読を防ぐ（BRU9-042） */}
                     <span style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 400 }}>
                       ({childTickets.length}件{(() => {
-                        const withdrawn = childTickets.filter(c => c.progress === -2).length;
+                        const withdrawn = childTickets.filter(c => c.status === "withdrawn").length;
                         return withdrawn > 0 ? ` / 取下${withdrawn}` : "";
                       })()})
                     </span>
@@ -2910,7 +2947,7 @@ export function TicketDetailPanel({
                       // 子チケットの実績工数（モニター用・BRU5-028）。集計はしないが各子の所要時間を帯に表示する。
                       const childHours = Math.round(calcTicketActualHours(child) * 10) / 10;
                       // 保留/取下の子は一覧画面と同じくグレーアウトして「止まっている」ことを一目で分かるようにする（BRU9-042）
-                      const isChildPaused = child.progress === -1 || child.progress === -2;
+                      const isChildPaused = child.status === "on-hold" || child.status === "withdrawn";
                       const childBg = isChildPaused ? "#F5F5F4" : "#FAFAF8";
                       return (
                         <div key={child.id}
@@ -3382,7 +3419,7 @@ export function TicketDetailPanel({
                                 <CornerDownRight style={{ width: 11, height: 11 }} />
                               </button>
                               {projectSlug && ticket.wbs && (
-                                <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} onError={showAlert} />
+                                <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} content={c.content} onError={showAlert} />
                               )}
                             </div>
                           </div>
@@ -3478,7 +3515,7 @@ export function TicketDetailPanel({
                                       </button>
                                     )}
                                     {projectSlug && ticket.wbs && (
-                                      <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} onError={showAlert} />
+                                      <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} content={reply.content} onError={showAlert} />
                                     )}
                                   </div>
                                 </div>
@@ -3702,7 +3739,7 @@ export function TicketDetailPanel({
                               // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
                               const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                               // 左線ではなく全体を囲うボーダースタイルに変更
-                              setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${c.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                              setReplyText(replyingToId === c.id ? "" : `<blockquote data-quote-id="${c.id}" style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
                               setReplyImages([]);
                             }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
                               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
@@ -3711,7 +3748,7 @@ export function TicketDetailPanel({
                               <CornerDownRight style={{ width: 11, height: 11 }} />
                             </button>
                             {projectSlug && ticket.wbs && (
-                              <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} onError={showAlert} />
+                              <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} content={c.content} onError={showAlert} />
                             )}
                           </div>
                         </div>
@@ -3815,7 +3852,7 @@ export function TicketDetailPanel({
                                     // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
                                     const cleanContent = truncateQuoteHtml(reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                                     // 左線ではなく全体を囲うボーダースタイルに変更
-                                    setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${reply.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                                    setReplyText(replyingToId === c.id ? "" : `<blockquote data-quote-id="${reply.id}" style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
                                     setReplyImages([]);
                                   }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
@@ -3824,7 +3861,7 @@ export function TicketDetailPanel({
                                     <CornerDownRight style={{ width: 11, height: 11 }} />
                                   </button>
                                   {projectSlug && ticket.wbs && (
-                                    <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} onError={showAlert} />
+                                    <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} content={reply.content} onError={showAlert} />
                                   )}
                                 </div>
                               </div>

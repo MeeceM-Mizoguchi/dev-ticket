@@ -96,8 +96,9 @@ export function ProjectMonitor({
       isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null })
     ]).then(([data, ticketRes, commentsRes]) => {
       if (data) setMilestones(data);
-      if (ticketRes?.data?.progress === -1) setIsHold(true);
-      if (ticketRes?.data?.progress === -2) setIsWithdrawn(true);
+      // 保留/取下は status カラムで管理する（旧仕様の progress = -1 / -2 は廃止・BRU10-078）
+      if (ticketRes?.data?.status === "on-hold") setIsHold(true);
+      if (ticketRes?.data?.status === "withdrawn") setIsWithdrawn(true);
       if (ticketRes?.data?.actual_work_hours != null) setActualWorkHours(ticketRes.data.actual_work_hours);
       if (Array.isArray(ticketRes?.data?.actual_work_hours_breakdown)) setBreakdown(ticketRes.data.actual_work_hours_breakdown.map((v: unknown) => String(v)));
       if (ticketRes?.data?.status) setTicketStatus(ticketRes.data.status);

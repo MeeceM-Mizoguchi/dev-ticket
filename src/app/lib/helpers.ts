@@ -7,15 +7,11 @@ export function computeSprintStatus(sprint: Sprint): SprintStatus {
   const { tickets, endDate } = sprint;
   const active: TicketStatus[] = ["in-progress", "in-review", "review-done", "stg-test", "uat", "done", "waiting-release", "released"];
   const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released"];
-  // 保留(progress === -1)・取下(progress === -2)は「もう動いていない」チケット。
-  // 保留チケットは元の status（例: in-progress）を保持したままなので、これを弾かないと
-  // 稼働中と誤判定され、実質止まっているスプリントが「進行中」のままになる。
-  const isPaused = (t: SprintTicket) => t.progress === -1 || t.progress === -2;
   // 🌟 修正: 全チケットが terminal または 保留/取下（＝動いているものが無い）なら完了
-  if (tickets.length > 0 && tickets.every((t: SprintTicket) => terminal.includes(t.status) || isPaused(t))) return "completed";
+  if (tickets.length > 0 && tickets.every((t: SprintTicket) => terminal.includes(t.status) || t.status === "on-hold" || t.status === "withdrawn")) return "completed";
   if (endDate && endDate < today) return "delayed";
   // 🌟 修正: 保留/取下チケットは稼働中に含めない
-  if (tickets.some((t: SprintTicket) => !isPaused(t) && active.includes(t.status))) return "active";
+  if (tickets.some((t: SprintTicket) => t.status !== "on-hold" && t.status !== "withdrawn" && active.includes(t.status))) return "active";
   return "planning";
 }
 
@@ -24,7 +20,6 @@ export function getStatusMeta(status: ProjectStatus | TicketStatus) {
     planning: { label: "計画中", cls: "bg-slate-100 text-slate-600", dot: "bg-slate-400", bar: "bg-slate-300" },
     "in-progress": { label: "進行中", cls: "bg-orange-50 text-orange-700", dot: "bg-orange-400", bar: "bg-orange-400" },
     completed: { label: "完了", cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500", bar: "bg-emerald-500" },
-    "on-hold": { label: "保留中", cls: "bg-amber-50 text-amber-700", dot: "bg-amber-400", bar: "bg-amber-400" },
     todo: { label: "未着手", cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" },
     done: { label: "完了", cls: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500", bar: "bg-emerald-500" },
     "in-review": { label: "レビュー中", cls: "bg-violet-50 text-violet-700", dot: "bg-violet-500", bar: "bg-violet-500" },
@@ -34,6 +29,8 @@ export function getStatusMeta(status: ProjectStatus | TicketStatus) {
     closed: { label: "クローズ", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-500", bar: "bg-stone-400" },
     "waiting-release": { label: "リリース待ち", cls: "bg-purple-50 text-purple-700", dot: "bg-purple-500", bar: "bg-purple-500" },
     released: { label: "クローズ", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-500", bar: "bg-stone-400" },
+    "on-hold": { label: "保留中", cls: "bg-red-50 text-red-700", dot: "bg-red-500", bar: "bg-red-500" },
+    withdrawn: { label: "取下", cls: "bg-stone-200 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-400" },
   };
   return map[status] ?? { label: status, cls: "bg-stone-100 text-stone-500", dot: "bg-stone-400", bar: "bg-stone-300" };
 }
@@ -42,25 +39,21 @@ export const TICKET_STATUSES = [
   { value: "todo", label: "未着手", color: "#6B7280", bg: "#F3F4F6" },
   { value: "in-progress", label: "進行中", color: "#D97706", bg: "#FFF7ED" },
   { value: "in-review", label: "レビュー中", color: "#7C3AED", bg: "#F5F3FF" },
-  { value: "pending", label: "保留中", color: "#DC2626", bg: "#FEF2F2" }, // 🌟 これを追加！
-  { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" }, // 🌟 取下（progress === -2 で対応）を追加
-  // ...  { value: "in-review",   label: "レビュー中",   color: "#7C3AED", bg: "#F5F3FF" },
   { value: "review-done", label: "レビュー完了", color: "#0284C7", bg: "#F0F9FF" },
   { value: "stg-test", label: "STG完了", color: "#0D9488", bg: "#F0FDFA" },
   { value: "uat", label: "UAT完了", color: "#4F46E5", bg: "#EEF2FF" },
   { value: "waiting-release", label: "リリース待ち", color: "#7C3AED", bg: "#F5F3FF" },
   { value: "released", label: "クローズ", color: "#6B7280", bg: "#F3F4F6" },
+  { value: "on-hold", label: "保留中", color: "#DC2626", bg: "#FEF2F2" },
+  { value: "withdrawn", label: "取下", color: "#6B7280", bg: "#F4F5F6" },
 ];
 
-// チケットの status ＋ progress からバッジ表示用メタを解決する。
-// - progress === -1: 保留中 / -2: 取下（DB制約回避のための裏ワザ値）
+// チケットの status からバッジ表示用メタを解決する。
 // - status === "closed"（子チケットの「対応完了」）は TICKET_STATUSES に
-//   独立エントリが無いため「クローズ」(released) にフォールバックさせる。
-//   これを入れないと find が undefined になり TICKET_STATUSES[0]（未着手）に
-//   誤フォールバックして、完了済みの子チケットが親ビューで「未着手」表示になる。
+//  独立エントリが無いため「クローズ」(released) にフォールバックさせる。
+//  これを入れないと find が undefined になり TICKET_STATUSES[0]（未着手）に
+//  誤フォールバックして、完了済みの子チケットが親ビューで「未着手」表示になる。
 export function getTicketStatusMeta(status: TicketStatus, progress?: number) {
-  if (progress === -1) return TICKET_STATUSES.find(s => s.value === "pending")!;
-  if (progress === -2) return TICKET_STATUSES.find(s => s.value === "withdrawn")!;
   if (status === "closed") return TICKET_STATUSES.find(s => s.value === "released")!;
   return TICKET_STATUSES.find(s => s.value === status) ?? TICKET_STATUSES[0];
 }
@@ -166,9 +159,10 @@ const STATUS_PROGRESS_MAP: Record<string, number> = {
   uat: 90,
   done: 100,
   closed: 100,
-  pending: 0,
   "waiting-release": 100,
   released: 100,
+  "on-hold": 0,
+  withdrawn: 0,
 };
 
 export function getDefaultProgressForStatus(status?: string | null) {
@@ -283,15 +277,14 @@ export function getSprintStatusMeta(status: SprintStatus) {
 
 export function sprintProgress(s: Sprint) {
   if (!s.tickets.length) return 0;
-  const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released"];
-  // 🌟 修正: statusが terminal配列に含まれているか、または progress が -2（取下）の場合も「完了」としてカウントする
-  return Math.round(s.tickets.filter(t => terminal.includes(t.status) || t.progress === -2).length / s.tickets.length * 100);
+  const terminal: TicketStatus[] = ["done", "closed", "waiting-release", "released", "withdrawn"];
+  return Math.round(s.tickets.filter(t => terminal.includes(t.status)).length / s.tickets.length * 100);
 }
 
-// スプリント内に保留中(progress === -1)のチケットが1件でもあるか。
+// スプリント内に保留中(on-hold)のチケットが1件でもあるか。
 // 「完了」だが保留を含むスプリントに「保留あり」ラベルを出すために使う。
 export function sprintHasPending(s: Sprint) {
-  return s.tickets.some(t => t.progress === -1);
+  return s.tickets.some(t => t.status === "on-hold");
 }
 
 export const inputCls = "w-full bg-[#F7F8F9] border border-stone-200/70 rounded-xl px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 focus:bg-white transition-all";
@@ -315,21 +308,20 @@ const STATUS_VALIDATION_LABEL: Partial<Record<TicketStatus, string>> = {
 };
 const STATUS_RANK: Record<TicketStatus, number> = {
   todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
-  "stg-test": 4, uat: 5, done: 6, closed: 7, "waiting-release": 8, released: 9,
+  "stg-test": 4, uat: 5, done: 6, closed: 7, "waiting-release": 8, released: 9, "on-hold": -1, withdrawn: -2,
 };
 export function validateParentStatusChange(targetStatus: TicketStatus, childTickets: SprintTicket[]): string | null {
-  // 取下(progress === -2)の子は「今後対応しない」ため判定から除外する。
-  // 除外しないと、取下げた子の status が todo のまま残り、親を永久に前進できなくなる。
-  // 一方 保留(-1)は「一時停止しているだけでいずれ対応する」ので除外しない
-  // （除外すると「保留にすれば親を完了できる」抜け道になる）。
-  const effective = childTickets.filter(c => c.progress !== -2);
+  // 取下(withdrawn)の子は「今後対応しない」ため判定から除外する。
+  // 除外しないと、親を永久に前進できなくなる。
+  // 一方 保留(on-hold)は「一時停止しているだけでいずれ対応する」ので除外しない。
+  const effective = childTickets.filter(c => c.status !== "withdrawn");
   if (effective.length === 0) return null;
   const minRank = PARENT_STATUS_MIN_CHILD_RANK[targetStatus];
   if (minRank === undefined) return null;
   const blocking = effective.filter(c => (STATUS_RANK[c.status] ?? 0) < minRank);
   if (blocking.length === 0) return null;
-  // 保留中の子が原因の場合、元の文言だけでは理由が分からず詰まるため内訳を併記する。
-  const held = blocking.filter(c => c.progress === -1).length;
+  // 保留中の子が原因の場合、内訳を併記する。
+  const held = blocking.filter(c => c.status === "on-hold").length;
   return held > 0
     ? `子チケット ${blocking.length}件が対応完了していないため変更できません。（うち保留中 ${held}件）`
     : `子チケット ${blocking.length}件が対応完了していないため変更できません。`;

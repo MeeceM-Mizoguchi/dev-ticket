@@ -5,41 +5,51 @@
 // 確定後もフォーカスと プロジェクト/担当者/優先度 は残るので、続けて何行でも打てる。
 //
 // 列幅は TASK_COLS を使う（見出し・データ行と縦を揃えるため）。
+//
+// 見た目は「表の続きの1行」に寄せてある。枠付きの入力欄を並べるとフォームに見えて
+// タイトル欄だけ浮くので、どのセルも既定は素の文字（.task-cell）にして、
+// マウスを乗せたときと入力中だけ枠を出す。
 import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { TASK_STATUSES, TASK_PRIORITIES, type MemberOption, type ProjectOption } from "@/app/lib/taskService";
 import type { NewTaskInput } from "@/app/lib/taskService";
-import { TASK_COLS } from "@/app/components/tasks/TaskListView";
+import { TASK_COLS, TITLE_CELL, DESC_CELL, BODY_TEXT, CELL } from "@/app/components/tasks/TaskListView";
+import { DatePicker } from "@/app/components/shared/DatePicker";
+import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
+import { TaskCategoryField } from "@/app/components/tasks/TaskCategoryField";
+import { textToDescription } from "@/app/lib/taskDescription";
 import type { Priority, TaskStatus } from "@/app/types";
 
-const CATEGORY_LIST_ID = "task-quick-add-categories";
-
-const CELL: React.CSSProperties = {
-  fontSize: 11, color: "#6B6458", background: "#FFFFFF",
-  border: "1px solid rgba(26,23,20,0.1)", borderRadius: 6,
-  padding: "4px 5px", outline: "none", cursor: "pointer",
-  fontFamily: "inherit", flexShrink: 0, boxSizing: "border-box",
-};
+/** 行ごとに作り直す必要のない選択肢 */
+const PRIORITY_OPTIONS: PickerOption[] = TASK_PRIORITIES.map(p => ({ value: p.value, label: p.label, color: p.color }));
+const STATUS_OPTIONS: PickerOption[] = TASK_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color }));
 
 export function TaskQuickAddRow({
-  projects, members, categories, showProject, fixedProjectId, defaultStatus = "todo",
-  focusSignal, onCreate,
+  projects, members, categoryOptions, showProject, fixedProjectId, lockProject, defaultStatus = "todo",
+  indent = 0, placeholder = "タスクを入力して Enter で追加", focusSignal, onCreate,
 }: {
   projects: ProjectOption[];
   members: MemberOption[];
-  /** 既に使われている分類。入力欄の候補に出す（自由入力も可） */
-  categories: string[];
+  /** 既に使われている分類。入力するたびに候補として出す（新しい要素も足せる） */
+  categoryOptions: string[];
   showProject: boolean;
-  /** プロジェクト配下の画面では固定（選択欄を出さない） */
+  /** プロジェクト配下の画面では固定 */
   fixedProjectId?: string | null;
+  /** プロジェクトを変えさせない（サブタスクは親と同じPJでないと見える人が食い違う） */
+  lockProject?: boolean;
   defaultStatus?: TaskStatus;
+  /** タイトル欄の字下げ。サブタスクの追加行で親の下にぶら下げるのに使う */
+  indent?: number;
+  /** タイトル欄の案内文 */
+  placeholder?: string;
   /** 値が変わるたびにタイトル入力へフォーカスする（ヘッダーの「タスクを追加」から） */
   focusSignal?: number;
   onCreate: (input: Omit<NewTaskInput, "ownerId" | "createdBy">) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [projectId, setProjectId] = useState(fixedProjectId ?? "");
-  const [category, setCategory] = useState("");
+  const [categories, setCategories] = useState<string[]>([]);
   const [status, setStatus] = useState<TaskStatus>(defaultStatus);
   const [priority, setPriority] = useState<Priority>("medium");
   const [assignee, setAssignee] = useState("");
@@ -63,18 +73,29 @@ export function TaskQuickAddRow({
     if (!v || saving) return;
     setSaving(true);
     const ok = await onCreate({
-      title: v, projectId: projectId || null, category: category.trim(), status, priority, assignee, startDate, dueDate,
+      title: v, description: textToDescription(description),
+      projectId: projectId || null, categories, status, priority, assignee, startDate, dueDate,
     });
     setSaving(false);
     if (!ok) return;
-    // 続けて打てるように、行の性格（PJ・担当・優先度・ステータス）は残してタイトルだけ空にする
+    // 続けて打てるように、行の性格（PJ・担当・優先度・ステータス・分類）は残して
+    // その1件ぶんの中身（タイトル・詳細・日付）だけ空にする
     setTitle("");
+    setDescription("");
     setStartDate("");
     setDueDate("");
     inputRef.current?.focus();
   };
 
-  const pri = TASK_PRIORITIES.find(p => p.value === priority)!;
+  const statusMeta = TASK_STATUSES.find(s => s.value === status)!;
+  const projectOptions: PickerOption[] = [
+    { value: "", label: "個人タスク" },
+    ...projects.map(p => ({ value: p.id, label: p.name })),
+  ];
+  const assigneeOptions: PickerOption[] = [
+    { value: "", label: "未割当" },
+    ...members.map(m => ({ value: m.name, label: m.name })),
+  ];
   const filled = title.trim().length > 0;
 
   return (
@@ -82,7 +103,7 @@ export function TaskQuickAddRow({
       display: "flex", alignItems: "center", gap: TASK_COLS.gap,
       padding: `8px ${TASK_COLS.padX}px`,
       borderTop: "1px solid rgba(26,23,20,0.05)",
-      background: filled ? "#F0FDF4" : "#FAFAF9",
+      background: filled ? "#F0FDF4" : indent > 0 ? "#FCFCFB" : "#FAFAF9",
     }}>
       {/* ＋ 自体が確定ボタン（Enter が主、マウスだけでも完結できる） */}
       <button type="button" onClick={submit} disabled={!filled || saving} title="追加（Enter）"
@@ -103,55 +124,57 @@ export function TaskQuickAddRow({
           if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
           if (e.key === "Escape") { setTitle(""); (e.currentTarget as HTMLInputElement).blur(); }
         }}
-        placeholder="タスクを入力して Enter で追加"
+        placeholder={placeholder}
         style={{
-          flex: 1, minWidth: 0, fontSize: 13, color: "#1A1714", fontFamily: "inherit",
-          background: "transparent", border: "none", outline: "none", padding: "3px 0",
+          ...TITLE_CELL, ...BODY_TEXT, fontFamily: "inherit",
+          background: "transparent", border: "none", outline: "none",
+          padding: "3px 0", paddingLeft: indent,
         }} />
 
-      {/* 分類は自由入力＋既存候補（datalist）。選ぶことも打ち込むこともできる */}
-      <input list={CATEGORY_LIST_ID} value={category} onChange={e => setCategory(e.target.value)}
-        placeholder="分類" title="分類"
-        style={{ ...CELL, width: TASK_COLS.category, cursor: "text" }} />
-      <datalist id={CATEGORY_LIST_ID}>
-        {categories.map(c => <option key={c} value={c} />)}
-      </datalist>
+      {/* 詳細メモ。1行ぶんのテキスト（データ行と同じ扱い） */}
+      <input className="task-cell" value={description} onChange={e => setDescription(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
+          if (e.key === "Escape") { setDescription(""); (e.currentTarget as HTMLInputElement).blur(); }
+        }}
+        placeholder="詳細" title="詳細"
+        style={{ ...CELL, ...DESC_CELL, ...BODY_TEXT, cursor: "text" }} />
 
-      {showProject && (
-        <select value={projectId} onChange={e => setProjectId(e.target.value)} title="プロジェクト"
-          disabled={!!fixedProjectId}
-          style={{ ...CELL, width: TASK_COLS.project }}>
-          <option value="">個人タスク</option>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      )}
-
-      {/* 優先度は色で分かるように、選択肢の左に点を重ねる */}
-      <span style={{ position: "relative", display: "inline-flex", alignItems: "center", width: TASK_COLS.priority, flexShrink: 0 }}>
-        <span style={{ width: 7, height: 7, borderRadius: "50%", background: pri.color, position: "absolute", left: 6, pointerEvents: "none" }} />
-        <select value={priority} onChange={e => setPriority(e.target.value as Priority)} title="優先度"
-          style={{ ...CELL, width: "100%", paddingLeft: 17, appearance: "none" as const }}>
-          {TASK_PRIORITIES.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-        </select>
+      {/* 分類は要素を足していく形。打つたびに過去の分類が候補に出る */}
+      <span title="分類"
+        style={{ ...CELL, width: TASK_COLS.category, cursor: "text", display: "inline-flex", alignItems: "center" }}>
+        <TaskCategoryField
+          values={categories} options={categoryOptions}
+          placeholder="分類" wrap={false}
+          onChange={setCategories}
+          onEnterWhenEmpty={submit} />
       </span>
 
-      <select value={assignee} onChange={e => setAssignee(e.target.value)} title="担当者"
-        style={{ ...CELL, width: TASK_COLS.assignee }}>
-        <option value="">未割当</option>
-        {members.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
-      </select>
+      {showProject && (
+        <PickerCell width={TASK_COLS.project} value={projectId} title="プロジェクト"
+          disabled={lockProject || !!fixedProjectId} options={projectOptions} placeholder="個人タスク"
+          onChange={setProjectId} />
+      )}
 
-      <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} title="開始日"
-        style={{ ...CELL, width: TASK_COLS.start }} />
+      <PickerCell width={TASK_COLS.priority} value={priority} title="優先度"
+        options={PRIORITY_OPTIONS} onChange={v => setPriority(v as Priority)} />
 
-      <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} title="期限"
-        min={startDate || undefined}
-        style={{ ...CELL, width: TASK_COLS.due }} />
+      <PickerCell width={TASK_COLS.assignee} value={assignee} title="担当者"
+        options={assigneeOptions} placeholder="未割当" onChange={setAssignee} />
 
-      <select value={status} onChange={e => setStatus(e.target.value as TaskStatus)} title="ステータス"
-        style={{ ...CELL, width: TASK_COLS.status }}>
-        {TASK_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-      </select>
+      <span style={{ width: TASK_COLS.start, flexShrink: 0 }}>
+        <DatePicker variant="cell" value={startDate} onChange={setStartDate} />
+      </span>
+
+      <span style={{ width: TASK_COLS.due, flexShrink: 0 }}>
+        <DatePicker variant="cell" value={dueDate} min={startDate || undefined} onChange={setDueDate} />
+      </span>
+
+      <PickerCell width={TASK_COLS.status} value={status} title="ステータス" align="center"
+        options={STATUS_OPTIONS} onChange={v => setStatus(v as TaskStatus)}
+        textStyle={{ color: statusMeta.color, fontWeight: 700 }} />
+
+      <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
     </div>
   );
 }

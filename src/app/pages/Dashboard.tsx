@@ -44,20 +44,22 @@ type DashProject = {
 };
 
 const STATUS_LABELS: Record<string, { label: string; bg: string; color: string }> = {
-  'todo':            { label: '未着手',     bg: '#F4F5F6', color: '#A09790' },
-  'in-progress':     { label: '進行中',     bg: '#FFFBEB', color: '#D97706' },
-  'in-review':       { label: 'レビュー中', bg: '#EFF6FF', color: '#2563EB' },
-  'review-done':     { label: 'レビュー完了', bg: '#F0FDF4', color: '#16A34A' },
-  'stg-test':        { label: 'STGテスト',  bg: '#F5F3FF', color: '#7C3AED' },
-  'uat':             { label: 'UAT',        bg: '#FFF7ED', color: '#EA580C' },
-  'done':            { label: '完了',       bg: '#ECFDF5', color: '#059669' },
-  'closed':          { label: 'クローズ',  bg: '#F1F5F9', color: '#64748B' },
+  'todo': { label: '未着手', bg: '#F4F5F6', color: '#A09790' },
+  'in-progress': { label: '進行中', bg: '#FFFBEB', color: '#D97706' },
+  'in-review': { label: 'レビュー中', bg: '#EFF6FF', color: '#2563EB' },
+  'review-done': { label: 'レビュー完了', bg: '#F0FDF4', color: '#16A34A' },
+  'stg-test': { label: 'STGテスト', bg: '#F5F3FF', color: '#7C3AED' },
+  'uat': { label: 'UAT', bg: '#FFF7ED', color: '#EA580C' },
+  'done': { label: '完了', bg: '#ECFDF5', color: '#059669' },
+  'closed': { label: 'クローズ', bg: '#F1F5F9', color: '#64748B' },
   'waiting-release': { label: 'リリース待ち', color: "#7C3AED", bg: "#F5F3FF" },
-  'released':        { label: 'クローズ',  color: "#6B7280", bg: "#F3F4F6" },
+  'released': { label: 'クローズ', color: "#6B7280", bg: "#F3F4F6" },
+  'on-hold': { label: '保留中', color: "#D97706", bg: "#FFFBEB" },
+  'withdrawn': { label: '取下', color: "#64748B", bg: "#F1F5F9" },
 };
 
-// 判定を一元化するため、完了・クローズ系のステータス配列を定義
-const TERMINAL_STATUSES = ["done", "closed", "waiting-release", "released"];
+// 判定を一元化するため、完了・クローズ系のステータス配列を定義（取下も含む）
+const TERMINAL_STATUSES = ["done", "closed", "waiting-release", "released", "withdrawn"];
 
 // ガント帯ホバー時に表示するチケット
 type GanttTicket = { id: string; title: string; status: string; priority: string };
@@ -120,19 +122,19 @@ export function Dashboard() {
   const [tickets, setTickets] = useState<DashTicket[]>(
     isSupabaseEnabled ? [] : TICKETS.filter(t => !TERMINAL_STATUSES.includes(t.status)).map(t => {
       const matchingProj = PROJECTS.find(p => p.name === t.project);
-      return { 
+      return {
         id: (t as any).wbs || t.id, // wbsプロパティがあれば最優先で参照
-        title: t.title, 
-        project: t.project, 
+        title: t.title,
+        project: t.project,
         projectId: matchingProj ? matchingProj.slug || matchingProj.id : (t.project === "DevTicket" ? "DEVTICKET" : "PROJ5e88"),
-        status: t.status, 
-        priority: t.priority, 
-        assignee: t.assignee, 
-        dueDate: t.dueDate 
+        status: t.status,
+        priority: t.priority,
+        assignee: t.assignee,
+        dueDate: t.dueDate
       };
     })
   );
-  
+
   const [projects, setProjects] = useState<DashProject[]>(
     isSupabaseEnabled ? [] : PROJECTS.map(p => ({ id: p.slug || p.id, name: p.name, status: p.status, client: p.client, members: p.members ?? [], done: p.done, inProgress: p.inProgress, todo: p.todo }))
   );
@@ -145,7 +147,7 @@ export function Dashboard() {
 
   const [selectedSprintTicket, setSelectedSprintTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketCtx, setSelectedTicketCtx] = useState<{ projectId: string; sprintId: string; projectSlug: string } | null>(null);
-  
+
   // 更新中アニメーション制御用ステートを追加
   const [isRefreshing, setIsRefreshRefreshing] = useState(false);
 
@@ -156,15 +158,15 @@ export function Dashboard() {
       setIsRefreshRefreshing(true);
       setTickets(TICKETS.filter(t => !TERMINAL_STATUSES.includes(t.status)).map(t => {
         const matchingProj = PROJECTS.find(p => p.name === t.project);
-        return { 
+        return {
           id: (t as any).wbs || t.id,
-          title: t.title, 
-          project: t.project, 
+          title: t.title,
+          project: t.project,
           projectId: matchingProj ? matchingProj.slug || matchingProj.id : (t.project === "DevTicket" ? "DEVTICKET" : "PROJ5e88"),
-          status: t.status, 
-          priority: t.priority, 
-          assignee: t.assignee, 
-          dueDate: t.dueDate 
+          status: t.status,
+          priority: t.priority,
+          assignee: t.assignee,
+          dueDate: t.dueDate
         };
       }));
       setProjects(PROJECTS.map(p => ({ id: p.slug || p.id, name: p.name, status: p.status, client: p.client, members: p.members ?? [], done: p.done, inProgress: p.inProgress, todo: p.todo })));
@@ -204,7 +206,7 @@ export function Dashboard() {
         const projectSlugMap = new Map((projectsData as any[]).map(p => [p.id, p.slug || p.id]));
         const projectNameById = new Map((projectsData as any[]).map(p => [p.id, p.name]));
         const categoryNameMap = new Map(((cData ?? []) as any[]).map(c => [c.id, c.name]));
-        
+
         // 🌟 変更: ダッシュボード全体のチケット同期部分において、TERMINAL_STATUSES（クローズ系）を除外する処理ではなく
         // 折れ線グラフ（クローズ累計）などを正しく描画できるように、全ステータスを安全に格納するように統一
         setTickets(tData.map((t: any) => {
@@ -213,9 +215,9 @@ export function Dashboard() {
 
           return {
             id: t.wbs || t.id,
-            dbId: t.id,                    
+            dbId: t.id,
             sprintId: t.sprint_id,
-            projectDbId: resolvedProjectId, 
+            projectDbId: resolvedProjectId,
             title: t.title,
             status: t.status,
             priority: t.priority,
@@ -263,8 +265,8 @@ export function Dashboard() {
             client: p.client,
             members: (p as any).members ?? [],
             done: projectTickets.filter((t: any) => TERMINAL_STATUSES.includes(t.status)).length,
-            inProgress: projectTickets.filter((t: any) => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo").length,
-            todo: projectTickets.filter((t: any) => t.status === "todo").length,
+            inProgress: projectTickets.filter((t: any) => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo" && t.status !== "on-hold").length,
+            todo: projectTickets.filter((t: any) => t.status === "todo" || t.status === "on-hold").length,
           };
         });
         setProjects(mapped);
@@ -299,8 +301,8 @@ export function Dashboard() {
   const assignedTickets = tickets.filter(t => t.project && assignedProjectNames.includes(t.project));
 
   const doneCount = assignedTickets.filter(t => TERMINAL_STATUSES.includes(t.status)).length;
-  const inProgressCount = assignedTickets.filter(t => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo").length;
-  const todoCount = assignedTickets.filter(t => t.status === "todo").length;
+  const inProgressCount = assignedTickets.filter(t => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo" && t.status !== "on-hold").length;
+  const todoCount = assignedTickets.filter(t => t.status === "todo" || t.status === "on-hold").length;
   const completionRate = assignedTickets.length > 0 ? Math.round((doneCount / assignedTickets.length) * 100) : 0;
   const activeProjects = assignedProjects.filter(p => p.status === "in-progress").length;
 
@@ -311,9 +313,8 @@ export function Dashboard() {
 
   // 🌟 修正: 完了・クローズ系のステータス（TERMINAL_STATUSES）を正確にマッピングして、グラフ表示の不整合を排除
   const lineStatusCategories = [
-    { key: '未着手', statuses: ['todo'] },
-    { key: '進行中', statuses: ['in-progress'] },
-    { key: 'レビュー中', statuses: ['in-review'] },
+    { key: '未着手', statuses: ['todo', 'on-hold'] },
+    { key: '進行中', statuses: ['in-progress'] }, { key: 'レビュー中', statuses: ['in-review'] },
     { key: 'レビュー完了', statuses: ['review-done'] },
     { key: 'STG完了', statuses: ['stg-test'] },
     { key: 'UAT完了', statuses: ['uat'] },
@@ -328,7 +329,7 @@ export function Dashboard() {
     const diffToMonday = (dayOfWeek + 6) % 7;
     const monday = new Date(value);
     monday.setDate(value.getDate() - diffToMonday);
-    
+
     const yyyy = monday.getFullYear();
     const mm = String(monday.getMonth() + 1).padStart(2, '0');
     const dd = String(monday.getDate()).padStart(2, '0');
@@ -361,8 +362,8 @@ export function Dashboard() {
         const projectName = t.project || 'Unknown';
         grouped[weekKey][projectName] = (grouped[weekKey][projectName] ?? 0) + 1;
       });
-    return Object.keys(grouped).sort().map(weekKey => ({ 
-      week: formatWeekLabel(weekKey), 
+    return Object.keys(grouped).sort().map(weekKey => ({
+      week: formatWeekLabel(weekKey),
       weekKey,
       ...grouped[weekKey]
     }));
@@ -373,7 +374,7 @@ export function Dashboard() {
 
     const currentYear = new Date().getFullYear();
     const firstDayOfMonth = new Date(currentYear, selectedMonth - 1, 1);
-    
+
     const day = firstDayOfMonth.getDay();
     const diffToMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
     const firstMonday = new Date(firstDayOfMonth);
@@ -387,7 +388,7 @@ export function Dashboard() {
       const mm = String(targetMonday.getMonth() + 1).padStart(2, '0');
       const dd = String(targetMonday.getDate()).padStart(2, '0');
       const key = `${yyyy}-${mm}-${dd}`;
-      
+
       weeksInMonth.push({
         week: `${selectedMonth}/${targetMonday.getDate()}週`,
         weekKey: key
@@ -397,7 +398,7 @@ export function Dashboard() {
 
     return weeksInMonth.map(w => {
       const existingData = weeklyCloseData.find(d => d.weekKey === w.weekKey);
-      
+
       const projectCounts = assignedProjects.reduce<Record<string, number>>((acc, p) => {
         acc[p.name] = existingData ? (existingData[p.name] ?? 0) : 0;
         return acc;
@@ -436,7 +437,7 @@ export function Dashboard() {
   const activeTickets = assignedTickets.filter(t => !TERMINAL_STATUSES.includes(t.status)).slice(0, 5);
 
   const overdueCountValue = assignedTickets.filter(t => {
-    if (!t.dueDate || TERMINAL_STATUSES.includes(t.status)) return false;
+    if (!t.dueDate || TERMINAL_STATUSES.includes(t.status) || t.status === "on-hold") return false;
     return t.dueDate < new Date().toISOString().split("T")[0];
   }).length;
 
@@ -575,7 +576,7 @@ export function Dashboard() {
                   <div style={{ minWidth: 80 }}>
                     <CustomSelect
                       value={String(selectedMonth)}
-                      options={[1,2,3,4,5,6,7,8,9,10,11,12].map(m => ({ value: String(m), label: `${m}月` }))}
+                      options={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(m => ({ value: String(m), label: `${m}月` }))}
                       onChange={v => setSelectedMonth(Number(v))}
                     />
                   </div>
@@ -591,8 +592,8 @@ export function Dashboard() {
                   ))}
                 </div>
               )}
-              
-              <button 
+
+              <button
                 type="button"
                 onClick={handleRefreshData}
                 disabled={isRefreshing}
@@ -606,12 +607,12 @@ export function Dashboard() {
                 onMouseEnter={e => { if (!isRefreshing) e.currentTarget.style.background = "#F4F5F6"; }}
                 onMouseLeave={e => { if (!isRefreshing) e.currentTarget.style.background = "#FFFFFF"; }}
               >
-                <RefreshCw 
-                  style={{ 
+                <RefreshCw
+                  style={{
                     width: 14, height: 14,
                     transition: "transform 0.5s ease",
                     transform: isRefreshing ? "rotate(360deg)" : "none"
-                  }} 
+                  }}
                 />
               </button>
             </div>
@@ -625,17 +626,17 @@ export function Dashboard() {
                 </div>
               ) : (
                 <div style={{ height: horizontalContentHeight }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 24, top: 8, bottom: 8 }} barCategoryGap="28%" barSize={28}>
-                    <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
-                    <YAxis dataKey="name" type="category" tick={renderProjectNameTick} axisLine={false} tickLine={false} width={180} />
-                    <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
-                      labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
-                    <Bar dataKey="完了" stackId="a" fill="#059669" />
-                    <Bar dataKey="進行中" stackId="a" fill="#D97706" />
-                    <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} layout="vertical" margin={{ left: 0, right: 24, top: 8, bottom: 8 }} barCategoryGap="28%" barSize={28}>
+                      <XAxis type="number" tick={{ fontSize: 11, fill: "#B0A9A4", fontFamily: "JetBrains Mono,monospace" }} tickMargin={6} padding={{ right: 18 }} axisLine={false} tickLine={false} />
+                      <YAxis dataKey="name" type="category" tick={renderProjectNameTick} axisLine={false} tickLine={false} width={180} />
+                      <Tooltip contentStyle={{ background: "#fff", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 10, fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.10)" }}
+                        labelStyle={{ color: "#1A1714", fontWeight: 700 }} itemStyle={{ color: "#6B6458" }} cursor={{ fill: "rgba(26,23,20,0.03)" }} />
+                      <Bar dataKey="完了" stackId="a" fill="#059669" />
+                      <Bar dataKey="進行中" stackId="a" fill="#D97706" />
+                      <Bar dataKey="未着手" stackId="a" fill="#E6E2D9" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               )
             )}
@@ -722,7 +723,7 @@ export function Dashboard() {
                 </ResponsiveContainer>
               )
             )}
-            
+
             {chartType === 'gantt' && (
               <DashboardGantt projectNames={assignedProjects.map(p => p.name)} sprints={ganttSprints} navigate={navigate} />
             )}
@@ -741,7 +742,7 @@ export function Dashboard() {
             ) : activeTickets.map(ticket => {
               const pr = getPriorityMeta(ticket.priority as "high" | "medium" | "low");
               const isInProgress = ticket.status !== "todo";
-              
+
               return (
                 <div style={{ display: "flex", gap: 10, padding: "9px 8px", borderRadius: 8, cursor: "pointer" }}
                   key={ticket.id}
@@ -776,9 +777,9 @@ export function Dashboard() {
             const progress = calcProgress(p.done, p.inProgress, p.todo);
             const statusStyle: Record<ProjectStatus, { bg: string; color: string; label: string }> = {
               "in-progress": { bg: "#ECFDF5", color: "#059669", label: "進行中" },
-              completed:     { bg: "#ECFDF5", color: "#059669", label: "完了" },
-              "on-hold":     { bg: "#FFFBEB", color: "#D97706", label: "保留中" },
-              planning:      { bg: "#F4F5F6", color: "#A09790", label: "計画中" },
+              completed: { bg: "#ECFDF5", color: "#059669", label: "完了" },
+              "on-hold": { bg: "#FFFBEB", color: "#D97706", label: "保留中" },
+              planning: { bg: "#F4F5F6", color: "#A09790", label: "計画中" },
             };
             const ss = statusStyle[p.status];
             return (
@@ -820,7 +821,7 @@ export function Dashboard() {
           sprintId={selectedTicketCtx.sprintId}
           projectSlug={selectedTicketCtx.projectSlug}
           onClose={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
-          onUpdated={() => {}}
+          onUpdated={() => { }}
           onDeleted={() => { setSelectedSprintTicket(null); setSelectedTicketCtx(null); }}
           onSelectTicket={t => setSelectedSprintTicket(t)}
         />
@@ -970,9 +971,11 @@ function DashboardGantt({ projectNames, sprints, navigate }: { projectNames: str
                       <span data-projname style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecorationColor: "#059669" }}>{g.name}</span>
                     </div>
                     <div style={{ position: "relative", flex: 1, height: "100%" }}>
-                      {(() => { const b = barRange(gStart, gEnd); return b ? (
-                        <div style={{ position: "absolute", left: b.left, width: b.width, top: "50%", transform: "translateY(-50%)", height: 8, background: "rgba(5,150,105,0.20)", borderRadius: 99 }} />
-                      ) : null; })()}
+                      {(() => {
+                        const b = barRange(gStart, gEnd); return b ? (
+                          <div style={{ position: "absolute", left: b.left, width: b.width, top: "50%", transform: "translateY(-50%)", height: 8, background: "rgba(5,150,105,0.20)", borderRadius: 99 }} />
+                        ) : null;
+                      })()}
                     </div>
                   </div>
                   {/* スプリント行 */}

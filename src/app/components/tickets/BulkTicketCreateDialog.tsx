@@ -15,13 +15,13 @@ registerAllModules();
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_MAP: Record<string, string> = {
-  "未着手":     "todo",
-  "進行中":     "in-progress",
+  "未着手": "todo",
+  "進行中": "in-progress",
   "レビュー中": "in-review",
   "レビュー完了": "review-done",
-  "STG完了":   "stg-test",
-  "UAT完了":   "uat",
-  "クローズ":  "closed",
+  "STG完了": "stg-test",
+  "UAT完了": "uat",
+  "クローズ": "closed",
 };
 const STATUS_LABELS = Object.keys(STATUS_MAP);
 
@@ -29,13 +29,13 @@ const PRIORITY_MAP: Record<string, string> = { "高": "high", "中": "medium", "
 const PRIORITY_LABELS = Object.keys(PRIORITY_MAP);
 
 const STATUS_STYLES: Record<string, { color: string; bg: string }> = {
-  "未着手":     { color: "#6B6458", bg: "#F4F5F6" },
-  "進行中":     { color: "#D97706", bg: "#FFFBEB" },
+  "未着手": { color: "#6B6458", bg: "#F4F5F6" },
+  "進行中": { color: "#D97706", bg: "#FFFBEB" },
   "レビュー中": { color: "#7C3AED", bg: "#F5F3FF" },
   "レビュー完了": { color: "#0284C7", bg: "#F0F9FF" },
-  "STG完了":   { color: "#0D9488", bg: "#F0FDFA" },
-  "UAT完了":   { color: "#4F46E5", bg: "#EEF2FF" },
-  "クローズ":  { color: "#6B7280", bg: "#F3F4F6" },
+  "STG完了": { color: "#0D9488", bg: "#F0FDFA" },
+  "UAT完了": { color: "#4F46E5", bg: "#EEF2FF" },
+  "クローズ": { color: "#6B7280", bg: "#F3F4F6" },
 };
 
 const PRIORITY_STYLES: Record<string, { color: string; bg: string }> = {
@@ -146,10 +146,10 @@ function makeEmptyRow(defaultAssignee: string = ""): RowData {
 
 const DATE_PICKER_I18N = {
   previousMonth: "前月",
-  nextMonth:     "翌月",
-  months:        ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"],
-  weekdays:      ["日曜","月曜","火曜","水曜","木曜","金曜","土曜"],
-  weekdaysShort: ["日","月","火","水","木","金","土"],
+  nextMonth: "翌月",
+  months: ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"],
+  weekdays: ["日曜", "月曜", "火曜", "水曜", "木曜", "金曜", "土曜"],
+  weekdaysShort: ["日", "月", "火", "水", "木", "金", "土"],
 };
 
 const DATE_COL_CFG = {
@@ -161,14 +161,14 @@ const DATE_COL_CFG = {
 };
 
 const COLUMNS = [
-  { data: "title",          type: "text"    as const },
-  { data: "status",         type: "text"    as const, renderer: statusCellRenderer },
-  { data: "priority",       type: "text"    as const, renderer: priorityCellRenderer },
-  { data: "assignee",       type: "text"    as const, renderer: assigneeCellRenderer },
-  { data: "startDate",      ...DATE_COL_CFG },
-  { data: "dueDate",        ...DATE_COL_CFG },
+  { data: "title", type: "text" as const },
+  { data: "status", type: "text" as const, renderer: statusCellRenderer },
+  { data: "priority", type: "text" as const, renderer: priorityCellRenderer },
+  { data: "assignee", type: "text" as const, renderer: assigneeCellRenderer },
+  { data: "startDate", ...DATE_COL_CFG },
+  { data: "dueDate", ...DATE_COL_CFG },
   { data: "estimatedHours", type: "numeric" as const, allowInvalid: true },
-  { data: "description",    type: "text"    as const },
+  { data: "description", type: "text" as const },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -997,7 +997,7 @@ export function BulkTicketCreateDialog({
       },
       hsep1: { name: "---------" },
       copy: { name: "コピー" },
-      cut:  { name: "切り取り" },
+      cut: { name: "切り取り" },
       custom_paste: {
         name: "貼り付け",
         callback() {
@@ -1017,7 +1017,7 @@ export function BulkTicketCreateDialog({
               });
             });
             if (changes.length > 0) hot.setDataAtCell(changes);
-          }).catch(() => {});
+          }).catch(() => { });
         },
       },
       hsep2: { name: "---------" },
@@ -1040,6 +1040,13 @@ export function BulkTicketCreateDialog({
     if (validRows.length === 0) {
       setError("タイトルが入力された行がありません");
       return;
+    }
+    if (plan.maxTicketsPerSprint !== null && currentTicketCount != null) {
+      const remaining = Math.max(0, plan.maxTicketsPerSprint - currentTicketCount);
+      if (validRows.length > remaining) {
+        setError(`プランの上限数（${plan.maxTicketsPerSprint}件）を超えるため、一括作成できません。残り作成可能件数：${remaining}件（入力：${validRows.length}件）`);
+        return;
+      }
     }
     setError(null);
     setSaving(true);
