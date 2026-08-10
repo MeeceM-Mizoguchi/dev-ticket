@@ -6,6 +6,8 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
 
+const LOCAL_STORAGE_KEY = "sprint_accordion_states";
+
 /** 一括作成の直後に強調表示する行の背景色 */
 const BULK_HL_BG = "#FFFBEB";
 
@@ -18,7 +20,61 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
   stickyTop?: number;
 }) {
   const { plan } = usePlan();
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(sprints.map(s => s.id)));
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    let savedStates: Record<string, boolean> = {};
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (saved) savedStates = JSON.parse(saved);
+    } catch (e) { }
+
+    const initial = new Set<string>();
+    sprints.forEach(s => {
+      if (savedStates[s.id] !== false) {
+        initial.add(s.id);
+      }
+    });
+    return initial;
+  });
+
+  useEffect(() => {
+    let savedStates: Record<string, boolean> = {};
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (saved) savedStates = JSON.parse(saved);
+    } catch (e) { }
+
+    setExpanded(prev => {
+      const next = new Set(prev);
+      sprints.forEach(s => {
+        if (savedStates[s.id] === false) {
+          next.delete(s.id);
+        } else {
+          next.add(s.id);
+        }
+      });
+      return next;
+    });
+  }, [sprints.map(s => s.id).join(",")]);
+
+  const toggleSprint = (id: string) => {
+    setExpanded(prev => {
+      const n = new Set(prev);
+      const willBeOpen = !n.has(id);
+      if (willBeOpen) {
+        n.add(id);
+      } else {
+        n.delete(id);
+      }
+      try {
+        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const savedStates = saved ? JSON.parse(saved) : {};
+        savedStates[id] = willBeOpen;
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(savedStates));
+      } catch (e) { }
+      return n;
+    });
+  };
+
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
   const bulkMenu = useBulkCreateMenu();
   // 毎レンダーで作り直さないよう memo 化する（点滅防止）
@@ -32,7 +88,17 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
     const sprint = sprints.find(s => s.tickets.some(t => bulkHighlight.has(t.wbs)));
     if (!sprint) return;
 
-    setExpanded(prev => (prev.has(sprint.id) ? prev : new Set(prev).add(sprint.id)));
+    setExpanded(prev => {
+      if (prev.has(sprint.id)) return prev;
+      const next = new Set(prev).add(sprint.id);
+      try {
+        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        const savedStates = saved ? JSON.parse(saved) : {};
+        savedStates[sprint.id] = true;
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(savedStates));
+      } catch (e) { }
+      return next;
+    });
     const parentIds = sprint.tickets.filter(t => t.parentId && bulkHighlight.has(t.wbs)).map(t => t.parentId!);
     if (parentIds.length > 0) {
       setExpandedTickets(prev => {
@@ -58,11 +124,11 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
   const maxDate = `${thisYear + 4}-12-31`;
   const totalDays = daysBetween(minDate, maxDate) + 1;
 
-  const getLeft  = (d: string) => Math.max(0, daysBetween(minDate, d)) * DAY_W;
+  const getLeft = (d: string) => Math.max(0, daysBetween(minDate, d)) * DAY_W;
   const getWidth = (s: string, e: string) => Math.max((daysBetween(s, e) + 1) * DAY_W, 2);
 
   // ② useMemo: 毎レンダーで new Date() を呼ばない
-  const todayStr  = useMemo(() => new Date().toISOString().split("T")[0], []);
+  const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
   const todayLeft = getLeft(todayStr);
 
   useEffect(() => {
@@ -150,10 +216,12 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
             {/* 日行 */}
             <div style={{ height: DAY_H, background: "#FAFAF8", borderBottom: "1px solid rgba(26,23,20,0.07)", position: "relative" }}>
               {calDays.map((d, i) => (
-                <div key={i} style={{ position: "absolute", left: i * DAY_W, width: DAY_W, height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+                <div key={i} style={{
+                  position: "absolute", left: i * DAY_W, width: DAY_W, height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
                   borderLeft: d.isFirst ? "1px solid rgba(26,23,20,0.15)" : "1px solid rgba(26,23,20,0.04)",
                   boxSizing: "border-box" as const,
-                  background: d.date === todayStr ? "rgba(5,150,105,0.10)" : "transparent" }}>
+                  background: d.date === todayStr ? "rgba(5,150,105,0.10)" : "transparent"
+                }}>
                   <span style={{ fontSize: 8, color: d.date === todayStr ? "#059669" : "#B0A9A4", fontFamily: "var(--font-mono)", fontWeight: d.date === todayStr ? 700 : 400 }}>
                     {d.day}
                   </span>
@@ -174,7 +242,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
             return (
               <div key={sprint.id}>
                 <div style={{ height: ROW_H, borderBottom: "1px solid rgba(26,23,20,0.05)", padding: "0 8px 0 10px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
-                  onClick={() => { const n = new Set(expanded); n.has(sprint.id) ? n.delete(sprint.id) : n.add(sprint.id); setExpanded(n); }}
+                  onClick={() => toggleSprint(sprint.id)}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F9F8F6"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   <ChevronDown style={{ width: 11, height: 11, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
@@ -266,8 +334,10 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
             {/* ① 共有グリッド線 */}
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none" }}>
               {calDays.map((d, i) => (
-                <div key={i} style={{ position: "absolute", top: 0, bottom: 0, left: i * DAY_W, width: 1,
-                  background: d.isFirst ? "rgba(26,23,20,0.18)" : d.day % 7 === 1 ? "rgba(26,23,20,0.07)" : "rgba(26,23,20,0.03)" }} />
+                <div key={i} style={{
+                  position: "absolute", top: 0, bottom: 0, left: i * DAY_W, width: 1,
+                  background: d.isFirst ? "rgba(26,23,20,0.18)" : d.day % 7 === 1 ? "rgba(26,23,20,0.07)" : "rgba(26,23,20,0.03)"
+                }} />
               ))}
               <div style={{ position: "absolute", top: 0, bottom: 0, left: todayLeft, width: 2, background: "#059669", opacity: 0.6 }} />
             </div>
