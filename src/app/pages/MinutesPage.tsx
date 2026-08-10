@@ -15,8 +15,9 @@ import { ArticleExportButton } from "@/app/components/shared/ArticleExportButton
 import { exportMinuteArticle } from "@/app/lib/articleExport";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { usePlan } from "@/app/contexts/PlanContext";
-import { mapProject, mapMeetingMinute, mapActionMemo } from "@/app/lib/mappers";
-import type { Project, MeetingMinute, ActionMemo, AccessLevel, UserPermissions } from "@/app/types";
+import { mapProject, mapMeetingMinute, mapActionMemo, mapSprintTicket } from "@/app/lib/mappers";
+import type { Project, MeetingMinute, ActionMemo, AccessLevel, UserPermissions, SprintTicket } from "@/app/types";
+import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
@@ -142,7 +143,50 @@ export function MinutesPage() {
   // ENHA2-035: 後追い追加のため未設定時は "edit"（既存プロジェクトでも即使える）
   const [permsLoaded, setPermsLoaded] = useState(false);
   const [sidebarSearch, setSidebarSearch] = useState("");
+  const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
+  const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSelectTicketByWbs = useCallback(async (wbs: string) => {
+    if (!isSupabaseEnabled || !project) {
+      setSelectedTicket({
+        id: wbs, wbs, title: wbs, status: "todo", priority: "medium", assignee: "", startDate: "", dueDate: "", estimatedHours: 0, progress: 0
+      });
+      return;
+    }
+    const { data: sprintRows } = await supabase!
+      .from("sprints")
+      .select("id")
+      .eq("project_id", project.id);
+    const sprintIds = sprintRows?.map(s => s.id) ?? [];
+
+    let ticketRow: any = null;
+    if (sprintIds.length > 0) {
+      const { data } = await supabase!
+        .from("sprint_tickets")
+        .select("*")
+        .in("sprint_id", sprintIds)
+        .eq("wbs", wbs)
+        .maybeSingle();
+      ticketRow = data;
+    }
+
+    if (!ticketRow) {
+      const { data } = await supabase!
+        .from("sprint_tickets")
+        .select("*")
+        .eq("wbs", wbs)
+        .maybeSingle();
+      ticketRow = data;
+    }
+
+    if (ticketRow) {
+      setSelectedTicket(mapSprintTicket(ticketRow));
+      setSelectedTicketSprintId(ticketRow.sprint_id);
+    } else {
+      toast("該当するチケットが見つかりませんでした", "error");
+    }
+  }, [project, toast]);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = effectiveMinutesPerm === "edit";
@@ -337,18 +381,18 @@ export function MinutesPage() {
               </div>
             );
             return filteredMinutes.map(m => (
-            <div key={m.id} onClick={() => navigate(`/${projectSlug ?? project?.slug}/minutes/${toMinuteSlug(m.createdAt) || m.id}`)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 7, cursor: "pointer", background: selectedId === m.id ? "#ECFDF5" : "transparent" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: 12, fontWeight: selectedId === m.id ? 700 : 500, color: selectedId === m.id ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</p>
-                <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>{formatDate(m.meetingDate)}</p>
+              <div key={m.id} onClick={() => navigate(`/${projectSlug ?? project?.slug}/minutes/${toMinuteSlug(m.createdAt) || m.id}`)}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 7, cursor: "pointer", background: selectedId === m.id ? "#ECFDF5" : "transparent" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: 12, fontWeight: selectedId === m.id ? 700 : 500, color: selectedId === m.id ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</p>
+                  <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>{formatDate(m.meetingDate)}</p>
+                </div>
+                {(pendingActionsByMinute[m.id] ?? 0) > 0 && (
+                  <span title={`未完了アクション ${pendingActionsByMinute[m.id]} 件`}
+                    style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />
+                )}
               </div>
-              {(pendingActionsByMinute[m.id] ?? 0) > 0 && (
-                <span title={`未完了アクション ${pendingActionsByMinute[m.id]} 件`}
-                  style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />
-              )}
-            </div>
-          ));
+            ));
           })()}
         </div>
 
@@ -475,6 +519,7 @@ export function MinutesPage() {
                   wikiItems={suggest.wikiItems}
                   minuteItems={suggest.minuteItems}
                   fileItems={suggest.fileItems}
+                  onTicketClick={handleSelectTicketByWbs}
                   onBacklogClick={id => openPreview("backlog", id)}
                   onWikiClick={id => openPreview("wiki", id)}
                   onMinuteClick={id => openPreview("minute", id)}
@@ -505,6 +550,19 @@ export function MinutesPage() {
           message={`「${deleteTarget.title}」を削除します。`}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
+      )}
+
+      {/* チケット詳細パネル */}
+      {selectedTicket && (
+        <TicketDetailPanel
+          ticket={selectedTicket}
+          projectId={project?.id}
+          sprintId={selectedTicketSprintId}
+          projectSlug={projectSlug}
+          onClose={() => setSelectedTicket(null)}
+          onUpdated={load}
+          onSelectTicket={t => handleSelectTicketByWbs(t.wbs)}
+        />
       )}
     </div>
   );

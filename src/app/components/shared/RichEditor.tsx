@@ -764,19 +764,19 @@ export function RichEditor({
         renderHTML({ options, node, suggestion }) {
           const char = (node.attrs.mentionSuggestionChar as string) ?? suggestion?.char ?? "@";
           if (char === "#") {
-            return ["span", { ...options.HTMLAttributes, class: "ticket-mention" }, `#${node.attrs.id ?? ""}`];
+            return ["span", { ...options.HTMLAttributes, class: "ticket-mention", "data-id": node.attrs.id ?? "" }, `#${node.attrs.id ?? ""}`];
           }
           if (char === "%") {
-            return ["span", { ...options.HTMLAttributes, class: "file-mention" }, `%${node.attrs.label ?? node.attrs.id ?? ""}`];
+            return ["span", { ...options.HTMLAttributes, class: "file-mention", "data-id": node.attrs.id ?? "" }, `%${node.attrs.label ?? node.attrs.id ?? ""}`];
           }
           if (char === "$") {
             const rawId = node.attrs.id ?? "";
             const [type] = rawId.split(":");
             const label = node.attrs.label ?? rawId.split(":").slice(1).join(":") ?? rawId;
             const cls = type === "wiki" ? "wiki-mention" : type === "minute" ? "minute-mention" : "backlog-mention";
-            return ["span", { ...options.HTMLAttributes, class: cls }, `$${label}`];
+            return ["span", { ...options.HTMLAttributes, class: cls, "data-id": rawId }, `$${label}`];
           }
-          return ["span", { ...options.HTMLAttributes, class: "mention" }, `@${node.attrs.label ?? node.attrs.id ?? ""}`];
+          return ["span", { ...options.HTMLAttributes, class: "mention", "data-id": node.attrs.id ?? "" }, `@${node.attrs.label ?? node.attrs.id ?? ""}`];
         },
         suggestions: [
           {
@@ -1044,63 +1044,84 @@ export function RichEditor({
     if (editor) editor.setEditable(!readOnly);
   }, [readOnly, editor]);
 
-  // ticket-mention クリックでナビゲーション
-  useEffect(() => {
-    if (!editor || !onTicketClick) return;
-    const dom = editor.view.dom;
-    const handler = (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest(".ticket-mention[data-id]");
-      if (!target) return;
-      const wbs = target.getAttribute("data-id");
-      if (wbs) {
-        e.preventDefault();
-        e.stopPropagation();
-        onTicketClick(wbs);
-      }
-    };
-    dom.addEventListener("click", handler);
-    return () => dom.removeEventListener("click", handler);
-  }, [editor, onTicketClick]);
-
-  // backlog/wiki/minute mention クリックでナビゲーション
+  // 各種メンション（チケット / バックログ / Wiki / 議事録 / ファイル）のクリック統合ハンドラー
   useEffect(() => {
     if (!editor) return;
     const dom = editor.view.dom;
     const handler = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
-      const backlogEl = el.closest(".backlog-mention[data-id]");
-      if (backlogEl && onBacklogClick) {
-        const rawId = backlogEl.getAttribute("data-id") ?? "";
-        const id = rawId.startsWith("backlog:") ? rawId.slice(8) : rawId;
-        e.preventDefault(); e.stopPropagation();
-        onBacklogClick(id);
+
+      // メンション対象の要素を取得
+      const mentionEl = el.closest(".ticket-mention, .backlog-mention, .wiki-mention, .minute-mention, .file-mention") as HTMLElement | null;
+      if (!mentionEl) return;
+
+      const rawId = mentionEl.getAttribute("data-id") ?? "";
+      const innerText = mentionEl.innerText || mentionEl.textContent || "";
+
+      // 1. テキストまたは data-id 内から WBS形式 (例: BRU-048, TT-001) を最優先で抽出
+      //    #BRU-048 や $BRU-048 など、先頭記号やクラス名に関わらず確実にチケットとしてヒットさせる
+      const wbsInText = innerText.match(/([A-Za-z0-9]+-\d+)/);
+      const wbsInId = rawId.match(/([A-Za-z0-9]+-\d+)/);
+      const matchedWbs = wbsInText?.[1] || wbsInId?.[1];
+
+      if (matchedWbs) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onTicketClick) {
+          onTicketClick(matchedWbs);
+        }
         return;
       }
-      const wikiEl = el.closest(".wiki-mention[data-id]");
-      if (wikiEl && onWikiClick) {
-        const rawId = wikiEl.getAttribute("data-id") ?? "";
-        const id = rawId.startsWith("wiki:") ? rawId.slice(5) : rawId;
-        e.preventDefault(); e.stopPropagation();
-        onWikiClick(id);
-        return;
+
+      // 2. WBS形式でない場合、通常の各種メンション処理に振り分ける
+      let cleanId = rawId;
+      if (cleanId.includes(":")) {
+        cleanId = cleanId.split(":").slice(1).join(":");
       }
-      const minuteEl = el.closest(".minute-mention[data-id]");
-      if (minuteEl && onMinuteClick) {
-        const rawId = minuteEl.getAttribute("data-id") ?? "";
-        const id = rawId.startsWith("minute:") ? rawId.slice(7) : rawId;
-        e.preventDefault(); e.stopPropagation();
-        onMinuteClick(id);
-        return;
+      if (!cleanId) {
+        cleanId = innerText.replace(/^[#$%]/, "").trim();
       }
-      const fileEl = el.closest(".file-mention[data-id]");
-      if (fileEl && onFileClick) {
-        e.preventDefault(); e.stopPropagation();
-        onFileClick(fileEl.getAttribute("data-id") ?? "");
+
+      if ((mentionEl.classList.contains("backlog-mention") || rawId.startsWith("backlog:")) && onBacklogClick) {
+        if (cleanId) {
+          e.preventDefault();
+          e.stopPropagation();
+          onBacklogClick(cleanId);
+          return;
+        }
+      }
+
+      if ((mentionEl.classList.contains("wiki-mention") || rawId.startsWith("wiki:")) && onWikiClick) {
+        if (cleanId) {
+          e.preventDefault();
+          e.stopPropagation();
+          onWikiClick(cleanId);
+          return;
+        }
+      }
+
+      if ((mentionEl.classList.contains("minute-mention") || rawId.startsWith("minute:")) && onMinuteClick) {
+        if (cleanId) {
+          e.preventDefault();
+          e.stopPropagation();
+          onMinuteClick(cleanId);
+          return;
+        }
+      }
+
+      if ((mentionEl.classList.contains("file-mention") || rawId.startsWith("file:")) && onFileClick) {
+        if (cleanId) {
+          e.preventDefault();
+          e.stopPropagation();
+          onFileClick(cleanId);
+          return;
+        }
       }
     };
+
     dom.addEventListener("click", handler);
     return () => dom.removeEventListener("click", handler);
-  }, [editor, onBacklogClick, onWikiClick, onMinuteClick, onFileClick]);
+  }, [editor, onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick]);
 
   // 🌟 BRU4-049: 縦罫線をダブルクリックで、その列の最長1行の自然幅に自動フィット
   useEffect(() => {
