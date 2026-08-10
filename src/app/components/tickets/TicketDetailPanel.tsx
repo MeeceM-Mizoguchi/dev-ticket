@@ -139,11 +139,11 @@ function pointToComment(targetEl: HTMLElement) {
   window.setTimeout(() => box.classList.remove("comment-ring-pulse"), 2100);
 }
 
-// コメント右端の三点リーダーメニュー（BRU10-049）。現時点の項目は「リンクをコピー」のみ。
+// コメント右端の三点リーダーメニュー（BRU10-049）。項目は「内容をコピー」「リンクをコピー」。
 // 開閉状態はこのコンポーネントが持つ。他の ⋯ を押した時点で前のメニューには
 // 「外側 mousedown」が届くので、同時に複数開くことはない。
-function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
-  projectSlug: string; wbs: string; commentId: string; onError: (message: string) => void;
+function CommentLinkMenu({ projectSlug, wbs, commentId, content, onError }: {
+  projectSlug: string; wbs: string; commentId: string; content: string; onError: (message: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -164,6 +164,24 @@ function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
       escStack.pop(closeOnEsc);
     };
   }, [open]);
+
+  // コメント本文（HTML）をMarkdownテキストにしてコピーする
+  const handleCopyContent = async () => {
+    const text = htmlToMarkdown(content ?? "").trim();
+    if (!text) {
+      setOpen(false);
+      onError("コピーできる本文がありません");
+      return;
+    }
+    if (await copyText(text)) {
+      setOpen(false);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      setOpen(false);
+      onError("クリップボードへのコピーに失敗しました");
+    }
+  };
 
   const handleCopy = async () => {
     const url = buildCommentLink(projectSlug, wbs, commentId);
@@ -205,6 +223,13 @@ function CommentLinkMenu({ projectSlug, wbs, commentId, onError }: {
           background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8,
           boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 60,
         }}>
+          <button onClick={handleCopyContent}
+            style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 9px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+            <Copy style={{ width: 12, height: 12, color: "#059669" }} />
+            内容をコピー
+          </button>
           <button onClick={handleCopy}
             style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 9px", background: "transparent", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}
@@ -3382,7 +3407,7 @@ export function TicketDetailPanel({
                                 <CornerDownRight style={{ width: 11, height: 11 }} />
                               </button>
                               {projectSlug && ticket.wbs && (
-                                <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} onError={showAlert} />
+                                <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} content={c.content} onError={showAlert} />
                               )}
                             </div>
                           </div>
@@ -3478,7 +3503,7 @@ export function TicketDetailPanel({
                                       </button>
                                     )}
                                     {projectSlug && ticket.wbs && (
-                                      <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} onError={showAlert} />
+                                      <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} content={reply.content} onError={showAlert} />
                                     )}
                                   </div>
                                 </div>
@@ -3711,7 +3736,7 @@ export function TicketDetailPanel({
                               <CornerDownRight style={{ width: 11, height: 11 }} />
                             </button>
                             {projectSlug && ticket.wbs && (
-                              <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} onError={showAlert} />
+                              <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={c.id} content={c.content} onError={showAlert} />
                             )}
                           </div>
                         </div>
@@ -3824,7 +3849,7 @@ export function TicketDetailPanel({
                                     <CornerDownRight style={{ width: 11, height: 11 }} />
                                   </button>
                                   {projectSlug && ticket.wbs && (
-                                    <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} onError={showAlert} />
+                                    <CommentLinkMenu projectSlug={projectSlug} wbs={ticket.wbs} commentId={reply.id} content={reply.content} onError={showAlert} />
                                   )}
                                 </div>
                               </div>
