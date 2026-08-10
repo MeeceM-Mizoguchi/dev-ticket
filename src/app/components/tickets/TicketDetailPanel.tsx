@@ -241,14 +241,16 @@ function ChildHoursBadge({ hours }: { hours: number }) {
 
 export function TicketDetailPanel({
   ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onMoved, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
-}: { ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void | Promise<void>; onDeleted?: () => void;
+}: {
+  ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void | Promise<void>; onDeleted?: () => void;
   /**
    * 🌟 BRU10-077: 別スプリントへ移動したときに呼ばれる。移動後（採番し直し後）のWBSと
    * 移動先スプリントIDを渡すので、呼び出し側で移動先までスクロールして強調表示する。
    * onUpdated の完了後・onClose の直前に呼ぶ。
    */
   onMoved?: (movedWbs: string, targetSprintId: string) => void;
-  onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean }) {
+  onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean
+}) {
 
   const { userName, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
@@ -3702,7 +3704,7 @@ export function TicketDetailPanel({
                               // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
                               const cleanContent = truncateQuoteHtml(c.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                               // 左線ではなく全体を囲うボーダースタイルに変更
-                              setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${c.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                              setReplyText(replyingToId === c.id ? "" : `<blockquote data-quote-id="${c.id}" style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${c.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
                               setReplyImages([]);
                             }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
                               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
@@ -3815,7 +3817,7 @@ export function TicketDetailPanel({
                                     // 過去の引用ブロック（blockquote）を除去し、純粋な本文だけを抽出
                                     const cleanContent = truncateQuoteHtml(reply.content.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, '').trim());
                                     // 左線ではなく全体を囲うボーダースタイルに変更
-                                    setReplyText(replyingToId === c.id ? "" : `<blockquote style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント <span style="opacity:0.01; font-size:1px; user-select:none;">[${reply.id}]</span></div>${cleanContent}</blockquote><p><br></p>`);
+                                    setReplyText(replyingToId === c.id ? "" : `<blockquote data-quote-id="${reply.id}" style="border: 1px solid #E5E7EB; margin: 0 0 10px 0; background: #F9FAFB; padding: 10px 14px; border-radius: 8px;"><div style="font-size: 10px; font-weight: bold; margin-bottom: 4px; color: #9E9690;">${reply.userName} さんのコメント</div>${cleanContent}</blockquote><p><br></p>`);
                                     setReplyImages([]);
                                   }} style={{ padding: 3, borderRadius: 4, border: "none", background: "transparent", cursor: "pointer", color: replyingToId === c.id ? "#0284C7" : "#D5D0CB" }}
                                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#0284C7"; }}
