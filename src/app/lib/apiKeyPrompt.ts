@@ -121,8 +121,12 @@ export function buildApiSetupPrompt(ctx: ApiSetupContext): string {
 - 認証ヘッダー: \`Authorization: Bearer ${key}\`
 - \`Content-Type: application/json\`
 - 対象プロジェクト: ${ctx.projectName}（APIキーに紐づいているので指定不要）
-- 対象スプリント: ${ctx.sprintName}
-- \`sprintId\`: \`${ctx.sprintId}\`
+- **登録先スプリント: ${ctx.sprintName || "(名称未設定)"}**
+- **\`sprintId\`: \`${ctx.sprintId}\`**
+
+⚠️ \`sprintId\` は上の値を**そのまま使う**こと。この手順は利用者が「${ctx.sprintName || "このスプリント"}」の画面から
+　 コピーしたものであり、登録先はここで確定している。**自分で別のスプリントを選び直さないこと。**
+　 利用者が会話の中で別のスプリントを明示的に指定した場合のみ、そちらに変更する。
 
 ${ctx.plainKey ? "" : `※ APIキーは上のプレースホルダを、控えてある実際のキー（\`dvt_live_\` で始まる文字列）に置き換えてください。
 　 既に環境変数や設定ファイルへ登録済みであれば、そちらを使ってください。
@@ -138,7 +142,7 @@ ${ctx.plainKey ? "" : `※ APIキーは上のプレースホルダを、控え�
       "status": "未着手",
       "priority": "高",
       "category": "バグ",
-      "assignee": "${ctx.memberNames[0] ?? "山田太郎"}",
+      "assignee": "山田太郎",
       "startDate": "${ctx.today}",
       "dueDate": "${ctx.today}",
       "estimatedHours": 4,
@@ -192,6 +196,9 @@ ${DESCRIPTION_SPEC}
 
 \`GET ${ctx.baseUrl}/api/v1/context\`（同じ Authorization ヘッダー）で、
 このプロジェクトのスプリント一覧・メンバー名・分類名・使えるステータスを取得できる。
+
+**スプリント一覧が取れても、登録先を \`${ctx.sprintId}\` から変えてはならない。**
+この呼び出しは担当者名や分類名の最新の候補を確かめるためのものである。
 
 ## 今日の日付
 
