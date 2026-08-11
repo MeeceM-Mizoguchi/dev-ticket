@@ -287,6 +287,31 @@ export function sprintHasPending(s: Sprint) {
   return s.tickets.some(t => t.status === "on-hold");
 }
 
+// WBS（T-001 / T-001-2 など）を「自然順」で比較する。
+//
+// 素の文字列比較だと T-10 が T-9 より前に来てしまうため、数字の並びは数値として比較する。
+// 一括作成したチケットは created_at が全件同一（1回の insert ＝ now() が同じ）になり
+// 作成日時では順序が決まらないので、一覧の既定順はこの WBS 順で決める。
+const WBS_CHUNK = /(\d+)|(\D+)/g;
+
+export function compareWbs(a: string, b: string): number {
+  const ac = (a || "").match(WBS_CHUNK) ?? [];
+  const bc = (b || "").match(WBS_CHUNK) ?? [];
+  for (let i = 0; i < Math.min(ac.length, bc.length); i++) {
+    const x = ac[i], y = bc[i];
+    const xn = /^\d/.test(x), yn = /^\d/.test(y);
+    if (xn && yn) {
+      const d = Number(x) - Number(y);
+      if (d !== 0) return d;
+    } else {
+      const d = x.localeCompare(y, "ja");
+      if (d !== 0) return d;
+    }
+  }
+  // 前方が一致するなら短い方が先（T-001 は子の T-001-2 より前）
+  return ac.length - bc.length;
+}
+
 export const inputCls = "w-full bg-[#F7F8F9] border border-stone-200/70 rounded-xl px-3.5 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 focus:bg-white transition-all";
 export const labelCls = "block text-[10px] font-bold text-stone-400 uppercase tracking-widest mb-1.5";
 

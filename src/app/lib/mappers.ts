@@ -1,4 +1,5 @@
 import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
+import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
 // shares は一覧では引かない（詳細を開いたときだけ埋める）ので既定は空配列。
@@ -77,10 +78,15 @@ export function mapTicketCategory(r: any): TicketCategory {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapSprint(r: any): Sprint {
+  // 並び順は WBS（No）の自然順。
+  // 一括作成したチケットは created_at が全件同一（1回の insert ＝ now() が同じ）になり、
+  // 作成日時では順序が決まらずランダムな id 順に落ちてしまうため、WBS を第1キーにする。
   const tickets = (r.sprint_tickets || []).map(mapSprintTicket)
-    .sort((a: import("../types").SprintTicket, b: import("../types").SprintTicket) => {
-      const d = (a.createdAt || "").localeCompare(b.createdAt || "");
-      return d !== 0 ? d : a.id.localeCompare(b.id);
+    .sort((a: SprintTicket, b: SprintTicket) => {
+      const d = compareWbs(a.wbs, b.wbs);
+      if (d !== 0) return d;
+      const c = (a.createdAt || "").localeCompare(b.createdAt || "");
+      return c !== 0 ? c : a.id.localeCompare(b.id);
     });
   return { id: r.id, projectId: r.project_id, name: r.name, goal: r.goal || "", status: r.status, startDate: r.start_date, endDate: r.end_date, identifier: r.identifier || "", tickets, isManualStatus: r.is_manual_status ?? false };
 }
