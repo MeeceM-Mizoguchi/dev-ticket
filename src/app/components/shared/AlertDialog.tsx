@@ -2,6 +2,15 @@ import { useEffect } from "react";
 import { AlertTriangle } from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
 
+/**
+ * アラートは AlertProvider（App直下）から出るグローバルな確認ダイアログなので、
+ * どの画面から呼ばれても必ず最前面に来る必要がある。
+ * 既存レイヤーの最大値より上に置く:
+ *   チケット詳細パネル 301/302 ／ パネル内ダイアログ 320 ／ 画像ライトボックス 400 ／
+ *   実績モニタ 1000 ／ お知らせ 2000 ／ 通話 9990〜10002 ／ ファイルビューア 9999・13000
+ */
+const ALERT_Z = 14000;
+
 export function AlertDialog({
   title = "確認",
   message,
@@ -17,7 +26,7 @@ export function AlertDialog({
   }, [onClose]);
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    <div style={{ position: "fixed", inset: 0, zIndex: ALERT_Z, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ position: "absolute", inset: 0, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} onClick={onClose} />
       <div style={{ position: "relative", zIndex: 10, width: "100%", maxWidth: 400, background: "#FFFFFF", borderRadius: 20, boxShadow: "0 24px 80px rgba(0,0,0,0.22), 0 4px 16px rgba(0,0,0,0.08)", overflow: "hidden" }}>
         <div style={{ background: "linear-gradient(135deg, #D97706 0%, #B45309 60%, #92400E 100%)", padding: "22px 24px 20px", position: "relative", overflow: "hidden" }}>

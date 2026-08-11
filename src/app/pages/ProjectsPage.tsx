@@ -17,6 +17,7 @@ import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
 import { EditProjectDialog } from "@/app/components/projects/EditProjectDialog";
 import { CategorySettingsModal } from "@/app/components/projects/CategorySettingsModal";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
+import { ProjectTimelineModal } from "@/app/components/projects/ProjectTimelineModal";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { PageLoader } from "@/app/components/shared/PageLoader";
@@ -59,6 +60,8 @@ export function ProjectsPage() {
   const [categoryTarget, setCategoryTarget] = useState<Project | null>(null);
   const [tagsEditTarget, setProjectTagsEditTarget] = useState<Project | null>(null);
   const [envMemoTarget, setEnvMemoTarget] = useState<Project | null>(null);
+  // 🌟 BRU11-020: プロジェクト推移（ガント）モーダルの対象
+  const [timelineTarget, setTimelineTarget] = useState<Project | null>(null);
 
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const isOwner = userRole === "owner";
@@ -435,6 +438,7 @@ export function ProjectsPage() {
               onDownload={() => handleDownloadProject(p)}
               onEditTags={() => setProjectTagsEditTarget(p)}
               onEnvMemo={canManage ? () => setEnvMemoTarget(p) : undefined}
+              onTimeline={() => setTimelineTarget(p)}
             />
           ))}
         </div>
@@ -458,6 +462,11 @@ export function ProjectsPage() {
           onClose={() => setProjectTagsEditTarget(null)}
           onUpdated={() => { refreshProjects(); setProjectTagsEditTarget(null); }}
         />
+      )}
+
+      {/* プロジェクト推移（ガント）モーダル */}
+      {timelineTarget && (
+        <ProjectTimelineModal project={timelineTarget} onClose={() => setTimelineTarget(null)} />
       )}
 
       {/* 環境メモダイアログ */}

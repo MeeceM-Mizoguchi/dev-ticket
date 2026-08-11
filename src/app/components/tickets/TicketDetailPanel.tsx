@@ -1278,7 +1278,11 @@ export function TicketDetailPanel({
       // 着手時刻を取得し、着手→完了の稼働時間(営業時間ベース)を実績工数として保存（BRU5-028）。
       // すでに実績が手入力されている場合は上書きしない。
       const { data: row } = await supabase!.from("sprint_tickets").select("started_at, actual_work_hours").eq("id", ticket.id).single();
-      const patch: Record<string, unknown> = { status: newStatus, progress: p };
+      // 🌟 追加(BRU11-020): 子チケットの完了日時を記録する。
+      //   recordMilestoneFromTicketStatus は呼ばない（closed → released_at にマップされ、
+      //   通っていないレビュー・STG等の工程まで一括スタンプして実績列を壊すため。BRU9-042 参照）。
+      //   ここで書くのは released_at 1本だけなので、その副作用は起きない。
+      const patch: Record<string, unknown> = { status: newStatus, progress: p, released_at: new Date().toISOString() };
       if (row?.actual_work_hours == null && row?.started_at) {
         const startedMs = new Date(row.started_at).getTime();
         const nowMs = Date.now();

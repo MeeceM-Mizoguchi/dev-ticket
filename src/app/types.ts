@@ -102,6 +102,8 @@ export interface SprintTicket {
   stgCompletedAt?: string | null;
   uatCompletedAt?: string | null;
   releasedAt?: string | null;
+  // クローズ日時。mapSprintTicket が closed_at から詰めている（完了とみなす日時は closedAt || releasedAt）
+  closedAt?: string | null;
   // リリースノート用フィールド
   releaseDate?: string | null;
   isReleaseDateUndecided?: boolean;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, Calendar, CheckCircle2, Circle, Download, Globe, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
+import { Building2, Calendar, CheckCircle2, Circle, Download, GanttChartSquare, Globe, MoreHorizontal, Pencil, Tags, Trash2, Zap } from "lucide-react";
 import type { Project } from "@/app/types";
 import { calcProgress, formatDate, getStatusMeta } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -9,7 +9,7 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 
 export function ProjectCard({
-  project, onNavigate, onOpenNewTab, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo,
+  project, onNavigate, onOpenNewTab, onEdit, onDelete, onCategorySettings, onDownload, onEditTags, onEnvMemo, onTimeline,
   highlight = false,
 }: {
   project: Project;
@@ -25,6 +25,8 @@ export function ProjectCard({
   onDownload?: () => void;
   onEditTags?: () => void;
   onEnvMemo?: () => void;
+  /** BRU11-020 プロジェクト推移（ガント）モーダルを開く */
+  onTimeline?: () => void;
 }) {
   const { plan } = usePlan();
   const lpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -125,6 +127,10 @@ export function ProjectCard({
                 {onEnvMemo && (
                   <MenuItem icon={<Globe style={{ width: 12, height: 12 }} />} label="設定" onClick={() => { setMenuOpen(false); onEnvMemo(); }} color="#0284C7" />
                 )}
+                {/* 🌟 BRU11-020: プロジェクト推移（ガント）。閲覧のみなので権限ガードなし */}
+                {onTimeline && (
+                  <MenuItem icon={<GanttChartSquare style={{ width: 12, height: 12 }} />} label="プロジェクト推移" onClick={() => { setMenuOpen(false); onTimeline(); }} color="#7C3AED" />
+                )}
                 {onDownload && (
                   <MenuItem
                     icon={<Download style={{ width: 12, height: 12 }} />}
@@ -139,7 +145,7 @@ export function ProjectCard({
                 {onDelete && (
                   <MenuItem icon={<Trash2 style={{ width: 12, height: 12 }} />} label="削除" onClick={() => { setMenuOpen(false); onDelete(); }} color="#DC2626" />
                 )}
-                {!onEdit && !onDelete && !onCategorySettings && !onDownload && !onEditTags && !onEnvMemo && (
+                {!onEdit && !onDelete && !onCategorySettings && !onDownload && !onEditTags && !onEnvMemo && !onTimeline && (
                   <div style={{ padding: "8px 10px", fontSize: 12, color: "#B0A9A4" }}>操作なし</div>
                 )}
               </div>
