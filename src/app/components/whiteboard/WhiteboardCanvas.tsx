@@ -22,7 +22,7 @@ import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whi
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
 import { cutFrameSelection, expandSelectionToFrameChildren, isFrameSelected, writeFrameAwareClipboard, writeFrameAwareClipboardViaApi } from "@/app/lib/whiteboardFrameCopy";
 import { hasRichBlocks, htmlToBlocks, looksLikeMarkdown, parseMarkdown } from "@/app/lib/markdown";
-import { pasteBlocksToWhiteboard } from "@/app/lib/whiteboardPasteMarkdown";
+import { pasteBlocksToWhiteboard, pastePlainTextToWhiteboard, shouldPastePlainText } from "@/app/lib/whiteboardPasteMarkdown";
 import { viewportCenter } from "@/app/lib/whiteboardTableCreate";
 import { handleIndentKey } from "@/app/lib/whiteboardIndent";
 import { reflowIndentWrap } from "@/app/lib/whiteboardIndentWrap";
@@ -767,12 +767,13 @@ export default function WhiteboardCanvas({
   // どちらの経路でも表・見出しがただの文字列になる。そこで
   //   ① text/html があればそれを IR へ（ブラウザ上で選択してコピーした場合はここに書式がある）
   //   ② 無ければ text/plain を Markdown として解釈（コピーボタン・ターミナル由来）
-  // の順で解釈し、書式として意味のある中身のときだけ横取りする。
-  // Excalidraw の paste は document のバブル段階(App.pasteFromClipboard)で処理されるため、
-  // window のキャプチャ段階で受ければ必ず先に取れる。
+  //   ③ 書式が無いただの文章は、改行を保ったテキストボックス1枚にする（BRU11-037）
+  // の順で解釈する。Excalidraw の paste は document のバブル段階(App.pasteFromClipboard)で
+  // 処理されるため、window のキャプチャ段階で受ければ必ず先に取れる。
   // 素通しする条件（＝Excalidraw 既定の挙動に任せる）:
   //   閲覧専用 / 入力欄・キャンバスのテキスト編集中 / 画像やExcalidraw独自形式 /
-  //   書式が無い（ただの文章）/ Shift を押しながらの貼り付け（＝素の文字で貼りたい時の逃げ道）
+  //   mermaid定義・URLのみ・グラフ化できる表（shouldPastePlainText 参照）/
+  //   Shift を押しながらの貼り付け（＝素の文字で貼りたい時の逃げ道）
   useEffect(() => {
     if (!api || !canEdit) return;
     const onPaste = (e: ClipboardEvent) => {
@@ -803,10 +804,15 @@ export default function WhiteboardCanvas({
         // HTML が無い / ただの文章だった場合は、text/plain を Markdown として解釈する
         blocks = text && text.length <= 200_000 && looksLikeMarkdown(text) ? parseMarkdown(text) : [];
       }
-      if (!blocks.length) return;
+      // 書式が無いただの文章は、テキストボックス1枚として自前で組む（BRU11-037）。Excalidraw 既定は
+      // 行ごとに要素を作り「貼り付け点を中心に左右中央」かつ「縦の送りが行の高さと噛み合わない」ため、
+      // 折り返しの起きる長文だと行同士が重なって崩れる。中身は素のテキストのまま（Markdown 解釈はしない）。
+      const plain = !blocks.length && shouldPastePlainText(text) ? text : null;
+      if (!blocks.length && !plain) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       const at = lastPointerScene.current ?? (() => { const { cx, cy } = viewportCenter(api); return { x: cx - 320, y: cy - 120 }; })();
+      if (plain) { pastePlainTextToWhiteboard(api, plain, at); return; }
       void pasteBlocksToWhiteboard(api, blocks, at).then((ok) => {
         if (ok) showToast("書式つきで貼り付けました");
       });

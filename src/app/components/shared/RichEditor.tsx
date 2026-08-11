@@ -941,6 +941,10 @@ export function RichEditor({
             if (marks.includes('strike')) t = `~~${t}~~`;
             return t;
           }
+          // 段落内の改行(<br> = hardBreak)。ProseMirror の leaf ノードなので子を辿っても文字が出ず、
+          // ここで拾わないと**コピーした文字から改行だけが消える**（BRU11-037）。
+          // 段落内の改行は Markdown 取込(escText)やShift+Enterで普通に入るため、実害が大きい。
+          if (node.type?.name === 'hardBreak') return '\n';
           if (node.type?.name === 'mention') {
             const char = node.attrs?.mentionSuggestionChar ?? '@';
             if (char === '#') return `#${node.attrs?.id ?? ''}`;
@@ -1016,9 +1020,12 @@ export function RichEditor({
           return out;
         }
 
+        // ブロック（段落・見出し・リスト等）の区切りは空行にする。各 block() が末尾に '\n' を付けるので
+        // '\n' で繋いで '\n\n' になる。単なる連結だと段落同士が1行で繋がり、Markdown として読み戻したとき
+        // 1つの段落に融合してしまう（＝改行が失われる）。mdBlocksToMarkdown の区切りとも揃う。
         const parts: string[] = [];
         slice.content.forEach((node: any) => { parts.push(block(node)); });
-        return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+        return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
       },
     },
   });
