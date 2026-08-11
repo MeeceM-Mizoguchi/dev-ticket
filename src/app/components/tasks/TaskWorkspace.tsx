@@ -10,7 +10,7 @@
 // 編集は詳細パネルを開かず、リストの行の中で完結する（TaskListView）。
 // かんばん／ガントで押されたタスクは、編集できるリストへ送って行に目印を付ける。
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CheckSquare, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw } from "lucide-react";
+import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { PageLoader } from "@/app/components/shared/PageLoader";
@@ -19,6 +19,7 @@ import { TaskListView } from "@/app/components/tasks/TaskListView";
 import { TaskBoardView, type TaskDropHandler } from "@/app/components/tasks/TaskBoardView";
 import { TaskGanttView } from "@/app/components/tasks/TaskGanttView";
 import { TaskQuickAddRow } from "@/app/components/tasks/TaskQuickAddRow";
+import { MdTaskImportDialog } from "@/app/components/tasks/MdTaskImportDialog";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import {
   loadTasks, loadTaskProjects, loadTaskMembers, loadMyShareFlags,
@@ -89,6 +90,7 @@ export function TaskWorkspace({
   const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
   // ヘッダーの「タスクを追加」から、表の追加行へフォーカスを飛ばすための合図
   const [addFocus, setAddFocus] = useState(0);
+  const [showMdImport, setShowMdImport] = useState(false);
 
   useEffect(() => { localStorage.setItem(viewStorageKey(scopeKey), view); }, [view, scopeKey]);
 
@@ -316,6 +318,26 @@ export function TaskWorkspace({
     return true;
   }, [tasks, canEdit, userId, userName, members, projectSlugOf, toast]);
 
+  /** いま手元にあるタスクの最小 sort_order。MD取り込みぶんはこれより手前（＝先頭）へ積む */
+  const minSortOrder = useMemo(
+    () => tasks.reduce<number | null>((min, t) => (min === null || t.sortOrder < min ? t.sortOrder : min), null),
+    [tasks],
+  );
+
+  /**
+   * MDファイルから取り込んだぶんを手元へ足す。
+   * sort_order は登録時に一覧の先頭へ来るよう振ってあるので、そのまま前に付ければ
+   * 読み込み直したときと同じ並びになる（取り込んだ直後に順番が入れ替わらない）。
+   */
+  const handleMdImported = useCallback((created: Task[]) => {
+    if (created.length === 0) return;
+    setTasks(prev => [...created, ...prev]);
+    if (created.some(t => t.status === "done")) setHideDone(false);
+    // ガントは日付のあるタスクしか出ないので、取り込んだものが必ず見えるリストへ寄せる
+    setView(v => (v === "gantt" ? "list" : v));
+    toast(`${created.length}件のタスクを取り込みました`);
+  }, [toast]);
+
   /** かんばんの列末尾からの追加。プロジェクトは画面のスコープに従う */
   const handleColumnCreate = useCallback((quickTitle: string, status: TaskStatus) =>
     handleCreate({ title: quickTitle, status, projectId, priority: "medium", assignee: "" }),
@@ -366,6 +388,10 @@ export function TaskWorkspace({
           <button type="button" onClick={() => reload(false)} disabled={refreshing} title="再読み込み"
             style={{ width: 34, height: 34, borderRadius: 9, border: "1px solid rgba(26,23,20,0.1)", background: "#FFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#6B6458" }}>
             <RefreshCw style={{ width: 14, height: 14, animation: refreshing ? "pageloader-spin 0.75s linear infinite" : undefined }} />
+          </button>
+          <button type="button" onClick={() => setShowMdImport(true)} title="MDファイルからタスクをまとめて作る"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 10, cursor: "pointer" }}>
+            <FileText style={{ width: 14, height: 14 }} />MDから作成
           </button>
           <button type="button" onClick={focusQuickAdd}
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#FFF", background: "#059669", border: "none", borderRadius: 10, cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)" }}>
@@ -480,6 +506,19 @@ export function TaskWorkspace({
       ) : (
         <TaskGanttView tasks={visible} projectNameOf={projectNameOf}
           selectedId={highlightId} onSelect={openInList} />
+      )}
+
+      {showMdImport && (
+        <MdTaskImportDialog
+          projectId={projectId}
+          projectSlug={projectSlug}
+          projects={projects}
+          members={members}
+          categoryOptions={categoryOptions}
+          minSortOrder={minSortOrder}
+          onClose={() => setShowMdImport(false)}
+          onCreated={handleMdImported}
+        />
       )}
 
       {pendingDelete && (
