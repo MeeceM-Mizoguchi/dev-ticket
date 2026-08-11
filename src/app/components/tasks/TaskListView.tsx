@@ -13,14 +13,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, Trash2 } from "lucide-react";
-import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
 import {
   TASK_STATUSES, TASK_PRIORITIES, getTaskStatusMeta,
   type MemberOption, type ProjectOption,
 } from "@/app/lib/taskService";
-import { descriptionToText, textToDescription, isRichDescription } from "@/app/lib/taskDescription";
+import { descriptionToText, textToDescription } from "@/app/lib/taskDescription";
 import { TaskCategoryField } from "@/app/components/tasks/TaskCategoryField";
 import type { Task, TaskStatus, Priority } from "@/app/types";
 
@@ -221,8 +220,12 @@ function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = true, s
 /**
  * 詳細メモのセル。
  *
- * 詳細メモは HTML で持っている（箇条書き・表・画像なども入る）。1行の入力欄で
- * 上書きするとその書式は落ちるので、書式つきのメモだけは一度確認を挟む。
+ * 追加行（TaskQuickAddRow）とまったく同じ1行の入力欄。追加も編集も同じ操作でできる。
+ * 詳細メモは HTML で持っているので、表示するときは素のテキストへ潰し、
+ * 確定するときに段落へ戻す（taskDescription）。
+ *
+ * 箇条書きなど書式つきのメモを1行に潰すと書式は落ちるが、打ち直さずに欄から
+ * 離れただけなら TextCell が保存しないので、クリックしただけで消えることはない。
  */
 function DescriptionCell({ task, editable, onCommit, textStyle }: {
   task: Task;
@@ -232,37 +235,6 @@ function DescriptionCell({ task, editable, onCommit, textStyle }: {
   textStyle?: React.CSSProperties;
 }) {
   const text = useMemo(() => descriptionToText(task.description), [task.description]);
-  const rich = useMemo(() => isRichDescription(task.description), [task.description]);
-  const [flattenOk, setFlattenOk] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-
-  // 別のタスクの行に使い回されたときのために、了承はタスクが変わったら忘れる
-  useEffect(() => { setFlattenOk(false); }, [task.id]);
-
-  if (editable && rich && !flattenOk) {
-    return (
-      <>
-        <span title={`${text}\n（書式つきのメモ。クリックすると1行テキストとして編集できます）`}
-          onClick={() => setConfirming(true)}
-          style={{
-            ...DESC_CELL, ...BODY_TEXT, ...textStyle, display: "inline-flex", alignItems: "center",
-            overflow: "hidden", textOverflow: "ellipsis",
-            whiteSpace: "nowrap" as const, cursor: "text",
-          }}>
-          {text}
-        </span>
-        {confirming && (
-          <ConfirmDialog
-            title="書式つきのメモを編集します"
-            message={"このメモには書式（箇条書き・表・画像など）が含まれています。\nここで編集すると1行のテキストになり、書式は失われます。"}
-            onConfirm={() => { setFlattenOk(true); setConfirming(false); }}
-            onClose={() => setConfirming(false)}
-            zIndex={300}
-          />
-        )}
-      </>
-    );
-  }
 
   return (
     <TextCell

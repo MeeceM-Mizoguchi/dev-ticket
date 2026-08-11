@@ -3,8 +3,8 @@
 // 詳細メモは書式つき（HTML）で持っているが、表の1行には素のテキストしか置けない。
 // ここで HTML ↔ 素のテキストを往復させる。
 //
-// 往復で壊れるもの（箇条書き・表・画像・見出し・複数段落）は isRichDescription で
-// 見分け、上書きする前に確認を挟む。
+// 追加行も編集も同じ1行の入力欄なので、確認は挟まない。書式つきのメモを打ち直せば
+// 書式は1行のテキストに潰れる（打ち直さずに欄から離れただけなら保存しない）。
 
 /** 表に出すための素のテキスト。改行は空白に潰して1行にする */
 export function descriptionToText(html: string): string {
@@ -28,18 +28,3 @@ export function textToDescription(text: string): string {
   return v.split("\n").map(line => `<p>${escapeHtml(line)}</p>`).join("");
 }
 
-/** 段落・改行の数（素のテキストに落とすと1行に潰れてしまう構造かの判定に使う） */
-const BLOCK_TAG = /<(ul|ol|li|table|img|h[1-6]|pre|blockquote|hr|figure)\b/i;
-
-/**
- * 1行の入力欄では編集できない（＝往復すると情報が落ちる）詳細メモか。
- * true のセルは、書式が消えることを確認してから編集させる。
- */
-export function isRichDescription(html: string): boolean {
-  if (!html) return false;
-  if (BLOCK_TAG.test(html)) return true;
-  if (/<br\b/i.test(html)) return true;
-  // 段落が2つ以上 = 改行を含む文章
-  const paragraphs = html.match(/<p\b/gi);
-  return !!paragraphs && paragraphs.length > 1;
-}
