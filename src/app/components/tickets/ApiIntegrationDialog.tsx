@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   KeyRound, Plus, Copy, Trash2, AlertTriangle, Sparkles, Loader2,
-  ChevronRight, ChevronDown, ShieldCheck, Ban,
+  ChevronRight, ChevronDown, ShieldCheck, Ban, Terminal, Globe,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText as copyToClipboard } from "@/lib/clipboard";
@@ -23,6 +23,8 @@ import {
   type ApiKeyRow,
 } from "@/app/lib/apiKeys";
 import { buildApiSetupPrompt } from "@/app/lib/apiKeyPrompt";
+import { buildApiSample, buildKeySetupSnippet, SAMPLE_LANGS, API_LIMITS, type SampleLang } from "@/app/lib/apiSamples";
+import { MD_STATUS_LABELS, MD_PRIORITY_LABELS } from "@/app/lib/mdTickets/parse";
 
 const GREEN = "#059669";
 const PURPLE = "#7C3AED";
@@ -72,7 +74,9 @@ export function ApiIntegrationDialog({
 
   const canManage = userRole === "admin" || userRole === "owner";
 
-  const [tab, setTab] = useState<"usage" | "keys">("usage");
+  const [tab, setTab] = useState<"usage" | "embed" | "keys">("usage");
+  /** 「組み込み」タブで表示中のサンプル言語 */
+  const [lang, setLang] = useState<SampleLang>("curl");
   const [loading, setLoading] = useState(true);
   const [keys, setKeys] = useState<ApiKeyRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -316,6 +320,31 @@ export function ApiIntegrationDialog({
           MDファイルの書き出しと取り込みは不要です。
         </p>
 
+        {/* 貼り付け先を誤ると必ず失敗するため、コピーボタンより前に置く。
+            ブラウザで動くAIはサンドボックスの外へ通信できず、プロンプトだけでは動かない。 */}
+        <div style={{ padding: "13px 15px", background: "#F0FDF4", border: `1px solid ${GREEN}22`, borderRadius: 11 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <Terminal style={{ width: 14, height: 14, color: GREEN, flexShrink: 0 }} />
+            <p style={{ fontSize: 12, fontWeight: 800, color: "#1A1714" }}>貼り付け先：コマンドを実行できるAI</p>
+          </div>
+          <p style={{ fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
+            <strong>Claude Code</strong>（デスクトップアプリの「Code」タブ / ターミナル）、
+            <strong>Cursor</strong>、<strong>Gemini CLI</strong> などに、
+            上のキー入りプロンプトを貼るだけで登録されます。設定は要りません。
+          </p>
+
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${GREEN}1A`, display: "flex", gap: 6 }}>
+            <Globe style={{ width: 13, height: 13, color: "#D97706", flexShrink: 0, marginTop: 2 }} />
+            <p style={{ fontSize: 11, color: "#6B6458", lineHeight: 1.8 }}>
+              <strong style={{ color: "#B45309" }}>Claude.ai・ChatGPT・Gemini のブラウザ版では動きません。</strong>
+              これらは外部への通信が遮断されているため、プロンプトを貼っても登録されません
+              （AIが「登録しました」と答えても実際には登録されていないことがあります）。
+              ブラウザのAIを使う場合は「新規チケット → MDファイルから取り込み」で、
+              AIの出力をそのまま貼り付けてください。
+            </p>
+          </div>
+        </div>
+
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 6 }}>使用するキー</p>
           <select
@@ -375,6 +404,201 @@ export function ApiIntegrationDialog({
             style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: GREEN }}>
             キーを管理する →
           </button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── 組み込みタブ ──────────────────────────────────────────────
+  /** 自社システム・CI・バッチから叩くための説明。MCP など追加の仕組みは要らない。 */
+  const renderEmbed = () => {
+    const sample = buildApiSample(lang, {
+      baseUrl, sprintId, plainKey: revealedKey ?? undefined,
+    });
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 15 }}>
+        <div style={{ padding: "13px 15px", background: "#F0FDF4", border: `1px solid ${GREEN}22`, borderRadius: 11 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
+            <ShieldCheck style={{ width: 14, height: 14, color: GREEN, flexShrink: 0 }} />
+            <p style={{ fontSize: 12, fontWeight: 800, color: "#1A1714" }}>必要なのはAPIキーだけです</p>
+          </div>
+          <p style={{ fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
+            Bearer認証の一般的なHTTPS APIです。自社サーバー・バッチ処理・CI・Zapier など、
+            HTTPリクエストを送れるものなら何からでも使えます。
+            MCPサーバーやSDKの導入は不要です。
+          </p>
+        </div>
+
+        {/* 組み込みの流れ。サンプルを写すだけでは動かないので、前後にやることを先に示す */}
+        <div>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>組み込みの流れ</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {[
+              { n: 1, t: "APIキーを発行する", d: "「APIキー」タブで発行します。発行は最初の1回だけです" },
+              { n: 2, t: "キーを自分のシステムに設定する", d: "環境変数に入れます。この画面に毎回入力するのではありません" },
+              { n: 3, t: "自分のデータを tickets の形に変換する", d: "下の「送れる項目」を見て、自社データの項目を対応づけます" },
+              { n: 4, t: "POST する", d: "登録されると wbs（チケット番号）が返ります" },
+            ].map(s => (
+              <div key={s.n} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                <span style={{
+                  width: 19, height: 19, borderRadius: 6, background: GREEN, color: "#FFFFFF", flexShrink: 0,
+                  fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", marginTop: 1,
+                }}>{s.n}</span>
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{s.t}</p>
+                  <p style={{ fontSize: 10.5, color: "#9E9690", lineHeight: 1.7, marginTop: 1 }}>{s.d}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* エンドポイント */}
+        <div>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>エンドポイント</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {[
+              { m: "POST", path: "/api/v1/tickets", desc: "チケットを登録する" },
+              { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
+            ].map(e => (
+              <div key={e.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: e.m === "POST" ? GREEN : "#0284C7", minWidth: 34 }}>{e.m}</span>
+                <code style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#1A1714" }}>{e.path}</code>
+                <span style={{ fontSize: 10.5, color: "#9E9690", marginLeft: "auto", textAlign: "right" }}>{e.desc}</span>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 7, lineHeight: 1.75 }}>
+            プロジェクトはAPIキーに紐づいているため指定不要です。
+            登録先スプリントは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>sprintId</code> で指定します
+            （このスプリントは <code style={{ fontFamily: "var(--font-mono)", color: "#4B4640" }}>{sprintId}</code>）。
+          </p>
+        </div>
+
+        {/* キーの置き場所。「画面に入力するのか？」という誤解が起きやすいので明示する */}
+        <div>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>APIキーの置き場所</p>
+          <p style={{ fontSize: 11.5, color: "#4B4640", lineHeight: 1.85, marginBottom: 8 }}>
+            キーはこの画面で発行して、<strong>自分のシステム側の環境変数に設定します</strong>。
+            Dev Ticket の画面に毎回入力するものではありません。
+            ソースコードに直接書くとGitに残って漏れるため、環境変数を使ってください。
+          </p>
+          <pre style={{
+            padding: "11px 13px", overflow: "auto",
+            background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9,
+            fontSize: 10.5, lineHeight: 1.7, fontFamily: "var(--font-mono)", color: "#4B4640", whiteSpace: "pre",
+          }}>{buildKeySetupSnippet(revealedKey ?? "dvt_live_ここにAPIキー")}</pre>
+          <div style={{ marginTop: 7 }}>
+            <Btn onClick={() => void copy(buildKeySetupSnippet(revealedKey ?? "dvt_live_ここにAPIキー"), "設定例")} tone="ghost">
+              <Copy style={{ width: 13, height: 13 }} />設定例をコピー
+            </Btn>
+          </div>
+        </div>
+
+        {/* サンプルコード */}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>サンプルコード</p>
+            <div style={{ display: "flex", gap: 3 }}>
+              {SAMPLE_LANGS.map(l => (
+                <button key={l.id} type="button" onClick={() => setLang(l.id)}
+                  style={{
+                    padding: "4px 10px", fontSize: 10.5, fontWeight: 700, borderRadius: 6, cursor: "pointer",
+                    border: `1px solid ${lang === l.id ? GREEN : "rgba(26,23,20,0.12)"}`,
+                    background: lang === l.id ? GREEN : "#FFFFFF",
+                    color: lang === l.id ? "#FFFFFF" : "#6B6458",
+                  }}>{l.label}</button>
+              ))}
+            </div>
+          </div>
+
+          <pre style={{
+            padding: "12px 14px", maxHeight: 300, overflow: "auto",
+            background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9,
+            fontSize: 10.5, lineHeight: 1.7, fontFamily: "var(--font-mono)",
+            color: "#4B4640", whiteSpace: "pre", wordBreak: "normal",
+          }}>{sample}</pre>
+
+          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
+            <Btn onClick={() => void copy(sample, "サンプルコード")} tone="ghost">
+              <Copy style={{ width: 13, height: 13 }} />サンプルをコピー
+            </Btn>
+            {/* curl は手元で1回叩く用途なのでキーを直に入れる。
+                コード側は環境変数から読む形にしてあるので、埋め込み済みと書くと嘘になる。 */}
+            <span style={{ fontSize: 10.5, color: lang === "curl" && revealedKey ? GREEN : "#9E9690", lineHeight: 1.6 }}>
+              {lang === "curl"
+                ? (revealedKey
+                  ? "✅ キーが埋め込まれています。このまま実行できます"
+                  : "キーの部分は自分で差し替えてください")
+                : "このコードにキーは含まれません。上の「APIキーの置き場所」で環境変数に設定してください"}
+            </span>
+          </div>
+        </div>
+
+        {/* 送れる項目。このプロジェクトの実際の分類名・メンバー名を出すので、そのまま写せる */}
+        <div>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 3 }}>送れる項目</p>
+          <p style={{ fontSize: 10.5, color: "#9E9690", lineHeight: 1.7, marginBottom: 8 }}>
+            tickets 配列の1要素に指定できるキーです。<strong>title 以外はすべて任意</strong>で、
+            省略すると「未指定のとき」の値になります。判断材料が無い項目は、空文字を入れずに
+            <strong>キーごと省略</strong>してください。
+          </p>
+          <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, overflow: "hidden" }}>
+            {[
+              { k: "title", req: true, v: "チケット名（500文字まで）", def: "—" },
+              { k: "status", req: false, v: MD_STATUS_LABELS.join(" / "), def: "未着手" },
+              { k: "priority", req: false, v: MD_PRIORITY_LABELS.join(" / "), def: "中" },
+              { k: "category", req: false, v: categoryNames.length > 0 ? categoryNames.join(" / ") : "（このプロジェクトには分類が未登録）", def: "分類なし" },
+              // 実名を画面に並べない（画面共有や資料に映るため）。
+              // 名前の一覧が必要なときは API から取る。
+              { k: "assignee", req: false, v: `プロジェクトのメンバー名（完全一致）。${memberNames.length}名が登録済み。名前は GET /api/v1/context で取得`, def: "空欄" },
+              { k: "startDate", req: false, v: "YYYY/MM/DD", def: "空欄" },
+              { k: "dueDate", req: false, v: "YYYY/MM/DD", def: "空欄" },
+              { k: "estimatedHours", req: false, v: "整数（時間）", def: "0" },
+              { k: "description", req: false, v: "本文（Markdown文字列）", def: "空欄" },
+              { k: "children", req: false, v: "子チケットの配列（同じ形・1階層まで）", def: "なし" },
+            ].map((f, i) => (
+              <div key={f.k} style={{
+                display: "flex", gap: 9, padding: "7px 11px", alignItems: "flex-start",
+                background: i % 2 === 0 ? "#FFFFFF" : "#FAFAF8",
+                borderTop: i === 0 ? "none" : "1px solid rgba(26,23,20,0.05)",
+              }}>
+                <code style={{ fontSize: 10.5, fontFamily: "var(--font-mono)", color: "#1A1714", minWidth: 104, flexShrink: 0 }}>
+                  {f.k}
+                  {f.req && <span style={{ color: "#DC2626", fontWeight: 800 }}> *</span>}
+                </code>
+                <span style={{ fontSize: 10.5, color: "#4B4640", lineHeight: 1.65, flex: 1 }}>{f.v}</span>
+                <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0, textAlign: "right", minWidth: 62 }}>{f.def}</span>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 7, lineHeight: 1.75 }}>
+            右端は未指定のときの値です。<code style={{ fontFamily: "var(--font-mono)" }}>category</code> /
+            <code style={{ fontFamily: "var(--font-mono)" }}>assignee</code> は登録済みの名前と完全一致させてください。
+            一致しない場合は空欄で登録され、レスポンスの <code style={{ fontFamily: "var(--font-mono)" }}>warnings</code> に理由が入ります
+            （エラーにはなりません）。表に無いキーは送っても無視されます。
+          </p>
+        </div>
+
+        {/* 制限と注意 */}
+        <div>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>制限</p>
+          <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.9 }}>
+            <li>1分あたり {API_LIMITS.requestsPerMinute} リクエストまで（超過すると 429）</li>
+            <li>1リクエストで親チケット {API_LIMITS.parentsPerRequest} 件、親1件あたり子 {API_LIMITS.childrenPerParent} 件まで</li>
+            <li>子チケットの階層は1段まで</li>
+          </ul>
+        </div>
+
+        <div style={{ display: "flex", gap: 7, padding: "11px 13px", background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.18)", borderRadius: 10 }}>
+          <AlertTriangle style={{ width: 14, height: 14, color: "#D97706", flexShrink: 0, marginTop: 1 }} />
+          <p style={{ fontSize: 11, color: "#6B6458", lineHeight: 1.8 }}>
+            <strong style={{ color: "#B45309" }}>冪等キーはありません。</strong>
+            同じ内容を2回送ると2件登録されます。タイムアウトした場合は、自動で再送せず
+            <code style={{ fontFamily: "var(--font-mono)" }}>GET /api/v1/context</code> などで
+            登録済みかを確認してから判断してください。
+          </p>
         </div>
       </div>
     );
@@ -566,7 +790,7 @@ export function ApiIntegrationDialog({
         {/* タブ（発行直後は隠す。キーのコピーに集中させるため） */}
         {!issuedKey && (
           <div style={{ display: "flex", gap: 4, padding: "12px 24px 0", background: "#FAFAF8", flexShrink: 0 }}>
-            {([["usage", "使い方"], ["keys", "APIキー"]] as const).map(([id, label]) => (
+            {([["usage", "AIから使う"], ["embed", "システムに組み込む"], ["keys", "APIキー"]] as const).map(([id, label]) => (
               <button key={id} type="button" onClick={() => setTab(id)}
                 style={{
                   padding: "7px 16px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer",
@@ -584,7 +808,9 @@ export function ApiIntegrationDialog({
               ? <p style={{ fontSize: 12, color: "#9E9690", textAlign: "center", padding: "24px 0" }}>読み込み中…</p>
               : issuedKey
                 ? renderIssued()
-                : tab === "usage" ? renderUsage() : renderKeys()}
+                : tab === "usage" ? renderUsage()
+                  : tab === "embed" ? renderEmbed()
+                    : renderKeys()}
 
           {manualCopyText && (
             <div style={{ marginTop: 14 }}>

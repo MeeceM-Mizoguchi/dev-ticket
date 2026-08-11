@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   X, FileText, Upload, Copy, Sparkles, ChevronDown, ChevronRight,
-  AlertTriangle, CornerDownRight, Loader2, Plus,
+  AlertTriangle, CornerDownRight, Loader2, Plus, ClipboardPaste,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, MEMBERS } from "@/app/data/mock";
@@ -77,7 +77,7 @@ function TicketBadges({ t }: { t: ParsedTicket }) {
   );
 }
 
-/** 取り込み済みのMDファイル1つ分。複数ファイルをまとめて1回で登録できる。 */
+/** 取り込み済みのMD1つ分。ファイルと貼り付けテキストを同じ単位で扱い、複数まとめて1回で登録できる。 */
 interface LoadedFile {
   /** 同名ファイルを複数回取り込めるようにするための一意キー */
   key: string;
@@ -87,6 +87,7 @@ interface LoadedFile {
 }
 
 let fileKeySeq = 0;
+let pasteSeq = 0;
 
 // ── 本体 ──────────────────────────────────────────────────────────────────
 
@@ -114,6 +115,10 @@ export function MdBulkCreateDialog({
   const [templateOpen, setTemplateOpen] = useState(false);
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
 
+  // ブラウザで動くAIの出力を、ファイルにせずそのまま貼り込むための入力欄
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const phase: "drop" | "review" = files.length > 0 ? "review" : "drop";
 
@@ -135,6 +140,21 @@ export function MdBulkCreateDialog({
 
   // ── 取り込み ──────────────────────────────────────────────────────────
 
+  /**
+   * MDテキスト1つ分を解析する。ファイル読み込みと貼り付けで共通。
+   * label は取り込み一覧に出す名前（ファイル名 or 「貼り付け1」）。
+   */
+  const parseMdText = useCallback((text: string, label: string, key: string): LoadedFile | { skipped: string } => {
+    if (text.length > MD_MAX_LENGTH) {
+      return { skipped: `「${label}」が大きすぎます（${MD_MAX_LENGTH.toLocaleString()}文字まで）` };
+    }
+    const result = mdTextToTickets(text, { memberNames, categories });
+    if (result.tickets.length === 0) {
+      return { skipped: `「${label}」にチケットが見つかりませんでした（見出しが必要です）` };
+    }
+    return { key, name: label, tickets: result.tickets, warnings: result.warnings };
+  }, [memberNames, categories]);
+
   /** 1ファイルを解析する。読めなければ理由を返す（他のファイルの取り込みは止めない）。 */
   const parseOneFile = useCallback(async (file: File): Promise<LoadedFile | { skipped: string }> => {
     if (!isMarkdownFile(file)) {
@@ -146,15 +166,8 @@ export function MdBulkCreateDialog({
     } catch {
       return { skipped: `「${file.name}」を読み込めませんでした` };
     }
-    if (text.length > MD_MAX_LENGTH) {
-      return { skipped: `「${file.name}」が大きすぎます（${MD_MAX_LENGTH.toLocaleString()}文字まで）` };
-    }
-    const result = mdTextToTickets(text, { memberNames, categories });
-    if (result.tickets.length === 0) {
-      return { skipped: `「${file.name}」にチケットが見つかりませんでした（見出しが必要です）` };
-    }
-    return { key: `f${++fileKeySeq}`, name: file.name, tickets: result.tickets, warnings: result.warnings };
-  }, [memberNames, categories]);
+    return parseMdText(text, file.name, `f${++fileKeySeq}`);
+  }, [parseMdText]);
 
   /** 選択・ドロップされたファイルをまとめて取り込み、既に読み込み済みのものへ追加する。 */
   const handleFiles = useCallback(async (fileList: FileList | null) => {
@@ -184,6 +197,33 @@ export function MdBulkCreateDialog({
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [parseOneFile, toast]);
 
+  /**
+   * 貼り付けられたMDテキストを取り込む。
+   * ブラウザで動くAI（Claude.ai / Gemini など）はサンドボックスの外へ通信できず、
+   * .md ファイルとして保存させるのも手間なので、チャットの出力をそのまま貼れる口を用意している。
+   * 解析から先はファイル取り込みと完全に同じ経路を通る。
+   */
+  const handlePasteImport = useCallback(() => {
+    const text = pasteText.trim();
+    if (!text) return;
+    setError(null);
+
+    // AIがつい ```markdown … ``` で囲んでしまうことがあるため、外側の1枚だけ剥がす
+    const unwrapped = /^```[a-zA-Z]*\n([\s\S]*)\n```$/.exec(text);
+    const body = unwrapped ? unwrapped[1] : text;
+
+    const result = parseMdText(body, `貼り付け${++pasteSeq}`, `p${pasteSeq}`);
+    if ("skipped" in result) {
+      pasteSeq--; // 失敗した番号は使い回す（連番が飛ばないように）
+      setError(result.skipped);
+      return;
+    }
+    setFiles(prev => [...prev, result]);
+    setWarningsOpen(false);
+    setPasteText("");
+    setPasteOpen(false);
+  }, [pasteText, parseMdText]);
+
   const removeFile = (key: string) => {
     setFiles(prev => prev.filter(f => f.key !== key));
     setError(null);
@@ -193,6 +233,8 @@ export function MdBulkCreateDialog({
     setFiles([]);
     setExcluded(new Set());
     setError(null);
+    setPasteText("");
+    setPasteOpen(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -339,6 +381,41 @@ export function MdBulkCreateDialog({
     );
   };
 
+  /** 貼り付け欄。最初の画面と確認画面（追加の貼り付け）の両方で使う */
+  const pasteBlock = (
+    <div style={{ marginTop: 8 }}>
+      <textarea
+        value={pasteText}
+        onChange={e => setPasteText(e.target.value)}
+        autoFocus
+        placeholder={"AIが出力した Markdown をここに貼り付けます。\n\n## チケットのタイトル\n- ステータス: 未着手\n- 優先度: 高\n..."}
+        style={{
+          width: "100%", height: 200, padding: 11, fontSize: 11.5, lineHeight: 1.6,
+          fontFamily: "var(--font-mono)", color: "#1A1714", background: "#FFFFFF",
+          border: "1px solid rgba(26,23,20,0.12)", borderRadius: 9, resize: "vertical",
+        }}
+      />
+      <div style={{ marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <span style={{ fontSize: 11, color: "#9E9690" }}>
+          {pasteText.length > 0 && `${pasteText.length.toLocaleString()} 文字`}
+        </span>
+        <button
+          type="button"
+          onClick={handlePasteImport}
+          disabled={pasteText.trim().length === 0}
+          style={{
+            padding: "8px 18px", fontSize: 12.5, fontWeight: 700, color: "#FFFFFF",
+            background: pasteText.trim().length === 0 ? "#9CA3AF" : "#0284C7",
+            border: "none", borderRadius: 9,
+            cursor: pasteText.trim().length === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          取り込む
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <>
       <style>{`@keyframes md-bulk-spin { to { transform: rotate(360deg); } }`}</style>
@@ -409,6 +486,24 @@ export function MdBulkCreateDialog({
               <span style={{ fontSize: 10.5, color: "#C9C4BB" }}>.md / .markdown</span>
             </button>
 
+            {/* 貼り付け取り込み。ブラウザで動くAIはファイルを作れないことがあるため、こちらを使う */}
+            <div style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                onClick={() => setPasteOpen(v => !v)}
+                style={{
+                  width: "100%", padding: "11px 16px", borderRadius: 11,
+                  border: "1px solid rgba(26,23,20,0.12)", background: "#FFFFFF", cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                }}
+              >
+                <ClipboardPaste style={{ width: 14, height: 14, color: "#0284C7" }} />
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>テキストを貼り付けて取り込み</span>
+                <span style={{ fontSize: 11, color: "#9E9690" }}>ファイルにせず、AIの出力をそのまま</span>
+              </button>
+              {pasteOpen && pasteBlock}
+            </div>
+
             {error && (
               <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.15)", borderRadius: 9 }}>
                 <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0 }} />
@@ -420,7 +515,9 @@ export function MdBulkCreateDialog({
             <div style={{ marginTop: 22, padding: 16, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 12 }}>
               <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 3 }}>AIに書いてもらう場合</p>
               <p style={{ fontSize: 11, color: "#9E9690", marginBottom: 12 }}>
-                プロンプトをAIに渡し、返ってきたMarkdownを .md ファイルとして保存してから取り込みます。
+                プロンプトをAIに渡し、返ってきたMarkdownを取り込みます。
+                Claude.ai や Gemini などブラウザで使うAIの場合は、チャットに出力された内容をコピーして
+                上の「テキストを貼り付けて取り込み」へ貼るのが簡単です（ファイル保存は不要）。
                 ステータス・優先度・分類・担当者・日程・見積工数まで埋めるよう指示が入っています。
               </p>
 
@@ -579,6 +676,11 @@ export function MdBulkCreateDialog({
               </div>
             )}
 
+            {/* 確認画面で「貼り付けを追加」を押したときの入力欄。既に取り込んだ分はそのまま残る */}
+            {pasteOpen && (
+              <div style={{ padding: "0 24px 12px", flexShrink: 0 }}>{pasteBlock}</div>
+            )}
+
             <div style={{ padding: "12px 24px", background: "#FFFFFF", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, borderTop: "1px solid rgba(26,23,20,0.07)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <button
@@ -587,6 +689,13 @@ export function MdBulkCreateDialog({
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, color: "#0284C7", background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.20)", borderRadius: 9, cursor: saving ? "not-allowed" : "pointer" }}
                 >
                   <Plus style={{ width: 12, height: 12 }} />ファイルを追加
+                </button>
+                <button
+                  onClick={() => setPasteOpen(v => !v)}
+                  disabled={saving}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "8px 14px", fontSize: 12.5, fontWeight: 700, color: "#0284C7", background: pasteOpen ? "#E0F2FE" : "#F0F9FF", border: "1px solid rgba(2,132,199,0.20)", borderRadius: 9, cursor: saving ? "not-allowed" : "pointer" }}
+                >
+                  <ClipboardPaste style={{ width: 12, height: 12 }} />貼り付けを追加
                 </button>
                 <button
                   onClick={resetFiles}
