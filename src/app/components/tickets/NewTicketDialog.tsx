@@ -22,8 +22,7 @@ import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
-// BRU10-062 作成中プログレス
-import { TicketCreateProgress } from "@/app/components/tickets/TicketCreateProgress";
+import { useToast } from "@/app/contexts/ToastContext";
 import { fetchSkills } from "@/app/lib/skillsApi";
 import { Sparkles } from "lucide-react";
 
@@ -36,9 +35,6 @@ const PRIORITY_OPTIONS: SelectOption[] = [
 
 const CACHE_KEY_PREFIX = "new_ticket_draft_";
 
-// BRU10-062: 作成処理のステップ。通信が遅い環境でも「いまどこまで進んだか」を出す。
-const CREATE_STEPS = ["チケット番号の採番", "チケット情報の保存", "通知の送信"];
-const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onCreated, sprintStartDate, sprintEndDate, parentTicketId, parentWbs, zIndexBase = 300, currentTicketCount }: {
   sprintId?: string; projectId?: string; projectSlug?: string; onClose: () => void; onCreated?: (wbs?: string) => void;
@@ -81,10 +77,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const ticketId = useRef<string>(`T-${Date.now()}`);
   const [images, setImages] = useState<string[]>([]);
   const [imageDragOver, setImageDragOver] = useState(false);
+  const { toast } = useToast();
   const [saving, setSaving] = useState(false);
-  // BRU10-062: 作成中プログレスの進行状況（0..CREATE_STEPS.length）とエラー
-  const [progressStep, setProgressStep] = useState(0);
-  const [progressError, setProgressError] = useState<string | null>(null);
+  // BRU10-062: 作成に失敗したときのエラー（下書きは保持され、そのまま再実行できる）
+  const [createError, setCreateError] = useState<string | null>(null);
   const [titleError, setTitleError] = useState(false);
   const [limitError, setLimitError] = useState<string | null>(null);
   const [categories, setCategories] = useState<TicketCategory[]>([]);
@@ -188,9 +184,9 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
 
   const handleInterceptClose = useCallback(() => {
     // BRU10-062: 作成処理中は閉じさせない（中断すると採番済みの番号が宙に浮く）
-    if (saving || progressError) return;
+    if (saving) return;
     setShowCloseConfirm(true);
-  }, [saving, progressError]);
+  }, [saving]);
 
   useEffect(() => {
     escStack.push(handleInterceptClose);
@@ -485,9 +481,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       }
     };
 
-    // BRU10-062: 作成中はプログレスを出す。採番 → 保存 → 通知 の3ステップ。
-    setProgressStep(0);
-    setProgressError(null);
+    // BRU11-031: 作成中は「作成する」ボタンが「作成中...」＋ぐるぐるに変わる。
+    setCreateError(null);
     setSaving(true);
     let createdWbs: string | undefined; // 作成成功したチケットのWBS（作成後の一覧スクロール&強調用・BRU5-034）
 
@@ -517,7 +512,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
           const { data: parentRow } = await supabase!
             .from("sprint_tickets").select("sprint_id").eq("id", parentTicketId).single();
           if (parentRow?.sprint_id) {
-            setProgressStep(1);
             const { error: insErr } = await supabase!.from("sprint_tickets").insert({
               id: ticketId.current, sprint_id: parentRow.sprint_id, wbs,
               title, status, priority, assignee: finalAssignee,
@@ -533,7 +527,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             });
             if (insErr) throw insErr;
             // 通知まわりは失敗してもチケット自体は作成済みなので、作成を巻き戻さない
-            setProgressStep(2);
             try {
               await saveRequiredSkills(ticketId.current);
               if (finalAssignee && effectiveProjectSlug) {
@@ -549,12 +542,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               }
               await notifyMentions(wbs);
             } catch (e) { console.error("[NewTicketDialog] notify (child early) failed:", e); }
-            setProgressStep(CREATE_STEPS.length);
-            await sleep(450); // 完了状態を一瞬見せてから閉じる
             try { localStorage.removeItem(contextKey); } catch (e) { }
             savedSprintIdRef.current = "";
             setSaving(false);
             emitLinkItemsChanged(effectiveProjectId, "ticket"); // 他タブの # サジェストへ即時反映
+            toast(`チケット「${wbs}」を作成しました`);
             onCreated?.(wbs);
             onClose();
             return;
@@ -581,7 +573,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         wbs = `${prefix}-${String(nextNum).padStart(3, "0")}`;
       }
       createdWbs = wbs; // 作成後スクロール&強調のため親へ返す（BRU5-034）
-      setProgressStep(1);
       const { error: insErr2 } = await supabase!.from("sprint_tickets").insert({
         id: ticketId.current, sprint_id: effectiveSprintId, wbs,
         title, status, priority, assignee: finalAssignee,
@@ -597,7 +588,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       });
       if (insErr2) throw insErr2;
       // 通知まわりは失敗してもチケット自体は作成済みなので、作成を巻き戻さない
-      setProgressStep(2);
       try {
         await saveRequiredSkills(ticketId.current);
         if (finalAssignee && effectiveProjectSlug) {
@@ -613,15 +603,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         }
         await notifyMentions(wbs);
       } catch (e) { console.error("[NewTicketDialog] notify failed:", e); }
-      setProgressStep(CREATE_STEPS.length);
-      await sleep(450); // 完了状態を一瞬見せてから閉じる
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
       emitLinkItemsChanged(effectiveProjectId, "ticket"); // 他タブの # サジェストへ即時反映
     } else {
-      setProgressStep(CREATE_STEPS.length);
-      await sleep(300);
       try { localStorage.removeItem(contextKey); } catch (e) { }
       savedSprintIdRef.current = "";
       setSaving(false);
@@ -630,12 +616,14 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       // BRU10-062: 保存に失敗したら閉じずにエラーを出す。下書きも消さないので再実行できる。
       console.error("[NewTicketDialog] create failed:", e);
       const detail = e?.message ? String(e.message) : "";
-      setProgressError(
+      setCreateError(
         `チケットを保存できませんでした。ネットワーク接続を確認してから、もう一度「作成する」を押してください。${detail ? `（${detail}）` : ""}`
       );
       setSaving(false);
       return;
     }
+    // BRU11-031: 作成中プログレスの完了画面を廃止したので、完了はトーストで知らせる
+    toast(createdWbs ? `チケット「${createdWbs}」を作成しました` : "チケットを作成しました");
     onCreated?.(createdWbs);
     onClose();
   };
@@ -1048,7 +1036,8 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             const isValid = errs.length === 0;
             return (
               <>
-                <BtnPrimary onClick={handleSave} disabled={!isValid || saving}>{saving ? "保存中..." : "作成する"}</BtnPrimary>
+                {/* BRU11-031: 作成中はボタン自身が「作成中...」＋ぐるぐるになる */}
+                <BtnPrimary onClick={handleSave} disabled={!isValid} loading={saving}>{saving ? "作成中..." : "作成する"}</BtnPrimary>
                 <BtnSecondary onClick={handleInterceptClose}>キャンセル</BtnSecondary>
                 {!isValid && (
                   <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
@@ -1058,6 +1047,11 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 {limitError && (
                   <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4 }}>
                     {limitError}
+                  </span>
+                )}
+                {createError && !saving && (
+                  <span style={{ fontSize: 11, color: "#DC2626", marginLeft: 4, lineHeight: 1.5 }}>
+                    {createError}
                   </span>
                 )}
               </>
@@ -1092,16 +1086,6 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         />
       )}
 
-      {/* BRU10-062: 作成中プログレス。通信が遅くても進行状況が見えるようにする。 */}
-      {(saving || progressError) && (
-        <TicketCreateProgress
-          steps={CREATE_STEPS}
-          step={progressStep}
-          error={progressError}
-          zIndex={zIndexBase + 20}
-          onClose={() => setProgressError(null)}
-        />
-      )}
     </>
   );
 }
