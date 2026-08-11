@@ -1,13 +1,13 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
-import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight } from "lucide-react";
+import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight, ChevronDown } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
-import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
+import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
 
 // ステータスごとの進捗率（progress）を定義
 const STATUS_PROGRESS: Record<TicketStatus, number> = {
@@ -187,7 +187,7 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
   );
 }
 
-function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, highlightWbsList, stickyTop }: {
+function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, onApiIntegration, highlightWbsList, stickyTop }: {
   sprints: Sprint[];
   loading?: boolean;
   canEdit?: boolean;
@@ -196,15 +196,23 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  /** 「新規チケット」メニューの「API連携」 */
+  onApiIntegration?: (sprintId: string) => void;
   /** 一括作成の直後に強調表示するWBS（複数） */
   highlightWbsList?: string[];
   // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
   stickyTop?: number;
 }) {
-  const { userName, userPermissions, userOrgId } = useAuth();
+  const { userName, userPermissions, userOrgId, userRole } = useAuth();
   const canCreateTicket = userPermissions.canCreateTicket;
   const { plan } = usePlan();
   const canSkipReview = userPermissions.canSkipReview;
+
+  // 「新規チケット」メニューで使えない項目の理由。4ビューで同じルールを使う
+  const createDisabled = buildCreateTicketDisabled({
+    featureBulkCreate: plan.featureBulkCreate,
+    canManageApiKeys: userRole === "admin" || userRole === "owner",
+  });
 
   const [selectedSprintId, setSelectedSprintId] = useState(sprints[0]?.id ?? "");
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
@@ -237,7 +245,7 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
     }
   }, [sprints, selectedSprintId]);
 
-  const bulkMenu = useBulkCreateMenu();
+  const createMenu = useCreateTicketMenu();
   // 毎レンダーで作り直さないよう memo 化する（点滅防止）
   const bulkHighlight = useMemo(() => new Set(highlightWbsList ?? []), [highlightWbsList]);
 
@@ -434,24 +442,21 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
             <ExternalLink style={{ width: 11, height: 11 }} />詳細
           </button>
-          {onCreateTicket && canCreateTicket && (
-            <button onClick={() => onCreateTicket(currentSprint.id)}
-              style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#7C3AED", background: "#F5F3FF", border: "1px solid rgba(124,58,237,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-              <Plus style={{ width: 11, height: 11 }} />新規チケット
-            </button>
-          )}
-          {onBulkCreate && canCreateTicket && (
-            <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-              <button onClick={e => { if (plan.featureBulkCreate) bulkMenu.open(currentSprint.id, e.currentTarget); }}
-                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureBulkCreate ? "#0284C7" : "#9CA3AF", background: plan.featureBulkCreate ? "#F0F9FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(2,132,199,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", flexShrink: 0 }}
-                onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#E0F2FE"; }}
-                onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; }}>
-                <Plus style={{ width: 11, height: 11 }} />一括作成
-              </button>
-            </PlanTooltip>
-          )}
+          {/* 「一括作成」ボタンは廃止し、「新規チケット」メニューへ集約した */}
+          {onCreateTicket && canCreateTicket && (() => {
+            const ticketAtLimit = plan.maxTicketsPerSprint !== null && currentSprint.tickets.length >= plan.maxTicketsPerSprint;
+            return (
+              <PlanTooltip text="現在のプランではこれ以上作成できません" active={ticketAtLimit}>
+                <button onClick={e => { if (!ticketAtLimit) createMenu.open(currentSprint.id, e.currentTarget); }}
+                  style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: ticketAtLimit ? "#9CA3AF" : "#7C3AED", background: ticketAtLimit ? "#F3F4F6" : "#F5F3FF", border: `1px solid ${ticketAtLimit ? "rgba(156,163,175,0.30)" : "rgba(124,58,237,0.20)"}`, borderRadius: 7, cursor: ticketAtLimit ? "not-allowed" : "pointer", flexShrink: 0 }}
+                  onMouseEnter={e => { if (!ticketAtLimit) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
+                  onMouseLeave={e => { if (!ticketAtLimit) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
+                  <Plus style={{ width: 11, height: 11 }} />新規チケット
+                  <ChevronDown style={{ width: 10, height: 10, marginLeft: -1 }} />
+                </button>
+              </PlanTooltip>
+            );
+          })()}
         </div>
       )}
 
@@ -628,11 +633,17 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
         </div>
       )}
 
-      {bulkMenu.menu && (
-        <BulkCreateMenu
-          anchorRect={bulkMenu.menu.rect}
-          onClose={bulkMenu.close}
-          onSelect={mode => onBulkCreate?.(bulkMenu.menu!.sprintId, mode)}
+      {createMenu.menu && (
+        <CreateTicketMenu
+          anchorRect={createMenu.menu.rect}
+          disabled={createDisabled}
+          onClose={createMenu.close}
+          onSelect={mode => {
+            const sprintId = createMenu.menu!.sprintId;
+            if (mode === "single") onCreateTicket?.(sprintId);
+            else if (mode === "api") onApiIntegration?.(sprintId);
+            else onBulkCreate?.(sprintId, mode);
+          }}
         />
       )}
     </div>
@@ -649,6 +660,8 @@ export default function SprintBoardView(props: {
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  /** 「新規チケット」メニューの「API連携」 */
+  onApiIntegration?: (sprintId: string) => void;
   highlightWbsList?: string[];
   // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
   stickyTop?: number;

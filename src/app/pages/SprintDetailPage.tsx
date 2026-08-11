@@ -14,7 +14,8 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
-import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
+import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
+import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
@@ -265,7 +266,9 @@ export function SprintDetailPage() {
   const [bulkCreateMode, setBulkCreateMode] = useState<BulkCreateMode>("table");
   // 一括作成の直後に、作成した全チケットを強調表示するための対象WBS
   const [bulkCreatedWbs, setBulkCreatedWbs] = useState<string[]>([]);
-  const bulkMenu = useBulkCreateMenu();
+  const createMenu = useCreateTicketMenu();
+  // 「新規チケット」メニューの「API連携」で開くモーダル
+  const [showApiIntegration, setShowApiIntegration] = useState(false);
   const [deleteTicketTarget, setDeleteTicketTarget] = useState<SprintTicket | null>(null);
   const [showMyFilterModal, setShowMyFilterModal] = useState(false);
   const [showSaveFilterDialog, setShowSaveFilterDialog] = useState(false);
@@ -693,25 +696,17 @@ export function SprintDetailPage() {
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
             <FolderOpen style={{ width: 14, height: 14 }} />Myフィルタ
           </button>
-          {canCreateTicket && (
-            <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-              <button onClick={e => { if (plan.featureBulkCreate) bulkMenu.open(sprint.id, e.currentTarget); }}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "9px 14px", fontSize: 13, fontWeight: 600, color: plan.featureBulkCreate ? "#7C3AED" : "#9CA3AF", background: plan.featureBulkCreate ? "#F5F3FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(124,58,237,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 10, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", flexShrink: 0 }}
-                onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-                onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-                <Plus style={{ width: 14, height: 14 }} />一括作成
-              </button>
-            </PlanTooltip>
-          )}
+          {/* 「一括作成」ボタンは廃止し、下の「新規チケット」メニューへ集約した */}
           {canCreateTicket && (() => {
             const atLimit = plan.maxTicketsPerSprint !== null && sprint.tickets.length >= plan.maxTicketsPerSprint;
             return (
               <PlanTooltip text="現在のプランではこれ以上作成できません" active={atLimit}>
-                <button onClick={atLimit ? undefined : () => setShowCreate(true)}
+                <button onClick={e => { if (!atLimit) createMenu.open(sprint.id, e.currentTarget); }}
                   style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: atLimit ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: atLimit ? "not-allowed" : "pointer", boxShadow: atLimit ? "none" : "0 2px 8px rgba(5,150,105,0.25)", flexShrink: 0 }}
                   onMouseEnter={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#047857"; }}
                   onMouseLeave={e => { if (!atLimit) (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-                  <Plus style={{ width: 15, height: 15 }} />チケット作成
+                  <Plus style={{ width: 15, height: 15 }} />新規チケット
+                  <ChevronDown style={{ width: 12, height: 12, marginLeft: -2 }} />
                 </button>
               </PlanTooltip>
             );
@@ -964,11 +959,29 @@ export function SprintDetailPage() {
         />
       ))}
 
-      {bulkMenu.menu && (
-        <BulkCreateMenu
-          anchorRect={bulkMenu.menu.rect}
-          onClose={bulkMenu.close}
-          onSelect={mode => { setBulkCreateMode(mode); setShowBulkCreate(true); }}
+      {createMenu.menu && (
+        <CreateTicketMenu
+          anchorRect={createMenu.menu.rect}
+          disabled={buildCreateTicketDisabled({
+            featureBulkCreate: plan.featureBulkCreate,
+            canManageApiKeys: userRole === "admin" || userRole === "owner",
+          })}
+          onClose={createMenu.close}
+          onSelect={mode => {
+            if (mode === "single") setShowCreate(true);
+            else if (mode === "api") setShowApiIntegration(true);
+            else { setBulkCreateMode(mode); setShowBulkCreate(true); }
+          }}
+        />
+      )}
+
+      {showApiIntegration && sprint && (
+        <ApiIntegrationDialog
+          sprintId={sprint.id}
+          sprintName={sprint.name}
+          projectId={project?.id}
+          projectName={project?.name ?? ""}
+          onClose={() => setShowApiIntegration(false)}
         />
       )}
       {deleteTicketTarget && (

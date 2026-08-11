@@ -4,22 +4,31 @@ import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, getTicketStatusMeta, computeSprintStatus } from "@/app/lib/helpers";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
-import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
+import { useAuth } from "@/app/contexts/AuthContext";
+import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
 
 const LOCAL_STORAGE_KEY = "sprint_accordion_states";
 
 /** 一括作成の直後に強調表示する行の背景色 */
 const BULK_HL_BG = "#FFFBEB";
 
-export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate, highlightWbsList, stickyTop }: {
+export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, highlightWbsList, stickyTop }: {
   sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  /** 「新規チケット」メニューの「API連携」 */
+  onApiIntegration?: (sprintId: string) => void;
   /** 一括作成の直後に強調表示するWBS（複数） */
   highlightWbsList?: string[];
   // 🌟 BRU5-043: 上部固定バーの高さ分だけ sticky ヘッダーを下げるオフセット
   stickyTop?: number;
 }) {
   const { plan } = usePlan();
+  const { userRole } = useAuth();
+  // 「新規チケット」メニューで使えない項目の理由。4ビューで同じルールを使う
+  const createDisabled = buildCreateTicketDisabled({
+    featureBulkCreate: plan.featureBulkCreate,
+    canManageApiKeys: userRole === "admin" || userRole === "owner",
+  });
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     let savedStates: Record<string, boolean> = {};
     try {
@@ -76,7 +85,7 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
   };
 
   const [expandedTickets, setExpandedTickets] = useState<Set<string>>(new Set());
-  const bulkMenu = useBulkCreateMenu();
+  const createMenu = useCreateTicketMenu();
   // 毎レンダーで作り直さないよう memo 化する（点滅防止）
   const bulkHighlight = useMemo(() => new Set(highlightWbsList ?? []), [highlightWbsList]);
 
@@ -259,25 +268,22 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
                     <ExternalLink style={{ width: 11, height: 11 }} />
                   </button>
-                  {onCreateTicket && (
-                    <button onClick={e => { e.stopPropagation(); onCreateTicket(sprint.id); }}
-                      style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                      <Plus style={{ width: 11, height: 11 }} />
-                    </button>
-                  )}
-                  {onBulkCreate && (
-                    <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-                      <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) bulkMenu.open(sprint.id, e.currentTarget); }}
-                        title={plan.featureBulkCreate ? "一括作成" : undefined}
-                        style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: plan.featureBulkCreate ? "pointer" : "not-allowed", color: plan.featureBulkCreate ? "#C9C4BB" : "#9CA3AF", flexShrink: 0, display: "flex", alignItems: "center", opacity: plan.featureBulkCreate ? 1 : 0.5 }}
-                        onMouseEnter={e => { if (plan.featureBulkCreate) { (e.currentTarget as HTMLElement).style.background = "#F0F9FF"; (e.currentTarget as HTMLElement).style.color = "#0284C7"; } }}
-                        onMouseLeave={e => { if (plan.featureBulkCreate) { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; } }}>
-                        <Plus style={{ width: 11, height: 11 }} />
-                      </button>
-                    </PlanTooltip>
-                  )}
+                  {/* 「一括作成」の＋は廃止し、この＋のメニューへ集約した */}
+                  {onCreateTicket && (() => {
+                    const ticketAtLimit = plan.maxTicketsPerSprint !== null && sprint.tickets.length >= plan.maxTicketsPerSprint;
+                    return (
+                      <PlanTooltip text="現在のプランではこれ以上作成できません" active={ticketAtLimit}>
+                        <button onClick={e => { e.stopPropagation(); if (!ticketAtLimit) createMenu.open(sprint.id, e.currentTarget); }}
+                          title={ticketAtLimit ? undefined : "新規チケット"}
+                          style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: ticketAtLimit ? "not-allowed" : "pointer", color: ticketAtLimit ? "#9CA3AF" : "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center", opacity: ticketAtLimit ? 0.5 : 1 }}
+                          onMouseEnter={e => { if (!ticketAtLimit) { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#7C3AED"; } }}
+                          onMouseLeave={e => { if (!ticketAtLimit) { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; } }}>
+                          <Plus style={{ width: 11, height: 11 }} />
+                          <ChevronDown style={{ width: 8, height: 8 }} />
+                        </button>
+                      </PlanTooltip>
+                    );
+                  })()}
                 </div>
                 {isExp && sprint.tickets.filter(t => !t.parentId).map(t => {
                   const tsm = getTicketStatusMeta(t.status);
@@ -426,11 +432,17 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
         </div>
       </div>
 
-      {bulkMenu.menu && (
-        <BulkCreateMenu
-          anchorRect={bulkMenu.menu.rect}
-          onClose={bulkMenu.close}
-          onSelect={mode => onBulkCreate?.(bulkMenu.menu!.sprintId, mode)}
+      {createMenu.menu && (
+        <CreateTicketMenu
+          anchorRect={createMenu.menu.rect}
+          disabled={createDisabled}
+          onClose={createMenu.close}
+          onSelect={mode => {
+            const sprintId = createMenu.menu!.sprintId;
+            if (mode === "single") onCreateTicket?.(sprintId);
+            else if (mode === "api") onApiIntegration?.(sprintId);
+            else onBulkCreate?.(sprintId, mode);
+          }}
         />
       )}
     </div>

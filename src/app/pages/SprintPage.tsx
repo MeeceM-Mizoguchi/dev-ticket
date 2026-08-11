@@ -19,7 +19,8 @@ import { DeleteSprintDialog } from "@/app/components/sprints/DeleteSprintDialog"
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { BulkTicketCreateDialog } from "@/app/components/tickets/BulkTicketCreateDialog";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
-import type { BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
+import type { BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
+import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
@@ -102,6 +103,8 @@ export function SprintPage() {
   const [bulkCreateMode, setBulkCreateMode] = useState<BulkCreateMode>("table");
   // 一括作成の直後に、作成した全チケットを各ビューで強調表示するための対象WBS
   const [bulkCreatedWbs, setBulkCreatedWbs] = useState<string[]>([]);
+  // 「新規チケット」メニューの「API連携」で開くモーダルの対象スプリント
+  const [apiIntegrationSprintId, setApiIntegrationSprintId] = useState<string | null>(null);
   // 🌟 BRU10-077: スプリント移動の直後に、移動先までスクロールして対象チケットを強調表示するためのWBS
   const [movedWbs, setMovedWbs] = useState<string[]>([]);
   const [showEditIdentifiers, setShowEditIdentifiers] = useState(false);
@@ -421,9 +424,9 @@ export function SprintPage() {
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
-        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
-        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
+        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
+        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
 
         {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
 
@@ -447,6 +450,19 @@ export function SprintPage() {
                 sprintEndDate={bulkSprint?.endDate || undefined}
               />
             );
+        })()}
+
+        {apiIntegrationSprintId && (() => {
+          const apiSprint = sprints.find(s => s.id === apiIntegrationSprintId);
+          return (
+            <ApiIntegrationDialog
+              sprintId={apiIntegrationSprintId}
+              sprintName={apiSprint?.name ?? ""}
+              projectId={projectId ?? undefined}
+              projectName={project?.name ?? ""}
+              onClose={() => setApiIntegrationSprintId(null)}
+            />
+          );
         })()}
 
         {createForSprintId && createForSprint && (

@@ -16,7 +16,7 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
 import { useAlert } from "@/app/contexts/AlertContext";
-import { BulkCreateMenu, useBulkCreateMenu, type BulkCreateMode } from "@/app/components/sprints/BulkCreateMenu";
+import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
 
 // 🌟 今日の日付（YYYY-MM-DD）を取得するヘルパー
 function getTodayString(): string {
@@ -259,7 +259,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -268,6 +268,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onSelectTicket?: (t: SprintTicket) => void;
   onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
+  /** 「新規チケット」メニューの「API連携」。未指定なら項目自体を出さない */
+  onApiIntegration?: (sprintId: string) => void;
   targetTicketWbs?: string;
   targetSprintId?: string | null;
   /** 一括作成・スプリント移動の直後に強調表示するWBS（複数） */
@@ -279,9 +281,15 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   projectMembers?: string[];
   projectSlug?: string;
 }) {
-  const { userId, userOrgId } = useAuth();
+  const { userId, userOrgId, userRole } = useAuth();
   const { plan } = usePlan();
   const { showAlert } = useAlert();
+
+  // 「新規チケット」メニューで使えない項目の理由。4ビューで同じルールを使う
+  const createDisabled = buildCreateTicketDisabled({
+    featureBulkCreate: plan.featureBulkCreate,
+    canManageApiKeys: userRole === "admin" || userRole === "owner",
+  });
 
   const [filterCounts, setFilterCounts] = useState<Record<string, number>>({});
   const refreshFilterCount = (sprintId: string) => {
@@ -301,7 +309,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
   const [highlightedTicketIds, setHighlightedTicketIds] = useState<Set<string>>(new Set());
 
-  const bulkMenu = useBulkCreateMenu();
+  const createMenu = useCreateTicketMenu();
   // 一括作成の直後に強調表示するWBS。毎レンダーで作り直さないよう memo 化する（点滅防止）
   const bulkHighlight = useMemo(() => new Set(highlightWbsList ?? []), [highlightWbsList]);
 
@@ -754,25 +762,17 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                         <Download style={{ width: 11, height: 11 }} />CSVダウンロード
                       </button>
                     </PlanTooltip>
-                    {onBulkCreate && (
-                      <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureBulkCreate} placement="bottom-left">
-                        <button onClick={e => { e.stopPropagation(); if (plan.featureBulkCreate) bulkMenu.open(sprint.id, e.currentTarget); }}
-                          style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureBulkCreate ? "#7C3AED" : "#9CA3AF", background: plan.featureBulkCreate ? "#F5F3FF" : "#F3F4F6", border: `1px solid ${plan.featureBulkCreate ? "rgba(124,58,237,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureBulkCreate ? "pointer" : "not-allowed" }}
-                          onMouseEnter={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
-                          onMouseLeave={e => { if (plan.featureBulkCreate) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
-                          <Plus style={{ width: 11, height: 11 }} />一括作成
-                        </button>
-                      </PlanTooltip>
-                    )}
+                    {/* 「一括作成」ボタンは廃止し、下の「新規チケット」メニューへ集約した */}
                     {onCreateTicket && (() => {
                       const ticketAtLimit = plan.maxTicketsPerSprint !== null && sprint.tickets.length >= plan.maxTicketsPerSprint;
                       return (
                         <PlanTooltip text="現在のプランではこれ以上作成できません" active={ticketAtLimit}>
-                          <button onClick={e => { e.stopPropagation(); if (!ticketAtLimit) onCreateTicket(sprint.id); }}
+                          <button onClick={e => { e.stopPropagation(); if (!ticketAtLimit) createMenu.open(sprint.id, e.currentTarget); }}
                             style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: ticketAtLimit ? "#9CA3AF" : "#7C3AED", background: ticketAtLimit ? "#F3F4F6" : "#F5F3FF", border: `1px solid ${ticketAtLimit ? "rgba(156,163,175,0.30)" : "rgba(124,58,237,0.20)"}`, borderRadius: 7, cursor: ticketAtLimit ? "not-allowed" : "pointer" }}
                             onMouseEnter={e => { if (!ticketAtLimit) (e.currentTarget as HTMLElement).style.background = "#EDE9FE"; }}
                             onMouseLeave={e => { if (!ticketAtLimit) (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; }}>
                             <Plus style={{ width: 11, height: 11 }} />新規チケット
+                            <ChevronDown style={{ width: 10, height: 10, marginLeft: -1 }} />
                           </button>
                         </PlanTooltip>
                       );
@@ -1063,11 +1063,17 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
 
       {bulk.ui}
 
-      {bulkMenu.menu && (
-        <BulkCreateMenu
-          anchorRect={bulkMenu.menu.rect}
-          onClose={bulkMenu.close}
-          onSelect={mode => onBulkCreate?.(bulkMenu.menu!.sprintId, mode)}
+      {createMenu.menu && (
+        <CreateTicketMenu
+          anchorRect={createMenu.menu.rect}
+          disabled={createDisabled}
+          onClose={createMenu.close}
+          onSelect={mode => {
+            const sprintId = createMenu.menu!.sprintId;
+            if (mode === "single") onCreateTicket?.(sprintId);
+            else if (mode === "api") onApiIntegration?.(sprintId);
+            else onBulkCreate?.(sprintId, mode);
+          }}
         />
       )}
     </div>
