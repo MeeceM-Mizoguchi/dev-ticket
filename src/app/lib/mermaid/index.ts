@@ -51,6 +51,23 @@ function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
 
 let idCounter = 0;
 
+/**
+ * mermaid のグローバル設定を差し替えたうえで処理を実行する（renderMermaid と同じ排他区間）。
+ *
+ * mermaid の設定はアプリ全体で1つしかない。@excalidraw/mermaid-to-excalidraw（ホワイトボードの
+ * Mermaid→図形変換）は「前回と同じ設定なら mermaid.initialize を省く」キャッシュを内部に持つため、
+ * その間に renderMermaid（プレビュー/PNG化）が別設定で initialize すると、変換側は自分の設定が
+ * 効いているつもりのまま こちらの設定で描画され、寸法やラベルがずれる。
+ * 変換の直前に必ず設定を入れ直し、かつ renderMermaid と混ざらないよう直列化する。
+ */
+export async function runWithMermaidConfig<T>(config: Record<string, unknown>, fn: () => Promise<T>): Promise<T> {
+  return runExclusive(async () => {
+    const mermaid = await getMermaid();
+    mermaid.initialize(config);
+    return fn();
+  });
+}
+
 export type MermaidRenderResult = { svg: string } | { error: string };
 
 /**

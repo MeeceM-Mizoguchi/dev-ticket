@@ -7,7 +7,39 @@
 // ネイティブ図形に変換し、変換に対応しない図種は SVG→PNG 化して画像要素として配置する。
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
-import { renderMermaid, mermaidSvgToPngDataUrl } from "@/app/lib/mermaid";
+import { renderMermaid, mermaidSvgToPngDataUrl, runWithMermaidConfig } from "@/app/lib/mermaid";
+
+// mermaid-to-excalidraw が本来使う設定（同ライブラリの MERMAID_CONFIG と同値）。
+// 同ライブラリは initialize をキャッシュで省くことがあり、その隙にプレビュー(MermaidView)側の設定が
+// 残っていると変換結果がずれるため、変換の直前にこちらから入れ直す（runWithMermaidConfig 参照）。
+const CONVERT_CONFIG = {
+  startOnLoad: false,
+  flowchart: { curve: "linear" },
+  themeVariables: { fontSize: "20px" },
+  maxEdges: 500,
+  maxTextSize: 50000,
+};
+
+/**
+ * mermaid-to-excalidraw が「内部フォールバック」を返したかを判定する。
+ *
+ * 同ライブラリは 未対応の図種(gantt/pie/mindmap 等) や 変換中の例外 を内部で握りつぶし
+ * （console に "Error processing Mermaid diagram" だけ出す）、図を焼いたSVG画像1枚を *正常値として*
+ * 返す。例外にならないのでこのファイルのPNGフォールバックが働かない。
+ * しかもその dataURL は outerHTML（HTML直列化）なので、Excalidraw が受け取り時に XML として
+ * 読み直すと "Invalid SVG" で弾かれ、中身の無い壊れた画像だけがキャンバスに残る（図が出ない）。
+ * ＝この形は使わず、必ず自前のPNG化へ回す。
+ *
+ * 例: mermaid v11 の flowchart は subgraph の <g> に id を付けないため、同ライブラリの
+ *     subgraph 探索が必ず失敗する（SubGraph element not found）→ この経路に落ちる。
+ *
+ * 判定: files を返すのは同ライブラリ内でこのフォールバック経路だけ。念のため画像だけの結果も弾く。
+ */
+function isImageFallback(elements: any[], files: unknown): boolean {
+  const list = files && typeof files === "object" ? Object.values(files as Record<string, any>) : [];
+  if (list.some((f) => typeof f?.mimeType === "string" && f.mimeType.includes("svg"))) return true;
+  return elements.length > 0 && elements.every((e) => e?.type === "image");
+}
 
 // mermaid-to-excalidraw はラベル内の <br/> を改行に変換しないため、変換後のテキスト要素で改行へ置換する。
 const fixBr = (t: string) => t.replace(/<br\s*\/?>/gi, "\n");
@@ -112,7 +144,12 @@ export async function mermaidToElements(api: any, code: string, maxImageWidth = 
 
   // ① ネイティブ変換（編集可能な図形）
   try {
-    const { elements: skeleton, files } = await parseMermaidToExcalidraw(src);
+    const { elements: skeleton, files } = await runWithMermaidConfig(
+      CONVERT_CONFIG,
+      () => parseMermaidToExcalidraw(src),
+    );
+    // ライブラリ内部のSVG画像フォールバックは表示できないので、②の自前PNG化に任せる。
+    if (isImageFallback(skeleton as any[], files)) throw new Error("この図種はネイティブ変換に非対応");
     const converted = convertToExcalidrawElements(skeleton as any) as any[];
     if (!converted.length) throw new Error("変換結果が空です");
     markMermaidElements(converted);
