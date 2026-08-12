@@ -417,6 +417,11 @@ export interface Task {
   categories: string[];
   status: TaskStatus;
   priority: Priority;
+  /**
+   * 進捗率（0〜100）。手入力で、ステータスとは連動しない
+   * （チケットの progress はステータスから自動で決まるが、こちらは自分で書き込む）
+   */
+  progress: number;
   assignee: string;
   startDate: string;          // "" = 未設定
   dueDate: string;

@@ -16,7 +16,7 @@ import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, Trash2, Users 
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
 import {
-  TASK_STATUSES, TASK_PRIORITIES, getTaskStatusMeta,
+  TASK_STATUSES, TASK_PRIORITIES, getTaskStatusMeta, clampTaskProgress,
   type MemberOption, type ProjectOption,
 } from "@/app/lib/taskService";
 import { descriptionToText, textToDescription } from "@/app/lib/taskDescription";
@@ -33,6 +33,7 @@ export const TASK_COLS = {
   assignee: 112,
   start: 106,
   due: 106,
+  progress: 52,
   status: 86,
   /** 行末の共有ボタン。追加行・見出しでは空けておく */
   share: 26,
@@ -220,6 +221,79 @@ function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = true, s
 }
 
 /**
+ * BRU11-041 進捗率のセル。
+ *
+ * 選ばせるのではなく、キーボードで数字を打ち込む欄（0〜100の％）。
+ * 数字以外は打った端から落とし、100を超える値はその場で100に丸めるので、
+ * 範囲外の値が表に出ることはない。
+ * 確定のしかたは他の文字セルと同じ（Enter か欄から離れたときに保存、Esc で取り消し）。
+ *
+ * ステータスとは連動させない。未着手/進行中/完了の3段階では表せない
+ * 「どこまで進んだか」を自分で書き込むための欄なので、勝手に上書きしない。
+ */
+export function ProgressCell({ value, onCommit, onEnter, disabled, textStyle }: {
+  value: number;
+  onCommit: (v: number) => void;
+  /**
+   * Enter で確定したときに、丸めたあとの値を渡す（追加行がそのまま登録に進むため）。
+   * 渡さなければ Enter は「確定して欄から離れる」だけ。
+   */
+  onEnter?: (v: number) => void;
+  disabled?: boolean;
+  /** 完了行など、文字色の上書き */
+  textStyle?: React.CSSProperties;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [editing, setEditing] = useState(false);
+
+  // 打っていない間は外からの変更に追従する（TextCell と同じ）
+  useEffect(() => { if (!editing) setDraft(String(value)); }, [value, editing]);
+
+  const commit = () => {
+    setEditing(false);
+    // 空欄のまま離れたら 0%（未入力）に戻す
+    const next = draft === "" ? 0 : clampTaskProgress(draft);
+    setDraft(String(next));
+    if (next !== value) onCommit(next);
+  };
+
+  // 0% は日付の未設定と同じく薄く出す（打ってある値と見分けが付くように）
+  const tone: React.CSSProperties = value === 0 ? { color: "#C9C4BB" } : {};
+  const text: React.CSSProperties = { ...CELL, ...tone, ...textStyle, fontFamily: "var(--font-mono)", fontWeight: 700 };
+
+  return (
+    <span title="進捗率（0〜100の数字を入力）"
+      style={{ width: TASK_COLS.progress, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 1, boxSizing: "border-box" }}>
+      {disabled
+        ? <span style={{ ...text, cursor: "default" }}>{value}</span>
+        : (
+          <input className="task-cell" value={draft}
+            inputMode="numeric"
+            onChange={e => {
+              setEditing(true);
+              // 数字以外（符号・小数点・全角も含む）は受け付けない。3桁を超えたぶんも捨てる
+              const digits = e.target.value.replace(/[^0-9]/g, "").slice(0, 3);
+              setDraft(digits === "" ? "" : String(clampTaskProgress(digits)));
+            }}
+            onFocus={e => { setEditing(true); e.currentTarget.select(); }}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                // blur が commit を走らせる。追加行はそのまま登録まで進む
+                (e.currentTarget as HTMLInputElement).blur();
+                onEnter?.(draft === "" ? 0 : clampTaskProgress(draft));
+              }
+              if (e.key === "Escape") { setDraft(String(value)); setEditing(false); (e.currentTarget as HTMLInputElement).blur(); }
+            }}
+            style={{ ...text, width: "100%", minWidth: 0, textAlign: "right" as const, cursor: "text" }} />
+        )}
+      <span style={{ ...text, flexShrink: 0, cursor: "default" }}>%</span>
+    </span>
+  );
+}
+
+/**
  * 詳細メモのセル。
  *
  * 追加行（TaskQuickAddRow）とまったく同じ1行の入力欄。追加も編集も同じ操作でできる。
@@ -390,6 +464,9 @@ function TaskRow({
           cellStyle={overdue ? { color: "#DC2626", fontWeight: 700 } : doneSub} />
       </span>
 
+      <ProgressCell value={task.progress} disabled={!editable} textStyle={doneSub}
+        onCommit={v => onPatch(task, { progress: v })} />
+
       <StatusPill status={task.status} disabled={!editable}
         onChange={s => onPatch(task, { status: s })} />
 
@@ -538,6 +615,7 @@ export function TaskListView({
         <span style={{ ...headCell, width: TASK_COLS.assignee }}>担当者</span>
         <span style={{ ...headCell, width: TASK_COLS.start }}>開始日</span>
         <span style={{ ...headCell, width: TASK_COLS.due }}>期限</span>
+        <span style={{ ...headCell, width: TASK_COLS.progress, textAlign: "right" as const }}>進捗率</span>
         <span style={{ ...headCell, width: TASK_COLS.status, textAlign: "center" as const }}>ステータス</span>
         <span style={{ width: TASK_COLS.share, flexShrink: 0 }} />
         <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />

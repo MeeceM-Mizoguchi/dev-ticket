@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { TASK_STATUSES, TASK_PRIORITIES, type MemberOption, type ProjectOption } from "@/app/lib/taskService";
 import type { NewTaskInput } from "@/app/lib/taskService";
-import { TASK_COLS, TITLE_CELL, DESC_CELL, BODY_TEXT, CELL } from "@/app/components/tasks/TaskListView";
+import { TASK_COLS, TITLE_CELL, DESC_CELL, BODY_TEXT, CELL, ProgressCell } from "@/app/components/tasks/TaskListView";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
 import { TaskCategoryField } from "@/app/components/tasks/TaskCategoryField";
@@ -52,6 +52,7 @@ export function TaskQuickAddRow({
   const [categories, setCategories] = useState<string[]>([]);
   const [status, setStatus] = useState<TaskStatus>(defaultStatus);
   const [priority, setPriority] = useState<Priority>("medium");
+  const [progress, setProgress] = useState(0);
   const [assignee, setAssignee] = useState("");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
@@ -68,22 +69,30 @@ export function TaskQuickAddRow({
     inputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [focusSignal]);
 
-  const submit = async () => {
+  /**
+   * 1行ぶんを登録する。
+   * 進捗率の欄で Enter を押した場合は、state の反映を待たずに済むよう
+   * 打ち終えた値を override で受け取る（同じ描画の中で読むと1つ前の値になるため）。
+   */
+  const submit = async (override?: { progress?: number }) => {
     const v = title.trim();
     if (!v || saving) return;
     setSaving(true);
     const ok = await onCreate({
       title: v, description: textToDescription(description),
-      projectId: projectId || null, categories, status, priority, assignee, startDate, dueDate,
+      projectId: projectId || null, categories, status, priority,
+      progress: override?.progress ?? progress,
+      assignee, startDate, dueDate,
     });
     setSaving(false);
     if (!ok) return;
     // 続けて打てるように、行の性格（PJ・担当・優先度・ステータス・分類）は残して
-    // その1件ぶんの中身（タイトル・詳細・日付）だけ空にする
+    // その1件ぶんの中身（タイトル・詳細・日付・進捗率）だけ空にする
     setTitle("");
     setDescription("");
     setStartDate("");
     setDueDate("");
+    setProgress(0);
     inputRef.current?.focus();
   };
 
@@ -106,7 +115,7 @@ export function TaskQuickAddRow({
       background: filled ? "#F0FDF4" : indent > 0 ? "#FCFCFB" : "#FAFAF9",
     }}>
       {/* ＋ 自体が確定ボタン（Enter が主、マウスだけでも完結できる） */}
-      <button type="button" onClick={submit} disabled={!filled || saving} title="追加（Enter）"
+      <button type="button" onClick={() => submit()} disabled={!filled || saving} title="追加（Enter）"
         style={{
           width: TASK_COLS.toggle, height: TASK_COLS.toggle, flexShrink: 0, padding: 0,
           display: "flex", alignItems: "center", justifyContent: "center",
@@ -169,6 +178,10 @@ export function TaskQuickAddRow({
       <span style={{ width: TASK_COLS.due, flexShrink: 0 }}>
         <DatePicker variant="cell" value={dueDate} min={startDate || undefined} onChange={setDueDate} />
       </span>
+
+      {/* 進捗率。データ行と同じ「数字だけを打ち込む欄」 */}
+      <ProgressCell value={progress} onCommit={setProgress}
+        onEnter={v => { setProgress(v); submit({ progress: v }); }} />
 
       <PickerCell width={TASK_COLS.status} value={status} title="ステータス" align="center"
         options={STATUS_OPTIONS} onChange={v => setStatus(v as TaskStatus)}
