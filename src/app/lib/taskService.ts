@@ -62,6 +62,17 @@ export function normalizeCategories(values: string[]): string[] {
   return out;
 }
 
+/**
+ * 進捗率を 0〜100 の整数に丸める。
+ * 入力欄は数字しか受け付けないが、貼り付け・IME・APIからの値もあるので
+ * DBへ渡す手前でここを必ず通す（DB側にも同じ範囲の制約がある）。
+ */
+export function clampTaskProgress(value: unknown): number {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(100, Math.max(0, n));
+}
+
 export interface ProjectOption { id: string; slug: string; name: string; members: string[] }
 export interface MemberOption { id: string; name: string }
 
@@ -186,6 +197,8 @@ export interface NewTaskInput {
   categories?: string[];
   status?: TaskStatus;
   priority?: Priority;
+  /** 進捗率(0〜100)。省略＝0% */
+  progress?: number;
   assignee?: string;
   startDate?: string;
   dueDate?: string;
@@ -208,6 +221,7 @@ export async function createTask(input: NewTaskInput): Promise<Task | null> {
     categories: normalizeCategories(input.categories ?? []),
     status,
     priority: input.priority ?? "medium",
+    progress: clampTaskProgress(input.progress ?? 0),
     assignee: input.assignee ?? "",
     start_date: input.startDate || null,
     due_date: input.dueDate || null,
@@ -230,6 +244,7 @@ export async function updateTask(id: string, patch: Partial<Task>): Promise<bool
   if (patch.description !== undefined) row.description = patch.description;
   if (patch.categories !== undefined)  row.categories = normalizeCategories(patch.categories);
   if (patch.priority !== undefined)    row.priority = patch.priority;
+  if (patch.progress !== undefined)    row.progress = clampTaskProgress(patch.progress);
   if (patch.assignee !== undefined)    row.assignee = patch.assignee;
   if (patch.startDate !== undefined)   row.start_date = patch.startDate || null;
   if (patch.dueDate !== undefined)     row.due_date = patch.dueDate || null;

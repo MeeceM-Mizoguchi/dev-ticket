@@ -15,6 +15,8 @@ export function mapTask(r: any): Task {
       ? r.categories.filter(Boolean)
       : (r.category ? [r.category] : []),
     status: r.status || "todo", priority: r.priority || "medium",
+    // 進捗率。列を足す前の行（supabase/add_task_progress.sql 未実行）でも 0% として読める
+    progress: Number(r.progress ?? 0),
     assignee: r.assignee || "",
     startDate: r.start_date || "", dueDate: r.due_date || "",
     ticketId: r.ticket_id ?? null, ticketWbs: r.ticket_wbs || "",
