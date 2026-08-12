@@ -6,6 +6,8 @@
 //
 // 文字のセル（タイトル・詳細）は打っている間は保存せず、Enter か欄から離れたときに
 // 確定する。選ぶだけのセル（PJ・優先度・担当・日付・ステータス）はその場で確定する。
+// 文字のセルは列幅より長い文章が入るので、欄に入ったら広い入力欄を重ねて全文を出し、
+// 入っていなくてもマウスを乗せれば全文をツールチップで出す（TaskTextCell）。
 //
 // サブタスク（子チケットと同じく1階層のみ）は親行の下にぶら下げる。
 // 親行の ▸ で開閉し、開いた中に「サブタスクを追加」の入力行が生えている。
@@ -20,6 +22,7 @@ import {
   type MemberOption, type ProjectOption,
 } from "@/app/lib/taskService";
 import { descriptionToText, textToDescription } from "@/app/lib/taskDescription";
+import { TextCell } from "@/app/components/tasks/TaskTextCell";
 import { TaskCategoryField } from "@/app/components/tasks/TaskCategoryField";
 import type { Task, TaskStatus, Priority } from "@/app/types";
 
@@ -168,55 +171,6 @@ function StatusPill({ status, onChange, disabled }: {
         document.body,
       )}
     </div>
-  );
-}
-
-/**
- * 文字のセル。1文字ごとに保存すると更新が飛びすぎるので、
- * Enter か欄から離れたときにだけ確定する（Esc で打ちかけを捨てる）。
- */
-function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = true, style }: {
-  value: string;
-  onCommit: (v: string) => void;
-  disabled?: boolean;
-  placeholder?: string;
-  /** 空を許すか。タイトルは空にできないので、空のまま離れたら元に戻す */
-  allowEmpty?: boolean;
-  style?: React.CSSProperties;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [editing, setEditing] = useState(false);
-
-  // 他の場所（かんばんの D&D など）で書き換わったら、打っていない間は追従する
-  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
-
-  const commit = () => {
-    setEditing(false);
-    const v = draft.trim();
-    if (!v && !allowEmpty) { setDraft(value); return; }
-    if (v === value) return;
-    onCommit(v);
-  };
-
-  if (disabled) {
-    return (
-      <span title={value} style={{ ...style, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {value || "—"}
-      </span>
-    );
-  }
-
-  return (
-    <input className="task-cell" value={draft} title={draft || placeholder}
-      onChange={e => { setEditing(true); setDraft(e.target.value); }}
-      onFocus={() => setEditing(true)}
-      onBlur={commit}
-      onKeyDown={e => {
-        if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); (e.currentTarget as HTMLInputElement).blur(); }
-        if (e.key === "Escape") { setDraft(value); setEditing(false); (e.currentTarget as HTMLInputElement).blur(); }
-      }}
-      placeholder={placeholder}
-      style={{ ...style, cursor: "text" }} />
   );
 }
 
