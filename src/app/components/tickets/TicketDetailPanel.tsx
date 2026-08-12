@@ -38,14 +38,12 @@ import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/us
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
 
-function truncateQuoteHtml(html: string, maxLines = 5): string {
-  const breaks = [...html.matchAll(/(<\/p>|<br\s*\/?>|<\/li>)/gi)];
-  if (breaks.length <= maxLines) return html;
-  const cut = breaks[maxLines - 1];
-  let clipped = html.slice(0, cut.index! + cut[0].length);
-  if ((clipped.match(/<ul/gi) ?? []).length > (clipped.match(/<\/ul>/gi) ?? []).length) clipped += '</ul>';
-  if ((clipped.match(/<ol/gi) ?? []).length > (clipped.match(/<\/ol>/gi) ?? []).length) clipped += '</ol>';
-  return clipped + '<p style="color:#9E9690;margin:0">...</p>';
+function truncateQuoteHtml(html: string, maxLength = 100): string {
+  if (!html) return "";
+  const plainText = html.replace(/<[^>]*>/g, "").trim();
+  if (plainText.length <= maxLength) return html;
+  const truncated = plainText.slice(0, maxLength);
+  return `<p>${truncated}...</p>`;
 }
 
 const STATUS_PROGRESS: Record<TicketStatus | "pending", number> = {
