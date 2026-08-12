@@ -19,31 +19,33 @@ import { calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
 import type { SprintTicket, SprintStatus } from "@/app/types";
 
 // ── 定数 ─────────────────────────────────────────────────────────────────────
-const TERMINAL_STATUSES = ["done", "closed", "waiting-release", "released"];
+const TERMINAL_STATUSES = ["done", "closed", "waiting-release", "released", "withdrawn"];
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
-  "todo":            { label: "未着手",       color: "#A09790" },
-  "in-progress":     { label: "進行中",       color: "#D97706" },
-  "in-review":       { label: "レビュー中",   color: "#2563EB" },
-  "review-done":     { label: "レビュー完了", color: "#16A34A" },
-  "stg-test":        { label: "STGテスト",    color: "#7C3AED" },
-  "uat":             { label: "UAT",          color: "#EA580C" },
-  "done":            { label: "完了",         color: "#059669" },
-  "closed":          { label: "クローズ",     color: "#64748B" },
+  "todo": { label: "未着手", color: "#A09790" },
+  "in-progress": { label: "進行中", color: "#D97706" },
+  "in-review": { label: "レビュー中", color: "#2563EB" },
+  "review-done": { label: "レビュー完了", color: "#16A34A" },
+  "stg-test": { label: "STGテスト", color: "#7C3AED" },
+  "uat": { label: "UAT", color: "#EA580C" },
+  "done": { label: "完了", color: "#059669" },
+  "closed": { label: "クローズ", color: "#64748B" },
   "waiting-release": { label: "リリース待ち", color: "#7C3AED" },
-  "released":        { label: "リリース済み", color: "#0D9488" },
+  "released": { label: "リリース済み", color: "#0D9488" },
+  "on-hold": { label: "保留", color: "#D97706" },
+  "withdrawn": { label: "取下", color: "#64748B" },
 };
 
 const SIGNAL_META = {
-  green:  { label: "順調", color: "#059669", bg: "#ECFDF5", border: "#A7F3D0" },
+  green: { label: "順調", color: "#059669", bg: "#ECFDF5", border: "#A7F3D0" },
   yellow: { label: "注意", color: "#D97706", bg: "#FFFBEB", border: "#FDE68A" },
-  red:    { label: "遅延", color: "#DC2626", bg: "#FEF2F2", border: "#FECACA" },
+  red: { label: "遅延", color: "#DC2626", bg: "#FEF2F2", border: "#FECACA" },
 } as const;
 
 const ISSUE_LEVEL = {
-  high:   { label: "要対応", color: "#DC2626", bg: "#FEF2F2", border: "#FEE2E2" },
-  medium: { label: "注意",   color: "#D97706", bg: "#FFFBEB", border: "#FDE68A" },
-  low:    { label: "改善",   color: "#2563EB", bg: "#EFF6FF", border: "#DBEAFE" },
+  high: { label: "要対応", color: "#DC2626", bg: "#FEF2F2", border: "#FEE2E2" },
+  medium: { label: "注意", color: "#D97706", bg: "#FFFBEB", border: "#FDE68A" },
+  low: { label: "改善", color: "#2563EB", bg: "#EFF6FF", border: "#DBEAFE" },
 } as const;
 
 type PeriodMode = "weekly" | "monthly" | "custom";
@@ -537,9 +539,11 @@ export function ReportsPage() {
           <div style={{ display: "flex", gap: 4, background: "#F3F4F6", borderRadius: 9, padding: 3 }}>
             {([["weekly", "週次"], ["monthly", "月次"], ["custom", "任意"]] as [PeriodMode, string][]).map(([m, l]) => (
               <button key={m} onClick={() => setPeriodMode(m)}
-                style={{ padding: "7px 16px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer",
+                style={{
+                  padding: "7px 16px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer",
                   background: periodMode === m ? "#FFF" : "transparent", color: periodMode === m ? "#059669" : "#6B7280",
-                  boxShadow: periodMode === m ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>
+                  boxShadow: periodMode === m ? "0 1px 3px rgba(0,0,0,0.08)" : "none"
+                }}>
                 {l}
               </button>
             ))}
@@ -921,13 +925,13 @@ function IssueRow({ iss, onPick }: { iss: { level: "high" | "medium" | "low"; ti
               {list.slice(0, 50).map(it => {
                 const pick = it.ticketId && onPick ? () => onPick(it.ticketId!) : undefined;
                 return (
-                <div key={it.id} onClick={pick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: it.alert ? "#FEF2F2" : "#F9FAFB", borderRadius: 8, border: it.alert ? "1px solid #FEE2E2" : "1px solid transparent", cursor: pick ? "pointer" : "default" }}>
-                  {it.alert && <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0 }} />}
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", fontFamily: "monospace", flexShrink: 0 }}>{it.wbs || "—"}</span>
-                  <span style={{ fontSize: 12, color: "#374151", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</span>
-                  {it.assignee && <span style={{ fontSize: 11, color: "#B0A9A4", flexShrink: 0, maxWidth: 90, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.assignee}</span>}
-                  {it.right && <span style={{ fontSize: 11, fontWeight: 600, color: it.right === "未設定" ? "#9CA3AF" : m.color, flexShrink: 0 }}>{it.right}</span>}
-                </div>
+                  <div key={it.id} onClick={pick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: it.alert ? "#FEF2F2" : "#F9FAFB", borderRadius: 8, border: it.alert ? "1px solid #FEE2E2" : "1px solid transparent", cursor: pick ? "pointer" : "default" }}>
+                    {it.alert && <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0 }} />}
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", fontFamily: "monospace", flexShrink: 0 }}>{it.wbs || "—"}</span>
+                    <span style={{ fontSize: 12, color: "#374151", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</span>
+                    {it.assignee && <span style={{ fontSize: 11, color: "#B0A9A4", flexShrink: 0, maxWidth: 90, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.assignee}</span>}
+                    {it.right && <span style={{ fontSize: 11, fontWeight: 600, color: it.right === "未設定" ? "#9CA3AF" : m.color, flexShrink: 0 }}>{it.right}</span>}
+                  </div>
                 );
               })}
               {list.length > 50 && <p style={{ fontSize: 11, color: "#9CA3AF", margin: "4px 6px 2px" }}>ほか {list.length - 50}件</p>}
