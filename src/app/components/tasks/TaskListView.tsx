@@ -34,6 +34,8 @@ export const TASK_COLS = {
   priority: 48,
   project: 132,
   assignee: 112,
+  /** 起票者（BRU11-040）。作った人は変えられないので読むだけの列 */
+  creator: 96,
   start: 106,
   due: 106,
   progress: 52,
@@ -405,6 +407,16 @@ function TaskRow({
         options={assigneeOptions} placeholder={task.assignee || "未割当"} textStyle={doneSub}
         onChange={v => onPatch(task, { assignee: v })} />
 
+      {/* 起票者。作った人は後から変えられないので、選べない素の文字で出す */}
+      <span title={task.createdBy ? `起票者: ${task.createdBy}` : "起票者不明"}
+        style={{
+          ...CELL, ...doneSub, width: TASK_COLS.creator, cursor: "default",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          color: task.createdBy ? (doneSub?.color ?? CELL.color) : "#B0A9A4",
+        }}>
+        {task.createdBy || "—"}
+      </span>
+
       <span style={{ width: TASK_COLS.start, flexShrink: 0 }}>
         <DatePicker variant="cell" value={task.startDate} disabled={!editable}
           cellStyle={doneSub}
@@ -567,6 +579,7 @@ export function TaskListView({
         {showProject && <span style={{ ...headCell, width: TASK_COLS.project }}>プロジェクト</span>}
         <span style={{ ...headCell, width: TASK_COLS.priority }}>優先度</span>
         <span style={{ ...headCell, width: TASK_COLS.assignee }}>担当者</span>
+        <span style={{ ...headCell, width: TASK_COLS.creator }}>起票者</span>
         <span style={{ ...headCell, width: TASK_COLS.start }}>開始日</span>
         <span style={{ ...headCell, width: TASK_COLS.due }}>期限</span>
         <span style={{ ...headCell, width: TASK_COLS.progress, textAlign: "right" as const }}>進捗率</span>

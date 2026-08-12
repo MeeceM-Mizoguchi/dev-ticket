@@ -555,7 +555,7 @@ export function TaskWorkspace({
             <TaskQuickAddRow
               projects={projects} members={members} categoryOptions={categoryOptions}
               showProject={!isProjectScope} fixedProjectId={parent.projectId} lockProject
-              indent={22} placeholder="サブタスクを入力して Enter で追加"
+              indent={22} placeholder="サブタスクを入力して Enter で追加" creatorName={userName}
               onCreate={input => handleCreateSubtask(parent, input)}
             />
           )}
@@ -563,7 +563,7 @@ export function TaskWorkspace({
             <TaskQuickAddRow
               projects={projects} members={members} categoryOptions={categoryOptions}
               showProject={!isProjectScope} fixedProjectId={projectId}
-              focusSignal={addFocus} onCreate={handleCreate}
+              focusSignal={addFocus} creatorName={userName} onCreate={handleCreate}
             />
           } />
       ) : view === "board" ? (

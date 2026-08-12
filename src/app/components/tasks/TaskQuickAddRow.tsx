@@ -27,7 +27,7 @@ const STATUS_OPTIONS: PickerOption[] = TASK_STATUSES.map(s => ({ value: s.value,
 
 export function TaskQuickAddRow({
   projects, members, categoryOptions, showProject, fixedProjectId, lockProject, defaultStatus = "todo",
-  indent = 0, placeholder = "タスクを入力して Enter で追加", focusSignal, onCreate,
+  indent = 0, placeholder = "タスクを入力して Enter で追加", focusSignal, creatorName = "", onCreate,
 }: {
   projects: ProjectOption[];
   members: MemberOption[];
@@ -45,6 +45,8 @@ export function TaskQuickAddRow({
   placeholder?: string;
   /** 値が変わるたびにタイトル入力へフォーカスする（ヘッダーの「タスクを追加」から） */
   focusSignal?: number;
+  /** 起票者の列に出す自分の名前（BRU11-040）。追加した瞬間にこの名前で入るので先に見せる */
+  creatorName?: string;
   onCreate: (input: Omit<NewTaskInput, "ownerId" | "createdBy">) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState("");
@@ -170,6 +172,15 @@ export function TaskQuickAddRow({
 
       <PickerCell width={TASK_COLS.assignee} value={assignee} title="担当者"
         options={assigneeOptions} placeholder="未割当" onChange={setAssignee} />
+
+      {/* 起票者は追加した人で決まるので選ばせない。自分の名前を薄く出しておく */}
+      <span title={creatorName ? `起票者: ${creatorName}` : "起票者"}
+        style={{
+          ...CELL, width: TASK_COLS.creator, cursor: "default", color: "#B0A9A4",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+        {creatorName || "—"}
+      </span>
 
       <span style={{ width: TASK_COLS.start, flexShrink: 0 }}>
         <DatePicker variant="cell" value={startDate} onChange={setStartDate} />
