@@ -1,8 +1,10 @@
-// ホワイトボードへ貼り付けた Markdown テキスト（Claude のコピーボタン等）を、図として取り込む。
+// ホワイトボードへ貼り付けたテキストを、図として取り込む。
 //
-// Excalidraw の既定の貼り付けは text/plain を「1個のテキスト要素」にするだけなので、表も見出しも
-// ただの文字列になる。ここでは共通の Markdown パーサ（app/lib/markdown）で IR にしてから、
-// ブロックごとにホワイトボードの表現へ変換する:
+// Markdown（Claude のコピーボタン等）は共通の Markdown パーサ（app/lib/markdown）で IR にしてから、
+// ブロックごとにホワイトボードの表現へ変換する。書式の無い素のテキストも
+// pastePlainTextToWhiteboard で自前に組む（後述・BRU11-037）。
+//
+// ブロックごとの変換:
 //
 //   表        → ホワイトボードの表（セル矩形＋groupId・whiteboardTableCreate と共通）
 //   ```mermaid → mermaid-to-excalidraw で図に展開（whiteboardMermaid と共通）
@@ -293,6 +295,11 @@ export async function pasteBlocksToWhiteboard(api: any, blocks: MdBlock[], at: {
     created.push(...els);
     y = boundsOf(els).maxY + GAP;
   }
+  return commitPaste(api, created);
+}
+
+/** 生成した要素をシーンへ入れて選択する（貼り付け経路の共通の締め）。 */
+function commitPaste(api: any, created: any[]): boolean {
   if (!created.length) return false;
 
   // 貼り付け全体を undo 履歴の1ステップとして記録（IMMEDIATELY）。
@@ -302,4 +309,78 @@ export async function pasteBlocksToWhiteboard(api: any, blocks: MdBlock[], at: {
   created.forEach((e) => { if (e?.id) ids[e.id] = true; });
   api.updateScene({ appState: { selectedElementIds: ids }, captureUpdate: CaptureUpdateAction.NEVER });
   return true;
+}
+
+// ── 書式の無い素のテキスト（BRU11-037） ──
+//
+// Excalidraw 既定の貼り付け（App.addTextFromPaste）は行ごとにテキスト要素を作るが、
+//   ・貼り付け点を中心に左右中央へ置く（x - 幅/2）＝全部が真ん中寄せに見える
+//   ・縦は「貼り付け点から高さ/2 だけ上」に置くのに、次の行への送りは「高さ + 10」
+// という組み方なので、折り返して背が高くなった行ほど上へ大きくずれ、前の行に食い込む。
+// 長文（＝折り返しが起きる文章）を貼るとこれが積み重なって行同士が重なり、表示が崩れる。
+//
+// そこで素のテキストは自前で組む: 貼り付け点を左上として、テキストボックス1枚に丸ごと入れる。
+//   ・改行・空行は元のまま残す（行ごとにバラバラの要素へ切らない＝あとから文章として直せる）
+//   ・折り返しは MAX_W。左揃え（Markdown 経路と同じ組み方）
+// ただし Excalidraw 側に専用の受け皿がある形（mermaid 定義／埋め込みURL／グラフ化できる表）は
+// 横取りせず既定に任せる。
+
+const URL_LINE = /^https?:\/\/\S+$/i;
+
+// Excalidraw の isMaybeMermaidDefinition と同じ図種（先頭行で mermaid 定義かを見る）
+const MERMAID_HEAD = /^(?:%%\{.*?\}%%\s*)?(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|gitGraph|C4Context|mindmap|timeline|zenuml|sankey|xychart|block)(?:-beta)?\b/;
+
+// Excalidraw の tryParseNumber と同じ「数値とみなす」判定
+const NUM_CELL = /^([-+]?)[$€£¥₩]?([-+]?)([\d.,]+)[%]?$/;
+
+/** 2列以下・数値の列を持つ表か（Excalidraw の tryParseCells 相当＝グラフ化ダイアログの対象） */
+function chartableCells(rows: string[][]): boolean {
+  const cols = rows[0]?.length ?? 0;
+  if (cols < 1 || cols > 2 || rows.length < 2) return false;
+  // 先頭行は見出しのことがあるので、2行目以降がすべて数値の列があれば対象とみなす
+  return rows[0].some((_, c) => rows.slice(1).every((r) => NUM_CELL.test(r[c] ?? "")));
+}
+
+/** Excalidraw の tryParseSpreadsheet 相当（タブ区切り優先・縦横どちらの向きでも見る） */
+function looksLikeSpreadsheet(text: string): boolean {
+  const raw = text.trim();
+  let rows = raw.split("\n").map((l) => l.trim().split("\t"));
+  if (rows[0]?.length !== 2) rows = raw.split("\n").map((l) => l.trim().split(","));
+  if (!rows.length || !rows.every((r) => r.length === rows[0].length)) return false;
+  const transposed = rows[0].map((_, c) => rows.map((r) => r[c]));
+  return chartableCells(rows) || chartableCells(transposed);
+}
+
+/** 素のテキストとして自前で組むべき貼り付けか（false なら Excalidraw の既定に任せる） */
+export function shouldPastePlainText(text: string): boolean {
+  if (!text || text.length > MD_MAX_LENGTH) return false;
+  const lines = text.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return false;
+  if (MERMAID_HEAD.test(text.trim())) return false;       // mermaid 定義は図に展開させる
+  if (lines.every((l) => URL_LINE.test(l))) return false; // URLだけの貼り付けは埋め込みにさせる
+  if (looksLikeSpreadsheet(text)) return false;           // 2列の数値表はグラフ化ダイアログに任せる
+  return true;
+}
+
+/**
+ * 貼り付けたテキストを整える。**改行と空行はそのまま残す**（元の行の切れ目を再現するため）。
+ * タブは Excalidraw の normalizeText と同じ8スペースへ寄せて、折り返し計算と表示をずらさない。
+ */
+function normalizePlainText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "        ")
+    .split("\n").map((l) => l.replace(/[ 　]+$/, "")).join("\n") // 行末の余白だけ落とす
+    .replace(/^\n+|\n+$/g, "");                                      // 前後の空行を落とす
+}
+
+/**
+ * 書式の無い素のテキストを、テキストボックス1枚としてホワイトボードへ貼り付ける。作った場合のみ true。
+ * @param at 貼り付け位置（scene座標・左上）
+ */
+export function pastePlainTextToWhiteboard(api: any, text: string, at: { x: number; y: number }): boolean {
+  if (!api) return false;
+  const body = normalizePlainText(text);
+  if (!body) return false;
+  return commitPaste(api, textElement(body, at.x, at.y));
 }
