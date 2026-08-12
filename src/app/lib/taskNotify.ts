@@ -68,3 +68,14 @@ export async function notifyTaskAssigned(base: TaskNotifyBase, assignee: string)
     `${base.fromUserName}さんからタスクが割り当てられました`,
     base.taskTitle);
 }
+
+/**
+ * 担当ではなく「見せるだけ」で共有したとき。
+ * 相手はお知らせから /tasks?task={id} へ飛べる（担当と同じ導線）。
+ * 権限を後から付け替えたときは飛ばさない（同じ内容が何度も届くだけなので）。
+ */
+export async function notifyTaskShared(base: TaskNotifyBase, toUserName: string, canEdit: boolean): Promise<void> {
+  await notify(base, toUserName,
+    `${base.fromUserName}さんからタスクが共有されました（${canEdit ? "編集可" : "閲覧のみ"}）`,
+    base.taskTitle);
+}
