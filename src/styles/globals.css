@@ -75,6 +75,16 @@
 .task-row:focus-within .task-row-del {
   opacity: 1;
 }
+/* 共有も同じ。ただし誰かに共有済みの行は人数を出しっぱなしにするので、
+   このクラス自体が付かない（TaskListView 側で出し分ける）。 */
+.task-row .task-row-share {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.task-row:hover .task-row-share,
+.task-row:focus-within .task-row-share {
+  opacity: 1;
+}
 /* 選択肢を持つセルだけは、触ったときに ▼ を出して「選べる」ことを示す */
 .task-select .task-select-arrow {
   opacity: 0;

@@ -20,15 +20,17 @@ import { TaskBoardView, type TaskDropHandler } from "@/app/components/tasks/Task
 import { TaskGanttView } from "@/app/components/tasks/TaskGanttView";
 import { TaskQuickAddRow } from "@/app/components/tasks/TaskQuickAddRow";
 import { MdTaskImportDialog } from "@/app/components/tasks/MdTaskImportDialog";
+import { TaskShareDialog } from "@/app/components/tasks/TaskShareDialog";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import {
-  loadTasks, loadTaskProjects, loadTaskMembers, loadMyShareFlags,
+  loadTasks, loadTaskProjects, loadTaskMembers, loadTaskShareMap, loadTaskShares,
   createTask, createSubtask, updateTask, deleteTask, syncAssigneeShare,
+  addTaskShare, removeTaskShare,
   computeSortOrder, renumberColumn, SORT_GAP,
   type NewTaskInput, type ProjectOption, type MemberOption,
 } from "@/app/lib/taskService";
-import { notifyTaskAssigned } from "@/app/lib/taskNotify";
-import type { Task, TaskStatus, TaskView } from "@/app/types";
+import { notifyTaskAssigned, notifyTaskShared } from "@/app/lib/taskNotify";
+import type { Task, TaskShare, TaskStatus, TaskView } from "@/app/types";
 
 type OwnerFilter = "all" | "mine" | "shared";
 
@@ -68,7 +70,8 @@ export function TaskWorkspace({
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [members, setMembers] = useState<MemberOption[]>([]);
-  const [shareFlags, setShareFlags] = useState<Record<string, boolean>>({});
+  // taskId → 共有相手。自分が持っているタスクは全件、他人のタスクは自分の行だけ入る（RLS）
+  const [shareMap, setShareMap] = useState<Record<string, TaskShare[]>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -88,6 +91,8 @@ export function TaskWorkspace({
   // これは「かんばん／ガント／お知らせから飛んできた行」に色を付けて送るための目印
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Task | null>(null);
+  // 共有ダイアログを開いているタスク。行を編集しても中身が古くならないよう id で持つ
+  const [shareTargetId, setShareTargetId] = useState<string | null>(null);
   // ヘッダーの「タスクを追加」から、表の追加行へフォーカスを飛ばすための合図
   const [addFocus, setAddFocus] = useState(0);
   const [showMdImport, setShowMdImport] = useState(false);
@@ -97,11 +102,11 @@ export function TaskWorkspace({
   // ── 読み込み ────────────────────────────────────────────────
   const reload = useCallback(async (spinner = true) => {
     if (spinner) setLoading(true); else setRefreshing(true);
-    const [t, flags] = await Promise.all([loadTasks(projectId), loadMyShareFlags(userId)]);
+    const [t, shares] = await Promise.all([loadTasks(projectId), loadTaskShareMap()]);
     setTasks(t);
-    setShareFlags(flags);
+    setShareMap(shares);
     if (spinner) setLoading(false); else setRefreshing(false);
-  }, [projectId, userId]);
+  }, [projectId]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -183,11 +188,69 @@ export function TaskWorkspace({
   const canEdit = useCallback((t: Task) => {
     if (t.ownerId === userId) return true;
     if (t.projectId) return true;
-    return shareFlags[t.id] === true;
-  }, [userId, shareFlags]);
+    return shareMap[t.id]?.some(s => s.profileId === userId && s.canEdit) === true;
+  }, [userId, shareMap]);
 
   /** 消せるのは持ち主だけ（サブタスクも一緒に消えるため） */
   const canDelete = useCallback((t: Task) => t.ownerId === userId, [userId]);
+
+  /** 共有を付け外しできるのも持ち主だけ（RLS の task_shares_write と同じ） */
+  const canShare = useCallback((t: Task) => t.ownerId === userId, [userId]);
+
+  /** いま何人に共有しているか。持ち主にしか正しく出せない（RLS で他人の行が見えないため） */
+  const shareCountOf = useCallback((t: Task) => shareMap[t.id]?.length ?? 0, [shareMap]);
+
+  // ── 共有 ────────────────────────────────────────────────────
+  /**
+   * そのタスクの共有相手を引き直して手元へ入れる。
+   * 持ち主のときだけ呼ぶこと（他人のタスクだと RLS で自分の行しか返らず、人数を取り違える）。
+   */
+  const refreshShares = useCallback(async (taskId: string) => {
+    const list = await loadTaskShares(taskId);
+    setShareMap(prev => ({ ...prev, [taskId]: list }));
+  }, []);
+
+  const handleAddShare = useCallback(async (task: Task, member: MemberOption, canEditFlag: boolean) => {
+    const ok = await addTaskShare(task.id, member.id, canEditFlag);
+    if (!ok) { toast("共有できませんでした", "error"); return; }
+    setShareMap(prev => ({
+      ...prev,
+      [task.id]: [...(prev[task.id] ?? []), { profileId: member.id, name: member.name, canEdit: canEditFlag }],
+    }));
+    // 担当に振ったときと同じお知らせ経路（ベル＋Slack）に乗せる
+    await notifyTaskShared(
+      { taskId: task.id, taskTitle: task.title, fromUserName: userName, projectSlug: projectSlugOf(task.projectId) },
+      member.name, canEditFlag,
+    );
+    toast(`${member.name}さんに共有しました`);
+  }, [toast, userName, projectSlugOf]);
+
+  /** 編集可 ⇄ 閲覧のみ。upsert なので同じ addTaskShare で足りる */
+  const handleChangeSharePermission = useCallback(async (task: Task, share: TaskShare, canEditFlag: boolean) => {
+    const ok = await addTaskShare(task.id, share.profileId, canEditFlag);
+    if (!ok) { toast("権限を変更できませんでした", "error"); return; }
+    setShareMap(prev => ({
+      ...prev,
+      [task.id]: (prev[task.id] ?? []).map(s => s.profileId === share.profileId ? { ...s, canEdit: canEditFlag } : s),
+    }));
+    toast(canEditFlag ? "編集できるようにしました" : "閲覧のみにしました");
+  }, [toast]);
+
+  const handleRemoveShare = useCallback(async (task: Task, share: TaskShare) => {
+    const ok = await removeTaskShare(task.id, share.profileId);
+    if (!ok) { toast("共有を解除できませんでした", "error"); return; }
+    setShareMap(prev => ({
+      ...prev,
+      [task.id]: (prev[task.id] ?? []).filter(s => s.profileId !== share.profileId),
+    }));
+    // 担当者の共有を外すと「振ったのに相手から見えない」に逆戻りする。黙って外さない
+    const name = share.name || members.find(m => m.id === share.profileId)?.name || "";
+    if (name && name === task.assignee) {
+      toast("共有を解除しました。担当者のままでは相手からこのタスクが見えません", "error");
+    } else {
+      toast("共有を解除しました");
+    }
+  }, [toast, members]);
 
   // ── 更新 ────────────────────────────────────────────────────
   const applyLocal = useCallback((id: string, patch: Partial<Task>) => {
@@ -215,7 +278,9 @@ export function TaskWorkspace({
     }
     // 担当者に指名した相手には自動で共有を張る（振ったのに見えない事故を防ぐ）＋お知らせ
     if (patch.assignee && patch.assignee !== task.assignee) {
-      await syncAssigneeShare(task.id, patch.assignee, members, task.createdBy);
+      const shared = await syncAssigneeShare(task.id, patch.assignee, members, task.createdBy);
+      // 共有バッジの人数を合わせる（引き直せるのは自分が持ち主のときだけ）
+      if (shared && task.ownerId === userId) await refreshShares(task.id);
       if (patch.assignee !== userName) {
         await notifyTaskAssigned(
           { taskId: task.id, taskTitle: task.title, fromUserName: userName, projectSlug: projectSlugOf(task.projectId) },
@@ -223,7 +288,7 @@ export function TaskWorkspace({
         );
       }
     }
-  }, [canEdit, applyLocal, toast, reload, members, userName, projectSlugOf]);
+  }, [canEdit, applyLocal, toast, reload, members, userId, userName, projectSlugOf, refreshShares]);
 
   // かんばんの D&D。落とした位置の前後から新しい sort_order を決める
   const handleDrop = useCallback<TaskDropHandler>(async (taskId, newStatus, beforeId) => {
@@ -279,7 +344,8 @@ export function TaskWorkspace({
     if (!created) { toast("タスクの作成に失敗しました", "error"); return false; }
     setTasks(prev => [created, ...prev]);
     if (created.assignee && created.assignee !== userName) {
-      await syncAssigneeShare(created.id, created.assignee, members, userName);
+      const shared = await syncAssigneeShare(created.id, created.assignee, members, userName);
+      if (shared) setShareMap(prev => ({ ...prev, [created.id]: [{ profileId: shared.id, name: shared.name, canEdit: true }] }));
       await notifyTaskAssigned(
         { taskId: created.id, taskTitle: created.title, fromUserName: userName, projectSlug: projectSlugOf(created.projectId) },
         created.assignee,
@@ -305,8 +371,6 @@ export function TaskWorkspace({
     const child = await createSubtask(parent, input, userId, userName, minSort ?? SORT_GAP);
     if (!child) { toast("サブタスクの作成に失敗しました", "error"); return false; }
     setTasks(prev => [...prev, child]);
-    // 親の共有をコピーしたので、自分に対する編集可フラグも手元に反映しておく
-    setShareFlags(prev => ({ ...prev, [child.id]: true }));
     // 親タスクと同じく、担当に指名した相手には共有とお知らせを回す
     if (child.assignee && child.assignee !== userName) {
       await syncAssigneeShare(child.id, child.assignee, members, userName);
@@ -315,8 +379,10 @@ export function TaskWorkspace({
         child.assignee,
       );
     }
+    // 親の共有をコピーしたうえに担当ぶんも足したので、手元へは引き直して入れる
+    await refreshShares(child.id);
     return true;
-  }, [tasks, canEdit, userId, userName, members, projectSlugOf, toast]);
+  }, [tasks, canEdit, userId, userName, members, projectSlugOf, toast, refreshShares]);
 
   /** いま手元にあるタスクの最小 sort_order。MD取り込みぶんはこれより手前（＝先頭）へ積む */
   const minSortOrder = useMemo(
@@ -332,6 +398,8 @@ export function TaskWorkspace({
   const handleMdImported = useCallback((created: Task[]) => {
     if (created.length === 0) return;
     setTasks(prev => [...created, ...prev]);
+    // 取り込みでも担当者ぶんの共有が張られるので、共有バッジを合わせる
+    loadTaskShareMap().then(setShareMap);
     if (created.some(t => t.status === "done")) setHideDone(false);
     // ガントは日付のあるタスクしか出ないので、取り込んだものが必ず見えるリストへ寄せる
     setView(v => (v === "gantt" ? "list" : v));
@@ -357,6 +425,10 @@ export function TaskWorkspace({
     setView(v => (v === "gantt" ? "list" : v));
     setAddFocus(n => n + 1);
   }, []);
+
+  // 共有ダイアログの対象。id で持っているので、開いている間に行を直しても中身が追従する
+  // （消えたら null になり、ダイアログはそのまま閉じる）
+  const shareTask = shareTargetId ? tasks.find(t => t.id === shareTargetId) ?? null : null;
 
   // ── 描画 ────────────────────────────────────────────────────
   if (loading) return <PageLoader label="タスクを読み込み中..." />;
@@ -474,9 +546,11 @@ export function TaskWorkspace({
       )}
       {view === "list" ? (
         <TaskListView tasks={visible} allTasks={tasks} showProject={!isProjectScope}
-          canEdit={canEdit} canDelete={canDelete} highlightId={highlightId}
+          canEdit={canEdit} canDelete={canDelete}
+          canShare={canShare} shareCountOf={shareCountOf} highlightId={highlightId}
           projects={projects} members={members} categoryOptions={categoryOptions}
           onPatch={patchTask} onDelete={setPendingDelete}
+          onShare={t => setShareTargetId(t.id)}
           renderSubtaskAdd={parent => (
             <TaskQuickAddRow
               projects={projects} members={members} categoryOptions={categoryOptions}
@@ -518,6 +592,20 @@ export function TaskWorkspace({
           minSortOrder={minSortOrder}
           onClose={() => setShowMdImport(false)}
           onCreated={handleMdImported}
+        />
+      )}
+
+      {shareTask && (
+        <TaskShareDialog
+          task={shareTask}
+          shares={shareMap[shareTask.id] ?? []}
+          members={members}
+          currentUserId={userId}
+          projectName={shareTask.projectId ? projectNameOf(shareTask.projectId) : undefined}
+          onAdd={(m, canEditFlag) => handleAddShare(shareTask, m, canEditFlag)}
+          onChangePermission={(s, canEditFlag) => handleChangeSharePermission(shareTask, s, canEditFlag)}
+          onRemove={s => handleRemoveShare(shareTask, s)}
+          onClose={() => setShareTargetId(null)}
         />
       )}
 

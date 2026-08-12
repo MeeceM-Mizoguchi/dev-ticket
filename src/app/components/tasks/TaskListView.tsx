@@ -12,7 +12,7 @@
 // その追加行も表の最終行と同じ全項目ぶんの入力欄（renderSubtaskAdd で受け取る）。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, Trash2, Users } from "lucide-react";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
 import {
@@ -34,6 +34,8 @@ export const TASK_COLS = {
   start: 106,
   due: 106,
   status: 86,
+  /** 行末の共有ボタン。追加行・見出しでは空けておく */
+  share: 26,
   /** 行末の削除ボタン。追加行・見出しでは空けておく */
   menu: 20,
   gap: 10,
@@ -249,7 +251,8 @@ function DescriptionCell({ task, editable, onCommit, textStyle }: {
 function TaskRow({
   task, depth, expanded, childCount, doneCount, editable, deletable, highlighted,
   showProject, projectOptions, assigneeOptions, categoryOptions,
-  onToggleExpand, onPatch, onDelete,
+  shareable, shareCount,
+  onToggleExpand, onPatch, onDelete, onShare,
 }: {
   task: Task;
   depth: number;
@@ -264,9 +267,14 @@ function TaskRow({
   projectOptions: PickerOption[];
   assigneeOptions: PickerOption[];
   categoryOptions: string[];
+  /** 共有を付け外しできるか（＝自分が持ち主か）。RLS の task_shares_write と同じ */
+  shareable: boolean;
+  /** いま共有している人数。0 でなければボタンを出しっぱなしにする */
+  shareCount: number;
   onToggleExpand: () => void;
   onPatch: (t: Task, patch: Partial<Task>) => void;
   onDelete: (t: Task) => void;
+  onShare: (t: Task) => void;
 }) {
   const done = task.status === "done";
   const overdue = isOverdue(task);
@@ -385,6 +393,29 @@ function TaskRow({
       <StatusPill status={task.status} disabled={!editable}
         onChange={s => onPatch(task, { status: s })} />
 
+      {/* 共有。誰かに共有していれば人数を出しっぱなしにし（見せている相手がいることを
+          一覧のまま気付けるように）、0人のときは行にマウスを乗せたときだけ出す。 */}
+      <span style={{ width: TASK_COLS.share, flexShrink: 0, display: "flex", justifyContent: "center" }}>
+        {shareable && (
+          <button type="button" className={shareCount > 0 ? undefined : "task-row-share"}
+            onClick={() => onShare(task)}
+            title={shareCount > 0 ? `${shareCount}人に共有中（共有先を変更）` : "このタスクを共有する"}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 4px",
+              border: "none", borderRadius: 5, cursor: "pointer",
+              background: shareCount > 0 ? "#ECFDF5" : "transparent",
+              color: shareCount > 0 ? "#059669" : "#C9C4BB",
+            }}
+            onMouseEnter={e => { if (shareCount === 0) (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+            onMouseLeave={e => { if (shareCount === 0) (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+            <Users style={{ width: 12, height: 12 }} />
+            {shareCount > 0 && (
+              <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)" }}>{shareCount}</span>
+            )}
+          </button>
+        )}
+      </span>
+
       {/* 削除。行にマウスを乗せたときだけ出す（誤爆を減らす） */}
       <span style={{ width: TASK_COLS.menu, flexShrink: 0, display: "flex", justifyContent: "center" }}>
         {deletable && (
@@ -401,9 +432,9 @@ function TaskRow({
 }
 
 export function TaskListView({
-  tasks, allTasks, showProject, canEdit, canDelete, highlightId,
+  tasks, allTasks, showProject, canEdit, canDelete, canShare, shareCountOf, highlightId,
   projects, members, categoryOptions,
-  onPatch, onDelete, renderSubtaskAdd, quickAdd,
+  onPatch, onDelete, onShare, renderSubtaskAdd, quickAdd,
 }: {
   /** 絞り込み後（画面に出す分） */
   tasks: Task[];
@@ -412,6 +443,10 @@ export function TaskListView({
   showProject: boolean;
   canEdit: (t: Task) => boolean;
   canDelete: (t: Task) => boolean;
+  /** 共有を付け外しできるか（＝持ち主か）。false の行にはボタンを出さない */
+  canShare: (t: Task) => boolean;
+  /** いま共有している人数 */
+  shareCountOf: (t: Task) => number;
   /** お知らせやかんばんから飛んできた行。色を付けてその位置まで送る */
   highlightId: string | null;
   projects: ProjectOption[];
@@ -420,6 +455,8 @@ export function TaskListView({
   categoryOptions: string[];
   onPatch: (t: Task, patch: Partial<Task>) => void;
   onDelete: (t: Task) => void;
+  /** 共有ダイアログを開く */
+  onShare: (t: Task) => void;
   /** 親を開いたときに下へ生やす「サブタスクを追加」行（TaskQuickAddRow） */
   renderSubtaskAdd: (parent: Task) => React.ReactNode;
   /** 表の最終行に生やす追加行（TaskQuickAddRow）。渡さなければ出ない */
@@ -502,6 +539,7 @@ export function TaskListView({
         <span style={{ ...headCell, width: TASK_COLS.start }}>開始日</span>
         <span style={{ ...headCell, width: TASK_COLS.due }}>期限</span>
         <span style={{ ...headCell, width: TASK_COLS.status, textAlign: "center" as const }}>ステータス</span>
+        <span style={{ width: TASK_COLS.share, flexShrink: 0 }} />
         <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
       </div>
 
@@ -517,8 +555,9 @@ export function TaskListView({
               showProject={showProject}
               projectOptions={projectOptions} assigneeOptions={assigneeOptions}
               categoryOptions={categoryOptions}
+              shareable={canShare(t)} shareCount={shareCountOf(t)}
               onToggleExpand={() => toggle(t.id)}
-              onPatch={onPatch} onDelete={onDelete} />
+              onPatch={onPatch} onDelete={onDelete} onShare={onShare} />
 
             {isOpen && t.parentId === null && (
               <>
@@ -529,8 +568,9 @@ export function TaskListView({
                     showProject={showProject}
                     projectOptions={projectOptions} assigneeOptions={assigneeOptions}
                     categoryOptions={categoryOptions}
+                    shareable={canShare(k)} shareCount={shareCountOf(k)}
                     onToggleExpand={() => {}}
-                    onPatch={onPatch} onDelete={onDelete} />
+                    onPatch={onPatch} onDelete={onDelete} onShare={onShare} />
                 ))}
                 {canEdit(t) && renderSubtaskAdd(t)}
               </>

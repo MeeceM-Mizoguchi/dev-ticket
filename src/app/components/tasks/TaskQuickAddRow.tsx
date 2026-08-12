@@ -174,6 +174,8 @@ export function TaskQuickAddRow({
         options={STATUS_OPTIONS} onChange={v => setStatus(v as TaskStatus)}
         textStyle={{ color: statusMeta.color, fontWeight: 700 }} />
 
+      {/* 共有・削除のぶんは空けておく（まだ存在しないタスクなので押せる操作が無い） */}
+      <span style={{ width: TASK_COLS.share, flexShrink: 0 }} />
       <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
     </div>
   );

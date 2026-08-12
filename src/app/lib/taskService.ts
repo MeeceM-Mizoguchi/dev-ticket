@@ -83,33 +83,44 @@ export async function loadTasks(projectId?: string | null): Promise<Task[]> {
 }
 
 /**
- * 自分宛の共有行だけをまとめて引く（taskId → 編集可か）。
- * 一覧で「閲覧のみ共有されたタスク」を編集不可にするために使う。
- * RLS の task_shares_select が profile_id = auth.uid() を通すので条件は要らないが、
- * 所有者として見えている行も混ざるため明示的に絞る。
+ * 見えている共有行を taskId ごとにまとめて引く。
+ *
+ * RLS(task_shares_select) が「自分宛の行」と「自分が持っているタスクの行」だけを通すので、
+ * 条件を付けずに引けば
+ *   ・自分に共有されているもの（＝自分の編集可否の判定に使う）
+ *   ・自分が誰かへ共有したもの（＝一覧の共有バッジと共有ダイアログの初期値に使う）
+ * が一度に揃う。
  */
-export async function loadMyShareFlags(profileId: string): Promise<Record<string, boolean>> {
-  if (!isSupabaseEnabled || !profileId) return {};
+export async function loadTaskShareMap(): Promise<Record<string, TaskShare[]>> {
+  if (!isSupabaseEnabled) return {};
+  // 共有した順に並べる（読み込むたびにダイアログの行が入れ替わらないよう profile_id で安定化）
   const { data, error } = await supabase!
-    .from("task_shares").select("task_id, can_edit").eq("profile_id", profileId);
-  if (error) { console.error("[task_shares] flags load failed:", error.message); return {}; }
-  const out: Record<string, boolean> = {};
+    .from("task_shares").select("task_id, profile_id, can_edit, profiles(name)")
+    .order("created_at", { ascending: true })
+    .order("profile_id", { ascending: true });
+  if (error) { console.error("[task_shares] map load failed:", error.message); return {}; }
+  const out: Record<string, TaskShare[]> = {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const r of (data ?? []) as any[]) out[r.task_id] = r.can_edit !== false;
+  for (const r of (data ?? []) as any[]) {
+    const list = out[r.task_id];
+    if (list) list.push(mapTaskShare(r)); else out[r.task_id] = [mapTaskShare(r)];
+  }
   return out;
 }
 
 /**
  * そのタスクの共有相手。
- * 共有を編集する画面は持たない（担当者に振ると自動で張られる）ので、
- * いまはサブタスクへ親の共有を引き継ぐときだけ使う。
+ * サブタスクへ親の共有を引き継ぐときと、共有を付け外ししたあとの取り直しに使う。
+ * 所有者でない場合は RLS により自分の行しか返らない。
  */
 export async function loadTaskShares(taskId: string): Promise<TaskShare[]> {
   if (!isSupabaseEnabled) return [];
   const { data, error } = await supabase!
     .from("task_shares")
     .select("profile_id, can_edit, profiles(name)")
-    .eq("task_id", taskId);
+    .eq("task_id", taskId)
+    .order("created_at", { ascending: true })
+    .order("profile_id", { ascending: true });
   if (error) { console.error("[task_shares] load failed:", error.message); return []; }
   return (data ?? []).map(mapTaskShare);
 }
@@ -288,6 +299,10 @@ export async function renumberColumn(tasks: Task[]): Promise<void> {
 
 // ── 共有 ──────────────────────────────────────────────────────
 
+/**
+ * 共有を張る／権限を付け替える。
+ * upsert なので、既に共有済みの相手に対して呼べば can_edit の変更になる。
+ */
 export async function addTaskShare(taskId: string, profileId: string, canEdit = true): Promise<boolean> {
   if (!isSupabaseEnabled) return true;
   const { error } = await supabase!
@@ -298,15 +313,32 @@ export async function addTaskShare(taskId: string, profileId: string, canEdit = 
 }
 
 /**
+ * 共有を外す。相手からそのタスクは見えなくなる。
+ * 実行できるのはタスクの所有者だけ（RLS の task_shares_write）。
+ * サブタスクの共有は別行なので、親を外しても子は外れない
+ * （子だけ相手に見せ続けたい場合があるため、ここでは連鎖させない）。
+ */
+export async function removeTaskShare(taskId: string, profileId: string): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  const { error } = await supabase!
+    .from("task_shares").delete().eq("task_id", taskId).eq("profile_id", profileId);
+  if (error) { console.error("[task_shares] delete failed:", error.message); return false; }
+  return true;
+}
+
+/**
  * 担当者に指名した相手へ自動で共有を張る。
  * これが無いと「個人タスクを他人に振ったのに相手から見えない」が起きる。
  * 担当を外したときは共有を消さない（意図的に共有を残したい場合があるため）。
+ *
+ * 呼び出し側が手元の共有一覧を更新できるよう、実際に張った相手を返す。
  */
 export async function syncAssigneeShare(
   taskId: string, assignee: string, members: MemberOption[], ownerName: string,
-): Promise<void> {
-  if (!assignee || assignee === ownerName) return;
+): Promise<MemberOption | null> {
+  if (!assignee || assignee === ownerName) return null;
   const m = members.find(x => x.name === assignee);
-  if (!m) return;
-  await addTaskShare(taskId, m.id, true);
+  if (!m) return null;
+  const ok = await addTaskShare(taskId, m.id, true);
+  return ok ? m : null;
 }
