@@ -14,6 +14,7 @@ import { Plus } from "lucide-react";
 import { TASK_STATUSES, TASK_PRIORITIES, type MemberOption, type ProjectOption } from "@/app/lib/taskService";
 import type { NewTaskInput } from "@/app/lib/taskService";
 import { TASK_COLS, TITLE_CELL, DESC_CELL, BODY_TEXT, CELL, ProgressCell } from "@/app/components/tasks/TaskListView";
+import { ExpandingInput } from "@/app/components/tasks/TaskTextCell";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
 import { TaskCategoryField } from "@/app/components/tasks/TaskCategoryField";
@@ -127,12 +128,12 @@ export function TaskQuickAddRow({
 
       <span style={{ width: TASK_COLS.expand, flexShrink: 0 }} />
 
-      <input ref={inputRef} value={title}
-        onChange={e => setTitle(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
-          if (e.key === "Escape") { setTitle(""); (e.currentTarget as HTMLInputElement).blur(); }
-        }}
+      {/* データ行と同じく、欄に入ると広がる（狭い列のままだと打った先が見えないため）。
+          Enter はここでも「1件足す」なので、足したあとも欄は開けたままにする */}
+      <ExpandingInput inputRef={inputRef} value={title}
+        onChange={setTitle}
+        onEnter={() => submit()}
+        onEscape={() => setTitle("")}
         placeholder={placeholder}
         style={{
           ...TITLE_CELL, ...BODY_TEXT, fontFamily: "inherit",
@@ -141,12 +142,11 @@ export function TaskQuickAddRow({
         }} />
 
       {/* 詳細メモ。1行ぶんのテキスト（データ行と同じ扱い） */}
-      <input className="task-cell" value={description} onChange={e => setDescription(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
-          if (e.key === "Escape") { setDescription(""); (e.currentTarget as HTMLInputElement).blur(); }
-        }}
-        placeholder="詳細" title="詳細"
+      <ExpandingInput className="task-cell" value={description}
+        onChange={setDescription}
+        onEnter={() => submit()}
+        onEscape={() => setDescription("")}
+        placeholder="詳細"
         style={{ ...CELL, ...DESC_CELL, ...BODY_TEXT, cursor: "text" }} />
 
       {/* 分類は要素を足していく形。打つたびに過去の分類が候補に出る */}
