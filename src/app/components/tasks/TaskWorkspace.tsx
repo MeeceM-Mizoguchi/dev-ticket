@@ -93,6 +93,8 @@ export function TaskWorkspace({
   // 担当者は複数選べる（空 = すべて）。"@me" = 自分 / "@none" = 未割当 / それ以外は名前。
   // 複数選んだときは「どれかに当てはまる」（OR）で絞る
   const [assigneeFilters, setAssigneeFilters] = useState<string[]>([]);
+  // 起票者も同じく複数選べる（空 = すべて）。"@me" = 自分 / それ以外は名前
+  const [creatorFilters, setCreatorFilters] = useState<string[]>([]);
   // 完了しても一覧から消さない（どれだけ片付いたか分からなくなるため）。
   // 溜まって邪魔になった人だけが明示的に隠す。
   const [hideDone, setHideDone] = useState(false);
@@ -185,13 +187,15 @@ export function TaskWorkspace({
         f === "@me" ? t.assignee === userName
           : f === "@none" ? !t.assignee
             : t.assignee === f)) return false;
+      if (creatorFilters.length > 0 && !creatorFilters.some(f =>
+        f === "@me" ? t.createdBy === userName : t.createdBy === f)) return false;
       if (q
         && !t.title.toLowerCase().includes(q)
         && !t.description.toLowerCase().includes(q)
         && !t.categories.some(c => c.toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, search, userName]);
+  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, creatorFilters, search, userName]);
 
   /**
    * タブの条件。互いに排他ではない（担当も共有もされていれば両方に出る）。
@@ -503,6 +507,11 @@ export function TaskWorkspace({
     .filter((n, i, all) => n && all.indexOf(n) === i)
     .sort();
 
+  const creatorNames: string[] = tasks
+    .map(t => t.createdBy)
+    .filter((n, i, all) => n && all.indexOf(n) === i)
+    .sort();
+
   return (
     <div style={{ padding: "0 4px 40px" }}>
       {/* ── ヘッダー ── */}
@@ -600,6 +609,14 @@ export function TaskWorkspace({
             ...assigneeNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
           ]}
           onChange={setAssigneeFilters} />
+
+        <MultiPickerCell width={160} values={creatorFilters} title="起票者（複数選べます）"
+          emptyLabel="起票者: すべて" showSelectAll={false}
+          options={[
+            { value: "@me", label: "自分が起票" },
+            ...creatorNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
+          ]}
+          onChange={setCreatorFilters} />
 
         {/* 標準のチェックボックスはOSごとに見た目が違うので自前で描く */}
         <button type="button" onClick={() => setHideDone(v => !v)}
