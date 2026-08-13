@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
 import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
@@ -412,7 +412,28 @@ export function TicketDetailPanel({
 
   // 子チケット
   const [childTickets, setChildTickets] = useState<SprintTicket[]>([]);
+  // 子チケットの取得が済んだかどうか（BRU11-046）。
+  // 工数入力画面の初期値に子の実績合計を入れるため、取得前に入力欄を出さないようにする。
+  const [childTicketsLoaded, setChildTicketsLoaded] = useState(false);
   const [showCreateChild, setShowCreateChild] = useState(false);
+
+  // 🌟 追加(BRU11-046): 子チケットの実績工数の合計。
+  // 一覧の各行に出しているバッジ（ChildHoursBadge）と同じ計算をそのまま足し上げる。
+  // 取下・保留の子も行に出ている以上は合計に含める（表示と合計を一致させる）。
+  const childActualHoursTotal = useMemo(
+    () => Math.round(childTickets.reduce((sum, c) => sum + calcTicketActualHours(c), 0) * 10) / 10,
+    [childTickets],
+  );
+
+  // 🌟 追加(BRU11-046): 親チケット完了時の工数入力欄は、子チケットの実績合計を
+  // 「開始 → レビュー依頼」の初期値として入れる（実作業は子で積み上がっているため）。
+  // 子が無い／実績が0のときは従来どおりマイルストーンの実測値をそのまま使う。
+  const withChildHours = useCallback((segments: number[]) => {
+    if (childActualHoursTotal <= 0) return segments;
+    const next = [...segments];
+    next[0] = childActualHoursTotal;
+    return next;
+  }, [childActualHoursTotal]);
 
   // リリースノート用
   const [releaseDate, setReleaseDate] = useState(ticket?.releaseDate ?? "");
@@ -480,7 +501,7 @@ export function TicketDetailPanel({
   }, [ticket?.id]);
 
   const loadChildTickets = useCallback(async (ticketId: string) => {
-    if (!isSupabaseEnabled) return;
+    if (!isSupabaseEnabled) { setChildTicketsLoaded(true); return; }
     const { data } = await supabase!
       .from("sprint_tickets")
       .select("id,wbs,title,status,priority,progress,parent_id,actual_work_hours,started_at,review_requested_at,review_approved_at,stg_completed_at,uat_completed_at,released_at")
@@ -496,6 +517,7 @@ export function TicketDetailPanel({
       const sorted = [...data].sort((a, b) => childNum(a.wbs) - childNum(b.wbs));
       setChildTickets(sorted.map(mapSprintTicket));
     }
+    setChildTicketsLoaded(true);
   }, []);
 
   const loadCommentFiles = useCallback(async (ticketId: string) => {
@@ -778,6 +800,7 @@ export function TicketDetailPanel({
     setTicketImages(initImages);
     ticketImagesRef.current = initImages;
     setChildTickets([]);
+    setChildTicketsLoaded(false);
     setComments([]);
     setSourceFiles([]);
     setCommentText("");
@@ -1326,7 +1349,7 @@ export function TicketDetailPanel({
     // UIを即座に更新してアニメーションを表示
     setStatus(newStatus);
     setProgress(p);
-    setCompletionSegmentHours(computeRawSegments({ ...ticket, releasedAt: now }));
+    setCompletionSegmentHours(withChildHours(computeRawSegments({ ...ticket, releasedAt: now })));
     setShowCompletionOverlay(true);
 
     // DB操作をバックグラウンドで実行
@@ -1346,7 +1369,7 @@ export function TicketDetailPanel({
       const milestones = await fetchMilestones(ticket.id);
       if (milestones) {
         const releasedAt = milestones.releasedAt || now;
-        setCompletionSegmentHours(computeRawSegments({ ...milestones, releasedAt }));
+        setCompletionSegmentHours(withChildHours(computeRawSegments({ ...milestones, releasedAt })));
       }
       const dateStr = isReleaseDateUndecided ? "（リリース日未定）" : releaseDate ? `（リリース予定日: ${releaseDate.replace(/-/g, "/")}）` : "";
       await addComment(`<p>対応完了してリリースノートに追加しました${dateStr}</p>`, "status_change", [], newStatus as TicketStatus);
@@ -2917,6 +2940,14 @@ export function TicketDetailPanel({
                         return withdrawn > 0 ? ` / 取下${withdrawn}` : "";
                       })()})
                     </span>
+                    {/* 🌟 追加(BRU11-046): 子チケットの実績工数の合計。親の完了時はこの値が
+                        「開始 → レビュー依頼」の工数の初期値として入る。 */}
+                    {childTickets.length > 0 && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#ECFDF5", color: "#059669", fontFamily: "var(--font-mono)", flexShrink: 0 }}
+                        title="子チケットの実績工数の合計">
+                        実績合計 {childActualHoursTotal}H
+                      </span>
+                    )}
                   </p>
                   {canEdit && (
                     plan.featureChildTickets ? (
@@ -4062,10 +4093,11 @@ export function TicketDetailPanel({
             onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
           />
         )}
-        {showHoursInputMode && !showCompletionOverlay && ticket && (
+        {/* 子チケットの実績合計を初期値に入れるため、子の取得完了まで入力欄は出さない（BRU11-046） */}
+        {showHoursInputMode && !showCompletionOverlay && ticket && childTicketsLoaded && (
           <CompletionOverlay
             ticketTitle={title}
-            initialSegmentHours={computeRawSegments(ticket)}
+            initialSegmentHours={withChildHours(computeRawSegments(ticket))}
             skipAnimation
             onSave={handleSaveActualWorkHours}
             onClose={() => setShowHoursInputMode(false)}
