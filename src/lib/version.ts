@@ -4,3 +4,11 @@
 declare const __APP_VERSION__: string;
 
 export const APP_VERSION: string = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "v0.0.0.0000";
+
+// 今表示しているバンドル自身のビルド時刻(epoch ms の文字列)。
+// dist/build-info.json の buildTime と同じ値が焼き込まれる。
+// サーバー上の build-info.json と突き合わせることで「今動いているコードが古いか」を
+// 直接判定できる（useVersionCheck）。
+declare const __APP_BUILD_TIME__: string;
+
+export const APP_BUILD_TIME: string = typeof __APP_BUILD_TIME__ !== "undefined" ? __APP_BUILD_TIME__ : "";

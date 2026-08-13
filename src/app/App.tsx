@@ -21,6 +21,7 @@ import { NewsListPage } from "@/app/pages/lp/news/NewsListPage";
 import { NewsArticlePage } from "@/app/pages/lp/news/NewsArticlePage";
 import { OrgProvider } from "@/app/contexts/OrgContext";
 import { PlanProvider } from "@/app/contexts/PlanContext";
+import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 
 // ネイティブアプリ(macOS/iPad)では営業用LPを表示せず、
 // ログイン済みならダッシュボード、未ログインならログイン画面へ直行する。
@@ -38,6 +39,14 @@ function WebNavBridge() {
   return null;
 }
 
+// 新しいバージョンがデプロイされたら自動でリロードする監視（BRU11-045）。
+// ログイン済み画面だけでなくログイン画面/LP/スプラッシュ中も含めて常時動かすため、
+// シェルではなくアプリ最上位（ToastProvider の内側）に置く。
+function VersionWatcher() {
+  useVersionCheck();
+  return null;
+}
+
 function RootRoute() {
   if (Capacitor.isNativePlatform()) {
     const loggedIn = sessionStorage.getItem("isLoggedIn") === "true";
@@ -49,6 +58,7 @@ function RootRoute() {
 export default function App() {
   return (
     <ToastProvider>
+      <VersionWatcher />
       <AlertProvider>
         <AuthProvider>
           <PreviewPanelProvider>

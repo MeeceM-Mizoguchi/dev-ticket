@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router";
+import { Capacitor } from "@capacitor/core";
 import { Ticket, AlertTriangle, ArrowRight, Fingerprint } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { biometricAuth } from "@/lib/biometricAuth";
@@ -15,6 +16,17 @@ export function LoginPage() {
   // 消すのは着地側(ProtectedShell)。ここで消すとレンダー中の副作用になり、
   // 再レンダーで戻り先を見失う可能性があるため読むだけにする。
   const afterLogin = () => peekRedirect() ?? "/dashboard";
+
+  // ログイン成功後の着地（BRU11-045）。
+  // SPA遷移だと画面を開きっぱなしにしていた間にデプロイされた新しいUIが載らないため、
+  // Web版はフルロードで着地させ「リロードした直後」と同じ状態から始める。
+  // ネイティブ(Mac/iPad)アプリはアセットが同梱でリロードしても内容が変わらず、
+  // 起動シーケンスをやり直すだけ損なので従来どおりSPA遷移。
+  const goAfterLogin = () => {
+    const to = afterLogin();
+    if (Capacitor.isNativePlatform()) { navigate(to, { replace: true }); return; }
+    window.location.assign(to);
+  };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [emailError, setEmailError] = useState("");
@@ -35,7 +47,7 @@ export function LoginPage() {
     try {
       const err = await loginWithBiometric();
       if (err) setError(err);
-      else navigate(afterLogin(), { replace: true });
+      else goAfterLogin();
     } catch (e: any) {
       setError(e?.message || "生体認証ログインに失敗しました。");
     } finally {
@@ -96,7 +108,7 @@ export function LoginPage() {
       const prev: string[] = (() => { try { return JSON.parse(localStorage.getItem(RECENT_USERS_KEY) || "[]"); } catch { return []; } })();
       const updated = [email, ...prev.filter(u => u !== email)].slice(0, 5);
       localStorage.setItem(RECENT_USERS_KEY, JSON.stringify(updated));
-      navigate(afterLogin(), { replace: true });
+      goAfterLogin();
     }
   };
 
