@@ -3,7 +3,6 @@ import { useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TabPane } from "./TabPane";
-import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
 import { TabProvider, useTabs } from "@/app/contexts/TabContext";
 
@@ -16,7 +15,7 @@ export function TabbedShell() {
 }
 
 function TabbedShellInner() {
-  useVersionCheck();
+  // バージョン監視(useVersionCheck)は App.tsx 直下で常時稼働（BRU11-045）。
   usePushNotifications();
   const tabs = useTabs()!;
   const navigate = useNavigate();

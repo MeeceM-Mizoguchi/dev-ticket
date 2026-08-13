@@ -179,8 +179,11 @@ export default defineConfig({
     tailwindcss(),
   ],
   // 稼働中バージョンをバンドルへ焼込む（src/lib/version.ts が参照）
+  // __APP_BUILD_TIME__ は build-info.json と同じ値。今表示しているバンドル自身の
+  // ビルド時刻が分かるので、新版デプロイの検知(useVersionCheck)が確実になる。
   define: {
     __APP_VERSION__: JSON.stringify(APP_BUILD.version),
+    __APP_BUILD_TIME__: JSON.stringify(APP_BUILD.buildTime),
   },
 
   resolve: {

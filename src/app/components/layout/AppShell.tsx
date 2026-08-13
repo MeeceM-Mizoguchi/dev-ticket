@@ -3,7 +3,6 @@ import { Navigate, Outlet, useLocation } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { TabbedShell } from "./TabbedShell";
-import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { usePushNotifications } from "@/app/hooks/usePushNotifications";
 import { useAutoLogout } from "@/app/hooks/useAutoLogout";
 import { isNativeTabletApp } from "@/app/lib/platform";
@@ -14,7 +13,8 @@ import { MlSetupGate } from "@/app/components/members/MlSetupGate";
 import { clearRedirect, rememberRedirect } from "@/app/lib/authRedirect";
 
 export function AppShell() {
-  useVersionCheck();
+  // バージョン監視(useVersionCheck)は App.tsx 直下で常時稼働させている。
+  // ここに置くとログイン画面では止まってしまうため（BRU11-045）。
   usePushNotifications();
   const { refreshNonce } = useRefresh();
   

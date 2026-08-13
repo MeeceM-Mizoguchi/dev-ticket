@@ -92,6 +92,9 @@ export function PlanProvider({ children }: { children: ReactNode }) {
         setPlan(p);
         if (p.accountExpiresAt && new Date(p.accountExpiresAt) < new Date()) {
           await logout();
+          // ログアウト時はフルロードでログイン画面へ戻す（BRU11-045）。
+          // SPA遷移のままだと古いバンドルを抱えたままログイン画面に留まる。
+          window.location.href = "/login";
         }
       } else {
         setPlan(UNLIMITED_PLAN);
