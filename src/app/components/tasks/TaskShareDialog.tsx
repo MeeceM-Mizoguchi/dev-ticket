@@ -10,11 +10,11 @@
 // 付け外しできるのはタスクの所有者だけ（RLS の task_shares_write と同じ）。
 // 呼び出し側（TaskWorkspace）が所有者のときしかボタンを出さないので、
 // ここでは権限判定はせず「所有者が開いている」前提で描く。
-import { useMemo, useState } from "react";
-import { Eye, Pencil, Trash2, UserPlus, Users } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Eye, Pencil, Trash2, UserPlus, Users, Globe } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
-import { PickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
+import { PickerCell, MultiPickerCell, type PickerOption } from "@/app/components/tasks/TaskPickerCell";
 import type { MemberOption } from "@/app/lib/taskService";
 import type { Task, TaskShare } from "@/app/types";
 
@@ -25,7 +25,7 @@ const PERM_OPTIONS: PickerOption[] = [
 ];
 
 export function TaskShareDialog({
-  task, shares, members, currentUserId, projectName,
+  task, shares, members, currentUserId, projectName, projectMemberNames,
   onAdd, onChangePermission, onRemove, onClose,
 }: {
   task: Task;
@@ -35,12 +35,15 @@ export function TaskShareDialog({
   currentUserId: string;
   /** プロジェクトタスクなら、その名前（注意書きに出す） */
   projectName?: string;
-  onAdd: (member: MemberOption, canEdit: boolean) => Promise<void>;
+  /** プロジェクトタスクなら、そのPJにアサインされている人の名前（一括公開に使う） */
+  projectMemberNames?: string[];
+  /** 選んだ相手をまとめて共有する。1人でも配列で渡す */
+  onAdd: (targets: MemberOption[], canEdit: boolean) => Promise<void>;
   onChangePermission: (share: TaskShare, canEdit: boolean) => Promise<void>;
   onRemove: (share: TaskShare) => Promise<void>;
   onClose: () => void;
 }) {
-  const [pickedId, setPickedId] = useState("");
+  const [pickedIds, setPickedIds] = useState<string[]>([]);
   const [pickedPerm, setPickedPerm] = useState("edit");
   const [busy, setBusy] = useState(false);
 
@@ -51,8 +54,24 @@ export function TaskShareDialog({
   }, [members, shares, currentUserId]);
 
   const candidateOptions = useMemo<PickerOption[]>(
-    () => [{ value: "", label: "メンバーを選ぶ" }, ...candidates.map(m => ({ value: m.id, label: m.name }))],
+    () => candidates.map(m => ({ value: m.id, label: m.name })),
     [candidates]);
+
+  /**
+   * まだ共有していないPJメンバー。「プロジェクトメンバーに公開」で一括して張る相手。
+   * projects.members は名前の配列なので、名前で突き合わせて id を得る。
+   */
+  const projectTargets = useMemo(() => {
+    if (!task.projectId || !projectMemberNames?.length) return [];
+    const inProject = new Set(projectMemberNames);
+    return candidates.filter(m => inProject.has(m.name));
+  }, [task.projectId, projectMemberNames, candidates]);
+
+  // 共有した相手は候補から消えるので、選択に残った id も一緒に落とす
+  useEffect(() => {
+    const alive = new Set(candidates.map(m => m.id));
+    setPickedIds(prev => (prev.every(id => alive.has(id)) ? prev : prev.filter(id => alive.has(id))));
+  }, [candidates]);
 
   /** 表示名。profiles を引けなかった相手は members から補う */
   const nameOf = (s: TaskShare) =>
@@ -64,12 +83,18 @@ export function TaskShareDialog({
   };
 
   const handleAdd = () => {
-    const m = candidates.find(x => x.id === pickedId);
-    if (!m) return;
+    const targets = candidates.filter(m => pickedIds.includes(m.id));
+    if (targets.length === 0) return;
     run(async () => {
-      await onAdd(m, pickedPerm === "edit");
-      setPickedId("");
+      await onAdd(targets, pickedPerm === "edit");
+      setPickedIds([]);
     });
+  };
+
+  /** PJメンバー全員へまとめて共有する。権限は上の欄で選んでいるものに合わせる */
+  const handlePublishToProject = () => {
+    if (projectTargets.length === 0) return;
+    run(() => onAdd(projectTargets, pickedPerm === "edit"));
   };
 
   return (
@@ -162,19 +187,21 @@ export function TaskShareDialog({
           </p>
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <PickerCell variant="chip" width={190} value={pickedId} title="共有する相手"
-              options={candidateOptions} disabled={busy} onChange={setPickedId} />
+            <MultiPickerCell width={190} values={pickedIds} title="共有する相手（複数選べます）"
+              emptyLabel="メンバーを選ぶ"
+              options={candidateOptions} disabled={busy} onChange={setPickedIds} />
             <PickerCell variant="chip" width={116} value={pickedPerm} title="権限"
               options={PERM_OPTIONS} disabled={busy} onChange={setPickedPerm} />
-            <button type="button" onClick={handleAdd} disabled={!pickedId || busy}
+            <button type="button" onClick={handleAdd} disabled={pickedIds.length === 0 || busy}
               style={{
                 display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px",
                 fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none",
-                color: !pickedId || busy ? "#9CA3AF" : "#FFF",
-                background: !pickedId || busy ? "#E5E7EB" : "#059669",
-                cursor: !pickedId || busy ? "not-allowed" : "pointer",
+                color: pickedIds.length === 0 || busy ? "#9CA3AF" : "#FFF",
+                background: pickedIds.length === 0 || busy ? "#E5E7EB" : "#059669",
+                cursor: pickedIds.length === 0 || busy ? "not-allowed" : "pointer",
               }}>
-              <UserPlus style={{ width: 13, height: 13 }} />共有する
+              <UserPlus style={{ width: 13, height: 13 }} />
+              共有する{pickedIds.length > 1 ? `（${pickedIds.length}人）` : ""}
             </button>
           </div>
         )}
@@ -182,6 +209,36 @@ export function TaskShareDialog({
           「閲覧のみ」で共有した相手は、内容は見られますが書き換えはできません。
           どちらの場合も、削除できるのは作成した本人だけです。
         </p>
+
+        {/* ── プロジェクトメンバーへの一括公開（BRU11-046） ──
+            1人ずつ選ばなくても、そのPJにアサインされている人へまとめて共有を張る。
+            権限は上の「編集可／閲覧のみ」に従う。 */}
+        {task.projectId && (
+          <div style={{ marginTop: 12, background: "#F7FDF9", border: "1px solid #A7F3D0", borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" onClick={handlePublishToProject}
+                disabled={projectTargets.length === 0 || busy}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px",
+                  fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none",
+                  color: projectTargets.length === 0 || busy ? "#9CA3AF" : "#FFF",
+                  background: projectTargets.length === 0 || busy ? "#E5E7EB" : "#0F766E",
+                  cursor: projectTargets.length === 0 || busy ? "not-allowed" : "pointer",
+                }}>
+                <Globe style={{ width: 13, height: 13 }} />
+                プロジェクトメンバーに公開
+                {projectTargets.length > 0 && `（${projectTargets.length}人）`}
+              </button>
+              <span style={{ fontSize: 10.5, color: "#6B6458", lineHeight: 1.6 }}>
+                {projectTargets.length === 0
+                  ? projectMemberNames?.length
+                    ? "このプロジェクトのメンバーには全員共有済みです。"
+                    : "このプロジェクトに他のメンバーがいません。"
+                  : `${projectName ? `「${projectName}」` : "このプロジェクト"}のメンバー全員に共有し、お知らせを送ります。`}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     </DialogShell>
   );

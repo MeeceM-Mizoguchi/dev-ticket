@@ -10,7 +10,7 @@
 // 編集は詳細パネルを開かず、リストの行の中で完結する（TaskListView）。
 // かんばん／ガントで押されたタスクは、編集できるリストへ送って行に目印を付ける。
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw } from "lucide-react";
+import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw, Layers, User, UserCheck, Users } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { PageLoader } from "@/app/components/shared/PageLoader";
@@ -21,7 +21,7 @@ import { TaskGanttView } from "@/app/components/tasks/TaskGanttView";
 import { TaskQuickAddRow } from "@/app/components/tasks/TaskQuickAddRow";
 import { MdTaskImportDialog } from "@/app/components/tasks/MdTaskImportDialog";
 import { TaskShareDialog } from "@/app/components/tasks/TaskShareDialog";
-import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
+import { PickerCell, MultiPickerCell } from "@/app/components/tasks/TaskPickerCell";
 import {
   loadTasks, loadTaskProjects, loadTaskMembers, loadTaskShareMap, loadTaskShares,
   createTask, createSubtask, updateTask, deleteTask, syncAssigneeShare,
@@ -32,7 +32,7 @@ import {
 import { notifyTaskAssigned, notifyTaskShared } from "@/app/lib/taskNotify";
 import type { Task, TaskShare, TaskStatus, TaskView } from "@/app/types";
 
-type OwnerFilter = "all" | "mine" | "shared";
+type OwnerFilter = "all" | "assigned" | "mine" | "shared";
 
 const VIEWS: { value: TaskView; label: string; icon: React.ElementType }[] = [
   { value: "list",  label: "リスト",   icon: List },
@@ -42,10 +42,19 @@ const VIEWS: { value: TaskView; label: string; icon: React.ElementType }[] = [
 
 function viewStorageKey(scopeKey: string) { return `dt.taskView.${scopeKey}`; }
 
-const OWNER_FILTERS = [
-  { value: "all", label: "自分＋共有" },
-  { value: "mine", label: "自分のタスク" },
-  { value: "shared", label: "共有されたもの" },
+/**
+ * 横断ビューのタブ（BRU11-046）。
+ * 「自分に振られたもの」「自分が作ったもの」「人から共有されたもの」は目的がまるで違うので、
+ * フィルタのプルダウンではなくタブで切り替える（いまどちらを見ているかが常に見える）。
+ *
+ * タブは互いに排他ではない。
+ * 他人が作ったタスクを自分が担当していれば「自分に振られた」と「共有された」の両方に出る。
+ */
+const OWNER_TABS: { value: OwnerFilter; label: string; icon: React.ElementType }[] = [
+  { value: "all",      label: "すべて",             icon: Layers },
+  { value: "assigned", label: "自分に振られたタスク", icon: UserCheck },
+  { value: "mine",     label: "自分が作成したタスク", icon: User },
+  { value: "shared",   label: "共有されたタスク",     icon: Users },
 ];
 
 export function TaskWorkspace({
@@ -81,7 +90,9 @@ export function TaskWorkspace({
   });
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
   const [projectFilter, setProjectFilter] = useState("");   // "" = すべて / "none" = 個人 / id
-  const [assigneeFilter, setAssigneeFilter] = useState("");  // "" = すべて / "@me" / "@none" / 名前
+  // 担当者は複数選べる（空 = すべて）。"@me" = 自分 / "@none" = 未割当 / それ以外は名前。
+  // 複数選んだときは「どれかに当てはまる」（OR）で絞る
+  const [assigneeFilters, setAssigneeFilters] = useState<string[]>([]);
   // 完了しても一覧から消さない（どれだけ片付いたか分からなくなるため）。
   // 溜まって邪魔になった人だけが明示的に隠す。
   const [hideDone, setHideDone] = useState(false);
@@ -151,26 +162,60 @@ export function TaskWorkspace({
     return projects.find(p => p.id === id)?.slug ?? (projectSlug ?? "");
   }, [projects, projectSlug]);
 
-  const visible = useMemo(() => {
+  /** そのPJにアサインされている人の名前。共有ダイアログの一括公開に渡す */
+  const projectMembersOf = useCallback((id: string | null) => {
+    if (!id) return [];
+    return projects.find(p => p.id === id)?.members ?? [];
+  }, [projects]);
+
+  /**
+   * タブ（自分／共有）以外の条件だけで絞ったもの。
+   * タブの件数バッジはこれを数える＝「そのタブに切り替えたら何件見えるか」と一致する。
+   */
+  const filteredExceptTab = useMemo(() => {
     const q = search.trim().toLowerCase();
     return tasks.filter(t => {
       if (hideDone && t.status === "done") return false;
       if (!isProjectScope) {
-        if (ownerFilter === "mine" && t.ownerId !== userId) return false;
-        if (ownerFilter === "shared" && t.ownerId === userId) return false;
         if (projectFilter === "none" && t.projectId) return false;
         if (projectFilter && projectFilter !== "none" && t.projectId !== projectFilter) return false;
       }
-      if (assigneeFilter === "@me" && t.assignee !== userName) return false;
-      if (assigneeFilter === "@none" && t.assignee) return false;
-      if (assigneeFilter && !assigneeFilter.startsWith("@") && t.assignee !== assigneeFilter) return false;
+      // 複数選択のときは「どれかに当てはまれば残す」。1つも選んでいなければ絞らない
+      if (assigneeFilters.length > 0 && !assigneeFilters.some(f =>
+        f === "@me" ? t.assignee === userName
+          : f === "@none" ? !t.assignee
+            : t.assignee === f)) return false;
       if (q
         && !t.title.toLowerCase().includes(q)
         && !t.description.toLowerCase().includes(q)
         && !t.categories.some(c => c.toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [tasks, hideDone, isProjectScope, ownerFilter, projectFilter, assigneeFilter, search, userId, userName]);
+  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, search, userName]);
+
+  /**
+   * タブの条件。互いに排他ではない（担当も共有もされていれば両方に出る）。
+   *   assigned = 自分が担当者（他人が作ったものも含む）
+   *   mine     = 自分が作成した
+   *   shared   = 他の人が作成して自分に見えている（共有された／PJで見えている）
+   */
+  const matchTab = useCallback((t: Task, tab: OwnerFilter) => {
+    if (tab === "assigned") return t.assignee === userName;
+    if (tab === "mine") return t.ownerId === userId;
+    if (tab === "shared") return t.ownerId !== userId;
+    return true;
+  }, [userId, userName]);
+
+  const visible = useMemo(
+    () => (isProjectScope ? filteredExceptTab : filteredExceptTab.filter(t => matchTab(t, ownerFilter))),
+    [filteredExceptTab, isProjectScope, ownerFilter, matchTab]);
+
+  const tabCounts = useMemo(() => ({
+    all:      filteredExceptTab.length,
+    assigned: filteredExceptTab.filter(t => matchTab(t, "assigned")).length,
+    mine:     filteredExceptTab.filter(t => matchTab(t, "mine")).length,
+    shared:   filteredExceptTab.filter(t => matchTab(t, "shared")).length,
+  }), [filteredExceptTab, matchTab]);
 
   const doneCount = useMemo(() => tasks.filter(t => t.status === "done").length, [tasks]);
 
@@ -210,19 +255,39 @@ export function TaskWorkspace({
     setShareMap(prev => ({ ...prev, [taskId]: list }));
   }, []);
 
-  const handleAddShare = useCallback(async (task: Task, member: MemberOption, canEditFlag: boolean) => {
-    const ok = await addTaskShare(task.id, member.id, canEditFlag);
-    if (!ok) { toast("共有できませんでした", "error"); return; }
-    setShareMap(prev => ({
-      ...prev,
-      [task.id]: [...(prev[task.id] ?? []), { profileId: member.id, name: member.name, canEdit: canEditFlag }],
-    }));
-    // 担当に振ったときと同じお知らせ経路（ベル＋Slack）に乗せる
-    await notifyTaskShared(
-      { taskId: task.id, taskTitle: task.title, fromUserName: userName, projectSlug: projectSlugOf(task.projectId) },
-      member.name, canEditFlag,
+  /**
+   * 選んだ相手へまとめて共有を張る（1人でも配列で来る）。
+   * 1件でも失敗したら、成功したぶんだけを手元へ入れて残りは知らせる
+   * （全部やり直させるより、誰に張れたかが分かるほうが混乱しない）。
+   */
+  const handleAddShares = useCallback(async (task: Task, targets: MemberOption[], canEditFlag: boolean) => {
+    if (targets.length === 0) return;
+    const results = await Promise.all(
+      targets.map(async m => ({ m, ok: await addTaskShare(task.id, m.id, canEditFlag) })),
     );
-    toast(`${member.name}さんに共有しました`);
+    const added = results.filter(r => r.ok).map(r => r.m);
+    const failed = results.filter(r => !r.ok).map(r => r.m);
+
+    if (added.length > 0) {
+      setShareMap(prev => ({
+        ...prev,
+        [task.id]: [
+          ...(prev[task.id] ?? []),
+          ...added.map(m => ({ profileId: m.id, name: m.name, canEdit: canEditFlag })),
+        ],
+      }));
+      // 担当に振ったときと同じお知らせ経路（ベル＋Slack）に乗せる
+      const base = { taskId: task.id, taskTitle: task.title, fromUserName: userName, projectSlug: projectSlugOf(task.projectId) };
+      await Promise.all(added.map(m => notifyTaskShared(base, m.name, canEditFlag)));
+    }
+
+    if (failed.length > 0) {
+      toast(`${failed.map(m => m.name).join("、")}さんには共有できませんでした`, "error");
+    } else if (added.length === 1) {
+      toast(`${added[0].name}さんに共有しました`);
+    } else {
+      toast(`${added.length}人に共有しました`);
+    }
   }, [toast, userName, projectSlugOf]);
 
   /** 編集可 ⇄ 閲覧のみ。upsert なので同じ addTaskShare で足りる */
@@ -472,6 +537,40 @@ export function TaskWorkspace({
         </div>
       </div>
 
+      {/* ── タブ（横断ビューのみ） ──
+          自分のタスクと、人から共有されたタスクを分けて見るためのもの。
+          プロジェクト配下は「そのPJのタスク」しか無いので出さない。 */}
+      {!isProjectScope && (
+        <div style={{ display: "flex", gap: 2, borderBottom: "1px solid rgba(26,23,20,0.09)", marginBottom: 14 }}>
+          {OWNER_TABS.map(({ value, label, icon: Icon }) => {
+            const on = ownerFilter === value;
+            return (
+              <button key={value} type="button" onClick={() => setOwnerFilter(value)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "9px 14px",
+                  fontSize: 12.5, fontWeight: on ? 800 : 600, fontFamily: "inherit",
+                  border: "none", background: "transparent", cursor: "pointer",
+                  color: on ? "#059669" : "#6B6458",
+                  borderBottom: on ? "2px solid #059669" : "2px solid transparent",
+                  marginBottom: -1,
+                }}>
+                <Icon style={{ width: 13, height: 13 }} />
+                {label}
+                <span style={{
+                  fontSize: 10, fontWeight: 700, fontFamily: "var(--font-mono)",
+                  borderRadius: 99, padding: "1px 7px",
+                  color: on ? "#059669" : "#A09790",
+                  background: on ? "#ECFDF5" : "#F4F5F6",
+                  border: `1px solid ${on ? "#A7F3D0" : "rgba(26,23,20,0.06)"}`,
+                }}>
+                  {tabCounts[value]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* ── ビュー切替＋フィルタ ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <div style={{ display: "flex", gap: 3, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: 3 }}>
@@ -484,28 +583,23 @@ export function TaskWorkspace({
         </div>
 
         {!isProjectScope && (
-          <>
-            <PickerCell variant="chip" width={128} value={ownerFilter} title="表示範囲"
-              options={OWNER_FILTERS}
-              onChange={v => setOwnerFilter(v as OwnerFilter)} />
-            <PickerCell variant="chip" width={168} value={projectFilter} title="プロジェクト"
-              options={[
-                { value: "", label: "すべてのPJ" },
-                { value: "none", label: "個人タスク" },
-                ...projects.map(p => ({ value: p.id, label: p.name })),
-              ]}
-              onChange={setProjectFilter} />
-          </>
+          <PickerCell variant="chip" width={168} value={projectFilter} title="プロジェクト"
+            options={[
+              { value: "", label: "すべてのPJ" },
+              { value: "none", label: "個人タスク" },
+              ...projects.map(p => ({ value: p.id, label: p.name })),
+            ]}
+            onChange={setProjectFilter} />
         )}
 
-        <PickerCell variant="chip" width={140} value={assigneeFilter} title="担当者"
+        <MultiPickerCell width={160} values={assigneeFilters} title="担当者（複数選べます）"
+          emptyLabel="担当: すべて" showSelectAll={false}
           options={[
-            { value: "", label: "担当: すべて" },
             { value: "@me", label: "自分の担当" },
             { value: "@none", label: "未割当" },
             ...assigneeNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
           ]}
-          onChange={setAssigneeFilter} />
+          onChange={setAssigneeFilters} />
 
         {/* 標準のチェックボックスはOSごとに見た目が違うので自前で描く */}
         <button type="button" onClick={() => setHideDone(v => !v)}
@@ -602,7 +696,8 @@ export function TaskWorkspace({
           members={members}
           currentUserId={userId}
           projectName={shareTask.projectId ? projectNameOf(shareTask.projectId) : undefined}
-          onAdd={(m, canEditFlag) => handleAddShare(shareTask, m, canEditFlag)}
+          projectMemberNames={shareTask.projectId ? projectMembersOf(shareTask.projectId) : undefined}
+          onAdd={(targets, canEditFlag) => handleAddShares(shareTask, targets, canEditFlag)}
           onChangePermission={(s, canEditFlag) => handleChangeSharePermission(shareTask, s, canEditFlag)}
           onRemove={s => handleRemoveShare(shareTask, s)}
           onClose={() => setShareTargetId(null)}
