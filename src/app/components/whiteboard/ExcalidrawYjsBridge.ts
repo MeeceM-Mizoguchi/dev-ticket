@@ -5,6 +5,8 @@ import * as Y from "yjs";
 import { REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvider";
 import { orderFramesBehindChildren } from "@/app/lib/whiteboardFrames";
 import { NO_HISTORY } from "@/app/lib/whiteboardHistory";
+import { tileTables } from "@/app/lib/whiteboardTable";
+import { getEditingTextEl } from "@/app/lib/whiteboardText";
 
 // Excalidraw の型は版で import パスが揺れるため緩く扱う。
 type El = any; // ExcalidrawElement（version, versionNonce, isDeleted, index を持つ）
@@ -55,6 +57,7 @@ export class ExcalidrawYjsBridge {
   private api: ExcalidrawAPI | null = null;
   private applyingRemote = false;
   private pendingApply = false;
+  private applyRaf = 0;
   /** trueを返す間は外部からの反映を保留（ローカル編集中の割り込みを防ぐ） */
   deferCheck: (() => boolean) | null = null;
 
@@ -66,11 +69,28 @@ export class ExcalidrawYjsBridge {
     this.yElements = doc.getMap("elements");
     this.yElements.observe((_event, tr) => {
       if (tr.origin === LOCAL_ORIGIN) return; // 自分の書き込みは反映不要
-      this.applyToExcalidraw();
+      this.scheduleApply();
     });
   }
 
   setApi(api: ExcalidrawAPI) { this.api = api; }
+
+  /** 反映は1フレームに1回へ束ねる（BRU11-051）。
+   *  リモートの1操作は「相手の onChange 1回＝ブロードキャスト1通」なので、相手がドラッグしている間は
+   *  1フレームに何通も届く。届くたびに applyToExcalidraw を回すと、全要素のディープコピー＋整列＋
+   *  表のタイル＋シーン全置換を1フレームに何度もやることになり、重い盤面ではコマ落ち＝ちらつきになる。
+   *  Y.Doc は既に最新なので、束ねても失われる更新は無い（最後に1回、最新状態を反映するだけ）。 */
+  private scheduleApply() {
+    if (this.applyRaf) return;
+    if (typeof requestAnimationFrame !== "function") { this.applyToExcalidraw(); return; }
+    this.applyRaf = requestAnimationFrame(() => { this.applyRaf = 0; this.applyToExcalidraw(); });
+  }
+
+  /** 購読解除時に保留中の反映を捨てる（アンマウント後のシーン更新を防ぐ）。 */
+  destroy() {
+    if (this.applyRaf) { cancelAnimationFrame(this.applyRaf); this.applyRaf = 0; }
+    this.api = null;
+  }
 
   /** リモート反映（updateScene）由来のonChange中かどうか。自動接続/追従の二重適用を防ぐのに使う。 */
   isApplyingRemote(): boolean { return this.applyingRemote; }
@@ -111,9 +131,21 @@ export class ExcalidrawYjsBridge {
       .map((el) => clone(el))
       .sort((a, b) => {
         const ai = a.index ?? "", bi = b.index ?? "";
-        return ai < bi ? -1 : ai > bi ? 1 : 0;
+        if (ai !== bi) return ai < bi ? -1 : 1;
+        // index が同値になることがある（2人が同時に要素を作ると、Excalidraw の採番は決定的なので
+        // 別々の要素へ同じ index 文字列が振られる）。Y.Map の反復順は受信順＝人によって違うため、
+        // ここで畳むと重なり順が人ごとにズレ、双方が index を振り直して押し合う（＝ちらつく）。
+        // Excalidraw 本家の orderByFractionalIndex と同じく id で決着させ、全員同じ順にする。
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
       });
-    return orderFramesBehindChildren(sorted);
+    // 【BRU11-051】最後に表のタイル（列幅・行高・セル位置・折り返し）を**適用してから**返す。
+    // 表のレイアウトは内容から導出する派生値で Yjs へは流れない（reflowTables は版を上げないため
+    // version 比較のブリッジを通らない）。つまり Y.Map のセル座標はタイル前の生の座標で、これを
+    // そのまま反映すると「崩れた表が一瞬見えてから onChange 駆動の reflow が整え直す」＝相手が
+    // 操作するたびにチカチカする。特に列/行を追加した直後は、新しいセルがテンプレセルの座標に
+    // 重なったまま同期されるため崩れが大きい（追加した列が既存の列を覆って見えなくなる）。
+    // ここで先に整えておけば崩れた状態は一度も描画されず、派生値をローカルで作る設計も保てる。
+    return tileTables(orderFramesBehindChildren(sorted), this.api);
   }
 
   /** 壊れた要素（不正な座標/寸法）をY.Mapから削除。既存の汚染をクリーンにする。 */
@@ -156,6 +188,31 @@ export class ExcalidrawYjsBridge {
     if (this.pendingApply) { this.pendingApply = false; this.applyToExcalidraw(); }
   }
 
+  /**
+   * 文字を入力している最中の要素（テキストとそのコンテナ）だけ、ローカルの実体を残す（BRU11-051）。
+   *
+   * Excalidraw はテキスト編集中 onChange を出さない＝入力内容も、それに追従して伸びた図形の高さも、
+   * 確定するまで Yjs へ流れない。一方リモート反映はシーンを丸ごと置き換えるため、相手が何か操作する
+   * たびに「入力中の図形が入力前の高さ・文字へ一瞬戻る」＝入力しながら箱がガタつく（表のセルは
+   * tileTables が textarea の生値から組み直すので無事だが、素の図形のラベルはこれが必要）。
+   * 反映のたびにローカルを残せば、Excalidraw のエディタと取り合いにならない。
+   * ※相手がその要素を削除した場合は素直に削除を受け入れる（残して復活させない）。
+   */
+  private keepLocalEditing(elements: El[]): El[] {
+    const ta = document.querySelector(".excalidraw-wysiwyg") as HTMLElement | null;
+    if (!ta || ta.offsetParent === null) return elements;
+    const editEl: any = getEditingTextEl() ?? (this.api as any)?.getAppState?.()?.editingTextElement;
+    const textId: string | undefined = editEl?.id;
+    if (!textId) return elements;
+    const local = (this.api?.getSceneElementsIncludingDeleted?.() ?? this.api?.getSceneElements?.() ?? []) as El[];
+    const byId = new Map<string, El>(local.map((e) => [e.id, e]));
+    const text = byId.get(textId);
+    if (!text) return elements;
+    const keep = new Set<string>([textId]);
+    if (text.containerId) keep.add(text.containerId);
+    return elements.map((e) => (keep.has(e.id) && !e.isDeleted ? (byId.get(e.id) ?? e) : e));
+  }
+
   private applyToExcalidraw() {
     if (!this.api) return;
     // ローカル編集中は反映を保留（編集中の要素が外部更新で壊れる/透明化するのを防ぐ）
@@ -172,7 +229,7 @@ export class ExcalidrawYjsBridge {
     const local = (this.api.getSceneElementsIncludingDeleted?.() ?? this.api.getSceneElements?.());
     if (local?.length) this.syncFromExcalidraw(local);
 
-    const elements = this.currentElements();
+    const elements = this.keepLocalEditing(this.currentElements());
     this.applyingRemote = true;
     try {
       // 【BRU7-058】リモート反映は絶対に履歴へ載せない（captureUpdate: NEVER）。

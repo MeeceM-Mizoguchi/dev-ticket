@@ -116,11 +116,25 @@ export function freezeSelectedTable(api: any): boolean {
   const lay = tableLayout(els, tid);
   if (!lay) return false;
   const { colW, rowH } = lay;
+  let changed = false;
   const next = els.map((e) => {
     const m = cellMeta(e);
     if (!m || m.tid !== tid) return e;
-    return { ...e, customData: { ...e.customData, wbTable: { ...m, cw: Math.round(colW[m.c]) || undefined, rh: Math.round(rowH[m.r]) || undefined } } };
+    const cw = Math.round(colW[m.c]) || undefined;
+    const rh = Math.round(rowH[m.r]) || undefined;
+    if (cw === m.cw && rh === m.rh) return e;     // 変化なしはそのまま（余計な更新を出さない）
+    changed = true;
+    // 【BRU11-051】版を上げる。cw/rh は「ユーザー意図サイズの台帳」で、Yjsブリッジは version 比較で
+    // しか伝播しないため、版を上げないと他メンバーへ届かない。届かないと相手側の再レイアウトは
+    // 内容フィット幅で組み直し、さらに次のリモート反映で自分の cw/rh ごと巻き戻される
+    // （＝角ハンドルで変えた表の大きさが、共同編集中に勝手に元へ戻る）。
+    return {
+      ...e,
+      customData: { ...e.customData, wbTable: { ...m, cw, rh } },
+      version: (e.version ?? 1) + 1, versionNonce: rand(),
+    };
   });
+  if (!changed) return false;
   api.updateScene({ elements: next });
   return true;
 }
@@ -583,6 +597,8 @@ function resyncFrozenCellSizes(api: any, els: readonly any[]): boolean {
     patch.set(e.id, {
       ...e,
       customData: { ...e.customData, wbTable: { ...m, ...(cw !== undefined && { cw }), ...(rh !== undefined && { rh }) } },
+      // 台帳の直しも他メンバーへ伝える（版を上げないとYjsブリッジが伝播しない・BRU11-051）。
+      version: (e.version ?? 1) + 1, versionNonce: rand(),
     });
   }
   if (!patch.size) return false;
@@ -593,9 +609,6 @@ function resyncFrozenCellSizes(api: any, els: readonly any[]): boolean {
 export function reflowTables(api: any, skip: boolean, undoing = false): boolean {
   if (skip || _reflowing) return false;
   const els = api.getSceneElements() as any[];
-  const tids = new Set<string>();
-  for (const e of els) { const m = cellMeta(e); if (m) tids.add(m.tid); }
-  if (!tids.size) return false;
 
   // 【BRU10-073】undo/redo 直後は、復元されたセルの実寸法を「手動サイズ」の正とみなして cw/rh を直す。
   // cw/rh は履歴に載らない NEVER 更新（freezeSelectedTable）で焼き込まれるため undo では戻らず、
@@ -603,11 +616,48 @@ export function reflowTables(api: any, skip: boolean, undoing = false): boolean 
   // 対象は既に cw/rh を持つ（＝手動サイズの）セルだけ。自動フィットのセルには書かない。
   if (undoing && resyncFrozenCellSizes(api, els)) return true;
 
-  // container.id -> 束ねられたテキスト要素
-  const textByContainer = new Map<string, any>();
-  for (const e of els) { if (e.type === "text" && e.containerId) textByContainer.set(e.containerId, e); }
+  const patch = computeTableTiling(els, api);
+  if (!patch.size) return false;
+  const next = els.map((e) => patch.get(e.id) ?? e);
+  _reflowing = true;
+  try { api.updateScene({ elements: next }); } finally { _reflowing = false; }
+  return true;
+}
 
+/**
+ * 表のタイル結果を**要素配列へ先に適用して返す**（副作用なし・BRU11-051）。
+ *
+ * 表のレイアウト（列幅・行高・セル位置・折り返し済みテキスト）は内容から毎回導出する派生値で、
+ * Yjs へは伝播しない（reflowTables の更新は版を上げないため、ブリッジの version 比較を通らない）。
+ * つまり **Y.Map に入っているセル座標は「タイルされる前の生の座標」** で、リモート反映は毎回その
+ * 生の座標でシーンを丸ごと置き換える。従来はその直後の onChange 駆動 reflow が整え直していたため、
+ * 相手が何か操作するたびに「崩れた表 → 整った表」が一瞬見える＝チカチカした。
+ * 特に列/行を追加した直後は、新しいセルがテンプレセルの座標に重なったまま同期されるので、
+ * 追加した列が消えて見えるほど大きく崩れる。
+ *
+ * → 反映する配列の時点でタイル済みにしてしまえば、崩れた状態は一度も描画されない。
+ *   派生値は各自のローカルで作る（＝Yjs へ流さない）という現在の設計のまま、ちらつきだけが消える。
+ *
+ * @param api 編集中セルの特定にだけ使う（省略可＝「誰も編集していない」前提で計算する）
+ */
+export function tileTables(els: readonly any[], api?: any): any[] {
+  const patch = computeTableTiling(els, api);
+  if (!patch.size) return els as any[];
+  return els.map((e) => patch.get(e.id) ?? e);
+}
+
+/** 表のタイル計算（id -> 差し替え後要素）。updateScene はせず、計算結果だけを返す。 */
+function computeTableTiling(els: readonly any[], api?: any): Map<string, any> {
   const patch = new Map<string, any>(); // id -> 差し替え後要素
+  const tids = new Set<string>();
+  for (const e of els) { const m = cellMeta(e); if (m) tids.add(m.tid); }
+  if (!tids.size) return patch;
+
+  // container.id -> 束ねられたテキスト要素
+  // 削除済み(tombstone)は必ず除く。api.getSceneElements() は tombstone を含まないが、Yjs 反映前の
+  // 配列（ブリッジ経由）は含むため、除かないと消したはずのラベルで行高を測って両者の計算が食い違う。
+  const textByContainer = new Map<string, any>();
+  for (const e of els) { if (e.type === "text" && e.containerId && !e.isDeleted) textByContainer.set(e.containerId, e); }
 
   // 編集中セルは Excalidraw の要素(originalText/cell.height)が「確定するまで更新されない(stale)」ため、
   // 複数行→一行に減らしても要素上は多行のまま＝行だけ高いまま空白が残る。実際に入力中の生テキストは
@@ -618,7 +668,7 @@ export function reflowTables(api: any, skip: boolean, undoing = false): boolean 
   // いるセル → (2) 編集中テキスト要素の containerId → (3) 最後の手段として textarea 上端の座標判定。
   let editingId: string | null = null;
   let liveText: string | null = null;
-  const st0 = api.getAppState();
+  const st0 = api?.getAppState?.() ?? null;
   const ta = document.querySelector(".excalidraw-wysiwyg") as HTMLTextAreaElement | null;
   if (ta && ta.offsetParent !== null) {
     liveText = ta.value;
@@ -632,7 +682,7 @@ export function reflowTables(api: any, skip: boolean, undoing = false): boolean 
       }
       if (!editingId) { const te = els.find((e) => e.id === editTextId); editingId = te?.containerId ?? null; }
     }
-    if (!editingId) {
+    if (!editingId && st0) {
       // 最後の手段: textarea の矩形を scene 変換し、水平中心が列に入り、垂直方向の重なりが最大のセルを選ぶ
       // （textarea が縮まず縦にずれても、重なり最大＝編集中セルを外さない）。
       const r = ta.getBoundingClientRect();
@@ -769,9 +819,5 @@ export function reflowTables(api: any, skip: boolean, undoing = false): boolean 
     }
   }
 
-  if (!patch.size) return false;
-  const next = els.map((e) => patch.get(e.id) ?? e);
-  _reflowing = true;
-  try { api.updateScene({ elements: next }); } finally { _reflowing = false; }
-  return true;
+  return patch;
 }
