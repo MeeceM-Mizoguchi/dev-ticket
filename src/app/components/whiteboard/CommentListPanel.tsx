@@ -6,16 +6,21 @@ import { useMemo, useState } from "react";
 import { X, CheckCircle2, MessageSquare } from "lucide-react";
 import { formatCommentTime, initialOf, type WbComment, type WbCommentReply } from "@/app/lib/whiteboardComments";
 import { wbUserColor } from "@/app/lib/whiteboardService";
+import { MentionText } from "./MentionText";
 
 interface Props {
   comments: WbComment[];
   replies: Record<string, WbCommentReply[]>;
   activeId: string | null;
+  /** 本文中のメンションを色付きで出すためのメンバー名 */
+  members: string[];
+  /** 自分宛てのメンションだけ色を変える */
+  selfName?: string;
   onJump: (commentId: string) => void;
   onClose: () => void;
 }
 
-export function CommentListPanel({ comments, replies, activeId, onJump, onClose }: Props) {
+export function CommentListPanel({ comments, replies, activeId, members, selfName, onJump, onClose }: Props) {
   const [tab, setTab] = useState<"open" | "resolved">("open");
 
   // 新しいものを上に（一覧は「最近の話題から追う」ほうが自然）
@@ -98,7 +103,9 @@ export function CommentListPanel({ comments, replies, activeId, onJump, onClose 
                   fontSize: 11, lineHeight: 1.6, color: "#6B6458", marginTop: 2,
                   display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
                   wordBreak: "break-word",
-                }}>{c.text}</div>
+                }}>
+                  <MentionText text={c.text} members={members} selfName={selfName} />
+                </div>
                 {count > 0 && (
                   <div style={{ fontSize: 10, color: "#0284C7", marginTop: 2, fontWeight: 600 }}>返信 {count} 件</div>
                 )}

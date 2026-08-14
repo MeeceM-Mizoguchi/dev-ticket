@@ -56,6 +56,7 @@ import {
 } from "@/app/lib/whiteboardComments";
 import { notifyWhiteboardMentions, notifyWhiteboardReply } from "@/app/lib/whiteboardCommentNotify";
 import { CommentListPanel } from "./CommentListPanel";
+import { MentionBackdrop, MentionText } from "./MentionText";
 import type { WbUser } from "@/app/hooks/useWhiteboardSync";
 
 interface Props {
@@ -224,6 +225,12 @@ const textareaStyle: React.CSSProperties = {
   outline: "none", resize: "none", fontFamily: "inherit", whiteSpace: "pre-wrap",
 };
 
+// 下地（MentionBackdrop）は textarea と同じ文字組みにしないとズレる。
+// 差し替えるのは「重ね方」だけ＝位置・枠の見え方・折り返しのみで、余白と字面は textareaStyle のまま。
+const BACKDROP_OVERRIDE: React.CSSProperties = {
+  position: "absolute", inset: 0, borderColor: "transparent", overflowWrap: "break-word",
+};
+
 const primaryBtn: React.CSSProperties = {
   padding: "5px 12px", fontSize: 11, fontWeight: 700, color: "#fff", background: "#059669",
   border: "none", borderRadius: 7, cursor: "pointer", fontFamily: "inherit",
@@ -238,11 +245,13 @@ const ghostBtn: React.CSSProperties = {
  * 「@」を打つとメンバー候補を出す（↑↓で選択、Enter/Tab で確定）。素の textarea なので
  * リッチエディタのメンション拡張は使えず、ここで最小限を自前で持つ。
  */
-function Composer({ value, onChange, onSubmit, onCancel, placeholder, submitLabel, autoFocus, minRows = 2, members }: {
+function Composer({ value, onChange, onSubmit, onCancel, placeholder, submitLabel, autoFocus, minRows = 2, members, selfName }: {
   value: string; onChange: (v: string) => void; onSubmit: () => void; onCancel: () => void;
   placeholder: string; submitLabel: string; autoFocus?: boolean; minRows?: number; members: string[];
+  selfName?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const [sug, setSug] = useState<{ items: string[]; start: number; index: number } | null>(null);
 
   useEffect(() => { if (autoFocus) requestAnimationFrame(() => ref.current?.focus()); }, [autoFocus]);
@@ -278,30 +287,40 @@ function Composer({ value, onChange, onSubmit, onCancel, placeholder, submitLabe
 
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 6 }}>
-      <textarea
-        ref={ref}
-        value={value}
-        rows={minRows}
-        placeholder={placeholder}
-        onChange={(e) => { onChange(e.target.value); refresh(e.target.value, e.target.selectionStart ?? e.target.value.length); }}
-        onClick={(e) => refresh(value, e.currentTarget.selectionStart ?? value.length)}
-        onBlur={() => setTimeout(() => setSug(null), 120)}
-        onKeyDown={(e) => {
-          const composing = e.nativeEvent.isComposing;
-          if (sug && !composing) {
-            if (e.key === "ArrowDown") { e.preventDefault(); setSug({ ...sug, index: (sug.index + 1) % sug.items.length }); return; }
-            if (e.key === "ArrowUp") { e.preventDefault(); setSug({ ...sug, index: (sug.index - 1 + sug.items.length) % sug.items.length }); return; }
-            if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(sug.items[sug.index]); return; }
-          }
-          // Enter は改行（仕様）。保存は Ctrl/⌘+Enter とボタン。
-          // IME変換中の Enter を拾わないよう isComposing を必ず見る。
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !composing) {
-            e.preventDefault();
-            onSubmit();
-          }
-        }}
-        style={textareaStyle}
-      />
+      {/* 入力中もメンションが成立しているか分かるように、textarea の背後に色だけを敷く */}
+      <div style={{ position: "relative" }}>
+        <MentionBackdrop
+          innerRef={backdropRef} text={value} members={members} selfName={selfName}
+          style={{ ...textareaStyle, ...BACKDROP_OVERRIDE }}
+        />
+        <textarea
+          ref={ref}
+          value={value}
+          rows={minRows}
+          placeholder={placeholder}
+          onChange={(e) => { onChange(e.target.value); refresh(e.target.value, e.target.selectionStart ?? e.target.value.length); }}
+          onClick={(e) => refresh(value, e.currentTarget.selectionStart ?? value.length)}
+          onBlur={() => setTimeout(() => setSug(null), 120)}
+          onScroll={(e) => { if (backdropRef.current) backdropRef.current.scrollTop = e.currentTarget.scrollTop; }}
+          onKeyDown={(e) => {
+            const composing = e.nativeEvent.isComposing;
+            if (sug && !composing) {
+              if (e.key === "ArrowDown") { e.preventDefault(); setSug({ ...sug, index: (sug.index + 1) % sug.items.length }); return; }
+              if (e.key === "ArrowUp") { e.preventDefault(); setSug({ ...sug, index: (sug.index - 1 + sug.items.length) % sug.items.length }); return; }
+              if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(sug.items[sug.index]); return; }
+            }
+            // Enter は改行（仕様）。保存は Ctrl/⌘+Enter とボタン。
+            // IME変換中の Enter を拾わないよう isComposing を必ず見る。
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !composing) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          // 背景は下地（MentionBackdrop）に描かせるので透かす。display:block は
+          // inline 要素のベースライン隙間で下地が数px はみ出すのを防ぐため。
+          style={{ ...textareaStyle, position: "relative", background: "transparent", display: "block" }}
+        />
+      </div>
       {sug && (
         <div style={{
           position: "absolute", left: 0, top: "100%", marginTop: 2, width: "100%", zIndex: 6,
@@ -1034,10 +1053,12 @@ export function CommentLayer({
         {editingThis ? (
           <Composer
             value={editText} onChange={setEditText} onSubmit={() => saveEdit(c)} onCancel={() => setEditing(null)}
-            placeholder="コメントを入力…" submitLabel="保存" autoFocus members={members}
+            placeholder="コメントを入力…" submitLabel="保存" autoFocus members={members} selfName={user.name}
           />
         ) : (
-          <div style={{ fontSize: 12, lineHeight: 1.7, color: "#1A1714", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{c.text}</div>
+          <div style={{ fontSize: 12, lineHeight: 1.7, color: "#1A1714", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            <MentionText text={c.text} members={members} selfName={user.name} />
+          </div>
         )}
 
         {/* 返信アイコン ／ 返信を表示 */}
@@ -1088,10 +1109,12 @@ export function CommentLayer({
                     {editingReply ? (
                       <Composer
                         value={editText} onChange={setEditText} onSubmit={() => saveEdit(c)} onCancel={() => setEditing(null)}
-                        placeholder="返信を入力…" submitLabel="保存" autoFocus minRows={2} members={members}
+                        placeholder="返信を入力…" submitLabel="保存" autoFocus minRows={2} members={members} selfName={user.name}
                       />
                     ) : (
-                      <div style={{ fontSize: 12, lineHeight: 1.7, color: "#1A1714", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{r.text}</div>
+                      <div style={{ fontSize: 12, lineHeight: 1.7, color: "#1A1714", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        <MentionText text={r.text} members={members} selfName={user.name} />
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1107,7 +1130,7 @@ export function CommentLayer({
               value={replyText} onChange={setReplyText}
               onSubmit={() => saveReply(c)}
               onCancel={() => { setReplyOpen(false); setReplyText(""); }}
-              placeholder="返信を入力…（Enterで改行 / @でメンション）" submitLabel="返信" autoFocus members={members}
+              placeholder="返信を入力…（Enterで改行 / @でメンション）" submitLabel="返信" autoFocus members={members} selfName={user.name}
             />
           </div>
         )}
@@ -1204,6 +1227,7 @@ export function CommentLayer({
                 autoFocus
                 minRows={3}
                 members={members}
+                selfName={user.name}
               />
             </div>
           </div>
@@ -1216,6 +1240,8 @@ export function CommentLayer({
             comments={comments}
             replies={replies}
             activeId={activeId}
+            members={members}
+            selfName={user.name}
             onJump={(id) => { focusComment(id); }}
             onClose={() => setListOpen(false)}
           />
