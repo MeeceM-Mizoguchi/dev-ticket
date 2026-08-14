@@ -25,6 +25,15 @@
 // ドラッグ中の追従も同じ土俵に乗せる＝data-x/data-y を書き換えるだけにして、
 // Yjs へは指を離した1回だけ書く（途中経過を配らない・再レンダーを起こさない）。
 //
+// 【重ね順】ピンは盤面の中身なので Excalidraw 標準UI（左のプロパティパネル・ツールバー、
+// layer-ui = z:6）の“下”に敷く（BRU11-049）。上に置くと、図形を選んだ時に出る左パネルへ
+// ピンが被って読めなくなる。逆に吹き出し・入力欄・コメント一覧はユーザーが今まさに読み書き
+// している最中のものなので標準UIより上（PANEL_Z）。そこで層を2枚に分け、
+//   ピン層(PIN_Z=5) … ピン本体と下書きの仮ピン。パネルの下へ自然に潜る（クリックも届かない）
+//   パネル層(PANEL_Z) … 開いている吹き出し・下書きの入力欄・コメント一覧
+// とする。位置合わせ（data-x/data-y → transform）は両層まとめて1つの rAF が面倒を見るので、
+// 外側のラッパーは z-index を持たない（＝重ね文脈を作らず、子の z-index をそのまま効かせる）。
+//
 // 【図形と一緒に動かす仕組み】ピンは Excalidraw の要素ではないので、Excalidraw の選択にも
 // ドラッグにも本来は乗らない。かといって appState の内部フラグ（selectionElement など）を
 // 当てにすると版によって拾えないので、キャンバスを押してから離すまでを自前で1操作として記録し、
@@ -101,6 +110,8 @@ const DRAG_SLOP = 3;           // これ未満の動きはクリック（＝吹�
 const SELECT_ACCENT = "#6965db"; // Excalidraw の選択色に合わせる
 const KEY_MOVE_MS = 400;       // 矢印キーでの移動を「ひと続き」とみなす猶予
 const HIT_PAD = 8;             // 選択枠の掴み判定に足す余白(px・画面)
+const PIN_Z = 5;               // ピン層: Excalidraw標準UI(layer-ui=6)より下＝パネルの下に潜る
+const PANEL_Z = 22;            // パネル層: 吹き出し・入力欄・一覧は標準UIより上
 
 /** 選択中のIDが実質同じか（毎フレームの setState で無駄な再レンダーを起こさないため） */
 function sameIds(a: string[], b: string[]): boolean {
@@ -458,10 +469,11 @@ export function CommentLayer({
     const layer = layerRef.current;
     if (!layer) return;
     positions.forEach((p, id) => {
-      const node = layer.querySelector<HTMLElement>(`[data-wbc-anchor][data-id="${CSS.escape(id)}"]`);
-      if (!node) return;
-      node.dataset.x = String(p.x);
-      node.dataset.y = String(p.y);
+      // 同じIDの錨はピン層とパネル層に1つずつ在りうる（吹き出しを開いたまま動かす場合）
+      layer.querySelectorAll<HTMLElement>(`[data-wbc-anchor][data-id="${CSS.escape(id)}"]`).forEach((node) => {
+        node.dataset.x = String(p.x);
+        node.dataset.y = String(p.y);
+      });
     });
   }, []);
 
@@ -1138,10 +1150,15 @@ export function CommentLayer({
     );
   };
 
+  const activeComment = activeId ? comments.find((c) => c.id === activeId) ?? null : null;
+
   return (
     <>
       <style>{COMMENT_MODE_CSS}</style>
-      <div ref={layerRef} style={{ position: "absolute", inset: 0, zIndex: 22, pointerEvents: "none", overflow: "hidden" }}>
+      {/* ラッパーは z-index を持たない（重ね文脈を作らないので、下の2層がそれぞれの高さで効く） */}
+      <div ref={layerRef} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+      {/* ── ピン層（Excalidraw標準UIの下） ─────────────────── */}
+      <div style={{ position: "absolute", inset: 0, zIndex: PIN_Z, pointerEvents: "none", overflow: "hidden" }}>
         {comments.map((c) => {
           const list = replies[c.id] ?? [];
           const active = activeId === c.id;
@@ -1186,12 +1203,11 @@ export function CommentLayer({
                   }}>{list.length}</span>
                 )}
               </button>
-              {active && renderTooltip(c)}
             </div>
           );
         })}
 
-        {/* 新規コメントの下書き（仮ピン＋入力欄） */}
+        {/* 新規コメントの下書き（仮ピン。入力欄はパネル層） */}
         {draft && (
           <div data-wbc-anchor data-x={draft.x} data-y={draft.y}
             style={{ position: "absolute", left: 0, top: 0, width: 0, height: 0 }}>
@@ -1203,6 +1219,24 @@ export function CommentLayer({
             }}>
               <MessageSquare style={{ width: 13, height: 13 }} />
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── パネル層（Excalidraw標準UIの上） ───────────────── */}
+      <div style={{ position: "absolute", inset: 0, zIndex: PANEL_Z, pointerEvents: "none", overflow: "hidden" }}>
+        {/* 開いている吹き出し。ピンと同じ錨（data-id）を持たせて、図形と一緒に動く時も追従させる */}
+        {activeComment && (
+          <div data-wbc-anchor data-id={activeComment.id} data-x={activeComment.x} data-y={activeComment.y}
+            style={{ position: "absolute", left: 0, top: 0, width: 0, height: 0 }}>
+            {renderTooltip(activeComment)}
+          </div>
+        )}
+
+        {/* 新規コメントの入力欄（仮ピンはピン層） */}
+        {draft && (
+          <div data-wbc-anchor data-x={draft.x} data-y={draft.y}
+            style={{ position: "absolute", left: 0, top: 0, width: 0, height: 0 }}>
             <div
               data-wbc-ui data-wbc-panel
               onWheel={(e) => e.stopPropagation()}
@@ -1246,6 +1280,7 @@ export function CommentLayer({
             onClose={() => setListOpen(false)}
           />
         )}
+      </div>
       </div>
     </>
   );
