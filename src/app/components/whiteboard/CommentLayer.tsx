@@ -9,6 +9,9 @@
 //     → 固定表示は「別の場所をクリック」か「Esc」で閉じる
 //   本文中の「@メンバー名」はメンションとして通知＋Slack通知を飛ばす
 //   「解決」にしたコメントはピンが消え、コメント一覧ポップアップから見返せる
+//   ピンをドラッグ → その場所へ動かす
+//     ・図形と一緒に囲んで選択でき、図形をドラッグすると選択中のピンも同じだけ動く
+//     ・Shift+クリックで選択の付け外し。選択中のピンを掴めば選択ぶん全部がまとめて動く
 //
 // 【権限】コメントは閲覧のみのメンバーも投稿・返信できる（図形の編集権限とは別物として扱う）。
 // 自分の投稿の編集・削除だけが本人限定。解決の切り替えは誰でもできる（Figma と同じ）。
@@ -19,6 +22,20 @@
 //   ・React は「どのピンが在るか」だけを描く（位置は data-x/data-y に持たせる）
 //   ・rAF ループが transform だけを書き換える（再レンダーなし）
 // という分担にしている。他のオーバーレイ（FrameHighlightLayer 等）と同じ考え方。
+// ドラッグ中の追従も同じ土俵に乗せる＝data-x/data-y を書き換えるだけにして、
+// Yjs へは指を離した1回だけ書く（途中経過を配らない・再レンダーを起こさない）。
+//
+// 【図形と一緒に動かす仕組み】ピンは Excalidraw の要素ではないので、Excalidraw の選択にも
+// ドラッグにも本来は乗らない。かといって appState の内部フラグ（selectionElement など）を
+// 当てにすると版によって拾えないので、キャンバスを押してから離すまでを自前で1操作として記録し、
+// **その操作が何だったのかを結果から見分ける**方式にしている。
+//   押した時 … 押した点・Shift・スクロール位置・図形の配置の指紋を控える。
+//              押した点が「選択中の図形の外接枠」の中なら＝選択ごと掴んだ（下の追従へ）。
+//   動かす間 … 上のどれでもなければ囲み選択とみなし、押した点↔今の点の矩形に入るピンを選ぶ。
+//              スクロールが動いていればパン、図形の指紋が変わっていれば図形のドラッグなので対象外。
+//   離した時 … ほとんど動いていなければただのクリック＝ピンの選択を解く。
+// 追従は「掴んだ瞬間の図形（リーダー）が動いた量」をそのままピンへ足すだけ。図形側には
+// 一切手を入れない（矢印の結合・フレームの所属・ラベルの追従は Excalidraw 本体の担当）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { viewportCoordsToSceneCoords, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import {
@@ -34,7 +51,7 @@ import { isActiveWbInstance } from "@/app/lib/whiteboardInstance";
 import { loadProjectMemberNames, wbUserColor } from "@/app/lib/whiteboardService";
 import {
   addComment, addReply, deleteComment, deleteReply, formatCommentTime, initialOf, mentionQueryAt,
-  observeComments, readComments, readReplies, setCommentResolved, updateComment, updateReply,
+  moveComments, observeComments, readComments, readReplies, setCommentResolved, updateComment, updateReply,
   type WbComment, type WbCommentReply,
 } from "@/app/lib/whiteboardComments";
 import { notifyWhiteboardMentions, notifyWhiteboardReply } from "@/app/lib/whiteboardCommentNotify";
@@ -78,6 +95,16 @@ const HOVER_CLOSE_MS = 220;    // ピン⇔吹き出し間をマウスが渡る�
 const FOCUS_RETRY_MS = 200;    // リンク着地: 対象が現れるまでの再探索間隔
 const FOCUS_RETRY_MAX = 30;    // 同 最大回数（≒6秒。Yjs の後追い差分を待つ）
 const MENTION_MAX = 6;         // メンション候補の表示件数
+const PIN_SIZE = 26;           // ピンの一辺(px・画面)。位置は左下＝コメント座標
+const DRAG_SLOP = 3;           // これ未満の動きはクリック（＝吹き出しを開く）として扱う
+const SELECT_ACCENT = "#6965db"; // Excalidraw の選択色に合わせる
+const KEY_MOVE_MS = 400;       // 矢印キーでの移動を「ひと続き」とみなす猶予
+const HIT_PAD = 8;             // 選択枠の掴み判定に足す余白(px・画面)
+
+/** 選択中のIDが実質同じか（毎フレームの setState で無駄な再レンダーを起こさないため） */
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
 
 // コメントモード中のカーソル（ピン）。Excalidraw は canvas に style.cursor を直接
 // 書き込むため、クラス側は !important でないと勝てない。
@@ -325,6 +352,8 @@ export function CommentLayer({
   const [replyText, setReplyText] = useState("");
   const [editing, setEditing] = useState<{ kind: "comment" | "reply"; id: string } | null>(null);
   const [editText, setEditText] = useState("");
+  // 図形と一緒に動かすために選択されているピン（Excalidraw の選択とは別に自前で持つ）
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const layerRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -335,6 +364,24 @@ export function CommentLayer({
   draftRef.current = draft;
   const listOpenRef = useRef(false);
   listOpenRef.current = listOpen;
+  const commentsRef = useRef<WbComment[]>([]);
+  commentsRef.current = comments;
+  const selectedRef = useRef<string[]>([]);
+  selectedRef.current = selectedIds;
+
+  // ドラッグ関連（すべて ref。毎フレームの再レンダーを起こさないため）
+  type Pos = Map<string, { x: number; y: number }>;
+  const pinDrag = useRef<{ pointerId: number; cx: number; cy: number; base: Pos; moved: boolean } | null>(null);
+  const dragPos = useRef<Pos | null>(null);      // ドラッグ中の暫定位置（指を離した時に Yjs へ書く）
+  const suppressClick = useRef(false);           // 動かした直後の click で吹き出しを開かない
+  // キャンバスを押してから離すまでの1操作ぶんの記録（囲み選択かどうかをここで見分ける）
+  const gesture = useRef<{
+    cx: number; cy: number; sx: number; sy: number; shift: boolean;
+    scrollX: number; scrollY: number; sig: string; grabbed: boolean;
+  } | null>(null);
+  // 図形の移動をピンへ写すためのセッション（key=矢印キー起点。時間切れで確定する）
+  const followRef = useRef<{ id: string; x: number; y: number; base: Pos; last: Pos | null; key: boolean } | null>(null);
+  const keyMoveUntil = useRef(0);
 
   // ── Yjs 購読 ───────────────────────────────────────────
   // docRef.current は親（useWhiteboardSync）の effect で入る。万一まだ空でも
@@ -385,6 +432,232 @@ export function CommentLayer({
     setHoverId(id);
     setStickyId(id);
   }, [cancelClose]);
+
+  // ── ピンの移動（ドラッグ / 図形への追従） ─────────────────
+  // 位置は data-x/data-y に書くだけ。実際の translate は下の rAF ループが当てる。
+  const paintPositions = useCallback((positions: Pos) => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    positions.forEach((p, id) => {
+      const node = layer.querySelector<HTMLElement>(`[data-wbc-anchor][data-id="${CSS.escape(id)}"]`);
+      if (!node) return;
+      node.dataset.x = String(p.x);
+      node.dataset.y = String(p.y);
+    });
+  }, []);
+
+  // 動かした結果を Yjs へ書く（＝共有・保存される）。ドラッグ確定時に1回だけ。
+  const commitPositions = useCallback((positions: Pos | null) => {
+    const doc = docRef.current;
+    if (!doc || !positions?.size) return;
+    moveComments(doc, Array.from(positions, ([id, p]) => ({ id, x: p.x, y: p.y })));
+  }, [docRef]);
+
+  // 指定IDのいまの位置を控える（ドラッグの起点）
+  const basePositions = useCallback((ids: string[]): Pos => {
+    const base: Pos = new Map();
+    for (const id of ids) {
+      const c = commentsRef.current.find((x) => x.id === id);
+      if (c) base.set(id, { x: c.x, y: c.y });
+    }
+    return base;
+  }, []);
+
+  const zoomOf = useCallback(() => {
+    try { return api.getAppState().zoom?.value ?? 1; } catch { return 1; }
+  }, [api]);
+
+  // 画面(client)座標 → scene座標（他のオーバーレイと同じ式）
+  const toScene = useCallback((cx: number, cy: number) => {
+    const st = api.getAppState();
+    const zoom = st.zoom?.value ?? 1;
+    return { x: (cx - (st.offsetLeft ?? 0)) / zoom - st.scrollX, y: (cy - (st.offsetTop ?? 0)) / zoom - st.scrollY };
+  }, [api]);
+
+  // 図形の姿の指紋。押した時と今とで違えば「図形が動いた／伸びた／回った＝囲み選択ではない」と分かる。
+  // 位置だけだと、右下ハンドルでのリサイズや回転（x,y が動かない）を見逃すので寸法と角度も混ぜる。
+  const sceneSignature = useCallback((): string => {
+    try {
+      const els = api.getSceneElements() as any[];
+      let a = 0, b = 0;
+      for (const e of els) { a += e.x + (e.width ?? 0); b += e.y + (e.height ?? 0) + (e.angle ?? 0); }
+      return `${els.length}:${a.toFixed(2)}:${b.toFixed(2)}`;
+    } catch { return ""; }
+  }, [api]);
+
+  /** 選択中の図形をまとめた外接枠（Excalidraw はこの中を掴むと選択ごと動かせる） */
+  const selectedElementsBox = useCallback((st: any) => {
+    const sel = st.selectedElementIds ?? {};
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    try {
+      for (const el of api.getSceneElements() as any[]) {
+        if (!sel[el.id]) continue;
+        x1 = Math.min(x1, el.x); y1 = Math.min(y1, el.y);
+        x2 = Math.max(x2, el.x + (el.width ?? 0)); y2 = Math.max(y2, el.y + (el.height ?? 0));
+      }
+    } catch { return null; }
+    return Number.isFinite(x1) ? { x1, y1, x2, y2 } : null;
+  }, [api]);
+
+  /** 矩形（scene座標）の中に根元が入っているピン */
+  const pinsInRect = useCallback((x1: number, y1: number, x2: number, y2: number): string[] => (
+    commentsRef.current
+      .filter((c) => !c.resolved && c.x >= Math.min(x1, x2) && c.x <= Math.max(x1, x2)
+        && c.y >= Math.min(y1, y2) && c.y <= Math.max(y1, y2))
+      .map((c) => c.id)
+  ), []);
+
+  const applySelection = useCallback((ids: string[], add: boolean) => {
+    setSelectedIds((prev) => {
+      const next = add ? Array.from(new Set([...prev, ...ids])) : ids;
+      return sameIds(prev, next) ? prev : next;
+    });
+  }, []);
+
+  /** 選択中の図形の移動をピンへ写すセッションを始める */
+  const startFollow = useCallback((st: any, byKey: boolean) => {
+    if (!selectedRef.current.length) return;
+    // 矢印キーのセッションが残っていたら、先に確定してから掴み直す（移動量を取りこぼさない）
+    if (followRef.current?.key) { const f = followRef.current; followRef.current = null; commitPositions(f.last); }
+    const sel = st.selectedElementIds ?? {};
+    let leader: any = null;
+    try { leader = (api.getSceneElements() as any[]).find((e) => sel[e.id]); } catch { /* noop */ }
+    if (!leader) return;
+    followRef.current = { id: leader.id, x: leader.x, y: leader.y, base: basePositions(selectedRef.current), last: null, key: byKey };
+  }, [api, basePositions, commitPositions]);
+
+  const endFollow = useCallback(() => {
+    const f = followRef.current;
+    if (!f) return;
+    followRef.current = null;
+    commitPositions(f.last);
+  }, [commitPositions]);
+
+  // ピンを掴む。選択済みのピンを掴んだ時は選択ぶんまとめて動かす。
+  const onPinPointerDown = (e: React.PointerEvent, c: WbComment) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    if (e.shiftKey) {
+      // Shift+クリックは選択の付け外しだけ（吹き出しは開かない・動かさない）
+      suppressClick.current = true;
+      setSelectedIds((prev) => (prev.includes(c.id) ? prev.filter((id) => id !== c.id) : [...prev, c.id]));
+      return;
+    }
+    suppressClick.current = false; // 前回のドラッグの取りこぼしを引きずらない
+    const sel = selectedRef.current;
+    const ids = sel.includes(c.id) ? sel : [c.id];
+    if (!sel.includes(c.id)) setSelectedIds([c.id]);
+    pinDrag.current = { pointerId: e.pointerId, cx: e.clientX, cy: e.clientY, base: basePositions(ids), moved: false };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  // キャンバスを押した時点で「選択を掴んだのか、選び直し（＝これから囲む）なのか」を決める。
+  // 選択中の図形の外接枠の中から始まったドラッグは選択ごと動かす操作なのでピンの選択を保ち、
+  // そのまま図形の移動をピンへ写す。それ以外は選択を解いて、囲み選択の記録を始める。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement | null)?.tagName !== "CANVAS") return; // ツールバー・自前パネル・ピンは対象外
+      gesture.current = null;
+      if (commentMode) return;  // コメントを置いている最中は選択の話ではない
+      let st: any;
+      try { st = api.getAppState(); } catch { return; }
+      if (st.activeTool?.type !== "selection") return; // 図形を描いている最中など
+      const p = toScene(e.clientX, e.clientY);
+      const pad = HIT_PAD / (st.zoom?.value ?? 1);
+      const box = selectedRef.current.length ? selectedElementsBox(st) : null;
+      const grabbed = !!box && !e.shiftKey
+        && p.x >= box.x1 - pad && p.x <= box.x2 + pad && p.y >= box.y1 - pad && p.y <= box.y2 + pad;
+      gesture.current = {
+        cx: e.clientX, cy: e.clientY, sx: p.x, sy: p.y, shift: e.shiftKey,
+        scrollX: st.scrollX, scrollY: st.scrollY, sig: sceneSignature(), grabbed,
+      };
+      if (grabbed) startFollow(st, false);           // 選択ごと動かす
+      else if (!e.shiftKey) setSelectedIds((prev) => (prev.length ? [] : prev)); // 選び直し
+    };
+    el.addEventListener("pointerdown", onDown, true);
+    return () => el.removeEventListener("pointerdown", onDown, true);
+  }, [api, containerRef, commentMode, sceneSignature, selectedElementsBox, startFollow, toScene]);
+
+  // ピンのドラッグ／囲み選択の追跡。囲んでいる間は「入るピン」を随時光らせる。
+  useEffect(() => {
+    const band = (e: PointerEvent, commit: boolean) => {
+      const g = gesture.current;
+      if (!g || g.grabbed) return;
+      if (Math.hypot(e.clientX - g.cx, e.clientY - g.cy) < DRAG_SLOP) {
+        // 動いていない＝ただのクリック。離した時点で選択を解く（Shift中は保つ）
+        if (commit && !g.shift) setSelectedIds((prev) => (prev.length ? [] : prev));
+        return;
+      }
+      let st: any;
+      try { st = api.getAppState(); } catch { return; }
+      // パン（画面が動いた）／図形が動いた・増えた＝囲み選択ではない
+      if (st.scrollX !== g.scrollX || st.scrollY !== g.scrollY) return;
+      if (sceneSignature() !== g.sig) return;
+      const p = toScene(e.clientX, e.clientY);
+      applySelection(pinsInRect(g.sx, g.sy, p.x, p.y), g.shift);
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const d = pinDrag.current;
+      if (d && e.pointerId === d.pointerId) {
+        const dx = e.clientX - d.cx;
+        const dy = e.clientY - d.cy;
+        if (!d.moved) {
+          if (Math.hypot(dx, dy) < DRAG_SLOP) return;
+          d.moved = true;
+          closeTooltip(); // 動かしている間は吹き出しが邪魔になる
+        }
+        const zoom = zoomOf();
+        const next: Pos = new Map();
+        d.base.forEach((p, id) => next.set(id, { x: p.x + dx / zoom, y: p.y + dy / zoom }));
+        dragPos.current = next;
+        paintPositions(next);
+        return;
+      }
+      band(e, false);
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const d = pinDrag.current;
+      if (d && e.pointerId === d.pointerId) {
+        pinDrag.current = null;
+        if (d.moved) {
+          suppressClick.current = true;
+          commitPositions(dragPos.current);
+          dragPos.current = null;
+        }
+      }
+      band(e, true);
+      gesture.current = null;
+      if (!followRef.current?.key) endFollow(); // 図形と一緒に動かした結果を確定
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [api, applySelection, closeTooltip, commitPositions, endFollow, paintPositions, pinsInRect, sceneSignature, toScene, zoomOf]);
+
+  // 矢印キーでの移動にも追従させる（Excalidraw が図形を動かした分をそのまま写す）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.key.startsWith("Arrow") || !selectedRef.current.length) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      keyMoveUntil.current = Date.now() + KEY_MOVE_MS;
+      if (followRef.current) return;
+      try { startFollow(api.getAppState(), true); } catch { /* noop */ }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [api, startFollow]);
 
   // 別のコメントへホバーが移ったら、その都度サブ状態を畳む。
   // 「返信リンクから開いた」時だけは畳まずに返信一覧を開いた状態で見せたいので、
@@ -503,16 +776,17 @@ export function CommentLayer({
   // Esc: 入力中なら入力を、開いていれば吹き出しを、次に一覧を、最後にコメントモードを閉じる。
   // escStack は capture 段階で先に走るので、Excalidraw の Esc（選択解除）とは競合しない。
   useEffect(() => {
-    if (!draft && !activeId && !commentMode && !listOpen) return;
+    if (!draft && !activeId && !commentMode && !listOpen && !selectedIds.length) return;
     const onEsc = () => {
       if (draftRef.current) { setDraft(null); return; }
       if (activeIdRef.current) { closeTooltip(); return; }
+      if (selectedRef.current.length) { setSelectedIds([]); return; }
       if (listOpenRef.current) { setListOpen(false); return; }
       setCommentMode(false);
     };
     escStack.push(onEsc);
     return () => escStack.pop(onEsc);
-  }, [draft, activeId, commentMode, listOpen, closeTooltip, setCommentMode, setListOpen]);
+  }, [draft, activeId, commentMode, listOpen, selectedIds, closeTooltip, setCommentMode, setListOpen]);
 
   useEffect(() => () => cancelClose(), [cancelClose]);
 
@@ -527,6 +801,27 @@ export function CommentLayer({
       let st: any;
       try { st = api.getAppState(); } catch { return; }
       if (!st) return;
+
+      // 図形の移動をピンへ写す。掴んだ時の図形（リーダー）が動いた量をそのまま足すだけ。
+      // 図形側には触らない（矢印の結合・フレーム所属は Excalidraw 本体の担当）。
+      const follow = followRef.current;
+      if (follow) {
+        if (follow.key && Date.now() > keyMoveUntil.current) {
+          endFollow();  // 矢印キーは押し終わりが無いので、途切れたら確定する
+        } else {
+          let leader: any = null;
+          try { leader = (api.getSceneElements() as any[]).find((e) => e.id === follow.id); } catch { /* noop */ }
+          if (leader) {
+            const dx = leader.x - follow.x;
+            const dy = leader.y - follow.y;
+            const next: Pos = new Map();
+            follow.base.forEach((p, id) => next.set(id, { x: p.x + dx, y: p.y + dy }));
+            follow.last = next;
+            paintPositions(next);
+          }
+        }
+      }
+
       const rect = container.getBoundingClientRect();
       const zoom = st.zoom?.value ?? 1;
       const dx = st.scrollX * zoom + (st.offsetLeft ?? 0) - rect.left;
@@ -556,7 +851,7 @@ export function CommentLayer({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [api, containerRef]);
+  }, [api, containerRef, endFollow, paintPositions]);
 
   // ── コメントへ移動して開く（リンク着地・一覧からのジャンプ共通） ──
   const focusTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -827,25 +1122,35 @@ export function CommentLayer({
         {comments.map((c) => {
           const list = replies[c.id] ?? [];
           const active = activeId === c.id;
+          const selected = selectedIds.includes(c.id);
           // 解決済みのピンは盤面から消す。ただし一覧やリンクから開いている間だけは出す。
           if (c.resolved && !active) return null;
           return (
-            <div key={c.id} data-wbc-anchor data-x={c.x} data-y={c.y}
+            <div key={c.id} data-wbc-anchor data-id={c.id} data-x={c.x} data-y={c.y}
               style={{ position: "absolute", left: 0, top: 0, width: 0, height: 0 }}>
               <button
                 data-wbc-ui
-                onMouseEnter={() => { cancelClose(); setHoverId(c.id); }}
-                onMouseLeave={() => { if (!stickyId) scheduleClose(); }}
-                onClick={(e) => { e.stopPropagation(); pinOpen(c.id); }}
-                title={`${c.userName} のコメント`}
+                onMouseEnter={() => { if (pinDrag.current) return; cancelClose(); setHoverId(c.id); }}
+                onMouseLeave={() => { if (!stickyId && !pinDrag.current) scheduleClose(); }}
+                onPointerDown={(e) => onPinPointerDown(e, c)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // 動かした／Shiftで選び直した直後は吹き出しを開かない
+                  if (suppressClick.current) { suppressClick.current = false; return; }
+                  pinOpen(c.id);
+                }}
+                title={`${c.userName} のコメント（ドラッグで移動）`}
                 style={{
                   position: "absolute", left: 0, top: 0, transform: "translateY(-100%)",
-                  width: 26, height: 26, padding: 0, pointerEvents: "auto",
+                  width: PIN_SIZE, height: PIN_SIZE, padding: 0, pointerEvents: "auto",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   background: c.resolved ? "#9CA3AF" : wbUserColor(c.userId || "anon"), color: "#fff",
                   border: "2px solid #fff", borderRadius: "13px 13px 13px 3px",
-                  boxShadow: active ? "0 0 0 3px rgba(2,132,199,0.35), 0 4px 12px rgba(0,0,0,0.25)" : "0 3px 10px rgba(0,0,0,0.22)",
-                  cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit", lineHeight: 1,
+                  boxShadow: selected
+                    ? `0 0 0 3px ${SELECT_ACCENT}, 0 4px 12px rgba(0,0,0,0.25)`
+                    : active ? "0 0 0 3px rgba(2,132,199,0.35), 0 4px 12px rgba(0,0,0,0.25)" : "0 3px 10px rgba(0,0,0,0.22)",
+                  cursor: "grab", fontSize: 11, fontWeight: 700, fontFamily: "inherit", lineHeight: 1,
+                  touchAction: "none", // タッチでもドラッグできるように（スクロールに奪わせない）
                 }}
               >
                 {initialOf(c.userName)}

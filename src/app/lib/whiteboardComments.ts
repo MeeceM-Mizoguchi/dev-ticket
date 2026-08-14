@@ -98,6 +98,25 @@ export function updateComment(doc: Y.Doc, id: string, text: string): void {
   commentsMap(doc).set(id, { ...cur, text, updatedAt: Date.now() });
 }
 
+/**
+ * ピンの位置を動かす（複数まとめて）。ドラッグ確定時に1回だけ呼ぶ想定。
+ * 1トランザクションにまとめるのは、途中経過を差分として配らないため
+ * （他の参加者の画面でピンがバラバラに飛ぶのを防ぐ）。
+ * 本文は触らないので updatedAt は進めない（「編集済み」表示にしない）。
+ */
+export function moveComments(doc: Y.Doc, moves: Array<{ id: string; x: number; y: number }>): void {
+  if (!moves.length) return;
+  doc.transact(() => {
+    const cm = commentsMap(doc);
+    for (const m of moves) {
+      if (!Number.isFinite(m.x) || !Number.isFinite(m.y)) continue;
+      const cur = cm.get(m.id);
+      if (!cur || (cur.x === m.x && cur.y === m.y)) continue;
+      cm.set(m.id, { ...cur, x: m.x, y: m.y });
+    }
+  });
+}
+
 /** コメントを削除する。ぶら下がっている返信も一緒に消す（孤児を残さない）。 */
 export function deleteComment(doc: Y.Doc, id: string): void {
   doc.transact(() => {
