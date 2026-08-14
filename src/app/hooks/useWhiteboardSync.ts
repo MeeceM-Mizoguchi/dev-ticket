@@ -205,6 +205,7 @@ export function useWhiteboardSync(
         unregisterControl();
         evict.dispose();
         provider.destroy();
+        bridge.destroy();   // 保留中(rAF)の反映を捨てる＝アンマウント後にシーンを触らない
         doc.destroy();
       };
       if (disposed) dispose();
