@@ -5,7 +5,8 @@
 //     初期 fetch(useEffect)が再実行される = 通話以外の全データを再取得する。
 //   - Topbar 自身は再マウントされないので、通知/お知らせの再読込は nonce を監視して行う。
 // CallProvider はこのプロバイダより上位に常駐するため、更新しても通話は一切影響を受けない。
-import { createContext, useContext, useCallback, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { consumePostUpdateRefresh } from "@/app/hooks/useVersionCheck";
 
 interface RefreshCtxType {
   refreshNonce: number;   // 増えるたびにページを再マウントして再取得する
@@ -31,6 +32,14 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setRefreshing(false), 900);
   }, []);
+
+  // 新バージョンの自動更新で入ってきた初回だけ、シェルが立ち上がった時点で
+  // ソフト更新を1回走らせる。これで「新しいUI(リロード)」と「新しいデータ(API再取得)」が
+  // 必ず揃う。通常のリロードや画面遷移では何も起きない(フラグは1回で消費される)。
+  useEffect(() => {
+    if (!consumePostUpdateRefresh()) return;
+    refresh();
+  }, [refresh]);
 
   return (
     <RefreshContext.Provider value={{ refreshNonce, refreshing, refresh }}>
