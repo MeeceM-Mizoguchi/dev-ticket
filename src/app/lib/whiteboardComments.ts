@@ -184,6 +184,46 @@ export function mentionedMembers(text: string, members: string[], selfName: stri
   return members.filter((n) => n && n !== selfName && text.includes(`@${n}`));
 }
 
+export interface WbTextPart {
+  text: string;
+  /** メンションとして当たったメンバー名（素の文字列なら undefined） */
+  mention?: string;
+}
+
+/**
+ * 本文を「素の文字列」と「メンション」に切り分ける（表示で色を付けるため）。
+ *
+ * ・メンバー名は長いものから当てる。「山田」と「山田太郎」のように前方一致する名前があると、
+ *   短いほうで切って「@山田 太郎」のような見た目になってしまうため。
+ * ・members に無い「@なにか」は素の文字として返す。色が付かない＝通知も飛ばない、と
+ *   見た目が一致するので、打ち間違いにその場で気づける（mentionedMembers と同じ突き合わせ）。
+ */
+export function splitMentions(text: string, members: string[]): WbTextPart[] {
+  if (!text) return [];
+  const names = members.filter((n) => !!n).sort((a, b) => b.length - a.length);
+  if (names.length === 0) return [{ text }];
+
+  const parts: WbTextPart[] = [];
+  let buf = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "@") {
+      const rest = text.slice(i + 1);
+      const hit = names.find((n) => rest.startsWith(n));
+      if (hit) {
+        if (buf) { parts.push({ text: buf }); buf = ""; }
+        parts.push({ text: `@${hit}`, mention: hit });
+        i += hit.length + 1;
+        continue;
+      }
+    }
+    buf += text[i];
+    i++;
+  }
+  if (buf) parts.push({ text: buf });
+  return parts;
+}
+
 /**
  * 入力中のキャレット直前が「@…」ならその検索語を返す（メンション候補の絞り込み用）。
  * 「@」の直前が文字の場合（メールアドレス等）は候補を出さない。
