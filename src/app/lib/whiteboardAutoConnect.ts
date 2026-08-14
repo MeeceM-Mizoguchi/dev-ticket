@@ -518,6 +518,12 @@ export function autoConnectLines(
   // 端点つまみを掴んで離した線の id（BRU7-056-4）。この線だけは「今繋がっている図形」を
   // 優先せず、端点を落とした位置から接続先を選び直す（狙った図形へ繋ぎ替えられるようにする）。
   retargetId?: string,
+  // 直前のドラッグで“一緒に動いた”要素の id（複数選択して移動した一群）。
+  // 一群の中どうしは相対位置が1mmも変わっていない＝接続関係は移動前のまま正しいので、
+  // ここに含まれる線には、同じく一群の中にある図形を**新しい接続先として選ばせない**。
+  // これが無いと、囲んで動かしただけで線が近くの（多くは全体を囲っている大きな）図形へ
+  // 吸着し、端点が辺の中点へ飛んで矢印・棒が崩れる。
+  coMoved?: Set<string>,
 ): boolean {
   const drawingId = appState?.newElement?.id ?? appState?.editingLinearElement?.elementId;
   const shapes = elements.filter(isConnectableShape);
@@ -553,15 +559,33 @@ export function autoConnectLines(
     const aE0 = readAnchor(el.customData?.triEnd);
     const retarget = !!retargetId && el.id === retargetId;
     const preferOf = (a: TriAnchor | null): string | undefined => (a && !retarget ? a.id : undefined);
-    let sShape = pickConnectTarget(startPt, shapes, preferOf(aS0), findTol);
-    let eShape = pickConnectTarget(endPt, shapes, preferOf(aE0), findTol);
+    // 複数選択して一緒に動かした一群の中の線は、同じ一群の図形を新しい接続先に選ばない（上の coMoved 参照）。
+    // 既に繋がっている図形だけは候補に残す（記録どおりの追従を妨げないため）。
+    const group = coMoved && coMoved.has(el.id) ? coMoved : null;
+    const cand = group
+      ? shapes.filter((s) => !group.has(s.id) || s.id === aS0?.id || s.id === aE0?.id)
+      : shapes;
+    let sShape = pickConnectTarget(startPt, cand, preferOf(aS0), findTol);
+    let eShape = pickConnectTarget(endPt, cand, preferOf(aE0), findTol);
     // 折れ矢印で終端(離した側)が図形に届かない場合、実カーソル位置(pointerHint)で拾い直す。
     // Shiftの角度スナップで端点が図形からズレても、狙った図形へ繋いで折れるようにする（BRU5-064）。
     let endRef = endPt;
     if (wantFold && !eShape && pointerHint) {
-      const s = pickConnectTarget(pointerHint, shapes, preferOf(aE0), FOLD_FIND_TOL);
+      const s = pickConnectTarget(pointerHint, cand, preferOf(aE0), FOLD_FIND_TOL);
       if (s) { eShape = s; endRef = pointerHint; }
     }
+    // 線を丸ごと呑み込んでいる図形（＝全体を囲っているだけの大きな枠）は接続先にしない。
+    // pickConnectTarget は「点を内包する図形」を距離0として拾うため、枠の中に引いただけの線は
+    // 端点が枠の辺から何百px離れていても枠に繋がってしまう。すると端点が辺の中点へ吹き飛び、
+    // 図の中の複数の線が枠の同じ1点へ集まって扇状に崩れる（＝報告された症状）。
+    // 枠の辺そのものへ繋いだ線（端点が外周のすぐ近く）は従来どおり接続を認める。
+    const swallows = (s: any, pt: Pt, other: Pt): boolean => {
+      const b = connectBBox(s);
+      const inside = (p: Pt) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+      return inside(pt) && inside(other) && distToOutline(pt, s) > TOL;
+    };
+    if (sShape && swallows(sShape, startPt, endPt)) sShape = null;
+    if (eShape && swallows(eShape, endRef, startPt)) eShape = null;
     // 【BRU7-056-3】両端が同じ図形へ吸着する接続は作らない。
     // 図形の“中”に引いただけの線・矢印（四角の中に置いた棒など）は、端点がその図形のbboxに
     // 内包されるため両端ともその図形を接続先に選ぶ。すると始点は左辺の中点・終点は上辺の中点…と

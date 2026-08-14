@@ -574,6 +574,7 @@ export default function WhiteboardCanvas({
       pointerDownNow.current = true;
       endpointDragId.current = null; // 新しいポインタ操作の開始（前回の取りこぼしを持ち越さない）
       copiedConnIds.current.clear(); // 前回のコピー操作の控えは持ち越さない（BRU7-056-7）
+      dragGroupIds.current.clear();  // 一緒に動かした一群の控えも、新しいポインタ操作では持ち越さない
       const m = new Map<string, string>();
       const ids = new Set<string>();
       for (const el of api.getSceneElements() as any[]) {
@@ -1079,6 +1080,7 @@ export default function WhiteboardCanvas({
   const copiedConnIds = useRef<Set<string>>(new Set());        // このポインタ操作でコピーに関わった線・矢印（接続状態を変えない・BRU7-056-7）
   const seededLines = useRef(false);                          // 起動時に盤面へ在った線を「評価済み」にしたか（BRU7-056-3）
   const touchedConnIds = useRef<Set<string>>(new Set());      // このポインタ操作で掴んだ線・矢印（離した時に接続を再判定・BRU7-056-3）
+  const dragGroupIds = useRef<Set<string>>(new Set());        // このポインタ操作で一緒に動かした一群（複数選択の移動。一群の中どうしは繋ぎ直さない）
   const prevTriSig = useRef<Map<string, string>>(new Map()); // 前フレームの図形geometry署名（追従/解除判定用）
   const prevFrameSig = useRef<Map<string, string>>(new Map()); // 前回のフレーム矩形署名（グループ化の新規/リサイズ判定用・BRU4-054）
   const prevFramePos = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map()); // 前回のフレーム位置＋サイズ（移動/リサイズ判別用・BRU5-040/BRU5-061）
@@ -1213,6 +1215,12 @@ export default function WhiteboardCanvas({
         const linEd = appState?.editingLinearElement ?? appState?.selectedLinearElement;
         const linDragId: string | undefined = linEd?.isDragging ? linEd.elementId : undefined;
         if (linDragId) endpointDragId.current = linDragId; // 離したフレームで繋ぎ直しを適用するため控える
+        // 複数選択して一緒に動かした一群を控える（離したフレームの再判定で使う）。
+        // 一群の中は相対位置が変わっていないので、その中の図形へ線を繋ぎ直してはいけない。
+        if (dragging) {
+          const selIds = appState?.selectedElementIds ?? {};
+          for (const id of Object.keys(selIds)) if (selIds[id]) dragGroupIds.current.add(id);
+        }
         if (dragging || appState?.isResizing || appState?.editingLinearElement || linDragId) {
           const selIds = appState?.selectedElementIds ?? {};
           const editingId = appState?.editingLinearElement?.elementId;
@@ -1245,7 +1253,7 @@ export default function WhiteboardCanvas({
         const noConnect = isConnectSuppressed() && (pointerDownNow.current || pointerUpPending.current);
         // 端点つまみを掴んで離した線だけは「今繋がっている図形」を優先せず接続先を選び直す（BRU7-056-4/-6）。
         // それ以外の線まで選び直すと、端点が矩形から少しはみ出しているだけで外枠に吸われて崩れる。
-        const connected = remote || busy || bracesFixed || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined);
+        const connected = remote || busy || bracesFixed || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined, dragGroupIds.current);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ。
         // 折れ矢印トグルON時は foldAll を渡し、接続済み直線をこの追従パスで確実に折る（描画タイミング非依存）。
         // undo/redo 直後は forceAnchor: 繋ぎ替え/解除をせず、記録どおりのアンカーへ端点を戻す（BRU5-066）。
