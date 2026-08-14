@@ -212,6 +212,100 @@ function replaceRange(ta: HTMLTextAreaElement, from: number, to: number, str: st
 }
 
 /**
+ * 削除キーの効き方。char=Backspace/Delete 単独、word=Option(Alt)+／Ctrl+（単語単位）、
+ * line=Cmd+（行頭・行末まで）。修飾キー付きの削除もインデントを食い破るので同じ土俵で扱う。
+ */
+type DeleteMode = "char" | "word" | "line";
+
+/** そのキーがこれから消そうとしている範囲 [from, to)。単語・行単位は行をまたがせない。 */
+function deleteRange(
+  value: string, s: number, backward: boolean, mode: DeleteMode, ls: number, le: number,
+): [number, number] {
+  if (mode === "line") return backward ? [ls, s] : [s, le];
+  if (mode === "word") {
+    let i = s;
+    if (backward) {
+      while (i > ls && value[i - 1] === " ") i--;
+      while (i > ls && value[i - 1] !== " ") i--;
+      return [i, s];
+    }
+    while (i < le && value[i] === " ") i++;
+    while (i < le && value[i] !== " ") i++;
+    return [s, i];
+  }
+  return backward ? [s - 1, s] : [s, s + 1];
+}
+
+/**
+ * 選択範囲からインデントを外す（BRU9-040 追補2）。
+ * 「インデントは書式であって文字ではない」以上、そもそも**選べない**のが素直。全選択（Cmd+A）でも
+ * ドラッグでも、インデントの空白には選択の帯が掛からないようにする。
+ *
+ * textarea の選択は連続した1区間しか持てないので、外せるのは**選択の端**だけ:
+ *   ・左揃え … 始点がその行の行頭パッドの中にあれば、パッドの後ろへ送る
+ *   ・右揃え … 終点がその行の行末パッドの中にあれば、パッドの手前へ戻す
+ * 複数行選択の「途中の行」のパッドは区間の内側なので外しようがない（削除時はその行ごと消えるので
+ * 実害は無い。端だけは handleIndentDelete が守る）。
+ *
+ * 反対側の端は詰めない。左揃えで終点を行頭へ戻すと、消した後に前の行のパッドと合体して
+ * かえってインデントが増えて見えるため（右揃えは左右逆）。
+ *
+ * キャレットだけ（選択なし）の時は動かさない。インデントの中にキャレットを置くこと自体は
+ * 妨げない（Shift+Tab の起点になるし、置けないと矢印キーの移動が跳ねて気持ち悪い）。
+ *
+ * @returns true＝実際に詰めた（＝呼び出し側は再入を気にしなくてよい。詰めた結果は冪等）
+ */
+export function clampIndentSelection(ta: HTMLTextAreaElement, side: IndentSide): boolean {
+  const { selectionStart: s, selectionEnd: e, value } = ta;
+  if (s === e) return false;
+
+  let ns = s, ne = e;
+  if (side === "start") {
+    const ls = value.lastIndexOf("\n", Math.max(0, s - 1)) + 1;
+    const nl = value.indexOf("\n", s);
+    const pt = ls + padCount(value.slice(ls, nl < 0 ? value.length : nl), "start");
+    if (s < pt) ns = Math.min(pt, e); // 選択がパッドの中で終わるなら潰れて空選択になる＝選べない
+  } else {
+    const ls = value.lastIndexOf("\n", Math.max(0, e - 1)) + 1;
+    const nl = value.indexOf("\n", e);
+    const le = nl < 0 ? value.length : nl;
+    const pf = le - padCount(value.slice(ls, le), "end");
+    if (e > pf) ne = Math.max(pf, s);
+  }
+  if (ns === s && ne === e) return false;
+
+  ta.setSelectionRange(ns, ne, ta.selectionDirection || "forward");
+  return true;
+}
+
+/**
+ * 範囲を選択してからの削除（Cmd+A → Delete など）。選択ぶんは消すが、インデントだけは残す。
+ *
+ * 削除後に残るのは「選択の手前」と「選択の後ろ」が繋がった1行なので、守るインデントも1つだけ:
+ * 左揃えなら**選択の始点がある行の行頭パッド**、右揃えなら**終点がある行の行末パッド**
+ * （残る行の行頭／行末になる側）。間の行のインデントは行ごと消えるので追いかけない。
+ */
+function deleteSelection(ta: HTMLTextAreaElement, side: IndentSide, s: number, e: number, value: string): boolean {
+  const anchor = side === "start" ? s : e;
+  const ls = value.lastIndexOf("\n", Math.max(0, anchor - 1)) + 1;
+  const nl = value.indexOf("\n", anchor);
+  const le = nl < 0 ? value.length : nl;
+  const pad = padCount(value.slice(ls, le), side);
+  if (!pad) return false;
+
+  const pf = side === "start" ? ls : le - pad;   // 保護範囲 [pf, pt)
+  const pt = side === "start" ? ls + pad : le;
+  const keep = Math.max(0, Math.min(e, pt) - Math.max(s, pf));
+  if (!keep) return false;                       // インデントに触れない選択は妨げない
+  if (keep === e - s) return true;               // インデントだけを選んで消そうとした → 握り潰す
+
+  replaceRange(ta, s, e, " ".repeat(keep));      // インデントぶんだけ書き戻す
+  const caret = side === "start" ? s + keep : s;
+  ta.setSelectionRange(caret, caret);
+  return true;
+}
+
+/**
  * Backspace / Delete をインデントの流儀で処理する（BRU9-040 追補）。
  * 戻り値 true＝こちらで処理した（＝呼び出し側でキーを握り潰す）。
  *
@@ -221,15 +315,23 @@ function replaceRange(ta: HTMLTextAreaElement, from: number, to: number, str: st
  *  1. **インデントだけで中身が無い行** … 行をひとまとまりとして扱い、**改行ごと消して隣の行へ移る**。
  *     Backspace なら直前の改行ごと消して上の行末へ、Delete なら直後の改行ごと消して下の行を上げる。
  *     （空白を1つずつ削るのではなく「空のインデント行を1回で畳む」＝ユーザーの期待どおり）
- *  2. **中身がある行** … インデントに手を掛けた時だけ握り潰す（文字の削除は妨げない）。
+ *     繋ぐ先の行が無い（先頭行の Backspace／最終行の Delete）ときは 2. に落ちる＝**何も起きない**。
+ *     ここを素通しにすると、インデントだけが1個ずつ削れていく（BRU9-040 の積み残し）。
+ *  2. **インデントに掛かる削除** … 消える範囲からインデントぶんだけを残して実行する。
+ *     Cmd+Backspace（行頭まで）や Option+Backspace（単語）でも、インデントだけは残る。
+ *     消せるのがインデントしか無いときは、代わりに本文の1文字を消す（キーが完全に無反応になるのを
+ *     避ける。右揃えで行末＝インデントの後ろにキャレットがある時など）。本文も無ければ握り潰す。
+ *  3. **範囲を選択してからの削除**（Cmd+A → Delete 等） … 同じ考えでインデントだけ残す（§deleteSelection）。
+ *     選択がある時はどの修飾キーでも「選択を消す」だけなので mode は見ない。
  *
  * インデントそのものを減らしたい時は Shift+Tab（または書式パネルの ⇤）を使う。
- * 範囲を選択してからの削除は、ユーザーの明示操作なので一切妨げない。
  * @param backward true=Backspace（手前を消す）／false=Delete（その場を消す）
  */
-export function handleIndentDelete(ta: HTMLTextAreaElement, side: IndentSide, backward: boolean): boolean {
+export function handleIndentDelete(
+  ta: HTMLTextAreaElement, side: IndentSide, backward: boolean, mode: DeleteMode = "char",
+): boolean {
   const { selectionStart: s, selectionEnd: e, value } = ta;
-  if (s !== e) return false;
+  if (s !== e) return deleteSelection(ta, side, s, e, value);
   const ls = value.lastIndexOf("\n", Math.max(0, s - 1)) + 1;
   const nl = value.indexOf("\n", s);
   const le = nl < 0 ? value.length : nl;
@@ -237,23 +339,38 @@ export function handleIndentDelete(ta: HTMLTextAreaElement, side: IndentSide, ba
   const pad = padCount(line, side);
   if (!pad) return false; // インデントが無い行は素通し（素の空行の結合も従来どおり）
 
-  // 1. インデントだけの行 → 改行ごと畳む
-  if (line.trim() === "") {
-    if (backward) {
-      if (ls === 0) return false;          // 上に行が無い＝繋ぐ先が無いので素通し
+  // 1. インデントだけの行 → 改行ごと畳む（隣に行がある時だけ）
+  if (line.trim() === "" && mode === "char") {
+    if (backward && ls > 0) {
       replaceRange(ta, ls - 1, le, "");    // 直前の改行＋この行 → キャレットは上の行末へ
       return true;
     }
-    if (le >= value.length) return false;  // 下に行が無い
-    replaceRange(ta, ls, le + 1, "");      // この行＋直後の改行 → 下の行が上がってくる
+    if (!backward && le < value.length) {
+      replaceRange(ta, ls, le + 1, "");    // この行＋直後の改行 → 下の行が上がってくる
+      return true;
+    }
+  }
+
+  // 2. インデントを残して削除する
+  const pf = side === "start" ? ls : le - pad;   // 保護範囲 [pf, pt)
+  const pt = side === "start" ? ls + pad : le;
+  let [from, to] = deleteRange(value, s, backward, mode, ls, le);
+  const keep = Math.max(0, Math.min(to, pt) - Math.max(from, pf)); // 範囲に掛かったインデントの文字数
+  if (!keep) return false;                       // インデントに触れない削除は妨げない
+
+  if (keep === to - from) {
+    // 消せるのがインデントだけ → 代わりに本文の1文字を消す（無ければ何もしない）
+    if (backward && side === "end" && pf > ls) [from, to] = [pf - 1, pf];
+    else if (!backward && side === "start" && pt < le) [from, to] = [pt, pt + 1];
+    else return true;
+    replaceRange(ta, from, to, "");
     return true;
   }
 
-  // 2. 中身がある行 → インデント部分に手が掛かった時だけ止める
-  const from = side === "start" ? ls : le - pad;  // 保護範囲 [from, to)
-  const to = side === "start" ? ls + pad : le;
-  const target = backward ? s - 1 : s;            // これから消えようとしている文字の位置
-  return target >= from && target < to;
+  replaceRange(ta, from, to, " ".repeat(keep));   // インデントぶんだけ書き戻す
+  const caret = side === "start" ? from + keep : from;
+  ta.setSelectionRange(caret, caret);
+  return true;
 }
 
 /**
@@ -283,7 +400,11 @@ export function handleIndentKey(e: KeyboardEvent, editingText: any): boolean {
 
   // 文字消しでインデントが崩れないようにする（中央揃え＝インデント非対応の時は素通し）
   if (isDelete) {
-    if (!side || !handleIndentDelete(ta, side, e.key === "Backspace")) return false;
+    // 修飾キー付きの削除も同じ土俵に乗せる。mac: Cmd=行頭/行末まで・Option=単語。
+    // Windows/Linux: Ctrl=単語（mac の Ctrl+Backspace は1文字削除なので単語扱いにしない）。
+    const mac = /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent);
+    const mode: DeleteMode = e.metaKey ? "line" : e.altKey || (!mac && e.ctrlKey) ? "word" : "char";
+    if (!side || !handleIndentDelete(ta, side, e.key === "Backspace", mode)) return false;
     e.preventDefault();
     e.stopPropagation();
     return true;
@@ -301,6 +422,18 @@ export function handleIndentKey(e: KeyboardEvent, editingText: any): boolean {
   if (isTab) indentEditor(ta, e.shiftKey || e.code === "BracketLeft" ? -1 : 1, readIndentStep(), side);
   else newlineWithIndent(ta, side);
   return true;
+}
+
+/**
+ * 編集中の textarea の選択が変わったときに呼ぶ（select イベント）。インデントに掛かった選択を詰める。
+ * handleIndentKey と同じく、対象は Excalidraw のテキストエディタだけ。
+ * @param editingText 今編集しているテキスト要素（揃えの判定に使う）
+ */
+export function handleIndentSelect(target: EventTarget | null, editingText: any): boolean {
+  const ta = target as HTMLTextAreaElement | null;
+  if (!ta?.classList?.contains("excalidraw-wysiwyg")) return false;
+  const side = indentSideOf(editingText);
+  return side ? clampIndentSelection(ta, side) : false;
 }
 
 /**

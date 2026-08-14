@@ -24,7 +24,7 @@ import { cutFrameSelection, expandSelectionToFrameChildren, isFrameSelected, wri
 import { hasRichBlocks, htmlToBlocks, looksLikeMarkdown, parseMarkdown } from "@/app/lib/markdown";
 import { pasteBlocksToWhiteboard, pastePlainTextToWhiteboard, shouldPastePlainText } from "@/app/lib/whiteboardPasteMarkdown";
 import { viewportCenter } from "@/app/lib/whiteboardTableCreate";
-import { handleIndentKey } from "@/app/lib/whiteboardIndent";
+import { handleIndentKey, handleIndentSelect } from "@/app/lib/whiteboardIndent";
 import { reflowIndentWrap } from "@/app/lib/whiteboardIndentWrap";
 import { activateWbInstance, isActiveWbInstance, registerWbInstance, unregisterWbInstance } from "@/app/lib/whiteboardInstance";
 import { onWhiteboardFocusRequest } from "@/app/lib/whiteboardFocusBus";
@@ -512,6 +512,26 @@ export default function WhiteboardCanvas({
     };
     el.addEventListener("keydown", onKey, true); // キャプチャ段階
     return () => el.removeEventListener("keydown", onKey, true);
+  }, [api, canEdit]);
+
+  // インデントを選択させない（BRU9-040 追補2）。全選択（Cmd+A）やドラッグで選択の帯が
+  // インデントの空白まで掛かるのを、選択が変わるたびに端から詰める。
+  // select は textarea から祖先へ伝播するので、キー処理と同じくここで受ける。
+  // setSelectionRange が再び select を起こすが、詰め終わった選択は変化しない＝そこで止まる。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !api || !canEdit) return;
+    const onSelect = (e: Event) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.classList?.contains("excalidraw-wysiwyg")) return;
+      try {
+        const ed = getEditingTextEl() ?? api.getAppState()?.editingTextElement;
+        const live = ed?.id ? (api.getSceneElements() as any[]).find((x) => x.id === ed.id) : null;
+        handleIndentSelect(t, live ?? ed);
+      } catch { /* noop */ }
+    };
+    el.addEventListener("select", onSelect, true); // キャプチャ段階
+    return () => el.removeEventListener("select", onSelect, true);
   }, [api, canEdit]);
 
   // undo/redo の猶予窓（BRU5-066 / BRU7-058）。
