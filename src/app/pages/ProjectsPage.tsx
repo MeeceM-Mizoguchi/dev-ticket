@@ -11,6 +11,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, CLIENTS } from "@/app/data/mock";
 import { mapProject, mapClient, mapSprint } from "@/app/lib/mappers";
 import { downloadProjectCsv } from "@/app/lib/csvExport";
+import { computeProjectStatus, countTicketBuckets } from "@/app/lib/helpers";
+import { writeProjectStatusInDb } from "@/app/lib/syncProjectStatus";
 import type { Project, Client } from "@/app/types";
 import { ProjectCard } from "@/app/components/projects/ProjectCard";
 import { NewProjectDialog } from "@/app/components/projects/NewProjectDialog";
@@ -101,27 +103,10 @@ export function ProjectsPage() {
       const pid = sprint.project_id;
       if (!map.has(pid)) map.set(pid, { done: 0, inProgress: 0, todo: 0 });
       const counts = map.get(pid)!;
-      for (const t of (sprint.sprint_tickets ?? [])) {
-        const s = String(t.status || "").toLowerCase().trim();
-
-        const isDoneStatus =
-          s.includes("done") || s.includes("close") || s.includes("releas") ||
-          s.includes("withdraw") || s.includes("cancel") || s.includes("complet") ||
-          s.includes("resolv") || s.includes("drop") || s.includes("reject") ||
-          s.includes("取下") || s.includes("取り下げ") || s.includes("キャンセル");
-
-        const isDoneFlag = t.is_withdrawn || t.archived || t.is_deleted || !!t.deleted_at;
-
-        const isDoneProgress = Number(t.progress) >= 100;
-
-        if (isDoneStatus || isDoneFlag || isDoneProgress) {
-          counts.done++;
-        } else if (s === "todo" || s === "open" || s.includes("未着手") || s.includes("pending") || s.includes("on-hold")) {
-          counts.todo++;
-        } else {
-          counts.inProgress++;
-        }
-      }
+      const c = countTicketBuckets(sprint.sprint_tickets ?? []);
+      counts.done += c.done;
+      counts.inProgress += c.inProgress;
+      counts.todo += c.todo;
     }
     return map;
   };
@@ -132,6 +117,13 @@ export function ProjectsPage() {
       const mapped = mapProject(r);
       const c = counts.get(r.id);
       if (c) { mapped.done = c.done; mapped.inProgress = c.inProgress; mapped.todo = c.todo; }
+      // 手動設定OFFのプロジェクトは、チケットの状況からステータスを都度算出する。
+      // DBの保存値がズレていれば書き戻して、保存値を直接読む箇所とも揃える。
+      const computed = computeProjectStatus(mapped);
+      if (computed !== mapped.status) {
+        mapped.status = computed;
+        void writeProjectStatusInDb(mapped.id, computed);
+      }
       return mapped;
     });
 

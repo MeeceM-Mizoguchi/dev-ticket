@@ -9,17 +9,10 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 // 🌟 追加: CustomSelect コンポーネントをインポート
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { computeProjectStatus } from "@/app/lib/helpers";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
-
-function calculateProjectAutoStatus(done: number = 0, inProgress: number = 0, todo: number = 0): ProjectStatus {
-  const total = done + inProgress + todo;
-  if (total === 0) return "planning";
-  if (done === total && total > 0) return "completed";
-  if (inProgress > 0 || done > 0) return "in-progress";
-  return "planning";
-}
 
 export function EditProjectDialog({ project, onClose, onUpdated }: {
   project: Project;
@@ -48,7 +41,7 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
   const handleToggleAuto = () => {
     if (isManualStatus) {
       setIsManualStatus(false);
-      const autoStatus = calculateProjectAutoStatus(project.done, project.inProgress, project.todo);
+      const autoStatus = computeProjectStatus({ ...project, isManualStatus: false });
       setStatus(autoStatus);
     } else {
       setIsManualStatus(true);

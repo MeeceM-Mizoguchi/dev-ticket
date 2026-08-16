@@ -150,11 +150,12 @@ export async function updateProjectStatus(
   newStatus: ProjectStatus,
   currentProject: Project
 ): Promise<Partial<Project>> {
-  const updates: Record<string, unknown> = { status: newStatus };
+  // ボードでの手動移動は「手動設定」に切り替える（自動算出に戻すのは編集ダイアログのトグル）
+  const updates: Record<string, unknown> = { status: newStatus, is_manual_status: true };
 
   if (isSupabaseEnabled) {
     await supabase!.from("projects").update(updates).eq("id", projectId);
   }
 
-  return { status: newStatus };
+  return { status: newStatus, isManualStatus: true };
 }

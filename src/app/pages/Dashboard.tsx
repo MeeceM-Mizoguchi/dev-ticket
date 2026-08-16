@@ -10,7 +10,7 @@ import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { TICKETS, PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprintTicket } from "@/app/lib/mappers";
-import { calcProgress, formatDate, getPriorityMeta, computeSprintStatus, getSprintStatusMeta, sprintProgress } from "@/app/lib/helpers";
+import { calcProgress, formatDate, getPriorityMeta, computeSprintStatus, computeProjectStatus, getSprintStatusMeta, sprintProgress } from "@/app/lib/helpers";
 import type { ProjectStatus, SprintTicket, TicketStatus, Priority, SprintStatus } from "@/app/types";
 
 type ChartType = 'horizontal' | 'vertical' | 'line' | 'gantt';
@@ -178,7 +178,7 @@ export function Dashboard() {
     // Supabase環境時のサイレント・アップデート
     setIsRefreshRefreshing(true);
     const isOwner = userRole === "owner";
-    let projQ = supabase!.from("projects").select("id, slug, name, status, client, members, organization_id");
+    let projQ = supabase!.from("projects").select("id, slug, name, status, is_manual_status, client, members, organization_id");
     if (isOwner) {
       if (selectedOrgId) projQ = projQ.eq("organization_id", selectedOrgId);
     } else if (userOrgId) {
@@ -258,15 +258,21 @@ export function Dashboard() {
         const mapped = pData.map((p: any) => {
           const sprintIds = sprints.filter((s: any) => s.project_id === p.id).map((s: any) => s.id);
           const projectTickets = ticketsData.filter((t: any) => sprintIds.includes(t.sprint_id));
+          const done = projectTickets.filter((t: any) => TERMINAL_STATUSES.includes(t.status)).length;
+          const inProgress = projectTickets.filter((t: any) => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo" && t.status !== "on-hold").length;
+          const todo = projectTickets.filter((t: any) => t.status === "todo" || t.status === "on-hold").length;
           return {
             id: p.slug || p.id,
             name: p.name,
-            status: p.status as ProjectStatus,
+            // 手動設定OFFのプロジェクトはチケットの状況から算出する（一覧画面と同じ判定）
+            status: computeProjectStatus({
+              status: p.status as ProjectStatus,
+              isManualStatus: p.is_manual_status ?? false,
+              done, inProgress, todo,
+            }),
             client: p.client,
             members: (p as any).members ?? [],
-            done: projectTickets.filter((t: any) => TERMINAL_STATUSES.includes(t.status)).length,
-            inProgress: projectTickets.filter((t: any) => !TERMINAL_STATUSES.includes(t.status) && t.status !== "todo" && t.status !== "on-hold").length,
-            todo: projectTickets.filter((t: any) => t.status === "todo" || t.status === "on-hold").length,
+            done, inProgress, todo,
           };
         });
         setProjects(mapped);

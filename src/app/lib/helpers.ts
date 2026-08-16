@@ -15,6 +15,55 @@ export function computeSprintStatus(sprint: Sprint): SprintStatus {
   return "planning";
 }
 
+// プロジェクト配下のチケット行を 完了/進行中/未着手 の3バケットに集計する。
+// DBの生行（sprint_tickets）をそのまま渡せるよう、取下・削除フラグや進捗100%も完了として扱う。
+export type TicketCountRow = {
+  status?: string | null;
+  progress?: number | string | null;
+  is_withdrawn?: boolean | null;
+  archived?: boolean | null;
+  is_deleted?: boolean | null;
+  deleted_at?: string | null;
+};
+export function countTicketBuckets(tickets: TicketCountRow[]): { done: number; inProgress: number; todo: number } {
+  const counts = { done: 0, inProgress: 0, todo: 0 };
+  for (const t of tickets) {
+    const s = String(t.status || "").toLowerCase().trim();
+
+    const isDoneStatus =
+      s.includes("done") || s.includes("close") || s.includes("releas") ||
+      s.includes("withdraw") || s.includes("cancel") || s.includes("complet") ||
+      s.includes("resolv") || s.includes("drop") || s.includes("reject") ||
+      s.includes("取下") || s.includes("取り下げ") || s.includes("キャンセル");
+
+    const isDoneFlag = !!(t.is_withdrawn || t.archived || t.is_deleted || t.deleted_at);
+    const isDoneProgress = Number(t.progress) >= 100;
+
+    if (isDoneStatus || isDoneFlag || isDoneProgress) counts.done++;
+    else if (s === "todo" || s === "open" || s.includes("未着手") || s.includes("pending") || s.includes("on-hold")) counts.todo++;
+    else counts.inProgress++;
+  }
+  return counts;
+}
+
+// プロジェクトのステータスをチケット集計から動的に算出する。
+// isManualStatus が true のプロジェクトは、ユーザーが明示的に決めた保存値をそのまま使う。
+export function computeProjectStatus(project: {
+  status: ProjectStatus;
+  isManualStatus?: boolean;
+  done?: number; inProgress?: number; todo?: number;
+}): ProjectStatus {
+  if (project.isManualStatus) return project.status;
+  const done = project.done ?? 0;
+  const inProgress = project.inProgress ?? 0;
+  const todo = project.todo ?? 0;
+  const total = done + inProgress + todo;
+  if (total === 0) return "planning";
+  if (done === total) return "completed";
+  if (inProgress > 0 || done > 0) return "in-progress";
+  return "planning";
+}
+
 export function getStatusMeta(status: ProjectStatus | TicketStatus) {
   const map: Record<string, { label: string; cls: string; dot: string; bar: string }> = {
     planning: { label: "計画中", cls: "bg-slate-100 text-slate-600", dot: "bg-slate-400", bar: "bg-slate-300" },

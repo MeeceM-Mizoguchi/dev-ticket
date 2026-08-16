@@ -12,6 +12,7 @@ import { buildCommentAnchor, buildCommentLink, parseCommentAnchor } from "@/app/
 import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
 import { calcHoldHours, HOLD_START_MARKER, HOLD_END_MARKER } from "@/app/lib/holdHours";
 import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
+import { syncProjectStatusBySprintId } from "@/app/lib/syncProjectStatus";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useAlert } from "@/app/contexts/AlertContext";
@@ -1128,7 +1129,11 @@ export function TicketDetailPanel({
 
   // チケットのステータス変更／保留／取下のたびに、所属スプリントの完了判定を
   // DBへ同期する（表示は computeSprintStatus のライブ計算が担保するので fire-and-forget）。
-  const syncSprint = useCallback(() => { void syncSprintStatusInDb(sprintId); }, [sprintId]);
+  const syncSprint = useCallback(() => {
+    void syncSprintStatusInDb(sprintId);
+    // 所属プロジェクトの進行状況（計画中／進行中／完了）も併せて同期する
+    void syncProjectStatusBySprintId(sprintId);
+  }, [sprintId]);
 
   const handleStatusAction = async (btn: { label: string; next: TicketStatus }) => {
     if (!ticket) return;
