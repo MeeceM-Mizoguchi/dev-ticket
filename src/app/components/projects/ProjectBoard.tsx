@@ -122,7 +122,7 @@ export function ProjectBoard({
   const handleDrop = useCallback(async (projectId: string, newStatus: ProjectStatus) => {
     const project = projects.find(p => p.id === projectId);
     if (!project) return;
-    onProjectsChange(prev => prev.map(p => p.id === projectId ? { ...p, status: newStatus } : p));
+    onProjectsChange(prev => prev.map(p => p.id === projectId ? { ...p, status: newStatus, isManualStatus: true } : p));
     await updateProjectStatus(projectId, newStatus, project);
   }, [projects, onProjectsChange]);
 

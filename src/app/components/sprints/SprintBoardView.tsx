@@ -20,6 +20,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { MEMBERS } from "@/app/data/mock";
 import { recordMilestoneFromTicketStatus } from "@/app/hooks/useProject";
 import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
+import { syncProjectStatusBySprintId } from "@/app/lib/syncProjectStatus";
 import { escStack } from "@/app/lib/escStack";
 import { submitOnModEnter } from "@/app/lib/submitKey";
 
@@ -319,6 +320,8 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
         }
         // ステータス変更後、所属スプリントの完了判定をDBへ同期する
         void syncSprintStatusInDb(currentSprintRef.current?.id);
+        // 所属プロジェクトの進行状況もDBへ同期する
+        void syncProjectStatusBySprintId(currentSprintRef.current?.id);
       }
       onUpdated?.();
     } finally {
