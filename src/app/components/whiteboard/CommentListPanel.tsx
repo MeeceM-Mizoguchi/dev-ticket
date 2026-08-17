@@ -18,9 +18,15 @@ interface Props {
   selfName?: string;
   onJump: (commentId: string) => void;
   onClose: () => void;
+  /**
+   * 出す位置。開くボタンの近くに出したいので、画面ごとに変える。
+   *   bottom … ホワイトボード（下部中央のツールバーを避けて右下）
+   *   top    … ファイルビューア（一覧ボタンがヘッダー右上にあるのでその真下）
+   */
+  placement?: "bottom" | "top";
 }
 
-export function CommentListPanel({ comments, replies, activeId, members, selfName, onJump, onClose }: Props) {
+export function CommentListPanel({ comments, replies, activeId, members, selfName, onJump, onClose, placement = "bottom" }: Props) {
   const [tab, setTab] = useState<"open" | "resolved">("open");
 
   // 新しいものを上に（一覧は「最近の話題から追う」ほうが自然）
@@ -50,7 +56,8 @@ export function CommentListPanel({ comments, replies, activeId, members, selfNam
       data-wbc-ui
       onWheel={(e) => e.stopPropagation()}
       style={{
-        position: "absolute", right: 16, bottom: 64, width: 320, maxHeight: "60%", zIndex: 3,
+        position: "absolute", right: 16, ...(placement === "top" ? { top: 12 } : { bottom: 64 }),
+        width: 320, maxHeight: "60%", zIndex: 3,
         pointerEvents: "auto", display: "flex", flexDirection: "column",
         background: "#fff", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 12,
         boxShadow: "0 10px 30px rgba(0,0,0,0.18)", overflow: "hidden",

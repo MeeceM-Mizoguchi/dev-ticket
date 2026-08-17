@@ -15,6 +15,7 @@ import { AnnouncementModal } from "@/app/components/announcements/AnnouncementMo
 import { APP_VERSION } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
 import { buildWhiteboardPath, parseWhiteboardMentionContext } from "@/app/lib/whiteboardLink";
+import { buildFileCommentPath, parseFileMentionContext } from "@/app/lib/fileCommentLink";
 import { parseTaskMentionContext } from "@/app/lib/taskNotify";
 import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
 
@@ -302,8 +303,12 @@ export function Topbar() {
     }
     // ホワイトボードのコメント宛て（ENHA2-039）。チケットではないので専用の飛び先へ。
     const wb = parseWhiteboardMentionContext(notif.mentionContext);
+    // ファイルボックスのコメント宛て（BRU12-025）。ファイルボックスでビューアを開いて着地する。
+    const fc = parseFileMentionContext(notif.mentionContext);
     if (wb && notif.projectSlug) {
       navigate(buildWhiteboardPath(notif.projectSlug, wb.boardId, null, wb.commentId));
+    } else if (fc && notif.projectSlug) {
+      navigate(buildFileCommentPath(notif.projectSlug, fc.fileId, fc.commentId));
     } else if (notif.projectSlug && notif.ticketWbs) {
       const anchor = notif.mentionContext ? `?anchor=${encodeURIComponent(notif.mentionContext)}` : "";
       navigate(`/${notif.projectSlug}/${notif.ticketWbs}${anchor}`);
