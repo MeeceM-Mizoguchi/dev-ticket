@@ -375,6 +375,15 @@ export function TicketDetailPanel({
   const [commentText, setCommentText] = useState("");
   const [commentImages, setCommentImages] = useState<string[]>([]);
 
+  // 投稿／返信の二重送信ガード（BRU12-022）
+  // state はボタンの見た目（非活性・「投稿中...」）用。判定そのものは ref で行う：
+  // state は再レンダー後の値しか読めないため、連打で同じレンダーのハンドラが2回走ると
+  // どちらも「送信中ではない」と判断してしまう。ref は同期的に立つのでその隙間が無い。
+  const [isPostingComment, setIsPostingComment] = useState(false);
+  const postingCommentRef = useRef(false);
+  const [isPostingReply, setIsPostingReply] = useState(false);
+  const postingReplyRef = useRef(false);
+
   // ticket-level images
   const [ticketImages, setTicketImages] = useState<string[]>(ticket?.images ?? []);
   const ticketImagesRef = useRef<string[]>(ticket?.images ?? []);
@@ -1891,10 +1900,18 @@ export function TicketDetailPanel({
   };
 
   const handleAddComment = async () => {
+    if (postingCommentRef.current) return; // 連打ガード：送信が終わるまで2回目以降は捨てる
     if (!commentText.trim() || !ticket) return;
-    await addComment(commentText, "comment", commentImages);
-    setCommentText("");
-    setCommentImages([]);
+    postingCommentRef.current = true;
+    setIsPostingComment(true);
+    try {
+      await addComment(commentText, "comment", commentImages);
+      setCommentText("");
+      setCommentImages([]);
+    } finally {
+      postingCommentRef.current = false;
+      setIsPostingComment(false);
+    }
   };
 
   const handleDeleteComment = async (id: string) => {
@@ -1910,12 +1927,21 @@ export function TicketDetailPanel({
     setEditImages([]);
   };
 
-  // ⌘/Ctrl + Enter からの返信確定。返信欄は通常フロー／レビューフローの2箇所で描画されるので共通化する
+  // 返信の確定（⌘/Ctrl + Enter と「返信」ボタンの共通経路）。
+  // 返信欄は通常フロー／レビューフローの2箇所で描画されるので共通化する
   const submitReply = (parent: TicketComment) => {
+    if (postingReplyRef.current) return; // 連打ガード
     if (!replyText.trim()) return;
+    postingReplyRef.current = true;
+    setIsPostingReply(true);
     void (async () => {
-      await addReply(parent, replyText, replyImages);
-      setReplyingToId(null); setReplyText(""); setReplyImages([]);
+      try {
+        await addReply(parent, replyText, replyImages);
+        setReplyingToId(null); setReplyText(""); setReplyImages([]);
+      } finally {
+        postingReplyRef.current = false;
+        setIsPostingReply(false);
+      }
     })();
   };
 
@@ -3685,9 +3711,9 @@ export function TicketDetailPanel({
                                     }} />
                                 </label>
                                 <div style={{ display: "flex", gap: 6 }}>
-                                  <button onClick={async () => { await addReply(c, replyText, replyImages); setReplyingToId(null); setReplyText(""); setReplyImages([]); }} disabled={!replyText.trim()}
-                                    style={{ padding: "6px 12px", background: !replyText.trim() ? "#F4F5F6" : "#0284C7", color: !replyText.trim() ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: !replyText.trim() ? "not-allowed" : "pointer" }}>
-                                    返信
+                                  <button onClick={() => submitReply(c)} disabled={!replyText.trim() || isPostingReply}
+                                    style={{ padding: "6px 12px", background: (!replyText.trim() || isPostingReply) ? "#F4F5F6" : "#0284C7", color: (!replyText.trim() || isPostingReply) ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: (!replyText.trim() || isPostingReply) ? "not-allowed" : "pointer" }}>
+                                    {isPostingReply ? "返信中..." : "返信"}
                                   </button>
                                   <button onClick={() => { setReplyingToId(null); setReplyText(""); setReplyImages([]); }} style={{ padding: "6px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
                                 </div>
@@ -4030,9 +4056,9 @@ export function TicketDetailPanel({
                                   }} />
                               </label>
                               <div style={{ display: "flex", gap: 6 }}>
-                                <button onClick={async () => { await addReply(c, replyText, replyImages); setReplyingToId(null); setReplyText(""); setReplyImages([]); }} disabled={!replyText.trim()}
-                                  style={{ padding: "6px 12px", background: !replyText.trim() ? "#F4F5F6" : "#0284C7", color: !replyText.trim() ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: !replyText.trim() ? "not-allowed" : "pointer" }}>
-                                  返信
+                                <button onClick={() => submitReply(c)} disabled={!replyText.trim() || isPostingReply}
+                                  style={{ padding: "6px 12px", background: (!replyText.trim() || isPostingReply) ? "#F4F5F6" : "#0284C7", color: (!replyText.trim() || isPostingReply) ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: (!replyText.trim() || isPostingReply) ? "not-allowed" : "pointer" }}>
+                                  {isPostingReply ? "返信中..." : "返信"}
                                 </button>
                                 <button onClick={() => { setReplyingToId(null); setReplyText(""); setReplyImages([]); }} style={{ padding: "6px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
                               </div>
@@ -4081,9 +4107,9 @@ export function TicketDetailPanel({
                         e.target.value = "";
                       }} />
                   </label>
-                  <button onClick={handleAddComment} disabled={!commentText.trim()}
-                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: !commentText.trim() ? "#F4F5F6" : "#059669", color: !commentText.trim() ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: !commentText.trim() ? "not-allowed" : "pointer" }}>
-                    投稿
+                  <button onClick={handleAddComment} disabled={!commentText.trim() || isPostingComment}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: (!commentText.trim() || isPostingComment) ? "#F4F5F6" : "#059669", color: (!commentText.trim() || isPostingComment) ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: (!commentText.trim() || isPostingComment) ? "not-allowed" : "pointer" }}>
+                    {isPostingComment ? "投稿中..." : "投稿"}
                   </button>
                 </div>
               </div>
