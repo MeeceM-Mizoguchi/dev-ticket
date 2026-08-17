@@ -184,6 +184,10 @@ function StatusPill({ status, onChange, disabled }: {
  * 範囲外の値が表に出ることはない。
  * 確定のしかたは他の文字セルと同じ（Enter か欄から離れたときに保存、Esc で取り消し）。
  *
+ * 欄に入っている間は、タイトル・詳細（ExpandingInput）と同じ「白地＋緑の枠」を出す。
+ * 数字だけの狭い欄なので広い入力欄は重ねず、その場に枠を出すだけにする。
+ * 枠は outline と box-shadow で描く（border や padding だと列幅と行の高さが動くため）。
+ *
  * ステータスとは連動させない。未着手/進行中/完了の3段階では表せない
  * 「どこまで進んだか」を自分で書き込むための欄なので、勝手に上書きしない。
  */
@@ -201,25 +205,46 @@ export function ProgressCell({ value, onCommit, onEnter, disabled, textStyle }: 
 }) {
   const [draft, setDraft] = useState(String(value));
   const [editing, setEditing] = useState(false);
+  /** 欄に入っているか。枠を出すためだけの状態 */
+  const [focused, setFocused] = useState(false);
+  /** Esc で捨てた直後の確定を止める（打ちかけを保存してしまわないように＝TextCell と同じ） */
+  const canceled = useRef(false);
 
   // 打っていない間は外からの変更に追従する（TextCell と同じ）
   useEffect(() => { if (!editing) setDraft(String(value)); }, [value, editing]);
 
   const commit = () => {
     setEditing(false);
+    setFocused(false);
+    // Esc は blur を呼んでここへ来るが、その時点の draft はまだ打ちかけのまま。
+    // 元の値へ戻すだけにして保存しない
+    if (canceled.current) { canceled.current = false; setDraft(String(value)); return; }
     // 空欄のまま離れたら 0%（未入力）に戻す
     const next = draft === "" ? 0 : clampTaskProgress(draft);
     setDraft(String(next));
     if (next !== value) onCommit(next);
   };
 
-  // 0% は日付の未設定と同じく薄く出す（打ってある値と見分けが付くように）
-  const tone: React.CSSProperties = value === 0 ? { color: "#C9C4BB" } : {};
+  // 0% は日付の未設定と同じく薄く出す（打ってある値と見分けが付くように）。
+  // ただし打っている間は薄いままだと読みにくいので、通常の文字色に戻す
+  const tone: React.CSSProperties = value === 0 && !focused ? { color: "#C9C4BB" } : {};
   const text: React.CSSProperties = { ...CELL, ...tone, ...textStyle, fontFamily: "var(--font-mono)", fontWeight: 700 };
+
+  // タイトル・詳細の重ねる入力欄と同じ見た目（白地・緑の枠・角丸・影）。
+  // 幅と高さを変えないよう、内側の余白は box-shadow の白で、枠は outline で作る
+  const frame: React.CSSProperties = focused
+    ? {
+      background: "#FFF",
+      borderRadius: 8,
+      boxShadow: "0 0 0 4px #FFF, 0 3px 10px rgba(5,150,105,0.18)",
+      outline: "1px solid #059669",
+      outlineOffset: 4,
+    }
+    : {};
 
   return (
     <span title="進捗率（0〜100の数字を入力）"
-      style={{ width: TASK_COLS.progress, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 1, boxSizing: "border-box" }}>
+      style={{ width: TASK_COLS.progress, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 1, boxSizing: "border-box", ...frame }}>
       {disabled
         ? <span style={{ ...text, cursor: "default" }}>{value}</span>
         : (
@@ -231,7 +256,7 @@ export function ProgressCell({ value, onCommit, onEnter, disabled, textStyle }: 
               const digits = e.target.value.replace(/[^0-9]/g, "").slice(0, 3);
               setDraft(digits === "" ? "" : String(clampTaskProgress(digits)));
             }}
-            onFocus={e => { setEditing(true); e.currentTarget.select(); }}
+            onFocus={e => { setEditing(true); setFocused(true); e.currentTarget.select(); }}
             onBlur={commit}
             onKeyDown={e => {
               if (e.key === "Enter" && !e.nativeEvent.isComposing) {
@@ -240,7 +265,11 @@ export function ProgressCell({ value, onCommit, onEnter, disabled, textStyle }: 
                 (e.currentTarget as HTMLInputElement).blur();
                 onEnter?.(draft === "" ? 0 : clampTaskProgress(draft));
               }
-              if (e.key === "Escape") { setDraft(String(value)); setEditing(false); (e.currentTarget as HTMLInputElement).blur(); }
+              if (e.key === "Escape") {
+                canceled.current = true;
+                setDraft(String(value)); setEditing(false); setFocused(false);
+                (e.currentTarget as HTMLInputElement).blur();
+              }
             }}
             style={{ ...text, width: "100%", minWidth: 0, textAlign: "right" as const, cursor: "text" }} />
         )}
