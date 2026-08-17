@@ -228,6 +228,13 @@ export default async function handler(req: any, res: any) {
       .delete().eq("project_id", file.project_id).eq("file_name", file.file_name);
     if (error) return res.status(500).json({ error: error.message });
     if (paths.length) await sb.storage.from(BUCKET).remove(paths);
+
+    // コメント(BRU12-025)は版をまたぐため project_files への FK を持たない＝
+    // 行を消しても連鎖しない。同じ引き当てキーでここで一緒に片付ける（孤児を残さない）。
+    const { error: cErr } = await sb.from("project_file_comments")
+      .delete().eq("project_id", file.project_id).eq("file_name", file.file_name);
+    if (cErr) console.error("[project-files] comment cleanup failed:", cErr.message);
+
     return res.json({ ok: true, deleted: paths.length });
   }
 

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { X, Download, Loader2, FileWarning, MonitorCog, Pencil, Eye } from "lucide-react";
+import { X, Download, Loader2, FileWarning, MonitorCog, Pencil, Eye, MessageSquare, List } from "lucide-react";
 import type { ProjectFile } from "@/app/types";
 import { escStack } from "@/app/lib/escStack";
 import { fetchSignedUrl, getFileKind, getExt, formatFileSize, isOfficeFile, canPreviewInBrowser, isEditableInBrowser, fetchFileWithRetry } from "@/app/lib/projectFiles";
 import { ExcelViewer } from "./ExcelViewer";
 import { ExcelEditor, type EditorHandle } from "./ExcelEditor";
 import { WordEditor } from "./WordEditor";
+import { FileCommentLayer } from "./FileCommentLayer";
 
 // ENHA2-035 自前ファイルビューア
 // 署名付きURLからブラウザが直接ファイルを取得し、レンダリングもすべてブラウザ内で行う。
@@ -93,19 +94,34 @@ interface Props {
   onDownload: (file: ProjectFile) => void;
   onOpenInApp: (file: ProjectFile) => void;
   onSaved?: () => void;
+  /** コメントへのリンク（?comment=&reply=）から開かれた場合の着地先（BRU12-025） */
+  focusCommentId?: string | null;
+  focusReplyId?: string | null;
 }
 
-export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSaved }: Props) {
+export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSaved, focusCommentId, focusReplyId }: Props) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [closeConfirm, setCloseConfirm] = useState(false);
   const editorRef = useRef<EditorHandle | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const kind = getFileKind(file.fileName);
   const canEdit = isEditableInBrowser(file.fileName) && canPreviewInBrowser(file.fileName);
 
+  // コメント（BRU12-025）。ホワイトボードと同じで、モード自体はツールバー側（ここ）が持つ
+  const [commentMode, setCommentMode] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  const [openCount, setOpenCount] = useState(0);
+  // 編集モード中はコメントを出さない（エディタが画面を作り替えるのでピンの位置が合わない。
+  // キー操作もセル入力とぶつかる）。表示できない形式も対象外。
+  const commentsEnabled = !editing && !error && canPreviewInBrowser(file.fileName);
+
   // 別ファイルに切り替わったら閲覧モードへ戻す
   useEffect(() => { setEditing(false); setCloseConfirm(false); }, [file.id]);
+
+  // 編集モードへ入ったらコメントモードは畳む（ピンごと消えるので開いたままにしない）
+  useEffect(() => { if (!commentsEnabled) { setCommentMode(false); setListOpen(false); } }, [commentsEnabled]);
 
   // 閉じるガード：編集中で未保存なら確認ダイアログを出す
   const attemptCloseRef = useRef<() => void>(() => {});
@@ -168,7 +184,9 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSave
   })();
 
   return createPortal(
-    <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.55)", display: "flex" }}
+    // data-file-viewer は「ビューアが開いている」ことの目印。裏でホワイトボードが開いていても
+    // 「c」キーをこちらのコメントモードだけが拾えるよう、CommentLayer がこれを見て降りる。
+    <div data-file-viewer style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.55)", display: "flex" }}
       onClick={attemptClose}>
       {/* 図面やシートを見るため全画面。閉じるのは右上の×か Esc */}
       <div onClick={e => e.stopPropagation()}
@@ -179,6 +197,29 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSave
             <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.fileName}</p>
             <p style={{ margin: 0, fontSize: 11, color: "#A09790" }}>{formatFileSize(file.fileSize)} · {file.uploadedBy}</p>
           </div>
+          {/* コメント（BRU12-025）。ホワイトボードと同じで、モードに入ってから書類をクリックする。
+              ショートカットは「c」（PDFはiframeにフォーカスが入るとキーが届かないのでボタンが確実） */}
+          {commentsEnabled && (
+            <>
+              <button onClick={() => { setCommentMode(v => !v); setListOpen(false); }}
+                title={commentMode ? "コメントモードを終了（Esc）" : "コメントモード（c）：書類をクリックしてコメントを置きます"}
+                style={{ position: "relative", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: commentMode ? "#F59E0B" : "#FFFBEB", color: commentMode ? "#fff" : "#B45309", border: `1.5px solid ${commentMode ? "#F59E0B" : "#FDE68A"}`, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                <MessageSquare style={{ width: 12, height: 12 }} />コメント
+                {openCount > 0 && (
+                  <span style={{
+                    minWidth: 16, height: 16, padding: "0 4px", borderRadius: 8, boxSizing: "border-box",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: commentMode ? "rgba(255,255,255,0.25)" : "#F59E0B", color: "#fff",
+                    fontSize: 10, fontWeight: 700,
+                  }}>{openCount}</span>
+                )}
+              </button>
+              <button onClick={() => setListOpen(v => !v)} title="コメント一覧（未解決／解決済み）"
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 8, background: listOpen ? "#FEF3C7" : "transparent", border: "none", cursor: "pointer", color: listOpen ? "#B45309" : "#6B6458" }}>
+                <List style={{ width: 15, height: 15 }} />
+              </button>
+            </>
+          )}
           {/* 画面内エディタ（xlsx/xlsm/docx）。閲覧⇔編集をトグルする */}
           {canEdit && (
             <button onClick={() => setEditing(v => !v)}
@@ -203,7 +244,23 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSave
             <X style={{ width: 16, height: 16 }} />
           </button>
         </div>
-        <div style={{ flex: 1, minHeight: 0 }}>{body}</div>
+        {/* コメントのピン層をこの箱の中に敷くので position:relative にする */}
+        <div ref={bodyRef} style={{ flex: 1, minHeight: 0, position: "relative" }}>
+          {body}
+          {commentsEnabled && (
+            <FileCommentLayer
+              file={file}
+              hostRef={bodyRef}
+              commentMode={commentMode}
+              setCommentMode={setCommentMode}
+              listOpen={listOpen}
+              setListOpen={setListOpen}
+              focusCommentId={focusCommentId}
+              focusReplyId={focusReplyId}
+              onCountChange={setOpenCount}
+            />
+          )}
+        </div>
       </div>
 
       {/* 未保存の確認 */}

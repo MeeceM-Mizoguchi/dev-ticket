@@ -12,6 +12,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapProjectFile } from "@/app/lib/mappers";
 import type { Project, ProjectFile, AccessLevel, UserPermissions } from "@/app/types";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { FILE_COMMENT_PARAM, FILE_REPLY_PARAM } from "@/app/lib/fileCommentLink";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -84,6 +85,8 @@ export function FileBoxPage() {
   const [uploading, setUploading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProjectFile | null>(null);
   const [previewTarget, setPreviewTarget] = useState<ProjectFile | null>(null);
+  // コメントのリンクから開かれた時の着地先（BRU12-025）
+  const [focusComment, setFocusComment] = useState<{ commentId: string | null; replyId: string | null } | null>(null);
 
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
@@ -150,6 +153,8 @@ export function FileBoxPage() {
 
   // 共有リンク(?file=...)で開かれたら、そのファイルのプレビューを直接開く。
   // URLに残った版が古くても、同名の最新版に読み替える。
+  // コメントのリンク(?file=..&comment=..[&reply=..], BRU12-025)なら、その付随情報も
+  // ビューアへ渡して該当ピンへ着地させる。
   useEffect(() => {
     const wanted = searchParams.get("file");
     if (!wanted || files.length === 0) return;
@@ -158,10 +163,17 @@ export function FileBoxPage() {
       ? files.reduce<ProjectFile | null>((best, f) =>
         f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
       : null;
-    if (newest) setPreviewTarget(newest);
-    else toast("リンク先のファイルが見つかりません", "error");
+    if (newest) {
+      setPreviewTarget(newest);
+      setFocusComment({
+        commentId: searchParams.get(FILE_COMMENT_PARAM),
+        replyId: searchParams.get(FILE_REPLY_PARAM),
+      });
+    } else toast("リンク先のファイルが見つかりません", "error");
     // 一度開いたらクエリを落とす（閉じた後に再度開いてしまわないように）
     searchParams.delete("file");
+    searchParams.delete(FILE_COMMENT_PARAM);
+    searchParams.delete(FILE_REPLY_PARAM);
     setSearchParams(searchParams, { replace: true });
   }, [files, searchParams, setSearchParams, toast]);
 
@@ -351,7 +363,7 @@ export function FileBoxPage() {
   }, [toast]);
 
   // モーダルの onClose は escStack に積まれるため、毎レンダーで作り直さないよう固定する
-  const closePreview = useCallback(() => setPreviewTarget(null), []);
+  const closePreview = useCallback(() => { setPreviewTarget(null); setFocusComment(null); }, []);
   const closeDelete = useCallback(() => setDeleteTarget(null), []);
 
   // 共有用リンク。Slack やメールに貼ると、開いた人はそのままプレビューが立ち上がる。
@@ -587,6 +599,8 @@ export function FileBoxPage() {
       {previewTarget && (
         <FileViewerModal file={previewTarget} onClose={closePreview}
           onDownload={handleDownload} onOpenInApp={handleOpenInApp}
+          focusCommentId={focusComment?.commentId ?? null}
+          focusReplyId={focusComment?.replyId ?? null}
           onSaved={() => { load(); if (project) emitLinkItemsChanged(project.id, "file"); }} />
       )}
       {deleteTarget && (
