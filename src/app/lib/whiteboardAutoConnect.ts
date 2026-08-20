@@ -549,6 +549,145 @@ export function applyConnectorVias(api: any, id: string, viasScene: readonly Pt[
   return true;
 }
 
+// ── 折れ線のリサイズ（BRU12-030）──
+//
+// 折れ線の形は点列そのものではなく「両端のアンカー＋折れ点(wbVias)」から毎フレーム引き直している。
+// そのためバウンディングボックスの角/辺を掴んでサイズを変えても、伸び縮みするのは点列だけで
+// 折れ点は元の位置に残る。選択を外した次のフレームで followTriangleConnections が“昔の折れ点”から
+// 経路を作り直すため、変更したサイズがまるごと元へ戻ってしまう（＝報告された症状）。
+//
+// ここでは「掴む直前の形」を控えておき、指を離したフレームで折れ点を新しい形へ焼き直す。
+//   ・線1本だけのリサイズ … 伸び縮みした点列の中間点をそのまま折れ点にする（見たままが残る）。
+//     両端は記録済みアンカーへ戻す（＝図形から外れない）。
+//   ・複数選択のリサイズ … 折れ点を外接矩形の変形に合わせて拡大縮小するだけにする。
+//     盤面をまとめて拡大した時に、経路の作り方（自動ルート/自由折れ点）まで変えないため。
+interface Box { x: number; y: number; w: number; h: number }
+export interface FoldResizeState {
+  resizing: boolean;                                  // 前tickでリサイズ中だったか
+  solo: boolean;                                      // 折れ線1本だけを掴んだリサイズか
+  pending: boolean;                                   // 焼き直しが未反映か（他処理と競合した時は次tickへ持ち越す）
+  snap: Map<string, { box: Box; vias: Pt[] }>;        // 掴む直前の外接矩形と折れ点(scene座標)
+}
+export const newFoldResizeState = (): FoldResizeState => ({ resizing: false, solo: false, pending: false, snap: new Map() });
+
+// 点列の外接矩形（el.x,y は先頭点であって左上ではないので、点から求める）
+const pointsBox = (el: any): Box => {
+  const xs = el.points.map((p: number[]) => el.x + p[0]);
+  const ys = el.points.map((p: number[]) => el.y + p[1]);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+};
+const sameBox = (a: Box, b: Box) =>
+  Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.w - b.w) < 0.5 && Math.abs(a.h - b.h) < 0.5;
+
+/** リサイズ確定フレームの焼き直し本体。1tick 1 updateScene を守るためまとめて反映する。 */
+function bakeResizedVias(api: any, elements: readonly any[], st: FoldResizeState): boolean {
+  const live = (id: string) => {
+    const el = elements.find((e: any) => e.id === id);
+    return el && !el.isDeleted && Array.isArray(el.points) && el.points.length >= 2 ? el : null;
+  };
+  if (st.solo) {
+    for (const [id, s] of st.snap) {
+      const el = live(id);
+      if (!el || sameBox(pointsBox(el), s.box)) continue; // 形が変わっていない＝別要素のリサイズ
+      const info = foldedRouteInfo(el, elements);
+      if (!info) continue;
+      // 伸び縮みした点列の中間点＝そのまま折れ点にする。両端は applyConnectorVias が
+      // 記録済みアンカー（繋いでいない線は今の端点）から引き直す。
+      let vias = el.points.slice(1, -1).map((p: number[]) => ({ x: el.x + p[0], y: el.y + p[1] }));
+      if (!vias.length) continue;
+      // ただし「辺から真っ直ぐ出るための肘」は折れ点にしない。経路生成側(routeViaPolyline)が
+      // その時の端点から作り直すので、折れ点にしてしまうと後で図形を動かした時に
+      // 昔の肘の位置まで戻ってから端点へ向かう＝経路が行って戻るようになる。
+      // 肘しか無い（コの字の）折れ線は、深さを保つために真ん中の1点だけ折れ点として残す。
+      if (vias.length >= 2 && info.sS && info.sE) {
+        const isCorner = (c: Pt | null, v: Pt) => !!c && Math.hypot(c.x - v.x, c.y - v.y) < 1;
+        const dropS = isCorner(elbowCorner(info.S, info.sS, vias[1]), vias[0]);
+        const dropE = isCorner(elbowCorner(info.E, info.sE, vias[vias.length - 2]), vias[vias.length - 1]);
+        const trimmed = vias.slice(dropS ? 1 : 0, dropE ? vias.length - 1 : vias.length);
+        vias = trimmed.length ? trimmed : [{
+          x: (vias[0].x + vias[vias.length - 1].x) / 2,
+          y: (vias[0].y + vias[vias.length - 1].y) / 2,
+        }];
+      }
+      // 履歴には載せない（リサイズ自体は Excalidraw が既に1ステップとして記録済み。ここは
+      // そこから導いた形の焼き直しなので、記録すると Ctrl+Z が2回必要になる・BRU7-058）。
+      if (applyConnectorVias(api, id, vias, true)) return true;
+    }
+    return false;
+  }
+  // 複数選択のリサイズ: 折れ点だけを外接矩形の変形へ合わせる（経路の引き直しは追従処理に任せる）
+  const patch = new Map<string, ViaOffset[]>();
+  for (const [id, s] of st.snap) {
+    if (!s.vias.length) continue; // 折れ点が無い線は自動ルートが新しいアンカーから引き直す
+    const el = live(id);
+    if (!el) continue;
+    const box = pointsBox(el);
+    if (sameBox(box, s.box)) continue;
+    const scale = (v: number, from: number, fw: number, to: number, tw: number) =>
+      fw > 0.5 ? to + ((v - from) / fw) * tw : to + (v - from); // 幅0（縦一直線）は平行移動だけ
+    const info = foldedRouteInfo(el, elements);
+    if (!info) continue;
+    const moved = s.vias.map((p) => ({
+      x: scale(p.x, s.box.x, s.box.w, box.x, box.w),
+      y: scale(p.y, s.box.y, s.box.h, box.y, box.h),
+    }));
+    patch.set(id, viasFromScene(moved, info.S));
+  }
+  if (!patch.size) return false;
+  api.updateScene({
+    elements: elements.map((e: any) => (!patch.has(e.id) ? e : {
+      ...e,
+      customData: { ...(e.customData ?? {}), wbVias: patch.get(e.id) },
+      version: (e.version ?? 1) + 1, versionNonce: rand(),
+    })),
+  });
+  return true;
+}
+
+/**
+ * 折れ線のサイズ変更を折れ点(wbVias)へ反映する（BRU12-030）。毎tick呼ぶ。
+ *
+ * リサイズ中は何もせず「掴む直前の形」を凍結し、指を離したフレームで焼き直す。
+ * @param active false（リモート反映中／他ヘルパーが反映済みのtick）の時は書き込まず、次tickへ持ち越す
+ * @returns updateScene で反映したら true
+ */
+export function syncFoldedViasOnResize(
+  api: any, elements: readonly any[], appState: any, st: FoldResizeState, active: boolean,
+): boolean {
+  const resizing = !!(appState?.isResizing || appState?.resizingElement);
+  if (resizing) {
+    // リサイズ中に控え直すと「変形の途中」を基準にしてしまう。開始フレームで凍結する。
+    if (!st.resizing) {
+      st.resizing = true;
+      st.solo = Object.values(appState?.selectedElementIds ?? {}).filter(Boolean).length === 1;
+      st.pending = st.snap.size > 0;
+    }
+    return false;
+  }
+  st.resizing = false;
+  if (st.pending) {
+    if (!active) return false; // 控えは保ったまま次tickで焼き直す
+    st.pending = false;
+    const did = bakeResizedVias(api, elements, st);
+    st.snap.clear();
+    if (did) return true;
+  }
+  // 静止中は「掴む直前の形」を控え続ける。
+  // 対象は“折れ点がズレると形が戻ってしまう線”だけ＝両端が図形に繋がった折れ線と、手動の折れ点を持つ折れ線。
+  st.snap.clear();
+  const sel = appState?.selectedElementIds ?? {};
+  for (const el of elements as any[]) {
+    if (el.isDeleted || !sel[el.id] || !isConnector(el) || !el.customData?.wbFolded) continue;
+    if (!Array.isArray(el.points) || el.points.length < 2) continue;
+    const info = foldedRouteInfo(el, elements);
+    if (!info) continue;
+    if (!(info.sS && info.sE) && readVias(el.customData).length === 0) continue;
+    st.snap.set(el.id, { box: pointsBox(el), vias: info.vias });
+  }
+  return false;
+}
+
 /**
  * 描画された線・矢印の端点が図形（四角/ひし形/楕円/三角形）に近ければ接続する。
  * 接続は customData(triStart/triEnd) に「外周上の相対位置」として記録し、followShapeConnections が固定・追従する。
