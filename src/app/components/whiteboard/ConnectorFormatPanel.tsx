@@ -177,7 +177,7 @@ export function ConnectorFormatPanel({ api, containerRef, canEdit }: Props) {
             {heading("折れ点")}
             {state.vias
               ? btn("リセット", false, () => { for (const id of state.ids) applyConnectorVias(api, id, [], true); })
-              : <span style={{ fontSize: 10, color: "#adb5bd", lineHeight: 1.5 }}>線上の丸をドラッグすると<br />折れ点を追加できます</span>}
+              : <span style={{ fontSize: 10, color: "#adb5bd", lineHeight: 1.5 }}>線上の丸をドラッグすると<br />好きな位置に何個でも<br />折れ点を追加できます</span>}
           </div>
         )}
       </div>
