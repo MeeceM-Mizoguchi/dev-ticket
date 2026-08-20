@@ -21,6 +21,7 @@ import { indentPadOf, indentSideOfAlign, type IndentSide } from "./whiteboardTex
 import { measureWrapped } from "./whiteboardIndent";
 import { boundTextPos } from "./whiteboardShapeFit";
 import { isTableCell } from "./whiteboardTable";
+import { isRemoteEditing } from "./whiteboardRemoteEdit";
 
 const FIT_TYPES = new Set(["rectangle", "ellipse", "diamond"]); // ラベルが折り返る素の図形（矢印ラベルは対象外）
 const EPS = 0.5;
@@ -63,6 +64,9 @@ export function reflowIndentWrap(api: any, skip: boolean): boolean {
 
   for (const t of els) {
     if (t.type !== "text" || t.isDeleted) continue;
+    // 他メンバーが入力中のテキストは、こちらの手元にある1つ前の確定内容で組み直すと
+    // 編集者と押し合う（BRU12-031・whiteboardRemoteEdit）。確定するまで触らない。
+    if (isRemoteEditing(t.id) || isRemoteEditing(t.containerId)) continue;
     const side = indentSideOfAlign(t.textAlign);
     if (!side) continue; // 中央揃え＝インデント非対応
     const container = t.containerId ? byId.get(t.containerId) : undefined;

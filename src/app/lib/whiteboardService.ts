@@ -252,11 +252,21 @@ export async function loadDocState(id: string): Promise<string> {
   return (data?.doc_state as string | undefined) ?? "";
 }
 
-export async function saveDocState(id: string, docStateBase64: string, userId: string): Promise<void> {
+/**
+ * ボードの内容を保存する。
+ * @param userId 更新者。null を渡すと updated_by は書き換えない（BRU12-031）。
+ *   他メンバーの編集を受け取った側も保険として保存するようにしたため（編集者がタブを閉じても
+ *   内容が失われないように）、その保存で「見ていただけの人」が更新者になるのを防ぐ。
+ */
+export async function saveDocState(id: string, docStateBase64: string, userId: string | null): Promise<void> {
   if (!isSupabaseEnabled) return;
   await supabase!
     .from("whiteboards")
-    .update({ doc_state: docStateBase64, updated_by: userId, updated_at: new Date().toISOString() })
+    .update({
+      doc_state: docStateBase64,
+      ...(userId ? { updated_by: userId } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", id);
 }
 
