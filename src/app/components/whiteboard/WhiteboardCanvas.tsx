@@ -329,6 +329,7 @@ export default function WhiteboardCanvas({
   const foldModeRef = useRef(false);               // onChangeから参照する用（stale回避）
   const shiftRef = useRef(false);                  // Shift押下中か
   const foldReqIds = useRef<Set<string>>(new Set()); // 折れ矢印にする要求idの控え
+  const prevNewElementId = useRef<string | null>(null); // 直前まで描画中だった要素id（中断の検知用・BRU12-031）
   const lastPointerScene = useRef<{ x: number; y: number } | null>(null); // 直近カーソル(scene座標)
   const undoUntil = useRef(0);                     // undo/redo 直後の猶予期限(ms)。この間は接続を記録どおり復元する（BRU5-066）
   const undoHardUntil = useRef(0);                 // 猶予窓の絶対上限（窓が開きっぱなしになるのを防ぐ・BRU7-058）
@@ -346,7 +347,7 @@ export default function WhiteboardCanvas({
 
   const {
     bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat, docLoaded,
-    setViewport, snapToFollowed, isApplyingFollow,
+    setViewport, snapToFollowed, isApplyingFollow, setEditingElements,
   } = useWhiteboardSync(boardId, user, channelKey, onEvicted);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
@@ -1117,6 +1118,13 @@ export default function WhiteboardCanvas({
     // 編集中テキストはモジュール単位の共有値なので、アクティブなキャンバスだけが書き込む
     // （2枚目のキャンバスが null で上書きすると、編集中の表レイアウトが崩れる）。
     if (appState && isActiveWbInstance(instanceKey)) setEditingTextEl(appState.editingTextElement ?? null);
+    // 「自分がいま文字を編集している要素」を他メンバーへ知らせる（BRU12-031）。
+    // 受け取った側は、その要素の高さフィット/折り返しの再計算を見送る。Excalidraw は編集中
+    // onChange を出さないため、他クライアントは1つ前の確定テキストで計算して押し戻してしまう。
+    if (appState) {
+      const et = appState.editingTextElement;
+      setEditingElements(et ? (et.containerId ? [et.id, et.containerId] : [et.id]) : []);
+    }
     // 自分のビューポート中心(cx,cy)+ズームを配信（追従される側・ENHA2-031）。
     // canEditガードより前に置き、閲覧専用ユーザーの表示も追従対象にできるようにする。
     if (appState) {
@@ -1157,6 +1165,14 @@ export default function WhiteboardCanvas({
     if (shiftRef.current && drawing && (drawing.type === "arrow" || drawing.type === "line")) {
       foldReqIds.current.add(drawing.id);
     }
+    // 描きかけのまま消えた新規要素を Yjs から取り消す（BRU12-031・ExcalidrawYjsBridge.dropIfAbsent）。
+    // クリックしただけ／Esc で中断した図形は tombstone を残さずシーンから消えるため、
+    // これが無いと共同編集で相手の操作が届くたびに“豆粒図形”が復活する。
+    const newElId: string | null = appState?.newElement?.id ?? null;
+    if (prevNewElementId.current && prevNewElementId.current !== newElId) {
+      try { bridgeRef.current?.dropIfAbsent(prevNewElementId.current); } catch { /* noop */ }
+    }
+    prevNewElementId.current = newElId;
     // onChange内で例外を投げるとExcalidrawのドラッグ/複製処理が壊れるため必ずcatchする
     // リモート反映(updateScene)由来のonChange、および追従適用中は自動接続/追従を実行しない（二重適用防止）
     const remote = (bridgeRef.current?.isApplyingRemote?.() ?? false) || isApplyingFollow();
@@ -1342,7 +1358,7 @@ export default function WhiteboardCanvas({
     try { bridgeRef.current?.syncFromExcalidraw(elements); } catch { /* noop */ }
     try { void syncLocalImages(); } catch { /* noop */ }
     } finally { onChangeDepth.current--; }
-  }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow, extendUndoGrace, instanceKey]);
+  }, [canEdit, api, bridgeRef, syncLocalImages, setViewport, isApplyingFollow, extendUndoGrace, instanceKey, setEditingElements]);
 
   const onPointerUpdate = useCallback((payload: any) => {
     // 折れ矢印(BRU5-064): 実カーソル位置(scene)を常に控える。Shiftの角度スナップで矢印端点が

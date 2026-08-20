@@ -115,6 +115,26 @@ export class ExcalidrawYjsBridge {
     }, LOCAL_ORIGIN);
   }
 
+  /**
+   * 描きかけのまま消えた新規要素を Yjs から取り消す（BRU12-031）。
+   *
+   * 図形ツールでクリックしただけ／描いている途中に Esc を押した場合、Excalidraw はその要素を
+   * **tombstone を残さずシーンから丸ごと取り除く**。ところが描いている間の onChange は既に
+   * Y.Map へ書き込まれているため、Yjs 側にはその要素が残る。単独作業なら反映が走らないので
+   * 表に出ないが、共同編集では相手の操作が届くたびにシーンを Y.Map で置き換えるため、
+   * 「消したはずの豆粒サイズの図形が勝手に生えてくる」ことになる。
+   *
+   * 「描画中だった要素が、確定もされず tombstone も無く消えた」時だけ取り消す。
+   * 削除は tombstone(isDeleted) として残るので、この経路で消えることはない。
+   */
+  dropIfAbsent(id: string) {
+    if (!id || !this.yElements.has(id)) return;
+    const local = (this.api?.getSceneElementsIncludingDeleted?.() ?? this.api?.getSceneElements?.()) as El[] | undefined;
+    if (!local) return;                                  // 判定材料が無い時は触らない
+    if (local.some((e) => e.id === id)) return;          // 確定済み／削除済みとして在る
+    this.doc.transact(() => { this.yElements.delete(id); }, LOCAL_ORIGIN);
+  }
+
   /** Y.Map の全要素を配列化（壊れた要素は除外）。適用時も独立コピーを渡す。
    *
    *  重要: Y.Map の反復順は「そのキーを最初に受信した順」で、CRDT のためクライアント毎・

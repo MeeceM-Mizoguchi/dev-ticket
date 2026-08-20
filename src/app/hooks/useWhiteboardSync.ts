@@ -8,11 +8,16 @@ import { SupabaseYjsProvider, REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvide
 import { ExcalidrawYjsBridge } from "@/app/components/whiteboard/ExcalidrawYjsBridge";
 import { loadDocState, saveDocState, base64ToBytes, bytesToBase64, wbChannelName, subscribeBoardEvicted } from "@/app/lib/whiteboardService";
 import { registerWbControl } from "@/app/lib/whiteboardControlBus";
+import { setRemoteEditingIds } from "@/app/lib/whiteboardRemoteEdit";
 
 export interface WbUser { id: string; name: string; color: string }
 export interface RemoteChat { userId: string; name: string; color: string; x: number; y: number; text: string }
 
 const SAVE_DEBOUNCE_MS = 1500;
+// 他メンバーの編集を受け取った側が「保険として」保存するまでの待ち時間（BRU12-031）。
+// 書いた本人の保存が先に済むよう十分長く取り、全員が同時に書きに行かないようばらつかせる。
+const REMOTE_SAVE_DEBOUNCE_MS = 8000;
+const REMOTE_SAVE_JITTER_MS = 4000;
 
 /**
  * @param channelKey プライベートモードのボードだけが持つ秘密トークン。
@@ -84,15 +89,48 @@ export function useWhiteboardSync(
         if (!disposed) onEvictedRef.current?.();
       });
 
-      // 3) 永続化（ローカル変更のみ・デバウンス保存）
+      // 3) 永続化（デバウンス保存）
+      //
+      // 【BRU12-031】他メンバーの編集（REMOTE_ORIGIN）でも保存する。以前はローカル変更だけを
+      // 保存対象にしていたため、書いた本人がデバウンス(1.5秒)の間にタブを閉じる／通信が切れると、
+      // その編集は誰の手元にも残っているのに DB へは一度も書かれず、次に開いた時に消えていた。
+      // 受け取った側が保険として保存すれば、書いた本人がいなくなっても内容は残る。
+      // ただし待ち時間は長めにして（＋ばらつき）、全員が同時に同じ内容を書き込まないようにする。
+      // 「見ていただけの人」が更新者になるのも避けるため、その保存では updated_by を書き換えない。
       let saveTimer: ReturnType<typeof setTimeout> | null = null;
-      const persist = () => saveDocState(boardId, bytesToBase64(Y.encodeStateAsUpdate(doc)), userRef.current.id);
-      const onDocUpdate = (_u: Uint8Array, origin: unknown) => {
-        if (origin === REMOTE_ORIGIN) return;
+      let saveDueAt = 0;
+      let saveAsAuthor = false; // 予約中の保存に、自分の編集が含まれているか
+      const persist = () => {
+        const asAuthor = saveAsAuthor;
+        saveAsAuthor = false;
+        return saveDocState(boardId, bytesToBase64(Y.encodeStateAsUpdate(doc)), asAuthor ? userRef.current.id : null);
+      };
+      const scheduleSave = (delay: number) => {
+        const due = Date.now() + delay;
+        if (saveTimer && saveDueAt <= due) return; // 既にもっと早い保存が予約済み
         if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => { saveTimer = null; void persist(); }, SAVE_DEBOUNCE_MS);
+        saveDueAt = due;
+        saveTimer = setTimeout(() => { saveTimer = null; void persist(); }, delay);
+      };
+      const onDocUpdate = (_u: Uint8Array, origin: unknown) => {
+        if (origin === REMOTE_ORIGIN) {
+          scheduleSave(REMOTE_SAVE_DEBOUNCE_MS + Math.floor(Math.random() * REMOTE_SAVE_JITTER_MS));
+          return;
+        }
+        saveAsAuthor = true;
+        scheduleSave(SAVE_DEBOUNCE_MS);
       };
       doc.on("update", onDocUpdate);
+
+      // タブを閉じる/隠す時は、予約中の保存を待たずに書き切る（閉じた瞬間の取りこぼしを防ぐ）。
+      const flushNow = () => {
+        if (!saveTimer) return;
+        clearTimeout(saveTimer); saveTimer = null;
+        void persist();
+      };
+      const onHide = () => { if (document.visibilityState === "hidden") flushNow(); };
+      document.addEventListener("visibilitychange", onHide);
+      window.addEventListener("pagehide", flushNow);
 
       // 3-2) 外（ページ側のプライベート切替）から操作できるようにする・whiteboardControlBus。
       const unregisterControl = registerWbControl(boardId, {
@@ -109,14 +147,19 @@ export function useWhiteboardSync(
       //   setState する（＝updateScene の乱発を防ぎ、ドラッグ/複製操作の中断を回避）。
       let prevCollabSig = "";
       let prevChatSig = "";
+      let prevEditSig = "";
       const onAwareness = () => {
         const states = awareness.getStates();
         const collab = new Map<string, any>();
         const chats: RemoteChat[] = [];
+        // 他メンバーが文字入力中の要素（BRU12-031）。入力中は導出（高さフィット・折り返し）を
+        // こちらでやり直さない＝編集者と押し合ってチカチカするのを防ぐ。
+        const editing: string[] = [];
         states.forEach((st: any, clientId: number) => {
           if (clientId === doc.clientID) return; // 自分は除外（自分のアバターは出さない）
           const u = st.user;
           if (!u) return;
+          if (Array.isArray(st.editing)) for (const id of st.editing) if (typeof id === "string") editing.push(id);
           const sid = String(clientId);
           // カーソル未移動でも接続中メンバーは右上アバターに出したいので pointer の有無に関わらず登録。
           // これにより collaborators=リアルタイムの在席状況となり、誰もいなければアバターは消える。
@@ -142,6 +185,9 @@ export function useWhiteboardSync(
         // チャットバブルはReact描画が必要（頻度は低い）。内容が変わった時だけ更新。
         const chatSig = JSON.stringify(chats);
         if (chatSig !== prevChatSig) { prevChatSig = chatSig; setRemoteChats(chats); }
+        // 編集中の要素idは onChange から同期的に参照するので、Reactを介さずモジュールへ置く。
+        const editSig = editing.join(",");
+        if (editSig !== prevEditSig) { prevEditSig = editSig; setRemoteEditingIds(editing); }
         // 追従（ENHA2-031）: Excalidrawネイティブの追従対象へ自分の表示を合わせる。
         applyFollow(states);
       };
@@ -201,6 +247,10 @@ export function useWhiteboardSync(
         window.removeEventListener("pointercancel", onUp);
         window.removeEventListener("blur", onLeave);
         document.removeEventListener("visibilitychange", onLeave);
+        document.removeEventListener("visibilitychange", onHide);
+        window.removeEventListener("pagehide", flushNow);
+        // ボードを離れる時、予約中の保存は捨てずに書き切る（切り替え直前の編集を落とさない）
+        flushNow();
         if (saveTimer) clearTimeout(saveTimer);
         unregisterControl();
         evict.dispose();
@@ -224,6 +274,8 @@ export function useWhiteboardSync(
       setRemoteChats([]);
       appliedVpSigRef.current = "";
       onAwarenessRef.current = () => {};
+      editingSigRef.current = "";
+      setRemoteEditingIds([]);
     };
     // channelKey はプライベート切替でのみ変わる。変わったら別チャンネルへ張り直す。
   }, [boardId, channelKey]);
@@ -234,6 +286,16 @@ export function useWhiteboardSync(
 
   const setChat = useCallback((text: string, active: boolean) => {
     awarenessRef.current?.setLocalStateField("chat", { text, active });
+  }, []);
+
+  // 自分がいま文字を編集している要素（テキスト要素＋コンテナ図形）を配信する（BRU12-031）。
+  // 受け取った側はその要素の導出（高さフィット・折り返し）を見送り、編集者の値をそのまま受け入れる。
+  const editingSigRef = useRef("");
+  const setEditingElements = useCallback((ids: string[]) => {
+    const sig = ids.join(",");
+    if (sig === editingSigRef.current) return; // 変化が無い間は awareness を配信しない
+    editingSigRef.current = sig;
+    awarenessRef.current?.setLocalStateField("editing", ids);
   }, []);
 
   // 自分のビューポート中心(cx,cy)とズームを配信（追従される側）。追従中は自分の視点を送らない。
@@ -261,6 +323,6 @@ export function useWhiteboardSync(
 
   return {
     bridgeRef, docRef, registerApi, synced, docLoaded, remoteChats, setCursor, setChat,
-    setViewport, snapToFollowed, isApplyingFollow,
+    setViewport, snapToFollowed, isApplyingFollow, setEditingElements,
   };
 }

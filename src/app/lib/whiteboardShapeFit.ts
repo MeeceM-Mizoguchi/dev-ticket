@@ -30,6 +30,7 @@
 // テキストの配置を Excalidraw と同じ式で中央へ置き直す（はみ出し自己修復に頼らず即整える）。
 import { fontString, indentSideOfAlign, lineW, wrapText, getLiveEditing } from "./whiteboardText";
 import { isTableCell } from "./whiteboardTable";
+import { isRemoteEditing } from "./whiteboardRemoteEdit";
 
 const PAD = 5;      // Excalidraw BOUND_TEXT_PADDING
 const EPS = 0.5;    // 変化とみなす閾値
@@ -38,8 +39,12 @@ const rand = () => Math.floor(Math.random() * 0x7fffffff);
 const FIT_TYPES = new Set(["rectangle", "ellipse", "diamond"]);
 
 // フィット対象の「バインドテキストを持ち得る素の図形」か。表セル・フレーム・矢印ラベルは除外。
+// 【BRU12-031】装飾用の影矩形（フレーム背景・テキストボックス背景）も除外する。文字を持つことが
+// 無いうえ、フレーム/テキストの追従で高さが毎回変わるため、基準高さ(wbBaseH)を書き続けて
+// 無駄な版更新＝同期のノイズになる。
 function isFitShape(e: any): boolean {
-  return !!e && !e.isDeleted && FIT_TYPES.has(e.type) && !isTableCell(e);
+  return !!e && !e.isDeleted && FIT_TYPES.has(e.type) && !isTableCell(e)
+    && !e.customData?.wbFrameBg && !e.customData?.wbBgFor;
 }
 
 // Excalidraw computeContainerDimensionForBoundText と厳密一致（型別のコンテナ高さ）。
@@ -101,15 +106,24 @@ const rawTextOf = (t: any): string =>
   typeof t?.originalText === "string" ? t.originalText : (t?.text ?? "");
 
 let _shapeReflowing = false; // 再入ガード（updateScene が同期的に onChange→本関数を呼び戻しても即 return）
-// セッション内: テキストが無い間に見た図形の高さ（＝テキストで伸びる前のユーザー意図の高さ）。
-// 空図形へ updateScene すると新規作成中の要素を壊すため、基準はここへローカル保持し、
-// 図形がテキストを持った瞬間に一度だけ customData.wbBaseH へ焼き込んで永続化する。
-const _emptyH = new Map<string, number>();
+
+// 【BRU12-031】基準高さの台帳は customData.wbBaseH（＝Yjsで同期される値）ただ1つにする。
+//
+// 以前はこれに加えて「テキストが無い間に見た高さ」をモジュール変数の Map（_emptyH）へ持ち、
+// そちらを wbBaseH より優先していた。この Map はクライアントごとに独立で同期されないため、
+// 共同編集では致命的だった:
+//   ・図形を描いている最中の中間サイズは相手の画面へ逐次流れる。相手が「文字が入る前」に
+//     見た高さは、描いた本人の最終高さとは限らない（相手が中間の高さを台帳に控える）。
+//   ・その図形に文字を入れた瞬間、本人は「自分の台帳の高さ」へ、相手は「相手の台帳の高さ」へ
+//     それぞれ図形を戻そうとする。どちらも版を上げて書き込むので永久に押し合う
+//     ＝図形のサイズが2つの値の間でチカチカ切り替わり続ける（報告された不具合）。
+// 同期される値だけから高さを決めれば、全員が同じ答えを出すので構造的に押し合いが起きない。
+// 文字が無い図形の高さは定義上つねにユーザー意図なので、その間 wbBaseH を実高さへ追従させておけば
+// セッション台帳と同じ役割を果たす。
 
 // 角リサイズ確定時に、選択中の素の図形の現在高さを wbBaseH へ焼き込む（表の freezeSelectedTable と同発想）。
 // 文字の有無は問わない: 空図形を大きくした場合もその高さを永続基準にしないと、後で文字を入れた瞬間に
-// 古い（または存在しない）基準まで縮んでしまうため（BRU6-011 追加修正・G1）。合わせてセッション記録
-// _emptyH も同値へ更新し、2つの台帳（永続 wbBaseH / セッション _emptyH）が食い違わないようにする。
+// 古い（または存在しない）基準まで縮んでしまうため（BRU6-011 追加修正・G1）。
 export function freezeSelectedShapeHeights(api: any): boolean {
   const st = api.getAppState();
   const sel = st.selectedElementIds || {};
@@ -117,7 +131,6 @@ export function freezeSelectedShapeHeights(api: any): boolean {
   const patch = new Map<string, any>();
   for (const e of els) {
     if (!sel[e.id] || !isFitShape(e)) continue;
-    _emptyH.set(e.id, e.height); // リサイズ確定＝この高さがユーザー意図。基準として控える。
     const baseH = e.customData?.wbBaseH;
     if (typeof baseH === "number" && Math.abs(baseH - e.height) < EPS) continue;
     patch.set(e.id, { ...e, customData: { ...e.customData, wbBaseH: Math.round(e.height) }, version: (e.version ?? 1) + 1, versionNonce: rand() });
@@ -133,7 +146,7 @@ export function freezeSelectedShapeHeights(api: any): boolean {
 // 編集中の図形は「高さのみ」調整する（テキスト配置は Excalidraw のエディタが管理するため触らない）。
 //
 // undoing=true（undo/redo 直後の猶予窓・BRU10-073）は、復元された実高さを「ユーザー意図の高さ」の
-// 正とみなして台帳（_emptyH / customData.wbBaseH）を書き直す。台帳は履歴に載らない NEVER 更新なので
+// 正とみなして台帳（customData.wbBaseH）を書き直す。台帳は履歴に載らない NEVER 更新なので
 // undo では戻らず、そのままだと直後の targetH = max(台帳, fitH) がリサイズ後の高さへ図形を押し戻して
 // 「ラベル付きの図形はサイズを変えて戻るを押しても戻らない」ように見えていた。
 export function reflowBoundTextShapes(api: any, skip: boolean, undoing = false): boolean {
@@ -149,18 +162,21 @@ export function reflowBoundTextShapes(api: any, skip: boolean, undoing = false):
 
   for (const c of els) {
     if (!isFitShape(c)) continue;
+    // 他メンバーが文字入力中の図形は、こちらの手元にある1つ前の確定テキストで計算すると
+    // 「伸びすぎ」と誤判定して縮めてしまい、編集者と押し合う（BRU12-031・whiteboardRemoteEdit）。
+    if (isRemoteEditing(c.id)) continue;
     const t = textByContainer.get(c.id);
 
     // テキスト要素が無い図形は「テキストで伸びようがない＝現在高さは必ずユーザー意図」。
-    // その高さをセッションMapへ控える。加えて、既に焼き込み済みの wbBaseH が実高さとズレていたら
-    // （remote拡大・undo/redo・複製など経路を問わず）ここで書き直し、台帳を実高さへ同期する（G2）。
-    // これで「空図形を拡大→文字入力で古い基準まで縮む」不具合を根本から断つ。差分がある時だけ patch
-    // するので churn は起きず1tickで収束する。新規作成中は onChange 側が newElement で本関数ごと skip
-    // 済みなので、ここで patch 対象になるのは wbBaseH を既に持つ＝作成済みの図形だけで安全。
+    // その高さを wbBaseH へ追従させる（remote拡大・undo/redo・複製など経路を問わず）。
+    // 【BRU12-031】以前はセッションMapへ控え、wbBaseH は既に持っている図形しか書き直さなかった。
+    // 台帳が同期されないため共同編集で押し合いが起きていた（冒頭の説明を参照）。基準は必ずここで
+    // 同期される値へ書き、以後は全員がその1つの値を見る。差分がある時だけ patch するので churn は
+    // 起きず1tickで収束する。新規作成中は onChange 側が newElement で本関数ごと skip 済みなので、
+    // 描いている最中の要素を触ることはない。
     if (!t) {
-      _emptyH.set(c.id, c.height);
       const savedBaseEmpty = typeof c.customData?.wbBaseH === "number" ? c.customData.wbBaseH : undefined;
-      if (savedBaseEmpty != null && Math.abs(savedBaseEmpty - c.height) > EPS) {
+      if (savedBaseEmpty == null || Math.abs(savedBaseEmpty - c.height) > EPS) {
         patch.set(c.id, { ...c, customData: { ...c.customData, wbBaseH: Math.round(c.height) }, version: (c.version ?? 1) + 1, versionNonce: rand() });
       }
       continue;
@@ -177,24 +193,22 @@ export function reflowBoundTextShapes(api: any, skip: boolean, undoing = false):
     const textH = wrapped.length * fontSize * lineHeight;
     const fitH = containerHeightForText(textH, c.type);
 
-    // 基準高さ = セッション記録（空だった時に観測した高さ）＞ 焼き込み済み wbBaseH ＞ 現在高さ。
-    // _emptyH は「テキストが無い間に見た＝確実にユーザー意図」の最も新しい観測なので最優先。次に永続
-    // 値、最後に現在高さ。※現在高さを wbBaseH より前に置くと、テキストで既に伸びた高さを下限に焼いて
-    // しまい「改行を減らしても縮まない」＝BRU6-011 の核が壊れるため、この順序は変えないこと。
-    // 改修前からの既存図形（どちらも無い）は現在高さを下限にして縮めない（誤縮小の回帰を避ける）。
+    // 基準高さ = 焼き込み済み wbBaseH ＞ 現在高さ。【BRU12-031】同期される値だけで決める。
+    // wbBaseH は「テキストが無かった間」に上の分岐が実高さへ追従させているので、
+    // 「文字を入れる直前の高さ」＝ユーザー意図がそのまま入っている（全クライアントで同じ値）。
+    // ※現在高さを wbBaseH より前に置くと、テキストで既に伸びた高さを下限に焼いてしまい
+    // 「改行を減らしても縮まない」＝BRU6-011 の核が壊れるため、この順序は変えないこと。
+    // 改修前からの既存図形（wbBaseH 無し）は現在高さを下限にして縮めない（誤縮小の回帰を避ける）。
+    // このとき targetH は単調増加にしかならないので、行数の計測が環境差でズレても押し合わない。
     // undo/redo 直後（undoing）は台帳を無視し、復元された実高さを基準にする＝台帳が undo に逆らわない。
-    // 合わせてセッション台帳もその場で実高さへ同期する（猶予窓が閉じた後も押し戻しが起きないように）。
     const savedBase = typeof c.customData?.wbBaseH === "number" ? c.customData.wbBaseH : undefined;
-    const base = undoing ? c.height : (_emptyH.get(c.id) ?? savedBase ?? c.height);
-    if (undoing) _emptyH.set(c.id, c.height);
+    const base = undoing ? c.height : (savedBase ?? c.height);
     const targetH = Math.max(base, fitH);
 
     const needH = Math.abs(c.height - targetH) > EPS;
-    // 通常はテキスト獲得時に一度だけ基準を永続化。undo 中は焼き込み済みの基準が実高さとズレていたら直す
+    // undo 中は焼き込み済みの基準が実高さとズレていたら直す
     // （持っていない図形には書かない＝自動のままの図形を勝手に手動基準へ変質させない）。
-    const needBaseWrite = undoing
-      ? savedBase != null && Math.abs(savedBase - c.height) > EPS
-      : savedBase == null && _emptyH.has(c.id);
+    const needBaseWrite = undoing && savedBase != null && Math.abs(savedBase - c.height) > EPS;
     if (!needH && !needBaseWrite) continue;
 
     const nc = {
