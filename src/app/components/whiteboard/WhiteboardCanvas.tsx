@@ -6,7 +6,7 @@ import { Excalidraw, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
 import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
-import { autoConnectLines, foldSelectedConnectors, followTriangleConnections, healBrokenElbowArrows, isConnectableShape, reconnectDraggedConnectors, remapDuplicatedCustomRefs, remapDuplicatedShapeAnchors, repairOpenTriangles, shapeSig, suppressTrianglePointEditing, unfoldSelectedConnectors, type DupPlan } from "@/app/lib/whiteboardAutoConnect";
+import { autoConnectLines, foldSelectedConnectors, followTriangleConnections, healBrokenElbowArrows, isConnectableShape, newFoldResizeState, reconnectDraggedConnectors, remapDuplicatedCustomRefs, remapDuplicatedShapeAnchors, repairOpenTriangles, shapeSig, suppressTrianglePointEditing, syncFoldedViasOnResize, unfoldSelectedConnectors, type DupPlan } from "@/app/lib/whiteboardAutoConnect";
 import { normalizeBraces } from "@/app/lib/whiteboardBrace";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
 import { syncTextBoxBgRects } from "@/app/lib/whiteboardTextBoxBg";
@@ -1107,6 +1107,7 @@ export default function WhiteboardCanvas({
   const prevFramePos = useRef<Map<string, { x: number; y: number; w: number; h: number }>>(new Map()); // 前回のフレーム位置＋サイズ（移動/リサイズ判別用・BRU5-040/BRU5-061）
   const wasDragging = useRef(false); // 前tickでドラッグ中だったか（ドラッグ確定=所属再判定の契機・BRU5-040）
   const wasResizing = useRef(false); // 前tickでリサイズ中だったか（表の角リサイズ確定=サイズ焼き込みの契機・BRU5-042）
+  const foldResize = useRef(newFoldResizeState()); // 折れ線のリサイズを折れ点へ焼き直すための控え（BRU12-030）
   const onChange = useCallback((elements: readonly any[], appState?: any) => {
     // #185保険(BRU7-043): Phase1(updateScene遅延)で通常 onChange は再入せず depth=1 だが、
     // 万一 updateScene が同期的に onChange を再入させても、深さで自動処理を打ち切って白画面を防ぐ。
@@ -1289,7 +1290,11 @@ export default function WhiteboardCanvas({
         const noConnect = isConnectSuppressed() && (pointerDownNow.current || pointerUpPending.current);
         // 端点つまみを掴んで離した線だけは「今繋がっている図形」を優先せず接続先を選び直す（BRU7-056-4/-6）。
         // それ以外の線まで選び直すと、端点が矩形から少しはみ出しているだけで外枠に吸われて崩れる。
-        const connected = remote || busy || bracesFixed || repaired ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined, dragGroupIds.current);
+        // 折れ線のサイズ変更を折れ点へ焼き直す（BRU12-030）。これが無いと、選択を外した次のフレームで
+        // 追従処理が“昔の折れ点”から経路を引き直し、変更したサイズがまるごと元に戻る。
+        // 静止中は「掴む直前の形」を控えるだけなので、反映が抑止されるtickでも毎回呼ぶ。
+        const viaResized = syncFoldedViasOnResize(api, elements, appState, foldResize.current, !remote && !busy && !bracesFixed && !repaired);
+        const connected = remote || busy || bracesFixed || repaired || viaResized ? false : autoConnectLines(api, elements, appState, processedLines.current, foldReqIds.current, foldModeRef.current, lastPointerScene.current, noConnect, endpointDragId.current ?? undefined, dragGroupIds.current);
         // 三角形コネクトの追従（ステートレス）。remote中やframe/autoConnect/修復反映直後はスキップ。
         // 折れ矢印トグルON時は foldAll を渡し、接続済み直線をこの追従パスで確実に折る（描画タイミング非依存）。
         // undo/redo 直後は forceAnchor: 繋ぎ替え/解除をせず、記録どおりのアンカーへ端点を戻す（BRU5-066）。
@@ -1306,7 +1311,7 @@ export default function WhiteboardCanvas({
         // 追従処理に foldAll を渡すと、盤面上の“既存の接続済みの線すべて”が折れ線に作り替えられ、
         // 「Elbowを押しただけで関係ない矢印まで壊れる」事故になる（BRU5-083）。既存の線は
         // 選択して「線の形」から明示的に折る。
-        const followedTri = followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !bracesFixed && !connected && !repaired, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
+        const followedTri = followTriangleConnections(api, elements, appState, prevTriSig.current, !remote && !busy && !bracesFixed && !connected && !repaired && !viaResized, false, undoing, editApplyId, noConnect, dupPlan.current?.pinned);
         // undo/redo の巻き戻しがまだ収束していない間は猶予窓を延長する（BRU7-058）。
         // 盤面が大きいと 300ms では追従が終わらず、窓が切れた残りの tick で接続が繋ぎ替え／解除
         // されていた。「直したものがある＝まだ収束していない」を延長条件にし、静定したら自然に閉じる。
