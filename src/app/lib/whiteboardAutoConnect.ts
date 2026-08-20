@@ -379,6 +379,55 @@ export function routeFreeVia(S: Pt, vias: readonly Pt[], E: Pt): Pt[] {
   return dedupeCollinear(out);
 }
 
+// ── 自由折れ点（BRU12-030）──
+//
+// 上の routeOrthogonalVia / routeFreeVia は「経由点を必ず通る直交ルート」を自動生成する方式で、
+// 角の位置はアルゴリズムが決める。そのため
+//   ・打った位置が角にならない（直線区間の点は dedupeCollinear に畳まれ、角は別の場所に湧く）
+//   ・2点目を足しても経路が変わらず「追加できていない」ように見える
+// という「好きな位置で折れない」問題があった。
+//
+// 自由折れ点モード(customData.wbViaFree)では、経路＝S→折れ点→…→E をそのまま結ぶだけにして、
+// 角の位置を一切自動調整しない。折れ点＝角、打った数だけ角が増える。
+// 一直線上に並んだ折れ点も角として残す（畳むと掴んでいたつまみが消えてしまうため）。
+
+// 辺 s に固定された端点 P と、隣の折れ点 q を直角に繋ぐ角。既に軸が揃っていれば不要(null)。
+// 図形の辺からは真っ直ぐ出入りさせたいので、両端だけはこの角を1つ挟む（折れ点自体は動かさない）。
+const elbowCorner = (P: Pt, s: Side, q: Pt): Pt | null =>
+  axisOfSide(s) === "h"
+    ? (Math.abs(q.y - P.y) < 0.5 ? null : { x: q.x, y: P.y })
+    : (Math.abs(q.x - P.x) < 0.5 ? null : { x: P.x, y: q.y });
+
+// 重なった点だけ落とす（dedupeCollinear と違い、一直線上の中間点は残す）。
+function dedupeSame(pts: Pt[]): Pt[] {
+  const out: Pt[] = [];
+  for (const q of pts) { const l = out[out.length - 1]; if (!l || Math.hypot(l.x - q.x, l.y - q.y) > 0.5) out.push(q); }
+  return out.length >= 2 ? out : pts.slice(0, 2);
+}
+
+/** 自由折れ点モードの経路。打った折れ点をそのまま角にする（BRU12-030）。 */
+export function routeViaPolyline(S: Pt, sS: Side | null, vias: readonly Pt[], E: Pt, sE: Side | null): Pt[] {
+  if (vias.length === 0) return sS && sE ? routeOrthogonal(S, sS, E, sE) : routeFree(S, E);
+  const out: Pt[] = [S];
+  if (sS) { const c = elbowCorner(S, sS, vias[0]); if (c) out.push(c); }
+  out.push(...vias.map((v) => ({ x: v.x, y: v.y })));
+  if (sE) { const c = elbowCorner(E, sE, vias[vias.length - 1]); if (c) out.push(c); }
+  out.push(E);
+  return dedupeSame(out);
+}
+
+/**
+ * 折れ線の経路を作る唯一の入口（BRU12-030）。
+ * 手で折れ点を編集した線(wbViaFree)は打った点をそのまま角にし、それ以外は従来の自動ルートを使う。
+ * ※既存の盤面（wbViaFree を持たない古い折れ線）は従来どおりの経路のまま＝見た目が変わらない。
+ */
+export function buildFoldedRoute(
+  cd: any, S: Pt, sS: Side | null, vias: readonly Pt[], E: Pt, sE: Side | null,
+): Pt[] {
+  if (vias.length > 0 && cd?.wbViaFree) return routeViaPolyline(S, sS, vias, E, sE);
+  return sS && sE ? routeOrthogonalVia(S, sS, vias, E, sE) : routeFreeVia(S, vias, E);
+}
+
 // 重複点・一直線上の中間点を除去（余計な折れ目を作らない）。
 function dedupeCollinear(pts: Pt[]): Pt[] {
   const uniq: Pt[] = [];
@@ -421,7 +470,7 @@ const anchorToPoint = (a: TriAnchor, tri: any): Pt => {
  * 図形に繋がっていない折れ線は経路の正解が points しか無いので、初回だけ現在の中間点を
  * 経由点として引き継ぐ（＝手で整えた形を勝手に作り直さない）。
  */
-export interface RouteInfo { S: Pt; E: Pt; sS: Side | null; sE: Side | null; vias: Pt[]; route: Pt[] }
+export interface RouteInfo { S: Pt; E: Pt; sS: Side | null; sE: Side | null; vias: Pt[]; route: Pt[]; free: boolean }
 export function foldedRouteInfo(el: any, elements: readonly any[]): RouteInfo | null {
   if (!el || el.isDeleted || !isConnector(el)) return null;
   const pts: number[][] = Array.isArray(el.points) ? el.points : [];
@@ -440,18 +489,18 @@ export function foldedRouteInfo(el: any, elements: readonly any[]): RouteInfo | 
   }
   const sS = both ? sideFromAnchor(aS!) : null;
   const sE = both ? sideFromAnchor(aE!) : null;
-  const route = both ? routeOrthogonalVia(S, sS!, vias, E, sE!) : routeFreeVia(S, vias, E);
-  return { S, E, sS, sE, vias, route };
+  const route = buildFoldedRoute(cd, S, sS, vias, E, sE);
+  return { S, E, sS, sE, vias, route, free: !!cd.wbViaFree && vias.length > 0 };
 }
 
 /**
  * 折れ点（経由点）を書き換えてコネクタの経路を引き直す（BRU7-043）。
  *
  * @param viasScene 新しい経由点(scene座標)。空配列を渡すと折れ点をすべて消して自動ルートへ戻す。
- * @param prune 「外しても経路が1mmも変わらない」経由点を捨てる（重複点・意味を失った点の掃除）。
+ * @param prune 隣（前後の折れ点・端点）と重なった経由点を捨てる（長さ0の区間の掃除）。
  *   ドラッグ中に捨てると掴んでいるつまみが消えるので、指を離したフレームだけ true にする。
- *   ※「経路の頂点に現れない点」は捨ててはいけない。直線区間に打った点は dedupeCollinear で
- *     頂点としては畳まれるが、その区間の位置を決めている（＝区間の平行移動）ので必須。
+ *   ※一直線上に並んだだけの点は捨てない（BRU12-030）。自由折れ点では折れ点＝角なので、
+ *     「見た目が変わらないから」と消すと置いたはずの折れ点が消え、好きな位置で折れなくなる。
  * @param commit ジェスチャの確定フレームで true（BRU7-058）。折れ点の編集は明確なユーザー操作
  *   なので、確定時の1回だけ履歴へ記録して「Ctrl+Z で折れ点の移動だけを戻せる」ようにする。
  *   ドラッグ中の中間状態を記録すると 1ドラッグが何十もの undo ステップに割れるため false。
@@ -462,24 +511,25 @@ export function applyConnectorVias(api: any, id: string, viasScene: readonly Pt[
   const el = elements.find((e: any) => e.id === id);
   const info = el ? foldedRouteInfo(el, elements) : null;
   if (!info) return false;
-  const build = (vs: readonly Pt[]) => (info.sS && info.sE
-    ? routeOrthogonalVia(info.S, info.sS, vs, info.E, info.sE)
-    : routeFreeVia(info.S, vs, info.E));
-  const sameRoute = (a: Pt[], b: Pt[]) => a.length === b.length && a.every((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y) < 0.5);
+  // 手で編集した折れ点は常に自由折れ点モード＝打った位置がそのまま角になる（BRU12-030）
+  const build = (vs: readonly Pt[]) => routeViaPolyline(info.S, info.sS, vs, info.E, info.sE);
   let route = build(viasScene);
   if (route.length < 2) return false;
   let kept: readonly Pt[] = viasScene;
   if (prune) {
+    // 隣（前後の折れ点・端点）と重なった点だけ捨てる。長さ0の区間はつまみが掴めなくなるため。
+    // ※一直線上に並んだだけの点は捨てない。捨てると「置いた折れ点が消える＝折れない」になる。
     const keep = [...viasScene];
     for (let i = keep.length - 1; i >= 0; i--) {
-      const base = build(keep);
-      const without = keep.filter((_, j) => j !== i);
-      if (sameRoute(build(without), base)) keep.splice(i, 1);
+      const prev = i > 0 ? keep[i - 1] : info.S;
+      const next = i < keep.length - 1 ? keep[i + 1] : info.E;
+      const near = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.y - b.y) < 1;
+      if (near(keep[i], prev) || near(keep[i], next)) keep.splice(i, 1);
     }
     if (keep.length !== viasScene.length) { kept = keep; route = build(keep); }
   }
-  const cd: any = { ...(el.customData ?? {}), wbFolded: true, wbVias: viasFromScene(kept, info.S) };
-  if (kept.length === 0) delete cd.wbVias;
+  const cd: any = { ...(el.customData ?? {}), wbFolded: true, wbViaFree: true, wbVias: viasFromScene(kept, info.S) };
+  if (kept.length === 0) { delete cd.wbVias; delete cd.wbViaFree; }
   const ox = route[0].x, oy = route[0].y;
   const np = route.map((p) => [p.x - ox, p.y - oy]);
   const xs = np.map((p) => p[0]), ys = np.map((p) => p[1]);
@@ -618,8 +668,8 @@ export function autoConnectLines(
     // 記録した triStart/triEnd と wbFolded を頼りに、追従時(followTriangleConnections)も再ルートする。
     let folded = false;
     if (wantFold && sC && eC && sShape && eShape && !isPolyShape(sShape) && !isPolyShape(eShape)) {
-      // 手動の折れ点(wbVias)があれば必ず通す（BRU7-043）
-      gp = routeOrthogonalVia(sC.point, sideFromAnchor(sC.anchor), viasToScene(customData, sC.point), eC.point, sideFromAnchor(eC.anchor));
+      // 手動の折れ点(wbVias)があれば必ず通す（BRU7-043 / 自由折れ点なら角そのもの・BRU12-030）
+      gp = buildFoldedRoute(customData, sC.point, sideFromAnchor(sC.anchor), viasToScene(customData, sC.point), eC.point, sideFromAnchor(eC.anchor));
       customData.wbFolded = true;
       folded = true;
     }
@@ -744,7 +794,7 @@ export function followTriangleConnections(
     if ((cd.wbFolded || foldAll) && bothConnected && stillAnchored) {
       // 手動の折れ点(wbVias)は始点相対で保存されているので、始点図形の移動にもそのまま追従する（BRU7-043）
       const rS = anchorToPoint(aS!, sShape);
-      const route = routeOrthogonalVia(rS, sideFromAnchor(aS!), viasToScene(cd, rS), anchorToPoint(aE!, eShape), sideFromAnchor(aE!));
+      const route = buildFoldedRoute(cd, rS, sideFromAnchor(aS!), viasToScene(cd, rS), anchorToPoint(aE!, eShape), sideFromAnchor(aE!));
       const cur = el.points.map((p: number[]) => ({ x: el.x + p[0], y: el.y + p[1] }));
       const same = !!cd.wbFolded && cur.length === route.length && route.every((q, i) => Math.hypot(q.x - cur[i].x, q.y - cur[i].y) < EPS);
       if (same) return el; // 既に折れていて形も一致 → 何もしない（churn防止）
@@ -1292,6 +1342,7 @@ export function unfoldSelectedConnectors(api: any, appState: any, round: boolean
     const nextCd = { ...(cd ?? {}) };
     delete nextCd.wbFolded;
     delete nextCd.wbVias; // 手動の折れ点も一緒に捨てる（直線に戻すので意味を持たない・BRU7-043）
+    delete nextCd.wbViaFree;
     changed = true;
     return {
       ...el,
@@ -1342,8 +1393,8 @@ export function foldSelectedConnectors(api: any, appState: any): boolean {
     const rS = both ? anchorToPoint(aS!, sShape) : S;
     const vias = viasToScene(cd, rS); // 手動の折れ点があれば維持したまま折り直す（BRU7-043）
     const route = both
-      ? routeOrthogonalVia(rS, sideFromAnchor(aS!), vias, anchorToPoint(aE!, eShape), sideFromAnchor(aE!))
-      : routeFreeVia(S, vias, E);
+      ? buildFoldedRoute(cd, rS, sideFromAnchor(aS!), vias, anchorToPoint(aE!, eShape), sideFromAnchor(aE!))
+      : buildFoldedRoute(cd, S, null, vias, E, null);
     if (route.length < 2) return el;
 
     const ox = route[0].x, oy = route[0].y;
