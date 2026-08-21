@@ -57,7 +57,8 @@ export function CommentListPanel({ comments, replies, activeId, members, selfNam
       onWheel={(e) => e.stopPropagation()}
       style={{
         position: "absolute", right: 16, ...(placement === "top" ? { top: 12 } : { bottom: 64 }),
-        width: 320, maxHeight: "60%", zIndex: 3,
+        // 件数で伸び縮みすると開くたびに位置が変わって落ち着かないので、高さは常に固定（中身が少なければ余白になる）
+        width: 320, height: "60%", minHeight: 240, maxHeight: "calc(100% - 88px)", zIndex: 3,
         pointerEvents: "auto", display: "flex", flexDirection: "column",
         background: "#fff", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 12,
         boxShadow: "0 10px 30px rgba(0,0,0,0.18)", overflow: "hidden",
@@ -77,7 +78,7 @@ export function CommentListPanel({ comments, replies, activeId, members, selfNam
         {tabBtn("resolved", "解決済み", resolved.length)}
       </div>
 
-      <div style={{ overflowY: "auto", padding: 6 }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 6 }}>
         {list.length === 0 ? (
           <div style={{ padding: "22px 12px", fontSize: 11, color: "#A09790", textAlign: "center" }}>
             {tab === "open" ? "未解決のコメントはありません" : "解決済みのコメントはありません"}

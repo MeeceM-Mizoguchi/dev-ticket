@@ -58,6 +58,7 @@ import { ConnectorViaOverlay } from "./ConnectorViaOverlay";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
 import { PrivateBadge } from "./PrivateBadge";
+import { useOverlayPinchZoom } from "./useOverlayPinchZoom";
 
 // Excalidraw標準のハンバーガーメニュー/ヘルプ(?)/コラボボタンを非表示にする
 // （メニューは自前、ヘルプは右上アイコンに一本化、コラボは独自Yjs同期を使うため不要）
@@ -351,6 +352,10 @@ export default function WhiteboardCanvas({
   } = useWhiteboardSync(boardId, user, channelKey, onEvicted);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
+
+  // UI（コメントピン・ツールバー・パネル）の上でのピンチをキャンバスのズームにする（BRU12-033）。
+  // これが無いとブラウザのページズームが働き、画面全体が拡大されてしまう。
+  useOverlayPinchZoom(api, containerRef);
 
   // このキャンバスを「アクティブなインスタンス」として登録する（whiteboardInstance.ts の説明を参照）。
   // リンクプレビューのパネルが開くとキャンバスが2枚になるため、window レベルの処理や
