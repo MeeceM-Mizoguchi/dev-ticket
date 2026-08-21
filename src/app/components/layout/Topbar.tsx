@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, RefreshCw } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, HelpCircle, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router";
+import { useTabs } from "@/app/contexts/TabContext";
 import { useRefresh } from "@/app/contexts/RefreshContext";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -43,6 +44,16 @@ export function Topbar() {
   const { userName, isSystemAdmin } = useAuth();
   const { refreshNonce, refreshing, refresh } = useRefresh();
   const navigate = useNavigate();
+  // Mac/iPad のタブモードでは、実URL遷移ではなくアクティブタブ内で遷移する。
+  const tabs = useTabs();
+  const openManual = (e: React.MouseEvent) => {
+    if (tabs) {
+      if (e.metaKey || e.ctrlKey) tabs.openTab("/manual");
+      else tabs.navigateActive("/manual");
+    } else {
+      navigate("/manual");
+    }
+  };
   const [showBugReport, setShowBugReport] = useState(false);
   const closeBugReport = useCallback(() => setShowBugReport(false), []);
   const [showNotif, setShowNotif] = useState(false);
@@ -594,6 +605,18 @@ export function Topbar() {
             </>
           )}
         </div>
+
+        {/* 使い方ガイド（マニュアル）: ベルの右に常設。全ユーザー */}
+        <button
+          onClick={openManual}
+          onContextMenu={tabs ? (e) => { e.preventDefault(); tabs.openTab("/manual"); } : undefined}
+          title="使い方ガイド"
+          style={{ position: "relative", width: 34, height: 34, borderRadius: 9, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", transition: "background 0.15s" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+          <HelpCircle style={{ width: 16, height: 16, color: "#9E9690" }} />
+        </button>
+
         <div style={{ width: 1, height: 18, background: "rgba(26,23,20,0.08)", margin: "0 4px" }} />
         <div style={{ position: "relative" }}>
           <button
