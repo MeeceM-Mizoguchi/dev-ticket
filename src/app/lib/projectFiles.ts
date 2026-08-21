@@ -121,6 +121,25 @@ export async function fetchSignedUrl(fileId: string, mode: "inline" | "download"
 }
 
 /**
+ * 署名付きURLを発行し直してからファイルを取得する。
+ * 署名付きURLの有効期限は60秒しかないため、ビューアを開いたまま少し経ってから
+ * （編集モードに入るなどして）取りに行くと必ず失効している。読む直前に発行し直す。
+ * 発行に失敗したときだけ、手持ちのURLで取りに行く。
+ */
+export async function fetchProjectFileFresh(fileId?: string | null, fallbackUrl?: string): Promise<Response> {
+  if (fileId) {
+    try {
+      return await fetchFileWithRetry(await fetchSignedUrl(fileId, "inline"));
+    } catch (e) {
+      if (!fallbackUrl) throw e;
+      console.warn("[projectFiles] 署名付きURLの再発行に失敗。手持ちのURLで試します", e);
+    }
+  }
+  if (!fallbackUrl) throw new Error("ファイルURLの取得に失敗しました");
+  return fetchFileWithRetry(fallbackUrl);
+}
+
+/**
  * ファイルをアップロードする。
  * ①サーバーが保存キーを決めて署名付きアップロードURLを発行
  * ②ブラウザ→ストレージへ直接アップロード（サーバーレス関数のサイズ上限を回避）

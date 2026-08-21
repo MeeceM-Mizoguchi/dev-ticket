@@ -144,13 +144,18 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSave
     return () => escStack.pop(h);
   }, []);
 
+  // 署名付きURLの有効期限は60秒。開いたまま時間が経ってから編集に入る／閲覧に戻ると、
+  // 失効したURLのままビューアやエディタが取りに行って「読み込みに失敗しました」になる。
+  // モードが切り替わるたびに発行し直し、届くまではスピナーを出す（古いURLで描き始めさせない）。
   useEffect(() => {
     let cancelled = false;
+    setUrl(null);
+    setError("");
     fetchSignedUrl(file.id, "inline")
       .then(u => { if (!cancelled) setUrl(u); })
       .catch(e => { if (!cancelled) setError(e?.message || "ファイルURLの取得に失敗しました"); });
     return () => { cancelled = true; };
-  }, [file.id]);
+  }, [file.id, editing]);
 
   const body = (() => {
     if (error) return <ErrorBox message={error} />;

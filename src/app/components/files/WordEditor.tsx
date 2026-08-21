@@ -6,17 +6,27 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-import { Loader2, Save, Bold, Italic, List, ListOrdered, Heading1, Heading2, X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import type { ProjectFile } from "@/app/types";
-import { uploadProjectFile, fetchFileWithRetry } from "@/app/lib/projectFiles";
+import { uploadProjectFile, fetchProjectFileFresh } from "@/app/lib/projectFiles";
 import { htmlToDocxBlob } from "@/app/lib/htmlToDocx";
+import { docxToEditorHtml } from "@/app/lib/docxToHtml";
+import { DocxSpan, DocxBlockStyle, Superscript, Subscript } from "@/app/lib/docxTiptap";
+import type { DocxLook } from "@/app/lib/docxLook";
+import { WordToolbar } from "./WordToolbar";
 import type { EditorHandle } from "./ExcelEditor";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 // ENHA2-035 Word(.docx) 画面内エディタ
 //
-// mammoth で docx → HTML にして TipTap で編集。保存時は htmlToDocx で docx を
-// 再生成する（再生成方式なので図形・一部レイアウト・脚注・変更履歴は失われる）。
+// docxToEditorHtml で docx → HTML にして TipTap で編集し、保存時は htmlToDocx で
+// docx を再生成する（再生成方式なので図形・テキストボックス・脚注・変更履歴・
+// ヘッダー/フッターは失われる）。
+//
+// 見た目はビューア（docx-preview）に合わせる。用紙サイズ・余白・本文と見出しの
+// 書体/大きさ/行間は docx から読んだ実際の値を使い、文字色・サイズ・書体や
+// 段落の配置・字下げ・行間・網かけ・罫線、表の列幅やセルの塗りも読み込んで
+// そのまま編集・保存できるようにしている。
 
 interface Props {
   url: string;
@@ -31,10 +41,12 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [look, setLook] = useState<DocxLook | null>(null);
 
   const editor = useEditor({
     extensions: [
       StarterKit,
+      DocxSpan, DocxBlockStyle, Superscript, Subscript,
       Image,
       Table.configure({ resizable: false }),
       TableRow, TableHeader, TableCell,
@@ -51,11 +63,14 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
     let cancelled = false;
     (async () => {
       try {
-        const buf = await (await fetchFileWithRetry(url)).arrayBuffer();
-        const mammoth: any = await import("mammoth/mammoth.browser");
-        const { value } = await (mammoth.default ?? mammoth).convertToHtml({ arrayBuffer: buf });
+        // 署名付きURLは60秒で失効する。閲覧してから編集ボタンを押すまでに
+        // それ以上かかるのが普通なので、渡されたURLは使わず発行し直して取りに行く。
+        const buf = await (await fetchProjectFileFresh(file.id, url)).arrayBuffer();
+        const { html, look: docxLook } = await docxToEditorHtml(new Uint8Array(buf));
         if (cancelled) return;
-        editor.commands.setContent(value || "<p></p>");
+        setLook(docxLook);
+        editor.commands.setContent(html);
+        setDirty(false);
         setLoading(false);
       } catch (e) {
         console.error("[WordEditor] load error:", e);
@@ -63,7 +78,7 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
       }
     })();
     return () => { cancelled = true; };
-  }, [editor, url]);
+  }, [editor, url, file.id]);
 
   // 編集を検知して未保存フラグを立てる
   useEffect(() => {
@@ -78,7 +93,8 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
     if (!editor) return false;
     setSaving(true);
     try {
-      const blob = await htmlToDocxBlob(editor.getHTML());
+      // 用紙サイズと余白は元の docx のものを引き継ぐ
+      const blob = await htmlToDocxBlob(editor.getHTML(), look?.page);
       const newFile = new File([blob], file.fileName, { type: blob.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
 
       let targetParentId = (file as any).parentId ?? (file as any).parent_id ?? (file as any).folderId ?? null;
@@ -103,7 +119,7 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
     } finally {
       setSaving(false);
     }
-  }, [editor, file, onSaved]);
+  }, [editor, file, look, onSaved]);
 
   const handleSaveClick = useCallback(() => {
     setConfirmOpen(true);
@@ -121,33 +137,18 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
   return (
     <>
       <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-        {/* ツールバー */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "8px 12px", borderBottom: "1px solid rgba(26,23,20,0.07)", flexShrink: 0, flexWrap: "wrap" }}>
-          <TB onClick={() => editor?.chain().focus().toggleBold().run()} active={editor?.isActive("bold")}><Bold style={ic} /></TB>
-          <TB onClick={() => editor?.chain().focus().toggleItalic().run()} active={editor?.isActive("italic")}><Italic style={ic} /></TB>
-          <div style={sep} />
-          <TB onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()} active={editor?.isActive("heading", { level: 1 })}><Heading1 style={ic} /></TB>
-          <TB onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()} active={editor?.isActive("heading", { level: 2 })}><Heading2 style={ic} /></TB>
-          <div style={sep} />
-          <TB onClick={() => editor?.chain().focus().toggleBulletList().run()} active={editor?.isActive("bulletList")}><List style={ic} /></TB>
-          <TB onClick={() => editor?.chain().focus().toggleOrderedList().run()} active={editor?.isActive("orderedList")}><ListOrdered style={ic} /></TB>
-          <div style={{ flex: 1 }} />
-          <button onClick={handleSaveClick} disabled={saving || loading}
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 14px", background: loading ? "#D4CEC8" : "#059669", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: saving || loading ? "default" : "pointer" }}>
-            {saving ? <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} /> : <Save style={{ width: 12, height: 12 }} />}
-            {saving ? "保存中..." : "保存（新バージョン）"}
-          </button>
-        </div>
+        <WordToolbar editor={editor} saving={saving} loading={loading} onSave={handleSaveClick} />
 
         {/* 警告バー */}
         <p style={{ margin: 0, padding: "5px 12px", fontSize: 11, color: "#92400E", background: "#FEF3C7", borderBottom: "1px solid rgba(217,119,6,0.2)", flexShrink: 0 }}>
-          本文・見出し・太字/斜体・箇条書き・表を編集できます。保存すると図形・一部レイアウト・脚注・変更履歴は失われる場合があります。
+          文字・段落・表の書式を編集できます。保存すると図形・テキストボックス・脚注・変更履歴・ヘッダー/フッターは失われる場合があります。
         </p>
 
-        {/* エディタ本体 */}
+        {/* エディタ本体（Wordの用紙を再現したページの上で編集する） */}
         <div style={{ flex: 1, overflow: "auto", minHeight: 0, background: "#F4F5F6", padding: 16 }}>
+          <style>{PAGE_CSS}{look?.css ?? ""}</style>
           {loading && <Centered><Loader2 style={{ width: 22, height: 22, animation: "spin 1s linear infinite" }} /> 読み込み中...</Centered>}
-          <div style={{ display: loading ? "none" : "block", maxWidth: 820, margin: "0 auto", background: "#fff", padding: "40px 48px", borderRadius: 6, boxShadow: "0 1px 4px rgba(0,0,0,0.06)", minHeight: "100%" }}>
+          <div className="dv-docx" style={{ display: loading ? "none" : "block", margin: "0 auto", background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,0.06)", minHeight: "100%" }}>
             <EditorContent editor={editor} />
           </div>
         </div>
@@ -203,7 +204,7 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
                 新バージョンとして保存しますか？
               </p>
               <p style={{ margin: 0, fontSize: 14, color: "#8B8680", lineHeight: 1.5 }}>
-                保存すると、図形・一部レイアウト・脚注・変更履歴などは失われる場合があります。
+                保存すると、図形・テキストボックス・脚注・変更履歴などは失われる場合があります。
               </p>
             </div>
 
@@ -244,18 +245,39 @@ export const WordEditor = forwardRef<EditorHandle, Props>(function WordEditor({ 
   );
 });
 
-const ic: React.CSSProperties = { width: 14, height: 14 };
-const sep: React.CSSProperties = { width: 1, height: 18, background: "rgba(26,23,20,0.10)", margin: "0 4px" };
-
-function TB({ onClick, active, children }: { onClick: () => void; active?: boolean; children: React.ReactNode }) {
-  return (
-    <button onClick={onClick} style={{
-      display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 28,
-      borderRadius: 6, cursor: "pointer", border: "none",
-      background: active ? "#ECFDF5" : "transparent", color: active ? "#059669" : "#6B6458",
-    }}>{children}</button>
-  );
-}
+// Word（ビューアの docx-preview）と揃えるための共通スタイル。
+// 用紙幅・余白・本文/見出しの書体は docx から読んだ値で上書きされる（look.css が後勝ち）。
+// ここに書いてあるのは、どの docx でも共通の「Wordらしさ」と、Tailwind の
+// リセットで消えてしまう箇条書き・表・上付き下付きの体裁の復元。
+const PAGE_CSS = `
+.dv-docx{width:794px;max-width:100%;padding:96px;box-sizing:border-box;}
+.dv-docx .ProseMirror{font-family:"Yu Gothic","游ゴシック","Hiragino Sans",Meiryo,sans-serif;font-size:11pt;line-height:1.15;color:#000;outline:none;}
+.dv-docx .ProseMirror p{margin:0;}
+.dv-docx .ProseMirror ul,.dv-docx .ProseMirror ol{margin:0;padding-left:48px;}
+.dv-docx .ProseMirror ul{list-style:disc;}
+.dv-docx .ProseMirror ul ul{list-style:circle;}
+.dv-docx .ProseMirror ul ul ul{list-style:square;}
+.dv-docx .ProseMirror ol{list-style:decimal;}
+.dv-docx .ProseMirror ol ol{list-style:lower-alpha;}
+.dv-docx .ProseMirror ol ol ol{list-style:lower-roman;}
+.dv-docx .ProseMirror li{margin:0;}
+.dv-docx .ProseMirror li>p{margin:0;}
+.dv-docx .ProseMirror sup{vertical-align:super;font-size:64%;}
+.dv-docx .ProseMirror sub{vertical-align:sub;font-size:64%;}
+.dv-docx .ProseMirror u{text-decoration:underline;}
+.dv-docx .ProseMirror table{border-collapse:collapse;width:100%;margin:10px 0;table-layout:fixed;}
+/* 罫線は表そのものが持つ既定（--dv-cell-border）を全セルに効かせる。
+   こうすると編集中に足した行やセルも同じ罫線になる。セル固有の罫線は
+   インラインstyleで上書きされ、罫線の無い表は Word と同じ薄いガイド線になる。 */
+.dv-docx .ProseMirror th,.dv-docx .ProseMirror td{border:var(--dv-cell-border,1px dashed rgba(0,0,0,0.18));padding:4px 6px;vertical-align:top;}
+.dv-docx .ProseMirror th{font-weight:inherit;text-align:left;}
+.dv-docx .ProseMirror .selectedCell:after{content:"";position:absolute;inset:0;background:rgba(5,150,105,0.10);pointer-events:none;}
+.dv-docx .ProseMirror th,.dv-docx .ProseMirror td{position:relative;}
+.dv-docx .ProseMirror img{max-width:100%;height:auto;}
+.dv-docx .ProseMirror a{color:#1155CC;text-decoration:underline;}
+.dv-docx .ProseMirror blockquote{margin:0 0 0 24px;}
+.dv-docx .ProseMirror hr{border:none;border-top:1px solid #999;margin:10px 0;}
+`;
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, height: "100%", color: "#B0A9A4", fontSize: 12 }}>{children}</div>;
