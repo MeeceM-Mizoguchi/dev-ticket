@@ -355,6 +355,10 @@ export interface GroupProjectPermission {
 export type BacklogStatus = "open" | "in-progress" | "converted" | "archived";
 export interface BacklogItem {
   id: string; projectId: string; title: string; description: string;
+  /** 階層フォルダ（Wikiと同仕様）。NULL = ルート直下 */
+  parentId: string | null;
+  /** true のときはフォルダ行。description/priority などの列は使わない */
+  isFolder: boolean;
   status: BacklogStatus; priority: Priority; rank: number;
   assignee: string; estimatedHours: number; convertedTicketId: string | null;
   convertedTicketWbs: string | null;
@@ -444,6 +448,11 @@ export interface WikiPage {
 }
 export interface MeetingMinute {
   id: string; projectId: string; title: string; meetingDate: string;
+  /** 階層フォルダ（Wikiと同仕様）。NULL = ルート直下 */
+  parentId: string | null;
+  /** true のときはフォルダ行。content/attendees などの列は使わない */
+  isFolder: boolean;
+  sortOrder: number;
   attendees: string[]; content: string;
   images: string[];
   createdBy: string; createdAt: string; updatedAt: string;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
 
 function toMinuteSlug(createdAt: string | null | undefined): string {
@@ -7,7 +7,7 @@ function toMinuteSlug(createdAt: string | null | undefined): string {
   if (!m) return "";
   return `${m[1]}${m[2]}${m[3]}-${m[4]}${m[5]}${m[6]}`;
 }
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, Users, Check, X, Search, FileUp, Upload, Loader2 } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, Users, Check, X, Search, FileUp, Upload, Loader2, FolderPlus, FolderOpen, Link2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -27,6 +27,8 @@ import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { readMinutesMarkdownFiles, MINUTES_MD_ACCEPT } from "@/app/lib/minutesMdImport";
+import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 
 function formatDate(d: string) {
   if (!d) return "";
@@ -118,7 +120,8 @@ function ActionItemsPanel({
 
 // ─── メインページ ─────────────────────────────────────────
 export function MinutesPage() {
-  const { projectSlug, minuteId: minuteIdParam } = useParams<{ projectSlug: string; minuteId?: string }>();
+  const { projectSlug, minuteId: minuteIdParam, folderId: folderIdParam } =
+    useParams<{ projectSlug: string; minuteId?: string; folderId?: string }>();
   const navigate = useNavigate();
   const { userPermissions, userName, userRole, userId } = useAuth();
   const { plan } = usePlan();
@@ -135,6 +138,12 @@ export function MinutesPage() {
   const [content, setContent] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<MeetingMinute | null>(null);
+  const [movingNodeTarget, setMovingNodeTarget] = useState<MeetingMinute | null>(null);
+  const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
+  // 作成直後のフォルダ/議事録を一時的にハイライトし、そこまでスクロールする（Wikiと同仕様）
+  const [highlightIds, setHighlightIds] = useState<string[]>([]);
+  const [scrollToId, setScrollToId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pendingActionsByMinute, setPendingActionsByMinute] = useState<Record<string, number>>({});
   const [showExternalInput, setShowExternalInput] = useState(false);
   const [externalInput, setExternalInput] = useState("");
@@ -246,16 +255,67 @@ export function MinutesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // URLパスパラメータからアイテム選択（UUID後方互換 + yyyymmdd-hhmmss スラグ対応）
+  // URLパスパラメータからアイテム選択（UUID後方互換 + yyyymmdd-hhmmss スラグ対応 + フォルダ）
   useEffect(() => {
-    if (minuteIdParam && minutes.length > 0) {
+    if (minutes.length === 0) return;
+    if (folderIdParam) {
+      const folder = minutes.find(m => m.id.toLowerCase() === folderIdParam.toLowerCase());
+      if (folder) setSelectedId(folder.id);
+      return;
+    }
+    if (minuteIdParam) {
       const found = minutes.find(m => m.id === minuteIdParam)
         ?? minutes.find(m => toMinuteSlug(m.createdAt) === minuteIdParam);
       if (found) setSelectedId(found.id);
     }
-  }, [minuteIdParam, minutes]);
+  }, [minuteIdParam, folderIdParam, minutes]);
 
   const selected = minutes.find(m => m.id === selectedId) ?? null;
+
+  // ツリー用の並び。フォルダを先頭に、議事録は従来どおり開催日の新しい順。
+  // 各階層の並びは buildDocTree がこの配列順をそのまま引き継ぐ。
+  const orderedMinutes = useMemo(() => [...minutes].sort((a, b) => {
+    if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
+    if (a.isFolder) return a.sortOrder - b.sortOrder || a.title.localeCompare(b.title, "ja");
+    return (b.meetingDate || "").localeCompare(a.meetingDate || "")
+      || (b.createdAt || "").localeCompare(a.createdAt || "");
+  }), [minutes]);
+  const tree = useMemo(() => buildDocTree(orderedMinutes), [orderedMinutes]);
+  const minuteCount = useMemo(() => minutes.filter(m => !m.isFolder).length, [minutes]);
+  const minuteById = useMemo(() => new Map(minutes.map(m => [m.id, m])), [minutes]);
+
+  // パンくず用：選択中の祖先フォルダ一覧
+  const ancestors = useMemo(() => {
+    if (!selected) return [];
+    const list: MeetingMinute[] = [];
+    let current: MeetingMinute | undefined = selected;
+    while (current?.parentId) {
+      const parent: MeetingMinute | undefined = minuteById.get(current.parentId);
+      if (!parent) break;
+      list.unshift(parent);
+      current = parent;
+    }
+    return list;
+  }, [selected, minuteById]);
+
+  const gotoMinute = useCallback((m: MeetingMinute) => {
+    navigate(`/${projectSlug ?? project?.slug}/minutes/${toMinuteSlug(m.createdAt) || m.id}`);
+  }, [navigate, projectSlug, project?.slug]);
+
+  const gotoFolder = useCallback((id: string) => {
+    navigate(`/${projectSlug ?? project?.slug}/minutes/folders/${id}`);
+  }, [navigate, projectSlug, project?.slug]);
+
+  // 作成したノードまでスクロールして数秒ハイライトする（Wikiと同仕様）
+  const flashCreated = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    setHighlightIds(ids);
+    setScrollToId(ids[0]);
+    highlightTimer.current = setTimeout(() => { setHighlightIds([]); setScrollToId(null); }, 2400);
+  }, []);
+
+  useEffect(() => () => { if (highlightTimer.current) clearTimeout(highlightTimer.current); }, []);
 
   useEffect(() => {
     setTitle(selected?.title ?? "");
@@ -295,12 +355,13 @@ export function MinutesPage() {
     }
   }, [selectedId]);
 
-  const handleAdd = async () => {
+  const handleAdd = async (parentId: string | null = null) => {
     if (!project) return;
     const id = crypto.randomUUID();
     const today = new Date().toISOString().slice(0, 10);
     const { data: inserted, error } = await supabase!.from("meeting_minutes").insert({
-      id, project_id: project.id, title: "新規議事録", meeting_date: today, attendees: [], content: "",
+      id, project_id: project.id, parent_id: parentId,
+      title: "新規議事録", meeting_date: today, attendees: [], content: "",
       created_by: userName || null,
     }).select("created_at").single();
     if (error) { toast("議事録の作成に失敗しました", "error"); return; }
@@ -308,7 +369,73 @@ export function MinutesPage() {
     emitLinkItemsChanged(project.id, "minute"); // 他タブの $ サジェストへ即時反映
     const slug = toMinuteSlug(inserted?.created_at) || id;
     navigate(`/${projectSlug ?? project?.slug}/minutes/${slug}`);
+    flashCreated([id]);
   };
+
+  // ── フォルダ（Wikiと同仕様） ─────────────────────────────────
+  const handleAddFolder = async (parentId: string | null = null) => {
+    if (!project) return;
+    const id = crypto.randomUUID();
+    const { error } = await supabase!.from("meeting_minutes").insert({
+      id, project_id: project.id, parent_id: parentId,
+      title: "無題のフォルダ", is_folder: true, attendees: [], content: "",
+      sort_order: minutes.filter(m => m.parentId === parentId).length,
+      created_by: userName || null,
+    });
+    if (error) {
+      console.error("[MinutesPage] folder insert error:", error);
+      toast("フォルダの作成に失敗しました", "error");
+      return;
+    }
+    await load();
+    gotoFolder(id);
+    flashCreated([id]);
+  };
+
+  const handleRenameNode = useCallback(async (id: string, nextTitle: string) => {
+    setMinutes(prev => prev.map(m => m.id === id ? { ...m, title: nextTitle } : m));
+    if (id === selectedId) setTitle(nextTitle);
+    const { error } = await supabase!.from("meeting_minutes")
+      .update({ title: nextTitle, updated_at: new Date().toISOString() }).eq("id", id);
+    if (error) {
+      console.error("[MinutesPage] rename error:", error);
+      toast("名前の変更に失敗しました", "error");
+      load();
+      return;
+    }
+    emitLinkItemsChanged(project?.id, "minute"); // 他タブのサジェスト表示名を更新
+  }, [selectedId, project?.id, load, toast]);
+
+  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
+    if (draggedId === targetParentId) return;
+    const dragged = minutes.find(m => m.id === draggedId);
+    if (!dragged || dragged.parentId === targetParentId) return;
+    if (isCyclicMove(minutes, draggedId, targetParentId)) {
+      toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
+      return;
+    }
+    const sortOrder = minutes.filter(m => m.parentId === targetParentId).length;
+    setMinutes(prev => prev.map(m => m.id === draggedId ? { ...m, parentId: targetParentId, sortOrder } : m));
+    const { error } = await supabase!.from("meeting_minutes")
+      .update({ parent_id: targetParentId, sort_order: sortOrder, updated_at: new Date().toISOString() })
+      .eq("id", draggedId);
+    if (error) {
+      console.error("[MinutesPage] move error:", error);
+      toast("移動に失敗しました", "error");
+    } else {
+      toast("配置を変更しました");
+    }
+    load();
+  }, [minutes, load, toast]);
+
+  const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
+
+  // フォルダはフォルダのURL、議事録は一覧と同じ yyyymmdd-hhmmss スラグでリンクを発行する
+  const handleCopyLink = useCallback((node: { id: string; isFolder: boolean }) => {
+    if (node.isFolder) { void copyShareLink({ kind: "minute-folder", id: node.id }); return; }
+    const m = minuteById.get(node.id);
+    void copyShareLink({ kind: "minute", id: toMinuteSlug(m?.createdAt) || node.id });
+  }, [copyShareLink, minuteById]);
 
   // ── MDファイル取り込み（単体 / 一括） ──────────────────────────
   // 1ファイル = 1議事録。タイトル・開催日・出席者は本文の前置きから拾い、
@@ -360,11 +487,14 @@ export function MinutesPage() {
   const handleDelete = async (m: MeetingMinute) => {
     await supabase!.from("meeting_minutes").delete().eq("id", m.id);
     emitLinkItemsChanged(project?.id, "minute");
-    if (selectedId === m.id) {
+    // フォルダを消すと配下も消える(cascade)ので、選択中が子孫なら選択を外す
+    const isSelectionGone = selectedId === m.id
+      || (!!selectedId && isCyclicMove(minutes, m.id, selectedId));
+    if (isSelectionGone) {
       setSelectedId(null);
       navigate(`/${projectSlug ?? project?.slug}/minutes`);
     }
-    toast(`「${m.title}」を削除しました`);
+    toast(`「${m.title || (m.isFolder ? "無題のフォルダ" : "新規議事録")}」を削除しました`);
     load();
   };
 
@@ -386,7 +516,7 @@ export function MinutesPage() {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>議事録</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${minutes.length} 件` : "..."}</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${minuteCount} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {permsLoaded && effectiveMinutesPerm === "view" && (
@@ -397,7 +527,21 @@ export function MinutesPage() {
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
-        <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto" }}>
+        <div
+          onDragOver={e => { if (!canEdit || sidebarSearch) return; e.preventDefault(); setIsTreeDragOverRoot(true); }}
+          onDragLeave={() => setIsTreeDragOverRoot(false)}
+          onDrop={async e => {
+            if (!canEdit || sidebarSearch) return;
+            e.preventDefault();
+            setIsTreeDragOverRoot(false);
+            const draggedId = e.dataTransfer.getData("text/plain");
+            if (draggedId) await handleMoveNode(draggedId, null);
+          }}
+          style={{
+            width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14,
+            border: isTreeDragOverRoot ? "1px dashed #059669" : "1px solid rgba(26,23,20,0.07)",
+            padding: 10, overflowY: "auto", transition: "all 0.15s",
+          }}>
           {/* 検索バー */}
           <div style={{ position: "relative", marginBottom: 8 }}>
             <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
@@ -419,65 +563,118 @@ export function MinutesPage() {
               {/* MD取り込み用の隠しinput。単体/一括で multiple だけが違う。 */}
               <input ref={singleMdInputRef} type="file" accept={MINUTES_MD_ACCEPT} onChange={handleMdInputChange} style={{ display: "none" }} />
               <input ref={bulkMdInputRef} type="file" accept={MINUTES_MD_ACCEPT} multiple onChange={handleMdInputChange} style={{ display: "none" }} />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
-                  <button
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 6, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
-                    {mdImportProgress ? (
-                      <>
-                        <Loader2 style={{ width: 12, height: 12, animation: "minutes-md-spin 1s linear infinite" }} />
-                        取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
-                      </>
-                    ) : (
-                      <>
-                        <Plus style={{ width: 12, height: 12 }} />新規議事録
-                        <ChevronDown style={{ width: 11, height: 11 }} />
-                      </>
-                    )}
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
-                  <DropdownMenuItem onSelect={() => handleAdd()}>
-                    <FileText style={{ width: 14, height: 14 }} />新規議事録を作成
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => singleMdInputRef.current?.click()}>
-                    <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => bulkMdInputRef.current?.click()}>
-                    <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
+                    <button
+                      style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
+                      {mdImportProgress ? (
+                        <>
+                          <Loader2 style={{ width: 12, height: 12, animation: "minutes-md-spin 1s linear infinite" }} />
+                          取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
+                        </>
+                      ) : (
+                        <>
+                          <Plus style={{ width: 12, height: 12 }} />新規議事録
+                          <ChevronDown style={{ width: 11, height: 11 }} />
+                        </>
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
+                    <DropdownMenuItem onSelect={() => handleAdd(null)}>
+                      <FileText style={{ width: 14, height: 14 }} />新規議事録を作成
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => singleMdInputRef.current?.click()}>
+                      <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => bulkMdInputRef.current?.click()}>
+                      <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <button onClick={() => handleAddFolder(null)}
+                  title="新規フォルダ"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, padding: "7px 10px", background: "#FFFBEB", color: "#D97706", border: "1.5px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <FolderPlus style={{ width: 13, height: 13 }} />
+                </button>
+              </div>
             </>
           )}
-          {minutes.length === 0 ? (
+
+          {sidebarSearch ? (
+            (() => {
+              // 検索中はフォルダ階層をたたんで、一致した議事録だけを平らに並べる（Wikiと同仕様）
+              const q = sidebarSearch.toLowerCase();
+              const matched = minutes.filter(m => !m.isFolder
+                && ((m.title || "").toLowerCase().includes(q) || (m.content ?? "").toLowerCase().includes(q)));
+              if (matched.length === 0) return (
+                <div style={{ padding: "24px 8px", textAlign: "center" }}>
+                  <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致する議事録がありません</p>
+                </div>
+              );
+              return matched.map(m => {
+                const parent = m.parentId ? minuteById.get(m.parentId) : null;
+                const isSelected = selectedId === m.id;
+                return (
+                  <div key={m.id} onClick={() => gotoMinute(m)}
+                    style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "7px 8px", borderRadius: 7, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 1 }}>
+                    <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</div>
+                      <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>
+                        {formatDate(m.meetingDate)}{parent ? ` · ${parent.title || "無題のフォルダ"}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()
+          ) : tree.length === 0 ? (
             <div style={{ padding: "24px 8px", textAlign: "center" }}>
               <FileText style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
               <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>議事録がありません</p>
             </div>
-          ) : (() => {
-            const filteredMinutes = sidebarSearch
-              ? minutes.filter(m => (m.title || "").toLowerCase().includes(sidebarSearch.toLowerCase()) || (m.content ?? "").toLowerCase().includes(sidebarSearch.toLowerCase()))
-              : minutes;
-            if (sidebarSearch && filteredMinutes.length === 0) return (
-              <div style={{ padding: "24px 8px", textAlign: "center" }}>
-                <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致する議事録がありません</p>
-              </div>
-            );
-            return filteredMinutes.map(m => (
-              <div key={m.id} onClick={() => navigate(`/${projectSlug ?? project?.slug}/minutes/${toMinuteSlug(m.createdAt) || m.id}`)}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 7, cursor: "pointer", background: selectedId === m.id ? "#ECFDF5" : "transparent" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontSize: 12, fontWeight: selectedId === m.id ? 700 : 500, color: selectedId === m.id ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</p>
-                  <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>{formatDate(m.meetingDate)}</p>
-                </div>
-                {(pendingActionsByMinute[m.id] ?? 0) > 0 && (
-                  <span title={`未完了アクション ${pendingActionsByMinute[m.id]} 件`}
-                    style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />
-                )}
-              </div>
-            ));
-          })()}
+          ) : (
+            <DocTree
+              tree={tree}
+              selectedId={selectedId}
+              canEdit={canEdit}
+              onSelect={(node: DocTreeNode) => {
+                if (node.isFolder) gotoFolder(node.id);
+                else {
+                  const m = minuteById.get(node.id);
+                  if (m) gotoMinute(m);
+                }
+              }}
+              onAddChild={(parentId, isFolder) => { if (isFolder) handleAddFolder(parentId); else handleAdd(parentId); }}
+              addItemLabel="議事録を追加"
+              onRename={handleRenameNode}
+              onDelete={node => { const m = minuteById.get(node.id); if (m) setDeleteTarget(m); }}
+              onMove={handleMoveNode}
+              onOpenMoveModal={node => { const m = minuteById.get(node.id); if (m) setMovingNodeTarget(m); }}
+              onCopyLink={handleCopyLink}
+              highlightIds={highlightIds}
+              scrollToId={scrollToId}
+              renderItemRow={(node, isSelected) => {
+                const m = minuteById.get(node.id);
+                const pending = pendingActionsByMinute[node.id] ?? 0;
+                return (
+                  <>
+                    <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.title || "新規議事録"}</p>
+                      <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>{formatDate(m?.meetingDate ?? "")}</p>
+                    </div>
+                    {pending > 0 && (
+                      <span title={`未完了アクション ${pending} 件`}
+                        style={{ width: 7, height: 7, borderRadius: "50%", background: "#F59E0B", flexShrink: 0 }} />
+                    )}
+                  </>
+                );
+              }}
+            />
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
@@ -486,16 +683,53 @@ export function MinutesPage() {
               <FileText style={{ width: 32, height: 32, color: "#D4CEC8", margin: "0 auto 10px" }} />
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>左の一覧から議事録を選択するか、新規作成してください</p>
             </div>
+          ) : selected.isFolder ? (
+            <div style={{ padding: "60px 0", textAlign: "center" }}>
+              <FolderOpen style={{ width: 32, height: 32, color: "#FCD34D", margin: "0 auto 10px" }} />
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: "0 0 6px" }}>{selected.title || "無題のフォルダ"}</p>
+              <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
+                {minutes.filter(m => m.parentId === selected.id).length} 件のアイテム
+              </p>
+              <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+                <button onClick={() => handleCopyLink(selected)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <Link2 style={{ width: 13, height: 13 }} />リンクをコピー
+                </button>
+                {canEdit && (
+                  <button onClick={() => handleAdd(selected.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#FFFFFF", color: "#6B6458", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    <Plus style={{ width: 13, height: 13 }} />このフォルダに議事録を追加
+                  </button>
+                )}
+              </div>
+            </div>
           ) : (
             <>
               {/* 固定ヘッダー: タイトル・削除・開催日・出席者 */}
               <div style={{ padding: "20px 20px 12px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                {ancestors.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#9E9690", marginBottom: 8, flexWrap: "wrap" }}>
+                    <span onClick={() => { setSelectedId(null); navigate(`/${projectSlug ?? project?.slug}/minutes`); }} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>議事録ホーム</span>
+                    {ancestors.map(folder => (
+                      <div key={folder.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span>&gt;</span>
+                        <span onClick={() => gotoFolder(folder.id)} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>
+                          {folder.title || "無題のフォルダ"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input
                     value={title} disabled={!canEdit}
                     onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value, meetingDate, attendees, content }); }}
                     placeholder="議事録タイトル"
                     style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                  <button onClick={() => handleCopyLink(selected)} title="この議事録へのリンクをコピー"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0, display: "flex", alignItems: "center" }}>
+                    <Link2 style={{ width: 14, height: 14 }} />
+                  </button>
                   <ArticleExportButton onExport={f => exportMinuteArticle(selected, f)} />
                   {canEdit && (
                     <button onClick={() => setDeleteTarget(selected)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
@@ -630,10 +864,25 @@ export function MinutesPage() {
 
       {deleteTarget && (
         <ConfirmDialog
-          title="議事録の削除"
-          message={`「${deleteTarget.title}」を削除します。`}
+          title={deleteTarget.isFolder ? "フォルダの削除" : "議事録の削除"}
+          message={deleteTarget.isFolder
+            ? `「${deleteTarget.title || "無題のフォルダ"}」を削除します。フォルダ内の議事録も一緒に削除されます。`
+            : `「${deleteTarget.title || "新規議事録"}」を削除します。`}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
+      )}
+
+      {/* Googleドライブ風のフォルダ階層一覧選択移動モーダル */}
+      {movingNodeTarget && (
+        <FolderMoveModal
+          node={movingNodeTarget}
+          items={minutes}
+          onClose={() => setMovingNodeTarget(null)}
+          onConfirm={async targetParentId => {
+            await handleMoveNode(movingNodeTarget.id, targetParentId);
+            setMovingNodeTarget(null);
+          }}
+        />
       )}
 
       {/* チケット詳細パネル */}

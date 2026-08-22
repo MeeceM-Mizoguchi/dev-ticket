@@ -45,6 +45,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   // Sprint list
   { path: "/:projectSlug", element: <SprintPage /> },
   { path: "/:projectSlug/backlog", element: <BacklogPage /> },
+  // フォルダ用の静的セグメントなので /:itemId より優先される
+  { path: "/:projectSlug/backlog/folders/:folderId", element: <BacklogPage /> },
   { path: "/:projectSlug/backlog/:itemId", element: <BacklogPage /> },
   
   // 🌟 修正: Wikiの動的パスパラメータを明示的にマッピング
@@ -54,6 +56,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/wiki/*", element: <WikiPage /> },
   
   { path: "/:projectSlug/minutes", element: <MinutesPage /> },
+  // フォルダ用の静的セグメントなので /:minuteId より優先される
+  { path: "/:projectSlug/minutes/folders/:folderId", element: <MinutesPage /> },
   { path: "/:projectSlug/minutes/:minuteId", element: <MinutesPage /> },
   // ENHA2-035 ファイルボックス（静的セグメントなので /:projectSlug/:segment より優先される）
   { path: "/:projectSlug/files", element: <FileBoxPage /> },

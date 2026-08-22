@@ -5,7 +5,6 @@ import {
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
   Folder, FolderPlus, Plus, Pencil,
 } from "lucide-react";
-import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -13,6 +12,8 @@ import { mapProject, mapProjectFile } from "@/app/lib/mappers";
 import type { Project, ProjectFile, AccessLevel, UserPermissions } from "@/app/types";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { FILE_COMMENT_PARAM, FILE_REPLY_PARAM } from "@/app/lib/fileCommentLink";
+import { FILE_FOLDER_PARAM } from "@/app/lib/shareLink";
+import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -174,6 +175,32 @@ export function FileBoxPage() {
     searchParams.delete("file");
     searchParams.delete(FILE_COMMENT_PARAM);
     searchParams.delete(FILE_REPLY_PARAM);
+    setSearchParams(searchParams, { replace: true });
+  }, [files, searchParams, setSearchParams, toast]);
+
+  // 共有リンク(?folder=...)で開かれたら、そのフォルダを開いた状態にする。
+  // パンくずは parent_id を根までたどって組み立てる（手で潜ったときと同じ状態にする）。
+  useEffect(() => {
+    const wanted = searchParams.get(FILE_FOLDER_PARAM);
+    if (!wanted || files.length === 0) return;
+    const folder = files.find(f => f.id === wanted && f.isFolder);
+    if (folder) {
+      const chain: { id: string; name: string }[] = [];
+      const seen = new Set<string>();
+      let cur: ProjectFile | undefined = folder;
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        chain.unshift({ id: cur.id, name: cur.fileName });
+        const parentId: string | null = cur.parentId ?? null;
+        cur = parentId ? files.find(f => f.id === parentId && f.isFolder) : undefined;
+      }
+      setCurrentFolderId(folder.id);
+      setBreadcrumbs(chain);
+    } else {
+      toast("リンク先のフォルダが見つかりません", "error");
+    }
+    // 一度開いたらクエリを落とす（フォルダを移動しても戻されないように）
+    searchParams.delete(FILE_FOLDER_PARAM);
     setSearchParams(searchParams, { replace: true });
   }, [files, searchParams, setSearchParams, toast]);
 
@@ -366,14 +393,13 @@ export function FileBoxPage() {
   const closePreview = useCallback(() => { setPreviewTarget(null); setFocusComment(null); }, []);
   const closeDelete = useCallback(() => setDeleteTarget(null), []);
 
-  // 共有用リンク。Slack やメールに貼ると、開いた人はそのままプレビューが立ち上がる。
+  // 共有用リンク。Slack やメールに貼ると、開いた人はそのままプレビュー（フォルダなら
+  // そのフォルダを開いた状態）で着地する。
   // （DevTicket内の本文に貼る場合は %メンションの方が画面遷移せず戻れるので推奨）
-  const handleCopyLink = useCallback(async (file: ProjectFile) => {
-    const slug = projectSlug ?? project?.slug ?? "";
-    const url = `${window.location.origin}/${slug}/files?file=${encodeURIComponent(file.id)}`;
-    if (await copyText(url)) toast("リンクをコピーしました");
-    else toast("リンクのコピーに失敗しました", "error");
-  }, [projectSlug, project, toast]);
+  const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
+  const handleCopyLink = useCallback((file: ProjectFile) => {
+    void copyShareLink({ kind: file.isFolder ? "file-folder" : "file", id: file.id });
+  }, [copyShareLink]);
 
   const handleDelete = useCallback(async (file: ProjectFile) => {
     setDeleteTarget(null);
@@ -537,6 +563,10 @@ export function FileBoxPage() {
                         フォルダ · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
                       </p>
                     </div>
+                    <button onClick={e => { e.stopPropagation(); handleCopyLink(f); }} title="リンクをコピー"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Link2 style={{ width: 13, height: 13 }} />
+                    </button>
                     <button onClick={e => { e.stopPropagation(); setRenameTarget(f); setRenameFolderName(f.fileName); }} title="名前を変更"
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Pencil style={{ width: 13, height: 13 }} />

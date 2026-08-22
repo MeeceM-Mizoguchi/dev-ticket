@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search, MoreVertical, Download, FileUp, Upload, Loader2 } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search, MoreVertical, Download, FileUp, Upload, Loader2, Link2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -29,6 +29,7 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { readWikiMarkdownFiles, WIKI_MD_ACCEPT } from "@/app/lib/wikiMdImport";
+import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 
 interface TreeNode extends WikiPageType {
   children: TreeNode[];
@@ -51,7 +52,7 @@ function buildTree(pages: WikiPageType[]): TreeNode[] {
 }
 
 function TreeItem({
-  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onImportMd, onDelete, onMoveNode, onOpenMoveModal, onRename, onExport, canEdit, highlightIds, scrollToId,
+  node, depth, selectedId, onSelectPage, onSelectFolder, onAddChild, onImportMd, onDelete, onMoveNode, onOpenMoveModal, onRename, onExport, onCopyLink, canEdit, highlightIds, scrollToId,
 }: {
   node: TreeNode; depth: number; selectedId: string | null;
   onSelectPage: (id: string) => void;
@@ -63,6 +64,7 @@ function TreeItem({
   onOpenMoveModal: (node: WikiPageType) => void;
   onRename: (id: string, newTitle: string) => Promise<void>;
   onExport: (node: WikiPageType, format: ExportFormat) => void;
+  onCopyLink: (node: WikiPageType) => void;
   canEdit: boolean;
   /** 作成直後に一時的に色を付けるノード。BRU10-080 */
   highlightIds: string[];
@@ -71,6 +73,9 @@ function TreeItem({
 }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
+  // 3点リーダー/右クリックメニューを開いている行。開いている間だけ枠を出して
+  // 「どの行のメニューか」を示す。選択(右パネル表示)は動かさない。
+  const [menuOpen, setMenuOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(node.title);
@@ -118,14 +123,6 @@ function TreeItem({
     } else {
       onSelectPage(node.id);
     }
-  };
-
-  // 右クリック(コンテキストメニュー)時に対象を選択状態にする（開閉トグルはしない）。
-  // どの項目へのメニューか分かるように、選択ハイライトを右クリック対象へ移す。
-  const selectNode = () => {
-    if (isEditing) return;
-    if (isFolder) onSelectFolder(node.id);
-    else onSelectPage(node.id);
   };
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -207,6 +204,7 @@ function TreeItem({
           <P.Item onSelect={() => onExport(node, "pdf")}>PDF (.pdf)</P.Item>
         </P.SubContent>
       </P.Sub>
+      <P.Item onSelect={() => onCopyLink(node)}><Link2 style={menuIconStyle} />リンクをコピー</P.Item>
       {canEdit && <P.Separator />}
       {canEdit && (
         <P.Item onSelect={() => onDelete(node)} className="text-red-600 focus:text-red-600">
@@ -223,7 +221,8 @@ function TreeItem({
       onDrop={handleDrop}
       style={{ background: isDragOver ? "rgba(5,150,105,0.08)" : "transparent", borderRadius: 8, transition: "background 0.15s" }}
     >
-      <ContextMenu onOpenChange={open => { if (open) selectNode(); }}>
+      {/* 右クリックは「メニューを出すだけ」。選択・開閉・遷移はしない */}
+      <ContextMenu onOpenChange={setMenuOpen}>
         <ContextMenuTrigger asChild>
           <div
             ref={rowRef}
@@ -236,8 +235,12 @@ function TreeItem({
               display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", paddingLeft: 8 + depth * 16,
               borderRadius: 7, cursor: "pointer",
               // 作成直後は琥珀色で数秒だけ光らせる。解除時は transition でそっと戻す。
-              background: isHighlighted ? "#FEF3C7" : (isSelected ? "#ECFDF5" : (hovered ? "#F4F5F6" : "transparent")),
-              boxShadow: isHighlighted ? "0 0 0 2px rgba(217,119,6,0.45)" : "none",
+              background: isHighlighted ? "#FEF3C7" : (isSelected ? "#ECFDF5" : (hovered || menuOpen ? "#F4F5F6" : "transparent")),
+              // 枠は inset で行の内側に描く。外側(0 0 0 Npx)だとサイドバーの
+              // overflow で端が切れたり、隣の行に食い込んで欠けて見えるため。
+              boxShadow: isHighlighted
+                ? "inset 0 0 0 2px rgba(217,119,6,0.45)"
+                : (menuOpen ? "inset 0 0 0 1.5px rgba(5,150,105,0.35)" : "none"),
               transition: "background 0.45s ease, box-shadow 0.45s ease",
             }}>
             <span
@@ -284,14 +287,14 @@ function TreeItem({
             )}
 
             {!isEditing && (
-              <DropdownMenu>
+              <DropdownMenu onOpenChange={setMenuOpen}>
                 <DropdownMenuTrigger asChild>
                   <button
                     onClick={e => e.stopPropagation()}
                     onPointerDown={e => e.stopPropagation()}
                     onDoubleClick={e => e.stopPropagation()}
                     title="メニュー"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0, display: "flex", opacity: hovered ? 1 : 0.5 }}>
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#9E9690", padding: 2, flexShrink: 0, display: "flex", opacity: hovered || menuOpen ? 1 : 0.5 }}>
                     <MoreVertical style={{ width: 14, height: 14 }} />
                   </button>
                 </DropdownMenuTrigger>
@@ -314,7 +317,7 @@ function TreeItem({
       </ContextMenu>
       {(isFolder || hasChildren) && expanded && node.children.map(c => (
         <TreeItem key={c.id} node={c} depth={depth + 1} selectedId={selectedId}
-          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onImportMd={onImportMd} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} onExport={onExport} canEdit={canEdit}
+          onSelectPage={onSelectPage} onSelectFolder={onSelectFolder} onAddChild={onAddChild} onImportMd={onImportMd} onDelete={onDelete} onMoveNode={onMoveNode} onOpenMoveModal={onOpenMoveModal} onRename={onRename} onExport={onExport} onCopyLink={onCopyLink} canEdit={canEdit}
           highlightIds={highlightIds} scrollToId={scrollToId} />
       ))}
     </div>
@@ -556,6 +559,11 @@ export function WikiPage() {
     const slug = projectSlug ?? "";
     navigate(`/${slug}/wiki/folders/${targetFolderId}`);
   }, [projectSlug, navigate]);
+
+  const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
+  const handleCopyLink = useCallback((node: { id: string; isFolder: boolean }) => {
+    void copyShareLink({ kind: node.isFolder ? "wiki-folder" : "wiki-page", id: node.id });
+  }, [copyShareLink]);
 
   const scheduleSave = useCallback((nextTitle: string, nextContent: string, immediate = false) => {
     if (!selectedId || loading) return; // 🌟 修正: 読み込み完了前は自動保存をガード
@@ -903,6 +911,7 @@ export function WikiPage() {
               onOpenMoveModal={setMovingNodeTarget}
               onRename={handleTreeItemRename}
               onExport={handleTreeExport}
+              onCopyLink={handleCopyLink}
               canEdit={canEdit}
               highlightIds={highlightIds}
               scrollToId={scrollToId}
@@ -928,8 +937,12 @@ export function WikiPage() {
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
                 {pages.filter(p => p.parentId === selected.id).length} 件のアイテム
               </p>
-              <div style={{ display: "flex", justifyContent: "center" }}>
+              <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
                 <ArticleExportButton onExport={f => exportWikiFolder(selected, pages, f)} />
+                <button onClick={() => handleCopyLink(selected)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <Link2 style={{ width: 13, height: 13 }} />リンクをコピー
+                </button>
               </div>
               <p style={{ fontSize: 11, color: "#C9C4BB", margin: "10px 0 0" }}>フォルダ内の全ページ（子・孫フォルダ含む）をまとめて出力します</p>
             </div>
@@ -955,6 +968,10 @@ export function WikiPage() {
                     onChange={e => { setTitle(e.target.value); scheduleSave(e.target.value, content); }}
                     placeholder="ページタイトル"
                     style={{ flex: 1, minWidth: 0, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
+                  <button onClick={() => handleCopyLink(selected)} title="このページへのリンクをコピー"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0, display: "flex", alignItems: "center" }}>
+                    <Link2 style={{ width: 14, height: 14 }} />
+                  </button>
                   <ArticleExportButton onExport={f => exportWikiArticle(selected, ancestors.map(a => a.title || "無題のフォルダ"), f)} />
                 </div>
               </div>
