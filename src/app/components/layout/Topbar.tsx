@@ -12,7 +12,7 @@ import { mapNotification } from "@/app/lib/mappers";
 import { BugReportModal } from "@/app/components/bug-report/BugReportModal";
 import { CallButton } from "@/app/components/call/CallButton";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
-import { APP_VERSION } from "@/lib/version";
+import { APP_VERSION, APP_BUILD_DATE, APP_BUILD_AT_TEXT, formatJstDateTime, formatElapsed } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
 import { buildWhiteboardPath, parseWhiteboardMentionContext } from "@/app/lib/whiteboardLink";
 import { buildFileCommentPath, parseFileMentionContext } from "@/app/lib/fileCommentLink";
@@ -102,6 +102,14 @@ export function Topbar() {
   }, []);
 
   useEffect(() => { void refreshBioState(); }, [refreshBioState]);
+
+  // バージョン情報モーダルは Esc で閉じる
+  useEffect(() => {
+    if (!showVersion) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowVersion(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showVersion]);
 
   useEffect(() => {
     if (!bioToast) return;
@@ -331,6 +339,98 @@ export function Topbar() {
     {showBugReport && <BugReportModal onClose={closeBugReport} />}
     {showAnnouncement && announcement && (
       <AnnouncementModal announcement={announcement} onClose={handleMarkAsReadAndClose} anchorX={announcementAnchorX} />
+    )}
+    {showVersion && (
+      <div
+        onClick={() => setShowVersion(false)}
+        style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(26,23,20,0.38)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+        {/* 縦は flex 1本。上半分（バージョン/更新日時/再読み込み）は固定で、
+            あふれた分は「更新履歴」のリストだけがスクロールする。 */}
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{ width: 420, maxWidth: "100%", maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden", background: "#fff", borderRadius: 16, boxShadow: "0 20px 60px rgba(0,0,0,0.24)", border: "1px solid rgba(26,23,20,0.08)" }}>
+
+          {/* ヘッダー */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "16px 18px 12px", flexShrink: 0 }}>
+            <Info style={{ width: 17, height: 17, color: "#059669", flexShrink: 0 }} />
+            <span style={{ fontSize: 14.5, fontWeight: 700, color: "#1A1714" }}>バージョン情報</span>
+            <button
+              onClick={() => setShowVersion(false)}
+              style={{ marginLeft: "auto", display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+              <X style={{ width: 15, height: 15, color: "#6B6458" }} />
+            </button>
+          </div>
+
+          {/* 稼働中のバージョンと、その更新日時 */}
+          <div style={{ margin: "0 18px", padding: "14px 16px", borderRadius: 12, background: "#F7F8F7", border: "1px solid rgba(26,23,20,0.06)", flexShrink: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#A09790", letterSpacing: 0.4 }}>ご利用中のバージョン</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+              <span style={{ fontSize: 19, fontWeight: 700, color: "#1A1714", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{APP_VERSION}</span>
+              <button
+                onClick={handleCopyVersion}
+                title="バージョンをコピー"
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#fff", cursor: "pointer" }}>
+                {versionCopied
+                  ? <Check style={{ width: 12, height: 12, color: "#059669" }} />
+                  : <Copy style={{ width: 12, height: 12, color: "#6B6458" }} />}
+                <span style={{ fontSize: 11, fontWeight: 600, color: versionCopied ? "#059669" : "#6B6458" }}>{versionCopied ? "コピーしました" : "コピー"}</span>
+              </button>
+            </div>
+            <div style={{ height: 1, background: "rgba(26,23,20,0.07)", margin: "12px 0" }} />
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#A09790", letterSpacing: 0.4 }}>更新日時</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714" }}>
+                {APP_BUILD_AT_TEXT || "不明"}
+              </span>
+              {APP_BUILD_DATE && (
+                <span style={{ fontSize: 11.5, fontWeight: 600, color: "#A09790" }}>（{formatElapsed(APP_BUILD_DATE)}）</span>
+              )}
+            </div>
+            <div style={{ fontSize: 10.5, color: "#A09790", marginTop: 4 }}>日本時間（JST）で表示しています</div>
+          </div>
+
+          {/* 更新確認 */}
+          <div style={{ padding: "12px 18px 0", flexShrink: 0 }}>
+            <button
+              onClick={() => { window.location.reload(); }}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 10px", borderRadius: 9, border: "1px solid rgba(26,23,20,0.10)", background: "#fff", cursor: "pointer" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}>
+              <RefreshCw style={{ width: 13, height: 13, color: "#6B6458" }} />
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#3D3732" }}>最新版を確認して再読み込み</span>
+            </button>
+          </div>
+
+          {/* 更新履歴（システム管理会社のみ） */}
+          {isSystemAdmin && isSupabaseEnabled && (
+            <div style={{ padding: "16px 18px 16px", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#A09790", letterSpacing: 0.4, marginBottom: 6, flexShrink: 0 }}>更新履歴</div>
+              {historyLoading ? (
+                <div style={{ fontSize: 12, color: "#A09790", padding: "8px 0" }}>読み込み中…</div>
+              ) : !versionHistory || versionHistory.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#A09790", padding: "8px 0" }}>履歴はまだありません。</div>
+              ) : (
+                <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 10 }}>
+                  {versionHistory.map((h, i) => (
+                    <div key={h.version} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", background: h.version === APP_VERSION ? "#ECFDF5" : "#fff", borderTop: i === 0 ? "none" : "1px solid rgba(26,23,20,0.06)" }}>
+                      <span style={{ fontSize: 11.5, fontWeight: 700, color: "#1A1714", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{h.version}</span>
+                      {h.version === APP_VERSION && (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#047857", background: "rgba(5,150,105,0.12)", borderRadius: 999, padding: "1px 6px" }}>使用中</span>
+                      )}
+                      <span style={{ marginLeft: "auto", fontSize: 11, color: "#6B6458", whiteSpace: "nowrap" }}>{formatJstDateTime(h.released_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 履歴セクションが無い（一般ユーザー）ときの下余白 */}
+          {!(isSystemAdmin && isSupabaseEnabled) && <div style={{ height: 16, flexShrink: 0 }} />}
+        </div>
+      </div>
     )}
     {/* position:relative + zIndex でヘッダー自体を独立したスタッキングコンテキストにし、
         ドロップダウン(通知/ユーザーメニュ)がページ側のsticky見出し(zIndex 100〜200)の裏に隠れないようにする。
