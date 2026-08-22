@@ -244,7 +244,7 @@ export function GlobalSearch() {
           ? supabase!.from("wiki_pages").select("id, title, content, project_id").eq("is_folder", false).in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(20)
           : Promise.resolve({ data: [] }),
         accessibleProjectIds.length > 0
-          ? supabase!.from("meeting_minutes").select("id, title, meeting_date, content, project_id, created_at").in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(20)
+          ? supabase!.from("meeting_minutes").select("id, title, meeting_date, content, project_id, created_at").eq("is_folder", false).in("project_id", accessibleProjectIds).or(`title.ilike.%${q}%,content.ilike.%${q}%`).limit(20)
           : Promise.resolve({ data: [] }),
       ]);
 

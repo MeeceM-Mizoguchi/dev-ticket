@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, GripVertical, GitBranch, ClipboardList, Trash2, Ticket, Search, X } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
@@ -21,6 +21,8 @@ import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 
 const PRIORITY_META: Record<Priority, { label: string; color: string; bg: string }> = {
   high: { label: "高", color: "#DC2626", bg: "#FEF2F2" },
@@ -43,6 +45,17 @@ async function nextBacklogId(projectId: string): Promise<string> {
     .order("id", { ascending: false }).limit(1).maybeSingle();
   const next = (parseInt(data?.id?.slice(2) ?? "0", 10) || 0) + 1;
   return `B-${String(next).padStart(3, "0")}`;
+}
+
+// フォルダ行のIDは "BF-001" 形式。項目の採番(like 'B-%')とは前方一致しないので衝突しない。
+async function nextBacklogFolderId(projectId: string): Promise<string> {
+  const { data } = await supabase!
+    .from("backlog_items").select("id")
+    .eq("project_id", projectId)
+    .like("id", "BF-%")
+    .order("id", { ascending: false }).limit(1).maybeSingle();
+  const next = (parseInt(data?.id?.slice(3) ?? "0", 10) || 0) + 1;
+  return `BF-${String(next).padStart(3, "0")}`;
 }
 
 // ─── チケット化モーダル ─────────────────────────────────────
@@ -153,25 +166,19 @@ function ConvertToTicketModal({
   );
 }
 
-// ─── 左サイドバー アイテム行 ─────────────────────────────────
-function BacklogSidebarItem({
-  item, isSelected, canEdit, isDone, isDragOver, projectSlug,
-  onSelect, onDragStart, onDragOver, onDrop, onDragEnd,
+// ─── 左サイドバー アイテム行の中身 ─────────────────────────────
+// ツリー(DocTree)の行と、検索結果の平坦な一覧の両方から使う。
+// 行そのもの（選択・ドラッグ・メニュー）は呼び出し側が持つ。
+function BacklogRowContent({
+  item, isSelected, projectSlug,
 }: {
-  item: BacklogItem; isSelected: boolean;
-  canEdit: boolean; isDone: boolean; isDragOver?: boolean;
-  projectSlug: string;
-  onSelect: () => void;
-  onDragStart?: () => void;
-  onDragOver?: () => void;
-  onDrop?: () => void;
-  onDragEnd?: () => void;
+  item: BacklogItem; isSelected: boolean; projectSlug: string;
 }) {
-  const [hovered, setHovered] = useState(false);
   const navigate = useNavigate();
   const pMeta = PRIORITY_META[item.priority];
   const sMeta = STATUS_META[item.status];
   const isConverted = item.status === "converted" && !!(item.convertedTicketWbs || item.convertedTicketId);
+  const isDone = item.status === "converted" || item.status === "archived";
 
   const handleOpenTicket = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -186,49 +193,25 @@ function BacklogSidebarItem({
   };
 
   return (
-    <div
-      draggable={canEdit && !isDone}
-      onDragStart={e => { e.dataTransfer.effectAllowed = "move"; onDragStart?.(); }}
-      onDragOver={e => { e.preventDefault(); onDragOver?.(); }}
-      onDrop={e => { e.preventDefault(); onDrop?.(); }}
-      onDragEnd={onDragEnd}
-      onClick={onSelect}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex", alignItems: "flex-start", gap: 4, padding: "8px 10px 8px 4px", borderRadius: 8, cursor: "pointer",
-        background: isSelected ? "#ECFDF5" : hovered ? "#F4F5F6" : "transparent",
-        opacity: isDone ? 0.65 : 1, marginBottom: 2,
-        outline: isDragOver ? "2px solid #059669" : "none",
-        outlineOffset: -1,
-      }}>
-      {canEdit && !isDone ? (
-        <div style={{ color: hovered || isSelected ? "#B0A9A4" : "#DEDAD5", cursor: "grab", flexShrink: 0, paddingTop: 3, display: "flex" }}>
-          <GripVertical style={{ width: 13, height: 13 }} />
-        </div>
-      ) : (
-        <div style={{ width: 13, flexShrink: 0 }} />
-      )}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
-          <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", background: isSelected ? "#A7F3D0" : "#EDE9FE", color: isSelected ? "#065F46" : "#6D28D9", padding: "1px 5px", borderRadius: 4, flexShrink: 0 }}>{item.id}</span>
-          <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title || "無題"}</span>
-        </div>
-        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pMeta.bg, color: pMeta.color }}>{pMeta.label}</span>
-          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: sMeta.bg, color: sMeta.color }}>{sMeta.label}</span>
-          {item.isUserInquiry && (
-            <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: "#FFF7ED", color: "#D97706" }}>問い合わせ</span>
-          )}
-          {isConverted && (
-            <button
-              onClick={handleOpenTicket}
-              title={`チケット ${item.convertedTicketWbs ?? ""} を開く`}
-              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", fontSize: 9, fontWeight: 700, borderRadius: 8, background: "#F5F3FF", color: "#6D28D9", border: "none", cursor: "pointer" }}>
-              <Ticket style={{ width: 9, height: 9 }} />{item.convertedTicketWbs ?? "開く"}
-            </button>
-          )}
-        </div>
+    <div style={{ flex: 1, minWidth: 0, opacity: isDone ? 0.65 : 1 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
+        <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", background: isSelected ? "#A7F3D0" : "#EDE9FE", color: isSelected ? "#065F46" : "#6D28D9", padding: "1px 5px", borderRadius: 4, flexShrink: 0 }}>{item.id}</span>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title || "無題"}</span>
+      </div>
+      <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pMeta.bg, color: pMeta.color }}>{pMeta.label}</span>
+        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: sMeta.bg, color: sMeta.color }}>{sMeta.label}</span>
+        {item.isUserInquiry && (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: "#FFF7ED", color: "#D97706" }}>問い合わせ</span>
+        )}
+        {isConverted && (
+          <button
+            onClick={handleOpenTicket}
+            title={`チケット ${item.convertedTicketWbs ?? ""} を開く`}
+            style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "1px 5px", fontSize: 9, fontWeight: 700, borderRadius: 8, background: "#F5F3FF", color: "#6D28D9", border: "none", cursor: "pointer" }}>
+            <Ticket style={{ width: 9, height: 9 }} />{item.convertedTicketWbs ?? "開く"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -236,7 +219,8 @@ function BacklogSidebarItem({
 
 // ─── メインページ ─────────────────────────────────────────
 export function BacklogPage() {
-  const { projectSlug, itemId: itemIdParam } = useParams<{ projectSlug: string; itemId?: string }>();
+  const { projectSlug, itemId: itemIdParam, folderId: folderIdParam } =
+    useParams<{ projectSlug: string; itemId?: string; folderId?: string }>();
   const navigate = useNavigate();
   const { userPermissions, userName, userRole, userId } = useAuth();
   const { plan } = usePlan();
@@ -257,8 +241,12 @@ export function BacklogPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BacklogItem | null>(null);
   const [convertTarget, setConvertTarget] = useState<BacklogItem | null>(null);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [movingNodeTarget, setMovingNodeTarget] = useState<BacklogItem | null>(null);
+  const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
+  // 作成直後のフォルダ/項目を一時的にハイライトし、そこまでスクロールする（Wikiと同仕様）
+  const [highlightIds, setHighlightIds] = useState<string[]>([]);
+  const [scrollToId, setScrollToId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
@@ -362,17 +350,67 @@ export function BacklogPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // URLパスパラメータからアイテム選択
+  // URLパスパラメータからアイテム/フォルダ選択
   useEffect(() => {
-    if (itemIdParam && items.length > 0) {
-      const found = items.find(i => i.id === itemIdParam);
-      if (found) setSelectedId(found.id);
-    }
-  }, [itemIdParam, items]);
+    if (items.length === 0) return;
+    const wanted = folderIdParam ?? itemIdParam;
+    if (!wanted) return;
+    const found = items.find(i => i.id === wanted);
+    if (found) setSelectedId(found.id);
+  }, [itemIdParam, folderIdParam, items]);
 
   const selectedItem = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId]);
   // チケット化済・アーカイブ済の項目は編集不可
-  const itemCanEdit = canEdit && selectedItem != null && selectedItem.status !== "converted" && selectedItem.status !== "archived";
+  const itemCanEdit = canEdit && selectedItem != null && !selectedItem.isFolder
+    && selectedItem.status !== "converted" && selectedItem.status !== "archived";
+
+  const itemById = useMemo(() => new Map(items.map(i => [i.id, i])), [items]);
+  const itemCount = useMemo(() => items.filter(i => !i.isFolder).length, [items]);
+
+  // ツリー用の並び。各階層で「フォルダ → 未完了 → 完了/アーカイブ」の順、同種内は rank 昇順。
+  // buildDocTree はこの配列順をそのまま各階層に引き継ぐ。
+  const orderedItems = useMemo(() => {
+    const doneRank = (i: BacklogItem) => (i.status === "converted" || i.status === "archived") ? 1 : 0;
+    return [...items].sort((a, b) => {
+      if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
+      if (a.isFolder) return a.rank - b.rank || a.title.localeCompare(b.title, "ja");
+      return doneRank(a) - doneRank(b) || a.rank - b.rank;
+    });
+  }, [items]);
+  const tree = useMemo(() => buildDocTree(orderedItems), [orderedItems]);
+
+  // パンくず用：選択中の祖先フォルダ一覧
+  const ancestors = useMemo(() => {
+    if (!selectedItem) return [];
+    const list: BacklogItem[] = [];
+    let current: BacklogItem | undefined = selectedItem;
+    while (current?.parentId) {
+      const parent: BacklogItem | undefined = itemById.get(current.parentId);
+      if (!parent) break;
+      list.unshift(parent);
+      current = parent;
+    }
+    return list;
+  }, [selectedItem, itemById]);
+
+  const gotoItem = useCallback((id: string) => {
+    navigate(`/${projectSlug ?? project?.slug}/backlog/${id}`);
+  }, [navigate, projectSlug, project?.slug]);
+
+  const gotoFolder = useCallback((id: string) => {
+    navigate(`/${projectSlug ?? project?.slug}/backlog/folders/${id}`);
+  }, [navigate, projectSlug, project?.slug]);
+
+  // 作成したノードまでスクロールして数秒ハイライトする（Wikiと同仕様）
+  const flashCreated = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    setHighlightIds(ids);
+    setScrollToId(ids[0]);
+    highlightTimer.current = setTimeout(() => { setHighlightIds([]); setScrollToId(null); }, 2400);
+  }, []);
+
+  useEffect(() => () => { if (highlightTimer.current) clearTimeout(highlightTimer.current); }, []);
 
   // 選択アイテムが変わったら編集ステートを同期
   useEffect(() => {
@@ -444,65 +482,147 @@ export function BacklogPage() {
     return ""; // インライン挿入を抑制
   }, [selectedId, handleImagesChange]);
 
-  const grouped = useMemo(() => {
-    const sorted = [...items].sort((a, b) => a.rank - b.rank);
-    const active = sorted.filter(i => i.status === "open" || i.status === "in-progress");
-    const done = sorted.filter(i => i.status === "converted" || i.status === "archived");
-    return { active, done };
-  }, [items]);
+  // 検索中はフォルダ階層をたたんで、一致した項目だけを平らに並べる（Wikiと同仕様）
+  const searchMatched = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    if (!q) return [] as BacklogItem[];
+    return orderedItems.filter(i => !i.isFolder
+      && (i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)));
+  }, [orderedItems, sidebarSearch]);
 
-  const sidebarFiltered = useMemo(() => {
-    if (!sidebarSearch.trim()) return grouped;
-    const q = sidebarSearch.toLowerCase();
-    return {
-      active: grouped.active.filter(i => i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)),
-      done: grouped.done.filter(i => i.title.toLowerCase().includes(q) || (i.description ?? "").toLowerCase().includes(q)),
-    };
-  }, [grouped, sidebarSearch]);
-
-  const handleAddItem = async () => {
+  const handleAddItem = async (parentId: string | null = null) => {
     if (!project) return;
     const id = await nextBacklogId(project.id);
     const { error } = await supabase!.from("backlog_items").insert({
-      id, project_id: project.id, title: "新規バックログ項目", description: "", priority: "medium",
+      id, project_id: project.id, parent_id: parentId,
+      title: "新規バックログ項目", description: "", priority: "medium",
       assignee: "", estimated_hours: 0, status: "open", rank: Date.now(), created_by: userName || null,
     });
     if (error) { toast("作成に失敗しました", "error"); return; }
     await load();
     emitLinkItemsChanged(project.id, "backlog"); // 他タブの $ サジェストへ即時反映
-    setSelectedId(id);
+    gotoItem(id);
+    flashCreated([id]);
   };
 
+  // ── フォルダ（Wikiと同仕様） ─────────────────────────────────
+  const handleAddFolder = async (parentId: string | null = null) => {
+    if (!project) return;
+    const id = await nextBacklogFolderId(project.id);
+    const { error } = await supabase!.from("backlog_items").insert({
+      id, project_id: project.id, parent_id: parentId,
+      title: "無題のフォルダ", description: "", is_folder: true,
+      priority: "medium", assignee: "", estimated_hours: 0, status: "open",
+      rank: items.filter(i => (i.parentId ?? null) === parentId && i.isFolder).length,
+      created_by: userName || null,
+    });
+    if (error) {
+      console.error("[BacklogPage] folder insert error:", error);
+      toast("フォルダの作成に失敗しました", "error");
+      return;
+    }
+    await load();
+    gotoFolder(id);
+    flashCreated([id]);
+  };
+
+  const handleRenameNode = useCallback(async (id: string, nextTitle: string) => {
+    if (!project) return;
+    setItems(prev => prev.map(i => i.id === id ? { ...i, title: nextTitle } : i));
+    if (id === selectedId) setEditTitle(nextTitle);
+    const { error } = await supabase!.from("backlog_items")
+      .update({ title: nextTitle, updated_at: new Date().toISOString() })
+      .eq("id", id).eq("project_id", project.id);
+    if (error) {
+      console.error("[BacklogPage] rename error:", error);
+      toast("名前の変更に失敗しました", "error");
+      load();
+      return;
+    }
+    emitLinkItemsChanged(project.id, "backlog"); // 他タブのサジェスト表示名を更新
+  }, [project, selectedId, load, toast]);
+
+  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
+    if (!project || draggedId === targetParentId) return;
+    const dragged = items.find(i => i.id === draggedId);
+    if (!dragged || (dragged.parentId ?? null) === targetParentId) return;
+    if (isCyclicMove(items, draggedId, targetParentId)) {
+      toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
+      return;
+    }
+    setItems(prev => prev.map(i => i.id === draggedId ? { ...i, parentId: targetParentId } : i));
+    const { error } = await supabase!.from("backlog_items")
+      .update({ parent_id: targetParentId, updated_at: new Date().toISOString() })
+      .eq("id", draggedId).eq("project_id", project.id);
+    if (error) {
+      console.error("[BacklogPage] move error:", error);
+      toast("移動に失敗しました", "error");
+    } else {
+      toast("配置を変更しました");
+    }
+    load();
+  }, [items, project, load, toast]);
+
+  // 同じ階層内での並べ替え。別階層の項目へドロップされたら、その階層へ移しつつ位置を合わせる。
   const reorderItems = useCallback(async (fromId: string, toId: string) => {
-    if (fromId === toId) return;
-    const active = grouped.active;
-    const fromIdx = active.findIndex(i => i.id === fromId);
-    const toIdx = active.findIndex(i => i.id === toId);
-    if (fromIdx === -1 || toIdx === -1) return;
-    const reordered = [...active];
-    const [moved] = reordered.splice(fromIdx, 1);
-    reordered.splice(toIdx, 0, moved);
+    if (!project || fromId === toId) return;
+    const from = items.find(i => i.id === fromId);
+    const to = items.find(i => i.id === toId);
+    if (!from || !to || from.isFolder) return;
+    const targetParentId = to.parentId ?? null;
+    const siblings = items
+      .filter(i => !i.isFolder && (i.parentId ?? null) === targetParentId && i.id !== fromId)
+      .sort((a, b) => a.rank - b.rank);
+    const toIdx = siblings.findIndex(i => i.id === toId);
+    if (toIdx === -1) return;
+    const reordered = [...siblings];
+    reordered.splice(toIdx, 0, from);
     const newRanks = reordered.map((item, idx) => ({ id: item.id, rank: (idx + 1) * 1000 }));
     setItems(prev => prev.map(i => {
       const r = newRanks.find(u => u.id === i.id);
-      return r ? { ...i, rank: r.rank } : i;
+      if (!r) return i;
+      return i.id === fromId ? { ...i, rank: r.rank, parentId: targetParentId } : { ...i, rank: r.rank };
     }));
-    if (!project) return;
     await Promise.all(newRanks.map(({ id, rank }) =>
-      supabase!.from("backlog_items").update({ rank }).eq("id", id).eq("project_id", project.id)
+      supabase!.from("backlog_items")
+        .update(id === fromId ? { rank, parent_id: targetParentId } : { rank })
+        .eq("id", id).eq("project_id", project.id)
     ));
-  }, [grouped.active]);
+  }, [items, project]);
+
+  const copyShareLink = useCopyShareLink(projectSlug ?? project?.slug);
+  const handleCopyLink = useCallback((node: { id: string; isFolder: boolean }) => {
+    void copyShareLink({ kind: node.isFolder ? "backlog-folder" : "backlog", id: node.id });
+  }, [copyShareLink]);
 
   const handleDelete = async (item: BacklogItem) => {
     if (!project) return;
-    await supabase!.from("backlog_items").delete().eq("id", item.id).eq("project_id", project.id);
+    // backlog_items は複合主キーのため parent_id に FK(on delete cascade) を張れない。
+    // フォルダを消すときは配下を再帰的に集めて、ここでまとめて削除する。
+    const collectIds = (id: string, acc: string[]): string[] => {
+      acc.push(id);
+      for (const child of items.filter(i => i.parentId === id)) collectIds(child.id, acc);
+      return acc;
+    };
+    const targetIds = item.isFolder ? collectIds(item.id, []) : [item.id];
+    const { error } = await supabase!.from("backlog_items")
+      .delete().in("id", targetIds).eq("project_id", project.id);
+    if (error) {
+      console.error("[BacklogPage] delete error:", error);
+      toast("削除に失敗しました", "error");
+      return;
+    }
     emitLinkItemsChanged(project.id, "backlog");
-    setItems(prev => prev.filter(i => i.id !== item.id));
-    if (selectedId === item.id) {
+    // 配下もまとめて消えるので、選択中が子孫なら選択を外す
+    const isSelectionGone = !!selectedId && targetIds.includes(selectedId);
+    if (isSelectionGone) {
       setSelectedId(null);
       navigate(`/${projectSlug ?? project?.slug}/backlog`);
     }
-    toast(`${item.id} を削除しました`);
+    toast(item.isFolder
+      ? `フォルダ「${item.title || "無題のフォルダ"}」を削除しました`
+      : `${item.id} を削除しました`);
+    load();
   };
 
   if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
@@ -522,7 +642,7 @@ export function BacklogPage() {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>バックログ</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${items.length} 件` : "..."}</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${itemCount} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {permsLoaded && effectiveBacklogPerm === "view" && (
@@ -534,7 +654,21 @@ export function BacklogPage() {
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
         {/* ─── 左サイドバー ─── */}
-        <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+        <div
+          onDragOver={e => { if (!canEdit || sidebarSearch) return; e.preventDefault(); setIsTreeDragOverRoot(true); }}
+          onDragLeave={() => setIsTreeDragOverRoot(false)}
+          onDrop={async e => {
+            if (!canEdit || sidebarSearch) return;
+            e.preventDefault();
+            setIsTreeDragOverRoot(false);
+            const draggedId = e.dataTransfer.getData("text/plain");
+            if (draggedId) await handleMoveNode(draggedId, null);
+          }}
+          style={{
+            width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14,
+            border: isTreeDragOverRoot ? "1px dashed #059669" : "1px solid rgba(26,23,20,0.07)",
+            padding: 10, overflowY: "auto", display: "flex", flexDirection: "column", transition: "all 0.15s",
+          }}>
           {/* 検索バー */}
           <div style={{ position: "relative", marginBottom: 8 }}>
             <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
@@ -551,49 +685,69 @@ export function BacklogPage() {
             )}
           </div>
 
-          {canEdit && canCreate && (
-            <button onClick={handleAddItem}
-              style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 8, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              <Plus style={{ width: 12, height: 12 }} />新規追加
-            </button>
+          {canEdit && (
+            <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+              {canCreate && (
+                <button onClick={() => handleAddItem(null)}
+                  style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <Plus style={{ width: 12, height: 12 }} />新規追加
+                </button>
+              )}
+              <button onClick={() => handleAddFolder(null)}
+                title="新規フォルダ"
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, padding: "7px 10px", background: "#FFFBEB", color: "#D97706", border: "1.5px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: canCreate ? "0 0 auto" : 1 }}>
+                <FolderPlus style={{ width: 13, height: 13 }} />
+              </button>
+            </div>
           )}
 
-          {grouped.active.length === 0 && grouped.done.length === 0 ? (
+          {items.length === 0 ? (
             <div style={{ padding: "24px 8px", textAlign: "center" }}>
               <ClipboardList style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
               <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>バックログ項目がありません</p>
             </div>
-          ) : sidebarFiltered.active.length === 0 && sidebarFiltered.done.length === 0 && sidebarSearch ? (
-            <div style={{ padding: "24px 8px", textAlign: "center" }}>
-              <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致する項目がありません</p>
-            </div>
+          ) : sidebarSearch ? (
+            searchMatched.length === 0 ? (
+              <div style={{ padding: "24px 8px", textAlign: "center" }}>
+                <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致する項目がありません</p>
+              </div>
+            ) : (
+              searchMatched.map(item => {
+                const parent = item.parentId ? itemById.get(item.parentId) : null;
+                const isSelected = selectedId === item.id;
+                return (
+                  <div key={item.id} onClick={() => gotoItem(item.id)}
+                    style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "8px 10px", borderRadius: 8, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 2 }}>
+                    <BacklogRowContent item={item} isSelected={isSelected} projectSlug={projectSlug ?? project?.slug ?? ""} />
+                    {parent && (
+                      <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0, marginTop: 2 }}>{parent.title || "無題のフォルダ"}</span>
+                    )}
+                  </div>
+                );
+              })
+            )
           ) : (
-            <>
-              {sidebarFiltered.active.map((item) => (
-                <BacklogSidebarItem key={item.id} item={item}
-                  isSelected={selectedId === item.id}
-                  canEdit={canEdit && !sidebarSearch} isDone={false}
-                  projectSlug={projectSlug ?? project?.slug ?? ""}
-                  isDragOver={!sidebarSearch && dragOverId === item.id && dragId !== item.id}
-                  onSelect={() => navigate(`/${projectSlug ?? project?.slug}/backlog/${item.id}`)}
-                  onDragStart={() => setDragId(item.id)}
-                  onDragOver={() => { if (!sidebarSearch && dragId && dragId !== item.id) setDragOverId(item.id); }}
-                  onDrop={() => { if (!sidebarSearch && dragId) reorderItems(dragId, item.id); }}
-                  onDragEnd={() => { setDragId(null); setDragOverId(null); }} />
-              ))}
-              {sidebarFiltered.done.length > 0 && (
-                <>
-                  <p style={{ fontSize: 10, fontWeight: 700, color: "#C9C4BB", padding: "8px 4px 4px", margin: 0 }}>完了・アーカイブ ({sidebarFiltered.done.length})</p>
-                  {sidebarFiltered.done.map((item) => (
-                    <BacklogSidebarItem key={item.id} item={item}
-                      isSelected={selectedId === item.id}
-                      canEdit={false} isDone
-                      projectSlug={projectSlug ?? project?.slug ?? ""}
-                      onSelect={() => navigate(`/${projectSlug ?? project?.slug}/backlog/${item.id}`)} />
-                  ))}
-                </>
-              )}
-            </>
+            <DocTree
+              tree={tree}
+              selectedId={selectedId}
+              canEdit={canEdit}
+              onSelect={(node: DocTreeNode) => { if (node.isFolder) gotoFolder(node.id); else gotoItem(node.id); }}
+              onAddChild={(parentId, isFolder) => { if (isFolder) handleAddFolder(parentId); else if (canCreate) handleAddItem(parentId); }}
+              addItemLabel="バックログ項目を追加"
+              onRename={handleRenameNode}
+              onDelete={node => { const i = itemById.get(node.id); if (i) setDeleteTarget(i); }}
+              onMove={handleMoveNode}
+              onReorder={reorderItems}
+              onOpenMoveModal={node => { const i = itemById.get(node.id); if (i) setMovingNodeTarget(i); }}
+              onCopyLink={handleCopyLink}
+              highlightIds={highlightIds}
+              scrollToId={scrollToId}
+              renderItemRow={(node, isSelected) => {
+                const item = itemById.get(node.id);
+                if (!item) return null;
+                return <BacklogRowContent item={item} isSelected={isSelected} projectSlug={projectSlug ?? project?.slug ?? ""} />;
+              }}
+            />
           )}
         </div>
 
@@ -604,10 +758,43 @@ export function BacklogPage() {
               <ClipboardList style={{ width: 32, height: 32, color: "#D4CEC8", margin: "0 auto 10px" }} />
               <p style={{ fontSize: 12, color: "#B0A9A4", margin: 0 }}>左の一覧から項目を選択するか、新規追加してください</p>
             </div>
+          ) : selectedItem.isFolder ? (
+            <div style={{ padding: "60px 0", textAlign: "center" }}>
+              <FolderOpen style={{ width: 32, height: 32, color: "#FCD34D", margin: "0 auto 10px" }} />
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: "0 0 6px" }}>{selectedItem.title || "無題のフォルダ"}</p>
+              <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
+                {items.filter(i => i.parentId === selectedItem.id).length} 件のアイテム
+              </p>
+              <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+                <button onClick={() => handleCopyLink(selectedItem)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <Link2 style={{ width: 13, height: 13 }} />リンクをコピー
+                </button>
+                {canEdit && canCreate && (
+                  <button onClick={() => handleAddItem(selectedItem.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#FFFFFF", color: "#6B6458", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    <Plus style={{ width: 13, height: 13 }} />このフォルダに項目を追加
+                  </button>
+                )}
+              </div>
+            </div>
           ) : (
             <>
               {/* 固定ヘッダー: タイトル + アクションボタン + フィールド行 */}
               <div style={{ padding: "20px 20px 14px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                {ancestors.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#9E9690", marginBottom: 8, flexWrap: "wrap" }}>
+                    <span onClick={() => { setSelectedId(null); navigate(`/${projectSlug ?? project?.slug}/backlog`); }} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>バックログホーム</span>
+                    {ancestors.map(folder => (
+                      <div key={folder.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span>&gt;</span>
+                        <span onClick={() => gotoFolder(folder.id)} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>
+                          {folder.title || "無題のフォルダ"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input
                     value={editTitle}
@@ -616,6 +803,10 @@ export function BacklogPage() {
                     placeholder="バックログ項目のタイトル"
                     style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0 }} />
                   <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    <button onClick={() => handleCopyLink(selectedItem)} title="この項目へのリンクをコピー"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, display: "flex", alignItems: "center" }}>
+                      <Link2 style={{ width: 14, height: 14 }} />
+                    </button>
                     {canCreate && selectedItem.status !== "converted" && (
                       <button onClick={() => setConvertTarget(selectedItem)} title="チケット化"
                         style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", background: "#EDE9FE", color: "#6D28D9", border: "none", borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
@@ -741,10 +932,25 @@ export function BacklogPage() {
       )}
       {deleteTarget && (
         <ConfirmDialog
-          title="バックログ項目の削除"
-          message={`${deleteTarget.id}「${deleteTarget.title}」を削除します。`}
+          title={deleteTarget.isFolder ? "フォルダの削除" : "バックログ項目の削除"}
+          message={deleteTarget.isFolder
+            ? `「${deleteTarget.title || "無題のフォルダ"}」を削除します。フォルダ内の項目も一緒に削除されます。`
+            : `${deleteTarget.id}「${deleteTarget.title}」を削除します。`}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
+      )}
+
+      {/* Googleドライブ風のフォルダ階層一覧選択移動モーダル */}
+      {movingNodeTarget && (
+        <FolderMoveModal
+          node={movingNodeTarget}
+          items={items}
+          onClose={() => setMovingNodeTarget(null)}
+          onConfirm={async targetParentId => {
+            await handleMoveNode(movingNodeTarget.id, targetParentId);
+            setMovingNodeTarget(null);
+          }}
+        />
       )}
 
       {/* チケット詳細パネル */}
