@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Megaphone, Plus, Trash2, Image as ImageIcon, Save, Eye } from "lucide-react";
-import { Navigate } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
@@ -32,7 +32,8 @@ async function uploadAnnouncementImage(file: File): Promise<string> {
 
 export function AnnouncementSettingsPage() {
   const { userPermissions } = useAuth();
-  if (!userPermissions.canUpdateAnnouncement) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+  if (!userPermissions.canUpdateAnnouncement) return <NotFoundView kind="no-permission" label="お知らせ設定" />;
 
   const [title, setTitle] = useState("");
   const [items, setItems] = useState<AnnouncementItem[]>([emptyItem()]);

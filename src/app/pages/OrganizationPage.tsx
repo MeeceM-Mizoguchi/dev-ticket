@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Globe, Users, ChevronLeft, ChevronRight, Pencil, Trash2, Building2, Sparkles, CreditCard, ToggleLeft, ToggleRight, Calendar } from "lucide-react";
-import { useNavigate, Navigate } from "react-router";
+import { useNavigate } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -675,7 +676,8 @@ export function OrganizationPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  if (!userPermissions.canAccessOrganization) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+  if (!userPermissions.canAccessOrganization) return <NotFoundView kind="no-permission" label="組織管理" />;
 
   const [orgs, setOrgs] = useState<OrgWithStats[]>([]);
   const [plans, setPlans] = useState<PlanSettings[]>([]);

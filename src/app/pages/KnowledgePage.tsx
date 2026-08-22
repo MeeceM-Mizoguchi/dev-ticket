@@ -12,7 +12,7 @@
 // 詳細は docs/knowledge-ai-design.md。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import {
   BookOpen, Upload, Download, Trash2, Loader2, Search, X, FolderPlus, Folder, FolderOpen, FolderKanban,
   FileText, ChevronRight, ChevronDown, ChevronLeft, AlertTriangle, CheckCircle2, RefreshCw, Pencil, Save,
@@ -28,6 +28,7 @@ import type {
 } from "@/app/types";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { FolderNameDialog } from "@/app/components/knowledge/FolderNameDialog";
 import { WikiImportDialog } from "@/app/components/knowledge/WikiImportDialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
@@ -238,7 +239,7 @@ function Body({
 export function KnowledgePage() {
   const { projectSlug, docId: routeDocId } = useParams<{ projectSlug: string; docId?: string }>();
   const navigate = useNavigate();
-  const { userName, userRole, userId } = useAuth();
+  const { userName, userRole, userId, userOrgId } = useAuth();
   const { plan, isLimitReached } = usePlan();
   const { toast } = useToast();
 
@@ -333,6 +334,9 @@ export function KnowledgePage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
     const { data } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     if (!data || data.length === 0) { setNotFound(true); setLoading(false); return; }
     const p = mapProject(data[0]);
@@ -814,10 +818,9 @@ export function KnowledgePage() {
   // 以前は <PageLoader /> を返していたため、他画面から来ると
   // 「ヘッダーとメニューが一度消えて、また出る」＝画面がチカつく状態だった。
   // 他のプロジェクト配下の画面と同じく、枠は最初から出して中身だけ後から入れる。
-  if (notFound) return <Navigate to="/projects" replace />;
-  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) {
-    return <Navigate to="/projects" replace />;
-  }
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (!loading && accessBlocked) return accessBlocked;
   if (!plan.featureKnowledgeAi) {
     return (
       <div style={{ padding: 24 }}>

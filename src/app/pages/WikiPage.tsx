@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, BookOpen, Folder, FolderOpen, FolderPlus, GripVertical, FolderTree, X, Pencil, Search, MoreVertical, Download, FileUp, Upload, Loader2, Link2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ArticleExportButton } from "@/app/components/shared/ArticleExportButton";
+import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { exportWikiArticle, exportWikiFolder, type ExportFormat } from "@/app/lib/articleExport";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
@@ -327,7 +328,7 @@ function TreeItem({
 export function WikiPage() {
   const { projectSlug, folderId, pageId, "*": wikiPath } = useParams<{ projectSlug: string; folderId?: string; pageId?: string; "*"?: string }>();
   const navigate = useNavigate();
-  const { userName, userRole, userId } = useAuth();
+  const { userName, userRole, userId, userOrgId } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
 
@@ -433,6 +434,9 @@ export function WikiPage() {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     // ロード開始時にloadingを確実にtrueにする（リロード対策）
     setLoading(true);
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
 
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
@@ -757,9 +761,24 @@ export function WikiPage() {
 
   const pageCount = useMemo(() => pages.filter(p => !p.isFolder).length, [pages]);
 
-  if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
-  if (!loading && effectiveWikiPerm === "none") return <Navigate to="/dashboard" replace />;
+  // URLで名指しされたページ/フォルダが実在しないとき（削除済みリンク等）。
+  // タイトルベースの旧URL(/:projectSlug/wiki/*)は総当たりで解決する仕様なので判定対象外。
+  // PJを跨いで遷移した直後は手元の pages がまだ前のPJのものなので、
+  // URLのPJと読み込み済みのPJが一致するまで判定しない（一瞬404が出るのを防ぐ）。
+  const projectMatchesUrl = !!project && (project.slug === projectSlug || project.id === projectSlug);
+  const routeTargetMissing = !loading && projectMatchesUrl && !!(pageId || folderId) && (() => {
+    const wanted = (pageId ?? folderId ?? "").toLowerCase();
+    return !pages.some(p => p.id.toLowerCase() === wanted);
+  })();
+
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (!loading && accessBlocked) return accessBlocked;
+  if (!loading && effectiveWikiPerm === "none") return <NotFoundView kind="no-permission" label="Wiki" />;
+  if (routeTargetMissing) return (
+    <NotFoundView kind="resource" label={folderId ? "フォルダ" : "Wikiページ"}
+      backTo={{ label: "Wikiホームへ", to: `/${projectSlug ?? project?.slug}/wiki` }} />
+  );
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>

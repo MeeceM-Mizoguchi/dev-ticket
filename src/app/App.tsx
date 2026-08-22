@@ -80,7 +80,8 @@ export default function App() {
                 <Route key={r.path} path={r.path} element={r.element} />
               ))}
             </Route>
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            {/* 不明なURLの受け皿は PROTECTED_ROUTES 末尾の "*"（404画面）が担う。
+                ここで /dashboard へ飛ばしてしまうと 404 に辿り着けない。 */}
           </Routes>
           </PreviewPanelProvider>
         </AuthProvider>

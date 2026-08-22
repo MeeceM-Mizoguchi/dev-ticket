@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate, Navigate } from "react-router";
+import { useParams, useNavigate } from "react-router";
 import { ArrowLeft, Globe, Users, UserPlus, Mail, Crown, ShieldCheck, Code2, Palette, BadgeCheck, Phone, Link2, MapPin, User, Briefcase, FileText } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -8,6 +8,7 @@ import { mapMember } from "@/app/lib/mappers";
 import type { Member, Organization } from "@/app/types";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { PageLoader } from "@/app/components/shared/PageLoader";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { InviteDialog } from "@/app/components/members/InviteDialog";
 
 // ── ロールのメタデータ ────────────────────────────────────────────
@@ -83,7 +84,8 @@ export function OrganizationDetailPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
 
-  if (!userPermissions.canAccessOrganization) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+  if (!userPermissions.canAccessOrganization) return <NotFoundView kind="no-permission" label="組織管理" />;
 
   const [org, setOrg] = useState<Organization | null>(null);
   const [members, setMembers] = useState<Member[]>([]);

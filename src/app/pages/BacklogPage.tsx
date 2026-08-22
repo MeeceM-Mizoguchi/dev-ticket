@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { FolderKanban, ChevronRight, Plus, GitBranch, ClipboardList, Trash2, Ticket, Search, X, FolderPlus, FolderOpen, Link2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -13,6 +13,7 @@ import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
@@ -222,7 +223,7 @@ export function BacklogPage() {
   const { projectSlug, itemId: itemIdParam, folderId: folderIdParam } =
     useParams<{ projectSlug: string; itemId?: string; folderId?: string }>();
   const navigate = useNavigate();
-  const { userPermissions, userName, userRole, userId } = useAuth();
+  const { userPermissions, userName, userRole, userId, userOrgId } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
 
@@ -316,6 +317,9 @@ export function BacklogPage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
@@ -358,6 +362,17 @@ export function BacklogPage() {
     const found = items.find(i => i.id === wanted);
     if (found) setSelectedId(found.id);
   }, [itemIdParam, folderIdParam, items]);
+
+  // URLで名指しされた項目/フォルダが実在しないとき（削除済みリンク等）。
+  // 以前は黙って一覧が出るだけで、リンクが死んでいることに気づけなかった。
+  // PJを跨いで遷移した直後は手元の items がまだ前のPJのものなので、
+  // URLのPJと読み込み済みのPJが一致するまで判定しない（一瞬404が出るのを防ぐ）。
+  const projectMatchesUrl = !!project && (project.slug === projectSlug || project.id === projectSlug);
+  const routeTargetMissing = !loading && projectMatchesUrl && (() => {
+    const wanted = folderIdParam ?? itemIdParam;
+    if (!wanted) return false;
+    return !items.some(i => i.id === wanted);
+  })();
 
   const selectedItem = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId]);
   // チケット化済・アーカイブ済の項目は編集不可
@@ -625,9 +640,14 @@ export function BacklogPage() {
     load();
   };
 
-  if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
-  if (!loading && effectiveBacklogPerm === "none") return <Navigate to="/dashboard" replace />;
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (!loading && accessBlocked) return accessBlocked;
+  if (!loading && effectiveBacklogPerm === "none") return <NotFoundView kind="no-permission" label="バックログ" />;
+  if (routeTargetMissing) return (
+    <NotFoundView kind="resource" label={folderIdParam ? "フォルダ" : "バックログ項目"}
+      backTo={{ label: "バックログ一覧へ", to: `/${projectSlug ?? project?.slug}/backlog` }} />
+  );
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>

@@ -10,7 +10,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
-import { Navigate } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 
 // Project-level permission flags only (admin-level flags are in ロール設定)
 const PROJECT_PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; color: string }[] = [
@@ -63,7 +63,8 @@ export function PermissionsPage() {
   const { toast } = useToast();
   const { selectedOrgId } = useOrg();
 
-  if (!userPermissions.canAccessGroups) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+  if (!userPermissions.canAccessGroups) return <NotFoundView kind="no-permission" label="アサイン計画" />;
 
   const [groups, setGroups] = useState<PermissionGroup[]>([]);
   const [members, setMembers] = useState<Member[]>([]);

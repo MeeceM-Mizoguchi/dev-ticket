@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate, useLocation } from "react-router";
 import type { ReactElement } from "react";
 import { ErrorBoundary } from "@/app/components/ErrorBoundary";
+import { RouteNotFoundPage } from "@/app/components/shared/NotFoundView";
 import { Dashboard } from "@/app/pages/Dashboard";
 import { ProjectsPage } from "@/app/pages/ProjectsPage";
 import { SprintPage } from "@/app/pages/SprintPage";
@@ -70,6 +71,10 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/whiteboard/:boardId", element: <WhiteboardPage /> },
   // Sprint detail (チケット一覧) with optional ticket open
   { path: "/:projectSlug/:segment", element: <SprintDetailPage /> },
+  // どのルートにも当たらないURL。黙ってダッシュボードへ飛ばすと「リンクが壊れている」のか
+  // 「打ち間違えた」のかが分からないため、理由とURLを出す 404 を描画する。
+  // 保護シェル配下に置いてあるので、サイドバー付きのまま表示される。
+  { path: "*", element: <RouteNotFoundPage /> },
 ];
 
 export function ProtectedRoutes({ location }: { location?: string }) {
@@ -85,7 +90,6 @@ export function ProtectedRoutes({ location }: { location?: string }) {
         {PROTECTED_ROUTES.map((r) => (
           <Route key={r.path} path={r.path} element={r.element} />
         ))}
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </ErrorBoundary>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
-import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { FolderKanban, ChevronRight, Plus, Trash2, ChevronDown, GitBranch, X, FolderOpen, BookmarkPlus } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -18,6 +18,7 @@ import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type 
 import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { MyFilterModal, addMyFilter, serializeFilters, checkDuplicateFilter } from "@/app/components/sprints/MyFilterModal";
 import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
 import { SelBox } from "@/app/components/sprints/SelBox";
@@ -247,6 +248,9 @@ export function SprintDetailPage() {
   const [sprint, setSprint] = useState<Sprint | null>(null);
   const [projectPermissions, setProjectPermissions] = useState<import("@/app/types").UserPermissions | null>(null);
   const [projectPermissionsLoaded, setProjectPermissionsLoaded] = useState(false);
+  // スプリント/チケットが見つからなかったときに 404 の文面を出し分けるための判定。
+  // "project" … URL のプロジェクト自体が存在しない / "sprint" … PJ は在るがその中に無い
+  const [missing, setMissing] = useState<"project" | "sprint" | null>(null);
 
   const NO_PERMS: import("@/app/types").UserPermissions = { canCreateTicket: false, canCreateSprint: false, canEditDelete: false, canReview: false, canSkipReview: false, canAccessMembers: false, canAccessRoles: false, canAccessGroups: false };
   const effectivePermissions = projectPermissionsLoaded
@@ -426,7 +430,14 @@ export function SprintDetailPage() {
         }
       }
       const s = byId ?? byRawId ?? byTicketWbs;
-      if (!s) { setProjectPermissionsLoaded(true); setLoading(false); return; }
+      if (!s) {
+        // 見つからない理由を 404 画面で出し分けるため、失敗したときだけ PJ を引き直す。
+        // （URL のプロジェクトが存在しないのか、PJ は在るがスプリント/チケットが無いのか）
+        const { data: bySlug } = await supabase!.from("projects").select("id").eq("slug", projectSlug ?? "").limit(1);
+        setMissing(bySlug?.[0] ? "sprint" : "project");
+        setProjectPermissionsLoaded(true); setLoading(false); return;
+      }
+      setMissing(null);
       setSprint(mapSprint(s));
       refreshFilterCount(s.id);
       const pid = s.project_id;
@@ -439,7 +450,7 @@ export function SprintDetailPage() {
       setProjectPermissionsLoaded(true);
       setLoading(false);
     })().catch(() => { setProjectPermissionsLoaded(true); setLoading(false); });
-  }, [sprintIdentifier, userId]);
+  }, [sprintIdentifier, projectSlug, userId]);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !userId || !sprint?.id) return;
@@ -527,12 +538,20 @@ export function SprintDetailPage() {
   });
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#A09790", fontSize: 13 }}>読み込み中...</div>;
-  if (!project || !sprint) return <Navigate to="/projects" replace />;
+  // 黙って /projects へ飛ばさず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  if (!project || !sprint) {
+    if (missing === "sprint") {
+      return (
+        <NotFoundView kind="resource" label={ticketWbs ? "チケット" : "スプリント"}
+          backTo={projectSlug ? { label: "スプリント一覧へ", to: `/${projectSlug}` } : undefined} />
+      );
+    }
+    return <NotFoundView kind="project" />;
+  }
 
-  // 組織チェック: organization_id が設定されていて一致しない場合はアクセス不可（ownerは除く）
-  const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
-  const isMemberOfProject = userRole === "owner" || (project.members ?? []).includes(userName);
-  if (!sameOrg || !isMemberOfProject) return <Navigate to="/projects" replace />;
+  // 組織チェック＋アサイン判定。別組織は404（存在を明かさない）、同組織の未アサインは403。
+  const accessBlocked = projectAccessView(project, { userRole, userName, userOrgId });
+  if (accessBlocked) return accessBlocked;
 
   const selectedTicket = ticketWbs
     ? (sprint.tickets.find(t => t.wbs === ticketWbs) ?? null)

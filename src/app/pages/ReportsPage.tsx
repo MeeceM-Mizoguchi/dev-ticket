@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ElementType, type CSSProperties, type ReactNode } from "react";
-import { Navigate } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import {
   FileBarChart2, Sparkles, Download, Loader2, Copy, CheckCircle2, Clock, ListTodo,
   TrendingUp, AlertTriangle, CalendarClock, CalendarRange, Gauge, Rocket, Users,
@@ -457,7 +457,8 @@ export function ReportsPage() {
     };
   }, [periodMode, customStart, customEnd, scope, allTickets, allSprints]);
 
-  if (!canAccess) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+  if (!canAccess) return <NotFoundView kind="no-permission" label="レポート管理" />;
 
   const scopeOptions = [
     { value: "all", label: "組織全体" },

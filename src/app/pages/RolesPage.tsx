@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus, X, UserCog, Pencil, Trash2, AlertCircle } from "lucide-react";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
-import { Navigate } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { RoleDefinition, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -56,7 +56,8 @@ export function RolesPage() {
   const [showNewModal, setShowNewModal] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<RoleDefinition | null>(null);
 
-  if (!userPermissions.canAccessRoles) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+  if (!userPermissions.canAccessRoles) return <NotFoundView kind="no-permission" label="ロール設定" />;
 
   useEffect(() => {
     if (!isSupabaseEnabled) { setLoading(false); return; }
