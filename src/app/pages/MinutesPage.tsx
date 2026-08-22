@@ -7,7 +7,7 @@ function toMinuteSlug(createdAt: string | null | undefined): string {
   if (!m) return "";
   return `${m[1]}${m[2]}${m[3]}-${m[4]}${m[5]}${m[6]}`;
 }
-import { FolderKanban, ChevronRight, Plus, FileText, Trash2, Users, Check, X, Search } from "lucide-react";
+import { FolderKanban, ChevronRight, ChevronDown, Plus, FileText, Trash2, Users, Check, X, Search, FileUp, Upload, Loader2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -25,6 +25,8 @@ import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
+import { readMinutesMarkdownFiles, MINUTES_MD_ACCEPT } from "@/app/lib/minutesMdImport";
 
 function formatDate(d: string) {
   if (!d) return "";
@@ -146,6 +148,10 @@ export function MinutesPage() {
   const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // MD取り込みの進捗（null=非実行中）。取り込み中は「新規議事録」ボタンを進捗表示へ差し替える。
+  const [mdImportProgress, setMdImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const singleMdInputRef = useRef<HTMLInputElement | null>(null);
+  const bulkMdInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleSelectTicketByWbs = useCallback(async (wbs: string) => {
     if (!isSupabaseEnabled || !project) {
@@ -304,6 +310,53 @@ export function MinutesPage() {
     navigate(`/${projectSlug ?? project?.slug}/minutes/${slug}`);
   };
 
+  // ── MDファイル取り込み（単体 / 一括） ──────────────────────────
+  // 1ファイル = 1議事録。タイトル・開催日・出席者は本文の前置きから拾い、
+  // 残りはすべて本文（貼り付けと同じ変換経路なので見出し・表・コードブロックまで揃う）。
+  const handleImportMdFiles = useCallback(async (files: File[]) => {
+    if (!project || files.length === 0) return;
+    setMdImportProgress({ done: 0, total: files.length });
+
+    const { minutes: imported, skipped } = await readMinutesMarkdownFiles(
+      files, project.members ?? [], (done, total) => setMdImportProgress({ done, total }),
+    );
+
+    if (imported.length === 0) {
+      setMdImportProgress(null);
+      toast(skipped[0]?.reason ?? "取り込める内容がありませんでした", "error");
+      return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = imported.map(m => ({
+      id: crypto.randomUUID(), project_id: project.id,
+      title: m.title, meeting_date: m.meetingDate || today,
+      attendees: m.attendees, content: m.content,
+      created_by: userName || null,
+    }));
+
+    const { data: inserted, error } = await supabase!.from("meeting_minutes").insert(rows).select("id, created_at");
+    setMdImportProgress(null);
+    if (error) {
+      console.error("[MinutesPage] md import insert error:", error);
+      toast("議事録の作成に失敗しました", "error");
+      return;
+    }
+
+    await load();
+    emitLinkItemsChanged(project.id, "minute"); // 他タブの $ サジェストへ即時反映
+    toast(`${rows.length}件の議事録を作成しました${skipped.length ? `（${skipped.length}件はスキップ）` : ""}`);
+    const first = (inserted ?? []).find(r => r.id === rows[0].id);
+    navigate(`/${projectSlug ?? project.slug}/minutes/${toMinuteSlug(first?.created_at) || rows[0].id}`);
+  }, [project, userName, load, toast, navigate, projectSlug]);
+
+  const handleMdInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
+    // 同じファイルを続けて選び直せるように値をクリアする
+    e.target.value = "";
+    if (picked.length > 0) void handleImportMdFiles(picked);
+  };
+
   const handleDelete = async (m: MeetingMinute) => {
     await supabase!.from("meeting_minutes").delete().eq("id", m.id);
     emitLinkItemsChanged(project?.id, "minute");
@@ -321,6 +374,7 @@ export function MinutesPage() {
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
+      <style>{"@keyframes minutes-md-spin { to { transform: rotate(360deg); } }"}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -361,10 +415,40 @@ export function MinutesPage() {
           </div>
 
           {canEdit && (
-            <button onClick={handleAdd}
-              style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 6, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              <Plus style={{ width: 12, height: 12 }} />新規議事録
-            </button>
+            <>
+              {/* MD取り込み用の隠しinput。単体/一括で multiple だけが違う。 */}
+              <input ref={singleMdInputRef} type="file" accept={MINUTES_MD_ACCEPT} onChange={handleMdInputChange} style={{ display: "none" }} />
+              <input ref={bulkMdInputRef} type="file" accept={MINUTES_MD_ACCEPT} multiple onChange={handleMdInputChange} style={{ display: "none" }} />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
+                  <button
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, width: "100%", padding: "7px 10px", marginBottom: 6, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
+                    {mdImportProgress ? (
+                      <>
+                        <Loader2 style={{ width: 12, height: 12, animation: "minutes-md-spin 1s linear infinite" }} />
+                        取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
+                      </>
+                    ) : (
+                      <>
+                        <Plus style={{ width: 12, height: 12 }} />新規議事録
+                        <ChevronDown style={{ width: 11, height: 11 }} />
+                      </>
+                    )}
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
+                  <DropdownMenuItem onSelect={() => handleAdd()}>
+                    <FileText style={{ width: 14, height: 14 }} />新規議事録を作成
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => singleMdInputRef.current?.click()}>
+                    <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => bulkMdInputRef.current?.click()}>
+                    <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
           )}
           {minutes.length === 0 ? (
             <div style={{ padding: "24px 8px", textAlign: "center" }}>
