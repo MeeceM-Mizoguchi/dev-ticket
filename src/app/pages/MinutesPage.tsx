@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, Navigate } from "react-router";
+import { useNavigate, useParams } from "react-router";
 
 function toMinuteSlug(createdAt: string | null | undefined): string {
   if (!createdAt) return "";
@@ -20,6 +20,7 @@ import type { Project, MeetingMinute, ActionMemo, AccessLevel, UserPermissions, 
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
@@ -123,7 +124,7 @@ export function MinutesPage() {
   const { projectSlug, minuteId: minuteIdParam, folderId: folderIdParam } =
     useParams<{ projectSlug: string; minuteId?: string; folderId?: string }>();
   const navigate = useNavigate();
-  const { userPermissions, userName, userRole, userId } = useAuth();
+  const { userPermissions, userName, userRole, userId, userOrgId } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
 
@@ -218,6 +219,9 @@ export function MinutesPage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
@@ -271,6 +275,21 @@ export function MinutesPage() {
   }, [minuteIdParam, folderIdParam, minutes]);
 
   const selected = minutes.find(m => m.id === selectedId) ?? null;
+
+  // URLで名指しされた議事録/フォルダが実在しないとき（削除済みリンク等）。
+  // 以前は黙って一覧が出るだけで、リンクが死んでいることに気づけなかった。
+  //
+  // 誤爆させないための条件が2つある:
+  //   ・作成直後 … handleAdd/handleAddFolder が await load() を挟むので minutes に載っている
+  //   ・PJ跨ぎの遷移 … 手元の minutes がまだ前のPJのものなので、URLのPJと一致するまで判定しない
+  const projectMatchesUrl = !!project && (project.slug === projectSlug || project.id === projectSlug);
+  const routeTargetMissing = !loading && projectMatchesUrl && (() => {
+    if (folderIdParam) return !minutes.some(m => m.id.toLowerCase() === folderIdParam.toLowerCase());
+    if (minuteIdParam) {
+      return !minutes.some(m => m.id === minuteIdParam || toMinuteSlug(m.createdAt) === minuteIdParam);
+    }
+    return false;
+  })();
 
   // ツリー用の並び。フォルダを先頭に、議事録は従来どおり開催日の新しい順。
   // 各階層の並びは buildDocTree がこの配列順をそのまま引き継ぐ。
@@ -498,9 +517,14 @@ export function MinutesPage() {
     load();
   };
 
-  if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
-  if (!loading && effectiveMinutesPerm === "none") return <Navigate to="/dashboard" replace />;
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (!loading && accessBlocked) return accessBlocked;
+  if (!loading && effectiveMinutesPerm === "none") return <NotFoundView kind="no-permission" label="議事録" />;
+  if (routeTargetMissing) return (
+    <NotFoundView kind="resource" label={folderIdParam ? "フォルダ" : "議事録"}
+      backTo={{ label: "議事録一覧へ", to: `/${projectSlug ?? project?.slug}/minutes` }} />
+  );
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>

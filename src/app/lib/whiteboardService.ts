@@ -53,12 +53,25 @@ export function base64ToBytes(b64: string): Uint8Array {
 }
 
 // ── プロジェクト解決（slug または id） ──
-export async function resolveProject(projectSlug: string): Promise<{ id: string; name: string; slug: string } | null> {
+// members / organization_id も返す。ホワイトボード画面が「見られない理由」を
+// 出し分ける（未アサインなのか、権限が無いだけなのか）のに使う。
+export interface ResolvedProject {
+  id: string; name: string; slug: string;
+  members: string[]; organizationId: string | null;
+}
+
+export async function resolveProject(projectSlug: string): Promise<ResolvedProject | null> {
   if (!isSupabaseEnabled) return null;
-  const { data: bySlug } = await supabase!.from("projects").select("id, name, slug").eq("slug", projectSlug).limit(1);
-  if (bySlug?.[0]) return bySlug[0] as any;
-  const { data: byId } = await supabase!.from("projects").select("id, name, slug").eq("id", projectSlug).maybeSingle();
-  return (byId as any) ?? null;
+  const cols = "id, name, slug, members, organization_id";
+  const { data: bySlug } = await supabase!.from("projects").select(cols).eq("slug", projectSlug).limit(1);
+  const row: any = bySlug?.[0]
+    ?? (await supabase!.from("projects").select(cols).eq("id", projectSlug).maybeSingle()).data;
+  if (!row) return null;
+  return {
+    id: row.id, name: row.name, slug: row.slug,
+    members: (row.members ?? []) as string[],
+    organizationId: (row.organization_id ?? null) as string | null,
+  };
 }
 
 // ── ボード単体のメタ情報（リンクから開く時に、所属プロジェクトを逆引きする） ──

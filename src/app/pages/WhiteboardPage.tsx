@@ -1,7 +1,7 @@
 // ホワイトボード画面。左にボード一覧、右にリアルタイム共同編集キャンバス（遅延ロード）。
 // 権限は議事録と同型（owner/admin=edit固定、他は project_member_permissions を参照）。
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { useParams, useNavigate, useSearchParams, Navigate } from "react-router";
+import { useParams, useNavigate, useSearchParams } from "react-router";
 import { FolderKanban, ChevronRight, PenTool } from "lucide-react";
 import { isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -12,6 +12,8 @@ import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
 import { BoardListToggle } from "@/app/components/whiteboard/BoardListToggle";
 import { PrivateBadge } from "@/app/components/whiteboard/PrivateBadge";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
+import { checkProjectAccess } from "@/app/lib/projectAccess";
 import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor, setBoardVisibility, broadcastBoardEvicted } from "@/app/lib/whiteboardService";
 import { getWbControl } from "@/app/lib/whiteboardControlBus";
 import { COMMENT_LINK_PARAM, ELEMENT_LINK_PARAM, REPLY_LINK_PARAM } from "@/app/lib/whiteboardLink";
@@ -29,7 +31,7 @@ export function WhiteboardPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
-  const { userId, userName, userRole } = useAuth();
+  const { userId, userName, userRole, userOrgId } = useAuth();
   const isAdminRole = userRole === "owner" || userRole === "admin";
   // オブジェクトへのディープリンク（?element=）。着地したら消費して URL から取り除く
   // （残すとボードを切り替えたりリロードするたびに再フォーカスが暴発するため・FileBoxPageと同型）。
@@ -40,6 +42,9 @@ export function WhiteboardPage() {
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
+  // 権限なし画面の文言を出し分けるためだけに持つ（未アサインか、権限が無いだけか）。
+  const [projectAccessInfo, setProjectAccessInfo] =
+    useState<{ members: string[]; organizationId: string | null } | null>(null);
   const [boards, setBoards] = useState<Whiteboard[]>([]);
   const [perms, setPerms] = useState<Perms>({ whiteboard: "view", wiki: "view", backlog: "view", minutes: "view" });
   const [loading, setLoading] = useState(true);
@@ -54,10 +59,14 @@ export function WhiteboardPage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
     const p = await resolveProject(projectSlug);
     if (!p) { setNotFound(true); setLoading(false); return; }
     setProjectId(p.id);
     setProjectName(p.name);
+    setProjectAccessInfo({ members: p.members ?? [], organizationId: p.organizationId });
 
     // 権限判定はリンクプレビュー（WhiteboardLinkPreview）と共通の関数に集約している。
     // whiteboards の RLS は authenticated 全許可なので、ここがアクセス制御の実体。
@@ -153,8 +162,19 @@ export function WhiteboardPage() {
     if (boardId === id) navigate(`/${projectSlug}/whiteboard`);
   }, [boardId, projectSlug, navigate]);
 
-  if (!loading && notFound) return <Navigate to="/projects" replace />;
-  if (!loading && perms.whiteboard === "none") return <Navigate to="/dashboard" replace />;
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  if (!loading && notFound) return <NotFoundView kind="project" />;
+  // 権限が無いときの理由を出し分ける（アクセスできる範囲は従来どおり。文言だけを正確にする）。
+  // 未アサインなら「権限が無い」ではなく「アサインされていない」と伝えたほうが次の行動につながる。
+  if (!loading && perms.whiteboard === "none") {
+    const access = checkProjectAccess(projectAccessInfo, { userRole, userName, userOrgId });
+    if (access === "not-found") return <NotFoundView kind="project" />;   // 別組織は存在を明かさない
+    return access === "no-access"
+      ? <NotFoundView kind="no-access" projectLabel={projectName} />
+      : <NotFoundView kind="no-permission" label="ホワイトボード" />;
+  }
+  // ボード単体が見つからない場合は、ボード一覧を残したまま右ペインに
+  // 「ボードが見つかりませんでした」を出す既存の作りをそのまま使う（下の JSX）。
 
   const user = { id: userId, name: userName || "匿名", color: wbUserColor(userId || "anon") };
   const currentBoard = boardId ? boards.find((b) => b.id === boardId) ?? null : null;

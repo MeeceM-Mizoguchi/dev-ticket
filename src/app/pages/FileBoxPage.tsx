@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
@@ -16,6 +16,7 @@ import { FILE_FOLDER_PARAM } from "@/app/lib/shareLink";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import {
@@ -74,7 +75,7 @@ export function FileBoxPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { userName, userRole, userId } = useAuth();
+  const { userName, userRole, userId, userOrgId } = useAuth();
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -111,6 +112,9 @@ export function FileBoxPage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
@@ -427,8 +431,9 @@ export function FileBoxPage() {
   const visible = currentLevelItems;
 
   // ── ガード ─────────────────────────────────────────────────
-  if (!loading && (notFound || !project)) return <Navigate to="/projects" replace />;
-  if (!loading && project && userRole !== "owner" && !(project.members ?? []).includes(userName)) return <Navigate to="/projects" replace />;
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (!loading && accessBlocked) return accessBlocked;
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>

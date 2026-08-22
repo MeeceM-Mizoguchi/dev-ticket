@@ -3,18 +3,19 @@
 // そのプロジェクトに紐付いたタスクだけを出す。中身は横断ビューと同じ TaskWorkspace で、
 // 違いは projectId を渡すこと（＝新規作成時のプロジェクトが固定され、PJフィルタが消える）だけ。
 import { useCallback, useEffect, useState } from "react";
-import { useParams, Navigate } from "react-router";
+import { useParams } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { mapProject } from "@/app/lib/mappers";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { TaskWorkspace } from "@/app/components/tasks/TaskWorkspace";
 import type { AccessLevel, Project, UserPermissions } from "@/app/types";
 
 export function ProjectTasksPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
-  const { userRole, userId } = useAuth();
+  const { userRole, userId, userName, userOrgId } = useAuth();
 
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,6 +31,9 @@ export function ProjectTasksPage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
+    // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+    // 引きずらないよう毎回クリアしてから引き直す。
+    setNotFound(false);
     const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
     const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
     if (!p) { setNotFound(true); setLoading(false); return; }
@@ -52,8 +56,13 @@ export function ProjectTasksPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (notFound) return <Navigate to="/projects" replace />;
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  // アサイン判定はここまで無かったので追加した（DB側は tasks_select の can_access_project() が
+  // 既に弾いており、未アサインの人には「空のタスク一覧」が出ていた）。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (notFound && accessBlocked) return accessBlocked;
   if (loading || !project) return <PageLoader label="プロジェクトを読み込み中..." />;
+  if (accessBlocked) return accessBlocked;
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>

@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, type ElementType } from "react";
-import { useNavigate, useParams, useSearchParams, Navigate } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Lock, Settings2, Megaphone } from "lucide-react";
+import { useNavigate, useParams, useSearchParams } from "react-router";
+import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Settings2, Megaphone } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -24,6 +24,7 @@ import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDia
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { SprintSettingsMenu } from "@/app/components/sprints/SprintSettingsMenu";
 import { SprintOrderDialog } from "@/app/components/sprints/SprintOrderDialog";
 import { fetchSprintOrder, applySprintOrder, saveSprintOrder, type SprintOrderScope } from "@/app/lib/sprintOrder";
@@ -227,6 +228,9 @@ export function SprintPage() {
     if (!projectSlug) { setLoading(false); return; }
 
     const lookupProject = async () => {
+      // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
+      // 引きずらないよう毎回クリアしてから引き直す。
+      setNotFound(false);
       const { data: bySlugRows } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
       const p = bySlugRows?.[0]
         ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
@@ -307,30 +311,11 @@ export function SprintPage() {
 
   const goToSprint = (sprint: Sprint) => navigate(`/${projectSlug}/${sprint.identifier || sprint.id}`);
 
-  if (!loading && notFound) return <Navigate to="/projects" replace />;
-  if (!loading && !project) return <Navigate to="/projects" replace />;
-
-  if (project) {
-    const sameOrg = userRole === "owner" || !project.organizationId || !userOrgId || project.organizationId === userOrgId;
-    const isMember = userRole === "owner" || (sameOrg && (project.members ?? []).includes(userName));
-    if (!isMember) return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "70vh", padding: 24 }}>
-        <div style={{ textAlign: "center" as const, maxWidth: 380 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 16, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
-            <Lock style={{ width: 24, height: 24, color: "#DC2626" }} />
-          </div>
-          <h2 style={{ fontSize: 18, fontWeight: 800, color: "#1A1714", marginBottom: 10, fontFamily: "var(--font-heading)" }}>アクセスできません</h2>
-          <p style={{ fontSize: 13, color: "#9E9690", lineHeight: 1.65, marginBottom: 24 }}>
-            このプロジェクトからアサイン解除されたため、<br />アクセスできません。
-          </p>
-          <button onClick={() => navigate("/projects")}
-            style={{ padding: "10px 28px", background: "#059669", color: "#FFF", border: "none", borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-            プロジェクト一覧に戻る
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // 黙って /projects へ飛ばすと「リンクを貼り損ねたのか、権限が無いのか」が分からないため、
+  // 理由と開こうとしたURLを出す共通画面をその場に描画する。
+  // 別組織なら404（存在を明かさない）、同組織の未アサインなら403。判定は projectAccess に集約。
+  const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
+  if (!loading && accessBlocked) return accessBlocked;
 
   const viewBtns: { mode: SprintView; label: string; Icon: ElementType }[] = [
     { mode: "list", label: "リスト", Icon: Layers },

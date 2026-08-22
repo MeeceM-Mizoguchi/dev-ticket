@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Search, UserPlus, Globe, Users, ArrowLeft, Sparkles, Zap, Settings2, History } from "lucide-react";
-import { useLocation, useNavigate, useSearchParams, Navigate } from "react-router";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -179,7 +180,8 @@ export function MembersPage() {
   // 他の管理画面(RolesPage/PermissionsPage等)には全てガードがあるが、
   // MembersPage だけ抜けていて /members 直打ちで到達できた。スキル情報を載せる前に塞ぐ。
   if (isSupabaseEnabled && !canManageSkills && !canAdd) {
-    return <Navigate to="/dashboard" replace />;
+    // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
+    return <NotFoundView kind="no-permission" label="メンバー管理" />;
   }
 
   if (loading) return <PageLoader />;

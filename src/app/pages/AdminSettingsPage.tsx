@@ -5,7 +5,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
-import { Navigate } from "react-router";
+import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { SlackNotificationSetting } from "@/app/components/settings/SlackNotificationSetting";
 import { MemberSlackSetting } from "@/app/components/settings/MemberSlackSetting";
 
@@ -16,8 +16,13 @@ export function AdminSettingsPage() {
   const effectiveOrgId = selectedOrgId ?? userOrgId;
   const [searchParams, setSearchParams] = useSearchParams();
 
-  if (!userPermissions.canAccessAdminSettings) return <Navigate to="/dashboard" replace />;
-  if (!plan.featureNotifications) return <Navigate to="/dashboard" replace />;
+  // 黙ってダッシュボードへ飛ばすと「リンクが壊れているのか権限が無いのか」が分からないため、
+  // 理由を出す共通画面をその場に描画する（docs/not-found-page-design.md）。
+  if (!userPermissions.canAccessAdminSettings) return <NotFoundView kind="no-permission" label="通知管理" />;
+  if (!plan.featureNotifications) return (
+    <NotFoundView kind="no-permission" label="通知管理"
+      body="通知管理はご契約のプランに含まれていません。ご利用をご希望の場合は管理者へお問い合わせください。" />
+  );
 
   const urlTab = searchParams.get("tab");
   const slackResult = searchParams.get("slack");
