@@ -11,8 +11,8 @@
 import type { MdBlock, MdInline, MdListItem } from "./types";
 
 // ── 暴走防止の上限（極端な入力でフリーズさせない） ──
+// 表の行数は制限しない（取り込んだ表が途中で切れて残りが素の文字列になるため）。
 const MAX_TABLE_COLS = 20;
-const MAX_TABLE_ROWS = 200;
 const MAX_LIST_DEPTH = 6;
 
 // ── 行の分類に使う正規表現 ──
@@ -409,7 +409,7 @@ function parseBlocks(lines: string[], depth = 0): MdBlock[] {
       const cols = header.length;
       i += 2; // 見出し行＋区切り行
       const rows: string[][] = [];
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim() && rows.length < MAX_TABLE_ROWS) {
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
         if (isDelimRow(lines[i])) { i++; continue; }
         const cells = splitRow(lines[i]);
         while (cells.length < cols) cells.push("");
