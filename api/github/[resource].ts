@@ -491,7 +491,9 @@ export default async function handler(req: any, res: any) {
       case "issues":   return await handleIssues(sb, caller, req, res);
       case "commits":  return await handleCommits(sb, caller, req, res);
       case "branches": return await handleBranches(sb, caller, req, res);
+      case "pending-branches": return await handlePendingBranches(sb, caller, req, res);
       case "links":    return await handleLinks(sb, caller, req, res);
+      case "create-pull": return await handleCreatePull(sb, caller, req, res);
       case "merge":    return await handleMerge(sb, caller, req, res);
       case "review":   return await handleReview(sb, caller, req, res);
       case "comment":  return await handleComment(sb, caller, req, res);
@@ -1088,6 +1090,109 @@ async function handleBranches(sb: SupabaseClient, caller: Caller, req: any, res:
   return res.status(200).json({ branches, defaultBranch: def, level: ctx.level, repo: ctx.repo });
 }
 
+/**
+ * まだプルリクエストが作られていないブランチの一覧。
+ *
+ * ブランチを「最後にコミットした順」で並べたいが、REST のブランチ一覧は日時を返さない。
+ * 1本ずつコミットを引くと本数分の呼び出しになるため、GraphQL で一度に取る。
+ * GraphQL が使えない場合は、日時なし・名前順の簡易版にフォールバックする。
+ */
+async function ghGraphql(token: string, query: string, variables: Record<string, unknown>) {
+  const res = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": UA,
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await res.json().catch(() => null) as any;
+  if (!res.ok || json?.errors?.length) {
+    throw new GithubError(res.status, json?.errors?.[0]?.message || `GraphQL エラー (${res.status})`);
+  }
+  return json?.data;
+}
+
+const PENDING_BRANCH_QUERY = `
+query($owner:String!,$name:String!,$n:Int!){
+  repository(owner:$owner,name:$name){
+    refs(refPrefix:"refs/heads/",first:$n,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){
+      nodes{
+        name
+        target{ ... on Commit { oid committedDate messageHeadline author{ name } } }
+      }
+    }
+  }
+}`;
+
+async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view");
+  const token = await installationToken(ctx.installationId);
+  const [owner, name] = ctx.repo.split("/");
+
+  // 既定ブランチと、オープンなPRが付いているブランチは対象外
+  const [repoInfo, openPulls] = await Promise.all([
+    gh(token, `/repos/${ctx.repo}`).catch(() => null),
+    gh(token, `/repos/${ctx.repo}/pulls?state=open&per_page=100`).catch(() => []),
+  ]);
+  const defaultBranch = repoInfo?.default_branch ?? ctx.defaultBranch ?? "main";
+  const withPr = new Set((openPulls ?? []).map((p: any) => p.head?.ref).filter(Boolean));
+
+  type Row = { name: string; sha: string; message: string; committedDate: string | null; authorName: string };
+  let rows: Row[] = [];
+
+  try {
+    const data = await ghGraphql(token, PENDING_BRANCH_QUERY, { owner, name, n: 50 });
+    rows = ((data?.repository?.refs?.nodes ?? []) as any[]).map(n => ({
+      name: n?.name ?? "",
+      sha: n?.target?.oid ?? "",
+      message: n?.target?.messageHeadline ?? "",
+      committedDate: n?.target?.committedDate ?? null,
+      authorName: n?.target?.author?.name ?? "",
+    }));
+  } catch (e) {
+    // GraphQL が使えない環境向けの簡易版。日時が取れないので名前順のまま返す
+    console.error("[github pending-branches] graphql failed:", (e as Error)?.message);
+    const list = await gh(token, `/repos/${ctx.repo}/branches?per_page=100`).catch(() => []);
+    rows = ((list ?? []) as any[]).map(b => ({
+      name: b.name, sha: b.commit?.sha ?? "", message: "", committedDate: null, authorName: "",
+    }));
+  }
+
+  const candidates = rows
+    .filter(r => r.name && r.name !== defaultBranch && !withPr.has(r.name))
+    .slice(0, 20);
+
+  // ブランチ名の WBS 番号から、このプロジェクトのチケット名を引いて添える
+  const wbsByBranch = new Map<string, string>();
+  for (const c of candidates) {
+    const m = c.name.toUpperCase().match(/[A-Z][A-Z0-9]*-\d+/);
+    if (m) wbsByBranch.set(c.name, m[0]);
+  }
+  const titleByWbs = new Map<string, string>();
+  const wbsList = Array.from(new Set(wbsByBranch.values()));
+  if (wbsList.length) {
+    const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", ctx.id);
+    const sprintIds = (sprints ?? []).map(s => (s as any).id);
+    if (sprintIds.length) {
+      const { data: tickets } = await sb.from("sprint_tickets")
+        .select("wbs, title").in("sprint_id", sprintIds).in("wbs", wbsList);
+      for (const t of (tickets ?? []) as any[]) titleByWbs.set(String(t.wbs).toUpperCase(), t.title);
+    }
+  }
+
+  return res.status(200).json({
+    level: ctx.level,
+    repo: ctx.repo,
+    defaultBranch,
+    branches: candidates.map(c => {
+      const wbs = wbsByBranch.get(c.name) ?? null;
+      return { ...c, wbs, ticketTitle: wbs ? (titleByWbs.get(wbs) ?? null) : null };
+    }),
+  });
+}
+
 // ── 紐付け ───────────────────────────────────────────────────
 /**
  * ブランチ名／タイトルの WBS からチケットへ自動で紐付ける。
@@ -1253,6 +1358,70 @@ async function writeLog(sb: SupabaseClient, ctx: ProjectCtx, caller: Caller, act
     result,
     detail: detail.slice(0, 500),
   });
+}
+
+/**
+ * プルリクエストの作成。GitHub の画面へ行かずに Dev Ticket 側で完結させるためのもの。
+ * 作成は書き込み操作なので、マージと同じ「マージ可」の権限を要求する。
+ */
+async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  const body = parseBody(req);
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "merge");
+
+  const head = String(body.head ?? "").trim();
+  const base = String(body.base ?? "").trim() || ctx.defaultBranch || "main";
+  const title = String(body.title ?? "").trim();
+  const draft = body.draft === true;
+
+  if (!head) throw new HttpError(400, "比較するブランチを選択してください。");
+  if (!title) throw new HttpError(400, "タイトルを入力してください。");
+  if (head === base) throw new HttpError(400, "比較するブランチとマージ先が同じです。");
+
+  const token = await installationToken(ctx.installationId);
+  const text = String(body.body ?? "").trim();
+
+  try {
+    const pr = await gh(token, `/repos/${ctx.repo}/pulls`, {
+      method: "POST",
+      body: {
+        title,
+        head,
+        base,
+        draft,
+        // 誰が Dev Ticket から作ったのかを本文に残す（GitHub上は App 名義になるため）
+        body: `${text}${text ? "\n\n" : ""}---\n_Dev Ticket の ${caller.name} が作成_`,
+      },
+    });
+    await writeLog(sb, ctx, caller, "create_pull", pr?.number ?? 0, "ok", `${head} → ${base} / ${title}`);
+    return res.status(200).json({
+      ok: true,
+      number: pr?.number ?? null,
+      url: pr?.html_url ?? null,
+      title: pr?.title ?? title,
+    });
+  } catch (e) {
+    // 作成時の 422 は「差分が無い」「既にPRがある」が大半で、
+    // マージ時の 422（ブランチ保護）とは意味が違うので専用に訳す
+    const raw = String((e as Error)?.message ?? "").toLowerCase();
+    let message = jaMessage(e).message;
+    let status = jaMessage(e).status;
+    if (e instanceof GithubError && e.status === 422) {
+      status = 409;
+      if (raw.includes("no commits between")) {
+        message = `「${head}」には「${base}」との差分がありません。コミットを push してから作成してください。`;
+      } else if (raw.includes("already exists")) {
+        message = `「${head}」のプルリクエストはすでに作成されています。`;
+      } else if (raw.includes("field head") || raw.includes("invalid")) {
+        message = `ブランチ「${head}」が見つかりません。一覧を更新して選び直してください。`;
+      } else {
+        message = "プルリクエストを作成できませんでした。ブランチとマージ先をご確認ください。";
+      }
+    }
+    console.error("[github create-pull]", (e as Error)?.message);
+    await writeLog(sb, ctx, caller, "create_pull", 0, "error", (e as Error)?.message ?? "");
+    return res.status(status).json({ error: message });
+  }
 }
 
 async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: any) {

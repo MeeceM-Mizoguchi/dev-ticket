@@ -4,7 +4,7 @@
 // （黙ってリダイレクトしない＝docs/not-found-page-design.md の方針）。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw, GitPullRequest } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -15,12 +15,14 @@ import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoun
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { PullRequestList, Empty } from "@/app/components/github/PullRequestList";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
+import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
+import { PendingBranches } from "@/app/components/github/PendingBranches";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import {
-  fetchPulls, fetchIssues, fetchCommits, fetchBranches, mergePull, relativeTime, GithubApiError,
+  fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, relativeTime, GithubApiError,
 } from "@/app/lib/github";
 import type {
-  Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, TicketGithubLink,
+  Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, GithubPendingBranch, TicketGithubLink,
   GithubAccessLevel, GithubMergeMethod,
 } from "@/app/types";
 
@@ -60,6 +62,10 @@ export function GithubPage() {
   const [apiError, setApiError] = useState("");
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
+  const [defaultBranch, setDefaultBranch] = useState("");
+  const [preparingCreate, setPreparingCreate] = useState(false);
+  const [createTarget, setCreateTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string; head?: string } | null>(null);
+  const [pending, setPending] = useState<GithubPendingBranch[]>([]);
 
   // ── プロジェクトの解決 ────────────────────────────────────
   useEffect(() => {
@@ -89,6 +95,10 @@ export function GithubPage() {
       if (which === "pulls") {
         const r = await fetchPulls(project.id);
         setPulls(r.pulls); setLinks(r.links); setLevel(r.level); setRepo(r.repo);
+        // PR未作成のブランチは付随情報なので、取れなくても一覧は表示する
+        fetchPendingBranches(project.id)
+          .then(p => setPending(p.branches))
+          .catch(() => setPending([]));
       } else if (which === "issues") {
         const r = await fetchIssues(project.id);
         setIssues(r.issues); setLevel(r.level); setRepo(r.repo);
@@ -97,7 +107,7 @@ export function GithubPage() {
         setCommits(r.commits); setRepo(r.repo);
       } else {
         const r = await fetchBranches(project.id);
-        setBranches(r.branches); setRepo(r.repo);
+        setBranches(r.branches); setDefaultBranch(r.defaultBranch); setRepo(r.repo);
       }
       setLoadedTabs(prev => ({ ...prev, [which]: true }));
       setFetchedAt(new Date().toISOString());
@@ -112,6 +122,29 @@ export function GithubPage() {
     if (!project?.id || !access.linked || access.level === "none" || !access.level) return;
     void loadTab(tab);
   }, [project?.id, tab, access.linked, access.level, loadTab]);
+
+  // PR作成ダイアログはブランチ一覧が要る。まだ取っていなければここで取る。
+  // head を渡すと、そのブランチを選択済みの状態で開く（未作成ブランチからの導線）。
+  const openCreatePull = async (head?: string) => {
+    if (!project?.id) return;
+    setPreparingCreate(true);
+    try {
+      let list = branches;
+      let def = defaultBranch;
+      if (!loadedTabs.branches || !list.length) {
+        const r = await fetchBranches(project.id);
+        list = r.branches; def = r.defaultBranch;
+        setBranches(r.branches); setDefaultBranch(r.defaultBranch);
+        setLoadedTabs(prev => ({ ...prev, branches: true }));
+      }
+      if (!list.length) { toast("ブランチを取得できませんでした", "error"); return; }
+      setCreateTarget({ branches: list, defaultBranch: def || project.githubDefaultBranch || "main", head });
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "ブランチを取得できませんでした", "error");
+    } finally {
+      setPreparingCreate(false);
+    }
+  };
 
   const handleMerge = async (method: GithubMergeMethod) => {
     if (!project?.id || !mergeTarget) return;
@@ -171,15 +204,26 @@ export function GithubPage() {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 4, marginTop: 12, background: "#F4F5F6", borderRadius: 9, padding: 3, width: "fit-content" }}>
-              {SUB_TABS.map(t => (
-                <button key={t.id} onClick={() => setTab(t.id)}
-                  style={{ padding: "6px 14px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer", background: tab === t.id ? BLACK : "transparent", color: tab === t.id ? "#FFF" : "#6B6458" }}>
-                  {t.label}
-                  {t.id === "pulls" && pulls.length > 0 && ` ${pulls.length}`}
-                  {t.id === "issues" && issues.length > 0 && ` ${issues.length}`}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 12, flexWrap: "wrap" as const }}>
+              <div style={{ display: "flex", gap: 4, background: "#F4F5F6", borderRadius: 9, padding: 3, width: "fit-content" }}>
+                {SUB_TABS.map(t => (
+                  <button key={t.id} onClick={() => setTab(t.id)}
+                    style={{ padding: "6px 14px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "none", cursor: "pointer", background: tab === t.id ? BLACK : "transparent", color: tab === t.id ? "#FFF" : "#6B6458" }}>
+                    {t.label}
+                    {t.id === "pulls" && pulls.length > 0 && ` ${pulls.length}`}
+                    {t.id === "issues" && issues.length > 0 && ` ${issues.length}`}
+                  </button>
+                ))}
+              </div>
+
+              {/* PRの作成は書き込み操作なので「マージ可」の人にだけ出す */}
+              {tab === "pulls" && level === "merge" && (
+                <button onClick={() => openCreatePull()} disabled={preparingCreate}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 16px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: preparingCreate ? "#9CA3AF" : BLACK, color: "#FFF", cursor: preparingCreate ? "default" : "pointer", whiteSpace: "nowrap" as const }}>
+                  <GitPullRequest style={{ width: 13, height: 13 }} />
+                  {preparingCreate ? "準備中..." : "プルリクエストを作成"}
                 </button>
-              ))}
+              )}
             </div>
           </div>
 
@@ -192,11 +236,18 @@ export function GithubPage() {
           {fetching && !loadedTabs[tab] ? (
             <PageLoader label="GitHubから取得中..." />
           ) : tab === "pulls" ? (
-            <PullRequestList
+            <>
+              <PendingBranches
+                branches={pending}
+                canCreate={level === "merge"}
+                onCreate={name => openCreatePull(name)}
+              />
+              <PullRequestList
               projectId={project.id} projectSlug={projectSlug ?? project.slug} repo={repo}
               pulls={pulls} level={level} links={links}
-              onMergeClick={setMergeTarget}
-            />
+                onMergeClick={setMergeTarget}
+              />
+            </>
           ) : tab === "issues" ? (
             <IssueList issues={issues} />
           ) : tab === "commits" ? (
@@ -214,6 +265,25 @@ export function GithubPage() {
           actorName={userName}
           onClose={() => setMergeTarget(null)}
           onMerge={handleMerge}
+        />
+      )}
+
+      {createTarget && (
+        <CreatePullDialog
+          projectId={project.id}
+          projectSlug={projectSlug ?? project.slug}
+          repo={repo || project.githubRepoFullName || ""}
+          branches={createTarget.branches}
+          defaultBranch={createTarget.defaultBranch}
+          initialHead={createTarget.head}
+          onClose={() => setCreateTarget(null)}
+          onCreated={async created => {
+            toast(created.number ? `#${created.number} を作成しました` : "プルリクエストを作成しました", "success");
+            // 一覧を取り直すと、ブランチ名のWBS番号からチケットへ自動で紐付く
+            setTab("pulls");
+            setLoadedTabs(prev => ({ ...prev, pulls: false }));
+            await loadTab("pulls", true);
+          }}
         />
       )}
     </div>

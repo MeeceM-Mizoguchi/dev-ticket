@@ -709,6 +709,20 @@ export interface GithubBranch {
   lastCommitSha: string;
 }
 
+/** まだプルリクエストが作られていないブランチ */
+export interface GithubPendingBranch {
+  name: string;
+  sha: string;
+  /** 最終コミットの1行目。GraphQL が使えない環境では空 */
+  message: string;
+  /** 最終コミットの日時。取得できない環境では null */
+  committedDate: string | null;
+  authorName: string;
+  /** ブランチ名から拾った WBS 番号 */
+  wbs: string | null;
+  ticketTitle: string | null;
+}
+
 export interface TicketGithubLink {
   id: number;
   projectId: string;
