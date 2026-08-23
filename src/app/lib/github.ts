@@ -5,7 +5,7 @@
 import { supabase } from "@/lib/supabase";
 import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
-  TicketGithubLink, GithubMergeMethod, GithubAccessLevel,
+  TicketGithubLink, GithubMergeMethod, GithubAccessLevel, GithubReleaseSyncResult,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -58,6 +58,17 @@ export function adoptGithubInstallation(installationId: string, orgId?: string |
   return call<{ ok: true; accountLogin: string }>("adopt", {
     query: { orgId: orgId ?? undefined },
     body: { installationId },
+  });
+}
+
+/**
+ * 「リリース待ち」のうち、紐付いたPRが既定ブランチへマージ済みのチケットを
+ * 「リリース済み」に反映する。定期実行と同じ処理を、この組織だけを対象に手動で走らせる。
+ */
+export function syncReleasedTickets(orgId?: string | null) {
+  return call<GithubReleaseSyncResult>("sync-released", {
+    query: { orgId: orgId ?? undefined },
+    body: {},
   });
 }
 
