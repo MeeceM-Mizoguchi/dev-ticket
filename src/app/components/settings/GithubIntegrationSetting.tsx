@@ -58,6 +58,7 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<GithubReleaseSyncResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [webhookCopied, setWebhookCopied] = useState(false);
   const [grantCounts, setGrantCounts] = useState<{ merge: number; view: number; none: number } | null>(null);
 
   const linkRef = useRef<HTMLDivElement>(null);
@@ -323,6 +324,15 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     }
   };
 
+  // GitHub App 側に登録する Webhook の宛先。設定しておくとマージした瞬間に反映される
+  const webhookUrl = `${window.location.origin}/api/github/webhook`;
+  const handleCopyWebhookUrl = async () => {
+    if (await copyText(webhookUrl)) {
+      setWebhookCopied(true);
+      setTimeout(() => setWebhookCopied(false), 2000);
+    }
+  };
+
   const jumpTo = (key: keyof SetupStepState) => {
     setTimeout(() => {
       const el = key === "installed" ? connectRef.current : key === "linked" ? linkRef.current : permRef.current;
@@ -582,9 +592,13 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
             <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 12, lineHeight: 1.8 }}>
               チケットのプルリクエストが既定ブランチへマージされると、
               <strong>「リリース待ち」のチケットを自動で「リリース済み」に</strong>します。
-              マージした直後・GitHubタブを開いたとき・定期実行の3つのタイミングで反映されます。
+              下のWebhookを設定していればマージした瞬間に、していなくても
+              マージ直後・GitHubタブを開いたとき・定期実行のいずれかで反映されます。
               <br />
               判定に使うのは GitHub 上のPRの状態だけなので、そのプロジェクトのデプロイ先には依存しません。
+              <br />
+              あわせて、<strong>チケットとPRの紐付け（チケット詳細の「関連PR」）も自動で埋めます</strong>。
+              こちらはステータスを問わないので、クローズ済み・リリース済みのチケットにも過去のPRが並びます。
             </p>
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const }}>
@@ -606,6 +620,28 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
                 style={{ padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#1A1714", cursor: syncing ? "default" : "pointer", opacity: syncing ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
                 {syncing ? "反映中..." : "今すぐ反映する"}
               </button>
+            </div>
+
+            {/* GitHub App 側に登録する Webhook。任意だが、設定するとマージ直後に反映される */}
+            <div style={{ marginTop: 14, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 12 }}>
+              <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", marginBottom: 6 }}>
+                Webhook（任意）
+              </p>
+              <p style={{ fontSize: 11, color: "#6B6458", lineHeight: 1.7, marginBottom: 8 }}>
+                GitHub App の設定画面で下のURLを Webhook URL に登録し、Secret に環境変数
+                <code style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}> GITHUB_WEBHOOK_SECRET </code>
+                と同じ値を入れ、購読イベントに「Pull requests」を追加してください。
+                設定するとマージした瞬間に反映されます。未設定でも動作します。
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const }}>
+                <code style={{ flex: 1, minWidth: 220, padding: "7px 10px", background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 11, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                  {webhookUrl}
+                </code>
+                <button onClick={handleCopyWebhookUrl}
+                  style={{ padding: "7px 12px", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#1A1714", cursor: "pointer", whiteSpace: "nowrap" as const }}>
+                  {webhookCopied ? "✓ コピーしました" : "URLをコピー"}
+                </button>
+              </div>
             </div>
 
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
