@@ -742,6 +742,14 @@ export interface TicketGithubLink {
 
 export type GithubMergeMethod = "merge" | "squash" | "rebase";
 
+/** まとめてマージの結果。1件ごとに成否を返す */
+export interface GithubBulkMergeResult {
+  ok: true;
+  merged: number;
+  failed: number;
+  results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string }[];
+}
+
 /** リリース待ち → リリース済み の自動反映の結果 */
 export interface GithubReleaseSyncResult {
   ok: true;

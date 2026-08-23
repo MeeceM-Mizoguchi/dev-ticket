@@ -5,7 +5,7 @@
 import { supabase } from "@/lib/supabase";
 import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
-  TicketGithubLink, GithubMergeMethod, GithubAccessLevel, GithubReleaseSyncResult, GithubPendingBranch,
+  TicketGithubLink, GithubMergeMethod, GithubAccessLevel, GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -117,6 +117,11 @@ export function createPull(projectId: string, input: {
 
 export function mergePull(projectId: string, number: number, method: GithubMergeMethod) {
   return call<{ ok: true; sha: string | null }>("merge", { body: { projectId, number, method } });
+}
+
+/** 選択した複数のPRを、1件ずつ順番にマージする */
+export function mergePullsBulk(projectId: string, numbers: number[], method: GithubMergeMethod) {
+  return call<GithubBulkMergeResult>("merge-bulk", { body: { projectId, numbers, method } });
 }
 
 export function reviewPull(projectId: string, number: number, event: "APPROVE" | "REQUEST_CHANGES", body: string) {

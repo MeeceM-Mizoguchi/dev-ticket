@@ -495,6 +495,7 @@ export default async function handler(req: any, res: any) {
       case "links":    return await handleLinks(sb, caller, req, res);
       case "create-pull": return await handleCreatePull(sb, caller, req, res);
       case "merge":    return await handleMerge(sb, caller, req, res);
+      case "merge-bulk": return await handleMergeBulk(sb, caller, req, res);
       case "review":   return await handleReview(sb, caller, req, res);
       case "comment":  return await handleComment(sb, caller, req, res);
       case "link":     return await handleLink(sb, caller, req, res);
@@ -1459,6 +1460,71 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
     await writeLog(sb, ctx, caller, "merge", number, "error", (e as Error)?.message ?? "");
     return res.status(m.status).json({ error: m.message });
   }
+}
+
+/** 一度に扱えるPRの上限。多すぎると実行時間が読めなくなるため */
+const MAX_BULK_MERGE = 20;
+
+/**
+ * 複数のPRをまとめてマージする。
+ *
+ * 1件ずつ順番に実行する。前のPRがマージされるとベースブランチが進むため、
+ * 後続のマージ可否は都度取り直さないと判定できない（handleMerge と同じく実行直前に引く）。
+ * 途中で失敗しても残りは続行し、1件ごとの結果を返す。
+ */
+async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  const body = parseBody(req);
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "merge");
+  const method = ["merge", "squash", "rebase"].includes(body.method) ? body.method : "squash";
+
+  const numbers = Array.from(new Set((Array.isArray(body.numbers) ? body.numbers : [])
+    .map((n: unknown) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0)));
+  if (!numbers.length) throw new HttpError(400, "マージする対象が選択されていません。");
+  if (numbers.length > MAX_BULK_MERGE) {
+    throw new HttpError(400, `一度にマージできるのは${MAX_BULK_MERGE}件までです。`);
+  }
+
+  const token = await installationToken(ctx.installationId);
+  const results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string }[] = [];
+
+  for (const number of numbers) {
+    let title = `#${number}`;
+    try {
+      // 直前の状態を必ず引き直す。前のマージでベースが進んでいる可能性があるため
+      const p = await gh(token, `/repos/${ctx.repo}/pulls/${number}`);
+      title = p?.title ?? title;
+
+      if (p.merged) throw new HttpError(409, "すでにマージされています。");
+      if (p.draft) throw new HttpError(409, "Draft のためマージできません。");
+      if (p.mergeable === false) throw new HttpError(409, "コンフリクトがあるためマージできません。");
+
+      const result = await gh(token, `/repos/${ctx.repo}/pulls/${number}/merge`, {
+        method: "PUT",
+        body: {
+          merge_method: method,
+          ...(method === "rebase" ? {} : {
+            commit_title: `${p.title} (#${number})`,
+            commit_message: `Merged via Dev Ticket by ${caller.name}`,
+          }),
+          sha: p.head?.sha,
+        },
+      });
+      await writeLog(sb, ctx, caller, "merge", number, "ok", `bulk / ${method} / ${result?.sha ?? ""}`);
+      results.push({ number, ok: true, title, sha: result?.sha ?? null });
+    } catch (e) {
+      const message = e instanceof HttpError ? e.message : jaMessage(e).message;
+      await writeLog(sb, ctx, caller, "merge", number, "error", `bulk / ${(e as Error)?.message ?? ""}`);
+      results.push({ number, ok: false, title, error: message });
+    }
+  }
+
+  return res.status(200).json({
+    ok: true,
+    merged: results.filter(r => r.ok).length,
+    failed: results.filter(r => !r.ok).length,
+    results,
+  });
 }
 
 async function handleReview(sb: SupabaseClient, caller: Caller, req: any, res: any) {
