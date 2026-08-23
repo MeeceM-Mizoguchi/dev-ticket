@@ -54,27 +54,25 @@ export function GithubSetupSteps({ state, onJump }: {
   );
 }
 
-/** 3段すべて完了したときの完了帯（設定ブロックは折りたたむ） */
-export function GithubSetupDone({ linkedCount, grantedCount, onExpand }: {
-  linkedCount: number; grantedCount: number; onExpand: () => void;
+/**
+ * 3段すべて完了したときに、ステップ表示の代わりに出す状態帯。
+ * 以前はこれを出して設定ブロックを畳んでいたが、設定画面なのに中身が消えて
+ * 一行だけの殺風景な画面になってしまうため、畳まずに設定はそのまま表示する。
+ */
+export function GithubSetupDone({ linkedCount, grantedCount }: {
+  linkedCount: number; grantedCount: number;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 12, padding: "13px 16px", marginBottom: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          <Check style={{ width: 12, height: 12, color: "#FFF" }} />
-        </div>
-        <div>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#15803D" }}>セットアップ完了</span>
-          <span style={{ fontSize: 12, color: "#166534", marginLeft: 10 }}>
-            {linkedCount}プロジェクトに紐付け済み ・ {grantedCount}名に権限を付与済み
-          </span>
-        </div>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 12, padding: "13px 16px", marginBottom: 16 }}>
+      <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Check style={{ width: 12, height: 12, color: "#FFF" }} />
       </div>
-      <button onClick={onExpand}
-        style={{ padding: "6px 13px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(5,150,105,0.3)", background: "#FFF", color: "#15803D", cursor: "pointer", whiteSpace: "nowrap" as const }}>
-        設定を変更する
-      </button>
+      <div>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#15803D" }}>セットアップ完了</span>
+        <span style={{ fontSize: 12, color: "#166534", marginLeft: 10 }}>
+          {linkedCount}プロジェクトに紐付け済み ・ {grantedCount}名に権限を付与済み
+        </span>
+      </div>
     </div>
   );
 }

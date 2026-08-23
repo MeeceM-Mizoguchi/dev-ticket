@@ -56,7 +56,6 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   const [disconnecting, setDisconnecting] = useState(false);
   const [adopting, setAdopting] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [grantCounts, setGrantCounts] = useState<{ merge: number; view: number; none: number } | null>(null);
 
   const linkRef = useRef<HTMLDivElement>(null);
@@ -193,7 +192,6 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   // 接続直後は「次にリポジトリを紐付けてください」へ誘導する
   useEffect(() => {
     if (!justConnected || loading || !status?.installed) return;
-    setExpanded(true);
     const t = setTimeout(() => linkRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
     return () => clearTimeout(t);
   }, [justConnected, loading, status?.installed]);
@@ -245,7 +243,6 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
       invalidateGithubAccessCache();
       const s = await loadStatus();
       if (s?.installed && !s.revoked) await loadRepos();
-      setExpanded(true);
       setTimeout(() => linkRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
     } catch (e) {
       toast(e instanceof GithubApiError ? e.message : "取り込みに失敗しました", "error");
@@ -311,7 +308,6 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   };
 
   const jumpTo = (key: keyof SetupStepState) => {
-    setExpanded(true);
     setTimeout(() => {
       const el = key === "installed" ? connectRef.current : key === "linked" ? linkRef.current : permRef.current;
       el?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -336,12 +332,12 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     );
   }
 
-  const showCollapsed = allDone && !expanded;
 
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, gap: 0 }}>
-      {showCollapsed
-        ? <GithubSetupDone linkedCount={linkedCount} grantedCount={grantedCount} onExpand={() => setExpanded(true)} />
+      {/* 完了しても設定は畳まない。設定画面なのに中身が消えると迷わせるため。 */}
+      {allDone
+        ? <GithubSetupDone linkedCount={linkedCount} grantedCount={grantedCount} />
         : <GithubSetupSteps state={steps} onJump={jumpTo} />}
 
       {error && <Notice tone="warn" title="接続状態を取得できませんでした">{error}</Notice>}
@@ -385,7 +381,7 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
         </Notice>
       )}
 
-      {showCollapsed ? null : !steps.installed ? (
+      {!steps.installed ? (
         <div ref={connectRef}>
           {/* GitHub側にはインストール済みなのに、こちらに記録が無い状態からの復旧 */}
           {!status?.installed && (status?.unclaimedInstallations?.length ?? 0) > 0 && (

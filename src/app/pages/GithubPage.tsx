@@ -193,7 +193,8 @@ export function GithubPage() {
             <PageLoader label="GitHubから取得中..." />
           ) : tab === "pulls" ? (
             <PullRequestList
-              projectId={project.id} repo={repo} pulls={pulls} level={level} links={links}
+              projectId={project.id} projectSlug={projectSlug ?? project.slug} repo={repo}
+              pulls={pulls} level={level} links={links}
               onMergeClick={setMergeTarget}
             />
           ) : tab === "issues" ? (

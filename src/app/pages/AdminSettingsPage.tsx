@@ -49,13 +49,16 @@ export function AdminSettingsPage() {
         : githubResult === "success"
           // 成功で終わらせず、次の作業（②リポジトリの紐付け）へ誘導する
           ? { type: "success", message: `GitHubに接続しました${githubRepos ? `（${githubRepos}リポジトリ）` : ""}。次に、プロジェクトとリポジトリを紐付けてください。` }
-          : githubResult === "error"
-            ? { type: "error", message: slackMessage ? decodeURIComponent(slackMessage) : "GitHubへの接続に失敗しました" }
-            : null
+          // 「リポジトリを追加・変更」から戻ってきたとき。新規接続ではないので文言を分ける
+          : githubResult === "updated"
+            ? { type: "success", message: `GitHubのリポジトリ設定を更新しました${githubRepos ? `（${githubRepos}リポジトリ）` : ""}。` }
+            : githubResult === "error"
+              ? { type: "error", message: slackMessage ? decodeURIComponent(slackMessage) : "GitHubへの接続に失敗しました" }
+              : null
   );
 
   // クエリは直後に消すため、接続直後かどうかは初期値として固定しておく
-  const [justConnectedGithub] = useState(githubResult === "success");
+  const [justConnectedGithub] = useState(githubResult === "success" || githubResult === "updated");
 
   useEffect(() => {
     if (slackResult || githubResult) {
