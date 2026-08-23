@@ -50,6 +50,17 @@ export function fetchGithubRepos(orgId?: string | null) {
   return call<{ repos: GithubRepo[] }>("repos", { query: { orgId: orgId ?? undefined } }).then(r => r.repos);
 }
 
+/**
+ * GitHub 側に既にインストール済みの接続を、この組織の接続として取り込む。
+ * コールバックが失敗して「GitHubには入っているのに Dev Ticket は未接続」になった状態からの復旧用。
+ */
+export function adoptGithubInstallation(installationId: string, orgId?: string | null) {
+  return call<{ ok: true; accountLogin: string }>("adopt", {
+    query: { orgId: orgId ?? undefined },
+    body: { installationId },
+  });
+}
+
 // ── 参照 ─────────────────────────────────────────────────────
 export function fetchPulls(projectId: string) {
   return call<{ pulls: GithubPull[]; level: GithubAccessLevel; repo: string; links: TicketGithubLink[] }>("pulls", { query: { projectId } });

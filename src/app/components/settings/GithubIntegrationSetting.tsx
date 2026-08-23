@@ -10,7 +10,7 @@ import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { PageLoader } from "@/app/components/shared/PageLoader";
-import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, GithubApiError } from "@/app/lib/github";
+import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, GithubApiError } from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 import type { GithubStatus, GithubRepo, GithubAccessLevel } from "@/app/types";
@@ -54,6 +54,7 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [adopting, setAdopting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [grantCounts, setGrantCounts] = useState<{ merge: number; view: number; none: number } | null>(null);
@@ -236,6 +237,23 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     }
   };
 
+  const handleAdopt = async (installationId: string) => {
+    setAdopting(true);
+    try {
+      const r = await adoptGithubInstallation(installationId, orgId);
+      toast(`${r.accountLogin} の接続を取り込みました`, "success");
+      invalidateGithubAccessCache();
+      const s = await loadStatus();
+      if (s?.installed && !s.revoked) await loadRepos();
+      setExpanded(true);
+      setTimeout(() => linkRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "取り込みに失敗しました", "error");
+    } finally {
+      setAdopting(false);
+    }
+  };
+
   const handleRepoChange = (id: string, repo: string) => {
     setRows(prev => prev.map(r => {
       if (r.id !== id) return r;
@@ -369,6 +387,36 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
 
       {showCollapsed ? null : !steps.installed ? (
         <div ref={connectRef}>
+          {/* GitHub側にはインストール済みなのに、こちらに記録が無い状態からの復旧 */}
+          {!status?.installed && (status?.unclaimedInstallations?.length ?? 0) > 0 && (
+            <div style={{ background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.28)", borderRadius: 12, padding: "16px 18px", marginBottom: 14 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#075985", marginBottom: 5 }}>
+                GitHub 側にインストール済みの接続が見つかりました
+              </p>
+              <p style={{ fontSize: 12, color: "#075985", lineHeight: 1.7, marginBottom: 12 }}>
+                インストールは完了していますが、Dev Ticket 側に接続情報が記録されていません。
+                下の接続を取り込むと、インストールをやり直さずに続きから進められます。
+              </p>
+              <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                {status!.unclaimedInstallations.map(inst => (
+                  <div key={inst.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: "10px 14px" }}>
+                    <div>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{inst.accountLogin}</p>
+                      <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
+                        {inst.accountType === "Organization" ? "Organization" : "アカウント"}
+                        {inst.repoSelection === "all" ? " ・ 全リポジトリ" : " ・ 選択したリポジトリのみ"}
+                      </p>
+                    </div>
+                    <button onClick={() => handleAdopt(inst.id)} disabled={adopting}
+                      style={{ padding: "8px 18px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: adopting ? "#9CA3AF" : GITHUB_BLACK, color: "#FFF", cursor: adopting ? "default" : "pointer", whiteSpace: "nowrap" as const }}>
+                      {adopting ? "取り込み中..." : "この接続を取り込む"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {status?.installed && status.revoked
             ? <RevokedCard onReconnect={handleConnect} connecting={connecting} />
             : <ConnectCard

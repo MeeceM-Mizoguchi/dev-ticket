@@ -465,7 +465,8 @@ export default async function handler(req: any, res: any) {
 
   try {
     switch (resource) {
-      case "install-start": return await installStart(caller, req, res);
+      case "install-start": return await installStart(sb, caller, req, res);
+      case "adopt":    return await handleAdopt(sb, caller, req, res);
       case "status":   return await handleStatus(sb, caller, req, res);
       case "repos":    return await handleRepos(sb, caller, req, res);
       case "pulls":    return await handlePulls(sb, caller, req, res);
@@ -530,7 +531,16 @@ function targetOrgId(caller: Caller, req: any): string {
   return String(caller.organizationId ?? "");
 }
 
-async function installStart(caller: Caller, req: any, res: any) {
+/** 組織の外部連携を書き換えてよい人か（画面側の canAccessAdminSettings と同じ判定） */
+async function requireOrgAdmin(sb: SupabaseClient, caller: Caller) {
+  if (caller.role === "owner" || caller.role === "admin") return;
+  const { data } = await sb.from("roles").select("base_permissions").eq("name", caller.role).maybeSingle();
+  if ((data?.base_permissions as any)?.canAccessAdminSettings === true) return;
+  throw new HttpError(403, "外部連携の設定を変更する権限がありません。");
+}
+
+async function installStart(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  await requireOrgAdmin(sb, caller);
   if (!appConfigured()) throw new HttpError(500, "GitHub App がサーバーに設定されていません。");
   const orgId = targetOrgId(caller, req);
   if (!orgId) throw new HttpError(400, "組織が特定できません。");
@@ -621,6 +631,12 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     /** 鍵が読めないときの切り分け用。値そのものは含めない */
     appKeyShape: null as string | null,
     appSlugMismatch: null as string | null,
+    /**
+     * GitHub 側にインストール済みだが、どの組織にも記録されていないもの。
+     * コールバックが失敗したときに「GitHubには入っているのにDev Ticketは未接続」で
+     * 詰まるため、そこから復旧するための候補。
+     */
+    unclaimedInstallations: [] as { id: string; accountLogin: string; accountType: string; repoSelection: string }[],
     installed: false,
     revoked: false,
     accountLogin: null as string | null,
@@ -648,7 +664,11 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
 
   const { data } = await sb
     .from("github_installations").select("*").eq("organization_id", orgId).maybeSingle();
-  if (!data) return res.status(200).json(base);
+
+  if (!data) {
+    base.unclaimedInstallations = await listUnclaimedInstallations(sb);
+    return res.status(200).json(base);
+  }
 
   let connectedByName: string | null = null;
   if (data.connected_by) {
@@ -691,6 +711,73 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     repoCount,
     manageUrl,
   });
+}
+
+/**
+ * App にインストール済みで、まだどの組織にも紐付いていないものを返す。
+ *
+ * App が public のときは他社の GitHub 組織のインストールが混ざり得るため、
+ * 取り込みの候補には出さない（署名付き state を通る通常の接続フローだけを使う）。
+ * private なら、インストール先は App の所有アカウント配下に限られる。
+ */
+async function listUnclaimedInstallations(sb: SupabaseClient) {
+  if (visibility() !== "private") return [];
+  try {
+    const list = await gh(appJwt(), "/app/installations?per_page=100");
+    if (!Array.isArray(list) || !list.length) return [];
+
+    const { data: claimed } = await sb.from("github_installations").select("installation_id");
+    const taken = new Set((claimed ?? []).map(r => String((r as any).installation_id)));
+
+    return list
+      .filter((i: any) => !taken.has(String(i.id)))
+      .map((i: any) => ({
+        id: String(i.id),
+        accountLogin: i.account?.login ?? "",
+        accountType: i.account?.type ?? "",
+        repoSelection: i.repository_selection ?? "",
+      }));
+  } catch {
+    // 候補が出せなくても通常の接続はできるので、ここでは黙って空にする
+    return [];
+  }
+}
+
+/** GitHub 側に既にあるインストールを、この組織の接続として取り込む */
+async function handleAdopt(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  await requireOrgAdmin(sb, caller);
+
+  const body = parseBody(req);
+  const installationId = String(body.installationId ?? "");
+  if (!installationId) throw new HttpError(400, "取り込む対象が指定されていません。");
+
+  const orgId = targetOrgId(caller, req) || String(caller.organizationId ?? "");
+  if (!orgId) throw new HttpError(400, "組織が特定できません。");
+
+  if (visibility() !== "private") {
+    throw new HttpError(403, "この App は公開設定のため、既存インストールの取り込みはできません。「GitHubに接続する」からやり直してください。");
+  }
+
+  const candidates = await listUnclaimedInstallations(sb);
+  const target = candidates.find(c => c.id === installationId);
+  if (!target) {
+    throw new HttpError(409, "対象のインストールが見つからないか、既に別の組織に接続されています。");
+  }
+
+  const { error } = await sb.from("github_installations").upsert({
+    organization_id: orgId,
+    installation_id: target.id,
+    account_login: target.accountLogin,
+    account_type: target.accountType,
+    repo_selection: target.repoSelection,
+    connected_by: caller.id,
+    connected_at: new Date().toISOString(),
+    revoked_at: null,
+  }, { onConflict: "organization_id" });
+  if (error) throw new HttpError(500, `接続情報の保存に失敗しました / ${error.message.slice(0, 200)}`);
+
+  return res.status(200).json({ ok: true, accountLogin: target.accountLogin });
 }
 
 async function handleRepos(sb: SupabaseClient, caller: Caller, req: any, res: any) {
