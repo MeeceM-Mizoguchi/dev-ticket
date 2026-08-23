@@ -17,9 +17,11 @@ import { PullRequestList, Empty } from "@/app/components/github/PullRequestList"
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { PendingBranches } from "@/app/components/github/PendingBranches";
+import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import {
-  fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, relativeTime, GithubApiError,
+  fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, mergePullsBulk,
+  mergeBlockReason, relativeTime, GithubApiError,
 } from "@/app/lib/github";
 import type {
   Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, GithubPendingBranch, TicketGithubLink,
@@ -66,6 +68,8 @@ export function GithubPage() {
   const [preparingCreate, setPreparingCreate] = useState(false);
   const [createTarget, setCreateTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string; head?: string } | null>(null);
   const [pending, setPending] = useState<GithubPendingBranch[]>([]);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [showBulkMerge, setShowBulkMerge] = useState(false);
 
   // ── プロジェクトの解決 ────────────────────────────────────
   useEffect(() => {
@@ -95,6 +99,7 @@ export function GithubPage() {
       if (which === "pulls") {
         const r = await fetchPulls(project.id);
         setPulls(r.pulls); setLinks(r.links); setLevel(r.level); setRepo(r.repo);
+        setSelected(new Set());
         // PR未作成のブランチは付随情報なので、取れなくても一覧は表示する
         fetchPendingBranches(project.id)
           .then(p => setPending(p.branches))
@@ -145,6 +150,18 @@ export function GithubPage() {
       setPreparingCreate(false);
     }
   };
+
+  const toggleSelect = (n: number) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n); else next.add(n);
+      return next;
+    });
+  };
+
+  // マージできる状態のものだけを選択対象にする
+  const mergeablePulls = useMemo(() => pulls.filter(p => !mergeBlockReason(p)), [pulls]);
+  const selectedPulls = useMemo(() => pulls.filter(p => selected.has(p.number)), [pulls, selected]);
 
   const handleMerge = async (method: GithubMergeMethod) => {
     if (!project?.id || !mergeTarget) return;
@@ -242,9 +259,39 @@ export function GithubPage() {
                 canCreate={level === "merge"}
                 onCreate={name => openCreatePull(name)}
               />
+              {/* まとめてマージの操作バー。マージできるPRが2件以上あるときだけ出す */}
+              {level === "merge" && mergeablePulls.length > 1 && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: selected.size ? "#F0F9FF" : "#FFF", border: `1px solid ${selected.size ? "rgba(2,132,199,0.28)" : "rgba(26,23,20,0.09)"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: "#4B4540" }}>
+                      <input type="checkbox"
+                        checked={selected.size > 0 && selected.size === mergeablePulls.length}
+                        onChange={e => setSelected(e.target.checked ? new Set(mergeablePulls.map(p => p.number)) : new Set())} />
+                      マージできるもの全件を選択（{mergeablePulls.length}件）
+                    </label>
+                    {selected.size > 0 && (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#0284C7" }}>{selected.size}件を選択中</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {selected.size > 0 && (
+                      <button onClick={() => setSelected(new Set())}
+                        style={{ padding: "6px 13px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#6B6458", cursor: "pointer" }}>
+                        選択を解除
+                      </button>
+                    )}
+                    <button onClick={() => setShowBulkMerge(true)} disabled={selected.size === 0}
+                      style={{ padding: "6px 16px", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", background: selected.size ? BLACK : "#E5E7EB", color: selected.size ? "#FFF" : "#9CA3AF", cursor: selected.size ? "pointer" : "not-allowed", whiteSpace: "nowrap" as const }}>
+                      まとめてマージする
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <PullRequestList
-              projectId={project.id} projectSlug={projectSlug ?? project.slug} repo={repo}
-              pulls={pulls} level={level} links={links}
+                projectId={project.id} projectSlug={projectSlug ?? project.slug} repo={repo}
+                pulls={pulls} level={level} links={links}
+                selected={selected} onToggleSelect={toggleSelect}
                 onMergeClick={setMergeTarget}
               />
             </>
@@ -265,6 +312,20 @@ export function GithubPage() {
           actorName={userName}
           onClose={() => setMergeTarget(null)}
           onMerge={handleMerge}
+        />
+      )}
+
+      {showBulkMerge && selectedPulls.length > 0 && (
+        <BulkMergeDialog
+          pulls={selectedPulls}
+          repo={repo}
+          actorName={userName}
+          onClose={() => setShowBulkMerge(false)}
+          onMerge={(numbers, method) => mergePullsBulk(project.id, numbers, method)}
+          onDone={async () => {
+            setLoadedTabs(prev => ({ ...prev, pulls: false }));
+            await loadTab("pulls", true);
+          }}
         />
       )}
 

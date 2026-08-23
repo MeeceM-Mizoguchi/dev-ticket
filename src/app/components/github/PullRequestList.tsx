@@ -10,7 +10,7 @@ import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/type
 
 const BLACK = "#1F2328";
 
-export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, onMergeClick, onLinkClick }: {
+export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick }: {
   projectId: string;
   /** 紐付いたチケットへ飛ばすために使う */
   projectSlug: string;
@@ -18,6 +18,9 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
   pulls: GithubPull[];
   level: GithubAccessLevel;
   links: TicketGithubLink[];
+  /** まとめてマージ用の選択状態。undefined なら選択機能を出さない */
+  selected?: Set<number>;
+  onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
 }) {
@@ -29,19 +32,23 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
       {pulls.map(p => (
         <PullRow key={p.number} projectId={projectId} projectSlug={projectSlug} repo={repo} pull={p} level={level}
           linked={links.filter(l => l.kind === "pull" && l.number === p.number)}
+          checked={selected?.has(p.number) ?? false}
+          onToggleSelect={onToggleSelect}
           onMergeClick={onMergeClick} onLinkClick={onLinkClick} />
       ))}
     </div>
   );
 }
 
-function PullRow({ projectId, projectSlug, repo, pull, level, linked, onMergeClick, onLinkClick }: {
+function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick }: {
   projectId: string;
   projectSlug: string;
   repo: string;
   pull: GithubPull;
   level: GithubAccessLevel;
   linked: TicketGithubLink[];
+  checked: boolean;
+  onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
 }) {
@@ -68,6 +75,13 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, onMergeCli
     <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.09)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ padding: "12px 14px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          {/* まとめてマージ用の選択。マージできない状態のものは選ばせない */}
+          {onToggleSelect && level === "merge" && (
+            <input type="checkbox" checked={checked} disabled={!!blocked}
+              onChange={() => onToggleSelect(pull.number)}
+              title={blocked ?? "まとめてマージの対象にする"}
+              style={{ marginTop: 3, flexShrink: 0, cursor: blocked ? "not-allowed" : "pointer" }} />
+          )}
           <GitPullRequest style={{ width: 15, height: 15, color: pull.draft ? "#8A837B" : "#059669", flexShrink: 0, marginTop: 2 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const }}>
