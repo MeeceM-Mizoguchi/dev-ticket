@@ -5,7 +5,7 @@
 import { supabase } from "@/lib/supabase";
 import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
-  TicketGithubLink, GithubMergeMethod, GithubAccessLevel, GithubReleaseSyncResult,
+  TicketGithubLink, GithubMergeMethod, GithubAccessLevel, GithubReleaseSyncResult, GithubPendingBranch,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -93,11 +93,28 @@ export function fetchBranches(projectId: string) {
   return call<{ branches: GithubBranch[]; defaultBranch: string; repo: string }>("branches", { query: { projectId } });
 }
 
+/** まだプルリクエストが作られていないブランチ（新しい順） */
+export function fetchPendingBranches(projectId: string) {
+  return call<{ branches: GithubPendingBranch[]; defaultBranch: string; repo: string; level: GithubAccessLevel }>(
+    "pending-branches", { query: { projectId } },
+  );
+}
+
 export function fetchTicketLinks(projectId: string, ticketId: string) {
   return call<{ links: TicketGithubLink[]; level: GithubAccessLevel; repo: string }>("links", { query: { projectId, ticketId } });
 }
 
 // ── 書き込み ─────────────────────────────────────────────────
+
+/** プルリクエストの作成。GitHub の画面へ行かずに Dev Ticket 側で完結させるためのもの */
+export function createPull(projectId: string, input: {
+  head: string; base: string; title: string; body: string; draft: boolean;
+}) {
+  return call<{ ok: true; number: number | null; url: string | null; title: string }>(
+    "create-pull", { body: { projectId, ...input } },
+  );
+}
+
 export function mergePull(projectId: string, number: number, method: GithubMergeMethod) {
   return call<{ ok: true; sha: string | null }>("merge", { body: { projectId, number, method } });
 }
