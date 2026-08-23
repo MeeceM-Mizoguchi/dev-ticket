@@ -38,6 +38,14 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   /** 利用者がタイトルを触ったら自動入力で上書きしない */
   const [titleTouched, setTitleTouched] = useState(false);
 
+  // base に入っている値が一覧に無いと、<select> は先頭の項目を表示してしまい、
+  // 画面に出ているマージ先と実際に送られる base がずれる。必ず選択肢に含めておく
+  const baseCandidates = useMemo<GithubBranch[]>(() => (
+    branches.some(b => b.name === base)
+      ? branches
+      : [{ name: base, protected: false, isDefault: base === (defaultBranch || "main"), lastCommitSha: "" }, ...branches]
+  ), [branches, base, defaultBranch]);
+
   const headCandidates = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return branches
@@ -111,7 +119,7 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
             <select className={inputCls} value={base}
               onChange={e => { setBase(e.target.value); if (e.target.value === head) setHead(""); }}
               style={{ width: "100%" }}>
-              {branches.map(b => <option key={b.name} value={b.name}>{b.name}{b.isDefault ? "（既定）" : ""}</option>)}
+              {baseCandidates.map(b => <option key={b.name} value={b.name}>{b.name}{b.isDefault ? "（既定）" : ""}</option>)}
             </select>
           </div>
           <div style={{ flex: "1 1 200px", minWidth: 0 }}>

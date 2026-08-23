@@ -68,6 +68,8 @@ export function GithubPage() {
   const [preparingCreate, setPreparingCreate] = useState(false);
   const [createTarget, setCreateTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string; head?: string } | null>(null);
   const [pending, setPending] = useState<GithubPendingBranch[]>([]);
+  /** コミットタブで見ているブランチ。空なら既定ブランチ（サーバー側でフォールバックする） */
+  const [commitBranch, setCommitBranch] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [showBulkMerge, setShowBulkMerge] = useState(false);
 
@@ -108,8 +110,10 @@ export function GithubPage() {
         const r = await fetchIssues(project.id);
         setIssues(r.issues); setLevel(r.level); setRepo(r.repo);
       } else if (which === "commits") {
-        const r = await fetchCommits(project.id);
+        const r = await fetchCommits(project.id, commitBranch || undefined);
         setCommits(r.commits); setRepo(r.repo);
+        // 未指定ならサーバーが既定ブランチに寄せるので、その名前を受け取って選択欄に反映する
+        setCommitBranch(r.branch);
       } else {
         const r = await fetchBranches(project.id);
         setBranches(r.branches); setDefaultBranch(r.defaultBranch); setRepo(r.repo);
@@ -121,12 +125,47 @@ export function GithubPage() {
     } finally {
       setFetching(false);
     }
-  }, [project?.id, loadedTabs]);
+  }, [project?.id, loadedTabs, commitBranch]);
 
   useEffect(() => {
     if (!project?.id || !access.linked || access.level === "none" || !access.level) return;
     void loadTab(tab);
   }, [project?.id, tab, access.linked, access.level, loadTab]);
+
+  /** ブランチ一覧を一度だけ取る。PR作成ダイアログとコミットタブの切り替え欄で共用する */
+  const ensureBranches = useCallback(async () => {
+    if (!project?.id) return { list: branches, def: defaultBranch };
+    if (loadedTabs.branches && branches.length) return { list: branches, def: defaultBranch };
+    const r = await fetchBranches(project.id);
+    setBranches(r.branches); setDefaultBranch(r.defaultBranch);
+    setLoadedTabs(prev => ({ ...prev, branches: true }));
+    return { list: r.branches, def: r.defaultBranch };
+  }, [project?.id, branches, defaultBranch, loadedTabs.branches]);
+
+  // コミットタブの切り替え欄にブランチ名が要るので、タブを開いた時点で取っておく。
+  // 取れなくてもコミット一覧そのものは出るため、失敗は握りつぶす
+  useEffect(() => {
+    if (tab !== "commits" || !project?.id) return;
+    if (loadedTabs.branches && branches.length) return;
+    void ensureBranches().catch(() => {});
+  }, [tab, project?.id, loadedTabs.branches, branches.length, ensureBranches]);
+
+  /** コミットタブで見るブランチを切り替える */
+  const changeCommitBranch = async (nextBranch: string) => {
+    if (!project?.id || !nextBranch || nextBranch === commitBranch) return;
+    setCommitBranch(nextBranch);
+    setFetching(true);
+    setApiError("");
+    try {
+      const r = await fetchCommits(project.id, nextBranch);
+      setCommits(r.commits); setRepo(r.repo); setCommitBranch(r.branch);
+      setFetchedAt(new Date().toISOString());
+    } catch (e) {
+      setApiError(e instanceof GithubApiError ? e.message : "コミットを取得できませんでした。");
+    } finally {
+      setFetching(false);
+    }
+  };
 
   // PR作成ダイアログはブランチ一覧が要る。まだ取っていなければここで取る。
   // head を渡すと、そのブランチを選択済みの状態で開く（未作成ブランチからの導線）。
@@ -134,14 +173,7 @@ export function GithubPage() {
     if (!project?.id) return;
     setPreparingCreate(true);
     try {
-      let list = branches;
-      let def = defaultBranch;
-      if (!loadedTabs.branches || !list.length) {
-        const r = await fetchBranches(project.id);
-        list = r.branches; def = r.defaultBranch;
-        setBranches(r.branches); setDefaultBranch(r.defaultBranch);
-        setLoadedTabs(prev => ({ ...prev, branches: true }));
-      }
+      const { list, def } = await ensureBranches();
       if (!list.length) { toast("ブランチを取得できませんでした", "error"); return; }
       setCreateTarget({ branches: list, defaultBranch: def || project.githubDefaultBranch || "main", head });
     } catch (e) {
@@ -298,7 +330,15 @@ export function GithubPage() {
           ) : tab === "issues" ? (
             <IssueList issues={issues} />
           ) : tab === "commits" ? (
-            <CommitList commits={commits} />
+            <>
+              <CommitBranchPicker
+                branches={branches}
+                value={commitBranch}
+                disabled={fetching}
+                onChange={changeCommitBranch}
+              />
+              <CommitList commits={commits} />
+            </>
           ) : (
             <BranchList branches={branches} />
           )}
@@ -400,6 +440,40 @@ function IssueList({ issues }: { issues: GithubIssue[] }) {
           </p>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * コミット一覧で見るブランチの切り替え。
+ * 既定ブランチしか見られないと、PR前のブランチに積んだコミットを画面から確認できないため。
+ */
+function CommitBranchPicker({ branches, value, disabled, onChange }: {
+  branches: GithubBranch[];
+  value: string;
+  disabled: boolean;
+  onChange: (name: string) => void;
+}) {
+  // 選んでいる値が一覧に無いと <select> は先頭の項目を表示してしまい、
+  // 画面に出ているブランチと実際に取得したブランチがずれる。必ず選択肢に含めておく
+  const options = useMemo<GithubBranch[]>(() => (
+    !value || branches.some(b => b.name === value)
+      ? branches
+      : [{ name: value, protected: false, isDefault: true, lastCommitSha: "" }, ...branches]
+  ), [branches, value]);
+
+  if (!options.length) return null;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" as const }}>
+      <label htmlFor="commit-branch" style={{ fontSize: 12, fontWeight: 700, color: "#4B4540" }}>ブランチ</label>
+      <select id="commit-branch" value={value} disabled={disabled}
+        onChange={e => onChange(e.target.value)}
+        style={{ padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#1A1714", fontFamily: "var(--font-mono)", maxWidth: 380, cursor: disabled ? "default" : "pointer" }}>
+        {options.map(b => (
+          <option key={b.name} value={b.name}>{b.name}{b.isDefault ? "（既定）" : ""}</option>
+        ))}
+      </select>
     </div>
   );
 }
