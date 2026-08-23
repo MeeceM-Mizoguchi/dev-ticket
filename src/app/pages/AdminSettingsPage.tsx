@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { BellRing, Users } from "lucide-react";
+import { Plug, Users } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -8,6 +8,7 @@ import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { SlackNotificationSetting } from "@/app/components/settings/SlackNotificationSetting";
 import { MemberSlackSetting } from "@/app/components/settings/MemberSlackSetting";
+import { GithubIntegrationSetting } from "@/app/components/settings/GithubIntegrationSetting";
 
 export function AdminSettingsPage() {
   const { userPermissions, userOrgId } = useAuth();
@@ -18,38 +19,51 @@ export function AdminSettingsPage() {
 
   // 黙ってダッシュボードへ飛ばすと「リンクが壊れているのか権限が無いのか」が分からないため、
   // 理由を出す共通画面をその場に描画する（docs/not-found-page-design.md）。
-  if (!userPermissions.canAccessAdminSettings) return <NotFoundView kind="no-permission" label="通知管理" />;
-  if (!plan.featureNotifications) return (
-    <NotFoundView kind="no-permission" label="通知管理"
-      body="通知管理はご契約のプランに含まれていません。ご利用をご希望の場合は管理者へお問い合わせください。" />
+  if (!userPermissions.canAccessAdminSettings) return <NotFoundView kind="no-permission" label="外部連携" />;
+  // 通知・GitHubの両方がプランでOFFのときだけ画面ごと閉じる。片方でも有効ならタブ単位で出し分ける。
+  if (!plan.featureNotifications && !plan.featureGithub) return (
+    <NotFoundView kind="no-permission" label="外部連携"
+      body="外部連携はご契約のプランに含まれていません。ご利用をご希望の場合は管理者へお問い合わせください。" />
   );
 
   const urlTab = searchParams.get("tab");
   const slackResult = searchParams.get("slack");
   const slackMessage = searchParams.get("message");
   const slackConnectedProjectId = searchParams.get("projectId");
+  const githubResult = searchParams.get("github");
+  const githubRepos = searchParams.get("repos");
 
-  const [tab, setTab] = useState(urlTab ?? "slack");
+  const tabs = [
+    ...(plan.featureNotifications ? [{ id: "slack", label: "Slack通知" }, { id: "members", label: "メンバー設定" }] : []),
+    ...(plan.featureGithub ? [{ id: "github", label: "GitHub連携" }] : []),
+  ];
+
+  const [tab, setTab] = useState(
+    urlTab && tabs.some(t => t.id === urlTab) ? urlTab : (tabs[0]?.id ?? "slack")
+  );
   const [banner, setBanner] = useState<{ type: "success" | "error"; message: string } | null>(
     slackResult === "success"
       ? { type: "success", message: "Slackへの接続が完了しました" }
       : slackResult === "error"
         ? { type: "error", message: slackMessage ? decodeURIComponent(slackMessage) : "接続に失敗しました" }
-        : null
+        : githubResult === "success"
+          // 成功で終わらせず、次の作業（②リポジトリの紐付け）へ誘導する
+          ? { type: "success", message: `GitHubに接続しました${githubRepos ? `（${githubRepos}リポジトリ）` : ""}。次に、プロジェクトとリポジトリを紐付けてください。` }
+          : githubResult === "error"
+            ? { type: "error", message: slackMessage ? decodeURIComponent(slackMessage) : "GitHubへの接続に失敗しました" }
+            : null
   );
 
+  // クエリは直後に消すため、接続直後かどうかは初期値として固定しておく
+  const [justConnectedGithub] = useState(githubResult === "success");
+
   useEffect(() => {
-    if (slackResult) {
+    if (slackResult || githubResult) {
       setSearchParams({}, { replace: true });
-      const timer = setTimeout(() => setBanner(null), 5000);
+      const timer = setTimeout(() => setBanner(null), 8000);
       return () => clearTimeout(timer);
     }
   }, []);
-
-  const tabs = [
-    { id: "slack", label: "Slack通知" },
-    { id: "members", label: "メンバー設定" },
-  ];
 
   return (
     <div style={{ padding: "28px 32px" }}>
@@ -58,11 +72,11 @@ export function AdminSettingsPage() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ width: 36, height: 36, borderRadius: 10, background: "#059669", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <BellRing style={{ width: 18, height: 18, color: "#fff" }} />
+            <Plug style={{ width: 18, height: 18, color: "#fff" }} />
           </div>
           <div>
-            <h1 style={{ fontSize: 18, fontWeight: 700, color: "#111827", letterSpacing: "-0.01em" }}>通知管理</h1>
-            <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>Slack通知のプロジェクト連携設定を管理します</p>
+            <h1 style={{ fontSize: 18, fontWeight: 700, color: "#111827", letterSpacing: "-0.01em" }}>外部連携</h1>
+            <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>Slack通知とGitHub連携の設定を管理します</p>
           </div>
         </div>
         <OrgSelector />
@@ -88,6 +102,16 @@ export function AdminSettingsPage() {
           </button>
         ))}
       </div>
+
+      {tab === "github" && (
+        <div style={{ maxWidth: 1000 }}>
+          <GithubIntegrationSetting
+            isAdmin={userPermissions.canAccessAdminSettings}
+            orgId={effectiveOrgId}
+            justConnected={justConnectedGithub}
+          />
+        </div>
+      )}
 
       {tab === "members" && (
         <div>

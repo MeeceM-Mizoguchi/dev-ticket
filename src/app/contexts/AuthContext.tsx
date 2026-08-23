@@ -25,6 +25,8 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   backlogPermission: "none",
   minutesPermission: "none",
   whiteboardPermission: "none",
+  // GitHubは既定で「権限なし」。付与された人にだけ見せる（docs/github-integration-design.md 5-3）
+  githubPermission: "none",
 };
 
 interface AuthCtxType {
@@ -58,7 +60,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessOrganization: true,
       canUpdateAnnouncement: true, canAccessReports: true,
       wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
-      whiteboardPermission: "edit",
+      whiteboardPermission: "edit", githubPermission: "merge",
     };
   }
   const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
@@ -71,7 +73,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true, canAccessAdminSettings: role === "admin",
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessReports: true,
       wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
-      whiteboardPermission: "edit",
+      whiteboardPermission: "edit", githubPermission: "merge",
     };
   }
   return { ...DEFAULT_PERMISSIONS };

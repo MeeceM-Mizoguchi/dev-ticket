@@ -23,6 +23,9 @@ const DEFAULT_PERMS: UserPermissions = {
   canAccessOrganization: false, canAccessReports: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
   whiteboardPermission: "none",
+  // GitHubはプロジェクト単位の権限なので、ロール既定は「権限なし」。
+  // 付与はアサイン計画で行う（docs/github-integration-design.md 5-2）。
+  githubPermission: "none",
 };
 
 const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; meeceOnly?: boolean }[] = [
@@ -32,7 +35,7 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; mee
   { key: "canAccessMembers", label: "メンバー管理", desc: "メンバー管理画面へのアクセスが可能" },
   { key: "canAccessRoles", label: "ロール設定", desc: "ロール設定画面へのアクセスが可能" },
   { key: "canAccessGroups", label: "アサイン計画", desc: "アサイン計画画面へのアクセスが可能" },
-  { key: "canAccessAdminSettings", label: "通知管理", desc: "Slack通知設定など管理者向け設定画面へのアクセスが可能" },
+  { key: "canAccessAdminSettings", label: "外部連携", desc: "Slack通知・GitHub連携など、外部サービスとの接続設定画面へのアクセスが可能" },
   { key: "canAccessReports", label: "レポート管理", desc: "レポート管理画面へのアクセスが可能（進捗・予定・生産性レポートの閲覧/出力）" },
   { key: "canUpdateAnnouncement", label: "お知らせ更新", desc: "ヘッダーお知らせのタイトル・画像・説明を登録・更新できる", meeceOnly: true },
 ];
@@ -46,8 +49,8 @@ export function RolesPage() {
   const isMeeceOrg = selectedOrgName === MEECE_ORG_NAME;
   const visiblePermFlags = PERM_FLAGS.filter(f => {
     if (f.meeceOnly && !isMeeceOrg) return false;
-    // 通知管理がプランでOFFの場合はロール設定から非表示
-    if (f.key === "canAccessAdminSettings" && !plan.featureNotifications) return false;
+    // 外部連携が丸ごとプランでOFF（通知もGitHubも無効）の場合だけロール設定から非表示
+    if (f.key === "canAccessAdminSettings" && !plan.featureNotifications && !plan.featureGithub) return false;
     return true;
   });
   const [roles, setRoles] = useState<RoleDefinition[]>([]);

@@ -21,6 +21,7 @@ export const UNLIMITED_PLAN: PlanSettings = {
   featureChildTickets: true,
   featureBulkCreate: true,
   featureKnowledgeAi: true,
+  featureGithub: true,
   maxKnowledgeDocsPerProject: null,
 };
 
@@ -57,6 +58,7 @@ function mapPlan(row: Record<string, unknown>): PlanSettings {
     // 未適用の環境（列が無い）では false 扱いにせず true にする。
     // SQL 未適用でサブナビから消えると「壊れた」ように見えるため。
     featureKnowledgeAi: (row.feature_knowledge_ai as boolean | undefined) ?? true,
+    featureGithub: (row.feature_github as boolean | undefined) ?? true,
     maxKnowledgeDocsPerProject: (row.max_knowledge_docs_per_project as number | null) ?? null,
   };
 }

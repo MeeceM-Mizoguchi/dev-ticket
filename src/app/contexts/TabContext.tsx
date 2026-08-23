@@ -88,7 +88,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/members": "メンバー",
   "/permissions": "アサイン計画",
   "/roles": "ロール設定",
-  "/admin-settings": "通知管理",
+  "/admin-settings": "外部連携",
   "/announcement-settings": "お知らせ設定",
   "/organization": "組織管理",
   "/bug-reports": "バグ報告",
@@ -106,6 +106,7 @@ export function titleForPath(path: string): string {
     if (sub === "backlog") return `${slug} / バックログ`;
     if (sub === "wiki") return `${slug} / Wiki`;
     if (sub === "minutes") return `${slug} / 議事録`;
+    if (sub === "github") return `${slug} / GitHub`;
     return `${slug} / ${sub}`;
   }
   return slug;

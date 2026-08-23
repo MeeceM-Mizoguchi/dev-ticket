@@ -271,10 +271,21 @@
 ### 7-1. Slack連携で通知を自動化する
 | # | 操作・説明 | 表示画面 | 強調箇所 | 権限 | 補足 |
 |---|---|---|---|---|---|
-| 1 | 通知管理を開く | ScreenSlack | サイドバー「通知管理」 | 通知管理権限 | プランで通知OFF時は非表示 |
-| 2 | プロジェクトごとにSlack接続 | ScreenSlack | 接続ボタン | 通知管理権限 | OAuth連携 |
-| 3 | 通知先チャンネルを設定 | ScreenSlack | チャンネル選択 | 通知管理権限 | アサイン/レビュー等で通知 |
-| 4 | メンバーのSlack ID登録 | ScreenSlack | メンバー設定タブ | 通知管理権限 | メンション通知に必要 |
+| 1 | 外部連携を開く | ScreenSlack | サイドバー「外部連携」 | 外部連携権限 | プランで通知OFF時はSlackタブが非表示 |
+| 2 | プロジェクトごとにSlack接続 | ScreenSlack | 接続ボタン | 外部連携権限 | OAuth連携 |
+| 3 | 通知先チャンネルを設定 | ScreenSlack | チャンネル選択 | 外部連携権限 | アサイン/レビュー等で通知 |
+| 4 | メンバーのSlack ID登録 | ScreenSlack | メンバー設定タブ | 外部連携権限 | メンション通知に必要 |
+
+### 7-1-2. GitHub連携でPR・Issueをアプリ内に出す
+（docs/github-integration-design.md）
+| # | 操作・説明 | 表示画面 | 強調箇所 | 権限 | 補足 |
+|---|---|---|---|---|---|
+| 1 | 外部連携 → GitHub連携タブを開く | ScreenGithubSetting | タブ「GitHub連携」 | 外部連携権限 | プランでGitHub OFF時は非表示 |
+| 2 | GitHubに接続する | ScreenGithubSetting | 接続ボタン | 外部連携権限 | GitHub App のインストール。**組織につき1回**・GitHubの管理者権限が必要 |
+| 3 | プロジェクトとリポジトリを紐付ける | ScreenGithubSetting | 紐付け表 | 外部連携権限 | 紐付けたPJにGitHubタブが出る |
+| 4 | メンバーにGitHub権限を付与 | ScreenPermissions | GitHub連携ブロック | アサイン計画権限 | 既定は「権限なし」。付与しないと誰にも見えない |
+| 5 | PR・Issue・コミットを見る | ScreenGithub | プロジェクト内GitHubタブ | GitHub閲覧権限 | 閲覧者にGitHubアカウントは不要 |
+| 6 | PRをマージする | ScreenGithub | マージするボタン | GitHubマージ権限 | ブランチ保護はGitHub側で有効。実行者は監査ログに残る |
 
 ### 7-2. 全員へお知らせを発信する
 | # | 操作・説明 | 表示画面 | 強調箇所 | 権限 | 補足 |
@@ -343,7 +354,9 @@ Login / Invite / InviteMail / AppOverview / Organization / OrgCreateModal / Memb
 | Wiki権限 | wikiPermission（none/view/edit） |
 | 議事録権限 | minutesPermission（none/view/edit） |
 | ホワイトボード権限 | whiteboardPermission（none/view/edit） |
-| 通知管理権限 | canAccessAdminSettings |
+| 外部連携権限 | canAccessAdminSettings（旧「通知管理権限」） |
+| GitHub閲覧権限 | githubPermission = view 以上 |
+| GitHubマージ権限 | githubPermission = merge |
 | お知らせ更新権限 | canUpdateAnnouncement |
 | レポート管理権限 | canAccessReports |
 
