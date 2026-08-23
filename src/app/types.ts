@@ -727,3 +727,16 @@ export interface TicketGithubLink {
 }
 
 export type GithubMergeMethod = "merge" | "squash" | "rebase";
+
+/** リリース待ち → リリース済み の自動反映の結果 */
+export interface GithubReleaseSyncResult {
+  ok: true;
+  /** リリース済みにしたチケットの総数 */
+  released: number;
+  details: {
+    projectId: string;
+    projectName: string;
+    released: { wbs: string; title: string; pulls: number[] }[];
+    error?: string;
+  }[];
+}

@@ -1,5 +1,8 @@
 {
   "outputDirectory": "dist",
+  "crons": [
+    { "path": "/api/github/sync-released", "schedule": "*/15 * * * *" }
+  ],
   "rewrites": [
     { "source": "/api/dav/:path*", "destination": "/api/dav-open?path=:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

@@ -10,10 +10,10 @@ import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { PageLoader } from "@/app/components/shared/PageLoader";
-import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, GithubApiError } from "@/app/lib/github";
+import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, syncReleasedTickets, GithubApiError } from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
-import type { GithubStatus, GithubRepo, GithubAccessLevel } from "@/app/types";
+import type { GithubStatus, GithubRepo, GithubAccessLevel, GithubReleaseSyncResult } from "@/app/types";
 
 const GITHUB_BLACK = "#1F2328";
 
@@ -55,6 +55,8 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [adopting, setAdopting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<GithubReleaseSyncResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [grantCounts, setGrantCounts] = useState<{ merge: number; view: number; none: number } | null>(null);
 
@@ -298,6 +300,20 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     invalidateGithubAccessCache();
     await loadStatus();
     toast("GitHubとの接続を解除しました", "success");
+  };
+
+  // 定期実行と同じ処理を、この組織だけを対象に手動で走らせる
+  const handleSyncReleased = async () => {
+    setSyncing(true);
+    try {
+      const r = await syncReleasedTickets(orgId);
+      setSyncResult(r);
+      toast(r.released > 0 ? `${r.released}件をリリース済みにしました` : "対象のチケットはありませんでした", "success");
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "リリース反映に失敗しました", "error");
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const handleCopyUrl = async () => {
@@ -557,6 +573,45 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
 
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7 }}>
               GitHub の閲覧・マージ権限は「アサイン計画」でメンバーまたはグループ単位に設定します。
+            </p>
+          </section>
+
+          {/* ④ リリースノートへの自動反映 */}
+          <section style={cardStyle}>
+            <SectionTitle no="④" title="リリースノートへの自動反映" />
+            <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 12, lineHeight: 1.8 }}>
+              チケットに紐付いたプルリクエストが既定ブランチへマージされると、
+              <strong>「リリース待ち」のチケットを自動で「リリース済み」に</strong>します。定期的に自動で実行されます。
+              <br />
+              判定に使うのは GitHub 上のPRの状態だけなので、そのプロジェクトのデプロイ先には依存しません。
+            </p>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const }}>
+              <div style={{ minWidth: 0 }}>
+                {syncResult
+                  ? <p style={{ fontSize: 13, color: syncResult.released > 0 ? "#15803D" : "#6B6458" }}>
+                      {syncResult.released > 0
+                        ? `${syncResult.released}件をリリース済みにしました`
+                        : "リリース済みにできるチケットはありませんでした"}
+                    </p>
+                  : <p style={{ fontSize: 12, color: "#A09790" }}>すぐに反映したいときは、右のボタンで実行できます。</p>}
+                {syncResult && syncResult.released > 0 && (
+                  <p style={{ fontSize: 11, color: "#A09790", marginTop: 3 }}>
+                    {syncResult.details.flatMap(d => d.released.map(r => r.wbs)).filter(Boolean).join(" / ")}
+                  </p>
+                )}
+              </div>
+              <button onClick={handleSyncReleased} disabled={syncing}
+                style={{ padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#1A1714", cursor: syncing ? "default" : "pointer", opacity: syncing ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
+                {syncing ? "反映中..." : "今すぐ反映する"}
+              </button>
+            </div>
+
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
+              前へ進めるのは「リリース待ち」からだけです。他のステータスのチケットは動かしません。
+              <br />
+              紐付けはブランチ名の WBS 番号を根拠にしているため、番号を含まないブランチのPRは自動では拾えません。
+              その場合はチケット詳細の「関連PR」から手動で紐付けてください。
             </p>
           </section>
         </div>

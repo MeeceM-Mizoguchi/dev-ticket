@@ -460,12 +460,29 @@ export default async function handler(req: any, res: any) {
   let sb: SupabaseClient;
   try { sb = admin(); } catch { return res.status(500).json({ error: "サーバー設定エラーが発生しました" }); }
 
+  // 定期実行からの呼び出し。ログイン中のユーザーが居ないので共有シークレットで通す。
+  // Vercel Cron は CRON_SECRET を設定しておくと Authorization: Bearer で送ってくるが、
+  // 中身はただのHTTPエンドポイントなので、他のスケジューラからでも同じように叩ける。
+  if (resource === "sync-released" && isCronRequest(req)) {
+    try {
+      return await runReleaseSync(sb, null, res);
+    } catch (e) {
+      console.error("[github sync-released]", (e as Error)?.message);
+      return res.status(500).json({ error: "リリース反映に失敗しました" });
+    }
+  }
+
   const caller = await getCaller(sb, req);
   if (!caller) return res.status(401).json({ error: "認証が必要です" });
 
   try {
     switch (resource) {
       case "install-start": return await installStart(sb, caller, req, res);
+      case "sync-released": {
+        // 画面からの手動実行。自分の組織だけを対象にする
+        await requireOrgAdmin(sb, caller);
+        return await runReleaseSync(sb, targetOrgId(caller, req) || String(caller.organizationId ?? ""), res);
+      }
       case "adopt":    return await handleAdopt(sb, caller, req, res);
       case "status":   return await handleStatus(sb, caller, req, res);
       case "repos":    return await handleRepos(sb, caller, req, res);
@@ -488,6 +505,137 @@ export default async function handler(req: any, res: any) {
     console.error("[github]", resource, (e as Error)?.message);
     return res.status(m.status).json({ error: m.message });
   }
+}
+
+// ── リリースノートへの自動反映 ───────────────────────────────
+//
+// 「リリース待ち」のチケットのうち、紐付いたPRが既定ブランチへマージ済みのものを
+// 「リリース済み」にする。見ているのは GitHub 上のPRの状態だけなので、
+// そのプロジェクトのデプロイ先（Vercel / AWS / オンプレ）に依存しない。
+
+/** 1プロジェクトあたりのPR照会の上限。取りこぼしても次回の実行で拾える */
+const MAX_PR_LOOKUPS = 50;
+
+/** 自動実行なので実行者が居ない。監査ログ用の固定ID */
+const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000000";
+
+function isCronRequest(req: any): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  const header: string = req.headers?.authorization || req.headers?.Authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (token.length !== secret.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret));
+}
+
+interface ReleaseSyncDetail {
+  projectId: string;
+  projectName: string;
+  released: { wbs: string; title: string; pulls: number[] }[];
+  error?: string;
+}
+
+async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any) {
+  let q = sb.from("projects")
+    .select("id, name, organization_id, github_repo_full_name, github_default_branch")
+    .eq("github_enabled", true)
+    .not("github_repo_full_name", "is", null);
+  if (orgId) q = q.eq("organization_id", orgId);
+  const { data: projects } = await q;
+
+  const details: ReleaseSyncDetail[] = [];
+  let released = 0;
+
+  for (const p of (projects ?? []) as any[]) {
+    const detail: ReleaseSyncDetail = { projectId: p.id, projectName: p.name, released: [] };
+    try {
+      await syncProjectReleases(sb, p, detail);
+      released += detail.released.length;
+    } catch (e) {
+      // 1プロジェクトの失敗で全体を止めない（接続が切れている組織などがあり得る）
+      detail.error = String((e as Error)?.message ?? e).slice(0, 200);
+      console.error("[github sync-released]", p.id, detail.error);
+    }
+    if (detail.released.length || detail.error) details.push(detail);
+  }
+
+  return res.status(200).json({ ok: true, released, details });
+}
+
+async function syncProjectReleases(sb: SupabaseClient, project: any, detail: ReleaseSyncDetail) {
+  const installationId = await getInstallationId(sb, project.organization_id);
+  const token = await installationToken(installationId);
+
+  const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", project.id);
+  const sprintIds = (sprints ?? []).map(s => (s as any).id);
+  if (!sprintIds.length) return;
+
+  // 前へ進めるのは「リリース待ち」からだけ。他のステータスには一切触らない
+  const { data: tickets } = await sb
+    .from("sprint_tickets").select("id, wbs, title")
+    .in("sprint_id", sprintIds).eq("status", "waiting-release");
+  if (!tickets?.length) return;
+
+  const ticketIds = (tickets as any[]).map(t => t.id);
+  const { data: links } = await sb
+    .from("ticket_github_links").select("ticket_id, number")
+    .eq("project_id", project.id).eq("kind", "pull").in("ticket_id", ticketIds);
+  if (!links?.length) return;
+
+  // 同じPRを何度も引かないよう、番号を一意にしてから照会する
+  const numbers = Array.from(new Set((links as any[]).map(l => Number(l.number)))).slice(0, MAX_PR_LOOKUPS);
+  const prState = new Map<number, { merged: boolean; base: string }>();
+  for (const n of numbers) {
+    try {
+      const pr = await gh(token, `/repos/${project.github_repo_full_name}/pulls/${n}`);
+      prState.set(n, { merged: !!pr?.merged_at, base: pr?.base?.ref ?? "" });
+    } catch {
+      // 引けなかったPRは「判定材料が揃っていない」として扱い、次回に持ち越す
+    }
+  }
+
+  const defaultBranch = project.github_default_branch || "main";
+  const targets: { id: string; wbs: string; title: string; pulls: number[] }[] = [];
+
+  for (const t of tickets as any[]) {
+    const mine = (links as any[]).filter(l => l.ticket_id === t.id).map(l => Number(l.number));
+    if (!mine.length) continue;
+    const states = mine.map(n => prState.get(n));
+    // 1つでも状態を確認できなかったら見送る（誤って完了扱いにしない）
+    if (states.some(s => !s)) continue;
+    if (!states.every(s => s!.merged && s!.base === defaultBranch)) continue;
+    targets.push({ id: t.id, wbs: t.wbs ?? "", title: t.title ?? "", pulls: mine });
+  }
+  if (!targets.length) return;
+
+  // 更新内容はリリースノートの一括リリースと同じにそろえる。
+  // 条件に status を残しているのは、判定中に人が別のステータスへ動かしていた場合に
+  // 上書きしないため。
+  const { error } = await sb.from("sprint_tickets")
+    .update({ status: "released", progress: 100 })
+    .in("id", targets.map(t => t.id))
+    .eq("status", "waiting-release");
+  if (error) throw new Error(error.message);
+
+  // 一覧の表示に使う紐付けの状態も合わせておく
+  const mergedNumbers = numbers.filter(n => prState.get(n)?.merged);
+  if (mergedNumbers.length) {
+    await sb.from("ticket_github_links").update({ state: "merged" })
+      .eq("project_id", project.id).eq("kind", "pull").in("number", mergedNumbers);
+  }
+
+  await sb.from("github_action_logs").insert(targets.map(t => ({
+    project_id: project.id,
+    actor_id: SYSTEM_ACTOR_ID,
+    actor_name: "システム（PRマージによる自動反映）",
+    action: "auto_release",
+    repo: project.github_repo_full_name,
+    pr_number: t.pulls[0] ?? null,
+    result: "ok",
+    detail: `${t.wbs} ${t.title} / PR #${t.pulls.join(", #")}`.slice(0, 500),
+  })));
+
+  detail.released = targets.map(t => ({ wbs: t.wbs, title: t.title, pulls: t.pulls }));
 }
 
 // ── インストール ─────────────────────────────────────────────
