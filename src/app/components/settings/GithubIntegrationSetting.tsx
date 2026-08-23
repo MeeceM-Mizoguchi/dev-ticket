@@ -580,8 +580,9 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
           <section style={cardStyle}>
             <SectionTitle no="④" title="リリースノートへの自動反映" />
             <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 12, lineHeight: 1.8 }}>
-              チケットに紐付いたプルリクエストが既定ブランチへマージされると、
-              <strong>「リリース待ち」のチケットを自動で「リリース済み」に</strong>します。定期的に自動で実行されます。
+              チケットのプルリクエストが既定ブランチへマージされると、
+              <strong>「リリース待ち」のチケットを自動で「リリース済み」に</strong>します。
+              マージした直後・GitHubタブを開いたとき・定期実行の3つのタイミングで反映されます。
               <br />
               判定に使うのは GitHub 上のPRの状態だけなので、そのプロジェクトのデプロイ先には依存しません。
             </p>
@@ -610,8 +611,10 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
               前へ進めるのは「リリース待ち」からだけです。他のステータスのチケットは動かしません。
               <br />
-              紐付けはブランチ名の WBS 番号を根拠にしているため、番号を含まないブランチのPRは自動では拾えません。
-              その場合はチケット詳細の「関連PR」から手動で紐付けてください。
+              判定はブランチ名・PRタイトルの WBS 番号を根拠にしています（紐付けが無いマージ済みPRも遡って突き合わせます）。
+              番号を含まないブランチのPRは自動では拾えないため、その場合はチケット詳細の「関連PR」から手動で紐付けてください。
+              <br />
+              未マージのまま閉じたPRは取り下げとみなして無視し、まだ開いているPRが残っているチケットは反映を見送ります。
             </p>
           </section>
         </div>
