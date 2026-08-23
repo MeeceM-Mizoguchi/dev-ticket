@@ -328,6 +328,11 @@ export interface Project {
   releasedAt?: string | null;
   organizationId?: string | null;
   isManualStatus?: boolean;
+  // GitHub連携（docs/github-integration-design.md）。インストールは組織単位のため
+  // ここにはリポジトリの割り当てだけを持つ。
+  githubRepoFullName?: string | null;
+  githubDefaultBranch?: string | null;
+  githubEnabled?: boolean;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
@@ -543,6 +548,11 @@ export interface TicketItem {
 }
 export type AccessLevel = "none" | "view" | "edit";
 
+// GitHub連携の権限（docs/github-integration-design.md 5-1）。
+// 「閲覧」と「マージ」をboolean2つに分けると「マージ可・閲覧不可」という
+// 矛盾した組み合わせが作れてしまうため、単一の3段階で持つ。
+export type GithubAccessLevel = "none" | "view" | "merge";
+
 export interface PlanSettings {
   id: string;
   name: string;
@@ -561,6 +571,7 @@ export interface PlanSettings {
   featureChildTickets: boolean;
   featureBulkCreate: boolean;
   featureKnowledgeAi: boolean;
+  featureGithub: boolean;
   maxKnowledgeDocsPerProject: number | null;
 }
 
@@ -585,4 +596,119 @@ export interface UserPermissions {
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
   whiteboardPermission: AccessLevel;
+  githubPermission: GithubAccessLevel;
 }
+
+// ── GitHub連携 ───────────────────────────────────────────────────────────────
+
+/** GET /api/github/status の戻り。画面のセットアップ状態の判定に使う。 */
+export interface GithubStatus {
+  /** サーバーに GitHub App の環境変数が入っているか */
+  appConfigured: boolean;
+  /** GITHUB_APP_VISIBILITY。説明文の出し分けにだけ使う */
+  visibility: "private" | "public";
+  /** 組織にインストール済みか */
+  installed: boolean;
+  /** GitHub側でアンインストールされている等、トークンが使えない状態 */
+  revoked: boolean;
+  accountLogin: string | null;
+  accountType: string | null;
+  repoSelection: string | null;
+  connectedAt: string | null;
+  connectedByName: string | null;
+  repoCount: number | null;
+  /** GitHub の設定画面（リポジトリの追加・変更用） */
+  manageUrl: string | null;
+}
+
+export interface GithubRepo {
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
+}
+
+export interface GithubUserRef {
+  login: string;
+  avatarUrl: string;
+}
+
+export type GithubCheckState = "success" | "failure" | "pending" | "none";
+export type GithubReviewState = "approved" | "changes_requested" | "pending";
+
+export interface GithubPull {
+  number: number;
+  title: string;
+  url: string;
+  state: "open" | "closed";
+  draft: boolean;
+  merged: boolean;
+  user: GithubUserRef;
+  base: string;
+  head: string;
+  headSha: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 一覧では取れないため詳細取得後にだけ入る */
+  mergeable?: boolean | null;
+  mergeableState?: string | null;
+  checkState: GithubCheckState;
+  checkSummary: string;
+  reviewState: GithubReviewState;
+  reviewSummary: string;
+  body?: string;
+  changedFiles?: number;
+  additions?: number;
+  deletions?: number;
+  checks?: { name: string; state: GithubCheckState }[];
+  /** ブランチ名・タイトルから拾ったWBS番号 */
+  detectedWbs: string[];
+  /** 自動検出の根拠（ブランチ名 / タイトル） */
+  autoReason?: string | null;
+}
+
+export interface GithubIssue {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  user: GithubUserRef;
+  createdAt: string;
+  labels: string[];
+  comments: number;
+}
+
+export interface GithubCommit {
+  sha: string;
+  message: string;
+  url: string;
+  authorName: string;
+  authorLogin: string | null;
+  avatarUrl: string | null;
+  date: string;
+}
+
+export interface GithubBranch {
+  name: string;
+  protected: boolean;
+  isDefault: boolean;
+  lastCommitSha: string;
+}
+
+export interface TicketGithubLink {
+  id: number;
+  projectId: string;
+  ticketId: string;
+  kind: "pull" | "issue";
+  number: number;
+  title: string | null;
+  state: string | null;
+  url: string | null;
+  autoLinked: boolean;
+  /** 自動検出の根拠（ブランチ名 / タイトル）。人が誤検出を判断できるようにする */
+  autoReason?: string | null;
+  /** 表示用。内部IDではなくWBS番号を出すためにサーバーで引き直したもの */
+  ticketWbs?: string | null;
+  ticketTitle?: string | null;
+}
+
+export type GithubMergeMethod = "merge" | "squash" | "rebase";

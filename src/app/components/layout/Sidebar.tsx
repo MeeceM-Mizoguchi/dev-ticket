@@ -1,5 +1,5 @@
 import { useState, useEffect, type ElementType } from "react";
-import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange, Ticket, UserCog, BellRing, ClipboardList, CheckSquare, FileText, Globe, Megaphone, FileBarChart2 } from "lucide-react";
+import { LayoutDashboard, FolderKanban, Building2, Users, LogOut, CalendarRange, Ticket, UserCog, Plug, ClipboardList, CheckSquare, FileText, Globe, Megaphone, FileBarChart2 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import type { Page, Role, UserPermissions } from "@/app/types";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -18,7 +18,9 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
   { id: "roles", label: "ロール設定", icon: UserCog, permission: "canAccessRoles" },
-  { id: "admin-settings", label: "通知管理", icon: BellRing, permission: "canAccessAdminSettings" },
+  // 中身は Slack通知 / メンバーのSlack ID / GitHub連携。実態が「外部サービス連携」なので
+  // 「通知管理」から改称した（docs/github-integration-design.md 8-1）。URLと権限は据え置き。
+  { id: "admin-settings", label: "外部連携", icon: Plug, permission: "canAccessAdminSettings" },
   { id: "announcement-settings", label: "お知らせ設定", icon: Megaphone, permission: "canUpdateAnnouncement" },
   { id: "organization", label: "組織管理", icon: Globe, permission: "canAccessOrganization" },
 ];
@@ -74,8 +76,10 @@ export function Sidebar() {
     if (n.permission && !userPermissions[n.permission]) return false;
     // ownerはメンバーメニューを非表示（組織管理から各組織のメンバーページへ遷移）
     if (n.id === "members" && userRole === "owner") return false;
-    // 通知管理: プランでOFFの場合は非表示
-    if (n.id === "admin-settings" && !plan.featureNotifications) return false;
+    // 外部連携: 通知もGitHubも両方プランでOFFのときだけ非表示。
+    // featureNotifications だけで判定すると、通知OFF・GitHub ONのプランで
+    // GitHub連携タブに到達できなくなる。
+    if (n.id === "admin-settings" && !plan.featureNotifications && !plan.featureGithub) return false;
     return true;
   });
 

@@ -35,6 +35,7 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
+import { TicketPrSection } from "@/app/components/github/TicketPrSection";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
@@ -3086,6 +3087,11 @@ export function TicketDetailPanel({
                 </div>
               )}
             </div>
+
+            {/* ── 関連PR（GitHub連携。権限とリポジトリ紐付けが無ければ自前で消える） ── */}
+            {projectId && ticket.id && (
+              <TicketPrSection projectId={projectId} ticketId={ticket.id} wbs={ticket.wbs} />
+            )}
 
             {/* ── Review flow + Source files ── */}
             {(reviewRequestComments.length > 0 || isAssignee || userName === reviewerName) && (

@@ -210,6 +210,7 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
   const [featureActualMonitor, setFeatureActualMonitor] = useState(plan?.featureActualMonitor ?? true);
   const [featureChildTickets, setFeatureChildTickets] = useState(plan?.featureChildTickets ?? true);
   const [featureBulkCreate, setFeatureBulkCreate] = useState(plan?.featureBulkCreate ?? true);
+  const [featureGithub, setFeatureGithub] = useState(plan?.featureGithub ?? true);
   const [saving, setSaving] = useState(false);
   const [nameErr, setNameErr] = useState(false);
 
@@ -233,6 +234,7 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
       feature_csv_export: featureCsvExport,
       feature_actual_monitor: featureActualMonitor,
       feature_child_tickets: featureChildTickets,
+      feature_github: featureGithub,
       // feature_bulk_create は supabase/add_bulk_create_to_plans.sql 適用後に追加
     };
     if (isSupabaseEnabled) {
@@ -304,7 +306,8 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
 
       <SectionLabel label="機能 ON/OFF" />
       <div style={{ background: "#FAFAF8", borderRadius: 10, padding: "0 12px", border: "1px solid rgba(26,23,20,0.07)" }}>
-        <FeatureRow label="通知管理（Slack連携・通知設定）" value={featureNotifications} onChange={setFeatureNotifications} />
+        <FeatureRow label="Slack通知（通知設定・メンバー連携）" value={featureNotifications} onChange={setFeatureNotifications} />
+        <FeatureRow label="GitHub連携（PR・Issue閲覧／マージ）" value={featureGithub} onChange={setFeatureGithub} />
         <FeatureRow label="CSV出力" value={featureCsvExport} onChange={setFeatureCsvExport} />
         <FeatureRow label="実績モニタ" value={featureActualMonitor} onChange={setFeatureActualMonitor} />
         <FeatureRow label="子チケット作成" value={featureChildTickets} onChange={setFeatureChildTickets} />
@@ -332,6 +335,7 @@ function PlanCard({ plan, onClick, onDelete }: { plan: PlanSettings; onClick: ()
     !plan.featureActualMonitor && "実績",
     !plan.featureChildTickets && "子TK",
     !plan.featureBulkCreate && "一括作成",
+    !plan.featureGithub && "GitHub",
   ].filter(Boolean) as string[];
   const isAllUnlimited = limits.every(l => l.val === null) && featuresOff.length === 0;
 
@@ -718,6 +722,8 @@ export function OrganizationPage() {
         featureActualMonitor: (row.feature_actual_monitor as boolean) ?? true,
         featureChildTickets: (row.feature_child_tickets as boolean) ?? true,
         featureBulkCreate: (row.feature_bulk_create as boolean) ?? true,
+        // 未適用の環境（列が無い）では true 扱い。PlanContext と揃えている
+        featureGithub: (row.feature_github as boolean | undefined) ?? true,
       })));
     }
   };

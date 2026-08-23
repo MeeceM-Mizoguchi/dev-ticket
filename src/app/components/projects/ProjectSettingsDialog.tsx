@@ -1,14 +1,19 @@
-import { useState } from "react";
-import { Plus, Minus, Globe } from "lucide-react";
-import type { Project, EnvMemo } from "@/app/types";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
+import { Plus, Minus, Globe, Github } from "lucide-react";
+import type { Project, EnvMemo, GithubRepo } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { inputCls, labelCls } from "@/app/lib/helpers";
 import { submitOnModEnter } from "@/app/lib/submitKey";
+import { fetchGithubStatus, fetchGithubRepos } from "@/app/lib/github";
+import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 const MAX_ENV_MEMOS = 10;
@@ -20,7 +25,9 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
   onClose: () => void;
   onUpdated?: (newSlug: string) => void;
 }) {
-  const { userOrgId } = useAuth();
+  const { userOrgId, userPermissions } = useAuth();
+  const { plan } = usePlan();
+  const navigate = useNavigate();
   const orgId = project.organizationId ?? userOrgId;
   const [slug, setSlug] = useState(project.slug);
   const [slugError, setSlugError] = useState("");
@@ -28,6 +35,37 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
   const [envMemos, setEnvMemos] = useState<EnvMemo[]>(
     project.envMemos?.length ? project.envMemos : []
   );
+
+  // ── GitHubリポジトリ（docs/github-integration-design.md 8-6） ──
+  // 書き込み先は「外部連携」画面の紐付け表と同じ projects.github_repo_full_name。
+  // データが二重化しないので、どちらから編集しても食い違わない。
+  const [ghInstalled, setGhInstalled] = useState<boolean | null>(null);
+  const [ghRepos, setGhRepos] = useState<GithubRepo[]>([]);
+  const [ghRepo, setGhRepo] = useState(project.githubRepoFullName ?? "");
+  const [ghBranch, setGhBranch] = useState(project.githubDefaultBranch ?? "");
+
+  useEffect(() => {
+    if (!plan.featureGithub || !isSupabaseEnabled) { setGhInstalled(false); return; }
+    let alive = true;
+    (async () => {
+      try {
+        const s = await fetchGithubStatus();
+        if (!alive) return;
+        const ok = s.appConfigured && s.installed && !s.revoked;
+        setGhInstalled(ok);
+        if (ok) setGhRepos(await fetchGithubRepos());
+      } catch {
+        if (alive) setGhInstalled(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [plan.featureGithub]);
+
+  const handleGhRepoChange = (v: string) => {
+    setGhRepo(v);
+    // リポジトリを選んだら既定ブランチを GitHub から拾って入れる
+    setGhBranch(v ? (v === project.githubRepoFullName ? (project.githubDefaultBranch ?? "") : (ghRepos.find(r => r.fullName === v)?.defaultBranch ?? "")) : "");
+  };
 
   const addMemo = () => {
     if (envMemos.length >= MAX_ENV_MEMOS) return;
@@ -63,7 +101,13 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
         const { data: dup } = await dupQ.maybeSingle();
         if (dup) { setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。"); setSaving(false); return; }
       }
-      const { data, error } = await supabase!.from("projects").update({ slug: finalSlug, env_memos: cleanedMemos }).eq("id", project.id).select("id");
+      const { data, error } = await supabase!.from("projects").update({
+        slug: finalSlug,
+        env_memos: cleanedMemos,
+        github_repo_full_name: ghRepo || null,
+        github_default_branch: ghRepo ? (ghBranch || null) : null,
+        github_enabled: !!ghRepo,
+      }).eq("id", project.id).select("id");
       setSaving(false);
       if (error) {
         setSlugError(error.code === "23505"
@@ -76,6 +120,8 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
         return;
       }
     }
+    // GitHubタブの表示可否をキャッシュしているので、保存したら捨てる
+    invalidateGithubAccessCache();
     onUpdated?.(finalSlug);
     onClose();
   };
@@ -101,6 +147,68 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
 
         {/* 区切り線 */}
         <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)" }} />
+
+        {/* GitHubリポジトリセクション（docs/github-integration-design.md 8-6） */}
+        {plan.featureGithub && (
+          <>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                <Github style={{ width: 13, height: 13, color: "#1F2328" }} />
+                <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", textTransform: "uppercase", letterSpacing: "0.08em" }}>GitHubリポジトリ</p>
+              </div>
+
+              {ghInstalled === null ? (
+                <p style={{ fontSize: 12, color: "#B0A9A4" }}>読み込み中...</p>
+              ) : ghInstalled ? (
+                <>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <label className={labelCls}>リポジトリ</label>
+                      <CustomSelect
+                        value={ghRepo}
+                        options={[{ value: "", label: "未設定" }, ...ghRepos.map(r => ({ value: r.fullName, label: r.fullName }))]}
+                        onChange={handleGhRepoChange}
+                        placeholder="未設定"
+                      />
+                    </div>
+                    <div style={{ flex: "0 0 150px" }}>
+                      <label className={labelCls}>既定ブランチ</label>
+                      <input
+                        className={inputCls}
+                        placeholder={ghRepo ? "main" : "—"}
+                        value={ghBranch}
+                        disabled={!ghRepo}
+                        onChange={e => setGhBranch(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 6 }}>
+                    選択すると、このプロジェクトに GitHub タブが表示されます（閲覧できるのは権限を付与されたメンバーだけです）。
+                  </p>
+                </>
+              ) : (
+                <div style={{ padding: "14px 16px", background: "#F9FAFB", borderRadius: 10, border: "1px dashed rgba(26,23,20,0.12)" }}>
+                  <p style={{ fontSize: 12, color: "#6B6458", lineHeight: 1.7 }}>
+                    この組織はまだ GitHub に接続されていません。
+                  </p>
+                  {userPermissions.canAccessAdminSettings ? (
+                    <button
+                      onClick={() => { onClose(); navigate("/admin-settings?tab=github"); }}
+                      style={{ marginTop: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#1F2328", cursor: "pointer" }}>
+                      外部連携をひらく →
+                    </button>
+                  ) : (
+                    <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 4 }}>
+                      管理者に GitHub 連携の設定を依頼してください。
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)" }} />
+          </>
+        )}
 
         {/* 環境メモセクション */}
         <div>

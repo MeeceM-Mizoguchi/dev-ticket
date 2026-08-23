@@ -1,0 +1,612 @@
+// GitHub連携の接続設定（docs/github-integration-design.md 8-1）。
+//
+// 設計方針: GitHub のインストールは Dev Ticket の外へ出る操作なので、
+// 離れる前に「何が起きるか」を必ず出す。そして今どこまで終わっているかを常に見せる。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { AlertTriangle, ExternalLink, RefreshCw, Search } from "lucide-react";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
+import { useToast } from "@/app/contexts/ToastContext";
+import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, GithubApiError } from "@/app/lib/github";
+import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
+import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
+import type { GithubStatus, GithubRepo, GithubAccessLevel } from "@/app/types";
+
+const GITHUB_BLACK = "#1F2328";
+
+const GITHUB_MARK = (
+  <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+  </svg>
+);
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  repo: string;          // "" = 未設定
+  branch: string;
+  enabled: boolean;
+  /** 保存前の値。差分だけ更新するために持つ */
+  savedRepo: string;
+  savedBranch: string;
+}
+
+interface Props {
+  isAdmin: boolean;
+  orgId?: string | null;
+  /** インストールから戻ってきた直後か（?github=success） */
+  justConnected?: boolean;
+}
+
+export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Props) {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const [status, setStatus] = useState<GithubStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [repos, setRepos] = useState<GithubRepo[]>([]);
+  const [rows, setRows] = useState<ProjectRow[]>([]);
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [grantCounts, setGrantCounts] = useState<{ merge: number; view: number; none: number } | null>(null);
+
+  const linkRef = useRef<HTMLDivElement>(null);
+  const permRef = useRef<HTMLDivElement>(null);
+  const connectRef = useRef<HTMLDivElement>(null);
+
+  // ── 読み込み ──────────────────────────────────────────────
+  const loadStatus = useCallback(async () => {
+    try {
+      const s = await fetchGithubStatus(orgId);
+      setStatus(s);
+      setError("");
+      return s;
+    } catch (e) {
+      setError(e instanceof GithubApiError ? e.message : "接続状態を取得できませんでした");
+      return null;
+    }
+  }, [orgId]);
+
+  const loadRepos = useCallback(async () => {
+    try {
+      setRepos(await fetchGithubRepos(orgId));
+    } catch {
+      setRepos([]);
+    }
+  }, [orgId]);
+
+  const loadProjects = useCallback(async () => {
+    if (!isSupabaseEnabled) return;
+    let q = supabase!
+      .from("projects")
+      .select("id, name, github_repo_full_name, github_default_branch, github_enabled")
+      .order("name");
+    if (orgId) q = q.eq("organization_id", orgId);
+    const { data } = await q;
+    setRows((data ?? []).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      repo: p.github_repo_full_name ?? "",
+      branch: p.github_default_branch ?? "",
+      enabled: p.github_enabled ?? false,
+      savedRepo: p.github_repo_full_name ?? "",
+      savedBranch: p.github_default_branch ?? "",
+    })));
+  }, [orgId]);
+
+  /**
+   * ③の付与状況。個別設定 → グループ → ロール既定 の順で解決する
+   * （サーバー側 resolveGithubLevel と同じ優先順位）。
+   */
+  const loadGrantCounts = useCallback(async () => {
+    if (!isSupabaseEnabled) return;
+    let mq = supabase!.from("profiles").select("id, role").eq("status", "active");
+    if (orgId) mq = mq.eq("organization_id", orgId);
+    const { data: profiles } = await mq;
+    if (!profiles) return;
+
+    const levels = new Map<string, GithubAccessLevel>();
+    const stronger = (a: GithubAccessLevel, b: GithubAccessLevel) =>
+      (a === "merge" || b === "merge") ? "merge" : (a === "view" || b === "view") ? "view" : "none";
+
+    // ロール既定（roles.base_permissions）
+    const { data: roles } = await supabase!.from("roles").select("name, base_permissions");
+    const roleLevel = new Map<string, GithubAccessLevel>();
+    for (const r of roles ?? []) {
+      const lv = (r as any).base_permissions?.githubPermission as GithubAccessLevel | undefined;
+      if (lv) roleLevel.set((r as any).name, lv);
+    }
+    for (const p of profiles as any[]) {
+      const role = p.role as string;
+      const base: GithubAccessLevel = role === "owner"
+        ? "merge"
+        : roleLevel.get(role) ?? (role === "admin" || role === "project-manager" ? "merge" : "none");
+      levels.set(p.id, base);
+    }
+
+    // グループ
+    let gq = supabase!.from("permission_groups").select("id, permissions");
+    if (orgId) gq = gq.or(`organization_id.eq.${orgId},organization_id.is.null`);
+    const { data: groups } = await gq;
+    const groupLevel = new Map<number, GithubAccessLevel>();
+    for (const g of groups ?? []) {
+      const lv = (g as any).permissions?.githubPermission as GithubAccessLevel | undefined;
+      if (lv && lv !== "none") groupLevel.set((g as any).id, lv);
+    }
+    if (groupLevel.size) {
+      const { data: gm } = await supabase!
+        .from("group_members").select("group_id, member_id").in("group_id", Array.from(groupLevel.keys()));
+      for (const m of gm ?? []) {
+        const id = (m as any).member_id as string;
+        if (!levels.has(id)) continue;
+        levels.set(id, stronger(levels.get(id)!, groupLevel.get((m as any).group_id)!));
+      }
+    }
+
+    // 個別（プロジェクト単位。1つでも付いていれば「付与済み」として数える）
+    const projectIds = rows.map(r => r.id);
+    if (projectIds.length) {
+      const { data: pmp } = await supabase!
+        .from("project_member_permissions").select("member_id, permissions").in("project_id", projectIds);
+      for (const row of pmp ?? []) {
+        const id = (row as any).member_id as string;
+        const lv = (row as any).permissions?.githubPermission as GithubAccessLevel | undefined;
+        if (!lv || !levels.has(id)) continue;
+        levels.set(id, stronger(levels.get(id)!, lv));
+      }
+    }
+
+    let merge = 0, view = 0, none = 0;
+    for (const lv of levels.values()) {
+      if (lv === "merge") merge++;
+      else if (lv === "view") view++;
+      else none++;
+    }
+    setGrantCounts({ merge, view, none });
+  }, [orgId, rows]);
+
+  useEffect(() => {
+    if (!isAdmin) { setLoading(false); return; }
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      const s = await loadStatus();
+      if (!alive) return;
+      await loadProjects();
+      if (s?.installed && !s.revoked) await loadRepos();
+      if (alive) setLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [isAdmin, loadStatus, loadProjects, loadRepos]);
+
+  useEffect(() => { void loadGrantCounts(); }, [loadGrantCounts]);
+
+  // 接続直後は「次にリポジトリを紐付けてください」へ誘導する
+  useEffect(() => {
+    if (!justConnected || loading || !status?.installed) return;
+    setExpanded(true);
+    const t = setTimeout(() => linkRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
+    return () => clearTimeout(t);
+  }, [justConnected, loading, status?.installed]);
+
+  // ── 派生 ──────────────────────────────────────────────────
+  const linkedCount = rows.filter(r => r.savedRepo).length;
+  const grantedCount = (grantCounts?.merge ?? 0) + (grantCounts?.view ?? 0);
+  const steps: SetupStepState = {
+    installed: !!status?.installed && !status.revoked,
+    linked: linkedCount > 0,
+    granted: grantedCount > 0,
+  };
+  const allDone = steps.installed && steps.linked && steps.granted;
+  const dirty = rows.some(r => r.repo !== r.savedRepo || r.branch !== r.savedBranch);
+
+  const repoOptions = useMemo(() => [
+    { value: "", label: "未設定" },
+    ...repos.map(r => ({ value: r.fullName, label: r.fullName })),
+  ], [repos]);
+
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? rows.filter(r => r.name.toLowerCase().includes(q)) : rows;
+  }, [rows, search]);
+
+  /** 同じリポジトリを複数プロジェクトで使ってよい。エラーにせず件数だけ出す */
+  const repoUsage = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) if (r.repo) m.set(r.repo, (m.get(r.repo) ?? 0) + 1);
+    return m;
+  }, [rows]);
+
+  // ── 操作 ──────────────────────────────────────────────────
+  const handleConnect = async () => {
+    setConnecting(true);
+    try {
+      await startGithubInstall(orgId);
+    } catch (e) {
+      setConnecting(false);
+      toast(e instanceof GithubApiError ? e.message : "接続を開始できませんでした", "error");
+    }
+  };
+
+  const handleRepoChange = (id: string, repo: string) => {
+    setRows(prev => prev.map(r => {
+      if (r.id !== id) return r;
+      // リポジトリを選んだら既定ブランチを GitHub から拾って入れる
+      const def = repos.find(x => x.fullName === repo)?.defaultBranch ?? "";
+      return { ...r, repo, branch: repo ? (r.repo === repo ? r.branch : def) : "" };
+    }));
+  };
+
+  const handleSave = async () => {
+    if (!isSupabaseEnabled) return;
+    setSaving(true);
+    const changed = rows.filter(r => r.repo !== r.savedRepo || r.branch !== r.savedBranch);
+    let failed = 0;
+    for (const r of changed) {
+      const { error: e } = await supabase!.from("projects").update({
+        github_repo_full_name: r.repo || null,
+        github_default_branch: r.repo ? (r.branch || null) : null,
+        github_enabled: !!r.repo,
+      }).eq("id", r.id);
+      if (e) failed++;
+    }
+    setSaving(false);
+    if (failed) { toast("一部のプロジェクトを保存できませんでした", "error"); }
+    setRows(prev => prev.map(r => ({ ...r, savedRepo: r.repo, savedBranch: r.branch, enabled: !!r.repo })));
+    // GitHubタブの表示可否はキャッシュしているので、紐付けを変えたら捨てる
+    invalidateGithubAccessCache();
+
+    const first = changed.find(r => r.repo);
+    if (first && !failed) {
+      toast(`${first.name} に ${first.repo} を紐付けました`, "success");
+    } else if (!failed) {
+      toast("紐付けを保存しました", "success");
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!isSupabaseEnabled || !orgId) return;
+    setDisconnecting(true);
+    // Dev Ticket 側の接続情報だけを消す。GitHub 上の App インストールは残る
+    await supabase!.from("github_installations").delete().eq("organization_id", orgId);
+    await supabase!.from("projects").update({ github_enabled: false }).eq("organization_id", orgId);
+    setDisconnecting(false);
+    setRows(prev => prev.map(r => ({ ...r, enabled: false })));
+    invalidateGithubAccessCache();
+    await loadStatus();
+    toast("GitHubとの接続を解除しました", "success");
+  };
+
+  const handleCopyUrl = async () => {
+    if (await copyText(window.location.href)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const jumpTo = (key: keyof SetupStepState) => {
+    setExpanded(true);
+    setTimeout(() => {
+      const el = key === "installed" ? connectRef.current : key === "linked" ? linkRef.current : permRef.current;
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 60);
+  };
+
+  // ── 表示 ──────────────────────────────────────────────────
+  if (!isAdmin) return <p style={{ fontSize: 12, color: "#A09790" }}>管理者またはプロジェクトマネージャーのみ変更できます。</p>;
+  if (!isSupabaseEnabled) return <p style={{ fontSize: 12, color: "#A09790" }}>Supabase未接続のため利用できません。</p>;
+  if (loading) return <p style={{ fontSize: 13, color: "#B0A9A4", padding: "24px 0", textAlign: "center" as const }}>読み込み中...</p>;
+
+  // 8-1-A: サーバー側の設定がまだ
+  if (status && !status.appConfigured) {
+    return (
+      <Notice tone="warn" title="GitHub連携がまだ有効化されていません">
+        サーバー側の設定（GitHub App）が未登録のため、この機能は利用できません。システム管理者にお問い合わせください。
+        <br />
+        <span style={{ fontSize: 11, color: "#9CA3AF" }}>
+          管理者向け: docs/github-integration-design.md の「12. GitHub App の作成と環境変数」を参照してください
+        </span>
+      </Notice>
+    );
+  }
+
+  const showCollapsed = allDone && !expanded;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" as const, gap: 0 }}>
+      {showCollapsed
+        ? <GithubSetupDone linkedCount={linkedCount} grantedCount={grantedCount} onExpand={() => setExpanded(true)} />
+        : <GithubSetupSteps state={steps} onJump={jumpTo} />}
+
+      {error && <Notice tone="warn" title="接続状態を取得できませんでした">{error}</Notice>}
+
+      {showCollapsed ? null : !steps.installed ? (
+        <div ref={connectRef}>
+          {status?.installed && status.revoked
+            ? <RevokedCard onReconnect={handleConnect} connecting={connecting} />
+            : <ConnectCard
+                visibility={status?.visibility ?? "public"}
+                connecting={connecting}
+                copied={copied}
+                onConnect={handleConnect}
+                onCopyUrl={handleCopyUrl}
+              />}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+
+          {/* ① 接続状態 */}
+          <section ref={connectRef} style={cardStyle}>
+            <SectionTitle no="①" title="接続状態" />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, padding: "11px 14px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5"><polyline points="20 6 9 17 4 12" /></svg>
+                </div>
+                <div>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#15803D" }}>接続済み</span>
+                  <span style={{ fontSize: 13, color: "#166534", marginLeft: 8, fontWeight: 700 }}>{status?.accountLogin}</span>
+                  <span style={{ fontSize: 11, color: "#166534", marginLeft: 6 }}>（{status?.accountType === "Organization" ? "Organization" : "アカウント"}）</span>
+                  <p style={{ fontSize: 11, color: "#166534", marginTop: 2 }}>
+                    許可リポジトリ {status?.repoCount ?? repos.length}件
+                    {status?.connectedAt && ` ・ ${new Date(status.connectedAt).toLocaleDateString("ja-JP")} に ${status.connectedByName ?? "―"} が接続`}
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {status?.manageUrl && (
+                  <a href={status.manageUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: GITHUB_BLACK, textDecoration: "none", whiteSpace: "nowrap" as const }}>
+                    リポジトリを追加・変更 <ExternalLink style={{ width: 11, height: 11 }} />
+                  </a>
+                )}
+                <button onClick={handleDisconnect} disabled={disconnecting}
+                  style={{ padding: "5px 12px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: disconnecting ? "default" : "pointer", opacity: disconnecting ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
+                  {disconnecting ? "解除中..." : "切断する"}
+                </button>
+              </div>
+            </div>
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7 }}>
+              「リポジトリを追加・変更」を押すと GitHub の設定画面に移動します。新しいリポジトリを Dev Ticket から見えるようにする場合はこちらです。
+              <br />
+              GitHub側で変更したあとは
+              <button onClick={() => { void loadRepos(); void loadStatus(); }}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: "0 4px", padding: "1px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#4B4540", cursor: "pointer" }}>
+                <RefreshCw style={{ width: 10, height: 10 }} />一覧を再取得
+              </button>
+              を押してください。
+              <br />
+              切断しても GitHub 上の App インストールは残ります（Dev Ticket 側の接続情報だけを消します）。
+            </p>
+          </section>
+
+          {/* ② リポジトリの紐付け */}
+          <section ref={linkRef} style={cardStyle}>
+            <SectionTitle no="②" title="プロジェクトとリポジトリの紐付け" />
+            <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 12 }}>
+              どのプロジェクトでどのリポジトリを表示するかを設定します。
+            </p>
+
+            {rows.length > 6 && (
+              <div style={{ position: "relative", marginBottom: 10 }}>
+                <Search style={{ width: 13, height: 13, color: "#B0A9A4", position: "absolute", left: 10, top: 9 }} />
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="プロジェクトを検索"
+                  style={{ width: "100%", boxSizing: "border-box" as const, padding: "7px 10px 7px 30px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#F9F8F6", outline: "none" }} />
+              </div>
+            )}
+
+            {rows.length === 0 ? (
+              <p style={{ fontSize: 12, color: "#B0A9A4", padding: "16px 0", textAlign: "center" as const }}>プロジェクトがありません。</p>
+            ) : (
+              <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "visible" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 260px 150px 46px", gap: 10, padding: "8px 12px", background: "#F9F8F6", borderBottom: "1px solid rgba(26,23,20,0.07)", fontSize: 10, fontWeight: 700, color: "#8A837B", letterSpacing: "0.06em" }}>
+                  <span>プロジェクト</span><span>リポジトリ</span><span>既定ブランチ</span><span style={{ textAlign: "center" as const }}>状態</span>
+                </div>
+                {filteredRows.map((r, i) => {
+                  const dup = r.repo ? (repoUsage.get(r.repo) ?? 0) - 1 : 0;
+                  return (
+                    <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 260px 150px 46px", gap: 10, padding: "9px 12px", alignItems: "center", borderBottom: i < filteredRows.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{r.name}</p>
+                        {dup > 0 && <p style={{ fontSize: 10, color: "#A09790", marginTop: 1 }}>他{dup}プロジェクトでも使用中</p>}
+                      </div>
+                      <CustomSelect value={r.repo} options={repoOptions} onChange={v => handleRepoChange(r.id, v)} placeholder="未設定" />
+                      <input value={r.branch} onChange={e => setRows(prev => prev.map(x => x.id === r.id ? { ...x, branch: e.target.value } : x))}
+                        disabled={!r.repo} placeholder={r.repo ? "main" : "—"}
+                        style={{ width: "100%", boxSizing: "border-box" as const, padding: "7px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: r.repo ? "#F9F8F6" : "#F4F5F6", color: r.repo ? "#1A1714" : "#C9C4BB", outline: "none" }} />
+                      <span style={{ textAlign: "center" as const, fontSize: 13, color: r.savedRepo ? "#059669" : "#C9C4BB" }}>
+                        {r.savedRepo ? "✔" : "○"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+              <button onClick={handleSave} disabled={saving || !dirty}
+                style={{ padding: "9px 22px", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: (saving || !dirty) ? "default" : "pointer", background: (saving || !dirty) ? "#E5E7EB" : "linear-gradient(135deg,#059669,#047857)", color: (saving || !dirty) ? "#9CA3AF" : "#fff", letterSpacing: "-0.01em" }}>
+                {saving ? "保存中..." : "保存する"}
+              </button>
+            </div>
+
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
+              プルダウンには、GitHub で許可したリポジトリだけが表示されます。
+              目的のリポジトリが無い場合は、上の「リポジトリを追加・変更」から GitHub 側で許可を追加してください。
+              <br />
+              紐付けを「未設定」に戻すと GitHub タブは消えますが、チケットとPRの紐付けデータは保持されます。
+            </p>
+          </section>
+
+          {/* ③ メンバーの権限 */}
+          <section ref={permRef} style={cardStyle}>
+            <SectionTitle no="③" title="メンバーの権限" />
+            <div style={{ display: "flex", gap: 8, padding: "10px 13px", background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.22)", borderRadius: 10, marginBottom: 12 }}>
+              <AlertTriangle style={{ width: 14, height: 14, color: "#D97706", flexShrink: 0, marginTop: 1 }} />
+              <p style={{ fontSize: 12, color: "#92400E", lineHeight: 1.7 }}>
+                初期状態では、すべてのメンバーが「権限なし」です。
+                権限を付けるまで、GitHub タブは本人の画面に表示されません。
+              </p>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const }}>
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: "#8A837B", letterSpacing: "0.06em", marginBottom: 4 }}>現在の付与状況</p>
+                <p style={{ fontSize: 13, color: "#1A1714" }}>
+                  {grantCounts
+                    ? <>マージ可 <strong>{grantCounts.merge}名</strong> ・ 閲覧のみ <strong>{grantCounts.view}名</strong> ・ 権限なし <strong>{grantCounts.none}名</strong></>
+                    : "集計中..."}
+                </p>
+              </div>
+              <button onClick={() => navigate("/permissions")}
+                style={{ padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#1A1714", cursor: "pointer", whiteSpace: "nowrap" as const }}>
+                アサイン計画をひらく →
+              </button>
+            </div>
+
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7 }}>
+              GitHub の閲覧・マージ権限は「アサイン計画」でメンバーまたはグループ単位に設定します。
+            </p>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 部品 ─────────────────────────────────────────────────────
+const cardStyle = { background: "#FFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "18px 20px" } as const;
+
+function SectionTitle({ no, title }: { no: string; title: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      <span style={{ fontSize: 12, fontWeight: 800, color: "#059669" }}>{no}</span>
+      <p style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{title}</p>
+    </div>
+  );
+}
+
+function Notice({ tone, title, children }: { tone: "warn" | "info"; title: string; children: React.ReactNode }) {
+  const warn = tone === "warn";
+  return (
+    <div style={{ display: "flex", gap: 10, padding: "13px 16px", borderRadius: 10, marginBottom: 16, background: warn ? "#FFFBEB" : "#F0F9FF", border: `1px solid ${warn ? "rgba(217,119,6,0.25)" : "rgba(2,132,199,0.25)"}` }}>
+      <AlertTriangle style={{ width: 15, height: 15, color: warn ? "#D97706" : "#0284C7", flexShrink: 0, marginTop: 1 }} />
+      <div>
+        <p style={{ fontSize: 13, fontWeight: 700, color: warn ? "#92400E" : "#075985", marginBottom: 4 }}>{title}</p>
+        <p style={{ fontSize: 12, color: warn ? "#92400E" : "#075985", lineHeight: 1.7 }}>{children}</p>
+      </div>
+    </div>
+  );
+}
+
+/** 8-1-B: 未接続。ここが一番説明を厚くする画面 */
+function ConnectCard({ visibility, connecting, copied, onConnect, onCopyUrl }: {
+  visibility: "private" | "public";
+  connecting: boolean;
+  copied: boolean;
+  onConnect: () => void;
+  onCopyUrl: () => void;
+}) {
+  const isPrivate = visibility === "private";
+  const steps = [
+    "下のボタンを押すと GitHub の画面に移動します",
+    isPrivate
+      ? "接続先のアカウントを確認します（選択肢は自社の GitHub 組織のみです）"
+      : "接続先の Organization（またはアカウント）を選びます",
+    "Dev Ticket から見せたいリポジトリを選んで Install を押します",
+    "自動でこの画面に戻ります",
+  ];
+
+  return (
+    <div style={{ background: "#FAFAF8", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, padding: "30px 24px", display: "flex", flexDirection: "column" as const, alignItems: "center" }}>
+      <div style={{ width: 52, height: 52, borderRadius: 14, background: GITHUB_BLACK, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14, color: "#fff", boxShadow: "0 4px 16px rgba(31,35,40,0.22)" }}>
+        {GITHUB_MARK}
+      </div>
+
+      <p style={{ fontSize: 15, fontWeight: 700, color: "#1A1714", marginBottom: 6, fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>
+        GitHubに接続する
+      </p>
+      <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 22, lineHeight: 1.8, textAlign: "center" as const }}>
+        接続すると、プルリクエスト・Issue・コミットを Dev Ticket の画面内で確認できるようになります。<br />
+        閲覧するメンバーに GitHub アカウントは必要ありません。
+      </p>
+
+      <div style={{ width: "100%", maxWidth: 560, background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
+        <p style={{ fontSize: 10, fontWeight: 700, color: "#A09790", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 10 }}>接続の流れ</p>
+        {steps.map((text, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "7px 0", borderBottom: i < steps.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+            <div style={{ width: 20, height: 20, borderRadius: "50%", background: GITHUB_BLACK, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", flexShrink: 0, marginTop: 1 }}>
+              {i + 1}
+            </div>
+            <div>
+              <p style={{ fontSize: 12, color: "#374151", lineHeight: 1.6 }}>{text}</p>
+              {i === 2 && (
+                <p style={{ fontSize: 11, color: "#A09790", marginTop: 3, lineHeight: 1.6 }}>
+                  ・「All repositories」＝ 今後追加される分も自動で対象<br />
+                  ・「Only select repositories」＝ 選んだものだけ
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ width: "100%", maxWidth: 560, background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.22)", borderRadius: 10, padding: "13px 16px", marginBottom: 22 }}>
+        <div style={{ display: "flex", gap: 9 }}>
+          <AlertTriangle style={{ width: 14, height: 14, color: "#D97706", flexShrink: 0, marginTop: 2 }} />
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 12, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>GitHub の管理者権限が必要です</p>
+            <p style={{ fontSize: 11, color: "#92400E", lineHeight: 1.7 }}>
+              {isPrivate
+                ? "この操作には、自社 GitHub 組織で App をインストールできる権限（Owner など）が必要です。"
+                : "この操作には、対象 Organization で App をインストールできる権限（Owner など）が必要です。権限が無い場合は、この画面の URL を管理者に共有して実施してもらってください。"}
+            </p>
+            {!isPrivate && (
+              <button onClick={onCopyUrl}
+                style={{ marginTop: 8, padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(217,119,6,0.3)", background: "#FFF", color: "#92400E", cursor: "pointer" }}>
+                {copied ? "✓ コピーしました" : "URLをコピー"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <button onClick={onConnect} disabled={connecting}
+        style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "11px 26px", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "none", cursor: connecting ? "default" : "pointer", background: connecting ? "#6B7280" : GITHUB_BLACK, color: "#fff", boxShadow: "0 2px 10px rgba(31,35,40,0.25)", letterSpacing: "-0.01em" }}>
+        <span style={{ color: "#fff", display: "flex" }}>{GITHUB_MARK}</span>
+        {connecting ? "GitHubへ移動中..." : "GitHubに接続する"}
+      </button>
+
+      <p style={{ fontSize: 11, color: "#A09790", marginTop: 14, textAlign: "center" as const, lineHeight: 1.7 }}>
+        接続は組織につき1回だけです。プロジェクトが増えても、この操作をやり直す必要はありません。
+      </p>
+    </div>
+  );
+}
+
+/** 8-1-E: GitHub 側でアンインストールされた */
+function RevokedCard({ onReconnect, connecting }: { onReconnect: () => void; connecting: boolean }) {
+  return (
+    <div style={{ display: "flex", gap: 12, padding: "16px 18px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.25)", borderRadius: 12 }}>
+      <AlertTriangle style={{ width: 16, height: 16, color: "#DC2626", flexShrink: 0, marginTop: 2 }} />
+      <div style={{ flex: 1 }}>
+        <p style={{ fontSize: 13, fontWeight: 700, color: "#B91C1C", marginBottom: 5 }}>GitHub との接続が解除されています</p>
+        <p style={{ fontSize: 12, color: "#B91C1C", lineHeight: 1.7 }}>
+          GitHub 側で Dev Ticket App がアンインストールされたか、権限が取り消された可能性があります。
+          再接続すると復旧します。プロジェクトとリポジトリの紐付けは保持されています。
+        </p>
+        <button onClick={onReconnect} disabled={connecting}
+          style={{ marginTop: 10, padding: "8px 18px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: connecting ? "#9CA3AF" : GITHUB_BLACK, color: "#FFF", cursor: connecting ? "default" : "pointer" }}>
+          {connecting ? "GitHubへ移動中..." : "再接続する"}
+        </button>
+      </div>
+    </div>
+  );
+}
