@@ -601,6 +601,13 @@ export interface UserPermissions {
 
 // ── GitHub連携 ───────────────────────────────────────────────────────────────
 
+export interface GithubUnclaimedInstallation {
+  id: string;
+  accountLogin: string;
+  accountType: string;
+  repoSelection: string;
+}
+
 /** GET /api/github/status の戻り。画面のセットアップ状態の判定に使う。 */
 export interface GithubStatus {
   /** サーバーに GitHub App の環境変数が入っているか */
@@ -613,6 +620,8 @@ export interface GithubStatus {
   /** 鍵が読めないときの切り分け用（値そのものは含まない） */
   appKeyShape: string | null;
   appSlugMismatch: string | null;
+  /** GitHub側にインストール済みだが、どの組織にも記録されていないもの（復旧用の候補） */
+  unclaimedInstallations: GithubUnclaimedInstallation[];
   /** 組織にインストール済みか */
   installed: boolean;
   /** GitHub側でアンインストールされている等、トークンが使えない状態 */
