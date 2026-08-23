@@ -1077,8 +1077,10 @@ async function handleCommits(sb: SupabaseClient, caller: Caller, req: any, res: 
 async function handleBranches(sb: SupabaseClient, caller: Caller, req: any, res: any) {
   const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view");
   const token = await installationToken(ctx.installationId);
+  // 1ページ（100件）で打ち切ると、ブランチ数が多いリポジトリで新しいブランチが一覧にも
+  // PR作成ダイアログの選択肢にも出てこないため、全ページ辿る
   const [list, repo] = await Promise.all([
-    gh(token, `/repos/${ctx.repo}/branches?per_page=100`),
+    ghPaged(token, `/repos/${ctx.repo}/branches`, PENDING_SCAN_PAGES),
     gh(token, `/repos/${ctx.repo}`),
   ]);
   const def = repo?.default_branch ?? ctx.defaultBranch;
@@ -1120,10 +1122,12 @@ async function ghGraphql(token: string, query: string, variables: Record<string,
   return json?.data;
 }
 
+// orderBy の TAG_COMMIT_DATE は refs/tags/ にしか効かず、refs/heads/ では並び順が保証されない。
+// ページングを安定させるために ALPHABETICAL で取り、コミット日時の並べ替えは取得後に自前で行う。
 const PENDING_BRANCH_QUERY = `
 query($owner:String!,$name:String!,$n:Int!,$after:String){
   repository(owner:$owner,name:$name){
-    refs(refPrefix:"refs/heads/",first:$n,after:$after,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){
+    refs(refPrefix:"refs/heads/",first:$n,after:$after,orderBy:{field:ALPHABETICAL,direction:ASC}){
       pageInfo{ hasNextPage endCursor }
       nodes{
         name
@@ -1201,8 +1205,12 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
     }));
   }
 
-  // 1段目：PR が一度も作られていないブランチだけ残す
-  const noPr = rows.filter(r => r.name && r.name !== defaultBranch && r.prCount === 0);
+  // 1段目：PR が一度も作られていないブランチだけ残す。
+  // 表示は新しい順、新着バナーは先頭を使うので、ここで最終コミット日時の降順に並べ直す
+  // （ISO8601 は文字列比較で時系列順になる。日時が取れないフォールバック時は末尾に寄る）
+  const noPr = rows
+    .filter(r => r.name && r.name !== defaultBranch && r.prCount === 0)
+    .sort((a, b) => (b.committedDate ?? "").localeCompare(a.committedDate ?? ""));
 
   // 2段目：既定ブランチに取り込み済みのものを落とす。
   // 中間ブランチなど、自身にPRが無いまま別経路で main に入っているものがここで消える
