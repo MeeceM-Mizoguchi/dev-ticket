@@ -1094,8 +1094,13 @@ async function handleBranches(sb: SupabaseClient, caller: Caller, req: any, res:
 /**
  * まだプルリクエストが作られていないブランチの一覧。
  *
- * ブランチを「最後にコミットした順」で並べたいが、REST のブランチ一覧は日時を返さない。
- * 1本ずつコミットを引くと本数分の呼び出しになるため、GraphQL で一度に取る。
+ * 判定は2段構え。片方だけだと、マージ後もブランチを消さない運用で過去のブランチが全部並ぶ。
+ *  1. そのブランチを head にした PR が「一度でも」作られていないこと
+ *     （open だけを見ると、マージ済みPRを持つブランチが「未作成」に化ける）
+ *  2. 既定ブランチにまだ取り込まれていないこと（ahead_by > 0）
+ *
+ * ブランチを「最後にコミットした順」で並べたいが、REST のブランチ一覧は日時も PR 有無も返さない。
+ * 1本ずつ引くと本数分の呼び出しになるため、GraphQL で全ページ辿って一度に取る。
  * GraphQL が使えない場合は、日時なし・名前順の簡易版にフォールバックする。
  */
 async function ghGraphql(token: string, query: string, variables: Record<string, unknown>) {
@@ -1116,54 +1121,107 @@ async function ghGraphql(token: string, query: string, variables: Record<string,
 }
 
 const PENDING_BRANCH_QUERY = `
-query($owner:String!,$name:String!,$n:Int!){
+query($owner:String!,$name:String!,$n:Int!,$after:String){
   repository(owner:$owner,name:$name){
-    refs(refPrefix:"refs/heads/",first:$n,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){
+    refs(refPrefix:"refs/heads/",first:$n,after:$after,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){
+      pageInfo{ hasNextPage endCursor }
       nodes{
         name
+        associatedPullRequests(first:1){ totalCount }
         target{ ... on Commit { oid committedDate messageHeadline author{ name } } }
       }
     }
   }
 }`;
 
+/** 100件×このページ数まで走査する。これを超えるリポジトリは実質ない */
+const PENDING_SCAN_PAGES = 10;
+/** 取り込み済み判定（compare）を掛ける上限。PR有無で絞った後なので通常は数本 */
+const PENDING_COMPARE_MAX = 100;
+/** compare を同時に投げる本数 */
+const PENDING_COMPARE_CHUNK = 10;
+
+/** ページングして全件取る。100件未満が返ったところで打ち切る */
+async function ghPaged(token: string, path: string, pages: number): Promise<any[]> {
+  const out: any[] = [];
+  for (let p = 1; p <= pages; p++) {
+    const sep = path.includes("?") ? "&" : "?";
+    const chunk = await gh(token, `${path}${sep}per_page=100&page=${p}`).catch(() => []);
+    const arr = Array.isArray(chunk) ? chunk : [];
+    out.push(...arr);
+    if (arr.length < 100) break;
+  }
+  return out;
+}
+
 async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: any, res: any) {
   const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view");
   const token = await installationToken(ctx.installationId);
   const [owner, name] = ctx.repo.split("/");
 
-  // 既定ブランチと、オープンなPRが付いているブランチは対象外
-  const [repoInfo, openPulls] = await Promise.all([
-    gh(token, `/repos/${ctx.repo}`).catch(() => null),
-    gh(token, `/repos/${ctx.repo}/pulls?state=open&per_page=100`).catch(() => []),
-  ]);
+  const repoInfo = await gh(token, `/repos/${ctx.repo}`).catch(() => null);
   const defaultBranch = repoInfo?.default_branch ?? ctx.defaultBranch ?? "main";
-  const withPr = new Set((openPulls ?? []).map((p: any) => p.head?.ref).filter(Boolean));
 
-  type Row = { name: string; sha: string; message: string; committedDate: string | null; authorName: string };
+  type Row = {
+    name: string; sha: string; message: string; committedDate: string | null; authorName: string;
+    /** そのブランチを head にした PR の数。open/closed/merged すべて数える */
+    prCount: number;
+  };
   let rows: Row[] = [];
 
   try {
-    const data = await ghGraphql(token, PENDING_BRANCH_QUERY, { owner, name, n: 50 });
-    rows = ((data?.repository?.refs?.nodes ?? []) as any[]).map(n => ({
-      name: n?.name ?? "",
-      sha: n?.target?.oid ?? "",
-      message: n?.target?.messageHeadline ?? "",
-      committedDate: n?.target?.committedDate ?? null,
-      authorName: n?.target?.author?.name ?? "",
-    }));
+    let after: string | null = null;
+    for (let page = 0; page < PENDING_SCAN_PAGES; page++) {
+      const data = await ghGraphql(token, PENDING_BRANCH_QUERY, { owner, name, n: 100, after });
+      const refs = data?.repository?.refs;
+      rows.push(...((refs?.nodes ?? []) as any[]).map(n => ({
+        name: n?.name ?? "",
+        sha: n?.target?.oid ?? "",
+        message: n?.target?.messageHeadline ?? "",
+        committedDate: n?.target?.committedDate ?? null,
+        authorName: n?.target?.author?.name ?? "",
+        prCount: n?.associatedPullRequests?.totalCount ?? 0,
+      })));
+      if (!refs?.pageInfo?.hasNextPage) { after = null; break; }
+      after = refs.pageInfo.endCursor as string;
+    }
+    if (after) console.warn(`[github pending-branches] ${ctx.repo}: ブランチが多すぎて全件は走査していない`);
   } catch (e) {
-    // GraphQL が使えない環境向けの簡易版。日時が取れないので名前順のまま返す
+    // GraphQL が使えない環境向けの簡易版。日時が取れないので名前順のまま返す。
+    // PR の有無は state=all を全ページ辿って自前で突き合わせる（open だけでは判定できない）
     console.error("[github pending-branches] graphql failed:", (e as Error)?.message);
-    const list = await gh(token, `/repos/${ctx.repo}/branches?per_page=100`).catch(() => []);
-    rows = ((list ?? []) as any[]).map(b => ({
+    const [list, pulls] = await Promise.all([
+      ghPaged(token, `/repos/${ctx.repo}/branches`, PENDING_SCAN_PAGES),
+      ghPaged(token, `/repos/${ctx.repo}/pulls?state=all`, PENDING_SCAN_PAGES),
+    ]);
+    const withPr = new Set(pulls.map((p: any) => p.head?.ref).filter(Boolean));
+    rows = list.map((b: any) => ({
       name: b.name, sha: b.commit?.sha ?? "", message: "", committedDate: null, authorName: "",
+      prCount: withPr.has(b.name) ? 1 : 0,
     }));
   }
 
-  const candidates = rows
-    .filter(r => r.name && r.name !== defaultBranch && !withPr.has(r.name))
-    .slice(0, 20);
+  // 1段目：PR が一度も作られていないブランチだけ残す
+  const noPr = rows.filter(r => r.name && r.name !== defaultBranch && r.prCount === 0);
+
+  // 2段目：既定ブランチに取り込み済みのものを落とす。
+  // 中間ブランチなど、自身にPRが無いまま別経路で main に入っているものがここで消える
+  const checked = noPr.slice(0, PENDING_COMPARE_MAX);
+  const unmerged: Row[] = [];
+  for (let i = 0; i < checked.length; i += PENDING_COMPARE_CHUNK) {
+    const chunk = checked.slice(i, i + PENDING_COMPARE_CHUNK);
+    const kept = await Promise.all(chunk.map(async r => {
+      const cmp = await gh(
+        token,
+        `/repos/${ctx.repo}/compare/${encodeURIComponent(defaultBranch)}...${encodeURIComponent(r.name)}`,
+      ).catch(() => null);
+      // 比較できなかったものは伏せずに残す（見落とすより出しすぎるほうがまし）
+      return typeof cmp?.ahead_by === "number" && cmp.ahead_by === 0 ? null : r;
+    }));
+    unmerged.push(...kept.filter((r): r is Row => !!r));
+  }
+  // 上限を超えた分は判定を掛けられないので、そのまま残す
+  const candidates = [...unmerged, ...noPr.slice(PENDING_COMPARE_MAX)];
 
   // ブランチ名の WBS 番号から、このプロジェクトのチケット名を引いて添える
   const wbsByBranch = new Map<string, string>();
@@ -1187,7 +1245,7 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
     level: ctx.level,
     repo: ctx.repo,
     defaultBranch,
-    branches: candidates.map(c => {
+    branches: candidates.map(({ prCount: _prCount, ...c }) => {
       const wbs = wbsByBranch.get(c.name) ?? null;
       return { ...c, wbs, ticketTitle: wbs ? (titleByWbs.get(wbs) ?? null) : null };
     }),
