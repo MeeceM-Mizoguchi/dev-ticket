@@ -3,14 +3,17 @@
 // 「view」の人にはマージ系ボタンをそもそも描画しない（押せないボタンを見せない）。
 // マージできない状態のときは、淡色のボタンと理由を並べて出す。
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import { ExternalLink, ChevronDown, ChevronUp, GitPullRequest, Link2 } from "lucide-react";
 import { fetchPull, mergeBlockReason, relativeTime, GithubApiError } from "@/app/lib/github";
 import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/types";
 
 const BLACK = "#1F2328";
 
-export function PullRequestList({ projectId, repo, pulls, level, links, onMergeClick, onLinkClick }: {
+export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, onMergeClick, onLinkClick }: {
   projectId: string;
+  /** 紐付いたチケットへ飛ばすために使う */
+  projectSlug: string;
   repo: string;
   pulls: GithubPull[];
   level: GithubAccessLevel;
@@ -24,7 +27,7 @@ export function PullRequestList({ projectId, repo, pulls, level, links, onMergeC
   return (
     <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
       {pulls.map(p => (
-        <PullRow key={p.number} projectId={projectId} repo={repo} pull={p} level={level}
+        <PullRow key={p.number} projectId={projectId} projectSlug={projectSlug} repo={repo} pull={p} level={level}
           linked={links.filter(l => l.kind === "pull" && l.number === p.number)}
           onMergeClick={onMergeClick} onLinkClick={onLinkClick} />
       ))}
@@ -32,8 +35,9 @@ export function PullRequestList({ projectId, repo, pulls, level, links, onMergeC
   );
 }
 
-function PullRow({ projectId, repo, pull, level, linked, onMergeClick, onLinkClick }: {
+function PullRow({ projectId, projectSlug, repo, pull, level, linked, onMergeClick, onLinkClick }: {
   projectId: string;
+  projectSlug: string;
   repo: string;
   pull: GithubPull;
   level: GithubAccessLevel;
@@ -41,6 +45,7 @@ function PullRow({ projectId, repo, pull, level, linked, onMergeClick, onLinkCli
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
 }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<GithubPull | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -81,14 +86,23 @@ function PullRow({ projectId, repo, pull, level, linked, onMergeClick, onLinkCli
 
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" as const, marginTop: 6 }}>
               {linked.length > 0 ? (
-                linked.map(l => (
-                  <span key={l.id} title={l.ticketTitle ?? undefined}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "#0284C7", fontWeight: 600 }}>
-                    <Link2 style={{ width: 11, height: 11 }} />
-                    {l.ticketWbs ?? l.ticketId}
-                    {l.ticketTitle && <span style={{ color: "#6B6458", fontWeight: 400 }}>{l.ticketTitle}</span>}
-                  </span>
-                ))
+                // このチップは「紐付いたチケット」なので、飛び先は GitHub ではなく Dev Ticket 側。
+                // PR そのものへはタイトル側のリンクから飛べる。
+                linked.map(l => {
+                  const wbs = l.ticketWbs ?? "";
+                  const clickable = !!(wbs && projectSlug);
+                  return (
+                    <button key={l.id} type="button"
+                      title={clickable ? `チケット ${wbs} を開く` : (l.ticketTitle ?? undefined)}
+                      disabled={!clickable}
+                      onClick={() => clickable && navigate(`/${encodeURIComponent(projectSlug)}/${encodeURIComponent(wbs)}`)}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "#0284C7", fontWeight: 600, background: "transparent", border: "none", padding: 0, cursor: clickable ? "pointer" : "default", textDecoration: clickable ? "underline" : "none", textUnderlineOffset: 2 }}>
+                      <Link2 style={{ width: 11, height: 11 }} />
+                      {wbs || l.ticketId}
+                      {l.ticketTitle && <span style={{ color: "#6B6458", fontWeight: 400, textDecoration: "none" }}>{l.ticketTitle}</span>}
+                    </button>
+                  );
+                })
               ) : pull.detectedWbs.length > 0 ? (
                 <span style={{ fontSize: 11, color: "#A09790" }}>
                   検出: {pull.detectedWbs.join(", ")}

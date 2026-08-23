@@ -122,8 +122,10 @@ export function mergeBlockReason(p: Pick<GithubPull, "draft" | "merged" | "merge
     case "unknown": return "GitHub側で判定中です";
     default:
       if (p.mergeable === false) return "コンフリクトがあります";
-      // 一覧では mergeable_state を取っていないため、詳細を開くまで判定できない
-      return p.mergeableState == null ? "詳細を開くとマージできます" : null;
+      // 一覧の下位（実データを引いていない分）は状態が不明。
+      // ここでボタンを塞ぐと「詳細を開かないとマージできない」体験になるので通す。
+      // マージ可否はサーバー側の merge が実行前に必ず引き直して判定する。
+      return null;
   }
 }
 

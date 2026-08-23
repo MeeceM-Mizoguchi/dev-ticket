@@ -558,13 +558,34 @@ async function installCallback(req: any, res: any) {
   const { installation_id: installationId, state, setup_action: setupAction } = req.query ?? {};
   if (!installationId) return fail("インストールがキャンセルされました");
 
-  const parsed = verifyState(String(state ?? ""));
-  if (!parsed) return fail("接続情報の検証に失敗しました。もう一度お試しください");
-
   if (!appConfigured()) return fail("サーバーに GitHub App が設定されていません（GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY）");
 
   let sb: SupabaseClient;
   try { sb = admin(); } catch { return fail("サーバー設定エラーが発生しました"); }
+
+  // 「リポジトリを追加・変更」→ Save で戻ってきた場合（Redirect on update）、
+  // この着地は Dev Ticket 側の接続ボタンを経由していないので state が付かない。
+  // 接続済みのインストールなら、これは新規接続ではなく更新なので正常系として扱う。
+  const parsed = verifyState(String(state ?? ""));
+  let orgId = parsed?.orgId ?? "";
+  let connectedBy = parsed?.userId ?? null;
+  const isUpdate = !parsed;
+
+  if (!parsed) {
+    const { data: existing } = await sb
+      .from("github_installations")
+      .select("organization_id, connected_by")
+      .eq("installation_id", String(installationId))
+      .maybeSingle();
+    if (existing) {
+      orgId = String((existing as any).organization_id);
+      connectedBy = (existing as any).connected_by ?? null;
+    }
+  }
+
+  if (!orgId) {
+    return fail("接続情報が確認できませんでした。Dev Ticket の「GitHubに接続する」からやり直してください");
+  }
 
   // 失敗の原因を切り分けられるよう、段階ごとに文言を分ける。
   // まとめて catch すると「保存に失敗」としか出せず、GitHub側の認証エラーなのか
@@ -598,24 +619,31 @@ async function installCallback(req: any, res: any) {
     console.error("[github install-callback] repo count failed (非致命):", brief(e));
   }
 
-  // ④ 保存。supabase-js は例外を投げず error を返すので、必ず中身を見る
-  const { error: dbError } = await sb.from("github_installations").upsert({
-    organization_id: parsed.orgId,
+  // ④ 保存。supabase-js は例外を投げず error を返すので、必ず中身を見る。
+  // 更新（リポジトリの追加・変更）のときは、最初に接続した人と日時を上書きしない。
+  const row: Record<string, unknown> = {
+    organization_id: orgId,
     installation_id: String(installationId),
     account_login: account?.account?.login ?? "",
     account_type: account?.account?.type ?? "",
     repo_selection: account?.repository_selection ?? "",
-    connected_by: parsed.userId,
-    connected_at: new Date().toISOString(),
     revoked_at: null,
-  }, { onConflict: "organization_id" });
+  };
+  if (!isUpdate) {
+    row.connected_by = connectedBy;
+    row.connected_at = new Date().toISOString();
+  }
+
+  const { error: dbError } = await sb
+    .from("github_installations").upsert(row, { onConflict: "organization_id" });
 
   if (dbError) {
     console.error("[github install-callback] db upsert failed:", dbError.message);
     return fail(`接続情報の保存に失敗しました / ${dbError.message.slice(0, 300)}`);
   }
 
-  return res.redirect(302, `${back}&github=success&repos=${repoCount}&action=${encodeURIComponent(String(setupAction ?? "install"))}`);
+  const kind = isUpdate ? "updated" : "success";
+  return res.redirect(302, `${back}&github=${kind}&repos=${repoCount}&action=${encodeURIComponent(String(setupAction ?? "install"))}`);
 }
 
 // ── 参照系 ───────────────────────────────────────────────────
@@ -802,18 +830,27 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   const token = await installationToken(ctx.installationId);
   const list = await gh(token, `/repos/${ctx.repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`);
 
-  // 一覧のCI/レビューは件数が多いと重いので、上位20件だけ実データを引く
+  // CI・レビュー・マージ可否は一覧APIでは取れないので、上位15件だけ実データを引く。
+  // mergeable_state を持たせないと一覧のマージボタンが常に無効になり、
+  // 毎回「詳細」を開かせることになるため、ここで一緒に取る。
   const pulls = (list ?? []).map(mapPull);
   const enriched = await Promise.all(pulls.map(async (p: any, i: number) => {
-    if (i >= 20) return p;
+    if (i >= 15) return p;
     try {
-      const [runs, reviews] = await Promise.all([
+      const [detail, runs, reviews] = await Promise.all([
+        gh(token, `/repos/${ctx.repo}/pulls/${p.number}`).catch(() => null),
         p.headSha ? gh(token, `/repos/${ctx.repo}/commits/${p.headSha}/check-runs?per_page=50`).catch(() => null) : null,
         gh(token, `/repos/${ctx.repo}/pulls/${p.number}/reviews?per_page=50`).catch(() => null),
       ]);
       const c = summarizeChecks(runs?.check_runs ?? []);
       const r = summarizeReviews(reviews ?? []);
-      return { ...p, checkState: c.state, checkSummary: c.summary, reviewState: r.state, reviewSummary: r.summary };
+      return {
+        ...p,
+        mergeable: detail?.mergeable ?? p.mergeable,
+        mergeableState: detail?.mergeable_state ?? p.mergeableState,
+        checkState: c.state, checkSummary: c.summary,
+        reviewState: r.state, reviewSummary: r.summary,
+      };
     } catch { return p; }
   }));
 
