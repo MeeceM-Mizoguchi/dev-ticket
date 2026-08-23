@@ -9,6 +9,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { PageLoader } from "@/app/components/shared/PageLoader";
 import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, GithubApiError } from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
@@ -302,7 +303,7 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   // ── 表示 ──────────────────────────────────────────────────
   if (!isAdmin) return <p style={{ fontSize: 12, color: "#A09790" }}>管理者またはプロジェクトマネージャーのみ変更できます。</p>;
   if (!isSupabaseEnabled) return <p style={{ fontSize: 12, color: "#A09790" }}>Supabase未接続のため利用できません。</p>;
-  if (loading) return <p style={{ fontSize: 13, color: "#B0A9A4", padding: "24px 0", textAlign: "center" as const }}>読み込み中...</p>;
+  if (loading) return <PageLoader label="GitHub連携の状態を確認中..." />;
 
   // 8-1-A: サーバー側の設定がまだ
   if (status && !status.appConfigured) {
@@ -326,6 +327,28 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
         : <GithubSetupSteps state={steps} onJump={jumpTo} />}
 
       {error && <Notice tone="warn" title="接続状態を取得できませんでした">{error}</Notice>}
+
+      {/* 接続ボタンを押す前に、App の資格情報が通るかをここで知らせる。
+          通らないまま GitHub へ進むと、戻ってきてから失敗して原因が分からなくなる。 */}
+      {status?.appConfigured && !status.appAuthOk && (
+        <Notice tone="warn" title="GitHub App の資格情報が GitHub に通りませんでした">
+          このまま接続しても失敗します。Vercel の環境変数 <code>GITHUB_APP_ID</code> と{" "}
+          <code>GITHUB_APP_PRIVATE_KEY</code> をご確認ください（秘密鍵は
+          <code>-----BEGIN</code> から <code>-----END</code> までを丸ごと貼り付けます）。
+          {status.appAuthError && (
+            <>
+              <br />
+              <span style={{ fontSize: 11, color: "#B45309" }}>GitHubからの応答: {status.appAuthError}</span>
+            </>
+          )}
+        </Notice>
+      )}
+
+      {status?.appSlugMismatch && (
+        <Notice tone="warn" title="GITHUB_APP_SLUG が実際の App と一致していません">
+          {status.appSlugMismatch}。このままでは接続ボタンから正しい App のインストール画面へ遷移しません。
+        </Notice>
+      )}
 
       {showCollapsed ? null : !steps.installed ? (
         <div ref={connectRef}>
@@ -538,42 +561,66 @@ function ConnectCard({ visibility, connecting, copied, onConnect, onCopyUrl }: {
         閲覧するメンバーに GitHub アカウントは必要ありません。
       </p>
 
-      <div style={{ width: "100%", maxWidth: 560, background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
-        <p style={{ fontSize: 10, fontWeight: 700, color: "#A09790", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 10 }}>接続の流れ</p>
-        {steps.map((text, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "7px 0", borderBottom: i < steps.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
-            <div style={{ width: 20, height: 20, borderRadius: "50%", background: GITHUB_BLACK, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", flexShrink: 0, marginTop: 1 }}>
-              {i + 1}
+      {/* 画面幅を活かすため、広い画面では横2列・狭い画面では自動で縦積みにする */}
+      <div style={{ width: "100%", maxWidth: 1240, display: "flex", flexWrap: "wrap" as const, gap: 14, alignItems: "stretch", marginBottom: 22 }}>
+        <div style={{ flex: "1 1 420px", minWidth: 0, background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "14px 18px" }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: "#A09790", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 10 }}>接続の流れ</p>
+          {steps.map((text, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "7px 0", borderBottom: i < steps.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+              <div style={{ width: 20, height: 20, borderRadius: "50%", background: GITHUB_BLACK, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", flexShrink: 0, marginTop: 1 }}>
+                {i + 1}
+              </div>
+              <div>
+                <p style={{ fontSize: 12, color: "#374151", lineHeight: 1.6 }}>{text}</p>
+                {i === 2 && (
+                  <p style={{ fontSize: 11, color: "#A09790", marginTop: 3, lineHeight: 1.6 }}>
+                    ・「All repositories」＝ 今後追加される分も自動で対象<br />
+                    ・「Only select repositories」＝ 選んだものだけ
+                  </p>
+                )}
+              </div>
             </div>
-            <div>
-              <p style={{ fontSize: 12, color: "#374151", lineHeight: 1.6 }}>{text}</p>
-              {i === 2 && (
-                <p style={{ fontSize: 11, color: "#A09790", marginTop: 3, lineHeight: 1.6 }}>
-                  ・「All repositories」＝ 今後追加される分も自動で対象<br />
-                  ・「Only select repositories」＝ 選んだものだけ
+          ))}
+        </div>
+
+        <div style={{ flex: "1 1 420px", minWidth: 0, display: "flex", flexDirection: "column" as const, gap: 14 }}>
+          <div style={{ background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.22)", borderRadius: 10, padding: "13px 16px" }}>
+            <div style={{ display: "flex", gap: 9 }}>
+              <AlertTriangle style={{ width: 14, height: 14, color: "#D97706", flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>GitHub の管理者権限が必要です</p>
+                <p style={{ fontSize: 11, color: "#92400E", lineHeight: 1.7 }}>
+                  {isPrivate
+                    ? "この操作には、自社 GitHub 組織で App をインストールできる権限（Owner など）が必要です。"
+                    : "この操作には、対象 Organization で App をインストールできる権限（Owner など）が必要です。権限が無い場合は、この画面の URL を管理者に共有して実施してもらってください。"}
                 </p>
-              )}
+                {!isPrivate && (
+                  <button onClick={onCopyUrl}
+                    style={{ marginTop: 8, padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(217,119,6,0.3)", background: "#FFF", color: "#92400E", cursor: "pointer" }}>
+                    {copied ? "✓ コピーしました" : "URLをコピー"}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-        ))}
-      </div>
 
-      <div style={{ width: "100%", maxWidth: 560, background: "#FFFBEB", border: "1px solid rgba(217,119,6,0.22)", borderRadius: 10, padding: "13px 16px", marginBottom: 22 }}>
-        <div style={{ display: "flex", gap: 9 }}>
-          <AlertTriangle style={{ width: 14, height: 14, color: "#D97706", flexShrink: 0, marginTop: 2 }} />
-          <div style={{ flex: 1 }}>
-            <p style={{ fontSize: 12, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>GitHub の管理者権限が必要です</p>
-            <p style={{ fontSize: 11, color: "#92400E", lineHeight: 1.7 }}>
-              {isPrivate
-                ? "この操作には、自社 GitHub 組織で App をインストールできる権限（Owner など）が必要です。"
-                : "この操作には、対象 Organization で App をインストールできる権限（Owner など）が必要です。権限が無い場合は、この画面の URL を管理者に共有して実施してもらってください。"}
-            </p>
-            {!isPrivate && (
-              <button onClick={onCopyUrl}
-                style={{ marginTop: 8, padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(217,119,6,0.3)", background: "#FFF", color: "#92400E", cursor: "pointer" }}>
-                {copied ? "✓ コピーしました" : "URLをコピー"}
-              </button>
-            )}
+          {/* 接続後に何ができるようになるかを先に見せる（右側の余白の活用も兼ねる） */}
+          <div style={{ flex: 1, background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "14px 18px" }}>
+            <p style={{ fontSize: 10, fontWeight: 700, color: "#A09790", letterSpacing: "0.08em", textTransform: "uppercase" as const, marginBottom: 10 }}>接続してできること</p>
+            {[
+              { icon: "🔀", title: "プルリクエストの確認", desc: "オープンなPR・CI状態・レビュー状況をアプリ内で一覧" },
+              { icon: "✅", title: "権限を持つ人だけのマージ", desc: "アサイン計画で「マージ可」にした人だけが実行できる" },
+              { icon: "🔗", title: "チケットとPRの紐付け", desc: "ブランチ名のWBS番号から自動で対応付け" },
+              { icon: "📄", title: "Issue・コミット・ブランチ", desc: "リポジトリの状況をタブで切り替えて確認" },
+            ].map((f, i, arr) => (
+              <div key={f.title} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "7px 0", borderBottom: i < arr.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+                <span style={{ fontSize: 13, lineHeight: 1.4, flexShrink: 0 }}>{f.icon}</span>
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{f.title}</p>
+                  <p style={{ fontSize: 11, color: "#A09790", marginTop: 1, lineHeight: 1.6 }}>{f.desc}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

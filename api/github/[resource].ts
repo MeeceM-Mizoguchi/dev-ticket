@@ -62,17 +62,48 @@ function visibility(): "private" | "public" {
 
 // ── GitHub App の認証 ────────────────────────────────────────
 /**
- * App 自身を名乗る JWT。exp は GitHub の上限が10分なので9分にしている。
- * 秘密鍵は環境変数に1行で入れる都合上、`\n` をエスケープしたまま入っていることがある。
+ * 環境変数に貼られた PEM を整える。
+ * ・Vercel に1行で入れると改行が `\n` のままになる
+ * ・Windows で開いた .pem をコピーすると CRLF が混ざり、Node の PEM パーサが弾く
+ * ・前後に引用符が付いたまま貼られることがある
+ */
+function privateKeyPem(): string {
+  let pem = (process.env.GITHUB_APP_PRIVATE_KEY || "").trim();
+  if ((pem.startsWith('"') && pem.endsWith('"')) || (pem.startsWith("'") && pem.endsWith("'"))) {
+    pem = pem.slice(1, -1);
+  }
+  pem = pem.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // 環境変数の入力欄に貼ったときに改行が空白へ潰されることがある。
+  // ヘッダは残っているのに改行が1つも無い場合は、64文字ごとに折り返して組み直す。
+  if (!pem.includes("\n")) {
+    const m = pem.match(/-----BEGIN ([A-Z ]+)-----([\s\S]*)-----END ([A-Z ]+)-----/);
+    if (m) {
+      const body = m[2].replace(/\s+/g, "");
+      const lines = body.match(/.{1,64}/g) ?? [];
+      pem = `-----BEGIN ${m[1]}-----\n${lines.join("\n")}\n-----END ${m[3]}-----\n`;
+    }
+  }
+  return pem;
+}
+
+/**
+ * App 自身を名乗る JWT。
+ * exp は GitHub 側の上限がちょうど10分なので、境界で弾かれないよう余裕を持たせている
+ * （iat を60秒戻したうえで exp は +7分。iat からの幅は8分）。
  */
 function appJwt(): string {
   const appId = process.env.GITHUB_APP_ID!;
-  const pem = (process.env.GITHUB_APP_PRIVATE_KEY || "").replace(/\\n/g, "\n");
   const now = Math.floor(Date.now() / 1000);
   const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
-  const data = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({ iat: now - 60, exp: now + 540, iss: appId })}`;
-  const sig = crypto.sign("RSA-SHA256", Buffer.from(data), pem).toString("base64url");
-  return `${data}.${sig}`;
+  const data = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({ iat: now - 60, exp: now + 420, iss: appId })}`;
+  try {
+    const sig = crypto.sign("RSA-SHA256", Buffer.from(data), privateKeyPem()).toString("base64url");
+    return `${data}.${sig}`;
+  } catch (e) {
+    // 鍵の形式が壊れているとここで落ちる。原因が分かる文言にして上へ投げる
+    throw new GithubError(500, `GITHUB_APP_PRIVATE_KEY を秘密鍵として読み込めませんでした（${(e as Error)?.message ?? ""}）`);
+  }
 }
 
 /**
@@ -480,32 +511,61 @@ async function installCallback(req: any, res: any) {
   const parsed = verifyState(String(state ?? ""));
   if (!parsed) return fail("接続情報の検証に失敗しました。もう一度お試しください");
 
+  if (!appConfigured()) return fail("サーバーに GitHub App が設定されていません（GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY）");
+
   let sb: SupabaseClient;
   try { sb = admin(); } catch { return fail("サーバー設定エラーが発生しました"); }
 
+  // 失敗の原因を切り分けられるよう、段階ごとに文言を分ける。
+  // まとめて catch すると「保存に失敗」としか出せず、GitHub側の認証エラーなのか
+  // DB側のエラーなのかが管理者に分からない。
+  const brief = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 300);
+
+  // ① インストール先のアカウント情報（App自身のJWTでしか引けない）
+  let account: any;
   try {
-    const token = await installationToken(String(installationId));
-    const info = await gh(token, "/installation/repositories?per_page=1");
-    // インストール先のアカウント情報は App 自身(JWT)でしか引けない
-    const account = await gh(appJwt(), `/app/installations/${installationId}`);
-
-    await sb.from("github_installations").upsert({
-      organization_id: parsed.orgId,
-      installation_id: String(installationId),
-      account_login: account?.account?.login ?? "",
-      account_type: account?.account?.type ?? "",
-      repo_selection: account?.repository_selection ?? "",
-      connected_by: parsed.userId,
-      connected_at: new Date().toISOString(),
-      revoked_at: null,
-    }, { onConflict: "organization_id" });
-
-    const count = info?.total_count ?? 0;
-    return res.redirect(302, `${back}&github=success&repos=${count}&action=${encodeURIComponent(String(setupAction ?? "install"))}`);
+    account = await gh(appJwt(), `/app/installations/${installationId}`);
   } catch (e) {
-    console.error("[github install-callback]", (e as Error)?.message);
-    return fail("接続情報の保存に失敗しました");
+    console.error("[github install-callback] app auth failed:", brief(e));
+    return fail(`GitHubの認証に失敗しました。App ID と秘密鍵の設定をご確認ください / ${brief(e)}`);
   }
+
+  // ② installation token（ここが通れば以後のAPI呼び出しも通る）
+  let token: string;
+  try {
+    token = await installationToken(String(installationId));
+  } catch (e) {
+    console.error("[github install-callback] installation token failed:", brief(e));
+    return fail(`インストールのトークンを取得できませんでした / ${brief(e)}`);
+  }
+
+  // ③ リポジトリ数は表示用なので、取れなくても接続自体は成立させる
+  let repoCount = 0;
+  try {
+    const info = await gh(token, "/installation/repositories?per_page=1");
+    repoCount = info?.total_count ?? 0;
+  } catch (e) {
+    console.error("[github install-callback] repo count failed (非致命):", brief(e));
+  }
+
+  // ④ 保存。supabase-js は例外を投げず error を返すので、必ず中身を見る
+  const { error: dbError } = await sb.from("github_installations").upsert({
+    organization_id: parsed.orgId,
+    installation_id: String(installationId),
+    account_login: account?.account?.login ?? "",
+    account_type: account?.account?.type ?? "",
+    repo_selection: account?.repository_selection ?? "",
+    connected_by: parsed.userId,
+    connected_at: new Date().toISOString(),
+    revoked_at: null,
+  }, { onConflict: "organization_id" });
+
+  if (dbError) {
+    console.error("[github install-callback] db upsert failed:", dbError.message);
+    return fail(`接続情報の保存に失敗しました / ${dbError.message.slice(0, 300)}`);
+  }
+
+  return res.redirect(302, `${back}&github=success&repos=${repoCount}&action=${encodeURIComponent(String(setupAction ?? "install"))}`);
 }
 
 // ── 参照系 ───────────────────────────────────────────────────
@@ -514,6 +574,11 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
   const base = {
     appConfigured: appConfigured(),
     visibility: visibility(),
+    // App の資格情報が実際に GitHub に通るか。通らないまま接続に進むと
+    // コールバックで初めて失敗して原因が分からなくなるため、ここで先に確かめる。
+    appAuthOk: false,
+    appAuthError: null as string | null,
+    appSlugMismatch: null as string | null,
     installed: false,
     revoked: false,
     accountLogin: null as string | null,
@@ -525,6 +590,18 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     manageUrl: null as string | null,
   };
   if (!base.appConfigured) return res.status(200).json(base);
+
+  // GET /app は App 自身のJWTでのみ通る。App ID と秘密鍵の組み合わせの検証になる。
+  try {
+    const app = await gh(appJwt(), "/app");
+    base.appAuthOk = true;
+    const expected = process.env.GITHUB_APP_SLUG;
+    if (app?.slug && expected && app.slug !== expected) {
+      base.appSlugMismatch = `GITHUB_APP_SLUG は「${expected}」ですが、この App の実際のスラッグは「${app.slug}」です`;
+    }
+  } catch (e) {
+    base.appAuthError = String((e as Error)?.message ?? e).slice(0, 300);
+  }
 
   const { data } = await sb
     .from("github_installations").select("*").eq("organization_id", orgId).maybeSingle();

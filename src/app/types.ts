@@ -607,6 +607,10 @@ export interface GithubStatus {
   appConfigured: boolean;
   /** GITHUB_APP_VISIBILITY。説明文の出し分けにだけ使う */
   visibility: "private" | "public";
+  /** App ID と秘密鍵の組み合わせが GitHub に通るか（接続前の自己診断） */
+  appAuthOk: boolean;
+  appAuthError: string | null;
+  appSlugMismatch: string | null;
   /** 組織にインストール済みか */
   installed: boolean;
   /** GitHub側でアンインストールされている等、トークンが使えない状態 */

@@ -104,13 +104,11 @@ export function AdminSettingsPage() {
       </div>
 
       {tab === "github" && (
-        <div style={{ maxWidth: 1000 }}>
-          <GithubIntegrationSetting
-            isAdmin={userPermissions.canAccessAdminSettings}
-            orgId={effectiveOrgId}
-            justConnected={justConnectedGithub}
-          />
-        </div>
+        <GithubIntegrationSetting
+          isAdmin={userPermissions.canAccessAdminSettings}
+          orgId={effectiveOrgId}
+          justConnected={justConnectedGithub}
+        />
       )}
 
       {tab === "members" && (
