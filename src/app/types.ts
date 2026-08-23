@@ -610,6 +610,8 @@ export interface GithubStatus {
   /** App ID と秘密鍵の組み合わせが GitHub に通るか（接続前の自己診断） */
   appAuthOk: boolean;
   appAuthError: string | null;
+  /** 鍵が読めないときの切り分け用（値そのものは含まない） */
+  appKeyShape: string | null;
   appSlugMismatch: string | null;
   /** 組織にインストール済みか */
   installed: boolean;

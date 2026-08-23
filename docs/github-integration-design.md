@@ -862,7 +862,8 @@ Vercel の環境変数:
 |---|---|
 | `GITHUB_APP_ID` | App ID |
 | `GITHUB_APP_SLUG` | インストールURLに使う App のスラッグ |
-| `GITHUB_APP_PRIVATE_KEY` | PEM 秘密鍵（改行は `\n` エスケープ） |
+| `GITHUB_APP_PRIVATE_KEY` | PEM 秘密鍵。改行そのまま／`\n` エスケープ／base64 のいずれでも可 |
+| `GITHUB_APP_PRIVATE_KEY_BASE64` | 上の代わりに使える。PEM 全体を base64 にした1行。**改行が壊れる環境ではこちらが確実**（設定されていればこちらが優先される） |
 | `GITHUB_APP_VISIBILITY` | `private` または `public`（既定 `public`）。**画面の文言だけ**を切り替える |
 | `PUBLIC_URL` | 既存。コールバックURLの組み立てに使用 |
 
