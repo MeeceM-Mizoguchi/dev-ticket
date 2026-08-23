@@ -332,13 +332,30 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
           通らないまま GitHub へ進むと、戻ってきてから失敗して原因が分からなくなる。 */}
       {status?.appConfigured && !status.appAuthOk && (
         <Notice tone="warn" title="GitHub App の資格情報が GitHub に通りませんでした">
-          このまま接続しても失敗します。Vercel の環境変数 <code>GITHUB_APP_ID</code> と{" "}
-          <code>GITHUB_APP_PRIVATE_KEY</code> をご確認ください（秘密鍵は
-          <code>-----BEGIN</code> から <code>-----END</code> までを丸ごと貼り付けます）。
+          このまま接続しても失敗します。Vercel の環境変数をご確認ください。
           {status.appAuthError && (
             <>
               <br />
-              <span style={{ fontSize: 11, color: "#B45309" }}>GitHubからの応答: {status.appAuthError}</span>
+              <span style={{ fontSize: 11, color: "#B45309" }}>応答: {status.appAuthError}</span>
+            </>
+          )}
+          {status.appKeyShape && (
+            <>
+              <br />
+              <span style={{ fontSize: 11, color: "#B45309", fontFamily: "var(--font-mono)" }}>
+                鍵の状態: {status.appKeyShape}
+              </span>
+            </>
+          )}
+          {/* 改行が潰れて鍵が読めないケースが多いので、確実な入れ方を画面に出しておく */}
+          {status.appAuthError?.includes("秘密鍵") && (
+            <>
+              <br />
+              <span style={{ fontSize: 11, color: "#92400E" }}>
+                改行が失われている可能性があります。PEM をそのまま貼る代わりに、base64 にした1行の文字列を{" "}
+                <code>GITHUB_APP_PRIVATE_KEY_BASE64</code> に登録する方法でも動きます（PowerShell:{" "}
+                <code>[Convert]::ToBase64String([IO.File]::ReadAllBytes("鍵のパス.pem"))</code>）。
+              </span>
             </>
           )}
         </Notice>

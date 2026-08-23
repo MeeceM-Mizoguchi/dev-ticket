@@ -68,23 +68,63 @@ function visibility(): "private" | "public" {
  * ・前後に引用符が付いたまま貼られることがある
  */
 function privateKeyPem(): string {
-  let pem = (process.env.GITHUB_APP_PRIVATE_KEY || "").trim();
+  // PEM は改行が意味を持つため、環境変数に貼る過程で壊れやすい。
+  // 壊れない入れ方として、PEM 全体を base64 にしたものを
+  // GITHUB_APP_PRIVATE_KEY_BASE64 に入れる方法も受け付ける（こちらを優先）。
+  const b64 = (process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || "").trim();
+  let pem = b64
+    ? Buffer.from(b64.replace(/\s+/g, ""), "base64").toString("utf8")
+    : (process.env.GITHUB_APP_PRIVATE_KEY || "").trim();
+
   if ((pem.startsWith('"') && pem.endsWith('"')) || (pem.startsWith("'") && pem.endsWith("'"))) {
     pem = pem.slice(1, -1);
   }
-  pem = pem.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // GITHUB_APP_PRIVATE_KEY 側に base64 を入れられていた場合も拾う
+  if (!pem.includes("-----BEGIN") && pem.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(pem)) {
+    const decoded = Buffer.from(pem.replace(/\s+/g, ""), "base64").toString("utf8");
+    if (decoded.includes("-----BEGIN")) pem = decoded;
+  }
+
+  pem = pem.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 
   // 環境変数の入力欄に貼ったときに改行が空白へ潰されることがある。
-  // ヘッダは残っているのに改行が1つも無い場合は、64文字ごとに折り返して組み直す。
-  if (!pem.includes("\n")) {
-    const m = pem.match(/-----BEGIN ([A-Z ]+)-----([\s\S]*)-----END ([A-Z ]+)-----/);
-    if (m) {
-      const body = m[2].replace(/\s+/g, "");
-      const lines = body.match(/.{1,64}/g) ?? [];
-      pem = `-----BEGIN ${m[1]}-----\n${lines.join("\n")}\n-----END ${m[3]}-----\n`;
-    }
+  // 見出しは残っているのに改行が足りない場合は、64文字ごとに折り返して組み直す。
+  const m = pem.match(/-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END ([A-Z0-9 ]+)-----/);
+  if (m && (pem.match(/\n/g) ?? []).length < 3) {
+    const body = m[2].replace(/\s+/g, "");
+    const lines = body.match(/.{1,64}/g) ?? [];
+    pem = `-----BEGIN ${m[1]}-----\n${lines.join("\n")}\n-----END ${m[3]}-----\n`;
+  } else if (m && !pem.endsWith("\n")) {
+    pem += "\n";
   }
   return pem;
+}
+
+/**
+ * 鍵の「形」だけを説明する。値そのものは絶対に出さない。
+ * DECODER エラーは原因が分からないので、どこが壊れているかを管理者に伝えるためのもの。
+ */
+function privateKeyShape(): string {
+  const b64 = (process.env.GITHUB_APP_PRIVATE_KEY_BASE64 || "").trim();
+  const raw = (process.env.GITHUB_APP_PRIVATE_KEY || "").trim();
+  const source = b64 ? "GITHUB_APP_PRIVATE_KEY_BASE64" : "GITHUB_APP_PRIVATE_KEY";
+  const value = b64 || raw;
+  if (!value) return `${source} が空です`;
+
+  const pem = privateKeyPem();
+  const head = pem.match(/-----BEGIN ([A-Z0-9 ]+)-----/);
+  const body = pem.replace(/-----[^-]*-----/g, "").replace(/\s+/g, "");
+  const parts = [
+    `変数=${source}`,
+    `長さ=${value.length}`,
+    head ? `見出し=${head[1]}` : "見出し=見つかりません",
+    `終端=${/-----END [A-Z0-9 ]+-----/.test(pem) ? "あり" : "なし"}`,
+    `改行=${(pem.match(/\n/g) ?? []).length}`,
+    `本文=${body.length}文字`,
+    `本文がbase64として妥当=${body.length > 0 && /^[A-Za-z0-9+/=]+$/.test(body) ? "はい" : "いいえ"}`,
+  ];
+  return parts.join(" / ");
 }
 
 /**
@@ -578,6 +618,8 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     // コールバックで初めて失敗して原因が分からなくなるため、ここで先に確かめる。
     appAuthOk: false,
     appAuthError: null as string | null,
+    /** 鍵が読めないときの切り分け用。値そのものは含めない */
+    appKeyShape: null as string | null,
     appSlugMismatch: null as string | null,
     installed: false,
     revoked: false,
@@ -601,6 +643,7 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     }
   } catch (e) {
     base.appAuthError = String((e as Error)?.message ?? e).slice(0, 300);
+    try { base.appKeyShape = privateKeyShape(); } catch { /* 形の説明で落ちても本題ではないので握る */ }
   }
 
   const { data } = await sb

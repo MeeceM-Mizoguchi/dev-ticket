@@ -31,3 +31,7 @@ docs/BRU7-035-turn-setup.md
 docs/sales-app-screens.md
 docs/営業アプリ設計書_v1.0.docx
 dev-ticket.2026-08-22.private-key.pem
+# 秘密鍵は名前を問わず追跡しない（GitHub App の鍵を再発行したときの取りこぼし防止）
+*.pem
+*.key
+*private-key*
