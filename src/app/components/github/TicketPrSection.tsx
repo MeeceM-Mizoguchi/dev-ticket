@@ -7,9 +7,15 @@
 //  ・ブランチ名に WBS 番号を含む「まだPRが無いブランチ」を候補として出し、その場でPRを作る
 //  ・「リリース待ち」以降は、紐付いたPRをこの画面からマージできる
 //  ・PRが発生しないチケット（仕様確認・ドキュメント等）は「PR不要」で未紐付けアラートを畳める
+//
+// BRU13-015：
+//  ・紐付いたPRの行からリンクをコピーできるようにした
+//  ・PRが1件も紐付いていないときは、開いた時点で紐付け候補を出す。
+//    「PRを紐付ける」を押すまで何も始まらない状態を無くすため
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { GitBranch, GitPullRequest, Github, Link2, Plus, X } from "lucide-react";
+import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Plus, X } from "lucide-react";
+import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -134,20 +140,50 @@ export function TicketPrSection({
     return () => { alive = false; };
   }, [loaded, level, wbs, pullLinks.length, projectId, ticketStatus]);
 
-  const openPicker = async () => {
-    setPicking(true);
-    if (available) return;
+  // auto … 開いた直後の自動表示。
+  // 押していないのに読み込み中の枠を出して畳むとチカつくので、取れてから出す。
+  // 同じ理由で、失敗もトーストにしない（押していない処理の失敗は直しようがない）
+  const openPicker = useCallback(async (auto = false) => {
+    if (!auto) setPicking(true);
+    if (available) { setPicking(true); return; }
     try {
-      const r = await fetchPulls(projectId);
+      // CI・レビューの状態はこの一覧では使わないので軽い方を叩く
+      const r = await fetchPulls(projectId, { light: true });
       // WBSが一致するPRを先頭に持ってくる
       const sorted = wbsKey
         ? [...r.pulls].sort((a, b) => Number(b.detectedWbs.includes(wbsKey)) - Number(a.detectedWbs.includes(wbsKey)))
         : r.pulls;
       setAvailable(sorted);
+      // 自動表示で候補が0件なら、何も出さない
+      if (!auto || sorted.length > 0) setPicking(true);
     } catch (e) {
-      toast(e instanceof GithubApiError ? e.message : "PRを取得できませんでした", "error");
+      if (!auto) toast(e instanceof GithubApiError ? e.message : "PRを取得できませんでした", "error");
       setPicking(false);
     }
+  }, [available, projectId, wbsKey, toast]);
+
+  // PRがまだ1件も紐付いていないなら、開いた（リロードした）時点で候補を出す。
+  // 候補の選択待ち（大文字小文字違い）が出ているときは、そちらを先に決めさせたいので出さない。
+  // 一度閉じたら開き直さないよう、チケットごとに1回だけ走らせる
+  const autoPickedRef = useRef("");
+  useEffect(() => {
+    if (!loaded || level !== "merge") return;
+    if (pullLinks.length > 0 || candidateGroups.length > 0) return;
+    if (autoPickedRef.current === ticketId) return;
+    autoPickedRef.current = ticketId;
+    void openPicker(true);
+  }, [loaded, level, ticketId, pullLinks.length, candidateGroups.length, openPicker]);
+
+  // コピーできたことをその場で返す。行ごとに出し分けたいので対象のリンクIDを持つ
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const copiedTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) window.clearTimeout(copiedTimer.current); }, []);
+
+  const handleCopyUrl = async (id: number, url: string) => {
+    if (!await copyText(url)) { toast("リンクをコピーできませんでした", "error"); return; }
+    setCopiedId(id);
+    if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopiedId(null), 1600);
   };
 
   const handleLink = async (number: number) => {
@@ -287,7 +323,7 @@ export function TicketPrSection({
               <GitPullRequest style={{ width: 11, height: 11 }} />
               {preparingCreate ? "準備中..." : "PRを作成"}
             </button>
-            <button onClick={openPicker} disabled={busy}
+            <button onClick={() => void openPicker()} disabled={busy}
               style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: busy ? "default" : "pointer" }}>
               <Plus style={{ width: 11, height: 11 }} />PRを紐付ける
             </button>
@@ -408,6 +444,15 @@ export function TicketPrSection({
                     自動検出（{l.autoReason}）
                   </span>
                 )}
+                {/* レビュー依頼やチャットへ貼るため、PRのURLをここからコピーできるようにする */}
+                {l.url && (
+                  <button onClick={() => void handleCopyUrl(l.id, l.url!)} title="PRのリンクをコピー"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", fontSize: 10, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: copiedId === l.id ? "#059669" : BLACK, cursor: "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
+                    {copiedId === l.id
+                      ? <><Check style={{ width: 11, height: 11 }} />コピーしました</>
+                      : <><Copy style={{ width: 11, height: 11 }} />リンクをコピー</>}
+                  </button>
+                )}
                 {/* マージはリリース待ち以降だけ。レビュー前に誤って入れられないようにする */}
                 {mergeable && (
                   <button onClick={() => openMerge(l.number)} disabled={busy || preparingMerge !== null}
@@ -441,7 +486,9 @@ export function TicketPrSection({
       {picking && (
         <div style={{ marginTop: 10, border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, overflow: "hidden" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", background: "#F4F5F6" }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>オープンなPRから選ぶ</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>
+              紐付け候補（オープンなPR）{wbsKey && "・このチケットの番号を含むものが上"}
+            </span>
             <button onClick={() => setPicking(false)}
               style={{ background: "none", border: "none", cursor: "pointer", color: "#B0A9A4", display: "flex" }}>
               <X style={{ width: 12, height: 12 }} />

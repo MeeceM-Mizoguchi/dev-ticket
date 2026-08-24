@@ -1368,11 +1368,16 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   const token = await installationToken(ctx.installationId);
   const list = await gh(token, `/repos/${ctx.repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`);
 
+  // light=1 … 番号・タイトル・検出WBSだけあればよい呼び出し（チケット詳細の紐付け候補）。
+  // チケットを開くたびに走るため、CI・レビューの取得（PR1件あたり3リクエスト）と
+  // リリース反映は行わない。GitHub API の呼び出し回数を抑えるためのもの
+  const light = req.query?.light === "1" || req.query?.light === 1;
+
   // CI・レビュー・マージ可否は一覧APIでは取れないので、上位15件だけ実データを引く。
   // mergeable_state を持たせないと一覧のマージボタンが常に無効になり、
   // 毎回「詳細」を開かせることになるため、ここで一緒に取る。
   const pulls = (list ?? []).map(mapPull);
-  const enriched = await Promise.all(pulls.map(async (p: any, i: number) => {
+  const enriched = light ? pulls : await Promise.all(pulls.map(async (p: any, i: number) => {
     if (i >= 15) return p;
     try {
       const [detail, runs, reviews] = await Promise.all([
@@ -1395,7 +1400,7 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   await autoLink(sb, ctx.id, enriched);
   // 一覧を開いた時点でマージ済みのPRを拾い直す。
   // 「リリース待ち」が無ければ GitHub は叩かないので、通常は追加の負荷にならない
-  await syncReleasesNow(sb, ctx.id);
+  if (!light) await syncReleasesNow(sb, ctx.id);
   const links = await loadLinksForProject(sb, ctx.id);
   return res.status(200).json({ pulls: enriched, level: ctx.level, repo: ctx.repo, links });
 }
