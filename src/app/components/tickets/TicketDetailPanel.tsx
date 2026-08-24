@@ -456,7 +456,7 @@ export function TicketDetailPanel({
 
   // 関連PR（BRU13-013）。リリースノートに追加したのにPRが紐付いていないチケットを取り残さないための状態。
   // 判定材料は TicketPrSection が持っているので、そこから上げてもらう
-  const [prState, setPrState] = useState<TicketPrState>({ loaded: false, level: "none", pullCount: 0 });
+  const [prState, setPrState] = useState<TicketPrState>({ ticketId: "", loaded: false, settled: false, level: "none", pullCount: 0 });
   const [prLinkWaived, setPrLinkWaived] = useState(ticket?.prLinkWaived ?? false);
   /** 「対応完了してリリースノートに追加」を押した直後だけ、関連PRを強調して紐付けを促す */
   const [prGuide, setPrGuide] = useState(false);
@@ -654,9 +654,38 @@ export function TicketDetailPanel({
     }));
   }, [clearLoadTimers, hideLoadOverlay]);
 
+  // 関連PR（GitHub）は TicketPrSection が自前で取りに行くため、下の jobs には並べられない。
+  // 一覧・PR作成候補・紐付け候補が出揃った合図を子から受け取り、本体のクエリと待ち合わせる。
+  // 待たずに外していたので「オーバーレイが消えたあとに関連PRが生えてくる」状態だった（BRU13-016）。
+  // どちらの合図が先に来ても、ここで両方揃っているかを確かめてから解除に進む。
+  const jobsDoneRunRef = useRef(0);
+  const loadTicketIdRef = useRef("");
+  /** 関連PRセクションが描画される（＝合図を待つ）ロードかどうか */
+  const waitingPrRef = useRef(false);
+  const prSettledTicketRef = useRef<string | null>(null);
+
+  const tryFinishInitialLoad = useCallback((runId: number) => {
+    if (!runId || runId !== loadRunIdRef.current) return;
+    if (jobsDoneRunRef.current !== runId) return;
+    if (waitingPrRef.current && prSettledTicketRef.current !== loadTicketIdRef.current) return;
+    finishInitialLoad(runId);
+  }, [finishInitialLoad]);
+
+  const handlePrStateChange = useCallback((s: TicketPrState) => {
+    setPrState(s);
+    if (!s.settled) return;
+    prSettledTicketRef.current = s.ticketId;
+    tryFinishInitialLoad(loadRunIdRef.current);
+  }, [tryFinishInitialLoad]);
+
   const runInitialLoad = useCallback(async (t: SprintTicket) => {
     const runId = ++loadRunIdRef.current;
     clearLoadTimers();
+    jobsDoneRunRef.current = 0;
+    loadTicketIdRef.current = t.id;
+    prSettledTicketRef.current = null;
+    // 関連PRセクションの描画条件と一致させる。出ないなら待たない
+    waitingPrRef.current = isSupabaseEnabled && !!projectId && !!t.id;
 
     if (!isSupabaseEnabled) {
       applyMockBreadcrumbs(t);
@@ -696,8 +725,9 @@ export function TicketDetailPanel({
     await Promise.allSettled(jobs.map(run => run()));
 
     if (runId !== loadRunIdRef.current) return; // 別チケットに切り替わっていたら破棄
-    finishInitialLoad(runId);
-  }, [projectId, sprintId, applyMockBreadcrumbs, clearLoadTimers, finishInitialLoad, hideLoadOverlay,
+    jobsDoneRunRef.current = runId;
+    tryFinishInitialLoad(runId);
+  }, [projectId, sprintId, applyMockBreadcrumbs, clearLoadTimers, finishInitialLoad, hideLoadOverlay, tryFinishInitialLoad,
     reloadTicketFields, loadCommentFiles, loadChildTickets,
     loadBreadcrumbParent, loadBreadcrumbProject, loadBreadcrumbSprint, refreshCategories]);
 
@@ -874,7 +904,7 @@ export function TicketDetailPanel({
     setIsOperationVerified(ticket.isOperationVerified ?? false);
     // チケットを切り替えたら、前のチケットの案内・離脱確認を持ち越さない
     setPrLinkWaived(ticket.prLinkWaived ?? false);
-    setPrState({ loaded: false, level: "none", pullCount: 0 });
+    setPrState({ ticketId: "", loaded: false, settled: false, level: "none", pullCount: 0 });
     setPrGuide(false);
     setShowPrLeaveConfirm(false);
     setShowCompletionOverlay(false);
@@ -3165,7 +3195,7 @@ export function TicketDetailPanel({
                   ticketStatus={status}
                   prLinkWaived={prLinkWaived}
                   guide={prGuide}
-                  onStateChange={setPrState}
+                  onStateChange={handlePrStateChange}
                   onWaiveChange={w => { setPrLinkWaived(w); onUpdated?.(); }}
                   onLinked={() => onUpdated?.()}
                 />

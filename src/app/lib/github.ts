@@ -101,10 +101,14 @@ export function fetchBranches(projectId: string) {
   return call<{ branches: GithubBranch[]; defaultBranch: string; repo: string }>("branches", { query: { projectId } });
 }
 
-/** まだプルリクエストが作られていないブランチ（新しい順） */
-export function fetchPendingBranches(projectId: string) {
+/**
+ * まだプルリクエストが作られていないブランチ（新しい順）。
+ * wbs を渡すと、その番号を含むブランチだけをサーバー側で絞ってから重い判定を掛ける。
+ * チケット詳細のように1チケット分しか使わない場合は必ず渡すこと（応答が大幅に速くなる）
+ */
+export function fetchPendingBranches(projectId: string, wbs?: string) {
   return call<{ branches: GithubPendingBranch[]; defaultBranch: string; repo: string; level: GithubAccessLevel }>(
-    "pending-branches", { query: { projectId } },
+    "pending-branches", { query: { projectId, wbs } },
   );
 }
 

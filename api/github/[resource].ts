@@ -1558,8 +1558,12 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
   const token = await installationToken(ctx.installationId);
   const [owner, name] = ctx.repo.split("/");
 
-  const repoInfo = await gh(token, `/repos/${ctx.repo}`).catch(() => null);
-  const defaultBranch = repoInfo?.default_branch ?? ctx.defaultBranch ?? "main";
+  // チケット詳細から呼ぶときだけ渡ってくる。そのチケットのブランチしか使わないので、
+  // 重い判定を掛ける前にここまで絞る（GitHub画面からの呼び出しは従来どおり全件）
+  const wbsFilter = String(req.query?.wbs ?? "").trim().toUpperCase();
+
+  // 既定ブランチの取得はブランチ走査と依存関係が無いので、待たずに同時に投げる
+  const repoInfoPromise = gh(token, `/repos/${ctx.repo}`).catch(() => null);
 
   type Row = {
     name: string; sha: string; message: string; committedDate: string | null; authorName: string;
@@ -1599,6 +1603,14 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
       prCount: withPr.has(b.name) ? 1 : 0,
     }));
   }
+
+  const repoInfo = await repoInfoPromise;
+  const defaultBranch = repoInfo?.default_branch ?? ctx.defaultBranch ?? "main";
+
+  // 0段目：チケット詳細からの呼び出しは、その番号を含むブランチしか表示に使わない。
+  // ここで先に落としておくと、この後の「取り込み済み判定」(compare は1本につき1リクエスト)が
+  // 最大100本から通常0〜数本に減る。チケットを開いたときの待ち時間はここが支配的だった
+  if (wbsFilter) rows = rows.filter(r => r.name.toUpperCase().includes(wbsFilter));
 
   // 1段目：PR が一度も作られていないブランチだけ残す。
   // 表示は新しい順、新着バナーは先頭を使うので、ここで最終コミット日時の降順に並べ直す
