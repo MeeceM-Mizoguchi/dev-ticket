@@ -512,23 +512,89 @@ export default async function handler(req: any, res: any) {
 
 // ── リリースノートへの自動反映 ───────────────────────────────
 //
-// 「リリース待ち」のチケットのうち、紐付いたPRが既定ブランチへマージ済みのものを
+// 「リリース待ち」のチケットのうち、PRが既定ブランチへマージ済みのものを
 // 「リリース済み」にする。見ているのは GitHub 上のPRの状態だけなので、
 // そのプロジェクトのデプロイ先（Vercel / AWS / オンプレ）に依存しない。
+//
+// 判定材料を ticket_github_links だけに頼らないこと。紐付けは PR一覧
+// （open のみ取得）を開いたときにしか作られないため、GitHub 側でPRを作って
+// そのままマージすると紐付けが1件も残らず、いつまでもリリース待ちのまま
+// 取り残される。ここでは閉じたPRも遡ってブランチ名／タイトルの WBS 番号で
+// 突き合わせ、見つかった紐付けは保存し直す。
 
-/** 1プロジェクトあたりのPR照会の上限。取りこぼしても次回の実行で拾える */
-const MAX_PR_LOOKUPS = 50;
+/**
+ * 走査の深さ。呼ばれる場所によって変える。
+ *
+ * 画面（PR一覧・チケット詳細の関連PR）からは表示を待たせるので浅く。
+ * 「更新の新しい順」に見るのでマージ直後のPRは必ず1ページ目に入る。
+ * 取りこぼしは定期実行と手動実行の深い走査で拾う。
+ */
+interface ReleaseSyncDepth {
+  /** PRを遡るページ数（100件／ページ） */
+  pages: number;
+  /** 走査範囲外だった紐付けを、番号指定で引き直す上限 */
+  lookups: number;
+}
+const SYNC_INTERACTIVE: ReleaseSyncDepth = { pages: 1, lookups: 10 };
+const SYNC_FULL: ReleaseSyncDepth = { pages: 3, lookups: 50 };
+
+/** 番号指定の引き直しを同時に投げる本数 */
+const LOOKUP_CHUNK = 10;
 
 /** 自動実行なので実行者が居ない。監査ログ用の固定ID */
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000000";
 
+/**
+ * 定期実行からの呼び出しか。
+ *
+ * CRON_SECRET を設定してあれば Bearer で突き合わせる（Vercel Cron は設定して
+ * おくと自動で付けてくる）。未設定の環境では突き合わせようがないので、
+ * Vercel Cron が付けるヘッダで判定したうえで警告を残す。
+ * ここで黙って false を返すと定期実行が 401 になり続け、
+ * 「マージしたのにリリース待ちのまま」の原因に気づけないため。
+ */
 function isCronRequest(req: any): boolean {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
   const header: string = req.headers?.authorization || req.headers?.Authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (token.length !== secret.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret));
+
+  if (secret) {
+    if (token.length !== secret.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(secret));
+  }
+
+  const ua = String(req.headers?.["user-agent"] ?? "").toLowerCase();
+  if (req.headers?.["x-vercel-cron"] != null || ua.startsWith("vercel-cron")) {
+    console.warn("[github sync-released] CRON_SECRET が未設定のため、ヘッダだけで定期実行と判定した");
+    return true;
+  }
+  return false;
+}
+
+/** 判定に使うPRの状態 */
+interface PrState {
+  number: number;
+  merged: boolean;
+  base: string;
+  open: boolean;
+  title: string;
+  url: string;
+  /** 自動紐付けの根拠（ブランチ名／タイトルのどちらで WBS を拾ったか） */
+  reason: string | null;
+}
+
+function toPrState(p: any): PrState {
+  const head = p?.head?.ref ?? "";
+  const title = p?.title ?? "";
+  return {
+    number: Number(p?.number ?? 0),
+    merged: !!p?.merged_at,
+    base: p?.base?.ref ?? "",
+    open: p?.state === "open",
+    title,
+    url: p?.html_url ?? "",
+    reason: detectWbs(head, title).reason,
+  };
 }
 
 interface ReleaseSyncDetail {
@@ -544,7 +610,9 @@ async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any
     .eq("github_enabled", true)
     .not("github_repo_full_name", "is", null);
   if (orgId) q = q.eq("organization_id", orgId);
-  const { data: projects } = await q;
+  const { data: projects, error: projectsError } = await q;
+  // 対象0件と「引けなかった」を混同すると、何も起きないのに成功に見えてしまう
+  if (projectsError) throw new Error(projectsError.message);
 
   const details: ReleaseSyncDetail[] = [];
   let released = 0;
@@ -552,7 +620,7 @@ async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any
   for (const p of (projects ?? []) as any[]) {
     const detail: ReleaseSyncDetail = { projectId: p.id, projectName: p.name, released: [] };
     try {
-      await syncProjectReleases(sb, p, detail);
+      await syncProjectReleases(sb, p, detail, SYNC_FULL);
       released += detail.released.length;
     } catch (e) {
       // 1プロジェクトの失敗で全体を止めない（接続が切れている組織などがあり得る）
@@ -565,10 +633,9 @@ async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any
   return res.status(200).json({ ok: true, released, details });
 }
 
-async function syncProjectReleases(sb: SupabaseClient, project: any, detail: ReleaseSyncDetail) {
-  const installationId = await getInstallationId(sb, project.organization_id);
-  const token = await installationToken(installationId);
-
+async function syncProjectReleases(
+  sb: SupabaseClient, project: any, detail: ReleaseSyncDetail, depth: ReleaseSyncDepth,
+) {
   const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", project.id);
   const sprintIds = (sprints ?? []).map(s => (s as any).id);
   if (!sprintIds.length) return;
@@ -577,37 +644,112 @@ async function syncProjectReleases(sb: SupabaseClient, project: any, detail: Rel
   const { data: tickets } = await sb
     .from("sprint_tickets").select("id, wbs, title")
     .in("sprint_id", sprintIds).eq("status", "waiting-release");
+  // 対象が無ければ GitHub は一切叩かない（PR一覧の表示のたびに呼ばれるため）
   if (!tickets?.length) return;
+
+  const installationId = await getInstallationId(sb, project.organization_id);
+  const token = await installationToken(installationId);
+  const repo = String(project.github_repo_full_name ?? "");
 
   const ticketIds = (tickets as any[]).map(t => t.id);
   const { data: links } = await sb
     .from("ticket_github_links").select("ticket_id, number")
     .eq("project_id", project.id).eq("kind", "pull").in("ticket_id", ticketIds);
-  if (!links?.length) return;
 
-  // 同じPRを何度も引かないよう、番号を一意にしてから照会する
-  const numbers = Array.from(new Set((links as any[]).map(l => Number(l.number)))).slice(0, MAX_PR_LOOKUPS);
-  const prState = new Map<number, { merged: boolean; base: string }>();
-  for (const n of numbers) {
-    try {
-      const pr = await gh(token, `/repos/${project.github_repo_full_name}/pulls/${n}`);
-      prState.set(n, { merged: !!pr?.merged_at, base: pr?.base?.ref ?? "" });
-    } catch {
-      // 引けなかったPRは「判定材料が揃っていない」として扱い、次回に持ち越す
+  // ① 更新の新しい順にPRを遡り、WBS番号で突き合わせる。
+  //    紐付けが1件も無いチケットはここで拾う（マージ済みPRは open の一覧に出ないため）。
+  //    リリース待ちのチケットが全て見つかった時点で打ち切る
+  const prState = new Map<number, PrState>();
+  const byWbs = new Map<string, number[]>();
+  const unmatched = new Set(
+    (tickets as any[]).map(t => String(t.wbs ?? "").toUpperCase()).filter(Boolean),
+  );
+  let repoInfo: any = null;
+
+  for (let page = 1; page <= depth.pages; page++) {
+    // 既定ブランチの確認（1ページ目のときだけ）は走査と同時に投げて往復を増やさない
+    const [info, chunk] = await Promise.all([
+      page === 1 ? gh(token, `/repos/${repo}`).catch(() => null) : Promise.resolve(repoInfo),
+      gh(token, `/repos/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`)
+        .catch(() => []),
+    ]);
+    repoInfo = info;
+
+    const list: any[] = Array.isArray(chunk) ? chunk : [];
+    for (const p of list) {
+      const st = toPrState(p);
+      if (!st.number) continue;
+      prState.set(st.number, st);
+      for (const w of detectWbs(p?.head?.ref ?? "", p?.title ?? "").list) {
+        byWbs.set(w, [...(byWbs.get(w) ?? []), st.number]);
+        unmatched.delete(w);
+      }
     }
+    if (list.length < 100 || !unmatched.size) break;
   }
 
-  const defaultBranch = project.github_default_branch || "main";
+  // 既定ブランチはリポジトリ側を正とする（接続時に保存した値が古いことがある）
+  const defaultBranch = repoInfo?.default_branch || project.github_default_branch || "main";
+
+  // ② 明示的に紐付いているのに走査範囲の外だったPRは、番号を指定して引き直す。
+  //    存在しない番号（手で紐付けを間違えた等）は判定から外す。ここで「状態不明」の
+  //    まま残すと、そのチケットが永久にリリース待ちから動かなくなるため
+  const gone = new Set<number>();
+  const missing = Array.from(new Set((links ?? []).map(l => Number((l as any).number))))
+    .filter(n => Number.isInteger(n) && n > 0 && !prState.has(n))
+    .slice(0, depth.lookups);
+  for (let i = 0; i < missing.length; i += LOOKUP_CHUNK) {
+    await Promise.all(missing.slice(i, i + LOOKUP_CHUNK).map(async n => {
+      try {
+        prState.set(n, toPrState(await gh(token, `/repos/${repo}/pulls/${n}`)));
+      } catch (e) {
+        if (e instanceof GithubError && e.status === 404) gone.add(n);
+        // それ以外（レート制限・一時的な失敗）は状態不明のまま次回に持ち越す
+      }
+    }));
+  }
+
   const targets: { id: string; wbs: string; title: string; pulls: number[] }[] = [];
+  const newLinks: Record<string, unknown>[] = [];
 
   for (const t of tickets as any[]) {
-    const mine = (links as any[]).filter(l => l.ticket_id === t.id).map(l => Number(l.number));
-    if (!mine.length) continue;
-    const states = mine.map(n => prState.get(n));
+    const wbs = String(t.wbs ?? "").toUpperCase();
+    const linked = (links ?? [])
+      .filter(l => (l as any).ticket_id === t.id).map(l => Number((l as any).number));
+    const numbers = Array.from(new Set([...linked, ...(wbs ? byWbs.get(wbs) ?? [] : [])]))
+      .filter(n => !gone.has(n));
+    if (!numbers.length) continue;
+
+    const states = numbers.map(n => prState.get(n));
     // 1つでも状態を確認できなかったら見送る（誤って完了扱いにしない）
     if (states.some(s => !s)) continue;
-    if (!states.every(s => s!.merged && s!.base === defaultBranch)) continue;
-    targets.push({ id: t.id, wbs: t.wbs ?? "", title: t.title ?? "", pulls: mine });
+    // まだ開いているPRがあるなら作業の途中とみなして触らない
+    if (states.some(s => s!.open)) continue;
+
+    // マージされずに閉じただけのPR（取り下げ・作り直し）は判定から外す。
+    // 1件でも既定ブランチへ入っていればリリース済みとして良い
+    const merged = (states as PrState[]).filter(s => s.merged && s.base === defaultBranch);
+    if (!merged.length) continue;
+
+    targets.push({
+      id: t.id, wbs: t.wbs ?? "", title: t.title ?? "",
+      pulls: merged.map(m => m.number).sort((a, b) => a - b),
+    });
+    // 走査で見つけた分は紐付けとしても残す（チケットから辿れるようにするため）
+    for (const m of merged) {
+      if (linked.includes(m.number)) continue;
+      newLinks.push({
+        project_id: project.id,
+        ticket_id: t.id,
+        kind: "pull",
+        number: m.number,
+        title: m.title,
+        state: "merged",
+        url: m.url,
+        auto_linked: true,
+        auto_reason: m.reason,
+      });
+    }
   }
   if (!targets.length) return;
 
@@ -620,8 +762,13 @@ async function syncProjectReleases(sb: SupabaseClient, project: any, detail: Rel
     .eq("status", "waiting-release");
   if (error) throw new Error(error.message);
 
+  if (newLinks.length) {
+    await sb.from("ticket_github_links")
+      .upsert(newLinks, { onConflict: "project_id,ticket_id,kind,number" });
+  }
+
   // 一覧の表示に使う紐付けの状態も合わせておく
-  const mergedNumbers = numbers.filter(n => prState.get(n)?.merged);
+  const mergedNumbers = Array.from(new Set(targets.flatMap(t => t.pulls)));
   if (mergedNumbers.length) {
     await sb.from("ticket_github_links").update({ state: "merged" })
       .eq("project_id", project.id).eq("kind", "pull").in("number", mergedNumbers);
@@ -639,6 +786,30 @@ async function syncProjectReleases(sb: SupabaseClient, project: any, detail: Rel
   })));
 
   detail.released = targets.map(t => ({ wbs: t.wbs, title: t.title, pulls: t.pulls }));
+}
+
+/**
+ * 1プロジェクトだけその場で反映する。マージ直後とPR一覧の表示時に呼ぶ。
+ *
+ * 定期実行だけに任せると、Cron の設定漏れやプランの実行間隔の制約で
+ * 「マージしたのにリリース待ちのまま」になるため、人がGitHubを触った
+ * タイミングでも必ず1回は走らせる。表示や操作の本筋は止めない。
+ *
+ * 表示を待たせる経路なので走査は1ページ（＝直近100PR）まで。
+ * リリース待ちのチケットが1件も無ければ GitHub は一切叩かない。
+ */
+async function syncReleasesNow(sb: SupabaseClient, projectId: string) {
+  try {
+    const { data: project } = await sb.from("projects")
+      .select("id, name, organization_id, github_repo_full_name, github_default_branch")
+      .eq("id", projectId).maybeSingle();
+    if (!project || !(project as any).github_repo_full_name) return;
+    await syncProjectReleases(sb, project, {
+      projectId, projectName: (project as any).name ?? "", released: [],
+    }, SYNC_INTERACTIVE);
+  } catch (e) {
+    console.error("[github sync-released] immediate", projectId, (e as Error)?.message);
+  }
 }
 
 // ── インストール ─────────────────────────────────────────────
@@ -1006,6 +1177,9 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   }));
 
   await autoLink(sb, ctx, enriched);
+  // 一覧を開いた時点でマージ済みのPRを拾い直す。
+  // 「リリース待ち」が無ければ GitHub は叩かないので、通常は追加の負荷にならない
+  await syncReleasesNow(sb, ctx.id);
   const links = await loadLinksForProject(sb, ctx.id);
   return res.status(200).json({ pulls: enriched, level: ctx.level, repo: ctx.repo, links });
 }
@@ -1461,6 +1635,9 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
       },
     });
     await writeLog(sb, ctx, caller, "create_pull", pr?.number ?? 0, "ok", `${head} → ${base} / ${title}`);
+    // 作成した時点で紐付けておく。PR一覧を開かないまま GitHub 側でマージされると、
+    // 紐付けが残らずリリース反映の判定材料が無くなるため
+    if (pr?.number) await autoLink(sb, ctx, [mapPull(pr)]).catch(() => {});
     return res.status(200).json({
       ok: true,
       number: pr?.number ?? null,
@@ -1520,6 +1697,8 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
       },
     });
     await writeLog(sb, ctx, caller, "merge", number, "ok", `${method} / ${result?.sha ?? ""}`);
+    // マージした直後に「リリース待ち → リリース済み」を反映する
+    await syncReleasesNow(sb, ctx.id);
     return res.status(200).json({ ok: true, sha: result?.sha ?? null });
   } catch (e) {
     const m = jaMessage(e);
@@ -1584,6 +1763,9 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
       results.push({ number, ok: false, title, error: message });
     }
   }
+
+  // まとめてマージしたぶんも、最後に1回だけ反映する
+  if (results.some(r => r.ok)) await syncReleasesNow(sb, ctx.id);
 
   return res.status(200).json({
     ok: true,
