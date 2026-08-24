@@ -611,6 +611,20 @@ export interface GithubUnclaimedInstallation {
   repoSelection: string;
 }
 
+/** インストールに足りていない GitHub App の権限（1件） */
+export interface GithubMissingPermission {
+  /** GitHub API 上のキー（contents / pull_requests など） */
+  key: string;
+  /** GitHub の設定画面に出ている表示名 */
+  label: string;
+  /** 必要なレベル（"Read" / "Read & write"） */
+  need: string;
+  /** 今付いているレベル。付いていなければ "なし" */
+  current: string;
+  /** 何に使う権限か */
+  why: string;
+}
+
 /** GET /api/github/status の戻り。画面のセットアップ状態の判定に使う。 */
 export interface GithubStatus {
   /** サーバーに GitHub App の環境変数が入っているか */
@@ -625,6 +639,11 @@ export interface GithubStatus {
   appSlugMismatch: string | null;
   /** GitHub側にインストール済みだが、どの組織にも記録されていないもの（復旧用の候補） */
   unclaimedInstallations: GithubUnclaimedInstallation[];
+  /**
+   * インストールに足りていない App の権限。
+   * 空でなければ、その権限を使う操作（マージなど）は実行しても必ず失敗する。
+   */
+  missingPermissions: GithubMissingPermission[];
   /** 組織にインストール済みか */
   installed: boolean;
   /** GitHub側でアンインストールされている等、トークンが使えない状態 */

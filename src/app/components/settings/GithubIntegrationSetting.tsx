@@ -407,6 +407,32 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
         </Notice>
       )}
 
+      {/* 権限が足りないと、閲覧はできるのにマージだけが必ず失敗する。
+          実行して初めて分かる状態にしないよう、ここで先に出す */}
+      {(status?.missingPermissions?.length ?? 0) > 0 && (
+        <Notice tone="warn" title="GitHub App の権限が不足しています">
+          次の権限が足りないため、その操作は実行しても必ず失敗します。
+          <br />
+          {status!.missingPermissions.map(p => (
+            <span key={p.key} style={{ display: "block", marginTop: 4, fontSize: 11 }}>
+              ・<strong>{p.label}</strong>：{p.current} → <strong>{p.need}</strong> が必要（{p.why}）
+            </span>
+          ))}
+          <br />
+          GitHub App の設定で権限を変更したあと、<strong>インストール画面で更新を承認</strong>してください。
+          App 側を変えただけでは反映されません。
+          {status!.manageUrl && (
+            <>
+              {" "}
+              <a href={status!.manageUrl} target="_blank" rel="noopener noreferrer"
+                style={{ color: "#92400E", fontWeight: 700, textDecoration: "underline" }}>
+                インストール設定をひらく
+              </a>
+            </>
+          )}
+        </Notice>
+      )}
+
       {!steps.installed ? (
         <div ref={connectRef}>
           {/* GitHub側にはインストール済みなのに、こちらに記録が無い状態からの復旧 */}

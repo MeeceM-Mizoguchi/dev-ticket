@@ -56,6 +56,8 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   const [merging, setMerging] = useState(false);
   const [result, setResult] = useState<GithubBulkMergeResult | null>(null);
   const [error, setError] = useState("");
+  /** マージ自体は終わったが、一覧の取り直しだけが失敗した状態 */
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const [order, setOrder] = useState<GithubPull[]>(() => inCreatedOrder(pulls));
 
   // 選択が変わったら並びも作り直す。並べ替えの途中で作り直さないよう、
@@ -86,16 +88,24 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   const handleRun = async () => {
     setMerging(true);
     setError("");
+    let r: GithubBulkMergeResult;
     try {
-      const r = await onMerge(order.map(p => p.number), method);
-      saveMergeMethod(method);
-      setResult(r);
-      await onDone();
+      r = await onMerge(order.map(p => p.number), method);
     } catch (e) {
       setError((e as Error)?.message ?? "マージに失敗しました。");
-    } finally {
       setMerging(false);
+      return;
     }
+    saveMergeMethod(method);
+    setResult(r);
+    // 一覧の取り直しに失敗しても、実行済みの結果は必ず読ませる。
+    // ここで例外を上の catch に流すと、結果の代わりにエラーだけが出てしまう
+    try {
+      await onDone();
+    } catch {
+      setRefreshFailed(true);
+    }
+    setMerging(false);
   };
 
   // 実行後は結果表示だけにする（同じ内容を二度実行させない）
@@ -105,7 +115,9 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
         footer={<BtnSecondary onClick={onClose}>閉じる</BtnSecondary>}>
         <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
           <p style={{ fontSize: 13, color: "#1A1714" }}>
-            <strong style={{ color: "#059669" }}>{result.merged}件</strong> をマージしました
+            {result.merged > 0
+              ? <><strong style={{ color: "#059669" }}>{result.merged}件</strong> をマージしました</>
+              : <>マージできたものはありません</>}
             {result.failed > 0 && <>／<strong style={{ color: "#DC2626" }}>{result.failed}件</strong> は失敗しました</>}
           </p>
           <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "hidden" }}>
@@ -121,10 +133,24 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
               </div>
             ))}
           </div>
-          {result.failed > 0 && (
+          {/* 「前のマージの影響で後続が失敗した」の説明は、実際に1件でも通ったときだけ意味を持つ。
+              1件も通っていないときに出すと、原因の見当違いな方へ誘導してしまう */}
+          {result.failed > 0 && result.merged > 0 && (
             <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
               前のマージでマージ先が進むため、後続がコンフリクトになることがあります。
               失敗した分は一覧を更新してから、あらためてお試しください。
+            </p>
+          )}
+          {result.failed > 0 && result.merged === 0 && (
+            <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
+              1件も通っていないため、PRごとの事情ではなく設定側が原因の可能性があります。
+              上の理由が全件で同じ場合は、管理者に「外部連携」画面の確認を依頼してください。
+            </p>
+          )}
+          {refreshFailed && (
+            <p style={{ fontSize: 11, color: "#B45309", lineHeight: 1.7 }}>
+              マージの実行は終わっていますが、一覧の取り直しに失敗しました。
+              閉じたあと「更新」を押して最新の状態にしてください。
             </p>
           )}
         </div>
