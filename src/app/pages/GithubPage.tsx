@@ -71,7 +71,12 @@ export function GithubPage() {
   /** コミットタブで見ているブランチ。空なら既定ブランチ（サーバー側でフォールバックする） */
   const [commitBranch, setCommitBranch] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [showBulkMerge, setShowBulkMerge] = useState(false);
+  /**
+   * まとめてマージの対象。開いた時点の選択を「そのまま持つ」。
+   * 選択（selected）から毎回導くと、実行後の一覧取り直しで選択が空になった瞬間に
+   * ダイアログごと消えてしまい、結果表示を読む前に閉じてしまう。
+   */
+  const [bulkTargets, setBulkTargets] = useState<GithubPull[] | null>(null);
 
   // ── プロジェクトの解決 ────────────────────────────────────
   useEffect(() => {
@@ -334,7 +339,7 @@ export function GithubPage() {
                         選択を解除
                       </button>
                     )}
-                    <button onClick={() => setShowBulkMerge(true)} disabled={selected.size === 0}
+                    <button onClick={() => setBulkTargets(selectedPulls)} disabled={selected.size === 0}
                       style={{ padding: "6px 16px", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", background: selected.size ? BLACK : "#E5E7EB", color: selected.size ? "#FFF" : "#9CA3AF", cursor: selected.size ? "pointer" : "not-allowed", whiteSpace: "nowrap" as const }}>
                       まとめてマージする
                     </button>
@@ -377,12 +382,12 @@ export function GithubPage() {
         />
       )}
 
-      {showBulkMerge && selectedPulls.length > 0 && (
+      {bulkTargets && bulkTargets.length > 0 && (
         <BulkMergeDialog
-          pulls={selectedPulls}
+          pulls={bulkTargets}
           repo={repo}
           actorName={userName}
-          onClose={() => setShowBulkMerge(false)}
+          onClose={() => setBulkTargets(null)}
           onMerge={(numbers, method) => mergePullsBulk(project.id, numbers, method)}
           onDone={async () => {
             await loadTab("pulls", true);

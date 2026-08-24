@@ -211,6 +211,18 @@ function jaMessage(e: unknown): { status: number; message: string } {
     if (e.status === 403 && raw.includes("rate limit")) {
       return { status: 429, message: "GitHubのリクエスト上限に達しました。しばらく待ってから「更新」を押してください。" };
     }
+    if (e.status === 403 && raw.includes("archived")) {
+      return { status: 403, message: "リポジトリがアーカイブされているため、書き込み操作はできません。" };
+    }
+    // 「Resource not accessible by integration」＝ GitHub App の権限不足。
+    // 時間をおいても直らないので「再度お試しください」に混ぜず、設定変更へ誘導する。
+    // マージは マージ先ブランチへの書き込みなので Contents: Read & write が要る
+    if (e.status === 403) {
+      return {
+        status: 403,
+        message: "GitHub App に必要な権限がありません。管理者に「外部連携」から App の権限更新（Pull requests と Contents を Read & write）の承認を依頼してください。",
+      };
+    }
     if (e.status === 405 || raw.includes("not mergeable")) {
       return { status: 409, message: "コンフリクトがあるためマージできません。GitHub上で解消してください。" };
     }
@@ -223,6 +235,44 @@ function jaMessage(e: unknown): { status: number; message: string } {
     return { status: 502, message: "GitHubとの通信に失敗しました。時間をおいて再度お試しください。" };
   }
   return { status: 500, message: "処理に失敗しました。時間をおいて再度お試しください。" };
+}
+
+// ── App の権限（インストール単位） ───────────────────────────
+/**
+ * Dev Ticket が使う GitHub App の権限。
+ *
+ * マージは「マージ先ブランチに commit を積む」操作なので、Pull requests だけでなく
+ * **Contents: Read & write** が要る。ここが Read のままだと GitHub は
+ * 403 Resource not accessible by integration を返し、PR の閲覧・作成は通るのに
+ * マージだけが必ず失敗する（原因が画面から分からない）。
+ *
+ * App 側の設定を変えても、インストール側が更新を承認するまで反映されないため、
+ * 判定は App の宣言ではなく「インストールに実際に付いている権限」で行う。
+ */
+const REQUIRED_PERMISSIONS: { key: string; label: string; need: "read" | "write"; why: string }[] = [
+  { key: "metadata", label: "Metadata", need: "read", why: "リポジトリ情報の取得" },
+  { key: "pull_requests", label: "Pull requests", need: "write", why: "PRの作成・マージ・レビュー" },
+  { key: "contents", label: "Contents", need: "write", why: "マージ（マージ先ブランチへの書き込み）" },
+  { key: "issues", label: "Issues", need: "read", why: "Issue一覧" },
+  { key: "checks", label: "Checks", need: "read", why: "CI状態の表示" },
+];
+
+const PERMISSION_RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
+
+export interface MissingPermission { key: string; label: string; need: string; current: string; why: string }
+
+function missingPermissions(perms: Record<string, string> | null | undefined): MissingPermission[] {
+  // 権限が読めなかったときは「不足している」と決めつけない（誤警告を出さない）
+  if (!perms || typeof perms !== "object") return [];
+  return REQUIRED_PERMISSIONS
+    .filter(p => (PERMISSION_RANK[perms[p.key]] ?? 0) < PERMISSION_RANK[p.need])
+    .map(p => ({
+      key: p.key,
+      label: p.label,
+      need: p.need === "write" ? "Read & write" : "Read",
+      current: perms[p.key] === "write" ? "Read & write" : perms[p.key] === "read" ? "Read" : "なし",
+      why: p.why,
+    }));
 }
 
 // ── 呼び出し元の特定 ─────────────────────────────────────────
@@ -1138,6 +1188,11 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
      * 詰まるため、そこから復旧するための候補。
      */
     unclaimedInstallations: [] as { id: string; accountLogin: string; accountType: string; repoSelection: string }[],
+    /**
+     * インストールに足りていない権限。空でなければ、その操作は必ず失敗する。
+     * 実行して初めて分かる状態にしないため、接続状態と並べてここで出す。
+     */
+    missingPermissions: [] as MissingPermission[],
     installed: false,
     revoked: false,
     accountLogin: null as string | null,
@@ -1198,6 +1253,15 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     if (!data.revoked_at) {
       await sb.from("github_installations").update({ revoked_at: new Date().toISOString() }).eq("organization_id", orgId);
     }
+  }
+
+  // 権限は App の宣言ではなくインストール実体を見る（承認前は古いままのため）。
+  // 判定できなくても接続そのものは使えるので、失敗は握って空のままにする
+  if (!revoked) {
+    try {
+      const inst = await gh(appJwt(), `/app/installations/${data.installation_id}`);
+      base.missingPermissions = missingPermissions(inst?.permissions);
+    } catch { /* 診断が出せないだけで本題ではない */ }
   }
 
   return res.status(200).json({

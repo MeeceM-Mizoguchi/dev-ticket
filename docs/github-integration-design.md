@@ -899,9 +899,18 @@ GitHub App は user access token も発行できるため、「自分の GitHub 
 |---|---|---|
 | Metadata | Read | 必須 |
 | Pull requests | **Read & write** | PR閲覧・マージ・レビュー・コメント |
-| Contents | Read | コミット・ブランチ一覧 |
+| Contents | **Read & write** | コミット・ブランチ一覧／**マージ** |
 | Issues | Read | Issue一覧 |
 | Checks | Read | CI状態の表示 |
+
+> **Contents は Read では足りない。**
+> マージ（`PUT /repos/{owner}/{repo}/pulls/{n}/merge`）は「マージ先ブランチに commit を積む」書き込み操作なので、
+> `Contents: Read & write` が必要。Read のままだと GitHub は `403 Resource not accessible by integration` を返し、
+> **PRの閲覧・作成は通るのにマージだけが必ず失敗する**（原因が分かりにくい壊れ方をする）。
+>
+> App 側の権限を変えても、**インストール側が更新を承認するまで反映されない**。
+> 承認漏れを画面から気付けるよう、`GET /api/github/status` が
+> `missingPermissions`（インストールに実際に付いている権限との差分）を返し、外部連携の画面に警告を出す。
 
 Vercel の環境変数:
 
@@ -925,5 +934,5 @@ App 側の設定:
 - Webhook（`pull_request` / `push`）による紐付けとステータスの即時同期
 - 本人名義でのマージ（user access token）
 - マージをトリガーにしたチケットステータスの自動遷移
-- マージ後のブランチ削除（Contents を Read & write にする必要がある）
+- マージ後のブランチ削除
 - コード差分・行コメントの表示
