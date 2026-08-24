@@ -2,8 +2,12 @@
 //
 // 1件ずつ順番に実行するため、途中で失敗しても残りは続行する。
 // 結果は1件ごとに表示し、失敗した理由をその場で読めるようにする。
-import { useState } from "react";
-import { AlertTriangle } from "lucide-react";
+//
+// 並び順は「PRを作った順（古い順）」を既定にする。一覧の並び（更新の新しい順）を
+// そのまま使うと、前のブランチの上に積んで作ったPRが先に来てしまい、
+// 先に入れた側に後続の変更まで含まれてしまう。順番は画面から入れ替えられる。
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AlertTriangle, ChevronDown, ChevronUp, RotateCcw } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, mergeBlockReason } from "@/app/lib/github";
@@ -11,6 +15,33 @@ import type { GithubPull, GithubMergeMethod, GithubBulkMergeResult } from "@/app
 
 const METHODS: GithubMergeMethod[] = ["merge", "squash", "rebase"];
 const BLACK = "#1F2328";
+
+/** 並べ替えの上下ボタン。押せないときは押せないと分かる見た目にする */
+function OrderButton({ label, disabled, onClick, children }: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} title={label} aria-label={label}
+      style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 20, borderRadius: 6, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", color: disabled ? "#D6D1CC" : "#1A1714", cursor: disabled ? "default" : "pointer", padding: 0 }}>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 作られた順（古い順）に並べ替える。
+ * 作成日時が同じ場合はPR番号の小さい方を先にする（番号は必ず作成順に振られるため）。
+ */
+function inCreatedOrder(list: GithubPull[]): GithubPull[] {
+  return [...list].sort((a, b) => {
+    // ISO8601 は文字列比較で時系列順になる
+    const d = (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
+    return d !== 0 ? d : a.number - b.number;
+  });
+}
 
 export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDone }: {
   pulls: GithubPull[];
@@ -25,12 +56,38 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   const [merging, setMerging] = useState(false);
   const [result, setResult] = useState<GithubBulkMergeResult | null>(null);
   const [error, setError] = useState("");
+  const [order, setOrder] = useState<GithubPull[]>(() => inCreatedOrder(pulls));
+
+  // 選択が変わったら並びも作り直す。並べ替えの途中で作り直さないよう、
+  // 見るのは「どのPRが選ばれているか」だけにする
+  const selectionKey = useMemo(
+    () => pulls.map(p => p.number).sort((a, b) => a - b).join(","),
+    [pulls],
+  );
+  useEffect(() => {
+    setOrder(inCreatedOrder(pulls));
+    // pulls そのものを見ると、一覧の再取得のたびに並べ替えが巻き戻る
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey]);
+
+  const isCreatedOrder = useMemo(
+    () => order.map(p => p.number).join(",") === inCreatedOrder(pulls).map(p => p.number).join(","),
+    [order, pulls],
+  );
+
+  const move = (from: number, to: number) => {
+    if (merging || to < 0 || to >= order.length) return;
+    const next = [...order];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setOrder(next);
+  };
 
   const handleRun = async () => {
     setMerging(true);
     setError("");
     try {
-      const r = await onMerge(pulls.map(p => p.number), method);
+      const r = await onMerge(order.map(p => p.number), method);
       saveMergeMethod(method);
       setResult(r);
       await onDone();
@@ -92,11 +149,27 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
           リポジトリ <strong style={{ fontFamily: "var(--font-mono)" }}>{repo}</strong>
         </p>
 
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" as const }}>
+          <p style={{ fontSize: 11, color: "#6B6458", lineHeight: 1.7 }}>
+            <strong>プルリクエストを作った順</strong>に並べています。
+            前のブランチの上に積んで作ったものは、先に作った方から入れてください。
+            <br />
+            右の <ChevronUp style={{ width: 10, height: 10, display: "inline", verticalAlign: "middle" }} />
+            <ChevronDown style={{ width: 10, height: 10, display: "inline", verticalAlign: "middle" }} /> で順番を入れ替えられます。
+          </p>
+          {!isCreatedOrder && (
+            <button type="button" onClick={() => setOrder(inCreatedOrder(pulls))} disabled={merging}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#1A1714", cursor: merging ? "default" : "pointer", whiteSpace: "nowrap" as const }}>
+              <RotateCcw style={{ width: 11, height: 11 }} />作成順に戻す
+            </button>
+          )}
+        </div>
+
         <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "hidden" }}>
-          {pulls.map((p, i) => {
+          {order.map((p, i) => {
             const blocked = mergeBlockReason(p);
             return (
-              <div key={p.number} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 13px", borderBottom: i < pulls.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+              <div key={p.number} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 13px", borderBottom: i < order.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
                 <span style={{ fontSize: 11, color: "#B0A9A4", flexShrink: 0, width: 16 }}>{i + 1}</span>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <p style={{ fontSize: 12, color: "#1A1714" }}>
@@ -108,6 +181,16 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
                     {p.reviewSummary && ` ・ レビュー ${p.reviewSummary}`}
                   </p>
                   {blocked && <p style={{ fontSize: 11, color: "#D97706", marginTop: 2 }}>{blocked}</p>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 3, flexShrink: 0 }}>
+                  <OrderButton label={`#${p.number} を1つ上へ`} disabled={merging || i === 0}
+                    onClick={() => move(i, i - 1)}>
+                    <ChevronUp style={{ width: 13, height: 13 }} />
+                  </OrderButton>
+                  <OrderButton label={`#${p.number} を1つ下へ`} disabled={merging || i === order.length - 1}
+                    onClick={() => move(i, i + 1)}>
+                    <ChevronDown style={{ width: 13, height: 13 }} />
+                  </OrderButton>
                 </div>
               </div>
             );
@@ -130,8 +213,8 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
         <div style={{ display: "flex", gap: 9, padding: "11px 13px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.2)", borderRadius: 9 }}>
           <AlertTriangle style={{ width: 14, height: 14, color: "#DC2626", flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 11, color: "#B91C1C", lineHeight: 1.7 }}>
-            この操作は取り消せません。1件ずつ順番に実行し、途中で失敗しても残りは続行します。<br />
-            前のマージでマージ先が進むため、<strong>後続がコンフリクトになることがあります</strong>。<br />
+            この操作は取り消せません。1件ずつ<strong>上から順番に</strong>実行し、途中で失敗しても残りは続行します。<br />
+            前のマージでマージ先が進むため、<strong>順番を誤ると後続がコンフリクトになることがあります</strong>。<br />
             GitHub 上は Dev Ticket[bot] 名義で記録され、各マージコミットに「{actorName}」が実行者として残ります。
           </p>
         </div>

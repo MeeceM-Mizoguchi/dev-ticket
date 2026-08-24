@@ -4,7 +4,7 @@
 // （黙ってリダイレクトしない＝docs/not-found-page-design.md の方針）。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ExternalLink, RefreshCw, GitPullRequest } from "lucide-react";
+import { ExternalLink, RefreshCw, GitPullRequest, FolderKanban, ChevronRight } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -223,7 +223,24 @@ export function GithubPage() {
 
   return (
     <div style={{ padding: "24px 24px 40px", minWidth: 900 }}>
-      <ProjectSubNav projectSlug={projectSlug ?? project.slug} active="github" marginBottom={16} />
+      {/* パンくず・見出し・タブの並びは他のプロジェクト内ページ（バックログ／議事録など）に合わせる */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+        <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+        </button>
+        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project.name ?? projectSlug ?? ""}</span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>GitHub</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project.name}</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ProjectSubNav projectSlug={projectSlug ?? project.slug} active="github" marginBottom={0} />
+        </div>
+      </div>
 
       {access.loading ? (
         <PageLoader label="読み込み中..." />
