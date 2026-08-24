@@ -99,13 +99,17 @@ export function GithubPage() {
     setApiError("");
     try {
       if (which === "pulls") {
-        const r = await fetchPulls(project.id);
+        // PR一覧と「PR未作成のブランチ」は並行して取り、まとめて反映する。
+        // 別々に反映すると、PRを作った直後に「まだPRが作られていない」古い案内が
+        // 一瞬だけ残り、そのあとマージの表示に切り替わって見えてしまう。
+        // 未作成ブランチは付随情報なので、取れなくても一覧は表示する
+        const [r, pendingBranches] = await Promise.all([
+          fetchPulls(project.id),
+          fetchPendingBranches(project.id).then(p => p.branches).catch(() => [] as GithubPendingBranch[]),
+        ]);
         setPulls(r.pulls); setLinks(r.links); setLevel(r.level); setRepo(r.repo);
+        setPending(pendingBranches);
         setSelected(new Set());
-        // PR未作成のブランチは付随情報なので、取れなくても一覧は表示する
-        fetchPendingBranches(project.id)
-          .then(p => setPending(p.branches))
-          .catch(() => setPending([]));
       } else if (which === "issues") {
         const r = await fetchIssues(project.id);
         setIssues(r.issues); setLevel(r.level); setRepo(r.repo);
@@ -199,7 +203,8 @@ export function GithubPage() {
     if (!project?.id || !mergeTarget) return;
     await mergePull(project.id, mergeTarget.number, method);
     toast(`#${mergeTarget.number} をマージしました`, "success");
-    setLoadedTabs(prev => ({ ...prev, pulls: false }));
+    // loadedTabs は落とさない。落とすと取り直しの間だけページ全体がローダーに変わり、
+    // 進捗を出しているダイアログの裏で表示が二度切り替わって見える
     await loadTab("pulls", true);
   };
 
@@ -380,7 +385,6 @@ export function GithubPage() {
           onClose={() => setShowBulkMerge(false)}
           onMerge={(numbers, method) => mergePullsBulk(project.id, numbers, method)}
           onDone={async () => {
-            setLoadedTabs(prev => ({ ...prev, pulls: false }));
             await loadTab("pulls", true);
           }}
         />
@@ -397,9 +401,10 @@ export function GithubPage() {
           onClose={() => setCreateTarget(null)}
           onCreated={async created => {
             toast(created.number ? `#${created.number} を作成しました` : "プルリクエストを作成しました", "success");
-            // 一覧を取り直すと、ブランチ名のWBS番号からチケットへ自動で紐付く
+            // 一覧を取り直すと、ブランチ名のWBS番号からチケットへ自動で紐付く。
+            // ここは await されていて、終わるまでダイアログは進捗を出したまま開いている。
+            // loadedTabs を落とすとその裏でページ全体がローダーに変わってしまうので触らない
             setTab("pulls");
-            setLoadedTabs(prev => ({ ...prev, pulls: false }));
             await loadTab("pulls", true);
           }}
         />

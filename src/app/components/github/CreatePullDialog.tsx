@@ -23,7 +23,8 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   /** 未作成ブランチの一覧から開いたときに、選択済みにしておくブランチ */
   initialHead?: string;
   onClose: () => void;
-  onCreated: (created: { number: number | null; url: string | null }) => void;
+  /** 一覧の取り直しまで待てるように、Promise を返してよい */
+  onCreated: (created: { number: number | null; url: string | null }) => void | Promise<void>;
 }) {
   const [base, setBase] = useState(defaultBranch || "main");
   const [head, setHead] = useState(initialHead && initialHead !== (defaultBranch || "main") ? initialHead : "");
@@ -31,7 +32,13 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   const [body, setBody] = useState("");
   const [draft, setDraft] = useState(false);
   const [filter, setFilter] = useState("");
-  const [creating, setCreating] = useState(false);
+  /**
+   * idle … 入力中／creating … GitHubへ作成中／refreshing … 呼び出し元が一覧を取り直している最中。
+   * 作成できた時点で閉じてしまうと、一覧が返ってくるまでの間だけ裏の画面が
+   * 「プルリクエスト未作成のブランチ」に戻り、そのあとマージの表示に切り替わって見える。
+   * 最後まで閉じずに進捗を出し続ける。
+   */
+  const [phase, setPhase] = useState<"idle" | "creating" | "refreshing">("idle");
   const [error, setError] = useState("");
   /** ブランチ名から見つけたチケット。タイトルの自動入力に使う */
   const [detected, setDetected] = useState<{ wbs: string; title: string } | null>(null);
@@ -80,30 +87,40 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
       : `対応チケット: ${detected.wbs} ${detected.title}\n${location.origin}/${projectSlug}/${detected.wbs}`);
   }, [detected, titleTouched, projectSlug]);
 
-  const canCreate = !!head && !!title.trim() && head !== base && !creating;
+  const busy = phase !== "idle";
+  const canCreate = !!head && !!title.trim() && head !== base && !busy;
 
   const handleCreate = async () => {
     if (!canCreate) return;
-    setCreating(true);
+    setPhase("creating");
     setError("");
+    let created: { number: number | null; url: string | null };
     try {
       const r = await createPull(projectId, { head, base, title: title.trim(), body, draft });
-      onCreated({ number: r.number, url: r.url });
-      onClose();
+      created = { number: r.number, url: r.url };
     } catch (e) {
       // 失敗しても閉じない。差分が無い・既にPRがある、など理由を読ませる
       setError(e instanceof GithubApiError ? e.message : "プルリクエストを作成できませんでした。");
-      setCreating(false);
+      setPhase("idle");
+      return;
     }
+    // ここから先は作成そのものは成功している。一覧の取り直しが終わってから閉じる
+    setPhase("refreshing");
+    try {
+      await onCreated(created);
+    } catch {
+      // 取り直しの失敗は一覧側で出す。作成は済んでいるのでダイアログは閉じる
+    }
+    onClose();
   };
 
   return (
-    <DialogShell title="プルリクエストを作成" size="lg" onClose={creating ? () => {} : onClose}
+    <DialogShell title="プルリクエストを作成" size="lg" onClose={busy ? () => {} : onClose}
       footer={<>
-        <BtnSecondary onClick={onClose} disabled={creating}>キャンセル</BtnSecondary>
+        <BtnSecondary onClick={onClose} disabled={busy}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleCreate} disabled={!canCreate}
           style={{ padding: "9px 20px", background: canCreate ? BLACK : "#E5E7EB", color: canCreate ? "#fff" : "#9CA3AF", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: canCreate ? "pointer" : "not-allowed" }}>
-          {creating ? "作成中..." : draft ? "Draft で作成する" : "作成する"}
+          {phase === "creating" ? "作成中..." : phase === "refreshing" ? "一覧を更新中..." : draft ? "Draft で作成する" : "作成する"}
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
