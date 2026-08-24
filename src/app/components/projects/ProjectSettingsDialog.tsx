@@ -12,7 +12,7 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { inputCls, labelCls } from "@/app/lib/helpers";
 import { submitOnModEnter } from "@/app/lib/submitKey";
-import { fetchGithubStatus, fetchGithubRepos } from "@/app/lib/github";
+import { fetchGithubStatus, fetchGithubRepos, backfillGithubLinks } from "@/app/lib/github";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
@@ -118,6 +118,13 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
       if (!data || data.length === 0) {
         setSlugError("保存できませんでした。編集権限をご確認ください。");
         return;
+      }
+      // 紐付けたリポジトリの過去PRを1回だけ遡って埋める。
+      // 同じリポジトリで2回目以降はサーバー側が何もせずに返す
+      if (ghRepo) {
+        setSaving(true);
+        try { await backfillGithubLinks(project.id); } catch { /* 穴埋めに失敗しても保存自体は済んでいる */ }
+        setSaving(false);
       }
     }
     // GitHubタブの表示可否をキャッシュしているので、保存したら捨てる
