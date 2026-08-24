@@ -215,11 +215,33 @@ export function GithubPage() {
 
   const isManager = userPermissions.canAccessAdminSettings;
 
+  // パンくず・見出し・タブの並びは他のプロジェクト内ページ（バックログ／議事録など）に合わせる。
+  // 読み込み中でも同じ枠を出したいので、先に組み立てて使い回す。
+  const pageHead = (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+        <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+        </button>
+        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>GitHub</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project?.name ?? "..."}</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="github" marginBottom={0} />
+        </div>
+      </div>
+    </>
+  );
+
   // ── ガード ────────────────────────────────────────────────
   const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
-  if (notFound && accessBlocked) return accessBlocked;
-  if (loading || !project) return <PageLoader label="プロジェクトを読み込み中..." />;
-  if (accessBlocked) return accessBlocked;
+  if (!loading && accessBlocked) return accessBlocked;
 
   if (!plan.featureGithub) return (
     <NotFoundView kind="no-permission" label="GitHub"
@@ -231,26 +253,19 @@ export function GithubPage() {
       body="GitHubの閲覧権限が付与されていません。管理者にご相談ください。" />
   );
 
+  // 読み込み中にページ全体を差し替えない。
+  // 以前は <PageLoader /> だけを返していたため、他画面から来ると
+  // 「見出しとサブナビが一度消えてまた出る」＝画面がチカつく状態だった（ナレッジノートと同じ対処）。
+  if (loading || !project) return (
+    <div style={{ padding: "24px 24px 40px", minWidth: 900 }}>
+      {pageHead}
+      <PageLoader label="読み込み中..." />
+    </div>
+  );
+
   return (
     <div style={{ padding: "24px 24px 40px", minWidth: 900 }}>
-      {/* パンくず・見出し・タブの並びは他のプロジェクト内ページ（バックログ／議事録など）に合わせる */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
-        <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
-        </button>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project.name ?? projectSlug ?? ""}</span>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>GitHub</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project.name}</p>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ProjectSubNav projectSlug={projectSlug ?? project.slug} active="github" marginBottom={0} />
-        </div>
-      </div>
+      {pageHead}
 
       {access.loading ? (
         <PageLoader label="読み込み中..." />
