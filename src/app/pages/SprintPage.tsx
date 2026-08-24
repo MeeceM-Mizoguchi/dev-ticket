@@ -9,6 +9,7 @@ import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { Project, Sprint, SprintTicket, SprintView, AccessLevel, EnvMemo } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
+import { usePrLinkedTickets } from "@/app/lib/prLinkAlert";
 import SprintBoardView from "@/app/components/sprints/SprintBoardView";
 import { SprintGanttView } from "@/app/components/sprints/SprintGanttView";
 import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
@@ -154,6 +155,10 @@ export function SprintPage() {
 
   const projectId = project?.id ?? null;
 
+  // 「リリース待ち以降なのに関連PRが無い」チケットを赤くするための紐付け状況。
+  // リポジトリが紐付いていないプロジェクトでは判定できないので出さない
+  const { linkedTicketIds, refreshPrLinks } = usePrLinkedTickets(projectId ?? undefined, !!project?.githubRepoFullName);
+
   useEffect(() => {
     if (isParentNav) {
       setIsParentNav(false);
@@ -170,6 +175,8 @@ export function SprintPage() {
     if (p) setProject(mapProject(p));
     if (data) setSprints(data.map(mapSprint).filter(s => !deletedIdsRef.current.has(s.id)));
     setSprintOrder(order);
+    // チケット詳細でPRを紐付けた／PR不要にした直後にも呼ばれるので、ここで一緒に取り直す
+    await refreshPrLinks();
   };
 
   const openBulkCreate = (sprintId: string, mode: BulkCreateMode) => {
@@ -409,7 +416,7 @@ export function SprintPage() {
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} />}
+        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} prLinkedTicketIds={linkedTicketIds} />}
         {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
         {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
 

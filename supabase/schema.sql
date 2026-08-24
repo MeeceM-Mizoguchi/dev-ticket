@@ -212,3 +212,6 @@ on conflict (id) do nothing;
 -- リリース日カラム追加
 -- alter table sprint_tickets add column if not exists release_date date;
 -- alter table sprint_tickets add column if not exists is_release_date_undecided boolean not null default false;
+
+-- PR未紐付けアラートの抑止（add_pr_link_waived.sql）
+-- alter table sprint_tickets add column if not exists pr_link_waived boolean not null default false;

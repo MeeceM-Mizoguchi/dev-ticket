@@ -35,7 +35,8 @@ import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
-import { TicketPrSection } from "@/app/components/github/TicketPrSection";
+import { TicketPrSection, type TicketPrState } from "@/app/components/github/TicketPrSection";
+import { PrLinkLeaveDialog } from "@/app/components/github/PrLinkLeaveDialog";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
@@ -453,6 +454,14 @@ export function TicketDetailPanel({
   const [pendingReleaseDate, setPendingReleaseDate] = useState<string | null>(null);
   const [showUndecidedConfirm, setShowUndecidedConfirm] = useState(false);
 
+  // 関連PR（BRU13-013）。リリースノートに追加したのにPRが紐付いていないチケットを取り残さないための状態。
+  // 判定材料は TicketPrSection が持っているので、そこから上げてもらう
+  const [prState, setPrState] = useState<TicketPrState>({ loaded: false, level: "none", pullCount: 0 });
+  const [prLinkWaived, setPrLinkWaived] = useState(ticket?.prLinkWaived ?? false);
+  /** 「対応完了してリリースノートに追加」を押した直後だけ、関連PRを強調して紐付けを促す */
+  const [prGuide, setPrGuide] = useState(false);
+  const [showPrLeaveConfirm, setShowPrLeaveConfirm] = useState(false);
+
   // 対応工数
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(ticket?.actualWorkHours ?? null);
   // 動作確認チェック
@@ -601,6 +610,7 @@ export function TicketDetailPanel({
         setReleaseDate(t.releaseDate ?? "");
         setIsReleaseDateUndecided(t.isReleaseDateUndecided ?? false);
         setIsOperationVerified(t.isOperationVerified ?? false);
+        setPrLinkWaived(t.prLinkWaived ?? false);
         setPrefixes(t.prefixes ?? []);
       });
   }, []);
@@ -715,6 +725,20 @@ export function TicketDetailPanel({
   useEffect(() => { handleCloseRef.current = handleClose; }, [handleClose]);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
+  // リリースノートに追加したのにPRが紐付いていない間は、閉じる前に必ず離脱確認を挟む。
+  // stableEscHandler は mount 時に1回しか登録しないので、最新の判定は ref から読む
+  const prGuardRef = useRef(false);
+  const prGuardActive = prGuide && prState.loaded && prState.level !== "none"
+    && prState.pullCount === 0 && !prLinkWaived;
+  useEffect(() => { prGuardRef.current = prGuardActive; }, [prGuardActive]);
+
+  // 関連PRはパネルのかなり下にあるので、案内を出したら見える位置まで送る
+  const prSectionRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!prGuardActive) return;
+    prSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [prGuardActive]);
+
   // Animate the child panel out (260ms) then navigate to the parent ticket.
   // Falls back to handleCloseRef (close) if no onSelectTicket handler is provided (e.g. Dashboard, ReleaseNotes).
   // All deps accessed via stable setters or refs so this callback is stable across re-renders.
@@ -743,12 +767,24 @@ export function TicketDetailPanel({
 
   // Stable handler registered once on mount: navigates to parent on Esc if child ticket, else closes.
   const stableEscHandler = useCallback(() => {
+    // 親チケットへ戻る場合もこのパネルからは離れるので、先に離脱確認を出す
+    if (prGuardRef.current) { setShowPrLeaveConfirm(true); return; }
     const parent = breadcrumbParentRef.current;
     if (parent) {
       handleNavigateToParent(parent);
     } else {
       handleCloseRef.current();
     }
+  }, [handleNavigateToParent]);
+
+  /** 離脱確認で「閉じる」を選んだとき。ガードを外してから通常の閉じる動線に乗せる */
+  const leaveWithoutPrLink = useCallback(() => {
+    prGuardRef.current = false;
+    setShowPrLeaveConfirm(false);
+    setPrGuide(false);
+    const parent = breadcrumbParentRef.current;
+    if (parent) handleNavigateToParent(parent);
+    else handleCloseRef.current();
   }, [handleNavigateToParent]);
 
   useEffect(() => {
@@ -836,6 +872,11 @@ export function TicketDetailPanel({
     setPendingReleaseDate(null);
     setActualWorkHours(ticket.actualWorkHours ?? null);
     setIsOperationVerified(ticket.isOperationVerified ?? false);
+    // チケットを切り替えたら、前のチケットの案内・離脱確認を持ち越さない
+    setPrLinkWaived(ticket.prLinkWaived ?? false);
+    setPrState({ loaded: false, level: "none", pullCount: 0 });
+    setPrGuide(false);
+    setShowPrLeaveConfirm(false);
     setShowCompletionOverlay(false);
     setShowHoursInputMode(ticket.status === "waiting-release" && (ticket.actualWorkHours == null));
     setEditChildHours(false);
@@ -1366,6 +1407,8 @@ export function TicketDetailPanel({
     setProgress(p);
     setCompletionSegmentHours(withChildHours(computeRawSegments({ ...ticket, releasedAt: now })));
     setShowCompletionOverlay(true);
+    // ここから先はPRの紐付けが必須。関連PRを強調し、未紐付けのまま閉じさせない
+    setPrGuide(true);
 
     // DB操作をバックグラウンドで実行
     void (async () => {
@@ -2052,6 +2095,29 @@ export function TicketDetailPanel({
           zIndex={320}
           onConfirm={handleConfirmParentStart}
           onClose={() => setShowParentStartConfirm(false)}
+        />
+      )}
+      {/* リリースノート追加後、PRを紐付けないまま閉じようとしたときの離脱確認 */}
+      {showPrLeaveConfirm && ticket && (
+        <PrLinkLeaveDialog
+          wbs={ticket.wbs}
+          title={title}
+          onCancel={() => setShowPrLeaveConfirm(false)}
+          onLink={() => {
+            setShowPrLeaveConfirm(false);
+            prSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }}
+          onWaive={async () => {
+            if (isSupabaseEnabled) {
+              const { error } = await supabase!.from("sprint_tickets").update({ pr_link_waived: true }).eq("id", ticket.id);
+              // 列が無い（マイグレーション未適用）ときに黙って閉じると、次に開いてもまた案内が出る
+              if (error) { showAlert("設定を保存できませんでした"); return; }
+            }
+            setPrLinkWaived(true);
+            onUpdated?.();
+            leaveWithoutPrLink();
+          }}
+          onLeave={leaveWithoutPrLink}
         />
       )}
       {pendingReleaseDate !== null && (
@@ -3090,7 +3156,20 @@ export function TicketDetailPanel({
 
             {/* ── 関連PR（GitHub連携。権限とリポジトリ紐付けが無ければ自前で消える） ── */}
             {projectId && ticket.id && (
-              <TicketPrSection projectId={projectId} ticketId={ticket.id} wbs={ticket.wbs} />
+              <div ref={prSectionRef}>
+                <TicketPrSection
+                  projectId={projectId}
+                  projectSlug={projectSlug}
+                  ticketId={ticket.id}
+                  wbs={ticket.wbs}
+                  ticketStatus={status}
+                  prLinkWaived={prLinkWaived}
+                  guide={prGuide}
+                  onStateChange={setPrState}
+                  onWaiveChange={w => { setPrLinkWaived(w); onUpdated?.(); }}
+                  onLinked={() => onUpdated?.()}
+                />
+              </div>
             )}
 
             {/* ── Review flow + Source files ── */}

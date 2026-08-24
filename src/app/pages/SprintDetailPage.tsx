@@ -24,6 +24,8 @@ import { SaveFilterDialog } from "@/app/components/sprints/SaveFilterDialog";
 import { SelBox } from "@/app/components/sprints/SelBox";
 import { useBulkTicketActions } from "@/app/components/sprints/useBulkTicketActions";
 import { useAlert } from "@/app/contexts/AlertContext";
+import { usePrLinkedTickets, needsPrLink, prLinkAlertTitle } from "@/app/lib/prLinkAlert";
+import { PrMissingChip } from "@/app/components/github/PrMissingChip";
 
 // あらゆるIDパターンに安全に対応するためのフォールバック付き辞書
 const CATEGORY_MAP: Record<string, string> = {
@@ -459,11 +461,17 @@ export function SprintDetailPage() {
       .then(({ count }) => { setSavedFilterCount(count ?? 0); });
   }, [sprint?.id, userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 「リリース待ち以降なのに関連PRが無い」チケットを赤くするための紐付け状況。
+  // リポジトリが紐付いていないプロジェクトでは判定できないので出さない
+  const { linkedTicketIds, refreshPrLinks } = usePrLinkedTickets(project?.id, !!project?.githubRepoFullName);
+
   // 一括作成後の強調表示は「再読み込みが終わってから」立てる必要があるため await できる形にしている
   const refreshSprint = async () => {
     if (!isSupabaseEnabled || !sprint) return;
     const { data } = await supabase!.from("sprints").select("*, sprint_tickets(*)").eq("id", sprint.id).order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }).single();
     if (data) setSprint(mapSprint(data));
+    // チケット詳細でPRを紐付けた／PR不要にした直後にも呼ばれるので、ここで一緒に取り直す
+    await refreshPrLinks();
   };
 
   const handleDeleteTicket = async (ticket: SprintTicket) => {
@@ -814,23 +822,27 @@ export function SprintDetailPage() {
 
             const displayCategory = getCategoryLabel(ticket);
             const needsHours = ticket.status === "waiting-release" && (ticket.actualWorkHours == null);
+            const needsPr = needsPrLink(ticket, linkedTicketIds);
+            // 工数未入力とPR未紐付けは同じ「!」で出す。どちらの理由かは title で読ませる
+            const rowAlert = needsHours || needsPr;
+            const alertTitle = [needsHours ? "工数が未入力です" : "", needsPr ? prLinkAlertTitle() : ""].filter(Boolean).join(" / ");
             const isSel = bulk.selectedIds.has(ticket.id);
             // 一括アサイン直後のハイライトも一括作成と同じ黄色で見せる
             const isFlashed = bulkHighlight.has(ticket.wbs) || highlightedTicketIds.has(ticket.id);
-            const rowBg = isFlashed ? "#FFFBEB" : needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent";
+            const rowBg = isFlashed ? "#FFFBEB" : rowAlert ? "#FFF5F5" : isSel ? "#F0FDF4" : ticket.wbs === lastOpenedWbs ? "#FFFBEB" : isTerminal ? "#F5F5F4" : "transparent";
 
             return (
               <div key={ticket.id}>
                 <div onClick={() => selectTicket(ticket.wbs || ticket.id)}
                   data-wbs={ticket.wbs}
-                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: rowBg, transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
+                  style={{ display: "grid", gridTemplateColumns: GRID, padding: "11px 16px", alignItems: "center", gap: 8, borderBottom: !isTicketExpanded && i < displayTickets.length - 1 ? "1px solid rgba(26,23,20,0.04)" : "none", background: rowBg, transition: "background 0.1s", cursor: "pointer", opacity: isTerminal ? 0.65 : 1, outline: rowAlert ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = isTerminal ? "#ECECEB" : "#FFF7F3"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowBg; }}>
                   <SelBox checked={isSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(ticket.id); }} />
                   <div style={{ display: "flex", justifyContent: "center", gap: 3, alignItems: "center" }}>
-                    {needsHours && (
+                    {rowAlert && (
                       <span
-                        title="工数が未入力です"
+                        title={alertTitle}
                         style={{ fontSize: 11, fontWeight: 800, color: "#EF4444", lineHeight: 1, flexShrink: 0, cursor: "default", userSelect: "none" }}
                       >!</span>
                     )}
@@ -846,6 +858,7 @@ export function SprintDetailPage() {
                       <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
                       <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{ticket.title}</span>
                       {hasChildren && <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9 }} />{children.length}</span>}
+                      {needsPr && <PrMissingChip />}
                     </div>
                   </div>
                   <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(ticket.description) || "—"}</span>
@@ -896,11 +909,12 @@ export function SprintDetailPage() {
                   const childCategory = getCategoryLabel(child);
 
                   const isChildSel = bulk.selectedIds.has(child.id);
-                  const cChildBg = (bulkHighlight.has(child.wbs) || highlightedTicketIds.has(child.id)) ? "#FFFBEB" : isChildSel ? "#F0FDF4" : "#F9F8F6";
+                  const childNeedsPr = needsPrLink(child, linkedTicketIds);
+                  const cChildBg = (bulkHighlight.has(child.wbs) || highlightedTicketIds.has(child.id)) ? "#FFFBEB" : childNeedsPr ? "#FFF5F5" : isChildSel ? "#F0FDF4" : "#F9F8F6";
 
                   return (
                     <div key={child.id} data-wbs={child.wbs} onClick={() => selectTicket(child.wbs || child.id)}
-                      style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: cChildBg, transition: "background 0.1s", cursor: "pointer", opacity: cIsTerminal ? 0.65 : 1 }}
+                      style={{ display: "grid", gridTemplateColumns: GRID, padding: "9px 16px 9px 32px", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(26,23,20,0.04)", background: cChildBg, transition: "background 0.1s", cursor: "pointer", opacity: cIsTerminal ? 0.65 : 1, outline: childNeedsPr ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#EEF7F3"; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = cChildBg; }}>
                       <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
@@ -910,6 +924,7 @@ export function SprintDetailPage() {
                       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                         <div style={{ width: 1, height: 12, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
                         <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                        {childNeedsPr && <PrMissingChip compact />}
                       </div>
                       <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
 

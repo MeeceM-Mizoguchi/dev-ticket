@@ -17,6 +17,8 @@ import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
 import { useAlert } from "@/app/contexts/AlertContext";
 import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
+import { needsPrLink, prLinkAlertTitle } from "@/app/lib/prLinkAlert";
+import { PrMissingChip } from "@/app/components/github/PrMissingChip";
 
 // 🌟 今日の日付（YYYY-MM-DD）を取得するヘルパー
 function getTodayString(): string {
@@ -259,7 +261,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug }: {
+export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, prLinkedTicketIds = null }: {
   sprints: Sprint[];
   loading?: boolean;
   onSelectSprint: (s: Sprint) => void;
@@ -280,6 +282,11 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
   onUpdated?: () => void | Promise<void>;
   projectMembers?: string[];
   projectSlug?: string;
+  /**
+   * PRが紐付いているチケットIDの集合。「リリース待ち以降なのにPRが無い」行を赤くするために使う。
+   * null（未取得・リポジトリ未紐付け）のときはアラートを出さない
+   */
+  prLinkedTicketIds?: Set<string> | null;
 }) {
   const { userId, userOrgId, userRole } = useAuth();
   const { plan } = usePlan();
@@ -885,6 +892,10 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                     const isHighlighted = t.wbs === targetTicketWbs || highlightedTicketIds.has(t.id) || bulkHighlight.has(t.wbs);
                     const baseBg = isHighlighted ? "#FFFBEB" : (t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn") ? "#F5F5F4" : "#FFFFFF";
                     const needsHours = t.status === "waiting-release" && (t.actualWorkHours == null);
+                    const needsPr = needsPrLink(t, prLinkedTicketIds);
+                    // 工数未入力とPR未紐付けは同じ「!」で出す。どちらの理由かは title で読ませる
+                    const rowAlert = needsHours || needsPr;
+                    const alertTitle = [needsHours ? "工数が未入力です" : "", needsPr ? prLinkAlertTitle() : ""].filter(Boolean).join(" / ");
                     const isSel = selectedTicketIds.has(t.id);
 
                     // 🌟 期限日当日の赤文字判定
@@ -894,14 +905,14 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                       <div key={t.id}>
                         <div onClick={() => onSelectTicket?.(t)}
                           data-wbs={t.wbs}
-                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn") ? 0.65 : 1, outline: needsHours ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
+                          style={{ display: "grid", gridTemplateColumns: GRID, padding: "10px 16px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: onSelectTicket ? "pointer" : "default", background: rowAlert ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg, transition: "background 0.1s", opacity: (t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn") ? 0.65 : 1, outline: rowAlert ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                           onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
-                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = needsHours ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowAlert ? "#FFF5F5" : isSel ? "#F0FDF4" : baseBg; }}>
                           <SelBox checked={isSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(t.id); }} />
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                            {needsHours && (
+                            {rowAlert && (
                               <span
-                                title="工数が未入力です"
+                                title={alertTitle}
                                 style={{ fontSize: 11, fontWeight: 800, color: "#EF4444", lineHeight: 1, flexShrink: 0, cursor: "default", userSelect: "none" }}
                               >!</span>
                             )}
@@ -916,6 +927,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                             <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
                             <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
                             {hasChildren && <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9, display: "inline" }} /> {children.length}</span>}
+                            {needsPr && <PrMissingChip />}
                           </div>
                           <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(t.description) || "—"}</span>
 
@@ -958,7 +970,8 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           const childCategory = getCategoryLabel(child);
                           const isChildHighlighted = child.wbs === targetTicketWbs || highlightedTicketIds.has(child.id) || bulkHighlight.has(child.wbs);
                           const isChildSel = selectedTicketIds.has(child.id);
-                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? "#F5F5F4" : "#F9F8F6";
+                          const childNeedsPr = needsPrLink(child, prLinkedTicketIds);
+                          const childBaseBg = isChildHighlighted ? "#FFFBEB" : childNeedsPr ? "#FFF5F5" : isChildSel ? "#F0FDF4" : (child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? "#F5F5F4" : "#F9F8F6";
 
                           // 子チケットの期限日赤文字判定
                           const isChildDueAlert = isOverdueOrToday(child.dueDate, child.status);
@@ -966,7 +979,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                           return (
                             <div key={child.id} onClick={() => onSelectTicket?.(child)}
                               data-wbs={child.wbs}
-                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? 0.65 : 1 }}
+                              style={{ display: "grid", gridTemplateColumns: GRID, padding: "8px 16px 8px 32px", gap: 8, alignItems: "center", borderTop: "1px solid rgba(26,23,20,0.04)", cursor: onSelectTicket ? "pointer" : "default", background: childBaseBg, transition: "background 0.1s", opacity: (child.status === "closed" || child.status === "released" || child.status === "on-hold" || child.status === "withdrawn") ? 0.65 : 1, outline: childNeedsPr ? "1.5px solid rgba(239,68,68,0.30)" : "none", outlineOffset: "-1px" }}
                               onMouseEnter={e => { if (onSelectTicket) (e.currentTarget as HTMLElement).style.background = (child.status === "on-hold" || child.status === "withdrawn") ? "#ECECEB" : "#EEF7F3"; }}
                               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childBaseBg; }}>
                               <SelBox checked={isChildSel} onClick={e => { e.stopPropagation(); bulk.toggleTicket(child.id); }} />
@@ -976,6 +989,7 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                               <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, paddingLeft: 4 }}>
                                 <div style={{ width: 1, height: 12, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
                                 <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                                {childNeedsPr && <PrMissingChip compact />}
                               </div>
                               <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>
 
