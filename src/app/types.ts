@@ -111,6 +111,9 @@ export interface SprintTicket {
   actualWorkHours?: number | null;
   // 動作確認チェック
   isOperationVerified?: boolean;
+  // PR未紐付けアラートを出さない（PR不要と人が確定したチケット）。
+  // アラート自体は「リリース待ち以降 かつ 関連PR0件」から導出するので、この値は抑止だけを担う
+  prLinkWaived?: boolean;
   // チケットプレフィックス（最大3つ）
   prefixes?: string[];
   // 開発規模。工数(時間)とは別軸の「難易度・広がり」。レコメンドの特徴量に使う。
