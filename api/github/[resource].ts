@@ -460,6 +460,17 @@ export default async function handler(req: any, res: any) {
   let sb: SupabaseClient;
   try { sb = admin(); } catch { return res.status(500).json({ error: "サーバー設定エラーが発生しました" }); }
 
+  // GitHub からの Webhook もログイン中のユーザーが居ない。署名で検証する
+  if (resource === "webhook") {
+    try {
+      return await githubWebhook(sb, req, res);
+    } catch (e) {
+      console.error("[github webhook]", (e as Error)?.message);
+      // 500 を返すと GitHub 側で再送が積まれるので、受領だけは返しておく
+      return res.status(200).json({ ok: false });
+    }
+  }
+
   // 定期実行からの呼び出し。ログイン中のユーザーが居ないので共有シークレットで通す。
   // Vercel Cron は CRON_SECRET を設定しておくと Authorization: Bearer で送ってくるが、
   // 中身はただのHTTPエンドポイントなので、他のスケジューラからでも同じように叩ける。
@@ -534,12 +545,24 @@ interface ReleaseSyncDepth {
   pages: number;
   /** 走査範囲外だった紐付けを、番号指定で引き直す上限 */
   lookups: number;
+  /**
+   * ステータスを問わず、走査したPRの紐付けを埋め直すか。
+   *
+   * これを立てておくと、クローズ済み・リリース済みのチケットにも「関連PR」が残る。
+   * 紐付けはPR一覧（open のみ）を開いたときにしか作られていなかったため、
+   * 過去分の穴埋めを兼ねる。中身が変わっていない行は書かないので、
+   * 2回目以降は実質ただの読み取りになる。
+   */
+  backfillLinks: boolean;
 }
-const SYNC_INTERACTIVE: ReleaseSyncDepth = { pages: 1, lookups: 10 };
-const SYNC_FULL: ReleaseSyncDepth = { pages: 3, lookups: 50 };
+const SYNC_INTERACTIVE: ReleaseSyncDepth = { pages: 1, lookups: 10, backfillLinks: false };
+const SYNC_FULL: ReleaseSyncDepth = { pages: 10, lookups: 50, backfillLinks: true };
 
 /** 番号指定の引き直しを同時に投げる本数 */
 const LOOKUP_CHUNK = 10;
+
+/** 紐付けの埋め直しを一度に処理するPR数。WBS番号を条件に並べるためURL長の上限に当たらないようにする */
+const LINK_BACKFILL_CHUNK = 100;
 
 /** 自動実行なので実行者が居ない。監査ログ用の固定ID */
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-000000000000";
@@ -644,25 +667,29 @@ async function syncProjectReleases(
   const { data: tickets } = await sb
     .from("sprint_tickets").select("id, wbs, title")
     .in("sprint_id", sprintIds).eq("status", "waiting-release");
-  // 対象が無ければ GitHub は一切叩かない（PR一覧の表示のたびに呼ばれるため）
-  if (!tickets?.length) return;
+  // 対象が無ければ GitHub は一切叩かない（PR一覧の表示のたびに呼ばれるため）。
+  // 紐付けの埋め直しをする回だけは、リリース待ちが0件でも走査する
+  if (!tickets?.length && !depth.backfillLinks) return;
 
   const installationId = await getInstallationId(sb, project.organization_id);
   const token = await installationToken(installationId);
   const repo = String(project.github_repo_full_name ?? "");
 
-  const ticketIds = (tickets as any[]).map(t => t.id);
-  const { data: links } = await sb
-    .from("ticket_github_links").select("ticket_id, number")
-    .eq("project_id", project.id).eq("kind", "pull").in("ticket_id", ticketIds);
+  const ticketIds = (tickets ?? []).map(t => (t as any).id);
+  const { data: links } = ticketIds.length
+    ? await sb.from("ticket_github_links").select("ticket_id, number")
+      .eq("project_id", project.id).eq("kind", "pull").in("ticket_id", ticketIds)
+    : { data: [] as any[] };
 
   // ① 更新の新しい順にPRを遡り、WBS番号で突き合わせる。
   //    紐付けが1件も無いチケットはここで拾う（マージ済みPRは open の一覧に出ないため）。
   //    リリース待ちのチケットが全て見つかった時点で打ち切る
+  //    （紐付けの埋め直しをする回は、過去分も拾うので打ち切らない）
   const prState = new Map<number, PrState>();
   const byWbs = new Map<string, number[]>();
+  const scannedPulls: any[] = [];
   const unmatched = new Set(
-    (tickets as any[]).map(t => String(t.wbs ?? "").toUpperCase()).filter(Boolean),
+    (tickets ?? []).map(t => String((t as any).wbs ?? "").toUpperCase()).filter(Boolean),
   );
   let repoInfo: any = null;
 
@@ -680,16 +707,28 @@ async function syncProjectReleases(
       const st = toPrState(p);
       if (!st.number) continue;
       prState.set(st.number, st);
+      if (depth.backfillLinks) scannedPulls.push(mapPull(p));
       for (const w of detectWbs(p?.head?.ref ?? "", p?.title ?? "").list) {
         byWbs.set(w, [...(byWbs.get(w) ?? []), st.number]);
         unmatched.delete(w);
       }
     }
-    if (list.length < 100 || !unmatched.size) break;
+    if (list.length < 100) break;
+    if (!depth.backfillLinks && !unmatched.size) break;
+  }
+
+  // 走査したPRを、ステータスを問わず全チケットへ紐付け直す。
+  // 「リリース待ち」を経由せずクローズされたチケットの関連PRはここで埋まる。
+  // WBS番号を条件に並べて引くので、URLが長くなりすぎないよう小分けにする
+  for (let i = 0; i < scannedPulls.length; i += LINK_BACKFILL_CHUNK) {
+    await autoLink(sb, project.id, scannedPulls.slice(i, i + LINK_BACKFILL_CHUNK));
   }
 
   // 既定ブランチはリポジトリ側を正とする（接続時に保存した値が古いことがある）
   const defaultBranch = repoInfo?.default_branch || project.github_default_branch || "main";
+
+  // ここから先はステータスを進める処理。対象が無ければ紐付けだけで終わる
+  if (!tickets?.length) return;
 
   // ② 明示的に紐付いているのに走査範囲の外だったPRは、番号を指定して引き直す。
   //    存在しない番号（手で紐付けを間違えた等）は判定から外す。ここで「状態不明」の
@@ -810,6 +849,118 @@ async function syncReleasesNow(sb: SupabaseClient, projectId: string) {
   } catch (e) {
     console.error("[github sync-released] immediate", projectId, (e as Error)?.message);
   }
+}
+
+// ── Webhook ──────────────────────────────────────────────────
+//
+// PRが作られた／閉じられた瞬間に紐付けとリリース反映を走らせる。
+// これが動いていれば、定期実行やGitHubタブを開く操作を待たずに反映される。
+//
+// GitHub App 側の設定（Webhook URL と Secret、Pull requests の購読）が必要。
+// 未設定でも他の経路（定期実行・マージ直後・PR一覧の表示）で反映されるので、
+// この受け口が無くても機能は成立する。
+
+/** 反応するイベント。synchronize（push のたび）等は紐付けに影響しないので無視する */
+const WEBHOOK_ACTIONS = new Set([
+  "opened", "reopened", "edited", "closed", "ready_for_review", "converted_to_draft",
+]);
+
+/**
+ * 生のリクエストボディを取り出す。
+ *
+ * 署名は「GitHubが送ってきたバイト列そのもの」に対して計算されているため、
+ * 一度 JSON にしたものを stringify し直すと（エスケープの流儀が違って）一致しない。
+ * 実行環境が先にボディを読んでしまっている場合は空文字を返し、呼び出し側で
+ * 「署名を検証できなかった」として扱う。
+ */
+async function readRawBody(req: any): Promise<string> {
+  // req.body に触れる前にストリームを試す。実装によっては body を参照した時点で
+  // 解析が走り、生のバイト列を取り直せなくなるため順番が重要
+  try {
+    if (!req.readableEnded) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+      if (chunks.length) return Buffer.concat(chunks).toString("utf8");
+    }
+  } catch {
+    // 読めなければ下の fallback へ
+  }
+  if (typeof req.body === "string") return req.body;
+  if (Buffer.isBuffer(req.body)) return req.body.toString("utf8");
+  return "";
+}
+
+type SignatureResult = "ok" | "invalid" | "unverifiable";
+
+function verifyWebhookSignature(raw: string, header: unknown): SignatureResult {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  if (!secret) return "unverifiable";
+  if (!raw) return "unverifiable";
+
+  const sent = String(header ?? "");
+  if (!sent.startsWith("sha256=")) return "invalid";
+  const expect = "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex");
+  if (sent.length !== expect.length) return "invalid";
+  return crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(expect)) ? "ok" : "invalid";
+}
+
+async function githubWebhook(sb: SupabaseClient, req: any, res: any) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+
+  const event = String(req.headers?.["x-github-event"] ?? "");
+  if (event === "ping") return res.status(200).json({ ok: true });
+  if (event !== "pull_request") return res.status(200).json({ ok: true, skipped: event || "unknown" });
+
+  const raw = await readRawBody(req);
+  const payload = raw ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : parseBody(req);
+  if (!payload) return res.status(400).json({ error: "payload を解釈できませんでした" });
+
+  const signature = verifyWebhookSignature(raw, req.headers?.["x-hub-signature-256"]);
+  if (signature === "invalid") return res.status(401).json({ error: "署名が一致しません" });
+  if (signature === "unverifiable") {
+    // 署名を確かめられない場合も、payload の中身は一切信用しない。
+    // 使うのは「どのリポジトリの何番か」だけで、状態は必ず GitHub から引き直すため、
+    // 偽の通知を受けても間違ったステータス更新にはならない
+    console.warn("[github webhook] 署名を検証できなかった（GITHUB_WEBHOOK_SECRET 未設定か、生ボディを取得できず）");
+  }
+
+  const action = String(payload?.action ?? "");
+  if (!WEBHOOK_ACTIONS.has(action)) return res.status(200).json({ ok: true, skipped: action });
+
+  const repo = String(payload?.repository?.full_name ?? "");
+  const number = Number(payload?.pull_request?.number ?? 0);
+  if (!repo || !Number.isInteger(number) || number <= 0) {
+    return res.status(200).json({ ok: true, skipped: "対象を特定できませんでした" });
+  }
+
+  const { data: projects } = await sb.from("projects")
+    .select("id, name, organization_id, github_repo_full_name, github_default_branch")
+    .eq("github_repo_full_name", repo).eq("github_enabled", true);
+  if (!projects?.length) return res.status(200).json({ ok: true, skipped: "未接続のリポジトリ" });
+
+  for (const p of projects as any[]) {
+    try {
+      await applyPullRequestEvent(sb, p, number);
+    } catch (e) {
+      // 1プロジェクトの失敗で他を止めない。GitHub には受領を返す
+      console.error("[github webhook]", p.id, (e as Error)?.message);
+    }
+  }
+  return res.status(200).json({ ok: true, projects: projects.length });
+}
+
+/** 通知されたPRを GitHub から引き直し、紐付けとリリース反映を行う */
+async function applyPullRequestEvent(sb: SupabaseClient, project: any, number: number) {
+  const installationId = await getInstallationId(sb, project.organization_id);
+  const token = await installationToken(installationId);
+  // payload を信用せず必ず引き直す。ここが偽の通知に対する歯止めになっている
+  const pr = await gh(token, `/repos/${project.github_repo_full_name}/pulls/${number}`);
+  if (!pr?.number) return;
+
+  await autoLink(sb, project.id, [mapPull(pr)]);
+  await syncProjectReleases(sb, project, {
+    projectId: project.id, projectName: project.name ?? "", released: [],
+  }, SYNC_INTERACTIVE);
 }
 
 // ── インストール ─────────────────────────────────────────────
@@ -1176,7 +1327,7 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
     } catch { return p; }
   }));
 
-  await autoLink(sb, ctx, enriched);
+  await autoLink(sb, ctx.id, enriched);
   // 一覧を開いた時点でマージ済みのPRを拾い直す。
   // 「リリース待ち」が無ければ GitHub は叩かないので、通常は追加の負荷にならない
   await syncReleasesNow(sb, ctx.id);
@@ -1439,12 +1590,18 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
  * ブランチ名／タイトルの WBS からチケットへ自動で紐付ける。
  * 表示のためだけの紐付けで、チケットのステータスには一切触らない
  * （既存のチケット更新経路に手を入れると、順番が入れ替わる等の既知不具合を踏むため）。
+ *
+ * チケットのステータスは問わない。クローズ済みでもリリース済みでも、
+ * WBS が一致すれば紐付ける（履歴として「このチケットのPRはどれか」を残すため）。
+ *
+ * 定期実行から全PRを渡して呼ばれるので、中身が変わっていない行は書かない。
+ * 毎回全件を upsert すると、実質は同じ内容の書き込みが延々と走ることになる。
  */
-async function autoLink(sb: SupabaseClient, ctx: ProjectCtx, pulls: any[]) {
+async function autoLink(sb: SupabaseClient, projectId: string, pulls: any[]) {
   const wbsList = Array.from(new Set(pulls.flatMap(p => p.detectedWbs as string[])));
   if (!wbsList.length) return;
 
-  const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", ctx.id);
+  const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", projectId);
   const sprintIds = (sprints ?? []).map(s => (s as any).id);
   if (!sprintIds.length) return;
 
@@ -1461,7 +1618,7 @@ async function autoLink(sb: SupabaseClient, ctx: ProjectCtx, pulls: any[]) {
       const ticketId = byWbs.get(w);
       if (!ticketId) continue;
       rows.push({
-        project_id: ctx.id,
+        project_id: projectId,
         ticket_id: ticketId,
         kind: "pull",
         number: p.number,
@@ -1475,18 +1632,21 @@ async function autoLink(sb: SupabaseClient, ctx: ProjectCtx, pulls: any[]) {
   }
   if (!rows.length) return;
 
-  // 手動で付けた紐付け（auto_linked=false）を自動で上書きしないよう、
-  // 既にある組み合わせは title/state の更新だけに留める。
   const { data: existing } = await sb
-    .from("ticket_github_links").select("id, ticket_id, number, auto_linked")
-    .eq("project_id", ctx.id).eq("kind", "pull");
-  const manual = new Set((existing ?? [])
-    .filter(e => (e as any).auto_linked === false)
-    .map(e => `${(e as any).ticket_id}#${(e as any).number}`));
+    .from("ticket_github_links").select("ticket_id, number, auto_linked, state, title, url")
+    .eq("project_id", projectId).eq("kind", "pull");
+  const before = new Map((existing ?? []).map(e => [`${(e as any).ticket_id}#${(e as any).number}`, e as any]));
 
-  const toUpsert = rows.map(r => manual.has(`${r.ticket_id}#${r.number}`)
-    ? { ...r, auto_linked: false, auto_reason: null }
-    : r);
+  const toUpsert: Record<string, unknown>[] = [];
+  for (const r of rows) {
+    const key = `${r.ticket_id}#${r.number}`;
+    const prev = before.get(key);
+    // 手動で付けた紐付け（auto_linked=false）を自動で上書きしない
+    const row = prev?.auto_linked === false ? { ...r, auto_linked: false, auto_reason: null } : r;
+    if (prev && prev.state === row.state && prev.title === row.title && prev.url === row.url) continue;
+    toUpsert.push(row);
+  }
+  if (!toUpsert.length) return;
 
   await sb.from("ticket_github_links").upsert(toUpsert, { onConflict: "project_id,ticket_id,kind,number" });
 }
@@ -1637,7 +1797,7 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
     await writeLog(sb, ctx, caller, "create_pull", pr?.number ?? 0, "ok", `${head} → ${base} / ${title}`);
     // 作成した時点で紐付けておく。PR一覧を開かないまま GitHub 側でマージされると、
     // 紐付けが残らずリリース反映の判定材料が無くなるため
-    if (pr?.number) await autoLink(sb, ctx, [mapPull(pr)]).catch(() => {});
+    if (pr?.number) await autoLink(sb, ctx.id, [mapPull(pr)]).catch(() => {});
     return res.status(200).json({
       ok: true,
       number: pr?.number ?? null,
