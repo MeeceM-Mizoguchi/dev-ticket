@@ -212,9 +212,12 @@ export function GithubPage() {
   const mergeablePulls = useMemo(() => pulls.filter(p => !mergeBlockReason(p)), [pulls]);
   const selectedPulls = useMemo(() => pulls.filter(p => selected.has(p.number)), [pulls, selected]);
 
-  const handleMerge = async (method: GithubMergeMethod) => {
+  // onMerged は「GitHub 側のマージが終わった」合図。ダイアログの進捗を次の段
+  //（一覧の取り直し）へ進めるために呼ぶ
+  const handleMerge = async (method: GithubMergeMethod, onMerged: () => void) => {
     if (!project?.id || !mergeTarget) return;
     await mergePull(project.id, mergeTarget.number, method);
+    onMerged();
     toast(`#${mergeTarget.number} をマージしました`, "success");
     // loadedTabs は落とさない。落とすと取り直しの間だけページ全体がローダーに変わり、
     // 進捗を出しているダイアログの裏で表示が二度切り替わって見える

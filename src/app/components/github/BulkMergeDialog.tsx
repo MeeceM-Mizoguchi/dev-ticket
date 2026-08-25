@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, RotateCcw } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, mergeBlockReason, GithubApiError } from "@/app/lib/github";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
 import type { GithubPull, GithubMergeMethod, GithubBulkMergeResult, GithubPermissionBlock } from "@/app/types";
@@ -54,7 +55,9 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   onDone: () => void | Promise<void>;
 }) {
   const [method, setMethod] = useState<GithubMergeMethod>(loadMergeMethod());
-  const [merging, setMerging] = useState(false);
+  /** idle … 確認中／merging … 実行中／refreshing … 一覧を取り直している最中 */
+  const [phase, setPhase] = useState<"idle" | "merging" | "refreshing">("idle");
+  const merging = phase !== "idle";
   const [result, setResult] = useState<GithubBulkMergeResult | null>(null);
   const [error, setError] = useState("");
   /**
@@ -92,7 +95,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   };
 
   const handleRun = async () => {
-    setMerging(true);
+    setPhase("merging");
     setError("");
     setBlocked(null);
     let r: GithubBulkMergeResult;
@@ -102,21 +105,42 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
       // 実行前に権限で弾かれた場合。1件もマージされていないので、直し先だけを出す
       if (e instanceof GithubApiError && e.permission) setBlocked(e.permission);
       setError((e as Error)?.message ?? "マージに失敗しました。");
-      setMerging(false);
+      setPhase("idle");
       return;
     }
     saveMergeMethod(method);
-    setResult(r);
-    setBlocked(r.permission ?? null);
     // 一覧の取り直しに失敗しても、実行済みの結果は必ず読ませる。
-    // ここで例外を上の catch に流すと、結果の代わりにエラーだけが出てしまう
+    // ここで例外を上の catch に流すと、結果の代わりにエラーだけが出てしまう。
+    // 結果に切り替えるのは取り直しが終わってから。先に切り替えると、
+    // 進捗の2段目（一覧の更新）を出す前に画面が変わってしまう
+    setPhase("refreshing");
     try {
       await onDone();
     } catch {
       setRefreshFailed(true);
     }
-    setMerging(false);
+    setBlocked(r.permission ?? null);
+    setResult(r);
+    setPhase("idle");
   };
+
+  // 実行はサーバー側で1件ずつ進み、途中経過は返らない。
+  // 出せるのは「実行中か」「一覧の取り直しに移ったか」の2段階まで
+  const steps: ProgressStep[] = [
+    {
+      key: "merge",
+      state: phase === "merging" ? "running" : "done",
+      text: phase === "merging"
+        ? `${order.length}件を上から順にマージしています...`
+        : `${order.length}件のマージを実行しました`,
+      hint: phase === "merging" ? "1件ずつ順番に実行するため、件数ぶんの時間がかかります" : undefined,
+    },
+    {
+      key: "refresh",
+      state: phase === "merging" ? "pending" : "running",
+      text: phase === "merging" ? "一覧の更新を待っています" : "一覧を最新の状態にしています...",
+    },
+  ];
 
   // 実行後は結果表示だけにする（同じ内容を二度実行させない）
   if (result) {
@@ -178,7 +202,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
         {/* 権限で弾かれたあとは押させない。押しても同じ理由で必ず失敗するため */}
         <button type="button" onClick={handleRun} disabled={merging || !!blocked}
           style={{ padding: "9px 20px", background: merging || blocked ? "#9CA3AF" : BLACK, color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: merging || blocked ? "not-allowed" : "pointer" }}>
-          {merging ? "マージ中..." : `${pulls.length}件をマージする`}
+          {phase === "merging" ? "マージ中..." : phase === "refreshing" ? "一覧を更新中..." : `${pulls.length}件をマージする`}
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
@@ -189,6 +213,10 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
           リポジトリ <strong style={{ fontFamily: "var(--font-mono)" }}>{repo}</strong>
         </p>
 
+        {/* 実行が始まったら並べ替えも方式も変えられない。案内は進捗に差し替える */}
+        {merging ? (
+          <StepProgressPanel steps={steps} note={`方式: ${MERGE_METHOD_LABELS[method]}／終わるまでこの画面は閉じないでください。`} />
+        ) : (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" as const }}>
           <p style={{ fontSize: 11, color: "#6B6458", lineHeight: 1.7 }}>
             <strong>プルリクエストを作った順</strong>に並べています。
@@ -204,6 +232,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
             </button>
           )}
         </div>
+        )}
 
         <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "hidden" }}>
           {order.map((p, i) => {
@@ -237,6 +266,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
           })}
         </div>
 
+        {!merging && (<>
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 8, letterSpacing: "0.04em" }}>マージ方式（全件に適用）</p>
           {METHODS.map(m => (
@@ -258,6 +288,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
             GitHub 上は Dev Ticket[bot] 名義で記録され、各マージコミットに「{actorName}」が実行者として残ります。
           </p>
         </div>
+        </>)}
 
         {blocked
           ? <PermissionBlockNotice block={blocked} compact />
