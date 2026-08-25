@@ -2,20 +2,34 @@
 //
 // ブランチ名に WBS 番号が含まれていれば、そのチケットを引いてタイトルと本文を先に埋める。
 // 作成後は PR一覧の取得時に自動でチケットへ紐付く。
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Search } from "lucide-react";
+//
+// BRU13-027：この画面を開いたままでもブランチを探し続ける。
+//  ブランチ一覧は開く直前に1回取っただけなので（BRU13-019 でここに寄せた）、
+//  「PRを作ろうとしたらまだ push していなかった → 別ウィンドウで push → 戻る」の流れで
+//  候補が空のまま詰み、ダイアログを閉じて開き直すしかなかった。
+//  開いている間だけ一定間隔で取り直し、増えたブランチをその場で選べるようにする。
+//  レート制限を踏まないよう、非表示のタブでは止め、放置されたら自動確認そのものを打ち切る
+//  （設計書 8章の「自動ポーリングはしない」は一覧画面の話。ここは人が待っている数分間だけ）。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, RefreshCw, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
-import { createPull, GithubApiError } from "@/app/lib/github";
+import { createPull, fetchBranches, GithubApiError } from "@/app/lib/github";
 import { inputCls, labelCls } from "@/app/lib/helpers";
 import type { GithubBranch } from "@/app/types";
 
 const BLACK = "#1F2328";
 const WBS_RE = /[A-Z][A-Z0-9]*-\d+/;
+/** ブランチを取り直す間隔 */
+const WATCH_MS = 10_000;
+/** 自動確認を続ける上限（10分）。開きっぱなしで放置されたときに叩き続けないための打ち切り */
+const WATCH_MAX = 60;
+/** 連続でこの回数失敗したら自動確認をやめる（手動の「更新」で再開できる） */
+const WATCH_MAX_FAILS = 3;
 
-export function CreatePullDialog({ projectId, projectSlug, repo, branches, defaultBranch, initialHead, onClose, onCreated }: {
+export function CreatePullDialog({ projectId, projectSlug, repo, branches, defaultBranch, initialHead, ticketWbs, onClose, onCreated }: {
   projectId: string;
   projectSlug: string;
   repo: string;
@@ -23,6 +37,11 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   defaultBranch: string;
   /** 未作成ブランチの一覧から開いたときに、選択済みにしておくブランチ */
   initialHead?: string;
+  /**
+   * チケット詳細から開いたときのWBS番号。
+   * 開いている間に現れたブランチがこの番号を含んでいたら、head に選んでおく
+   */
+  ticketWbs?: string;
   onClose: () => void;
   /** 一覧の取り直しまで待てるように、Promise を返してよい */
   onCreated: (created: { number: number | null; url: string | null }) => void | Promise<void>;
@@ -46,20 +65,81 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   /** 利用者がタイトルを触ったら自動入力で上書きしない */
   const [titleTouched, setTitleTouched] = useState(false);
 
+  /* ── 開いている間のブランチ探し（BRU13-027） ────────────────────── */
+
+  /** 取り直した結果を含む、いま画面に出しているブランチ。初期値は開く直前に取ったもの */
+  const [liveBranches, setLiveBranches] = useState<GithubBranch[]>(branches);
+  /** この画面を開いたあとに現れたブランチ（新しい順）。選択肢に「新着」を付け、その場で選ばせる */
+  const [freshNames, setFreshNames] = useState<string[]>([]);
+  /** 取り直し中か。手動の「更新」でも自動確認でも立てる */
+  const [checking, setChecking] = useState(false);
+  /** 最後に確認できた時刻。「いつの情報か」を出すために持つ */
+  const [checkedAt, setCheckedAt] = useState(() => Date.now());
+  /** 自動確認を打ち切ったか（放置・連続失敗）。手動の「更新」で戻す */
+  const [watchOff, setWatchOff] = useState(false);
+
+  /** 既に知っているブランチ名。「増えた分」だけを新着として拾うために持つ */
+  const knownRef = useRef<Set<string>>(new Set(branches.map(b => b.name)));
+  /** 取り直しの多重起動を止める（インターバルと手動が重なることがある） */
+  const checkingRef = useRef(false);
+  const failsRef = useRef(0);
+  /** 最後に取りにいった時刻。復帰のたびに叩かないための間引きに使う */
+  const lastAtRef = useRef(0);
+
+  // 呼び出し元が一覧を取り直してブランチを差し替えたら、こちらの積み上げも初期化する
+  // （props に合わせて state を調整するパターン。この回のレンダー結果は破棄される）
+  const [seed, setSeed] = useState(branches);
+  if (seed !== branches) {
+    setSeed(branches);
+    setLiveBranches(branches);
+    setFreshNames([]);
+    knownRef.current = new Set(branches.map(b => b.name));
+  }
+
   // base に入っている値が一覧に無いと、<select> は先頭の項目を表示してしまい、
   // 画面に出ているマージ先と実際に送られる base がずれる。必ず選択肢に含めておく
   const baseCandidates = useMemo<GithubBranch[]>(() => (
-    branches.some(b => b.name === base)
-      ? branches
-      : [{ name: base, protected: false, isDefault: base === (defaultBranch || "main"), lastCommitSha: "" }, ...branches]
-  ), [branches, base, defaultBranch]);
+    liveBranches.some(b => b.name === base)
+      ? liveBranches
+      : [{ name: base, protected: false, isDefault: base === (defaultBranch || "main"), lastCommitSha: "" }, ...liveBranches]
+  ), [liveBranches, base, defaultBranch]);
 
   const headCandidates = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return branches
+    return liveBranches
       .filter(b => b.name !== base)
       .filter(b => !q || b.name.toLowerCase().includes(q));
-  }, [branches, base, filter]);
+  }, [liveBranches, base, filter]);
+
+  /**
+   * ブランチの取り直し。増えた分を新着として覚え、選択肢へ反映する。
+   * 自動確認から呼ばれたときは静かに失敗させる（数秒ごとにエラーを出しても直しようがない）
+   */
+  const refreshBranches = useCallback(async (minGapMs = 0) => {
+    if (checkingRef.current) return;
+    // ウィンドウの行き来のたびに叩かないよう、直前に取っていたら見送る
+    if (minGapMs && Date.now() - lastAtRef.current < minGapMs) return;
+    checkingRef.current = true;
+    lastAtRef.current = Date.now();
+    setChecking(true);
+    try {
+      const r = await fetchBranches(projectId);
+      if (!r.branches.length) return;
+      failsRef.current = 0;
+      const known = knownRef.current;
+      const appeared = r.branches.map(b => b.name).filter(n => !known.has(n));
+      for (const b of r.branches) known.add(b.name);
+      setLiveBranches(r.branches);
+      setCheckedAt(Date.now());
+      if (appeared.length) setFreshNames(prev => [...appeared, ...prev.filter(n => !appeared.includes(n))]);
+    } catch {
+      failsRef.current++;
+      if (failsRef.current >= WATCH_MAX_FAILS) setWatchOff(true);
+    } finally {
+      checkingRef.current = false;
+      setChecking(false);
+    }
+  }, [projectId]);
 
   // ブランチ名の WBS 番号から、このプロジェクトのチケットを引く
   const lookupTicket = useCallback(async (branch: string) => {
@@ -87,6 +167,56 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
       ? prev
       : `対応チケット: ${detected.wbs} ${detected.title}\n${location.origin}/${projectSlug}/${detected.wbs}`);
   }, [detected, titleTouched, projectSlug]);
+
+  // 開いている間はブランチを探し続ける。
+  //  ・非表示のタブでは叩かない（裏で開きっぱなしのタブが数を食うのを避ける）
+  //  ・作成中は止める（結果が入れ替わって選択がずれる）
+  //  ・上限に達したら自動確認をやめ、手動の「更新」に切り替える
+  useEffect(() => {
+    if (phase !== "idle" || watchOff) return;
+    let n = 0;
+    const id = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      if (++n > WATCH_MAX) { setWatchOff(true); return; }
+      void refreshBranches();
+    }, WATCH_MS);
+    return () => clearInterval(id);
+  }, [phase, watchOff, refreshBranches]);
+
+  // 別ウィンドウで push して戻ってきた直後が一番見たいタイミング。
+  // 次のインターバルを待たずに取り直す
+  useEffect(() => {
+    if (phase !== "idle" || watchOff) return;
+    const onVisible = () => { if (document.visibilityState === "visible") void refreshBranches(WATCH_MS / 2); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [phase, watchOff, refreshBranches]);
+
+  // 現れたブランチがこのチケットのものなら、まだ選んでいないときだけ選択しておく。
+  // （利用者が選んだあとに勝手に差し替えない）
+  useEffect(() => {
+    if (head || !ticketWbs || !freshNames.length) return;
+    const upper = ticketWbs.toUpperCase();
+    const hit = freshNames.find(n => n.toUpperCase().includes(upper) && n !== base);
+    if (hit) setHead(hit);
+  }, [freshNames, head, ticketWbs, base]);
+
+  /** 手動の「更新」。自動確認を打ち切ったあとの再開も兼ねる */
+  const manualRefresh = () => {
+    failsRef.current = 0;
+    setWatchOff(false);
+    void refreshBranches();
+  };
+
+  /** 新着のうち、いま選べるもの（base と同じものは選べない） */
+  const freshSelectable = useMemo(
+    () => freshNames.filter(n => n !== base && liveBranches.some(b => b.name === n)),
+    [freshNames, base, liveBranches],
+  );
 
   const busy = phase !== "idle";
   const canCreate = !!head && !!title.trim() && head !== base && !busy;
@@ -142,6 +272,7 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        <style>{`@keyframes spin-cpd { to { transform: rotate(360deg); } }`}</style>
 
         <p style={{ fontSize: 12, color: "#6B6458" }}>
           リポジトリ <strong style={{ fontFamily: "var(--font-mono)" }}>{repo}</strong>
@@ -169,16 +300,55 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
             <label className={labelCls}>比較するブランチ（head）</label>
             <select className={inputCls} value={head} onChange={e => setHead(e.target.value)} style={{ width: "100%" }}>
               <option value="">選択してください</option>
-              {headCandidates.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+              {headCandidates.map(b => (
+                <option key={b.name} value={b.name}>{b.name}{freshNames.includes(b.name) ? "（新着）" : ""}</option>
+              ))}
             </select>
           </div>
         </div>
 
-        {branches.length > 8 && (
+        {liveBranches.length > 8 && (
           <div style={{ position: "relative" }}>
             <Search style={{ width: 13, height: 13, color: "#B0A9A4", position: "absolute", left: 10, top: 9 }} />
             <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="ブランチ名で絞り込む"
               style={{ width: "100%", boxSizing: "border-box" as const, padding: "7px 10px 7px 30px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#F9F8F6", outline: "none" }} />
+          </div>
+        )}
+
+        {/*
+          この画面を開いたままでもブランチを探し続けていることを出す（BRU13-027）。
+          出さないと「押した時点の一覧で固定されている」のか「探しているのか」が分からず、
+          結局ダイアログを閉じて開き直すことになる
+        */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" as const }}>
+          <p style={{ fontSize: 11, color: "#A09790", display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: watchOff ? "#D6D3D1" : "#10B981", flexShrink: 0 }} />
+            {watchOff
+              ? "新しいブランチの自動確認を止めています。更新すると再開します"
+              : checking
+                ? "新しいブランチを確認しています..."
+                : `新しいブランチを自動で確認しています（最終確認 ${new Date(checkedAt).toLocaleTimeString("ja-JP")}）`}
+          </p>
+          <button type="button" onClick={manualRefresh} disabled={checking}
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(26,23,20,0.12)", background: "#FFFFFF", color: checking ? "#A09790" : "#1A1714", cursor: checking ? "default" : "pointer", flexShrink: 0 }}>
+            <RefreshCw style={{ width: 12, height: 12, animation: checking ? "spin-cpd 1s linear infinite" : undefined }} />
+            {watchOff ? "再開して更新" : "更新"}
+          </button>
+        </div>
+
+        {freshSelectable.length > 0 && (
+          <div style={{ padding: "10px 12px", background: "#ECFDF5", border: "1px solid rgba(16,185,129,0.35)", borderRadius: 9 }}>
+            <p style={{ fontSize: 11, color: "#047857", fontWeight: 700, marginBottom: 6 }}>
+              この画面を開いたあとに、新しいブランチが見つかりました
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 6 }}>
+              {freshSelectable.map(n => (
+                <button key={n} type="button" onClick={() => setHead(n)}
+                  style={{ padding: "4px 9px", fontSize: 11, fontWeight: 700, fontFamily: "var(--font-mono)", borderRadius: 7, border: head === n ? "1px solid #047857" : "1px solid rgba(16,185,129,0.4)", background: head === n ? "#047857" : "#FFFFFF", color: head === n ? "#FFFFFF" : "#047857", cursor: "pointer" }}>
+                  {n}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
