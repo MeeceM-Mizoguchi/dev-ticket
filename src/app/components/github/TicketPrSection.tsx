@@ -10,43 +10,46 @@
 //
 // BRU13-015：
 //  ・紐付いたPRの行からリンクをコピーできるようにした
-//  ・PRが1件も紐付いていないときは、開いた時点で紐付け候補を出す。
-//    「PRを紐付ける」を押すまで何も始まらない状態を無くすため
+//
+// BRU13-019（チケットが開くのが遅いという指摘への対応）：
+//  開いた時点で GitHub を叩くのをやめた。ここで自動で走っていた
+//   ・PR作成候補（pending-branches：ブランチ全件の走査を伴う）
+//   ・紐付け候補の自動表示（pulls の取得）
+//  の2つが、チケット詳細の初回ロードのオーバーレイをそのまま数秒引き延ばしていたため。
+//  紐付いたPRの一覧（links）はDBだけで返るので、これだけを待つ。
+//  ブランチ探しは「PRを作成」を押してから走らせ、進捗を出す（CreatePullPrepDialog）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
+import { Check, Copy, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
 import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
   fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches,
-  linkTicket, unlinkTicket, mergePull, resolveLinkCandidate, relativeTime, GithubApiError,
+  linkTicket, unlinkTicket, mergePull, resolveLinkCandidate, GithubApiError,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
+import { CreatePullPrepDialog, type PrepState } from "@/app/components/github/CreatePullPrepDialog";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import type {
-  TicketGithubLink, TicketGithubLinkCandidate, GithubPull, GithubBranch, GithubPendingBranch,
+  TicketGithubLink, TicketGithubLinkCandidate, GithubPull, GithubBranch,
   GithubAccessLevel, GithubMergeMethod, TicketStatus,
 } from "@/app/types";
 
 const BLACK = "#1F2328";
 
-/** ブランチ候補を探しにいかないステータス。まだコミットが無い／作業が止まっているもの */
-const CANDIDATE_SKIP_STATUSES: TicketStatus[] = ["todo", "on-hold", "withdrawn"];
-
 /** 親（チケット詳細）へ渡す状態。リリースノート追加後の案内と離脱確認の判断に使う */
 export interface TicketPrState {
   /** どのチケットの状態か。チケットを切り替えた直後に前のチケットの合図を誤って使わないため */
   ticketId: string;
-  loaded: boolean;
   /**
-   * このセクションの表示が確定したか（BRU13-016）。
-   * 紐付け一覧に加えて、あとから差し込まれる「PR作成候補」「紐付け候補」まで出揃った状態。
-   * チケット詳細の初回ロード用オーバーレイは、これが立つまで外さない
+   * 紐付け一覧が返ってきたか。これがこのセクションの表示が確定した合図でもある。
+   * チケット詳細の初回ロード用オーバーレイは、これが立つまで外さない（BRU13-016）。
+   * links はDBだけで返るので、本体のクエリと並べても待ち時間はほぼ増えない（BRU13-019）
    */
-  settled: boolean;
+  loaded: boolean;
   level: GithubAccessLevel;
   /** 紐付いているPRの件数 */
   pullCount: number;
@@ -88,13 +91,11 @@ export function TicketPrSection({
   // 何も出ないと固まったように見える
   const [linking, setLinking] = useState<number | null>(null);
 
-  // このチケットのブランチ候補（ブランチ名に WBS 番号を含み、まだPRが無いもの）
-  const [candidates, setCandidates] = useState<GithubPendingBranch[] | null>(null);
-  // 「出す／出さない」が決まったか。GitHubを叩かずに決まるケースはその場で true にして待たせない
-  const [candidatesSettled, setCandidatesSettled] = useState(false);
-  const [pickerSettled, setPickerSettled] = useState(false);
   const [createTarget, setCreateTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string; head?: string } | null>(null);
-  const [preparingCreate, setPreparingCreate] = useState(false);
+  /** PR作成の準備（ブランチ取得＋このチケットのブランチ探し）の進捗。null なら準備していない */
+  const [prep, setPrep] = useState<PrepState | null>(null);
+  /** 準備の実行回。キャンセル・チケット切り替えのあとに返ってきた結果を捨てる目印 */
+  const prepRunRef = useRef(0);
   /** マージ確認を開くために詳細を引いている最中のPR番号 */
   const [preparingMerge, setPreparingMerge] = useState<number | null>(null);
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
@@ -144,16 +145,14 @@ export function TicketPrSection({
     setLinks([]);
     setLinkCandidates([]);
     setLevel("none");
-    setCandidates(null);
-    setCandidatesSettled(false);
-    setPickerSettled(false);
     setAvailable(null);
     setPicking(false);
+    // 準備中に別のチケットへ移ったら、その進捗は前のチケットのもの。閉じて結果も捨てる
+    prepRunRef.current++;
+    setPrep(null);
   }
 
-  // 非同期の完了が「今開いているチケットのものか」を、effect の再実行に左右されずに判定する。
-  // 「確定した」の合図はこの ref で見張る（cleanup の alive フラグだと、
-  //  同じチケットのまま effect が張り直されただけでも合図が落ちてしまう）
+  // 非同期の完了が「今開いているチケットのものか」を、effect の再実行に左右されずに判定する
   const currentKeyRef = useRef(shownKey);
   currentKeyRef.current = shownKey;
 
@@ -162,75 +161,29 @@ export function TicketPrSection({
   // 親へ状態を上げる。オブジェクトを毎回作ると無限ループになるので、値が変わったときだけ通知する
   const onStateChangeRef = useRef(onStateChange);
   useEffect(() => { onStateChangeRef.current = onStateChange; }, [onStateChange]);
-  // 一覧・PR作成候補・紐付け候補がすべて出揃った状態。親のオーバーレイ解除の条件になる
-  const settled = loaded && candidatesSettled && pickerSettled;
   useEffect(() => {
-    onStateChangeRef.current?.({ ticketId, loaded, settled, level, pullCount: pullLinks.length });
-  }, [ticketId, loaded, settled, level, pullLinks.length]);
+    onStateChangeRef.current?.({ ticketId, loaded, level, pullCount: pullLinks.length });
+  }, [ticketId, loaded, level, pullLinks.length]);
 
-  // ブランチ候補は「作れる人」にだけ、かつPRがまだ無いときだけ探す。
-  // pending-branches はブランチ全件の走査を伴うので、まだ着手していない／止まっている
-  // チケットでは投げない。取れなくてもこのセクションの本体は出したいので失敗は握りつぶす。
-  //
-  // 「出さない」と分かるものは通信せずその場で確定させる（親のオーバーレイを待たせないため）。
-  // 投げる場合も wbs を渡してサーバー側で絞らせる（compare の往復が桁で減る）
-  useEffect(() => {
-    if (!loaded) return;
-    const skip = level !== "merge" || !wbs
-      || (!!ticketStatus && CANDIDATE_SKIP_STATUSES.includes(ticketStatus))
-      || pullLinks.length > 0;
-    if (skip) { setCandidates(null); setCandidatesSettled(true); return; }
-    const key = shownKey;
-    let alive = true;
-    fetchPendingBranches(projectId, wbs)
-      .then(r => {
-        if (!alive) return;
-        const upper = wbs.toUpperCase();
-        setCandidates(r.branches.filter(b => b.name.toUpperCase().includes(upper)));
-      })
-      .catch(() => { if (alive) setCandidates([]); })
-      .finally(() => { if (currentKeyRef.current === key) setCandidatesSettled(true); });
-    return () => { alive = false; };
-  }, [loaded, level, wbs, pullLinks.length, projectId, ticketStatus, shownKey]);
-
-  // auto … 開いた直後の自動表示。
-  // 押していないのに読み込み中の枠を出して畳むとチカつくので、取れてから出す。
-  // 同じ理由で、失敗もトーストにしない（押していない処理の失敗は直しようがない）
-  const openPicker = useCallback(async (auto = false) => {
-    if (!auto) setPicking(true);
-    if (available) { setPicking(true); return; }
+  // 「PRを紐付ける」を押したときだけ走る。開いた時点では叩かない（BRU13-019）
+  const openPicker = useCallback(async () => {
+    setPicking(true);
+    if (available) return;
+    const key = currentKeyRef.current;
     try {
       // CI・レビューの状態はこの一覧では使わないので軽い方を叩く
       const r = await fetchPulls(projectId, { light: true });
+      if (currentKeyRef.current !== key) return; // 別チケットに切り替わっていたら捨てる
       // WBSが一致するPRを先頭に持ってくる
-      const sorted = wbsKey
+      setAvailable(wbsKey
         ? [...r.pulls].sort((a, b) => Number(b.detectedWbs.includes(wbsKey)) - Number(a.detectedWbs.includes(wbsKey)))
-        : r.pulls;
-      setAvailable(sorted);
-      // 自動表示で候補が0件なら、何も出さない
-      if (!auto || sorted.length > 0) setPicking(true);
+        : r.pulls);
     } catch (e) {
-      if (!auto) toast(e instanceof GithubApiError ? e.message : "PRを取得できませんでした", "error");
+      if (currentKeyRef.current !== key) return;
+      toast(e instanceof GithubApiError ? e.message : "PRを取得できませんでした", "error");
       setPicking(false);
     }
   }, [available, projectId, wbsKey, toast]);
-
-  // PRがまだ1件も紐付いていないなら、開いた（リロードした）時点で候補を出す。
-  // 候補の選択待ち（大文字小文字違い）が出ているときは、そちらを先に決めさせたいので出さない。
-  // 一度閉じたら開き直さないよう、チケットごとに1回だけ走らせる
-  const autoPickedRef = useRef("");
-  useEffect(() => {
-    if (!loaded) return;
-    // 自動表示を出さないと決まるケースは、通信せずにその場で確定させる
-    if (level !== "merge" || pullLinks.length > 0 || candidateGroups.length > 0
-      || autoPickedRef.current === ticketId) {
-      setPickerSettled(true);
-      return;
-    }
-    autoPickedRef.current = ticketId;
-    const key = shownKey;
-    void openPicker(true).finally(() => { if (currentKeyRef.current === key) setPickerSettled(true); });
-  }, [loaded, level, ticketId, pullLinks.length, candidateGroups.length, openPicker, shownKey]);
 
   // コピーできたことをその場で返す。行ごとに出し分けたいので対象のリンクIDを持つ
   const [copiedId, setCopiedId] = useState<number | null>(null);
@@ -292,19 +245,55 @@ export function TicketPrSection({
     }
   };
 
-  // PR作成ダイアログはブランチ一覧が要る。head を渡すと、そのブランチを選択済みで開く
-  const openCreate = async (head?: string) => {
-    setPreparingCreate(true);
+  /**
+   * PR作成の準備。「PRを作成」を押してから、必要なものを取りにいく（BRU13-019）。
+   *
+   *  ・ブランチ一覧（必須）
+   *  ・このチケットのWBS番号を含む、まだPRが無いブランチ（head を選択済みにするためだけ）
+   *
+   * 後者はブランチ全件の走査を伴って遅いので、以前はチケットを開いた時点で先回りしていたが、
+   * それがチケットが開くまでの待ち時間そのものになっていた。押してから走らせ、進捗を出す。
+   * 失敗しても作成そのものは続けられる（ブランチは作成画面で手で選べる）。
+   *
+   * 準備中に「キャンセル」やチケット切り替えがあったら、返ってきた結果は捨てる
+   */
+  const openCreate = async () => {
+    if (prep) return;
+    const run = ++prepRunRef.current;
+    const alive = () => prepRunRef.current === run;
+    setPrep({ branches: "running", candidates: wbs ? "running" : "skipped" });
+
+    const branchesP = fetchBranches(projectId).then(
+      r => { if (alive()) setPrep(p => p && { ...p, branches: "done" }); return r; },
+      e => { if (alive()) setPrep(p => p && { ...p, branches: "failed" }); throw e; },
+    );
+
+    const headP: Promise<string | undefined> = wbs
+      ? fetchPendingBranches(projectId, wbs).then(
+        r => {
+          const upper = wbs.toUpperCase();
+          const hit = r.branches.find(b => b.name.toUpperCase().includes(upper))?.name;
+          if (alive()) setPrep(p => p && { ...p, candidates: hit ? "done" : "none" });
+          return hit;
+        },
+        () => { if (alive()) setPrep(p => p && { ...p, candidates: "failed" }); return undefined; },
+      )
+      : Promise.resolve(undefined);
+
     try {
-      const r = await fetchBranches(projectId);
+      const [r, head] = await Promise.all([branchesP, headP]);
+      if (!alive()) return;
       if (!r.branches.length) { toast("ブランチを取得できませんでした", "error"); return; }
       setCreateTarget({ branches: r.branches, defaultBranch: r.defaultBranch || "main", head });
     } catch (e) {
+      if (!alive()) return;
       toast(e instanceof GithubApiError ? e.message : "ブランチを取得できませんでした", "error");
     } finally {
-      setPreparingCreate(false);
+      if (alive()) setPrep(null);
     }
   };
+
+  const cancelPrep = () => { prepRunRef.current++; setPrep(null); };
 
   // 作成したPRはこのチケットのものと分かっているので、その場で紐付ける。
   // 一覧の取り直し（PR一覧経由の自動検出）を待たせない
@@ -382,10 +371,10 @@ export function TicketPrSection({
         </div>
         {level === "merge" && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button onClick={() => openCreate(candidates?.[0]?.name)} disabled={busy || preparingCreate}
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: preparingCreate ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy || preparingCreate ? "default" : "pointer" }}>
+            <button onClick={() => void openCreate()} disabled={busy || !!prep}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: prep ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy || prep ? "default" : "pointer" }}>
               <GitPullRequest style={{ width: 11, height: 11 }} />
-              {preparingCreate ? "準備中..." : "PRを作成"}
+              {prep ? "準備中..." : "PRを作成"}
             </button>
             <button onClick={() => void openPicker()} disabled={busy}
               style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: busy ? "default" : "pointer" }}>
@@ -452,38 +441,6 @@ export function TicketPrSection({
           </div>
         </div>
       ))}
-
-      {/* このチケットのブランチ候補。「このコミットのPRを作りますか？」の導線 */}
-      {level === "merge" && pullLinks.length === 0 && candidates && candidates.length > 0 && (
-        <div style={{ border: "1px solid rgba(2,132,199,0.28)", background: "#F0F9FF", borderRadius: 9, padding: "10px 12px", marginBottom: 10 }}>
-          <p style={{ fontSize: 11, fontWeight: 700, color: "#0284C7", marginBottom: 7 }}>
-            このチケットのブランチが見つかりました。プルリクエストを作成しますか？
-          </p>
-          <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
-            {candidates.map(b => (
-              <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" as const, background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "8px 10px" }}>
-                <div style={{ flex: 1, minWidth: 200 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <GitBranch style={{ width: 11, height: 11, color: "#8A837B", flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{b.name}</span>
-                  </div>
-                  {(b.message || b.committedDate) && (
-                    <p style={{ fontSize: 11, color: "#6B6458", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-                      {b.message}
-                      {b.committedDate && ` ・ ${relativeTime(b.committedDate)}`}
-                      {b.authorName && ` ・ ${b.authorName}`}
-                    </p>
-                  )}
-                </div>
-                <button onClick={() => openCreate(b.name)} disabled={busy || preparingCreate}
-                  style={{ padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy || preparingCreate ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy || preparingCreate ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
-                  このブランチでPRを作成
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {pullLinks.length === 0 && links.length === 0 ? (
         <p style={{ fontSize: 11, color: "#B0A9A4" }}>紐付いたPRはありません。</p>
@@ -608,6 +565,11 @@ export function TicketPrSection({
         その内側に置いた position:fixed のダイアログはパネル基準に閉じ込められることがある。
         オーバーレイは body 直下に出す
       */}
+      {prep && createPortal(
+        <div style={{ position: "relative", zIndex: 340 }}>
+          <CreatePullPrepDialog state={prep} onCancel={cancelPrep} />
+        </div>, document.body)}
+
       {createTarget && createPortal(
         <div style={{ position: "relative", zIndex: 340 }}>
           <CreatePullDialog

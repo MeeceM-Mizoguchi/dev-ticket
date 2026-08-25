@@ -456,7 +456,7 @@ export function TicketDetailPanel({
 
   // 関連PR（BRU13-013）。リリースノートに追加したのにPRが紐付いていないチケットを取り残さないための状態。
   // 判定材料は TicketPrSection が持っているので、そこから上げてもらう
-  const [prState, setPrState] = useState<TicketPrState>({ ticketId: "", loaded: false, settled: false, level: "none", pullCount: 0 });
+  const [prState, setPrState] = useState<TicketPrState>({ ticketId: "", loaded: false, level: "none", pullCount: 0 });
   const [prLinkWaived, setPrLinkWaived] = useState(ticket?.prLinkWaived ?? false);
   /** 「対応完了してリリースノートに追加」を押した直後だけ、関連PRを強調して紐付けを促す */
   const [prGuide, setPrGuide] = useState(false);
@@ -655,9 +655,12 @@ export function TicketDetailPanel({
   }, [clearLoadTimers, hideLoadOverlay]);
 
   // 関連PR（GitHub）は TicketPrSection が自前で取りに行くため、下の jobs には並べられない。
-  // 一覧・PR作成候補・紐付け候補が出揃った合図を子から受け取り、本体のクエリと待ち合わせる。
+  // 紐付け一覧が返った合図を子から受け取り、本体のクエリと待ち合わせる。
   // 待たずに外していたので「オーバーレイが消えたあとに関連PRが生えてくる」状態だった（BRU13-016）。
   // どちらの合図が先に来ても、ここで両方揃っているかを確かめてから解除に進む。
+  //
+  // 待つのは紐付け一覧（DBのみ・速い）だけ。ブランチ探しやPR一覧の取得まで待っていたため
+  // チケットが開くまで数秒かかっていたので、そちらは押したときに走らせるようにした（BRU13-019）。
   const jobsDoneRunRef = useRef(0);
   const loadTicketIdRef = useRef("");
   /** 関連PRセクションが描画される（＝合図を待つ）ロードかどうか */
@@ -673,7 +676,7 @@ export function TicketDetailPanel({
 
   const handlePrStateChange = useCallback((s: TicketPrState) => {
     setPrState(s);
-    if (!s.settled) return;
+    if (!s.loaded) return;
     prSettledTicketRef.current = s.ticketId;
     tryFinishInitialLoad(loadRunIdRef.current);
   }, [tryFinishInitialLoad]);
@@ -904,7 +907,7 @@ export function TicketDetailPanel({
     setIsOperationVerified(ticket.isOperationVerified ?? false);
     // チケットを切り替えたら、前のチケットの案内・離脱確認を持ち越さない
     setPrLinkWaived(ticket.prLinkWaived ?? false);
-    setPrState({ ticketId: "", loaded: false, settled: false, level: "none", pullCount: 0 });
+    setPrState({ ticketId: "", loaded: false, level: "none", pullCount: 0 });
     setPrGuide(false);
     setShowPrLeaveConfirm(false);
     setShowCompletionOverlay(false);
