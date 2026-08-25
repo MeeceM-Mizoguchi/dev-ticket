@@ -34,6 +34,12 @@ export interface CellEdit {
   valign?: "top" | "middle" | "bottom";
   /** 折り返し表示。undefined=変更なし / true=折り返す / false=はみ出す（BRU10-055） */
   wrap?: boolean;
+  /**
+   * 書式インデックス（styles.xml の cellXfs の番号）を丸ごと差し替える。BRU13-019。
+   * セルのコピー＆貼り付けで、フォント・サイズ・太字・罫線・表示形式まで
+   * そのまま複製するために使う。fill/align/wrap はこの上に重ねて適用される。
+   */
+  styleIndex?: number;
 }
 
 // ── 列番号 <-> 列文字 ──────────────────────────────────────────
@@ -348,6 +354,10 @@ export function patchXlsx(originalBytes: Uint8Array, edits: CellEdit[]): Uint8Ar
       if (!cell.hasAttribute("s")) {
         const inherited = inheritedStyle(row, edit.col, ranges);
         if (inherited) cell.setAttribute("s", inherited);
+      }
+      // コピーしてきた書式があれば土台ごと差し替える（フォント・罫線・表示形式まで複製）
+      if (edit.styleIndex !== undefined && Number.isInteger(edit.styleIndex)) {
+        cell.setAttribute("s", String(edit.styleIndex));
       }
       applyEdit(doc, cell, edit);
       // 色・揃え・折り返し

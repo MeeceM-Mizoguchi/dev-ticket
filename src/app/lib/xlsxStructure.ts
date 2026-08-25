@@ -39,7 +39,7 @@ function splitRef(ref: string): { col: number; row: number } | null {
 }
 
 // シート名 → xl/worksheets/sheetN.xml のパスを解決
-function resolveSheetPath(files: Record<string, Uint8Array>, sheetName: string): string | null {
+export function resolveSheetPath(files: Record<string, Uint8Array>, sheetName: string): string | null {
   const wb = files["xl/workbook.xml"] ? strFromU8(files["xl/workbook.xml"]) : null;
   const rels = files["xl/_rels/workbook.xml.rels"] ? strFromU8(files["xl/_rels/workbook.xml.rels"]) : null;
   if (!wb || !rels) return null;
@@ -165,6 +165,100 @@ export function removeCols(bytes: Uint8Array, sheetName: string, at: number, cou
     }
     shiftCols(doc, at + count, -count);
     adjustMerges(doc, "col", at, -count);
+  });
+}
+
+// ── 行/列のコピー挿入（BRU13-019）────────────────────────────
+// いずれも「元の行/列の XML をそのまま複製して挿入位置へ差し込む」。
+// 値・スタイル・行高・列幅がまとめて複製されるので、Excel の
+// 「コピーしたセルの挿入」と同じ結果になる。
+// 「入れ替え（移動）」は 呼び出し側で コピー挿入 → 元を削除 の2手で表現する。
+
+// 複製したセルの数式を安全な形にする。
+// 共有数式(t="shared")・配列数式(t="array")のマスタをそのまま複製すると
+// si の重複で Excel が「修復が必要」と判断するため、通常の数式へ落とす。
+// 本体を持たない子セル（si 参照のみ）は数式を捨ててキャッシュ値だけ残す。
+function sanitizeClonedFormulas(scope: Element) {
+  for (const f of Array.from(scope.getElementsByTagName("f"))) {
+    const t = f.getAttribute("t");
+    if (t !== "shared" && t !== "array") continue;
+    if ((f.textContent ?? "").trim() === "") { f.parentNode?.removeChild(f); continue; }
+    f.removeAttribute("t"); f.removeAttribute("si"); f.removeAttribute("ref");
+  }
+}
+function insertRowSorted(sheetData: Element, row: Element) {
+  const rn = Number(row.getAttribute("r"));
+  for (const r of Array.from(sheetData.getElementsByTagName("row"))) {
+    if (Number(r.getAttribute("r")) > rn) { sheetData.insertBefore(row, r); return; }
+  }
+  sheetData.appendChild(row);
+}
+function insertCellSorted(row: Element, cell: Element) {
+  const p = splitRef(cell.getAttribute("r") || "");
+  if (!p) return;
+  for (const c of Array.from(row.getElementsByTagName("c"))) {
+    const q = splitRef(c.getAttribute("r") || "");
+    if (q && q.col > p.col) { row.insertBefore(cell, c); return; }
+  }
+  row.appendChild(cell);
+}
+
+// srcAt から count 行を複製し、insertAt（挿入前の座標・1始まり）へ差し込む
+export function copyRows(bytes: Uint8Array, sheetName: string, srcAt: number, count: number, insertAt: number): Uint8Array {
+  if (count <= 0) return bytes;
+  return withSheet(bytes, sheetName, doc => {
+    const sheetData = doc.getElementsByTagName("sheetData")[0];
+    if (!sheetData) return;
+    // 空きを作る前に元の行を控える（行番号が動くため）
+    const clones: (Element | null)[] = [];
+    for (let i = 0; i < count; i++) {
+      const found = Array.from(sheetData.getElementsByTagName("row"))
+        .find(r => Number(r.getAttribute("r")) === srcAt + i);
+      clones.push(found ? (found.cloneNode(true) as Element) : null);
+    }
+    shiftRows(doc, insertAt, count);
+    adjustMerges(doc, "row", insertAt, count);
+    for (let i = 0; i < count; i++) {
+      const clone = clones[i];
+      if (!clone) continue;
+      const rn = insertAt + i;
+      clone.setAttribute("r", String(rn));
+      for (const c of Array.from(clone.getElementsByTagName("c"))) {
+        const p = splitRef(c.getAttribute("r") || "");
+        if (p) c.setAttribute("r", colLetter(p.col) + rn);
+      }
+      sanitizeClonedFormulas(clone);
+      insertRowSorted(sheetData, clone);
+    }
+  });
+}
+
+// srcAt から count 列を複製し、insertAt（挿入前の座標・1始まり）へ差し込む
+export function copyCols(bytes: Uint8Array, sheetName: string, srcAt: number, count: number, insertAt: number): Uint8Array {
+  if (count <= 0) return bytes;
+  return withSheet(bytes, sheetName, doc => {
+    const sheetData = doc.getElementsByTagName("sheetData")[0];
+    if (!sheetData) return;
+    // 列をずらす前に、各行の対象セルを控える
+    const pending: { row: Element; cells: { offset: number; el: Element }[] }[] = [];
+    for (const row of Array.from(sheetData.getElementsByTagName("row"))) {
+      const cells: { offset: number; el: Element }[] = [];
+      for (const c of Array.from(row.getElementsByTagName("c"))) {
+        const p = splitRef(c.getAttribute("r") || "");
+        if (p && p.col >= srcAt && p.col < srcAt + count) cells.push({ offset: p.col - srcAt, el: c.cloneNode(true) as Element });
+      }
+      if (cells.length) pending.push({ row, cells });
+    }
+    shiftCols(doc, insertAt, count);
+    adjustMerges(doc, "col", insertAt, count);
+    for (const { row, cells } of pending) {
+      const rn = Number(row.getAttribute("r"));
+      for (const { offset, el } of cells) {
+        el.setAttribute("r", colLetter(insertAt + offset) + rn);
+        sanitizeClonedFormulas(el);
+        insertCellSorted(row, el);
+      }
+    }
   });
 }
 

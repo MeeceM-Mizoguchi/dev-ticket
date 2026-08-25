@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { parseXlsxDrawings, calloutTailPoints } from "@/app/lib/xlsxDrawing";
 import type { DrawingObject, Paragraph } from "@/app/lib/xlsxDrawing";
 import { parseThemePalette, resolveCellColor, resolveFill } from "@/app/lib/xlsxCellColor";
-import { textWidth, wrapHeight, spillExtents } from "@/app/lib/xlsxTextLayout";
+import { textWidth, wrapHeight, spillExtents, shouldWrap, fitColumnWidth } from "@/app/lib/xlsxTextLayout";
 import { fetchFileWithRetry } from "@/app/lib/projectFiles";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) ビューア
@@ -65,6 +65,7 @@ const emptyCell = (): CellData => ({
   colSpan: 1, rowSpan: 1, hidden: false,
 });
 
+const EMPTY_CELL = emptyCell();
 const fontOf = (c: CellData) => ({ size: c.sizePx, bold: c.bold, italic: c.italic, family: CELL_FONT_FAMILY });
 
 // exceljs の cell.text は文字列とは限らない。
@@ -284,6 +285,8 @@ function CellView({ cell, width }: { cell: CellData; width: number }) {
           display: "flex", alignItems: vFlex, justifyContent: flex,
           padding: `0 ${CELL_PAD_X}px`, boxSizing: "border-box",
           whiteSpace: "nowrap", overflow: "hidden", pointerEvents: "none",
+          // 隣のセルが背景色を持つと はみ出した文字が隠れるので、手前に描く
+          zIndex: 1,
         }}>
           {flatText(cell.text)}
         </div>
@@ -373,7 +376,28 @@ export function ExcelViewer({ url }: { url: string }) {
             rows.push(cells);
           }
 
+          // セル内改行があるセルは、ファイルに折り返し指定が無くても改行して見せる（編集画面と共通の規則）
+          for (const line of rows) for (const cd of line) cd.wrap = shouldWrap(cd.text, cd.wrap);
+
           const colWidths = Array.from({ length: baseCols }, (_, i) => colPx(i));
+
+          // 開いた時点で文字が見えない列を広げる（編集画面と共通の規則）。広げるだけで狭めない。
+          for (let c = 0; c < baseCols; c++) {
+            const w = fitColumnWidth(
+              Array.from({ length: baseRows }, (_, r) => {
+                const cd = rows[r][c];
+                const next = rows[r][c + 1];
+                // 結合セルは1列だけ広げても意味が無いので対象外
+                const skip = !cd || cd.hidden || cd.colSpan > 1;
+                return {
+                  text: skip ? "" : cd.text,
+                  wrap: !skip && cd.wrap,
+                  font: fontOf(cd ?? EMPTY_CELL),
+                  spillable: !!next && !next.hidden && next.text === "",
+                };
+              }), CELL_PAD_X);
+            if (w > colWidths[c]) colWidths[c] = w;
+          }
 
           // 折り返しセルのぶん行高を広げる。
           // Excel はファイルに計算済みの行高(ht)を持っているが、こちらは列幅もフォントも
@@ -384,9 +408,11 @@ export function ExcelViewer({ url }: { url: string }) {
             let h = baseRowPx(r);
             for (let c = 0; c < baseCols; c++) {
               const cd = rows[r][c];
-              if (!cd || cd.hidden || !cd.wrap || !cd.text || cd.rowSpan > 1) continue;
-              const w = contentWidth(sumPx(colWidths, c, c + cd.colSpan));
-              h = Math.max(h, wrapHeight(cd.text, w, fontOf(cd), lineHeightPx(cd.sizePx), CELL_PAD_Y * 2 + 2));
+              if (!cd || cd.hidden || !cd.text || cd.rowSpan > 1) continue;
+              // 折り返しは行数ぶん、そうでなくても大きい文字は1行ぶんの高さを確保する
+              h = Math.max(h, cd.wrap
+                ? wrapHeight(cd.text, contentWidth(sumPx(colWidths, c, c + cd.colSpan)), fontOf(cd), lineHeightPx(cd.sizePx), CELL_PAD_Y * 2 + 2)
+                : lineHeightPx(cd.sizePx) + CELL_PAD_Y * 2 + 2);
             }
             rowHeights.push(h);
           }
