@@ -625,6 +625,24 @@ export interface GithubMissingPermission {
   why: string;
 }
 
+/**
+ * 権限不足で操作が止まっている状態。
+ *
+ * 「App の設定そのものが足りない（scope=app）」と
+ * 「設定は足りていて承認がまだ（scope=install）」は直しに行く画面が違う。
+ * どちらかを断定せずに案内すると、案内どおりに操作しても直らないため必ず分ける。
+ */
+export interface GithubPermissionBlock {
+  /** "repo" は権限ではなくリポジトリ側（ブランチ保護など）で拒否された場合 */
+  scope: "app" | "install" | "repo";
+  operation: "merge" | "create-pull" | "review";
+  missing: GithubMissingPermission[];
+  /** 直しに行くGitHubの画面。分からなければ null */
+  fixUrl: string | null;
+  /** そのまま画面に出せる日本語 */
+  message: string;
+}
+
 /** GET /api/github/status の戻り。画面のセットアップ状態の判定に使う。 */
 export interface GithubStatus {
   /** サーバーに GitHub App の環境変数が入っているか */
@@ -644,6 +662,14 @@ export interface GithubStatus {
    * 空でなければ、その権限を使う操作（マージなど）は実行しても必ず失敗する。
    */
   missingPermissions: GithubMissingPermission[];
+  /**
+   * 不足がどちら側にあるか。null なら不足なし。
+   *   "app"     … App の設定そのもの。インストール画面で承認しても直らない
+   *   "install" … 宣言は足りていて、承認がまだ
+   */
+  permissionScope: "app" | "install" | null;
+  /** App の権限設定ページ（App の所有者だけが開ける） */
+  appPermissionsUrl: string | null;
   /** 組織にインストール済みか */
   installed: boolean;
   /** GitHub側でアンインストールされている等、トークンが使えない状態 */
@@ -791,6 +817,8 @@ export interface GithubBulkMergeResult {
   merged: number;
   failed: number;
   results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string }[];
+  /** 権限で止まったときだけ入る。直しに行く画面を結果画面から出すために使う */
+  permission?: GithubPermissionBlock;
 }
 
 /** リリース待ち → リリース済み の自動反映の結果 */

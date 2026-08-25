@@ -18,6 +18,7 @@ import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { PendingBranches } from "@/app/components/github/PendingBranches";
 import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
+import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import {
   fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, mergePullsBulk,
@@ -25,7 +26,7 @@ import {
 } from "@/app/lib/github";
 import type {
   Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, GithubPendingBranch, TicketGithubLink,
-  GithubAccessLevel, GithubMergeMethod,
+  GithubAccessLevel, GithubMergeMethod, GithubPermissionBlock,
 } from "@/app/types";
 
 const BLACK = "#1F2328";
@@ -77,6 +78,12 @@ export function GithubPage() {
    * ダイアログごと消えてしまい、結果表示を読む前に閉じてしまう。
    */
   const [bulkTargets, setBulkTargets] = useState<GithubPull[] | null>(null);
+  /**
+   * マージ・PR作成が GitHub App の権限で止まる状態。
+   * 押してから全件失敗して初めて理由が出る、という繰り返しを断つために
+   * 一覧を取った時点でサーバーから受け取り、実行の入口を閉じる。
+   */
+  const [writeBlock, setWriteBlock] = useState<GithubPermissionBlock | null>(null);
 
   // ── プロジェクトの解決 ────────────────────────────────────
   useEffect(() => {
@@ -113,6 +120,7 @@ export function GithubPage() {
           fetchPendingBranches(project.id).then(p => p.branches).catch(() => [] as GithubPendingBranch[]),
         ]);
         setPulls(r.pulls); setLinks(r.links); setLevel(r.level); setRepo(r.repo);
+        setWriteBlock(r.writeBlock ?? null);
         setPending(pendingBranches);
         setSelected(new Set());
       } else if (which === "issues") {
@@ -307,10 +315,12 @@ export function GithubPage() {
                 ))}
               </div>
 
-              {/* PRの作成は書き込み操作なので「マージ可」の人にだけ出す */}
+              {/* PRの作成は書き込み操作なので「マージ可」の人にだけ出す。
+                  権限で必ず失敗する状態では押させない（理由はすぐ下の帯に出ている） */}
               {tab === "pulls" && level === "merge" && (
-                <button onClick={() => openCreatePull()} disabled={preparingCreate}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 16px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: preparingCreate ? "#9CA3AF" : BLACK, color: "#FFF", cursor: preparingCreate ? "default" : "pointer", whiteSpace: "nowrap" as const }}>
+                <button onClick={() => openCreatePull()} disabled={preparingCreate || !!writeBlock}
+                  title={writeBlock ? writeBlock.message : undefined}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 16px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: preparingCreate || writeBlock ? "#9CA3AF" : BLACK, color: "#FFF", cursor: preparingCreate || writeBlock ? "not-allowed" : "pointer", whiteSpace: "nowrap" as const }}>
                   <GitPullRequest style={{ width: 13, height: 13 }} />
                   {preparingCreate ? "準備中..." : "プルリクエストを作成"}
                 </button>
@@ -328,13 +338,16 @@ export function GithubPage() {
             <PageLoader label="GitHubから取得中..." />
           ) : tab === "pulls" ? (
             <>
+              {/* 権限が足りないと、閲覧はできるのにマージだけが必ず失敗する。
+                  選んで押したあとに全件失敗させないよう、一覧の先頭で先に知らせる */}
+              {writeBlock && <PermissionBlockNotice block={writeBlock} />}
               <PendingBranches
                 branches={pending}
                 canCreate={level === "merge"}
                 onCreate={name => openCreatePull(name)}
               />
               {/* まとめてマージの操作バー。マージできるPRが2件以上あるときだけ出す */}
-              {level === "merge" && mergeablePulls.length > 1 && (
+              {level === "merge" && !writeBlock && mergeablePulls.length > 1 && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: selected.size ? "#F0F9FF" : "#FFF", border: `1px solid ${selected.size ? "rgba(2,132,199,0.28)" : "rgba(26,23,20,0.09)"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: "#4B4540" }}>
@@ -367,6 +380,7 @@ export function GithubPage() {
                 pulls={pulls} level={level} links={links}
                 selected={selected} onToggleSelect={toggleSelect}
                 onMergeClick={setMergeTarget}
+                writeBlocked={writeBlock?.message ?? null}
               />
             </>
           ) : tab === "issues" ? (
