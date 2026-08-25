@@ -5,7 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@11.1.1",
   "scripts": {
-    "build": "vite build && node scripts/publish-version.mjs",
+    "build": "node scripts/check-ime-enter.mjs && vite build && node scripts/publish-version.mjs",
+    "check:ime": "node scripts/check-ime-enter.mjs",
     "dev": "vite"
   },
   "dependencies": {

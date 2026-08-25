@@ -37,6 +37,13 @@ export function getExt(fileName: string): string {
   return i < 0 ? "" : fileName.slice(i + 1).toLowerCase();
 }
 
+// 名前と拡張子(先頭のドット込み)に割る。先頭ドット(.gitignore 等)は拡張子扱いしない。
+// api/project-files/[action].ts の splitName と同じ規則。ずれると改名時に拡張子が二重になる。
+export function splitFileName(fileName: string): { base: string; ext: string } {
+  const i = fileName.lastIndexOf(".");
+  return i > 0 ? { base: fileName.slice(0, i), ext: fileName.slice(i) } : { base: fileName, ext: "" };
+}
+
 export function getFileKind(fileName: string): FileKind {
   return EXT_KIND[getExt(fileName)] ?? "other";
 }
@@ -209,6 +216,17 @@ export async function uploadProjectFile(
 export async function fetchDavUrl(fileId: string): Promise<string> {
   const res = await postApi<{ url: string }>("dav-url", { fileId });
   return res.url;
+}
+
+/**
+ * ファイル名を変更する。
+ * file_name は版・コメント・WebDAV の引き当てキーなので、サーバー側で同名の全バージョンと
+ * コメントをまとめて付け替える。拡張子は元のものが保たれ、同名が既にあれば「(1)」が付く。
+ * @returns 実際に登録された名前（重複回避で変わることがある）
+ */
+export async function renameProjectFile(fileId: string, newName: string): Promise<string> {
+  const res = await postApi<{ fileName: string }>("rename", { fileId, newName });
+  return res.fileName;
 }
 
 /** DB行とストレージ実体をまとめて削除する */

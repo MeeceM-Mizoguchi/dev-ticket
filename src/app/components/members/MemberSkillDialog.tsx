@@ -26,6 +26,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { SkillHistoryView } from "@/app/components/members/SkillHistoryView";
 import { MlBatchLogView, BatchLogFilter } from "@/app/components/members/MlBatchLogView";
 import { SkillRestoreDialog } from "@/app/components/members/SkillRestoreDialog";
+import { submitOnEnter } from "@/app/lib/submitKey";
 
 interface Row {
   skillId: string;
@@ -376,7 +377,7 @@ export function MemberSkillDialog({ member, orgId, canRestore, onClose, onSaved 
                   {customLayer === layer.key ? (
                     <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
                       <input autoFocus value={customName} onChange={e => setCustomName(e.target.value)}
-                        onKeyDown={e => { if (e.key === "Enter") void addCustom(layer.key); if (e.key === "Escape") { setCustomLayer(null); setCustomName(""); } }}
+                        onKeyDown={submitOnEnter(() => void addCustom(layer.key), { onCancel: () => { setCustomLayer(null); setCustomName(""); } })}
                         placeholder="スキル名を入力（例: Svelte）"
                         style={{ flex: 1, padding: "6px 10px", fontSize: 12, borderRadius: 8, border: "1px solid rgba(5,150,105,0.4)", outline: "none", background: "#FFFFFF", color: "#1A1714" }} />
                       <button onClick={() => void addCustom(layer.key)} disabled={!customName.trim()}

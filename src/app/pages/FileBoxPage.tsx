@@ -14,6 +14,7 @@ import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { FILE_COMMENT_PARAM, FILE_REPLY_PARAM } from "@/app/lib/fileCommentLink";
 import { FILE_FOLDER_PARAM } from "@/app/lib/shareLink";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
+import { submitOnEnter } from "@/app/lib/submitKey";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
@@ -22,7 +23,7 @@ import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
-  downloadProjectFile,
+  downloadProjectFile, renameProjectFile, splitFileName,
 } from "@/app/lib/projectFiles";
 
 const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
@@ -62,7 +63,7 @@ function FileListSkeleton() {
             <Sk w="26%" h={10} />
           </div>
           {/* 実際の操作ボタン(padding:5)と同じ位置に合わせる */}
-          {[0, 1, 2].map(k => (
+          {[0, 1, 2, 3].map(k => (
             <span key={k} style={{ padding: 5, display: "flex", flexShrink: 0 }}><Sk w={13} h={13} radius={4} /></span>
           ))}
         </div>
@@ -96,9 +97,10 @@ export function FileBoxPage() {
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
 
+  // 改名ダイアログはフォルダ・ファイル共用。ファイルのときは拡張子を除いた部分だけを編集する。
   const [renameTarget, setRenameTarget] = useState<ProjectFile | null>(null);
-  const [renameFolderName, setRenameFolderName] = useState("");
-  const [renamingFolder, setRenamingFolder] = useState(false);
+  const [renameName, setRenameName] = useState("");
+  const [renaming, setRenaming] = useState(false);
 
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState<ProjectFile | null>(null);
@@ -301,55 +303,72 @@ export function FileBoxPage() {
     }
   }, [project, newFolderName, currentFolderId, userName, toast, load]);
 
-  const handleRenameFolder = useCallback(async () => {
-    if (!project || !renameTarget || !renameFolderName.trim()) return;
-    const inputName = renameFolderName.trim();
-    setRenamingFolder(true);
+  // 改名ダイアログを開く。ファイルは拡張子を触らせないので、編集対象は拡張子を除いた部分だけ。
+  const openRename = useCallback((f: ProjectFile) => {
+    setRenameTarget(f);
+    setRenameName(f.isFolder ? f.fileName : splitFileName(f.fileName).base);
+  }, []);
+
+  const handleRename = useCallback(async () => {
+    if (!project || !renameTarget || !renameName.trim()) return;
+    const isFolder = renameTarget.isFolder;
+    const inputName = isFolder ? renameName.trim() : `${renameName.trim()}${splitFileName(renameTarget.fileName).ext}`;
+    if (inputName === renameTarget.fileName) { setRenameTarget(null); setRenameName(""); return; }
+    setRenaming(true);
     try {
-      const targetParentId = renameTarget.parentId ?? null;
-      let query = supabase!
-        .from("project_files")
-        .select("file_name")
-        .eq("project_id", project.id)
-        .neq("id", renameTarget.id);
+      let finalName: string;
+      if (isFolder) {
+        // フォルダ名は同じ階層の中だけで重複を避ければよい（版もコメントも持たない）
+        const targetParentId = renameTarget.parentId ?? null;
+        let query = supabase!
+          .from("project_files")
+          .select("file_name")
+          .eq("project_id", project.id)
+          .neq("id", renameTarget.id);
 
-      if (targetParentId === null) {
-        query = query.is("parent_id", null);
-      } else {
-        query = query.eq("parent_id", targetParentId);
-      }
-
-      const { data: existingItems } = await query;
-      const existingNames = new Set((existingItems ?? []).map(item => item.file_name));
-
-      let finalName = inputName;
-      if (existingNames.has(finalName)) {
-        let counter = 1;
-        while (existingNames.has(`${inputName} (${counter})`)) {
-          counter++;
+        if (targetParentId === null) {
+          query = query.is("parent_id", null);
+        } else {
+          query = query.eq("parent_id", targetParentId);
         }
-        finalName = `${inputName} (${counter})`;
-      }
 
-      const { error } = await supabase!
-        .from("project_files")
-        .update({ file_name: finalName })
-        .eq("id", renameTarget.id);
-      if (error) throw error;
+        const { data: existingItems } = await query;
+        const existingNames = new Set((existingItems ?? []).map(item => item.file_name));
+
+        finalName = inputName;
+        if (existingNames.has(finalName)) {
+          let counter = 1;
+          while (existingNames.has(`${inputName} (${counter})`)) {
+            counter++;
+          }
+          finalName = `${inputName} (${counter})`;
+        }
+
+        const { error } = await supabase!
+          .from("project_files")
+          .update({ file_name: finalName })
+          .eq("id", renameTarget.id);
+        if (error) throw error;
+      } else {
+        // ファイル名は版・コメント・WebDAV の引き当てキーなので、
+        // 同名の全バージョンとコメントをまとめて付け替えるサーバー側に任せる。
+        finalName = await renameProjectFile(renameTarget.id, inputName);
+      }
 
       if (finalName !== inputName) {
-        toast(`同名のフォルダがあるため名前を変更しました：「${inputName}」→「${finalName}」`);
+        toast(`同名の${isFolder ? "フォルダ" : "ファイル"}があるため名前を変更しました：「${inputName}」→「${finalName}」`);
       }
-      toast(`フォルダ名を「${finalName}」に変更しました`);
+      toast(`${isFolder ? "フォルダ名" : "ファイル名"}を「${finalName}」に変更しました`);
       setRenameTarget(null);
-      setRenameFolderName("");
+      setRenameName("");
+      if (!isFolder) emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
       load();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "フォルダ名の変更に失敗しました", "error");
+      toast(e instanceof Error ? e.message : `${isFolder ? "フォルダ" : "ファイル"}名の変更に失敗しました`, "error");
     } finally {
-      setRenamingFolder(false);
+      setRenaming(false);
     }
-  }, [project, renameTarget, renameFolderName, toast, load]);
+  }, [project, renameTarget, renameName, toast, load]);
 
   const handleOpenFolder = useCallback((folder: ProjectFile) => {
     setCurrentFolderId(folder.id);
@@ -582,7 +601,7 @@ export function FileBoxPage() {
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Link2 style={{ width: 13, height: 13 }} />
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setRenameTarget(f); setRenameFolderName(f.fileName); }} title="名前を変更"
+                    <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Pencil style={{ width: 13, height: 13 }} />
                     </button>
@@ -629,6 +648,10 @@ export function FileBoxPage() {
                   <button onClick={e => { e.stopPropagation(); handleDownload(f); }} title="ダウンロード"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Download style={{ width: 13, height: 13 }} />
+                  </button>
+                  <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                    <Pencil style={{ width: 13, height: 13 }} />
                   </button>
                   <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
@@ -681,38 +704,54 @@ export function FileBoxPage() {
               onChange={e => setNewFolderName(e.target.value)}
               placeholder="新しいフォルダ名"
               autoFocus
-              onKeyDown={e => { if (e.key === "Enter" && newFolderName.trim()) handleCreateFolder(); }}
+              onKeyDown={submitOnEnter(handleCreateFolder, { enabled: !creatingFolder && !!newFolderName.trim(), onCancel: () => setShowFolderModal(false) })}
               style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", fontSize: 13, border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, outline: "none", fontFamily: "inherit" }}
             />
           </div>
         </DialogShell>
       )}
-      {renameTarget && (
-        <DialogShell title="フォルダ名の変更" onClose={() => setRenameTarget(null)} size="sm"
-          footer={<>
-            <button type="button" onClick={() => setRenameTarget(null)} disabled={renamingFolder}
-              style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
-              キャンセル
-            </button>
-            <button type="button" onClick={handleRenameFolder} disabled={renamingFolder || !renameFolderName.trim()}
-              style={{ padding: "8px 16px", background: renamingFolder || !renameFolderName.trim() ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: renamingFolder || !renameFolderName.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-              {renamingFolder ? "保存中..." : "保存"}
-            </button>
-          </>}>
-          <div style={{ padding: "8px 0" }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>フォルダ名</label>
-            <input
-              type="text"
-              value={renameFolderName}
-              onChange={e => setRenameFolderName(e.target.value)}
-              placeholder="フォルダ名を入力"
-              autoFocus
-              onKeyDown={e => { if (e.key === "Enter" && renameFolderName.trim()) handleRenameFolder(); }}
-              style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", fontSize: 13, border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, outline: "none", fontFamily: "inherit" }}
-            />
-          </div>
-        </DialogShell>
-      )}
+      {renameTarget && (() => {
+        // 拡張子はビューアの種別判定・アプリ起動の要なので、入力欄の外に固定表示して触らせない
+        const renameExt = renameTarget.isFolder ? "" : splitFileName(renameTarget.fileName).ext;
+        const label = renameTarget.isFolder ? "フォルダ名" : "ファイル名";
+        const disabled = renaming || !renameName.trim();
+        return (
+          <DialogShell title={`${label}の変更`} onClose={() => setRenameTarget(null)} size="sm"
+            footer={<>
+              <button type="button" onClick={() => setRenameTarget(null)} disabled={renaming}
+                style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
+                キャンセル
+              </button>
+              <button type="button" onClick={handleRename} disabled={disabled}
+                style={{ padding: "8px 16px", background: disabled ? "#9CA3AF" : "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: disabled ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                {renaming ? "保存中..." : "保存"}
+              </button>
+            </>}>
+            <div style={{ padding: "8px 0" }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>{label}</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="text"
+                  value={renameName}
+                  onChange={e => setRenameName(e.target.value)}
+                  placeholder={`${label}を入力`}
+                  autoFocus
+                  onKeyDown={submitOnEnter(handleRename, { enabled: !disabled, onCancel: () => setRenameTarget(null) })}
+                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box", padding: "8px 12px", fontSize: 13, border: "1px solid rgba(26,23,20,0.15)", borderRadius: 8, outline: "none", fontFamily: "inherit" }}
+                />
+                {renameExt && (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#A09790", flexShrink: 0 }}>{renameExt}</span>
+                )}
+              </div>
+              <p style={{ margin: "8px 0 0", fontSize: 11, color: "#B0A9A4", lineHeight: 1.6 }}>
+                {renameExt
+                  ? `拡張子（${renameExt}）は変更できません。過去バージョンとコメントも一緒に新しい名前へ引き継がれます。`
+                  : "フォルダの中身はそのまま引き継がれます。"}
+              </p>
+            </div>
+          </DialogShell>
+        );
+      })()}
     </div>
   );
 }

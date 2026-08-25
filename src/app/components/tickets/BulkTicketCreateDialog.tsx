@@ -9,6 +9,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { escStack } from "@/app/lib/escStack";
 import { insertBulkTickets, type BulkInsertTicket } from "@/app/lib/bulkTicketInsert";
+import { isImeComposing } from "@/app/lib/submitKey";
 
 registerAllModules();
 
@@ -761,6 +762,9 @@ export function BulkTicketCreateDialog({
   const beforeKeyDown = useCallback((event: KeyboardEvent) => {
     const hot = hotRef.current?.hotInstance;
     if (!hot) return;
+    // 日本語変換中のキーは全て IME のもの（Enter=変換確定、↑↓=候補送り、Escape=変換取消）。
+    // ここで横取りするとセル移動や改行挿入が変換確定に混ざる。
+    if (isImeComposing(event)) return;
     const selected = hot.getSelected();
     if (!selected?.length) return;
     const [row, c] = selected[0];

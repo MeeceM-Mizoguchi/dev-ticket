@@ -11,6 +11,7 @@ import { ScreenShare, ScreenShareOff, MousePointer2, Pencil, Type, Minimize2, Ma
 import { useCall } from "@/app/contexts/CallContext";
 import { contentRect, toNorm, fromNorm, type Rect } from "@/app/lib/screenShareGeom";
 import type { AnnotationInput, ScreenShareState } from "@/app/lib/callConstants";
+import { submitOnEnter } from "@/app/lib/submitKey";
 
 const COLORS = ["#EF4444", "#2563EB", "#059669", "#F59E0B", "#7C3AED", "#111827"];
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.round(Math.random() * 1e9)}`);
@@ -252,7 +253,7 @@ function StagePanel({
             <input
               autoFocus value={textInput.value}
               onChange={(e) => setTextInput({ ...textInput, value: e.target.value })}
-              onKeyDown={(e) => { if (e.key === "Enter") commitText(); else if (e.key === "Escape") setTextInput(null); }}
+              onKeyDown={submitOnEnter(commitText, { onCancel: () => setTextInput(null) })}
               onBlur={commitText}
               placeholder="テキスト（Enterで確定）"
               style={{ position: "absolute", left: q.x, top: q.y, transform: "translateY(-50%)", minWidth: 160, padding: "3px 7px", borderRadius: 6, border: `2px solid ${color}`, background: "rgba(255,255,255,0.95)", color, fontSize: 14, fontWeight: 700, outline: "none" }}
