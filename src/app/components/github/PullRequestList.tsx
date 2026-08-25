@@ -2,7 +2,10 @@
 //
 // 「view」の人にはマージ系ボタンをそもそも描画しない（押せないボタンを見せない）。
 // マージできない状態のときは、淡色のボタンと理由を並べて出す。
-import { useEffect, useState } from "react";
+//
+// マージ可否（mergeable_state）は一覧APIでは取れないため、行を開いたときに引いた詳細を優先して使う。
+// その詳細は refreshedAt が変わったら捨てる。残すと更新ボタンが効かなく見える（BRU13-021）。
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { ExternalLink, ChevronDown, ChevronUp, GitPullRequest, Link2 } from "lucide-react";
 import { fetchPull, mergeBlockReason, relativeTime, GithubApiError } from "@/app/lib/github";
@@ -10,7 +13,7 @@ import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/type
 
 const BLACK = "#1F2328";
 
-export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick, writeBlocked }: {
+export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick, writeBlocked, refreshedAt }: {
   projectId: string;
   /** 紐付いたチケットへ飛ばすために使う */
   projectSlug: string;
@@ -28,6 +31,11 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
    * 入っていれば全件マージできないので、押せるボタンを出さない
    */
   writeBlocked?: string | null;
+  /**
+   * 一覧を取得した時刻。値が変わったら「更新した」の合図として、
+   * 各行が開いたときに引いた詳細を捨てる（BRU13-021）
+   */
+  refreshedAt?: string | null;
 }) {
   if (!pulls.length) {
     return <Empty>オープンなプルリクエストはありません。</Empty>;
@@ -38,14 +46,14 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
         <PullRow key={p.number} projectId={projectId} projectSlug={projectSlug} repo={repo} pull={p} level={level}
           linked={links.filter(l => l.kind === "pull" && l.number === p.number)}
           checked={selected?.has(p.number) ?? false}
-          onToggleSelect={onToggleSelect} writeBlocked={writeBlocked}
+          onToggleSelect={onToggleSelect} writeBlocked={writeBlocked} refreshedAt={refreshedAt}
           onMergeClick={onMergeClick} onLinkClick={onLinkClick} />
       ))}
     </div>
   );
 }
 
-function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick, writeBlocked }: {
+function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick, writeBlocked, refreshedAt }: {
   projectId: string;
   projectSlug: string;
   repo: string;
@@ -57,6 +65,7 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
   writeBlocked?: string | null;
+  refreshedAt?: string | null;
 }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -64,19 +73,44 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState("");
 
+  // 一覧を取り直したら、開いたときに引いた詳細はもう古い（BRU13-021）。
+  //
+  // 行は key={PR番号} で描画されるため、更新ボタンで一覧が入れ替わっても
+  // この行の state は残る。下の shown は detail を優先するので、捨てないと
+  // 「更新しても古いマージ可否・変更ファイル数が出続け、F5でしか直らない」状態になる。
+  // （実際に、コンフリクトを解消して更新しても「マージ不可」が消えなかった）
+  //
+  // useEffect ではなくレンダー中に捨てるのは、副作用だと1フレームぶん
+  // 古い詳細のまま描かれてしまうため。開いたままなら下の effect が引き直す
+  const [detailAt, setDetailAt] = useState(refreshedAt);
+  if (detailAt !== refreshedAt) {
+    setDetailAt(refreshedAt);
+    setDetail(null);
+    setDetailError("");
+  }
+
   const shown = detail ?? pull;
   // 権限で止まっているときは、PR個別の事情より先にそちらを理由として出す
   const blocked = writeBlocked || mergeBlockReason(shown);
 
-  // mergeable_state は一覧では取れないので、開いたときに詳細を引く
+  // 更新を挟んだかどうかを、返ってきた時点で確かめるための目印。
+  // 取得中に更新を押されたら、その応答は更新前のものなので捨てる
+  const detailAtRef = useRef(detailAt);
+  detailAtRef.current = detailAt;
+
+  // mergeable_state は一覧では取れないので、開いたときに詳細を引く。
+  // 更新で detail を捨てたあとも、開いたままならここで引き直される
   useEffect(() => {
     if (!open || detail || loadingDetail) return;
+    const at = detailAt;
     setLoadingDetail(true);
     fetchPull(projectId, pull.number)
-      .then(r => setDetail(r.pull))
-      .catch(e => setDetailError(e instanceof GithubApiError ? e.message : "詳細を取得できませんでした"))
+      .then(r => { if (detailAtRef.current === at) setDetail(r.pull); })
+      .catch(e => {
+        if (detailAtRef.current === at) setDetailError(e instanceof GithubApiError ? e.message : "詳細を取得できませんでした");
+      })
       .finally(() => setLoadingDetail(false));
-  }, [open, detail, loadingDetail, projectId, pull.number]);
+  }, [open, detail, loadingDetail, detailAt, projectId, pull.number]);
 
   return (
     <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.09)", borderRadius: 12, overflow: "hidden" }}>
