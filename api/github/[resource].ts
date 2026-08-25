@@ -558,12 +558,25 @@ interface ProjectCtx {
  *   プロジェクトの実在 → 同一組織か → メンバーか → githubPermission → installation。
  * 足りなければ Error を投げ、呼び出し側が 4xx にして返す。
  */
-async function projectContext(sb: SupabaseClient, caller: Caller, projectId: string, need: "view" | "merge"): Promise<ProjectCtx> {
-  const { data: project } = await sb
-    .from("projects")
-    .select("id, organization_id, members, github_repo_full_name, github_default_branch, github_enabled")
-    .eq("id", projectId)
-    .maybeSingle();
+/**
+ * opts.installation … GitHub API を叩かない handler（links など）は false を渡す。
+ * インストールIDの取得はSupabaseへの往復が1回増えるだけで、使わないなら丸ごと無駄になる。
+ * チケット詳細を開くたびに走る handleLinks では、この1往復が体感に効く（BRU13-023）
+ */
+async function projectContext(
+  sb: SupabaseClient, caller: Caller, projectId: string, need: "view" | "merge",
+  opts?: { installation?: boolean },
+): Promise<ProjectCtx> {
+  // 権限の解決はプロジェクト行を必要としないので、待たずに並行して走らせる。
+  // 直列にすると、チケットを開くたびにSupabaseへの往復がそのぶん積み上がる（BRU13-023）。
+  // アクセス不可で弾く場合に権限クエリが1回無駄になるが、判定順は下で従来どおり保つ
+  const [{ data: project }, level] = await Promise.all([
+    sb.from("projects")
+      .select("id, organization_id, members, github_repo_full_name, github_default_branch, github_enabled")
+      .eq("id", projectId)
+      .maybeSingle(),
+    resolveGithubLevel(sb, caller, projectId),
+  ]);
   if (!project) throw new HttpError(404, "プロジェクトが見つかりません。");
 
   const orgId = (project.organization_id as string | null) ?? null;
@@ -578,7 +591,6 @@ async function projectContext(sb: SupabaseClient, caller: Caller, projectId: str
     throw new HttpError(403, "このプロジェクトにアクセスできません。");
   }
 
-  const level = await resolveGithubLevel(sb, caller, projectId);
   if (level === "none" || (need === "merge" && level !== "merge")) {
     throw new HttpError(403, need === "merge"
       ? "GitHubのマージ権限がありません。管理者にご相談ください。"
@@ -590,7 +602,7 @@ async function projectContext(sb: SupabaseClient, caller: Caller, projectId: str
     throw new HttpError(409, "このプロジェクトにはGitHubリポジトリが紐付いていません。");
   }
 
-  const installationId = await getInstallationId(sb, orgId);
+  const installationId = opts?.installation === false ? "" : await getInstallationId(sb, orgId);
   return {
     id: projectId,
     organizationId: orgId,
@@ -2153,8 +2165,17 @@ function mapLink(r: any) {
   };
 }
 
+/**
+ * チケット詳細の「関連PR」が開くたびに叩く。GitHub API は一切使わず、DBだけで返る。
+ *
+ * チケットを開く速度に直結するので、Supabaseへの往復を最小限にしてある（BRU13-023）:
+ *  ・インストールIDは使わないので引かない
+ *  ・ticketId 指定のときは withWbs を飛ばす。「どのチケットのPRか」は
+ *    呼び出し側が最初から知っているうえ、チケット詳細では使っていない
+ *    （使うのは GitHub画面のPR一覧＝ticketId 指定なしの呼び出しだけ）
+ */
 async function handleLinks(sb: SupabaseClient, caller: Caller, req: any, res: any) {
-  const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view");
+  const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view", { installation: false });
   const ticketId = String(req.query?.ticketId ?? "");
 
   let q = sb.from("ticket_github_links").select("*").eq("project_id", ctx.id);
@@ -2165,7 +2186,7 @@ async function handleLinks(sb: SupabaseClient, caller: Caller, req: any, res: an
 
   const [{ data }, { data: cand }] = await Promise.all([q, cq]);
   return res.status(200).json({
-    links: await withWbs(sb, data ?? []),
+    links: ticketId ? (data ?? []).map(mapLink) : await withWbs(sb, data ?? []),
     candidates: (cand ?? []).map(mapCandidate),
     level: ctx.level,
     repo: ctx.repo,
