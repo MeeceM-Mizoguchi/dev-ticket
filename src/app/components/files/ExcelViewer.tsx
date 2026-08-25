@@ -496,41 +496,57 @@ export function ExcelViewer({ url }: { url: string }) {
           データが大きいため先頭 {MAX_ROWS} 行 × {MAX_COLS} 列のみ表示しています。
         </p>
       )}
-      <div style={{ flex: 1, overflow: "auto", padding: 12, minHeight: 0, background: "#fff" }}>
-        <div style={{ position: "relative", width: HEADER_W + totalW }}>
-          {/* フォントは固定する。文字幅の計測(canvas)と実際の描画を一致させるため。 */}
-          <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: HEADER_W + totalW, fontFamily: CELL_FONT_FAMILY }}>
-            <colgroup>
-              <col style={{ width: HEADER_W }} />
-              {sheet.colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
-            </colgroup>
-            <thead>
-              <tr style={{ height: HEADER_H }}>
-                <th style={{ background: "#EEF0F2", border: "1px solid #D9DCE0" }} />
-                {sheet.colWidths.map((_, c) => (
-                  <th key={c} style={{ background: "#EEF0F2", border: "1px solid #D9DCE0", fontSize: 10, fontWeight: 600, color: "#6B6458" }}>
-                    {colLetter(c + 1)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sheet.rows.map((row, r) => (
-                <tr key={r} style={{ height: sheet.rowHeights[r] }}>
-                  <td style={{ background: "#EEF0F2", border: "1px solid #D9DCE0", fontSize: 10, color: "#6B6458", textAlign: "center" }}>{r + 1}</td>
-                  {row.map((cell, c) => cell.hidden ? null : (
-                    <CellView key={c} cell={cell} width={sumPx(sheet.colWidths, c, c + cell.colSpan)} />
+      <div style={{ flex: 1, overflow: "auto", minHeight: 0, background: "#fff" }}>
+        {/* 余白は内側に持たせる。スクロール枠に padding があると、固定したヘッダの上に
+            余白ぶんの隙間ができて、そこをセルが通り抜けて見えてしまう。 */}
+        <div style={{ padding: 12, width: "fit-content" }}>
+          <div style={{ position: "relative", width: HEADER_W + totalW }}>
+            {/* フォントは固定する。文字幅の計測(canvas)と実際の描画を一致させるため。 */}
+            <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: HEADER_W + totalW, fontFamily: CELL_FONT_FAMILY }}>
+              <colgroup>
+                <col style={{ width: HEADER_W }} />
+                {sheet.colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
+              </colgroup>
+              <thead>
+                <tr style={{ height: HEADER_H }}>
+                  <th style={{ ...stickyHead, left: 0, zIndex: 3 }} />
+                  {sheet.colWidths.map((_, c) => (
+                    <th key={c} style={{ ...stickyHead, fontSize: 10, fontWeight: 600, color: "#6B6458" }}>
+                      {colLetter(c + 1)}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <DrawingLayer objects={sheet.drawings} width={totalW} height={totalH} />
+              </thead>
+              <tbody>
+                {sheet.rows.map((row, r) => (
+                  <tr key={r} style={{ height: sheet.rowHeights[r] }}>
+                    <td style={{ ...stickyRowHead, fontSize: 10, color: "#6B6458", textAlign: "center" }}>{r + 1}</td>
+                    {row.map((cell, c) => cell.hidden ? null : (
+                      <CellView key={c} cell={cell} width={sumPx(sheet.colWidths, c, c + cell.colSpan)} />
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <DrawingLayer objects={sheet.drawings} width={totalW} height={totalH} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
+// BRU13-023 スクロールしても列名（A,B,C…）・行番号（1,2,3…）が消えないよう貼り付ける。
+// borderCollapse: collapse の表では、貼り付いたセルの枠線は表側に描かれて消えてしまうので、
+// 枠線は box-shadow（セルの内側）で描く。
+const stickyHead: CSSProperties = {
+  position: "sticky", top: 0, zIndex: 2,
+  background: "#EEF0F2", border: "1px solid #D9DCE0", boxShadow: "inset 0 0 0 1px #D9DCE0",
+};
+const stickyRowHead: CSSProperties = {
+  position: "sticky", left: 0, zIndex: 1,
+  background: "#EEF0F2", border: "1px solid #D9DCE0", boxShadow: "inset 0 0 0 1px #D9DCE0",
+};
 
 function Centered({ children }: { children: ReactNode }) {
   return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#B0A9A4", fontSize: 12 }}>{children}</div>;

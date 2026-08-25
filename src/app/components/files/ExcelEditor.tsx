@@ -59,6 +59,22 @@ const CELL_CSS = `
   padding: 0 ${HOT_PAD_X}px; white-space: nowrap; overflow: hidden; pointer-events: none;
   /* 右隣のセルは白い背景を持つので、重ねて描かないと はみ出した文字が隠れてしまう */
   z-index: 1; }
+/* BRU13-023 列ヘッダ(A,B,C…)と行ヘッダ(1,2,3…)をスクロールしても消えないように固定する。
+   Handsontable は自前でスクロールせず外側の div がスクロールする作りなので、
+   ヘッダのクローン層（絶対配置）はそのまま流れていってしまう。
+   本体と同じ升目に grid で重ねたうえで position: sticky にして、スクロールに追従させる。 */
+.xls-hot > .handsontable { display: grid; overflow: visible !important; }
+.xls-hot > .handsontable > .ht_master,
+.xls-hot > .handsontable > .ht_clone_top,
+.xls-hot > .handsontable > .ht_clone_inline_start,
+.xls-hot > .handsontable > .ht_clone_top_inline_start_corner {
+  grid-area: 1 / 1; align-self: start; justify-self: start; }
+.xls-hot > .handsontable > .ht_clone_top { position: sticky !important; top: 0; }
+.xls-hot > .handsontable > .ht_clone_inline_start { position: sticky !important; left: 0; }
+.xls-hot > .handsontable > .ht_clone_top_inline_start_corner { position: sticky !important; top: 0; left: 0; }
+/* 列幅・行高のドラッグつまみは表本体を基準に置かれるので、固定したヘッダの位置まで動かす */
+.xls-hot > .handsontable > .manualColumnResizer { transform: translateY(var(--xls-sy, 0px)); }
+.xls-hot > .handsontable > .manualRowResizer { transform: translateX(var(--xls-sx, 0px)); }
 `;
 
 interface SheetModel {
@@ -82,6 +98,13 @@ interface SheetModel {
 }
 
 const ROW_HEADER_W = 50; // Handsontable の行ヘッダ幅（固定）
+
+// BRU13-023 セル編集中の入力欄の折り返し幅。
+// Handsontable は「表の幅」から入力欄の最大幅を決めるが、このエディタは表を実寸で描いて
+// 外側の div でスクロールさせるため、その最大幅が画面の幅と大きくかけ離れてしまう。
+// 実際に見えている右端までを最大幅として渡し直し、そこで折り返させる。
+const EDITOR_EDGE_GAP = 16;  // 右端に残す余白（縦スクロールバーぶん）
+const EDITOR_MIN_W = 220;    // 右端ぎりぎりのセルでも、これだけは横幅を確保する
 
 // 保存前の破損ガード：exceljs で開け、描画XMLに Excel が破損とみなす欠陥が無いことを確認する
 async function verifyXlsx(bytes: Uint8Array, models: SheetModel[]): Promise<boolean> {
@@ -271,6 +294,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   const sheetsRef = useRef<SheetModel[] | null>(null);
   const hotRef = useRef<InstanceType<typeof HotTable>>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const disposeRef = useRef<() => void>(() => { });
   // HotTable に渡す data 配列。ラッパーが再レンダーごとに data を再適用するため、
   // 別配列で差し替えず「同じ配列を in-place で書き換え」て編集が消えないようにする。
@@ -480,6 +504,31 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     });
   }, [sheet?.name, sheet?.raw]);
 
+  // BRU13-023 編集中の入力欄を、画面に見えている幅で折り返させる。
+  // Handsontable の入力欄は「表の右端まで」横に伸びる作りなので、長い文章のセルでは
+  // 画面外へ飛び出して読めなくなる。最大幅の算出（getEditedCellRect）だけを差し替え、
+  // 見えている右端で頭打ちにする。幅が縮んだぶんは Handsontable 側が縦に伸ばしてくれる。
+  const fitEditorToViewport = useCallback(() => {
+    const hot: any = (hotRef.current as any)?.hotInstance;
+    const sc = scrollRef.current;
+    if (!hot || hot.isDestroyed || !sc) return;
+    const ed: any = hot.getActiveEditor?.();
+    if (!ed || !ed.isOpened?.() || typeof ed.getEditedCellRect !== "function") return;
+    if (!ed.xlsFitted) {
+      ed.xlsFitted = true;
+      const cellRect = ed.getEditedCellRect.bind(ed);
+      ed.getEditedCellRect = () => {
+        const rect = cellRect();
+        const root: HTMLElement | undefined = hot.rootElement;
+        if (!rect || !root) return rect;
+        // 入力欄の左端から、スクロール枠の右端までが折り返しに使える幅
+        const avail = sc.getBoundingClientRect().right - (root.getBoundingClientRect().left + rect.start) - EDITOR_EDGE_GAP;
+        return { ...rect, maxWidth: Math.max(EDITOR_MIN_W, Math.min(rect.maxWidth, avail)) };
+      };
+    }
+    ed.refreshDimensions?.(true);
+  }, []);
+
   // ── 数式セルは編集開始時に数式文字列を出す ────────────────────
   const afterBeginEditing = useCallback((row: number, col: number) => {
     const m = sheetsRef.current?.[active];
@@ -488,7 +537,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       const ed: any = (hotRef.current as any)?.hotInstance?.getActiveEditor?.();
       if (ed) ed.setValue(raw);
     }
-  }, [active]);
+    // 長い文章のセルは、入力欄が画面外へ伸びないよう見えている幅で折り返させる
+    fitEditorToViewport();
+  }, [active, fitEditorToViewport]);
 
   // ── 編集の反映＋再計算 ──────────────────────────────────────
   // ── Undo/Redo（全状態のスナップショット方式）─────────────────
@@ -694,6 +745,32 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       setOverlayOffset({ left, top });
     });
   }, []);
+
+  // BRU13-023 固定ヘッダ（sticky）が本体からどれだけずれているかを CSS 変数へ流す。
+  // 列幅・行高のドラッグつまみは表本体を基準に置かれるため、この値だけずらさないと
+  // スクロール中は画面外に置かれてしまい、ヘッダ境界をドラッグできなくなる。
+  useEffect(() => {
+    const sc = scrollRef.current;
+    const wrap = wrapRef.current;
+    if (!sc || !wrap) return;
+    let raf = 0;
+    const sync = () => {
+      raf = 0;
+      const root = wrap.querySelector<HTMLElement>(".handsontable");
+      if (!root) return;
+      const rr = root.getBoundingClientRect();
+      const top = root.querySelector<HTMLElement>(":scope > .ht_clone_top");
+      const left = root.querySelector<HTMLElement>(":scope > .ht_clone_inline_start");
+      wrap.style.setProperty("--xls-sy", `${top ? Math.round(top.getBoundingClientRect().top - rr.top) : 0}px`);
+      wrap.style.setProperty("--xls-sx", `${left ? Math.round(left.getBoundingClientRect().left - rr.left) : 0}px`);
+      // 編集したままスクロールしたときも、入力欄の折り返し幅を追従させる
+      fitEditorToViewport();
+    };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(sync); };
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    sync();
+    return () => { sc.removeEventListener("scroll", onScroll); if (raf) cancelAnimationFrame(raf); };
+  }, [fitEditorToViewport]);
 
   // BRU10-055 セル文字の見切れ対策。
   // 折り返しなら td 内で改行し、そうでなければ隣が空セルの間だけ文字をはみ出させる。
@@ -1994,59 +2071,63 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       {/* グリッド＋描画レイヤー（画像・図形は表示のみ）。
           Handsontable を実サイズで描画し、外側 div でスクロールさせることで
           描画オーバーレイとセルが一緒にスクロールし、位置がズレない。 */}
-      <div style={{ flex: 1, overflow: "auto", minHeight: 0, padding: "8px 12px 12px", background: "#fff" }}>
-        <div ref={wrapRef} className="bulk-hot-wrap xls-hot" style={{ position: "relative", width: ROW_HEADER_W + sheet.totalW + 4 }}>
-          <HotTable
-            key={sheet.name + ":" + gridVersion}
-            ref={hotRef}
-            data={activeData}
-            colHeaders={colHeaders}
-            rowHeaders={true}
-            rowHeaderWidth={ROW_HEADER_W}
-            colWidths={sheet.colWidths}
-            rowHeights={sheet.rowHeights}
-            width={ROW_HEADER_W + sheet.totalW + 4}
-            height="auto"
-            renderAllRows={true}
-            viewportColumnRenderingOffset={300}
-            autoColumnSize={false}
-            autoRowSize={false}
-            outsideClickDeselects={false}
-            undo={false}
-            copyPaste={false}
-            manualColumnResize={true}
-            manualRowResize={true}
-            manualRowMove={true}
-            manualColumnMove={true}
-            beforeRowMove={beforeRowMove as any}
-            beforeColumnMove={beforeColumnMove as any}
-            beforeColumnResize={beforeColumnResize as any}
-            beforeRowResize={beforeRowResize as any}
-            licenseKey="non-commercial-and-evaluation"
-            contextMenu={contextMenu}
-            cells={cells as any}
-            beforeChange={beforeChange as any}
-            afterChange={afterChange as any}
-            afterBeginEditing={afterBeginEditing as any}
-            afterColumnResize={afterColumnResize as any}
-            afterRowResize={afterRowResize as any}
-            afterSelectionEnd={afterSelectionEnd as any}
-            afterRender={measureOverlay as any}
-          />
-          {/* 図形オーバーレイは常時操作可。図形以外は透過してセル編集できる */}
-          <ShapeEditorOverlay ref={overlayRef} key={"se-" + sheet.name + ":" + gridVersion}
-            initialObjects={shapeEditsRef.current[sheet.name]?.objects ?? sheet.drawings}
-            offsetLeft={overlayOffset.left} offsetTop={overlayOffset.top}
-            width={sheet.totalW} height={sheet.totalH}
-            onSelectChange={(info) => {
-              setShapeInfo(info);
-              if (info) {
-                if (info.fill) setShapeFill(info.fill);
-                if (info.line) setShapeLine(info.line);
-                if (info.textColor) setShapeText(info.textColor);
-              }
-            }}
-            onDirty={onShapeDirty} />
+      <div ref={scrollRef} style={{ flex: 1, overflow: "auto", minHeight: 0, background: "#fff" }}>
+        {/* 余白は内側に持たせる。スクロール枠に padding があると、固定したヘッダの上に
+            余白ぶんの隙間ができて、そこをセルが通り抜けて見えてしまう。 */}
+        <div style={{ padding: "8px 12px 12px", width: "fit-content" }}>
+          <div ref={wrapRef} className="bulk-hot-wrap xls-hot" style={{ position: "relative", width: ROW_HEADER_W + sheet.totalW + 4 }}>
+            <HotTable
+              key={sheet.name + ":" + gridVersion}
+              ref={hotRef}
+              data={activeData}
+              colHeaders={colHeaders}
+              rowHeaders={true}
+              rowHeaderWidth={ROW_HEADER_W}
+              colWidths={sheet.colWidths}
+              rowHeights={sheet.rowHeights}
+              width={ROW_HEADER_W + sheet.totalW + 4}
+              height="auto"
+              renderAllRows={true}
+              viewportColumnRenderingOffset={300}
+              autoColumnSize={false}
+              autoRowSize={false}
+              outsideClickDeselects={false}
+              undo={false}
+              copyPaste={false}
+              manualColumnResize={true}
+              manualRowResize={true}
+              manualRowMove={true}
+              manualColumnMove={true}
+              beforeRowMove={beforeRowMove as any}
+              beforeColumnMove={beforeColumnMove as any}
+              beforeColumnResize={beforeColumnResize as any}
+              beforeRowResize={beforeRowResize as any}
+              licenseKey="non-commercial-and-evaluation"
+              contextMenu={contextMenu}
+              cells={cells as any}
+              beforeChange={beforeChange as any}
+              afterChange={afterChange as any}
+              afterBeginEditing={afterBeginEditing as any}
+              afterColumnResize={afterColumnResize as any}
+              afterRowResize={afterRowResize as any}
+              afterSelectionEnd={afterSelectionEnd as any}
+              afterRender={measureOverlay as any}
+            />
+            {/* 図形オーバーレイは常時操作可。図形以外は透過してセル編集できる */}
+            <ShapeEditorOverlay ref={overlayRef} key={"se-" + sheet.name + ":" + gridVersion}
+              initialObjects={shapeEditsRef.current[sheet.name]?.objects ?? sheet.drawings}
+              offsetLeft={overlayOffset.left} offsetTop={overlayOffset.top}
+              width={sheet.totalW} height={sheet.totalH}
+              onSelectChange={(info) => {
+                setShapeInfo(info);
+                if (info) {
+                  if (info.fill) setShapeFill(info.fill);
+                  if (info.line) setShapeLine(info.line);
+                  if (info.textColor) setShapeText(info.textColor);
+                }
+              }}
+              onDirty={onShapeDirty} />
+          </div>
         </div>
       </div>
     </div>
