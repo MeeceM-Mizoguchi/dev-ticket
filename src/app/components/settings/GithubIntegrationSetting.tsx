@@ -425,9 +425,17 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
       )}
 
       {/* 権限が足りないと、閲覧はできるのにマージだけが必ず失敗する。
-          実行して初めて分かる状態にしないよう、ここで先に出す */}
+          実行して初めて分かる状態にしないよう、ここで先に出す。
+
+          直しに行く画面は原因で変わる。
+            ・permissionScope="app"     … App の設定そのもの。承認しても直らない
+            ・permissionScope="install" … 宣言は足りていて、承認がまだ
+          以前は常に「承認してください」と案内していたため、App 側が原因のときは
+          案内どおりに操作しても直らず、同じ失敗を繰り返していた。 */}
       {(status?.missingPermissions?.length ?? 0) > 0 && (
-        <Notice tone="warn" title="GitHub App の権限が不足しています">
+        <Notice tone="warn" title={status!.permissionScope === "app"
+          ? "GitHub App の設定に権限がありません（承認では直りません）"
+          : "GitHub App の権限更新が承認されていません"}>
           次の権限が足りないため、その操作は実行しても必ず失敗します。
           <br />
           {status!.missingPermissions.map(p => (
@@ -436,15 +444,33 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
             </span>
           ))}
           <br />
-          GitHub App の設定で権限を変更したあと、<strong>インストール画面で更新を承認</strong>してください。
-          App 側を変えただけでは反映されません。
-          {status!.manageUrl && (
+          {status!.permissionScope === "app" ? (
             <>
-              {" "}
-              <a href={status!.manageUrl} target="_blank" rel="noopener noreferrer"
-                style={{ color: "#92400E", fontWeight: 700, textDecoration: "underline" }}>
-                インストール設定をひらく
-              </a>
+              App の所有者が GitHub の <strong>App 設定（Permissions）</strong>で権限を追加し、
+              そのうえでインストール画面の更新を承認してください。
+              インストール画面での承認だけでは直りません。
+              {status!.appPermissionsUrl && (
+                <>
+                  {" "}
+                  <a href={status!.appPermissionsUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ color: "#92400E", fontWeight: 700, textDecoration: "underline" }}>
+                    App の権限設定をひらく
+                  </a>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              GitHub の<strong>インストール画面で権限の更新を承認</strong>してください。
+              {status!.manageUrl && (
+                <>
+                  {" "}
+                  <a href={status!.manageUrl} target="_blank" rel="noopener noreferrer"
+                    style={{ color: "#92400E", fontWeight: 700, textDecoration: "underline" }}>
+                    インストール設定をひらく
+                  </a>
+                </>
+              )}
             </>
           )}
         </Notice>

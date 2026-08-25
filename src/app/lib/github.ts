@@ -6,12 +6,18 @@ import { supabase } from "@/lib/supabase";
 import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
   TicketGithubLink, TicketGithubLinkCandidate, GithubMergeMethod, GithubAccessLevel,
-  GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult,
+  GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult, GithubPermissionBlock,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  /** 権限で止められたときだけ入る。直しに行く画面のURLを画面から出すために使う */
+  permission?: GithubPermissionBlock;
+  constructor(status: number, message: string, permission?: GithubPermissionBlock) {
+    super(message);
+    this.status = status;
+    this.permission = permission;
+  }
 }
 
 async function call<T>(resource: string, opts?: { query?: Record<string, string | number | undefined>; body?: unknown }): Promise<T> {
@@ -31,7 +37,7 @@ async function call<T>(resource: string, opts?: { query?: Record<string, string 
   });
 
   const json = await res.json().catch(() => null) as any;
-  if (!res.ok) throw new GithubApiError(res.status, json?.error ?? "処理に失敗しました。");
+  if (!res.ok) throw new GithubApiError(res.status, json?.error ?? "処理に失敗しました。", json?.permission);
   return json as T;
 }
 
@@ -80,9 +86,14 @@ export function syncReleasedTickets(orgId?: string | null) {
  * 番号とタイトルだけあればよい用途（チケット詳細の紐付け候補）で使う
  */
 export function fetchPulls(projectId: string, opts?: { light?: boolean }) {
-  return call<{ pulls: GithubPull[]; level: GithubAccessLevel; repo: string; links: TicketGithubLink[] }>(
-    "pulls", { query: { projectId, light: opts?.light ? 1 : undefined } },
-  );
+  return call<{
+    pulls: GithubPull[];
+    level: GithubAccessLevel;
+    repo: string;
+    links: TicketGithubLink[];
+    /** マージが権限で止まる状態なら入る（light では返らない） */
+    writeBlock: GithubPermissionBlock | null;
+  }>("pulls", { query: { projectId, light: opts?.light ? 1 : undefined } });
 }
 
 export function fetchPull(projectId: string, number: number) {

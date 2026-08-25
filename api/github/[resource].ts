@@ -216,11 +216,15 @@ function jaMessage(e: unknown): { status: number; message: string } {
     }
     // 「Resource not accessible by integration」＝ GitHub App の権限不足。
     // 時間をおいても直らないので「再度お試しください」に混ぜず、設定変更へ誘導する。
-    // マージは マージ先ブランチへの書き込みなので Contents: Read & write が要る
+    //
+    // ただし、原因が「App の宣言」なのか「インストールの承認待ち」なのかは
+    // ここでは分からない。断定すると直しに行く画面を誤って案内することになるため、
+    // 書き込み系のハンドラは explainForbidden() で切り分けた文言に差し替える。
+    // ここに残るのは、切り分けられなかったときの控えめな言い方だけ。
     if (e.status === 403) {
       return {
         status: 403,
-        message: "GitHub App に必要な権限がありません。管理者に「外部連携」から App の権限更新（Pull requests と Contents を Read & write）の承認を依頼してください。",
+        message: "GitHub App の権限が足りないため実行できませんでした。管理者に「外部連携」画面の確認を依頼してください。",
       };
     }
     if (e.status === 405 || raw.includes("not mergeable")) {
@@ -259,20 +263,211 @@ const REQUIRED_PERMISSIONS: { key: string; label: string; need: "read" | "write"
 
 const PERMISSION_RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
 
+const PERMISSION_META = new Map(REQUIRED_PERMISSIONS.map(p => [p.key, p]));
+
 export interface MissingPermission { key: string; label: string; need: string; current: string; why: string }
 
-function missingPermissions(perms: Record<string, string> | null | undefined): MissingPermission[] {
-  // 権限が読めなかったときは「不足している」と決めつけない（誤警告を出さない）
+/** 求めるレベルに届いていない権限だけを返す。読めなかったときは「不足」と決めつけない */
+function shortage(
+  perms: Record<string, string> | null | undefined,
+  needs: { key: string; need: "read" | "write" }[],
+): MissingPermission[] {
   if (!perms || typeof perms !== "object") return [];
-  return REQUIRED_PERMISSIONS
-    .filter(p => (PERMISSION_RANK[perms[p.key]] ?? 0) < PERMISSION_RANK[p.need])
-    .map(p => ({
-      key: p.key,
-      label: p.label,
-      need: p.need === "write" ? "Read & write" : "Read",
-      current: perms[p.key] === "write" ? "Read & write" : perms[p.key] === "read" ? "Read" : "なし",
-      why: p.why,
-    }));
+  return needs
+    .filter(n => (PERMISSION_RANK[perms[n.key]] ?? 0) < PERMISSION_RANK[n.need])
+    .map(n => {
+      const meta = PERMISSION_META.get(n.key);
+      return {
+        key: n.key,
+        label: meta?.label ?? n.key,
+        need: n.need === "write" ? "Read & write" : "Read",
+        current: perms[n.key] === "write" ? "Read & write" : perms[n.key] === "read" ? "Read" : "なし",
+        why: meta?.why ?? "",
+      };
+    });
+}
+
+function missingPermissions(perms: Record<string, string> | null | undefined): MissingPermission[] {
+  return shortage(perms, REQUIRED_PERMISSIONS);
+}
+
+// ── 権限不足の切り分け（再発防止の中心） ─────────────────────
+//
+// 「Resource not accessible by integration」で失敗する原因は2段ある。
+//
+//   ① App 自体の宣言が足りない … GitHub の App 設定（所有者しか触れない）。
+//      インストール側でいくら承認しても直らない。
+//   ② 宣言は足りているが、インストールが更新を承認していない。
+//
+// ①と②で直しに行く画面が違うのに、以前は失敗後に②だけを案内していたため、
+// 案内どおりに操作しても直らず同じ失敗を繰り返していた。
+// ここで両方を見て、どちらが原因かと、直す場所のURLまで確定させる。
+
+/** 操作ごとに「これが無いと必ず失敗する」権限 */
+type OperationKey = "merge" | "create-pull" | "review";
+
+const OPERATION_NEEDS: Record<OperationKey, { key: string; need: "read" | "write" }[]> = {
+  // マージはマージ先ブランチへ commit を積むため Contents: Read & write が要る
+  merge: [{ key: "pull_requests", need: "write" }, { key: "contents", need: "write" }],
+  "create-pull": [{ key: "pull_requests", need: "write" }, { key: "contents", need: "read" }],
+  review: [{ key: "pull_requests", need: "write" }],
+};
+
+const OPERATION_LABELS: Record<OperationKey, string> = {
+  merge: "マージ",
+  "create-pull": "プルリクエストの作成",
+  review: "レビューの送信",
+};
+
+export interface PermissionBlock {
+  /**
+   * "app"     … App の設定そのものが足りない（承認では直らない）
+   * "install" … 宣言は足りていて、承認がまだ
+   * "repo"    … 権限は足りている。リポジトリ側（ブランチ保護など）で拒否された
+   */
+  scope: "app" | "install" | "repo";
+  operation: OperationKey;
+  missing: MissingPermission[];
+  /** 直しに行くGitHubの画面 */
+  fixUrl: string | null;
+  message: string;
+}
+
+/** App 設定の権限ページ。App の所有者だけが開ける */
+function appPermissionsUrl(): string | null {
+  const slug = process.env.GITHUB_APP_SLUG;
+  return slug ? `https://github.com/settings/apps/${slug}/permissions` : null;
+}
+
+/**
+ * 権限は変わることが稀なので短くキャッシュする。
+ * 承認した直後に古い判定を返し続けないよう、TTLは1分に留める。
+ */
+const PERMISSION_TTL = 60_000;
+let appPermsCache: { perms: Record<string, string> | null; at: number } | null = null;
+const installCache = new Map<string, { perms: Record<string, string> | null; manageUrl: string | null; at: number }>();
+
+/** App が GitHub 上で宣言している権限（インストールとは別物） */
+async function appPermissions(force = false): Promise<Record<string, string> | null> {
+  if (!force && appPermsCache && Date.now() - appPermsCache.at < PERMISSION_TTL) return appPermsCache.perms;
+  let perms: Record<string, string> | null = null;
+  try {
+    const app = await gh(appJwt(), "/app");
+    perms = (app?.permissions as Record<string, string> | undefined) ?? null;
+  } catch { /* 読めないときは判定しない（誤警告を出さない） */ }
+  appPermsCache = { perms, at: Date.now() };
+  return perms;
+}
+
+/** インストールに実際に付いている権限と、その設定画面のURL */
+async function installationPermissions(installationId: string, force = false) {
+  const hit = installCache.get(installationId);
+  if (!force && hit && Date.now() - hit.at < PERMISSION_TTL) return hit;
+  let entry = { perms: null as Record<string, string> | null, manageUrl: null as string | null, at: Date.now() };
+  try {
+    const inst = await gh(appJwt(), `/app/installations/${installationId}`);
+    entry = {
+      perms: (inst?.permissions as Record<string, string> | undefined) ?? null,
+      manageUrl: (inst?.html_url as string | undefined) ?? null,
+      at: Date.now(),
+    };
+  } catch { /* 同上 */ }
+  installCache.set(installationId, entry);
+  return entry;
+}
+
+/**
+ * その操作が権限で止まるかを、実行前に判定する。
+ * 止まらない（または判定できない）なら null。
+ */
+async function permissionBlock(installationId: string, operation: OperationKey, force = false): Promise<PermissionBlock | null> {
+  const needs = OPERATION_NEEDS[operation];
+  const label = OPERATION_LABELS[operation];
+
+  const declared = await appPermissions(force);
+  const declaredShort = shortage(declared, needs);
+  if (declaredShort.length) {
+    const names = declaredShort.map(m => `${m.label}（${m.need}）`).join("・");
+    return {
+      scope: "app",
+      operation,
+      missing: declaredShort,
+      fixUrl: appPermissionsUrl(),
+      message: `${label}に必要な ${names} が GitHub App 側に設定されていません。`
+        + "インストール画面での承認では直りません。App の所有者が GitHub の App 設定で権限を追加し、"
+        + "そのうえでインストール画面の更新を承認する必要があります。",
+    };
+  }
+
+  const inst = await installationPermissions(installationId, force);
+  const installShort = shortage(inst.perms, needs);
+  if (installShort.length) {
+    const names = installShort.map(m => `${m.label}（${m.need}）`).join("・");
+    return {
+      scope: "install",
+      operation,
+      missing: installShort,
+      fixUrl: inst.manageUrl,
+      message: `${label}に必要な ${names} の権限更新が、まだ承認されていません。`
+        + "管理者が GitHub のインストール画面で権限の更新を承認すると使えるようになります。",
+    };
+  }
+  return null;
+}
+
+/** 実行前の関門。ここで止めれば、まとめてマージが全件同じ理由で失敗することがなくなる */
+async function assertPermitted(installationId: string, operation: OperationKey) {
+  const block = await permissionBlock(installationId, operation);
+  if (block) throw new HttpError(403, block.message, { permission: block });
+}
+
+/** GitHub が「App の権限が無い」と言っているか */
+function isForbiddenByIntegration(e: unknown): boolean {
+  return e instanceof GithubError && e.status === 403
+    && (e.message || "").toLowerCase().includes("not accessible by integration");
+}
+
+/**
+ * 書き込みを実行する。
+ *
+ * installation token は最大1時間キャッシュしているため、権限の承認直後は
+ * 「権限は足りているのにトークンだけが古い」状態が起こり得る。
+ * その1回だけを救うため、403 のときはトークンを捨てて取り直し、一度だけやり直す。
+ * （403 は実行されなかったことを意味するので、やり直しても二重マージにはならない）
+ */
+async function runWithFreshToken<T>(
+  installationId: string,
+  state: { refreshed: boolean },
+  run: (token: string) => Promise<T>,
+): Promise<T> {
+  try {
+    return await run(await installationToken(installationId));
+  } catch (e) {
+    if (state.refreshed || !isForbiddenByIntegration(e)) throw e;
+    state.refreshed = true;
+    tokenCache.delete(installationId);
+    return await run(await installationToken(installationId));
+  }
+}
+
+/**
+ * 実行してから 403 になったときの説明。
+ * 事前判定を通っているのに弾かれた＝判定が古い可能性があるので、権限を取り直して見る。
+ */
+async function explainForbidden(installationId: string, operation: OperationKey, e: unknown) {
+  if (!isForbiddenByIntegration(e)) return null;
+  const block = await permissionBlock(installationId, operation, true);
+  if (block) return block;
+  // 権限は足りている。ブランチ保護やリポジトリの制限など、権限以外の理由。
+  // ここで「承認してください」と言うと、直しようのない案内で時間を使わせてしまう
+  return {
+    scope: "repo" as const,
+    operation,
+    missing: [] as MissingPermission[],
+    fixUrl: null,
+    message: `GitHub 側で${OPERATION_LABELS[operation]}が拒否されました。`
+      + "App の権限は足りているため、リポジトリのブランチ保護やルールセットの設定をご確認ください。",
+  };
 }
 
 // ── 呼び出し元の特定 ─────────────────────────────────────────
@@ -408,7 +603,13 @@ async function projectContext(sb: SupabaseClient, caller: Caller, projectId: str
 
 class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  /** error 以外に画面へ渡したいもの（権限不足の内訳と直し先URLなど） */
+  payload?: Record<string, unknown>;
+  constructor(status: number, message: string, payload?: Record<string, unknown>) {
+    super(message);
+    this.status = status;
+    this.payload = payload;
+  }
 }
 
 async function getInstallationId(sb: SupabaseClient, orgId: string | null): Promise<string> {
@@ -585,7 +786,7 @@ export default async function handler(req: any, res: any) {
       default:         return res.status(404).json({ error: "Not Found" });
     }
   } catch (e) {
-    if (e instanceof HttpError) return res.status(e.status).json({ error: e.message });
+    if (e instanceof HttpError) return res.status(e.status).json({ error: e.message, ...(e.payload ?? {}) });
     const m = jaMessage(e);
     console.error("[github]", resource, (e as Error)?.message);
     return res.status(m.status).json({ error: m.message });
@@ -1194,6 +1395,15 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
      * 実行して初めて分かる状態にしないため、接続状態と並べてここで出す。
      */
     missingPermissions: [] as MissingPermission[],
+    /**
+     * 不足がどちら側にあるか。
+     *   "app"     … App の設定そのもの（承認では直らない）
+     *   "install" … 宣言は足りていて、インストールの承認がまだ
+     * 直しに行く画面が違うため、まとめずに分けて持つ。
+     */
+    permissionScope: null as "app" | "install" | null,
+    /** App の権限設定ページ。所有者だけが開ける */
+    appPermissionsUrl: appPermissionsUrl(),
     installed: false,
     revoked: false,
     accountLogin: null as string | null,
@@ -1210,6 +1420,8 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
   try {
     const app = await gh(appJwt(), "/app");
     base.appAuthOk = true;
+    // ここで引いた宣言を権限判定でも使う（同じ画面で /app を二度叩かない）
+    appPermsCache = { perms: (app?.permissions as Record<string, string> | undefined) ?? null, at: Date.now() };
     const expected = process.env.GITHUB_APP_SLUG;
     if (app?.slug && expected && app.slug !== expected) {
       base.appSlugMismatch = `GITHUB_APP_SLUG は「${expected}」ですが、この App の実際のスラッグは「${app.slug}」です`;
@@ -1256,13 +1468,24 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
     }
   }
 
-  // 権限は App の宣言ではなくインストール実体を見る（承認前は古いままのため）。
+  // App の宣言とインストール実体の両方を見る。
+  //   ・App 側が足りない … 承認しても直らないので、App 設定へ案内する
+  //   ・App 側は足りている … 承認待ち。インストール画面へ案内する
+  // どちらか一方しか見ないと、案内どおりに操作しても直らない状態が続く。
   // 判定できなくても接続そのものは使えるので、失敗は握って空のままにする
   if (!revoked) {
-    try {
-      const inst = await gh(appJwt(), `/app/installations/${data.installation_id}`);
-      base.missingPermissions = missingPermissions(inst?.permissions);
-    } catch { /* 診断が出せないだけで本題ではない */ }
+    const declaredShort = missingPermissions(await appPermissions());
+    if (declaredShort.length) {
+      base.missingPermissions = declaredShort;
+      base.permissionScope = "app";
+    } else {
+      const inst = await installationPermissions(String(data.installation_id), true);
+      const installShort = missingPermissions(inst.perms);
+      if (installShort.length) {
+        base.missingPermissions = installShort;
+        base.permissionScope = "install";
+      }
+    }
   }
 
   return res.status(200).json({
@@ -1366,12 +1589,20 @@ async function handleRepos(sb: SupabaseClient, caller: Caller, req: any, res: an
 async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: any) {
   const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view");
   const token = await installationToken(ctx.installationId);
-  const list = await gh(token, `/repos/${ctx.repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`);
 
   // light=1 … 番号・タイトル・検出WBSだけあればよい呼び出し（チケット詳細の紐付け候補）。
   // チケットを開くたびに走るため、CI・レビューの取得（PR1件あたり3リクエスト）と
   // リリース反映は行わない。GitHub API の呼び出し回数を抑えるためのもの
   const light = req.query?.light === "1" || req.query?.light === 1;
+
+  // マージが権限で止まる状態なら、一覧を出す時点で知らせる（選んで押してから気づかせない）。
+  // 一覧の取得と並行して引くので待ち時間は増やさない
+  const [list, writeBlock] = await Promise.all([
+    gh(token, `/repos/${ctx.repo}/pulls?state=open&per_page=50&sort=updated&direction=desc`),
+    !light && ctx.level === "merge"
+      ? permissionBlock(ctx.installationId, "merge").catch(() => null)
+      : Promise.resolve(null),
+  ]);
 
   // CI・レビュー・マージ可否は一覧APIでは取れないので、上位15件だけ実データを引く。
   // mergeable_state を持たせないと一覧のマージボタンが常に無効になり、
@@ -1402,7 +1633,7 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   // 「リリース待ち」が無ければ GitHub は叩かないので、通常は追加の負荷にならない
   if (!light) await syncReleasesNow(sb, ctx.id);
   const links = await loadLinksForProject(sb, ctx.id);
-  return res.status(200).json({ pulls: enriched, level: ctx.level, repo: ctx.repo, links });
+  return res.status(200).json({ pulls: enriched, level: ctx.level, repo: ctx.repo, links, writeBlock });
 }
 
 async function handlePull(sb: SupabaseClient, caller: Caller, req: any, res: any) {
@@ -2092,6 +2323,8 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
   if (!title) throw new HttpError(400, "タイトルを入力してください。");
   if (head === base) throw new HttpError(400, "比較するブランチとマージ先が同じです。");
 
+  await assertPermitted(ctx.installationId, "create-pull");
+
   const token = await installationToken(ctx.installationId);
   const text = String(body.body ?? "").trim();
 
@@ -2149,6 +2382,14 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
   const method = ["merge", "squash", "rebase"].includes(body.method) ? body.method : "squash";
   if (!number) throw new HttpError(400, "PR番号が不正です。");
 
+  // GitHub を叩く前に権限で止める。実行して初めて分かる状態にしない。
+  // 止めた事実もログに残す。残さないと「誰も直さないまま何度も起きている」ことに気付けない
+  const pre = await permissionBlock(ctx.installationId, "merge");
+  if (pre) {
+    await writeLog(sb, ctx, caller, "merge", number, "blocked", `permission:${pre.scope} / ${pre.missing.map(m => m.key).join(",")}`);
+    throw new HttpError(403, pre.message, { permission: pre });
+  }
+
   const token = await installationToken(ctx.installationId);
   const p = await gh(token, `/repos/${ctx.repo}/pulls/${number}`);
 
@@ -2156,27 +2397,32 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
   if (p.draft) throw new HttpError(409, "Draft のためマージできません。");
   if (p.mergeable === false) throw new HttpError(409, "コンフリクトがあるためマージできません。GitHub上で解消してください。");
 
+  const retry = { refreshed: false };
   try {
-    const result = await gh(token, `/repos/${ctx.repo}/pulls/${number}/merge`, {
-      method: "PUT",
-      body: {
-        merge_method: method,
-        // rebase は commit_title/message を受け付けないため付けない
-        ...(method === "rebase" ? {} : {
-          commit_title: `${p.title} (#${number})`,
-          commit_message: `Merged via Dev Ticket by ${caller.name}`,
-        }),
-        sha: p.head?.sha,
-      },
-    });
+    const result = await runWithFreshToken(ctx.installationId, retry, t =>
+      gh(t, `/repos/${ctx.repo}/pulls/${number}/merge`, {
+        method: "PUT",
+        body: {
+          merge_method: method,
+          // rebase は commit_title/message を受け付けないため付けない
+          ...(method === "rebase" ? {} : {
+            commit_title: `${p.title} (#${number})`,
+            commit_message: `Merged via Dev Ticket by ${caller.name}`,
+          }),
+          sha: p.head?.sha,
+        },
+      }));
     await writeLog(sb, ctx, caller, "merge", number, "ok", `${method} / ${result?.sha ?? ""}`);
     // マージした直後に「リリース待ち → リリース済み」を反映する
     await syncReleasesNow(sb, ctx.id);
     return res.status(200).json({ ok: true, sha: result?.sha ?? null });
   } catch (e) {
+    const block = await explainForbidden(ctx.installationId, "merge", e);
     const m = jaMessage(e);
     await writeLog(sb, ctx, caller, "merge", number, "error", (e as Error)?.message ?? "");
-    return res.status(m.status).json({ error: m.message });
+    return res.status(block ? 403 : m.status).json(
+      block ? { error: block.message, permission: block } : { error: m.message },
+    );
   }
 }
 
@@ -2203,11 +2449,26 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
     throw new HttpError(400, `一度にマージできるのは${MAX_BULK_MERGE}件までです。`);
   }
 
+  // 1件ずつ同じ理由で全滅するのを防ぐため、1件目を叩く前に権限で止める。
+  // ここで 403 を投げると1件もマージされないまま、直し先つきの理由が1つだけ返る
+  const pre = await permissionBlock(ctx.installationId, "merge");
+  if (pre) {
+    await writeLog(sb, ctx, caller, "merge", 0, "blocked", `bulk / permission:${pre.scope} / ${pre.missing.map(m => m.key).join(",")}`);
+    throw new HttpError(403, pre.message, { permission: pre });
+  }
+
   const token = await installationToken(ctx.installationId);
   const results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string }[] = [];
+  const retry = { refreshed: false };
+  /** 権限で止まったと分かった時点で、残りは叩かずに同じ理由を並べる */
+  let blocked: PermissionBlock | null = null;
 
   for (const number of numbers) {
     let title = `#${number}`;
+    if (blocked) {
+      results.push({ number, ok: false, title, error: blocked.message });
+      continue;
+    }
     try {
       // 直前の状態を必ず引き直す。前のマージでベースが進んでいる可能性があるため
       const p = await gh(token, `/repos/${ctx.repo}/pulls/${number}`);
@@ -2217,21 +2478,23 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
       if (p.draft) throw new HttpError(409, "Draft のためマージできません。");
       if (p.mergeable === false) throw new HttpError(409, "コンフリクトがあるためマージできません。");
 
-      const result = await gh(token, `/repos/${ctx.repo}/pulls/${number}/merge`, {
-        method: "PUT",
-        body: {
-          merge_method: method,
-          ...(method === "rebase" ? {} : {
-            commit_title: `${p.title} (#${number})`,
-            commit_message: `Merged via Dev Ticket by ${caller.name}`,
-          }),
-          sha: p.head?.sha,
-        },
-      });
+      const result = await runWithFreshToken(ctx.installationId, retry, t =>
+        gh(t, `/repos/${ctx.repo}/pulls/${number}/merge`, {
+          method: "PUT",
+          body: {
+            merge_method: method,
+            ...(method === "rebase" ? {} : {
+              commit_title: `${p.title} (#${number})`,
+              commit_message: `Merged via Dev Ticket by ${caller.name}`,
+            }),
+            sha: p.head?.sha,
+          },
+        }));
       await writeLog(sb, ctx, caller, "merge", number, "ok", `bulk / ${method} / ${result?.sha ?? ""}`);
       results.push({ number, ok: true, title, sha: result?.sha ?? null });
     } catch (e) {
-      const message = e instanceof HttpError ? e.message : jaMessage(e).message;
+      blocked = await explainForbidden(ctx.installationId, "merge", e);
+      const message = blocked ? blocked.message : e instanceof HttpError ? e.message : jaMessage(e).message;
       await writeLog(sb, ctx, caller, "merge", number, "error", `bulk / ${(e as Error)?.message ?? ""}`);
       results.push({ number, ok: false, title, error: message });
     }
@@ -2245,6 +2508,8 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
     merged: results.filter(r => r.ok).length,
     failed: results.filter(r => !r.ok).length,
     results,
+    // 全件が同じ理由（権限）で落ちたときは、直し先を画面に出すために添える
+    ...(blocked ? { permission: blocked } : {}),
   });
 }
 
@@ -2258,6 +2523,8 @@ async function handleReview(sb: SupabaseClient, caller: Caller, req: any, res: a
   if (event === "REQUEST_CHANGES" && !String(body.body ?? "").trim()) {
     throw new HttpError(400, "変更を依頼する場合はコメントを入力してください。");
   }
+
+  await assertPermitted(ctx.installationId, "review");
 
   const token = await installationToken(ctx.installationId);
   const text = String(body.body ?? "").trim();

@@ -10,7 +10,7 @@ import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/type
 
 const BLACK = "#1F2328";
 
-export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick }: {
+export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick, writeBlocked }: {
   projectId: string;
   /** 紐付いたチケットへ飛ばすために使う */
   projectSlug: string;
@@ -23,6 +23,11 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
   onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
+  /**
+   * PRの状態ではなく App の権限でマージできない場合の理由。
+   * 入っていれば全件マージできないので、押せるボタンを出さない
+   */
+  writeBlocked?: string | null;
 }) {
   if (!pulls.length) {
     return <Empty>オープンなプルリクエストはありません。</Empty>;
@@ -33,14 +38,14 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
         <PullRow key={p.number} projectId={projectId} projectSlug={projectSlug} repo={repo} pull={p} level={level}
           linked={links.filter(l => l.kind === "pull" && l.number === p.number)}
           checked={selected?.has(p.number) ?? false}
-          onToggleSelect={onToggleSelect}
+          onToggleSelect={onToggleSelect} writeBlocked={writeBlocked}
           onMergeClick={onMergeClick} onLinkClick={onLinkClick} />
       ))}
     </div>
   );
 }
 
-function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick }: {
+function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick, writeBlocked }: {
   projectId: string;
   projectSlug: string;
   repo: string;
@@ -51,6 +56,7 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
+  writeBlocked?: string | null;
 }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -59,7 +65,8 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   const [detailError, setDetailError] = useState("");
 
   const shown = detail ?? pull;
-  const blocked = mergeBlockReason(shown);
+  // 権限で止まっているときは、PR個別の事情より先にそちらを理由として出す
+  const blocked = writeBlocked || mergeBlockReason(shown);
 
   // mergeable_state は一覧では取れないので、開いたときに詳細を引く
   useEffect(() => {
@@ -145,7 +152,7 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
               blocked ? (
                 <span title={blocked}
                   style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", color: "#B0A9A4", cursor: "not-allowed", whiteSpace: "nowrap" as const }}>
-                  マージ不可 ⓘ
+                  {writeBlocked ? "権限不足 ⓘ" : "マージ不可 ⓘ"}
                 </span>
               ) : (
                 <button onClick={() => onMergeClick(shown)}
