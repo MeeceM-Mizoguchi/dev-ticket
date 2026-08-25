@@ -381,6 +381,7 @@ export function GithubPage() {
                 selected={selected} onToggleSelect={toggleSelect}
                 onMergeClick={setMergeTarget}
                 writeBlocked={writeBlock?.message ?? null}
+                refreshedAt={fetchedAt}
               />
             </>
           ) : tab === "issues" ? (
