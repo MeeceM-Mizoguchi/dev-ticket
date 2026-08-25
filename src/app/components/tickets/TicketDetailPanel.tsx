@@ -655,40 +655,31 @@ export function TicketDetailPanel({
   }, [clearLoadTimers, hideLoadOverlay]);
 
   // 関連PR（GitHub）は TicketPrSection が自前で取りに行くため、下の jobs には並べられない。
-  // 紐付け一覧が返った合図を子から受け取り、本体のクエリと待ち合わせる。
-  // 待たずに外していたので「オーバーレイが消えたあとに関連PRが生えてくる」状態だった（BRU13-016）。
-  // どちらの合図が先に来ても、ここで両方揃っているかを確かめてから解除に進む。
   //
-  // 待つのは紐付け一覧（DBのみ・速い）だけ。ブランチ探しやPR一覧の取得まで待っていたため
-  // チケットが開くまで数秒かかっていたので、そちらは押したときに走らせるようにした（BRU13-019）。
+  // 以前はその取得完了までオーバーレイを外さずに待っていた（BRU13-016：待たずに外すと
+  // 「オーバーレイが消えたあとに関連PRが生えてくる」ため）。しかし紐付け一覧のAPIは
+  // Supabaseへの往復が直列に積み上がり、チケットが開くまでの時間そのものになっていた。
+  //
+  // BRU13-023 で待ち合わせをやめ、セクション側が自前でプログレスを出して枠を確保する形にした。
+  // ここで待つのは本体のクエリ（すべて並列）だけ。
   const jobsDoneRunRef = useRef(0);
-  const loadTicketIdRef = useRef("");
-  /** 関連PRセクションが描画される（＝合図を待つ）ロードかどうか */
-  const waitingPrRef = useRef(false);
-  const prSettledTicketRef = useRef<string | null>(null);
 
   const tryFinishInitialLoad = useCallback((runId: number) => {
     if (!runId || runId !== loadRunIdRef.current) return;
     if (jobsDoneRunRef.current !== runId) return;
-    if (waitingPrRef.current && prSettledTicketRef.current !== loadTicketIdRef.current) return;
     finishInitialLoad(runId);
   }, [finishInitialLoad]);
 
+  // 離脱確認（リリースノート追加後のPR未紐付け）の判定材料として受け取るだけ。
+  // オーバーレイの解除条件には入れない
   const handlePrStateChange = useCallback((s: TicketPrState) => {
     setPrState(s);
-    if (!s.loaded) return;
-    prSettledTicketRef.current = s.ticketId;
-    tryFinishInitialLoad(loadRunIdRef.current);
-  }, [tryFinishInitialLoad]);
+  }, []);
 
   const runInitialLoad = useCallback(async (t: SprintTicket) => {
     const runId = ++loadRunIdRef.current;
     clearLoadTimers();
     jobsDoneRunRef.current = 0;
-    loadTicketIdRef.current = t.id;
-    prSettledTicketRef.current = null;
-    // 関連PRセクションの描画条件と一致させる。出ないなら待たない
-    waitingPrRef.current = isSupabaseEnabled && !!projectId && !!t.id;
 
     if (!isSupabaseEnabled) {
       applyMockBreadcrumbs(t);

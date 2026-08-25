@@ -30,6 +30,7 @@ import {
   linkTicket, unlinkTicket, mergePull, resolveLinkCandidate, GithubApiError,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
+import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { CreatePullPrepDialog, type PrepState } from "@/app/components/github/CreatePullPrepDialog";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
@@ -77,6 +78,20 @@ export function TicketPrSection({
 }) {
   const { userName } = useAuth();
   const { toast } = useToast();
+  /**
+   * 「このセクションを出す見込みがあるか」を、取得を待たずに決めるための事前判定（BRU13-023）。
+   *
+   * チケット詳細の初回オーバーレイはこのセクションを待たなくなったので、
+   * 取得中も枠を出しておかないと、あとから生えてきて下の要素を押し下げる。
+   * かといって全員に枠を出すと、GitHub未連携のプロジェクトでは出してから消すことになる。
+   *
+   * useGithubAccess はスラッグ単位で60秒キャッシュされ、プロジェクト画面の
+   * ProjectSubNav が既に解決済みなので、ここでは待ち時間なしで返る。
+   * スラッグを渡してこない画面（レポート）もあるので、無ければIDで引く
+   * （このフックはスラッグでもIDでも解決できる）
+   */
+  const access = useGithubAccess(projectSlug || projectId);
+  const mayHaveSection = access.linked && !!access.level && access.level !== "none";
   const [links, setLinks] = useState<TicketGithubLink[]>([]);
   /** 大文字小文字違いで割れていて、自動紐付けを見送ったPR */
   const [linkCandidates, setLinkCandidates] = useState<TicketGithubLinkCandidate[]>([]);
@@ -346,13 +361,22 @@ export function TicketPrSection({
     }
   };
 
-  // 権限が無い／リポジトリ未紐付けのときはセクションごと出さない
-  if (!loaded || level === "none") return null;
+  // サーバーが「権限が無い／リポジトリ未紐付け」と答えたらセクションごと出さない
+  if (loaded && level === "none") return null;
+  // まだ取得中で、出す見込みも無いなら何も置かない。
+  // 見込みの判定に access を使うのは、枠を出してから消すのを避けるため（BRU13-023）
+  if (!loaded && !mayHaveSection) return null;
 
   // 「リリース待ち以降なのにPRが無い」なら、開くたびに紐付けを促す。
-  // PRを1件でも紐付けるか「PR不要」にすれば消える
-  const showGuide = pullLinks.length === 0 && !prLinkWaived
+  // PRを1件でも紐付けるか「PR不要」にすれば消える。
+  // 取得前は「PRが無い」と断定できないので出さない（赤枠を出してから引っ込めない）
+  const showGuide = loaded && pullLinks.length === 0 && !prLinkWaived
     && !!ticketStatus && isPrLinkAlertStatus(ticketStatus);
+
+  // ヘッダーのボタンの出し分け。取得前は事前に分かっている権限で決める。
+  // ここが後から変わるとボタンが増減してヘッダーの見た目が動くため、
+  // 取得後もサーバーの答え（level）に静かに引き継がれるようにしてある
+  const shownLevel = loaded ? level : access.level;
 
   return (
     <div style={{
@@ -369,20 +393,36 @@ export function TicketPrSection({
           <Github style={{ width: 13, height: 13, color: BLACK }} />
           <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714" }}>関連PR</p>
         </div>
-        {level === "merge" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button onClick={() => void openCreate()} disabled={busy || !!prep}
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: prep ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy || prep ? "default" : "pointer" }}>
+        {/* 取得が終わるまでは押させない。repo が未取得のままダイアログを開かせないため */}
+        {shownLevel === "merge" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, opacity: loaded ? 1 : 0.5 }}>
+            <button onClick={() => void openCreate()} disabled={!loaded || busy || !!prep}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: prep ? "#9CA3AF" : BLACK, color: "#FFF", cursor: !loaded || busy || prep ? "default" : "pointer" }}>
               <GitPullRequest style={{ width: 11, height: 11 }} />
               {prep ? "準備中..." : "PRを作成"}
             </button>
-            <button onClick={() => void openPicker()} disabled={busy}
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: busy ? "default" : "pointer" }}>
+            <button onClick={() => void openPicker()} disabled={!loaded || busy}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: !loaded || busy ? "default" : "pointer" }}>
               <Plus style={{ width: 11, height: 11 }} />PRを紐付ける
             </button>
           </div>
         )}
       </div>
+
+      {/*
+        取得が終わるまでの本文（BRU13-023）。
+        チケット詳細の初回オーバーレイはこのセクションを待たなくなったので、
+        待っているのはここだけになる。
+
+        高さは「PR1行ぶん」に合わせてある。0にすると、出揃った瞬間に
+        下のレビューフロー・添付ファイルが押し下げられて見える
+      */}
+      {!loaded && (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, minHeight: 34 }}>
+          <Loader2 style={{ width: 12, height: 12, color: "#0284C7", animation: "tpr-spin 1s linear infinite" }} />
+          <span style={{ fontSize: 11, color: "#8A837B" }}>関連PRを読み込んでいます...</span>
+        </div>
+      )}
 
       {showGuide && (
         <div style={{ background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.25)", borderRadius: 9, padding: "10px 12px", marginBottom: 10 }}>
@@ -442,7 +482,7 @@ export function TicketPrSection({
         </div>
       ))}
 
-      {pullLinks.length === 0 && links.length === 0 ? (
+      {!loaded ? null : pullLinks.length === 0 && links.length === 0 ? (
         <p style={{ fontSize: 11, color: "#B0A9A4" }}>紐付いたPRはありません。</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
