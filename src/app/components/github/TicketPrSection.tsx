@@ -38,7 +38,15 @@ const CANDIDATE_SKIP_STATUSES: TicketStatus[] = ["todo", "on-hold", "withdrawn"]
 
 /** 親（チケット詳細）へ渡す状態。リリースノート追加後の案内と離脱確認の判断に使う */
 export interface TicketPrState {
+  /** どのチケットの状態か。チケットを切り替えた直後に前のチケットの合図を誤って使わないため */
+  ticketId: string;
   loaded: boolean;
+  /**
+   * このセクションの表示が確定したか（BRU13-016）。
+   * 紐付け一覧に加えて、あとから差し込まれる「PR作成候補」「紐付け候補」まで出揃った状態。
+   * チケット詳細の初回ロード用オーバーレイは、これが立つまで外さない
+   */
+  settled: boolean;
   level: GithubAccessLevel;
   /** 紐付いているPRの件数 */
   pullCount: number;
@@ -78,6 +86,9 @@ export function TicketPrSection({
 
   // このチケットのブランチ候補（ブランチ名に WBS 番号を含み、まだPRが無いもの）
   const [candidates, setCandidates] = useState<GithubPendingBranch[] | null>(null);
+  // 「出す／出さない」が決まったか。GitHubを叩かずに決まるケースはその場で true にして待たせない
+  const [candidatesSettled, setCandidatesSettled] = useState(false);
+  const [pickerSettled, setPickerSettled] = useState(false);
   const [createTarget, setCreateTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string; head?: string } | null>(null);
   const [preparingCreate, setPreparingCreate] = useState(false);
   /** マージ確認を開くために詳細を引いている最中のPR番号 */
@@ -113,32 +124,70 @@ export function TicketPrSection({
     }
   }, [projectId, ticketId]);
 
+  // チケットを切り替えたときは、前のチケットの表示・確定状態をすべて捨ててから読み直す。
+  // 残したままだと、前のチケットのPRが一瞬見えるうえ、下の「表示が確定した」合図が
+  // 新しいチケットのIDを付けて即座に上がり、親のオーバーレイが待たずに外れてしまう。
+  //
+  // useEffect ではなくレンダー中に切り替えるのは、副作用だと1フレーム分だけ
+  // 前のチケットの値のまま親へ通知が飛ぶため（React の「props に合わせて state を調整する」パターン。
+  // この回のレンダー結果は破棄され、更新後の値で描き直されるので副作用は走らない）。
+  // 紐付け操作後の load() は再取得だけなので、ここは通らない＝セクションが消えてチカつくこともない
+  const shownKey = `${projectId}|${ticketId}`;
+  const [loadedKey, setLoadedKey] = useState(shownKey);
+  if (loadedKey !== shownKey) {
+    setLoadedKey(shownKey);
+    setLoaded(false);
+    setLinks([]);
+    setLinkCandidates([]);
+    setLevel("none");
+    setCandidates(null);
+    setCandidatesSettled(false);
+    setPickerSettled(false);
+    setAvailable(null);
+    setPicking(false);
+  }
+
+  // 非同期の完了が「今開いているチケットのものか」を、effect の再実行に左右されずに判定する。
+  // 「確定した」の合図はこの ref で見張る（cleanup の alive フラグだと、
+  //  同じチケットのまま effect が張り直されただけでも合図が落ちてしまう）
+  const currentKeyRef = useRef(shownKey);
+  currentKeyRef.current = shownKey;
+
   useEffect(() => { void load(); }, [load]);
 
   // 親へ状態を上げる。オブジェクトを毎回作ると無限ループになるので、値が変わったときだけ通知する
   const onStateChangeRef = useRef(onStateChange);
   useEffect(() => { onStateChangeRef.current = onStateChange; }, [onStateChange]);
+  // 一覧・PR作成候補・紐付け候補がすべて出揃った状態。親のオーバーレイ解除の条件になる
+  const settled = loaded && candidatesSettled && pickerSettled;
   useEffect(() => {
-    onStateChangeRef.current?.({ loaded, level, pullCount: pullLinks.length });
-  }, [loaded, level, pullLinks.length]);
+    onStateChangeRef.current?.({ ticketId, loaded, settled, level, pullCount: pullLinks.length });
+  }, [ticketId, loaded, settled, level, pullLinks.length]);
 
   // ブランチ候補は「作れる人」にだけ、かつPRがまだ無いときだけ探す。
   // pending-branches はブランチ全件の走査を伴うので、まだ着手していない／止まっている
-  // チケットでは投げない。取れなくてもこのセクションの本体は出したいので失敗は握りつぶす
+  // チケットでは投げない。取れなくてもこのセクションの本体は出したいので失敗は握りつぶす。
+  //
+  // 「出さない」と分かるものは通信せずその場で確定させる（親のオーバーレイを待たせないため）。
+  // 投げる場合も wbs を渡してサーバー側で絞らせる（compare の往復が桁で減る）
   useEffect(() => {
-    if (!loaded || level !== "merge" || !wbs) return;
-    if (ticketStatus && CANDIDATE_SKIP_STATUSES.includes(ticketStatus)) { setCandidates(null); return; }
-    if (pullLinks.length > 0) { setCandidates(null); return; }
+    if (!loaded) return;
+    const skip = level !== "merge" || !wbs
+      || (!!ticketStatus && CANDIDATE_SKIP_STATUSES.includes(ticketStatus))
+      || pullLinks.length > 0;
+    if (skip) { setCandidates(null); setCandidatesSettled(true); return; }
+    const key = shownKey;
     let alive = true;
-    fetchPendingBranches(projectId)
+    fetchPendingBranches(projectId, wbs)
       .then(r => {
         if (!alive) return;
         const upper = wbs.toUpperCase();
         setCandidates(r.branches.filter(b => b.name.toUpperCase().includes(upper)));
       })
-      .catch(() => { if (alive) setCandidates([]); });
+      .catch(() => { if (alive) setCandidates([]); })
+      .finally(() => { if (currentKeyRef.current === key) setCandidatesSettled(true); });
     return () => { alive = false; };
-  }, [loaded, level, wbs, pullLinks.length, projectId, ticketStatus]);
+  }, [loaded, level, wbs, pullLinks.length, projectId, ticketStatus, shownKey]);
 
   // auto … 開いた直後の自動表示。
   // 押していないのに読み込み中の枠を出して畳むとチカつくので、取れてから出す。
@@ -167,12 +216,17 @@ export function TicketPrSection({
   // 一度閉じたら開き直さないよう、チケットごとに1回だけ走らせる
   const autoPickedRef = useRef("");
   useEffect(() => {
-    if (!loaded || level !== "merge") return;
-    if (pullLinks.length > 0 || candidateGroups.length > 0) return;
-    if (autoPickedRef.current === ticketId) return;
+    if (!loaded) return;
+    // 自動表示を出さないと決まるケースは、通信せずにその場で確定させる
+    if (level !== "merge" || pullLinks.length > 0 || candidateGroups.length > 0
+      || autoPickedRef.current === ticketId) {
+      setPickerSettled(true);
+      return;
+    }
     autoPickedRef.current = ticketId;
-    void openPicker(true);
-  }, [loaded, level, ticketId, pullLinks.length, candidateGroups.length, openPicker]);
+    const key = shownKey;
+    void openPicker(true).finally(() => { if (currentKeyRef.current === key) setPickerSettled(true); });
+  }, [loaded, level, ticketId, pullLinks.length, candidateGroups.length, openPicker, shownKey]);
 
   // コピーできたことをその場で返す。行ごとに出し分けたいので対象のリンクIDを持つ
   const [copiedId, setCopiedId] = useState<number | null>(null);
