@@ -437,7 +437,17 @@ export function FileBoxPage() {
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
-      {/* ...省略... */}
+      {/* パンくず・見出し・サブナビの並びは他のプロジェクト配下の画面（議事録／ナレッジノート等）と揃える。
+          ここだけパンくずが無く、見出しから始まっていたので全体が上にずれていた */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+        <button onClick={() => navigate("/projects")}
+          style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+        </button>
+        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
+      </div>
+
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>ファイルボックス</h1>
