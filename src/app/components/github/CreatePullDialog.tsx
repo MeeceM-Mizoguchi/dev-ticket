@@ -7,6 +7,7 @@ import { AlertTriangle, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
 import { createPull, GithubApiError } from "@/app/lib/github";
 import { inputCls, labelCls } from "@/app/lib/helpers";
 import type { GithubBranch } from "@/app/types";
@@ -90,6 +91,23 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   const busy = phase !== "idle";
   const canCreate = !!head && !!title.trim() && head !== base && !busy;
 
+  /**
+   * 作成中の進捗。作成そのものと、呼び出し元の一覧の取り直しの2段階を出す。
+   * どちらも数秒かかることがあり、ボタンの「作成中...」だけだと何を待っているのか分からない
+   */
+  const steps: ProgressStep[] = [
+    {
+      key: "create",
+      state: phase === "creating" ? "running" : "done",
+      text: phase === "creating" ? "プルリクエストを作成しています..." : "プルリクエストを作成しました",
+    },
+    {
+      key: "refresh",
+      state: phase === "creating" ? "pending" : "running",
+      text: phase === "creating" ? "画面の更新を待っています" : "画面を最新の状態にしています...",
+    },
+  ];
+
   const handleCreate = async () => {
     if (!canCreate) return;
     setPhase("creating");
@@ -128,6 +146,14 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
         <p style={{ fontSize: 12, color: "#6B6458" }}>
           リポジトリ <strong style={{ fontFamily: "var(--font-mono)" }}>{repo}</strong>
         </p>
+
+        {/* 作成が始まったら入力は触れないので、進捗だけに切り替えて何を待っているかを出す */}
+        {busy ? (<>
+          <p style={{ fontSize: 12, color: "#1A1714", background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 8, padding: "9px 12px", fontFamily: "var(--font-mono)" }}>
+            {base} ← {head}
+          </p>
+          <StepProgressPanel steps={steps} note="作成が終わるまで、この画面は閉じないでください。" />
+        </>) : (<>
 
         {/* マージ先と比較ブランチ */}
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" as const }}>
@@ -194,6 +220,7 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
         <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
           GitHub 上では Dev Ticket[bot] 名義で作成され、本文の末尾に実行者が記録されます。
         </p>
+        </>)}
       </div>
     </DialogShell>
   );

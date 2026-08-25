@@ -6,6 +6,7 @@ import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
+import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod } from "@/app/lib/github";
 import type { GithubPull, GithubMergeMethod } from "@/app/types";
 
@@ -16,25 +17,46 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onMerge }: 
   repo: string;
   actorName: string;
   onClose: () => void;
-  onMerge: (method: GithubMergeMethod) => Promise<void>;
+  /**
+   * マージの実行。GitHub へのマージが終わった時点で onMerged を呼ぶと、
+   * 進捗の1段目が完了して「画面の更新」へ進む。呼ばなくても動く（最後まで1段目のまま）
+   */
+  onMerge: (method: GithubMergeMethod, onMerged: () => void) => Promise<void>;
 }) {
   const [method, setMethod] = useState<GithubMergeMethod>(loadMergeMethod());
-  const [merging, setMerging] = useState(false);
+  /** idle … 確認中／merging … GitHubへ依頼中／refreshing … 呼び出し元が画面を取り直している最中 */
+  const [phase, setPhase] = useState<"idle" | "merging" | "refreshing">("idle");
   const [error, setError] = useState("");
+  const merging = phase !== "idle";
 
   const handleMerge = async () => {
-    setMerging(true);
+    setPhase("merging");
     setError("");
     try {
-      await onMerge(method);
+      await onMerge(method, () => setPhase("refreshing"));
       saveMergeMethod(method);
       onClose();
     } catch (e) {
       // 閉じずに理由を見せる
       setError((e as Error)?.message ?? "マージに失敗しました。");
-      setMerging(false);
+      setPhase("idle");
     }
   };
+
+  // マージそのものと、そのあとの画面の取り直しを分けて出す。
+  // 「マージ中...」だけだと、GitHub 側が終わっているのかどうかが分からない
+  const steps: ProgressStep[] = [
+    {
+      key: "merge",
+      state: phase === "merging" ? "running" : "done",
+      text: phase === "merging" ? `#${pull.number} を ${pull.base} にマージしています...` : `#${pull.number} をマージしました`,
+    },
+    {
+      key: "refresh",
+      state: phase === "merging" ? "pending" : "running",
+      text: phase === "merging" ? "画面の更新を待っています" : "画面を最新の状態にしています...",
+    },
+  ];
 
   return (
     <DialogShell title="マージの確認" onClose={merging ? () => {} : onClose}
@@ -42,11 +64,13 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onMerge }: 
         <BtnSecondary onClick={onClose} disabled={merging}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleMerge} disabled={merging}
           style={{ padding: "9px 20px", background: merging ? "#9CA3AF" : "#1F2328", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: merging ? "not-allowed" : "pointer" }}>
-          {merging ? "マージ中..." : "マージする"}
+          {phase === "merging" ? "マージ中..." : phase === "refreshing" ? "画面を更新中..." : "マージする"}
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
-        <p style={{ fontSize: 13, color: "#1A1714" }}>以下のプルリクエストをマージします。</p>
+        <p style={{ fontSize: 13, color: "#1A1714" }}>
+          {merging ? "マージを実行しています。" : "以下のプルリクエストをマージします。"}
+        </p>
 
         <div style={{ background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column" as const, gap: 7 }}>
           <Row label="リポジトリ" value={repo} />
@@ -56,6 +80,10 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onMerge }: 
           <Row label="レビュー" value={pull.reviewSummary || "—"} tone={pull.reviewState === "approved" ? "good" : pull.reviewState === "changes_requested" ? "bad" : "normal"} />
         </div>
 
+        {/* 実行が始まったら方式は変えられないので、選択肢と警告は進捗に差し替える */}
+        {merging ? (
+          <StepProgressPanel steps={steps} note={`方式: ${MERGE_METHOD_LABELS[method]}／終わるまでこの画面は閉じないでください。`} />
+        ) : (<>
         <div>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 8, letterSpacing: "0.04em" }}>マージ方式</p>
           {METHODS.map(m => (
@@ -77,6 +105,7 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onMerge }: 
             GitHub 上は Dev Ticket[bot] 名義で記録され、マージコミットに「{actorName}」が実行者として残ります。
           </p>
         </div>
+        </>)}
 
         {error && (
           <div style={{ padding: "11px 13px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.35)", borderRadius: 9 }}>
