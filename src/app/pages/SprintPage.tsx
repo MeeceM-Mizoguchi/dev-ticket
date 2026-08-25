@@ -29,6 +29,7 @@ import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { SprintSettingsMenu } from "@/app/components/sprints/SprintSettingsMenu";
 import { SprintOrderDialog } from "@/app/components/sprints/SprintOrderDialog";
 import { fetchSprintOrder, applySprintOrder, saveSprintOrder, type SprintOrderScope } from "@/app/lib/sprintOrder";
+import { useScrollRestore } from "@/app/hooks/useScrollRestore";
 
 function EnvMemoTag({ m }: { m: EnvMemo }) {
   const [open, setOpen] = useState(false);
@@ -152,6 +153,15 @@ export function SprintPage() {
     const scroller = headerRef.current?.closest("main") as HTMLElement | null;
     if (scroller) scroller.scrollTop = 0;
   }, [viewMode, loading]);
+
+  // 🌟 他画面から戻ったとき・リロードしたときに、前回見ていた位置まで戻す。
+  //    ビューごとに高さが違うので記憶キーは表示モード込み。ボードは上記のとおり
+  //    先頭へ戻す仕様なので復元しない。特定チケット(hl_wbs)やアンカー指定で
+  //    開かれたときも、そちらのスクロールを優先させるため復元しない。
+  const scrollRestoreRef = useScrollRestore(
+    projectSlug ? `sprints:${projectSlug}:${viewMode}` : null,
+    { ready: !loading, disabled: viewMode === "board" || !!highlightWbs || !!anchor },
+  );
 
   const projectId = project?.id ?? null;
 
@@ -333,7 +343,7 @@ export function SprintPage() {
   const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
 
   return (
-    <div style={{ minWidth: 1100 }}>
+    <div ref={scrollRestoreRef} style={{ minWidth: 1100 }}>
       {/* 🌟 BRU5-043: パンくず〜ビュー切替までを画面上部に固定。下へスクロールしても
           バックログ/ホワイトボード等のタブとビュー切替へ常時アクセスできるようにする。
           headerRef の実高さ(headerH)を各ビューの sticky ヘッダーへオフセットとして渡し段重ねする。 */}

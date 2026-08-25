@@ -26,6 +26,7 @@ import { useBulkTicketActions } from "@/app/components/sprints/useBulkTicketActi
 import { useAlert } from "@/app/contexts/AlertContext";
 import { usePrLinkedTickets, needsPrLink, prLinkAlertTitle } from "@/app/lib/prLinkAlert";
 import { PrMissingChip } from "@/app/components/github/PrMissingChip";
+import { useScrollRestore } from "@/app/hooks/useScrollRestore";
 
 // あらゆるIDパターンに安全に対応するためのフォールバック付き辞書
 const CATEGORY_MAP: Record<string, string> = {
@@ -328,6 +329,16 @@ export function SprintDetailPage() {
     if (!scrollTick || !scrollWbsRef.current) return;
     document.querySelector(`[data-wbs="${scrollWbsRef.current}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, [scrollTick]);
+
+  // 🌟 他画面から戻ったとき・リロードしたときに、前回見ていた位置まで戻す。
+  //    チケット詳細を開いている間も sprintIdentifier は変わらないので、
+  //    開閉ではキーが変わらず＝復元は走らない（閉じたときの行スクロールは既存処理に任せる）。
+  //    特定チケットへ飛ぶ指定(hl_wbs / アンカー / スプリント移動直後)があるときは、
+  //    そちらを優先させるため復元しない。
+  const scrollRestoreRef = useScrollRestore(
+    projectSlug && sprintIdentifier ? `tickets:${projectSlug}:${sprintIdentifier}` : null,
+    { ready: !loading, disabled: !!lastOpenedWbs || !!anchor || !!pendingMovedHighlight },
+  );
 
   // 一括作成の直後に強調表示するWBS。毎レンダーで作り直さないよう memo 化する（点滅防止）
   const bulkHighlight = useMemo(() => new Set(bulkCreatedWbs), [bulkCreatedWbs]);
@@ -687,7 +698,7 @@ export function SprintDetailPage() {
   ];
 
   return (
-    <div style={{ padding: "24px", minWidth: 1140 }}>
+    <div ref={scrollRestoreRef} style={{ padding: "24px", minWidth: 1140 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
