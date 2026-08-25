@@ -15,14 +15,14 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
   fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches,
-  linkTicket, unlinkTicket, mergePull, relativeTime, GithubApiError,
+  linkTicket, unlinkTicket, mergePull, resolveLinkCandidate, relativeTime, GithubApiError,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import type {
-  TicketGithubLink, GithubPull, GithubBranch, GithubPendingBranch, GithubAccessLevel,
-  GithubMergeMethod, TicketStatus,
+  TicketGithubLink, TicketGithubLinkCandidate, GithubPull, GithubBranch, GithubPendingBranch,
+  GithubAccessLevel, GithubMergeMethod, TicketStatus,
 } from "@/app/types";
 
 const BLACK = "#1F2328";
@@ -61,6 +61,8 @@ export function TicketPrSection({
   const { userName } = useAuth();
   const { toast } = useToast();
   const [links, setLinks] = useState<TicketGithubLink[]>([]);
+  /** 大文字小文字違いで割れていて、自動紐付けを見送ったPR */
+  const [linkCandidates, setLinkCandidates] = useState<TicketGithubLinkCandidate[]>([]);
   const [level, setLevel] = useState<GithubAccessLevel>("none");
   const [repo, setRepo] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -79,10 +81,22 @@ export function TicketPrSection({
   const pullLinks = useMemo(() => links.filter(l => l.kind === "pull"), [links]);
   const canMergeHere = level === "merge" && !!ticketStatus && isPrLinkAlertStatus(ticketStatus);
 
+  // サーバー側の検出は大文字に正規化されている。チケットの WBS 番号は
+  // プロジェクトが決めた綴りのままなので、突き合わせる前に揃える
+  const wbsKey = wbs ? wbs.toUpperCase() : "";
+
+  // 候補は WBS 番号ごとにまとめて出す。「この番号のPRはどれか」を1回で選ばせる
+  const candidateGroups = useMemo(() => {
+    const m = new Map<string, TicketGithubLinkCandidate[]>();
+    for (const c of linkCandidates) m.set(c.wbsKey, [...(m.get(c.wbsKey) ?? []), c]);
+    return Array.from(m.entries());
+  }, [linkCandidates]);
+
   const load = useCallback(async () => {
     try {
       const r = await fetchTicketLinks(projectId, ticketId);
       setLinks(r.links);
+      setLinkCandidates(r.candidates ?? []);
       setLevel(r.level);
       setRepo(r.repo);
     } catch {
@@ -126,8 +140,8 @@ export function TicketPrSection({
     try {
       const r = await fetchPulls(projectId);
       // WBSが一致するPRを先頭に持ってくる
-      const sorted = wbs
-        ? [...r.pulls].sort((a, b) => Number(b.detectedWbs.includes(wbs)) - Number(a.detectedWbs.includes(wbs)))
+      const sorted = wbsKey
+        ? [...r.pulls].sort((a, b) => Number(b.detectedWbs.includes(wbsKey)) - Number(a.detectedWbs.includes(wbsKey)))
         : r.pulls;
       setAvailable(sorted);
     } catch (e) {
@@ -142,6 +156,22 @@ export function TicketPrSection({
       await linkTicket(projectId, ticketId, "pull", number);
       await load();
       setPicking(false);
+      onLinked?.();
+      toast(`#${number} を紐付けました`, "success");
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "紐付けに失敗しました", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 大文字小文字違いで割れていた候補から1件を選ぶ。
+  // 選ばれなかったPRの自動紐付けはサーバー側で外れ、この候補は二度と出てこない
+  const handleChooseCandidate = async (number: number) => {
+    setBusy(true);
+    try {
+      await resolveLinkCandidate(projectId, ticketId, number);
+      await load();
       onLinked?.();
       toast(`#${number} を紐付けました`, "success");
     } catch (e) {
@@ -279,6 +309,49 @@ export function TicketPrSection({
         </div>
       )}
 
+      {/*
+        大文字小文字だけが違うブランチのPRが複数あって、自動では決められなかったもの。
+        機械が勝手に選ぶと関係の無いPRが混ざるので、ここで人に選ばせる
+      */}
+      {candidateGroups.map(([key, group]) => (
+        <div key={key} style={{ border: "1px solid rgba(217,119,6,0.30)", background: "#FFFBEB", borderRadius: 9, padding: "10px 12px", marginBottom: 10 }}>
+          <p style={{ fontSize: 12, fontWeight: 700, color: "#B45309", lineHeight: 1.7 }}>
+            {key} のプルリクエストが複数見つかりました。どれを紐付けますか？
+          </p>
+          <p style={{ fontSize: 11, color: "#B45309", lineHeight: 1.7, marginTop: 3, marginBottom: 8 }}>
+            大文字小文字だけが違う書き方（{Array.from(new Set(group.map(c => c.spelling).filter(Boolean))).join(" / ")}）
+            が混ざっているため、自動では紐付けていません。選ばなかったPRは紐付きません。
+          </p>
+          <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+            {group.map(c => {
+              const already = links.some(l => l.kind === c.kind && l.number === c.number);
+              return (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" as const, background: "#FFF", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8, padding: "8px 10px" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#8A837B", fontFamily: "var(--font-mono)", flexShrink: 0 }}>#{c.number}</span>
+                  <a href={c.url ?? undefined} target="_blank" rel="noopener noreferrer"
+                    style={{ flex: 1, minWidth: 140, fontSize: 12, fontWeight: 600, color: "#1A1714", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                    {c.title ?? `#${c.number}`}
+                  </a>
+                  {c.spelling && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#B45309", fontFamily: "var(--font-mono)", flexShrink: 0 }}>{c.spelling}</span>
+                  )}
+                  <span style={{ fontSize: 10, color: "#A09790", flexShrink: 0 }}>
+                    {c.state === "merged" ? "マージ済み" : c.state === "closed" ? "クローズ" : "オープン"}
+                  </span>
+                  {already && <span style={{ fontSize: 10, color: "#A09790", flexShrink: 0 }}>紐付け済み</span>}
+                  {level === "merge" && (
+                    <button onClick={() => handleChooseCandidate(c.number)} disabled={busy}
+                      style={{ padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
+                      これを紐付ける
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
       {/* このチケットのブランチ候補。「このコミットのPRを作りますか？」の導線 */}
       {level === "merge" && pullLinks.length === 0 && candidates && candidates.length > 0 && (
         <div style={{ border: "1px solid rgba(2,132,199,0.28)", background: "#F0F9FF", borderRadius: 9, padding: "10px 12px", marginBottom: 10 }}>
@@ -388,7 +461,7 @@ export function TicketPrSection({
                     <Link2 style={{ width: 11, height: 11, color: "#0284C7", flexShrink: 0 }} />
                     <span style={{ fontSize: 11, fontWeight: 700, color: "#8A837B", fontFamily: "var(--font-mono)", flexShrink: 0 }}>#{p.number}</span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{p.title}</span>
-                    {wbs && p.detectedWbs.includes(wbs) && (
+                    {wbsKey && p.detectedWbs.includes(wbsKey) && (
                       <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", flexShrink: 0 }}>一致</span>
                     )}
                     {already && <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0 }}>紐付け済み</span>}

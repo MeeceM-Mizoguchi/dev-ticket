@@ -10,7 +10,7 @@ import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { PageLoader } from "@/app/components/shared/PageLoader";
-import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, syncReleasedTickets, GithubApiError } from "@/app/lib/github";
+import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, syncReleasedTickets, backfillGithubLinks, GithubApiError } from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 import type { GithubStatus, GithubRepo, GithubAccessLevel, GithubReleaseSyncResult } from "@/app/types";
@@ -268,6 +268,7 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     setSaving(true);
     const changed = rows.filter(r => r.repo !== r.savedRepo || r.branch !== r.savedBranch);
     let failed = 0;
+    const linked: string[] = [];
     for (const r of changed) {
       const { error: e } = await supabase!.from("projects").update({
         github_repo_full_name: r.repo || null,
@@ -275,9 +276,25 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
         github_enabled: !!r.repo,
       }).eq("id", r.id);
       if (e) failed++;
+      else if (r.repo) linked.push(r.id);
     }
+
+    // 紐付けたリポジトリの過去PRを1回だけ遡って埋める。
+    // リポジトリを紐付ける前にマージ・クローズされたPRは、Webhook でもPR一覧でも拾えないため。
+    // 同じリポジトリで2回目以降はサーバー側が何もせずに返す
+    let backfilled = 0;
+    for (const id of linked) {
+      try {
+        const b = await backfillGithubLinks(id);
+        if (!b.skipped) backfilled += b.scanned;
+      } catch {
+        // 穴埋めに失敗しても紐付けの保存自体は済んでいる。以後は Webhook で追従できる
+      }
+    }
+
     setSaving(false);
     if (failed) { toast("一部のプロジェクトを保存できませんでした", "error"); }
+    else if (backfilled) { toast(`過去のプルリクエスト ${backfilled}件を確認して紐付けました`, "success"); }
     setRows(prev => prev.map(r => ({ ...r, savedRepo: r.repo, savedBranch: r.branch, enabled: !!r.repo })));
     // GitHubタブの表示可否はキャッシュしているので、紐付けを変えたら捨てる
     invalidateGithubAccessCache();

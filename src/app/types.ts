@@ -697,8 +697,10 @@ export interface GithubPull {
   additions?: number;
   deletions?: number;
   checks?: { name: string; state: GithubCheckState }[];
-  /** ブランチ名・タイトルから拾ったWBS番号 */
+  /** ブランチ名・タイトルから拾ったWBS番号（大文字に正規化済み） */
   detectedWbs: string[];
+  /** 正規化したWBS番号 → 実際に書かれていた綴り。大文字小文字の食い違いの表示に使う */
+  detectedSpellings?: Record<string, string>;
   /** 自動検出の根拠（ブランチ名 / タイトル） */
   autoReason?: string | null;
 }
@@ -760,6 +762,25 @@ export interface TicketGithubLink {
   /** 表示用。内部IDではなくWBS番号を出すためにサーバーで引き直したもの */
   ticketWbs?: string | null;
   ticketTitle?: string | null;
+}
+
+/**
+ * 大文字小文字だけが違う綴りが混ざっていて、自動では紐付けなかったPR。
+ * どれが正しいかは人にしか決められないので、チケット詳細で選ばせる。
+ */
+export interface TicketGithubLinkCandidate {
+  id: number;
+  ticketId: string;
+  /** 突き合わせに使ったWBS番号（大文字に正規化済み） */
+  wbsKey: string;
+  kind: "pull" | "issue";
+  number: number;
+  /** このPRのブランチ名／タイトルに実際に書かれていた綴り */
+  spelling: string | null;
+  title: string | null;
+  state: string | null;
+  url: string | null;
+  autoReason: string | null;
 }
 
 export type GithubMergeMethod = "merge" | "squash" | "rebase";

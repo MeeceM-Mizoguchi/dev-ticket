@@ -424,16 +424,34 @@ async function getInstallationId(sb: SupabaseClient, orgId: string | null): Prom
 }
 
 // ── 変換 ─────────────────────────────────────────────────────
-const WBS_RE = /[A-Z][A-Z0-9]*-\d+/g;
+// WBS番号の接頭辞はプロジェクトが決めるもので、小文字（demo-071）のこともある。
+// 突き合わせは大文字に正規化して行うが、大文字小文字の食い違いを見つけるために
+// 原文の綴りも保持する。
+const WBS_RE = /[A-Za-z][A-Za-z0-9]*-\d+/g;
 
-/** ブランチ名とタイトルからWBS番号を拾う。誤検出を人が判断できるよう根拠も返す */
-function detectWbs(head: string, title: string): { list: string[]; reason: string | null } {
-  const fromHead = (head.toUpperCase().match(WBS_RE) ?? []);
-  const fromTitle = (title.toUpperCase().match(WBS_RE) ?? []);
-  const list = Array.from(new Set([...fromHead, ...fromTitle]));
-  if (!list.length) return { list, reason: null };
+interface WbsHit {
+  /** 大文字に正規化したWBS番号 */
+  list: string[];
+  /** 正規化したWBS番号 → ブランチ名／タイトルに実際に書かれていた綴り */
+  spellings: Record<string, string>;
+  /** 自動検出の根拠。誤検出を人が判断できるようにする */
+  reason: string | null;
+}
+
+/** ブランチ名とタイトルからWBS番号を拾う */
+function detectWbs(head: string, title: string): WbsHit {
+  const fromHead = head.match(WBS_RE) ?? [];
+  const fromTitle = title.match(WBS_RE) ?? [];
+  const spellings: Record<string, string> = {};
+  // ブランチ名を先に見る。同じ番号ならブランチ名の綴りを正とする
+  for (const w of [...fromHead, ...fromTitle]) {
+    const key = w.toUpperCase();
+    if (!spellings[key]) spellings[key] = w;
+  }
+  const list = Object.keys(spellings);
+  if (!list.length) return { list, spellings, reason: null };
   const reason = fromHead.length ? `ブランチ名 ${fromHead[0]}` : `タイトル ${fromTitle[0]}`;
-  return { list, reason };
+  return { list, spellings, reason };
 }
 
 function mapUser(u: any) {
@@ -465,6 +483,7 @@ function mapPull(p: any) {
     reviewState: "pending" as const,
     reviewSummary: "",
     detectedWbs: det.list,
+    detectedSpellings: det.spellings,
     autoReason: det.reason,
   };
 }
@@ -561,6 +580,8 @@ export default async function handler(req: any, res: any) {
       case "comment":  return await handleComment(sb, caller, req, res);
       case "link":     return await handleLink(sb, caller, req, res);
       case "unlink":   return await handleUnlink(sb, caller, req, res);
+      case "backfill-links": return await handleBackfillLinks(sb, caller, req, res);
+      case "resolve-candidate": return await handleResolveCandidate(sb, caller, req, res);
       default:         return res.status(404).json({ error: "Not Found" });
     }
   } catch (e) {
@@ -595,21 +616,15 @@ interface ReleaseSyncDepth {
   pages: number;
   /** 走査範囲外だった紐付けを、番号指定で引き直す上限 */
   lookups: number;
-  /**
-   * ステータスを問わず、走査したPRの紐付けを埋め直すか。
-   *
-   * これを立てておくと、クローズ済み・リリース済みのチケットにも「関連PR」が残る。
-   * 紐付けはPR一覧（open のみ）を開いたときにしか作られていなかったため、
-   * 過去分の穴埋めを兼ねる。中身が変わっていない行は書かないので、
-   * 2回目以降は実質ただの読み取りになる。
-   */
-  backfillLinks: boolean;
 }
-const SYNC_INTERACTIVE: ReleaseSyncDepth = { pages: 1, lookups: 10, backfillLinks: false };
-const SYNC_FULL: ReleaseSyncDepth = { pages: 10, lookups: 50, backfillLinks: true };
+const SYNC_INTERACTIVE: ReleaseSyncDepth = { pages: 1, lookups: 10 };
+const SYNC_FULL: ReleaseSyncDepth = { pages: 10, lookups: 50 };
 
 /** 番号指定の引き直しを同時に投げる本数 */
 const LOOKUP_CHUNK = 10;
+
+/** 過去PRの穴埋めで遡るページ数（100件／ページ） */
+const LINK_BACKFILL_PAGES = 10;
 
 /** 紐付けの埋め直しを一度に処理するPR数。WBS番号を条件に並べるためURL長の上限に当たらないようにする */
 const LINK_BACKFILL_CHUNK = 100;
@@ -717,9 +732,8 @@ async function syncProjectReleases(
   const { data: tickets } = await sb
     .from("sprint_tickets").select("id, wbs, title")
     .in("sprint_id", sprintIds).eq("status", "waiting-release");
-  // 対象が無ければ GitHub は一切叩かない（PR一覧の表示のたびに呼ばれるため）。
-  // 紐付けの埋め直しをする回だけは、リリース待ちが0件でも走査する
-  if (!tickets?.length && !depth.backfillLinks) return;
+  // 対象が無ければ GitHub は一切叩かない（PR一覧の表示のたびに呼ばれるため）
+  if (!tickets?.length) return;
 
   const installationId = await getInstallationId(sb, project.organization_id);
   const token = await installationToken(installationId);
@@ -734,10 +748,8 @@ async function syncProjectReleases(
   // ① 更新の新しい順にPRを遡り、WBS番号で突き合わせる。
   //    紐付けが1件も無いチケットはここで拾う（マージ済みPRは open の一覧に出ないため）。
   //    リリース待ちのチケットが全て見つかった時点で打ち切る
-  //    （紐付けの埋め直しをする回は、過去分も拾うので打ち切らない）
   const prState = new Map<number, PrState>();
   const byWbs = new Map<string, number[]>();
-  const scannedPulls: any[] = [];
   const unmatched = new Set(
     (tickets ?? []).map(t => String((t as any).wbs ?? "").toUpperCase()).filter(Boolean),
   );
@@ -757,28 +769,17 @@ async function syncProjectReleases(
       const st = toPrState(p);
       if (!st.number) continue;
       prState.set(st.number, st);
-      if (depth.backfillLinks) scannedPulls.push(mapPull(p));
       for (const w of detectWbs(p?.head?.ref ?? "", p?.title ?? "").list) {
         byWbs.set(w, [...(byWbs.get(w) ?? []), st.number]);
         unmatched.delete(w);
       }
     }
     if (list.length < 100) break;
-    if (!depth.backfillLinks && !unmatched.size) break;
-  }
-
-  // 走査したPRを、ステータスを問わず全チケットへ紐付け直す。
-  // 「リリース待ち」を経由せずクローズされたチケットの関連PRはここで埋まる。
-  // WBS番号を条件に並べて引くので、URLが長くなりすぎないよう小分けにする
-  for (let i = 0; i < scannedPulls.length; i += LINK_BACKFILL_CHUNK) {
-    await autoLink(sb, project.id, scannedPulls.slice(i, i + LINK_BACKFILL_CHUNK));
+    if (!unmatched.size) break;
   }
 
   // 既定ブランチはリポジトリ側を正とする（接続時に保存した値が古いことがある）
   const defaultBranch = repoInfo?.default_branch || project.github_default_branch || "main";
-
-  // ここから先はステータスを進める処理。対象が無ければ紐付けだけで終わる
-  if (!tickets?.length) return;
 
   // ② 明示的に紐付いているのに走査範囲の外だったPRは、番号を指定して引き直す。
   //    存在しない番号（手で紐付けを間違えた等）は判定から外す。ここで「状態不明」の
@@ -1632,9 +1633,8 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
     const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", ctx.id);
     const sprintIds = (sprints ?? []).map(s => (s as any).id);
     if (sprintIds.length) {
-      const { data: tickets } = await sb.from("sprint_tickets")
-        .select("wbs, title").in("sprint_id", sprintIds).in("wbs", wbsList);
-      for (const t of (tickets ?? []) as any[]) titleByWbs.set(String(t.wbs).toUpperCase(), t.title);
+      const tickets = await ticketsByWbs(sb, sprintIds, wbsList, "wbs, title");
+      for (const t of tickets) titleByWbs.set(String(t.wbs).toUpperCase(), t.title);
     }
   }
 
@@ -1651,6 +1651,46 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
 
 // ── 紐付け ───────────────────────────────────────────────────
 /**
+ * WBS番号でチケットを引く。
+ *
+ * ブランチ名／タイトルから拾った WBS は大文字に正規化してある（detectWbs）が、
+ * チケット側の wbs はプロジェクトが決めた接頭辞そのままで、小文字のこともある
+ * （demo-071 など）。`in("wbs", …)` は完全一致なので、大文字の接頭辞を使って
+ * いるプロジェクトだけ紐付き、小文字のプロジェクトは1件も当たらなかった。
+ * 大文字小文字を無視して引くために ilike を使う。
+ * WBS は英数字とハイフンだけなので、ワイルドカードの混入は起きない。
+ */
+async function ticketsByWbs(
+  sb: SupabaseClient, sprintIds: string[], wbsList: string[], columns: string,
+): Promise<any[]> {
+  if (!sprintIds.length || !wbsList.length) return [];
+  const { data } = await sb
+    .from("sprint_tickets").select(columns)
+    .in("sprint_id", sprintIds)
+    .or(wbsList.map(w => `wbs.ilike.${w}`).join(","));
+  return (data ?? []) as any[];
+}
+
+/** PostgREST が1リクエストで返す上限。これを超える件数は分割して読む */
+const REST_PAGE_SIZE = 1000;
+
+/** このプロジェクトのPR紐付けを全件。件数が上限を超えても取りこぼさないよう分割して読む */
+async function allPullLinks(sb: SupabaseClient, projectId: string): Promise<any[]> {
+  const out: any[] = [];
+  for (let from = 0; ; from += REST_PAGE_SIZE) {
+    const { data } = await sb
+      .from("ticket_github_links")
+      .select("id, ticket_id, number, auto_linked, state, title, url, wbs_spelling")
+      .eq("project_id", projectId).eq("kind", "pull")
+      .order("id").range(from, from + REST_PAGE_SIZE - 1);
+    const page = (data ?? []) as any[];
+    out.push(...page);
+    if (page.length < REST_PAGE_SIZE) break;
+  }
+  return out;
+}
+
+/**
  * ブランチ名／タイトルの WBS からチケットへ自動で紐付ける。
  * 表示のためだけの紐付けで、チケットのステータスには一切触らない
  * （既存のチケット更新経路に手を入れると、順番が入れ替わる等の既知不具合を踏むため）。
@@ -1658,7 +1698,12 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
  * チケットのステータスは問わない。クローズ済みでもリリース済みでも、
  * WBS が一致すれば紐付ける（履歴として「このチケットのPRはどれか」を残すため）。
  *
- * 定期実行から全PRを渡して呼ばれるので、中身が変わっていない行は書かない。
+ * ただし、同じWBS番号に対して大文字小文字だけが違う綴りが混ざっている場合
+ * （SEIBUN/demo-071 と SEIBUN/DEMO-071 の両方にPRがある等）は、どちらが正しいか
+ * 機械では決められない。自動では紐付けず、候補として残して人に選ばせる。
+ * 同じ綴り同士で複数PRがあるのは正常なので、そちらは今まで通り全件紐付ける。
+ *
+ * 全PRを渡して呼ばれることがあるので、中身が変わっていない行は書かない。
  * 毎回全件を upsert すると、実質は同じ内容の書き込みが延々と走ることになる。
  */
 async function autoLink(sb: SupabaseClient, projectId: string, pulls: any[]) {
@@ -1669,50 +1714,157 @@ async function autoLink(sb: SupabaseClient, projectId: string, pulls: any[]) {
   const sprintIds = (sprints ?? []).map(s => (s as any).id);
   if (!sprintIds.length) return;
 
-  const { data: tickets } = await sb
-    .from("sprint_tickets").select("id, wbs").in("sprint_id", sprintIds).in("wbs", wbsList);
-  if (!tickets?.length) return;
+  const tickets = await ticketsByWbs(sb, sprintIds, wbsList, "id, wbs");
+  if (!tickets.length) return;
 
-  const byWbs = new Map<string, string>();
-  for (const t of tickets as any[]) byWbs.set(String(t.wbs).toUpperCase(), t.id);
+  // WBS番号（大文字）ごとに当たったチケットを集める。
+  // 接頭辞の大小を途中で変えた等で、同じ番号のチケットが2件当たることもある
+  const ticketsByKey = new Map<string, any[]>();
+  for (const t of tickets) {
+    const k = String(t.wbs).toUpperCase();
+    ticketsByKey.set(k, [...(ticketsByKey.get(k) ?? []), t]);
+  }
 
-  const rows: Record<string, unknown>[] = [];
+  const pullsByKey = new Map<string, any[]>();
   for (const p of pulls) {
     for (const w of p.detectedWbs as string[]) {
-      const ticketId = byWbs.get(w);
-      if (!ticketId) continue;
-      rows.push({
-        project_id: projectId,
-        ticket_id: ticketId,
-        kind: "pull",
-        number: p.number,
-        title: p.title,
-        state: p.merged ? "merged" : p.state,
-        url: p.url,
-        auto_linked: true,
-        auto_reason: p.autoReason ?? null,
-      });
+      if (ticketsByKey.has(w)) pullsByKey.set(w, [...(pullsByKey.get(w) ?? []), p]);
     }
   }
-  if (!rows.length) return;
+  if (!pullsByKey.size) return;
 
-  const { data: existing } = await sb
-    .from("ticket_github_links").select("ticket_id, number, auto_linked, state, title, url")
-    .eq("project_id", projectId).eq("kind", "pull");
-  const before = new Map((existing ?? []).map(e => [`${(e as any).ticket_id}#${(e as any).number}`, e as any]));
+  const existing = await allPullLinks(sb, projectId);
+  const before = new Map(existing.map(e => [`${e.ticket_id}#${e.number}`, e]));
+
+  // WBS番号ごとに、綴りが何通りあるかを数える。
+  // 既に紐付いている行の綴りも見る。前回のWebhookで入った demo-071 と、
+  // 今回来た DEMO-071 の食い違いは、今回のPRだけを見ていても分からないため。
+  // 同じPR番号の行は今回のデータのほうが新しいので数えない（ブランチ名の改名を誤検出しないため）
+  const spellingsByKey = new Map<string, Set<string>>();
+  const add = (k: string, s: string | null | undefined) => {
+    if (!s) return;
+    if (!spellingsByKey.has(k)) spellingsByKey.set(k, new Set());
+    spellingsByKey.get(k)!.add(s);
+  };
+  for (const [k, ps] of pullsByKey) {
+    const incoming = new Set(ps.map(p => p.number));
+    for (const p of ps) add(k, (p.detectedSpellings ?? {})[k]);
+    const ticketIds = new Set((ticketsByKey.get(k) ?? []).map(t => t.id));
+    for (const e of existing) {
+      if (ticketIds.has(e.ticket_id) && !incoming.has(e.number)) add(k, e.wbs_spelling);
+    }
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  const candidates: Record<string, unknown>[] = [];
+  const withdrawIds: number[] = [];
+
+  for (const [k, ps] of pullsByKey) {
+    const ts = ticketsByKey.get(k) ?? [];
+    const ambiguous = (spellingsByKey.get(k)?.size ?? 0) > 1 || ts.length > 1;
+
+    for (const t of ts) {
+      for (const p of ps) {
+        const row = {
+          project_id: projectId,
+          ticket_id: t.id,
+          kind: "pull",
+          number: p.number,
+          title: p.title,
+          state: p.merged ? "merged" : p.state,
+          url: p.url,
+        };
+        if (!ambiguous) {
+          rows.push({ ...row, auto_linked: true, auto_reason: p.autoReason ?? null, wbs_spelling: (p.detectedSpellings ?? {})[k] ?? null });
+          continue;
+        }
+        candidates.push({ ...row, wbs_key: k, spelling: (p.detectedSpellings ?? {})[k] ?? null, auto_reason: p.autoReason ?? null });
+        // 綴りが割れる前に自動で付けてしまった紐付けは引っ込める。
+        // 人が選んだもの・手で付けたもの（auto_linked=false）はそのまま残す
+        const prev = before.get(`${t.id}#${p.number}`);
+        if (prev?.auto_linked === true) withdrawIds.push(prev.id);
+      }
+    }
+  }
+
+  if (candidates.length) {
+    // 既にある候補は上書きしない。人が選び終えた印（resolved_at）を消さないため
+    await sb.from("ticket_github_link_candidates")
+      .upsert(candidates, { onConflict: "project_id,ticket_id,kind,number", ignoreDuplicates: true });
+  }
+  if (withdrawIds.length) {
+    await sb.from("ticket_github_links").delete().in("id", withdrawIds);
+  }
 
   const toUpsert: Record<string, unknown>[] = [];
   for (const r of rows) {
-    const key = `${r.ticket_id}#${r.number}`;
-    const prev = before.get(key);
+    const prev = before.get(`${r.ticket_id}#${r.number}`);
     // 手動で付けた紐付け（auto_linked=false）を自動で上書きしない
     const row = prev?.auto_linked === false ? { ...r, auto_linked: false, auto_reason: null } : r;
-    if (prev && prev.state === row.state && prev.title === row.title && prev.url === row.url) continue;
+    if (prev && prev.state === row.state && prev.title === row.title && prev.url === row.url
+      && prev.wbs_spelling === row.wbs_spelling) continue;
     toUpsert.push(row);
   }
   if (!toUpsert.length) return;
 
   await sb.from("ticket_github_links").upsert(toUpsert, { onConflict: "project_id,ticket_id,kind,number" });
+}
+
+/**
+ * 過去PRの穴埋め。全PRを遡ってWBS番号で紐付け直す。
+ *
+ * PR一覧（openのみ）と Webhook だけでは、リポジトリを紐付ける前にマージ・クローズ
+ * されたPRが永久に紐付かない。リポジトリを紐付けた直後に1回だけ走らせて過去分を埋める。
+ * 全PRの走査を伴うので、定期実行では行わない。
+ */
+async function backfillProjectLinks(sb: SupabaseClient, project: any): Promise<number> {
+  const installationId = await getInstallationId(sb, (project.organization_id as string | null) ?? null);
+  const token = await installationToken(installationId);
+  const repo = String(project.github_repo_full_name ?? "");
+
+  const scanned: any[] = [];
+  for (let page = 1; page <= LINK_BACKFILL_PAGES; page++) {
+    const chunk = await gh(
+      token, `/repos/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+    ).catch(() => []);
+    const list: any[] = Array.isArray(chunk) ? chunk : [];
+    for (const p of list) scanned.push(mapPull(p));
+    if (list.length < 100) break;
+  }
+  // WBS番号を条件に並べて引くので、URLが長くなりすぎないよう小分けにする
+  for (let i = 0; i < scanned.length; i += LINK_BACKFILL_CHUNK) {
+    await autoLink(sb, project.id, scanned.slice(i, i + LINK_BACKFILL_CHUNK));
+  }
+  return scanned.length;
+}
+
+/**
+ * リポジトリを紐付けた直後の穴埋め。画面から保存のたびに呼ばれるので、
+ * 同じリポジトリでは1回しか走らせない。別のリポジトリへ付け替えたときは
+ * 対象のPRが変わるので、もう一度だけ走らせる。
+ */
+async function handleBackfillLinks(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  const body = parseBody(req);
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "merge");
+
+  const { data: project } = await sb.from("projects")
+    .select("id, organization_id, github_repo_full_name, github_links_backfilled_repo")
+    .eq("id", ctx.id).maybeSingle();
+  if (!project) throw new HttpError(404, "プロジェクトが見つかりません。");
+
+  const repo = String((project as any).github_repo_full_name ?? "");
+  if (String((project as any).github_links_backfilled_repo ?? "") === repo) {
+    return res.status(200).json({ ok: true, skipped: true, scanned: 0 });
+  }
+
+  const scanned = await backfillProjectLinks(sb, project);
+  await sb.from("projects").update({
+    github_links_backfilled_repo: repo,
+    github_links_backfilled_at: new Date().toISOString(),
+  }).eq("id", ctx.id);
+
+  return res.status(200).json({ ok: true, skipped: false, scanned });
 }
 
 async function loadLinksForProject(sb: SupabaseClient, projectId: string) {
@@ -1759,8 +1911,88 @@ async function handleLinks(sb: SupabaseClient, caller: Caller, req: any, res: an
 
   let q = sb.from("ticket_github_links").select("*").eq("project_id", ctx.id);
   if (ticketId) q = q.eq("ticket_id", ticketId);
-  const { data } = await q;
-  return res.status(200).json({ links: await withWbs(sb, data ?? []), level: ctx.level, repo: ctx.repo });
+  let cq = sb.from("ticket_github_link_candidates").select("*")
+    .eq("project_id", ctx.id).is("resolved_at", null);
+  if (ticketId) cq = cq.eq("ticket_id", ticketId);
+
+  const [{ data }, { data: cand }] = await Promise.all([q, cq]);
+  return res.status(200).json({
+    links: await withWbs(sb, data ?? []),
+    candidates: (cand ?? []).map(mapCandidate),
+    level: ctx.level,
+    repo: ctx.repo,
+  });
+}
+
+function mapCandidate(r: any) {
+  return {
+    id: r.id,
+    ticketId: r.ticket_id,
+    wbsKey: r.wbs_key,
+    kind: r.kind,
+    number: r.number,
+    spelling: r.spelling ?? null,
+    title: r.title ?? null,
+    state: r.state ?? null,
+    url: r.url ?? null,
+    autoReason: r.auto_reason ?? null,
+  };
+}
+
+/**
+ * 大文字小文字違いで割れていた候補から、人が1件を選んで確定する。
+ *
+ * 選ばれた1件だけを紐付け、同じWBS番号で自動的に付いていた他の紐付けは外す。
+ * 選ばれなかった候補も含めて resolved_at を入れ、次の走査で再び出てこないようにする
+ * （GitHub 側のブランチは残ったままなので、印を残さないと毎回また候補になる）。
+ */
+async function handleResolveCandidate(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  const body = parseBody(req);
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "merge");
+  const ticketId = String(body.ticketId ?? "");
+  const number = Number(body.number ?? 0);
+  if (!ticketId || !number) throw new HttpError(400, "選択された候補が不正です。");
+
+  const { data: group } = await sb.from("ticket_github_link_candidates").select("*")
+    .eq("project_id", ctx.id).eq("ticket_id", ticketId).is("resolved_at", null);
+  const chosen = (group ?? []).find(c => Number((c as any).number) === number);
+  if (!chosen) throw new HttpError(404, "候補が見つかりません。すでに解決済みの可能性があります。");
+
+  const wbsKey = String((chosen as any).wbs_key ?? "");
+  const siblings = (group ?? []).filter(c => String((c as any).wbs_key ?? "") === wbsKey);
+
+  // 選ばれなかったPRの自動紐付けを外す。人が付けたもの（auto_linked=false）は触らない
+  const drop = siblings.filter(c => Number((c as any).number) !== number).map(c => Number((c as any).number));
+  if (drop.length) {
+    await sb.from("ticket_github_links").delete()
+      .eq("project_id", ctx.id).eq("ticket_id", ticketId).eq("kind", "pull")
+      .eq("auto_linked", true).in("number", drop);
+  }
+
+  // 人が選んだ紐付けは auto_linked=false で残す。以後の自動処理で書き換えられない
+  await sb.from("ticket_github_links").upsert({
+    project_id: ctx.id,
+    ticket_id: ticketId,
+    kind: (chosen as any).kind ?? "pull",
+    number,
+    title: (chosen as any).title ?? "",
+    state: (chosen as any).state ?? "",
+    url: (chosen as any).url ?? "",
+    linked_by: caller.id,
+    auto_linked: false,
+    auto_reason: null,
+    wbs_spelling: (chosen as any).spelling ?? null,
+  }, { onConflict: "project_id,ticket_id,kind,number" });
+
+  const now = new Date().toISOString();
+  await sb.from("ticket_github_link_candidates")
+    .update({ resolved_at: now, resolved_by: caller.id, chosen: false })
+    .in("id", siblings.map(c => (c as any).id));
+  await sb.from("ticket_github_link_candidates")
+    .update({ chosen: true }).eq("id", (chosen as any).id);
+
+  return res.status(200).json({ ok: true, number });
 }
 
 async function handleLink(sb: SupabaseClient, caller: Caller, req: any, res: any) {

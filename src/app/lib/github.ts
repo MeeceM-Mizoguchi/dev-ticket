@@ -5,7 +5,8 @@
 import { supabase } from "@/lib/supabase";
 import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
-  TicketGithubLink, GithubMergeMethod, GithubAccessLevel, GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult,
+  TicketGithubLink, TicketGithubLinkCandidate, GithubMergeMethod, GithubAccessLevel,
+  GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -101,7 +102,13 @@ export function fetchPendingBranches(projectId: string) {
 }
 
 export function fetchTicketLinks(projectId: string, ticketId: string) {
-  return call<{ links: TicketGithubLink[]; level: GithubAccessLevel; repo: string }>("links", { query: { projectId, ticketId } });
+  return call<{
+    links: TicketGithubLink[];
+    /** 大文字小文字違いで自動紐付けを見送ったPR。人がどれか1件を選ぶ */
+    candidates: TicketGithubLinkCandidate[];
+    level: GithubAccessLevel;
+    repo: string;
+  }>("links", { query: { projectId, ticketId } });
 }
 
 // ── 書き込み ─────────────────────────────────────────────────
@@ -138,6 +145,22 @@ export function linkTicket(projectId: string, ticketId: string, kind: "pull" | "
 
 export function unlinkTicket(projectId: string, id: number) {
   return call<{ ok: true }>("unlink", { body: { projectId, id } });
+}
+
+/**
+ * 大文字小文字違いで割れていた候補から1件を選んで確定する。
+ * 選ばれなかったPRの自動紐付けは外れ、以後この候補は出てこない。
+ */
+export function resolveLinkCandidate(projectId: string, ticketId: string, number: number) {
+  return call<{ ok: true; number: number }>("resolve-candidate", { body: { projectId, ticketId, number } });
+}
+
+/**
+ * リポジトリを紐付けた直後に、過去のPRを1回だけ遡って紐付ける。
+ * 同じリポジトリで2回目以降は skipped:true が返るだけで、GitHub は叩かない。
+ */
+export function backfillGithubLinks(projectId: string) {
+  return call<{ ok: true; skipped: boolean; scanned: number }>("backfill-links", { body: { projectId } });
 }
 
 // ── 表示ヘルパー ─────────────────────────────────────────────
