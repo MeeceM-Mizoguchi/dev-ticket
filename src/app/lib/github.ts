@@ -74,8 +74,15 @@ export function syncReleasedTickets(orgId?: string | null) {
 }
 
 // ── 参照 ─────────────────────────────────────────────────────
-export function fetchPulls(projectId: string) {
-  return call<{ pulls: GithubPull[]; level: GithubAccessLevel; repo: string; links: TicketGithubLink[] }>("pulls", { query: { projectId } });
+/**
+ * オープンなPRの一覧。
+ * light を付けると CI・レビュー・マージ可否を引かない軽い応答になる。
+ * 番号とタイトルだけあればよい用途（チケット詳細の紐付け候補）で使う
+ */
+export function fetchPulls(projectId: string, opts?: { light?: boolean }) {
+  return call<{ pulls: GithubPull[]; level: GithubAccessLevel; repo: string; links: TicketGithubLink[] }>(
+    "pulls", { query: { projectId, light: opts?.light ? 1 : undefined } },
+  );
 }
 
 export function fetchPull(projectId: string, number: number) {
