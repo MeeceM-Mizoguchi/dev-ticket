@@ -14,7 +14,7 @@
 //    「PRを紐付ける」を押すまで何も始まらない状態を無くすため
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Plus, X } from "lucide-react";
+import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
 import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -83,6 +83,10 @@ export function TicketPrSection({
   const [available, setAvailable] = useState<GithubPull[] | null>(null);
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 紐付け処理中のPR番号。押した行そのものに進捗を出すために持つ（BRU13-017）。
+  // 候補の行を押してから完了までは通信2往復（紐付け＋取り直し）あって数秒かかるため、
+  // 何も出ないと固まったように見える
+  const [linking, setLinking] = useState<number | null>(null);
 
   // このチケットのブランチ候補（ブランチ名に WBS 番号を含み、まだPRが無いもの）
   const [candidates, setCandidates] = useState<GithubPendingBranch[] | null>(null);
@@ -242,6 +246,7 @@ export function TicketPrSection({
 
   const handleLink = async (number: number) => {
     setBusy(true);
+    setLinking(number);
     try {
       await linkTicket(projectId, ticketId, "pull", number);
       await load();
@@ -252,6 +257,7 @@ export function TicketPrSection({
       toast(e instanceof GithubApiError ? e.message : "紐付けに失敗しました", "error");
     } finally {
       setBusy(false);
+      setLinking(null);
     }
   };
 
@@ -259,6 +265,7 @@ export function TicketPrSection({
   // 選ばれなかったPRの自動紐付けはサーバー側で外れ、この候補は二度と出てこない
   const handleChooseCandidate = async (number: number) => {
     setBusy(true);
+    setLinking(number);
     try {
       await resolveLinkCandidate(projectId, ticketId, number);
       await load();
@@ -268,6 +275,7 @@ export function TicketPrSection({
       toast(e instanceof GithubApiError ? e.message : "紐付けに失敗しました", "error");
     } finally {
       setBusy(false);
+      setLinking(null);
     }
   };
 
@@ -365,6 +373,8 @@ export function TicketPrSection({
       padding: "14px 16px",
       boxShadow: showGuide ? "0 0 0 3px rgba(220,38,38,0.08)" : "none",
     }}>
+      {/* spin は各画面で個別に定義されているので、ここでも名前をぶつけないよう接頭辞を付けて持つ */}
+      <style>{"@keyframes tpr-spin { to { transform: rotate(360deg); } }"}</style>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <Github style={{ width: 13, height: 13, color: BLACK }} />
@@ -431,8 +441,9 @@ export function TicketPrSection({
                   {already && <span style={{ fontSize: 10, color: "#A09790", flexShrink: 0 }}>紐付け済み</span>}
                   {level === "merge" && (
                     <button onClick={() => handleChooseCandidate(c.number)} disabled={busy}
-                      style={{ padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
-                      これを紐付ける
+                      style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
+                      {linking === c.number && <Loader2 style={{ width: 11, height: 11, animation: "tpr-spin 1s linear infinite" }} />}
+                      {linking === c.number ? "紐付け中..." : "これを紐付ける"}
                     </button>
                   )}
                 </div>
@@ -539,12 +550,20 @@ export function TicketPrSection({
 
       {picking && (
         <div style={{ marginTop: 10, border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, overflow: "hidden" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", background: "#F4F5F6" }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>
-              紐付け候補（オープンなPR）{wbsKey && "・このチケットの番号を含むものが上"}
-            </span>
-            <button onClick={() => setPicking(false)}
-              style={{ background: "none", border: "none", cursor: "pointer", color: "#B0A9A4", display: "flex" }}>
+          {/* 一覧を下までスクロールしていて押した行が見えていなくても分かるよう、見出しにも進捗を出す */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", background: linking !== null ? "#EFF6FF" : "#F4F5F6" }}>
+            {linking !== null ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#0284C7" }}>
+                <Loader2 style={{ width: 11, height: 11, animation: "tpr-spin 1s linear infinite" }} />
+                #{linking} を紐付けています...
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>
+                紐付け候補（オープンなPR）{wbsKey && "・このチケットの番号を含むものが上"}
+              </span>
+            )}
+            <button onClick={() => setPicking(false)} disabled={linking !== null}
+              style={{ background: "none", border: "none", cursor: linking !== null ? "default" : "pointer", color: "#B0A9A4", display: "flex", opacity: linking !== null ? 0.4 : 1 }}>
               <X style={{ width: 12, height: 12 }} />
             </button>
           </div>
@@ -556,16 +575,26 @@ export function TicketPrSection({
             ) : (
               available.map(p => {
                 const already = links.some(l => l.kind === "pull" && l.number === p.number);
+                // 押した行だけ進捗を出し、他の行は薄くして「今はこれを処理中」と分かるようにする
+                const linkingThis = linking === p.number;
                 return (
                   <button key={p.number} onClick={() => !already && handleLink(p.number)} disabled={already || busy}
-                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: "none", borderBottom: "1px solid rgba(26,23,20,0.05)", background: already ? "#F9FAFB" : "#FFF", cursor: already || busy ? "default" : "pointer", textAlign: "left" as const }}>
-                    <Link2 style={{ width: 11, height: 11, color: "#0284C7", flexShrink: 0 }} />
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: "none", borderBottom: "1px solid rgba(26,23,20,0.05)", background: linkingThis ? "#EFF6FF" : already ? "#F9FAFB" : "#FFF", cursor: already || busy ? "default" : "pointer", textAlign: "left" as const, opacity: linking !== null && !linkingThis ? 0.45 : 1, transition: "opacity .15s, background .15s" }}>
+                    {linkingThis
+                      ? <Loader2 style={{ width: 11, height: 11, color: "#0284C7", flexShrink: 0, animation: "tpr-spin 1s linear infinite" }} />
+                      : <Link2 style={{ width: 11, height: 11, color: "#0284C7", flexShrink: 0 }} />}
                     <span style={{ fontSize: 11, fontWeight: 700, color: "#8A837B", fontFamily: "var(--font-mono)", flexShrink: 0 }}>#{p.number}</span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{p.title}</span>
-                    {wbsKey && p.detectedWbs.includes(wbsKey) && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", flexShrink: 0 }}>一致</span>
+                    {linkingThis ? (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#0284C7", flexShrink: 0 }}>紐付け中...</span>
+                    ) : (
+                      <>
+                        {wbsKey && p.detectedWbs.includes(wbsKey) && (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", flexShrink: 0 }}>一致</span>
+                        )}
+                        {already && <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0 }}>紐付け済み</span>}
+                      </>
                     )}
-                    {already && <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0 }}>紐付け済み</span>}
                   </button>
                 );
               })
