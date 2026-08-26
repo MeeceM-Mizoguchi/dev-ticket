@@ -2,6 +2,7 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { Image as ImageIcon, X, Copy, CheckCheck } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PlanTooltip } from "./PlanTooltip";
+import { ImageLightbox, useImageLightbox } from "./ImageLightbox";
 
 interface Props {
   images: string[];
@@ -14,7 +15,7 @@ interface Props {
 export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, readOnly, maxImages }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
-  const [previewImg, setPreviewImg] = useState<string | null>(null);
+  const { lightbox, openLightbox, closeLightbox, setLightboxIndex } = useImageLightbox();
   const imagesRef = useRef<string[]>(images);
   imagesRef.current = images;
 
@@ -119,7 +120,7 @@ export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, rea
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
             {images.map((img, i) => (
               <div key={i} style={{ position: "relative" }}>
-                <img src={img} alt="" onClick={() => setPreviewImg(img)}
+                <img src={img} alt="" onClick={() => openLightbox(images, i)}
                   style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                 {!readOnly && (
                   <>
@@ -140,19 +141,12 @@ export function ImageAttachments({ images, onImagesChange, uploadPathPrefix, rea
         )}
       </div>
 
-      {/* 画像プレビューモーダル */}
-      {previewImg && (
-        <div
-          style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={() => setPreviewImg(null)}
-        >
-          <img src={previewImg} alt="" style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8, objectFit: "contain" }} onClick={e => e.stopPropagation()} />
-          <button onClick={() => setPreviewImg(null)}
-            style={{ position: "absolute", top: 20, right: 20, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
-            <X style={{ width: 18, height: 18 }} />
-          </button>
-        </div>
+      {/* 画像プレビューモーダル（←→キー / 左右の矢印で送れる） */}
+      {lightbox && (
+        <ImageLightbox images={lightbox.images} index={lightbox.index}
+          onIndexChange={setLightboxIndex} onClose={closeLightbox} />
       )}
+
     </>
   );
 }

@@ -25,6 +25,7 @@ import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
+import { ImageLightbox, useImageLightbox } from "@/app/components/shared/ImageLightbox";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -392,7 +393,7 @@ export function TicketDetailPanel({
   const ticketImagesRef = useRef<string[]>(ticket?.images ?? []);
 
   // image preview
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const { lightbox, openLightbox, closeLightbox, setLightboxIndex } = useImageLightbox();
 
   // drag over states
   const [imageDragOver, setImageDragOver] = useState(false);
@@ -816,13 +817,6 @@ export function TicketDetailPanel({
     escStack.push(stableEscHandler);
     return () => escStack.pop(stableEscHandler);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!previewImage) return;
-    const close = () => setPreviewImage(null);
-    escStack.push(close);
-    return () => escStack.pop(close);
-  }, [previewImage]);
 
   // Runs synchronously before paint — sets the panel animation value without any visible flash.
   // useLayoutEffect + setState causes a sync re-render before the browser draws, so the first
@@ -2226,22 +2220,10 @@ export function TicketDetailPanel({
       )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes commentRingPulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0)}22%{box-shadow:0 0 0 4px rgba(249,115,22,0.55),0 0 18px 3px rgba(249,115,22,0.35)}50%{box-shadow:0 0 0 2px rgba(249,115,22,0.28),0 0 9px 2px rgba(249,115,22,0.18)}74%{box-shadow:0 0 0 4px rgba(249,115,22,0.50),0 0 18px 3px rgba(249,115,22,0.32)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}.comment-ring-pulse{animation:commentRingPulse 2s ease-out; border-radius:8px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
 
-      {/* Image preview modal */}
-      {previewImage && (
-        <div onClick={() => setPreviewImage(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}>
-          <button onClick={e => { e.stopPropagation(); copyImageToClipboard(previewImage); }}
-            style={{ position: "absolute", top: 16, right: 60, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#FFF" }}
-            title="画像をコピー">
-            {copiedImageUrl === previewImage ? <CheckCheck style={{ width: 18, height: 18, color: "#4ADE80" }} /> : <Copy style={{ width: 18, height: 18 }} />}
-          </button>
-          <button onClick={() => setPreviewImage(null)}
-            style={{ position: "absolute", top: 16, right: 16, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#FFF" }}>
-            <X style={{ width: 18, height: 18 }} />
-          </button>
-          <img src={previewImage} alt="" onClick={e => e.stopPropagation()}
-            style={{ maxWidth: "90vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 8, boxShadow: "0 24px 80px rgba(0,0,0,0.6)", cursor: "default" }} />
-        </div>
+      {/* Image preview modal — ←→キー / 左右の矢印で同じ並びの画像を送れる */}
+      {lightbox && (
+        <ImageLightbox images={lightbox.images} index={lightbox.index}
+          onIndexChange={setLightboxIndex} onClose={closeLightbox} zIndex={400} />
       )}
 
       <div onClick={stableEscHandler} style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(10,14,12,0.30)", backdropFilter: "blur(3px)" }} />
@@ -3161,7 +3143,7 @@ export function TicketDetailPanel({
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                   {ticketImages.map((img, i) => (
                     <div key={i} style={{ position: "relative" }}>
-                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                      <img src={img} alt="" onClick={() => openLightbox(ticketImages, i)}
                         style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 7, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                       <button onClick={() => copyImageToClipboard(img)}
                         style={{ position: "absolute", top: -5, right: 15, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3289,7 +3271,7 @@ export function TicketDetailPanel({
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                                     {roundImages.map((img, i) => (
                                       <div key={i} style={{ position: "relative" }}>
-                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                        <img src={img} alt="" onClick={() => openLightbox(roundImages, i)}
                                           style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                         <button onClick={() => copyImageToClipboard(img)}
                                           style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3328,7 +3310,7 @@ export function TicketDetailPanel({
                                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: c.content ? 5 : 0 }}>
                                                     {(c.images ?? []).map((img, i) => (
                                                       <div key={i} style={{ position: "relative" }}>
-                                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                                        <img src={img} alt="" onClick={() => openLightbox((c.images ?? []), i)}
                                                           style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                                         <button onClick={() => copyImageToClipboard(img)}
                                                           style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3459,7 +3441,7 @@ export function TicketDetailPanel({
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
                           {reviewImages.map((img, i) => (
                             <div key={i} style={{ position: "relative" }}>
-                              <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                              <img src={img} alt="" onClick={() => openLightbox(reviewImages, i)}
                                 style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                               <button onClick={() => copyImageToClipboard(img)}
                                 style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3605,7 +3587,7 @@ export function TicketDetailPanel({
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                   {editImages.map((img, i) => (
                                     <div key={i} style={{ position: "relative" }}>
-                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                      <img src={img} alt="" onClick={() => openLightbox(editImages, i)}
                                         style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                       <button onClick={() => copyImageToClipboard(img)}
                                         style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3649,7 +3631,7 @@ export function TicketDetailPanel({
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                                     {c.images.map((img, i) => (
                                       <div key={i} style={{ position: "relative" }}>
-                                        <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                        <img src={img} alt="" onClick={() => openLightbox(c.images, i)}
                                           style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                         <button onClick={() => copyImageToClipboard(img)}
                                           style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3701,7 +3683,7 @@ export function TicketDetailPanel({
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                         {editImages.map((img, i) => (
                                           <div key={i} style={{ position: "relative" }}>
-                                            <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                            <img src={img} alt="" onClick={() => openLightbox(editImages, i)} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                             <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
                                               {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
                                             </button>
@@ -3776,7 +3758,7 @@ export function TicketDetailPanel({
                                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                         {reply.images.map((img, i) => (
                                           <div key={i} style={{ position: "relative" }}>
-                                            <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                            <img src={img} alt="" onClick={() => openLightbox(reply.images, i)} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                             <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
                                               {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
                                             </button>
@@ -3840,7 +3822,7 @@ export function TicketDetailPanel({
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                                 {revisionImages.map((img, i) => (
                                   <div key={i} style={{ position: "relative" }}>
-                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                    <img src={img} alt="" onClick={() => openLightbox(revisionImages, i)}
                                       style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                     <button onClick={() => copyImageToClipboard(img)}
                                       style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3935,7 +3917,7 @@ export function TicketDetailPanel({
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                 {editImages.map((img, i) => (
                                   <div key={i} style={{ position: "relative" }}>
-                                    <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                    <img src={img} alt="" onClick={() => openLightbox(editImages, i)}
                                       style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                     <button onClick={() => copyImageToClipboard(img)}
                                       style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -3979,7 +3961,7 @@ export function TicketDetailPanel({
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: c.content ? 6 : 0 }}>
                                   {c.images.map((img, i) => (
                                     <div key={i} style={{ position: "relative" }}>
-                                      <img src={img} alt="" onClick={() => setPreviewImage(img)}
+                                      <img src={img} alt="" onClick={() => openLightbox(c.images, i)}
                                         style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                       <button onClick={() => copyImageToClipboard(img)}
                                         style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -4047,7 +4029,7 @@ export function TicketDetailPanel({
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
                                       {editImages.map((img, i) => (
                                         <div key={i} style={{ position: "relative" }}>
-                                          <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                          <img src={img} alt="" onClick={() => openLightbox(editImages, i)} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                           <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: 12, width: 15, height: 15, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
                                             {copiedImageUrl === img ? <CheckCheck style={{ width: 7, height: 7, color: "#4ADE80" }} /> : <Copy style={{ width: 7, height: 7, color: "#FFF" }} />}
                                           </button>
@@ -4121,7 +4103,7 @@ export function TicketDetailPanel({
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
                                       {reply.images.map((img, i) => (
                                         <div key={i} style={{ position: "relative" }}>
-                                          <img src={img} alt="" onClick={() => setPreviewImage(img)} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
+                                          <img src={img} alt="" onClick={() => openLightbox(reply.images, i)} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(26,23,20,0.08)", cursor: "zoom-in" }} />
                                           <button onClick={() => copyImageToClipboard(img)} style={{ position: "absolute", top: -5, right: -5, width: 18, height: 18, borderRadius: "50%", background: "#1A1714", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="画像をコピー">
                                             {copiedImageUrl === img ? <CheckCheck style={{ width: 8, height: 8, color: "#4ADE80" }} /> : <Copy style={{ width: 8, height: 8, color: "#FFF" }} />}
                                           </button>

@@ -9,6 +9,7 @@ import { TableMap } from "@tiptap/pm/tables";
 import Mention from "@tiptap/extension-mention";
 import { MermaidNode } from "./MermaidNode";
 import { MermaidEditModal } from "./MermaidEditModal";
+import { ImageLightbox, useImageLightbox } from "./ImageLightbox";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
@@ -26,7 +27,6 @@ import { openExternalUrl } from "@/lib/openExternal";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { parseWhiteboardLink } from "@/app/lib/whiteboardLink";
 import { requestWhiteboardFocus } from "@/app/lib/whiteboardFocusBus";
-import { createPortal } from "react-dom";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
 // ── Markdown ファイル取り込み ────────────────────────────────
@@ -248,12 +248,29 @@ export function tsvToTableHtml(text: string): string | null {
 }
 
 // ---- インライン画像 NodeView（ホバーでコピー/削除、クリックで拡大表示） ----
-function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
+function ImageNodeView({ node, deleteNode, editor, getPos }: NodeViewProps) {
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [preview, setPreview] = useState(false);
+  const { lightbox, openLightbox, closeLightbox, setLightboxIndex } = useImageLightbox();
   const src = (node.attrs as { src: string }).src;
   const isEditable = editor.isEditable;
+
+  // 同じ本文に並んでいる画像をまとめて対象にし、拡大表示から矢印で送れるようにする
+  const openPreview = () => {
+    let selfPos: number | null = null;
+    try { selfPos = typeof getPos === "function" ? getPos() ?? null : null; } catch { selfPos = null; }
+    const srcs: string[] = [];
+    let selfIndex = 0;
+    editor.state.doc.descendants((n, pos) => {
+      if (n.type.name !== "image") return;
+      const s = (n.attrs as { src?: string }).src;
+      if (!s) return;
+      if (selfPos !== null && pos === selfPos) selfIndex = srcs.length;
+      srcs.push(s);
+    });
+    if (srcs.length === 0) { openLightbox([src], 0); return; }
+    openLightbox(srcs, selfIndex);
+  };
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -283,7 +300,7 @@ function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}>
       <img src={src} style={{ maxWidth: "100%", maxHeight: 300, borderRadius: 6, margin: "4px 0", display: "block", objectFit: "contain", boxShadow: "0 1px 4px rgba(0,0,0,0.10)", cursor: "zoom-in" }}
-        onClick={() => setPreview(true)} />
+        onClick={openPreview} />
       {hovered && isEditable && (
         <div contentEditable={false} style={{ position: "absolute", top: 8, right: 4, display: "flex", gap: 4 }}>
           <button type="button" onMouseDown={handleCopy}
@@ -298,19 +315,9 @@ function ImageNodeView({ node, deleteNode, editor }: NodeViewProps) {
           </button>
         </div>
       )}
-      {preview && createPortal(
-        <div
-          style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}
-          onClick={() => setPreview(false)}
-        >
-          <img src={src} alt="" style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8, objectFit: "contain", boxShadow: "0 24px 80px rgba(0,0,0,0.6)", cursor: "default" }}
-            onClick={e => e.stopPropagation()} />
-          <button type="button" onClick={() => setPreview(false)}
-            style={{ position: "absolute", top: 20, right: 20, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
-            <X style={{ width: 18, height: 18 }} />
-          </button>
-        </div>,
-        document.body
+      {lightbox && (
+        <ImageLightbox images={lightbox.images} index={lightbox.index}
+          onIndexChange={setLightboxIndex} onClose={closeLightbox} />
       )}
     </NodeViewWrapper>
   );
