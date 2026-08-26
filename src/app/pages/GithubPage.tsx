@@ -208,9 +208,25 @@ export function GithubPage() {
     });
   };
 
+  /**
+   * 行を開いたときに引いた詳細を一覧側へ取り込む（BRU13-036）。
+   *
+   * GitHub の mergeable_state は要求されてから計算されるため、一覧の取得では
+   * "unknown"（＝マージ可否は判定中）で返ってくることがある。行はその後に引き直した
+   * 詳細を優先して出すので、取り込まないと「行のチェックボックスは押せるのに
+   * 全件選択の母数には入っていない」という食い違いが残る。
+   */
+  const applyPullDetail = useCallback((detail: GithubPull) => {
+    setPulls(prev => prev.map(p => (p.number === detail.number ? { ...p, ...detail } : p)));
+  }, []);
+
   // マージできる状態のものだけを選択対象にする
   const mergeablePulls = useMemo(() => pulls.filter(p => !mergeBlockReason(p)), [pulls]);
   const selectedPulls = useMemo(() => pulls.filter(p => selected.has(p.number)), [pulls, selected]);
+  const allMergeableSelected = useMemo(
+    () => mergeablePulls.length > 0 && mergeablePulls.every(p => selected.has(p.number)),
+    [mergeablePulls, selected],
+  );
 
   // onMerged は「GitHub 側のマージが終わった」合図。ダイアログの進捗を次の段
   //（一覧の取り直し）へ進めるために呼ぶ
@@ -354,9 +370,23 @@ export function GithubPage() {
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: selected.size ? "#F0F9FF" : "#FFF", border: `1px solid ${selected.size ? "rgba(2,132,199,0.28)" : "rgba(26,23,20,0.09)"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: "#4B4540" }}>
+                      {/* 件数の一致で判定すると、母数（マージできるもの）に入っていないPRを
+                          手で選んだ瞬間にチェックが外れて見える。「マージできるものが
+                          全部入っているか」で判定し、外すときも自分の分だけ外す（BRU13-036） */}
                       <input type="checkbox"
-                        checked={selected.size > 0 && selected.size === mergeablePulls.length}
-                        onChange={e => setSelected(e.target.checked ? new Set(mergeablePulls.map(p => p.number)) : new Set())} />
+                        checked={allMergeableSelected}
+                        ref={el => { if (el) el.indeterminate = !allMergeableSelected && mergeablePulls.some(p => selected.has(p.number)); }}
+                        onChange={e => {
+                          // 更新関数は後で走ることがあるので、押した時点の状態を先に取り出す
+                          const on = e.target.checked;
+                          setSelected(prev => {
+                            const next = new Set(prev);
+                            for (const p of mergeablePulls) {
+                              if (on) next.add(p.number); else next.delete(p.number);
+                            }
+                            return next;
+                          });
+                        }} />
                       マージできるもの全件を選択（{mergeablePulls.length}件）
                     </label>
                     {selected.size > 0 && (
@@ -382,7 +412,7 @@ export function GithubPage() {
                 projectId={project.id} projectSlug={projectSlug ?? project.slug} repo={repo}
                 pulls={pulls} level={level} links={links}
                 selected={selected} onToggleSelect={toggleSelect}
-                onMergeClick={setMergeTarget}
+                onMergeClick={setMergeTarget} onDetailLoaded={applyPullDetail}
                 writeBlocked={writeBlock?.message ?? null}
                 refreshedAt={fetchedAt}
               />
