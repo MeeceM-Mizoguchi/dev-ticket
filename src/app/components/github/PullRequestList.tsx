@@ -13,7 +13,7 @@ import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/type
 
 const BLACK = "#1F2328";
 
-export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick, writeBlocked, refreshedAt }: {
+export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick, onDetailLoaded, writeBlocked, refreshedAt }: {
   projectId: string;
   /** 紐付いたチケットへ飛ばすために使う */
   projectSlug: string;
@@ -26,6 +26,11 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
   onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
+  /**
+   * 行を開いて引いた詳細を親へ渡す。マージ可否（mergeable_state）は一覧APIでは
+   * 判定中のことがあり、親が持つ一覧と行の表示が食い違うため（BRU13-036）
+   */
+  onDetailLoaded?: (pull: GithubPull) => void;
   /**
    * PRの状態ではなく App の権限でマージできない場合の理由。
    * 入っていれば全件マージできないので、押せるボタンを出さない
@@ -47,13 +52,13 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
           linked={links.filter(l => l.kind === "pull" && l.number === p.number)}
           checked={selected?.has(p.number) ?? false}
           onToggleSelect={onToggleSelect} writeBlocked={writeBlocked} refreshedAt={refreshedAt}
-          onMergeClick={onMergeClick} onLinkClick={onLinkClick} />
+          onMergeClick={onMergeClick} onLinkClick={onLinkClick} onDetailLoaded={onDetailLoaded} />
       ))}
     </div>
   );
 }
 
-function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick, writeBlocked, refreshedAt }: {
+function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, onToggleSelect, onMergeClick, onLinkClick, onDetailLoaded, writeBlocked, refreshedAt }: {
   projectId: string;
   projectSlug: string;
   repo: string;
@@ -64,6 +69,7 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
   onLinkClick?: (pull: GithubPull) => void;
+  onDetailLoaded?: (pull: GithubPull) => void;
   writeBlocked?: string | null;
   refreshedAt?: string | null;
 }) {
@@ -98,6 +104,11 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   const detailAtRef = useRef(detailAt);
   detailAtRef.current = detailAt;
 
+  // 親へ渡すコールバックは ref 経由で持つ。effect の依存に入れると、
+  // 親が再描画されるたびに詳細を引き直しかねない
+  const onDetailLoadedRef = useRef(onDetailLoaded);
+  onDetailLoadedRef.current = onDetailLoaded;
+
   // mergeable_state は一覧では取れないので、開いたときに詳細を引く。
   // 更新で detail を捨てたあとも、開いたままならここで引き直される
   useEffect(() => {
@@ -105,7 +116,12 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
     const at = detailAt;
     setLoadingDetail(true);
     fetchPull(projectId, pull.number)
-      .then(r => { if (detailAtRef.current === at) setDetail(r.pull); })
+      .then(r => {
+        if (detailAtRef.current !== at) return;
+        setDetail(r.pull);
+        // 引き直した可否は一覧側の判断（まとめてマージの母数）にも反映させる
+        onDetailLoadedRef.current?.(r.pull);
+      })
       .catch(e => {
         if (detailAtRef.current === at) setDetailError(e instanceof GithubApiError ? e.message : "詳細を取得できませんでした");
       })

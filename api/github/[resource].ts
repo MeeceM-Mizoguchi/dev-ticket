@@ -674,6 +674,22 @@ function mapUser(u: any) {
   return { login: u?.login ?? "", avatarUrl: u?.avatar_url ?? "" };
 }
 
+/** マージ可否の再取得までの待ち時間。GitHub 側の計算が終わるのを少しだけ待つ */
+const MERGEABLE_RETRY_MS = 1200;
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * マージ可否が「判定中」かどうか。
+ * オープンかつ Draft でないのに mergeable が決まっていないものだけを対象にする
+ * （Draft や既にマージ済みは計算されないので、待っても変わらない）
+ */
+function needsMergeableRetry(detail: any): boolean {
+  if (!detail) return false;
+  if (detail.draft || detail.merged_at || detail.state !== "open") return false;
+  return detail.mergeable === null || detail.mergeable === undefined || detail.mergeable_state === "unknown";
+}
+
 function mapPull(p: any) {
   const head = p.head?.ref ?? "";
   const det = detectWbs(head, p.title ?? "");
@@ -1626,11 +1642,19 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   const enriched = light ? pulls : await Promise.all(pulls.map(async (p: any, i: number) => {
     if (i >= 15) return p;
     try {
-      const [detail, runs, reviews] = await Promise.all([
+      const [detail0, runs, reviews] = await Promise.all([
         gh(token, `/repos/${ctx.repo}/pulls/${p.number}`).catch(() => null),
         p.headSha ? gh(token, `/repos/${ctx.repo}/commits/${p.headSha}/check-runs?per_page=50`).catch(() => null) : null,
         gh(token, `/repos/${ctx.repo}/pulls/${p.number}/reviews?per_page=50`).catch(() => null),
       ]);
+      // GitHub のマージ可否は「聞かれてから」計算される。しばらく触られていないPRは
+      // 1回目が unknown（mergeable=null）で返り、その要求をきっかけに計算される。
+      // ここで諦めると一覧では「判定中＝マージ不可」のまま出てしまい、
+      // 詳細を開いた人にだけマージできるように見える（BRU13-036）ので、一度だけ引き直す
+      const detail = needsMergeableRetry(detail0)
+        ? await sleep(MERGEABLE_RETRY_MS).then(() =>
+            gh(token, `/repos/${ctx.repo}/pulls/${p.number}`).catch(() => detail0))
+        : detail0;
       const c = summarizeChecks(runs?.check_runs ?? []);
       const r = summarizeReviews(reviews ?? []);
       return {
@@ -1657,7 +1681,11 @@ async function handlePull(sb: SupabaseClient, caller: Caller, req: any, res: any
   if (!number) throw new HttpError(400, "PR番号が不正です。");
 
   const token = await installationToken(ctx.installationId);
-  const p = await gh(token, `/repos/${ctx.repo}/pulls/${number}`);
+  const first = await gh(token, `/repos/${ctx.repo}/pulls/${number}`);
+  // 一覧と同じく、判定中なら一度だけ引き直す（BRU13-036）
+  const p = needsMergeableRetry(first)
+    ? await sleep(MERGEABLE_RETRY_MS).then(() => gh(token, `/repos/${ctx.repo}/pulls/${number}`).catch(() => first))
+    : first;
   const [runs, reviews] = await Promise.all([
     gh(token, `/repos/${ctx.repo}/commits/${p.head?.sha}/check-runs?per_page=50`).catch(() => null),
     gh(token, `/repos/${ctx.repo}/pulls/${number}/reviews?per_page=50`).catch(() => null),
