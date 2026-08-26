@@ -59,7 +59,7 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onMerge }: 
   ];
 
   return (
-    <DialogShell title="マージの確認" onClose={merging ? () => {} : onClose}
+    <DialogShell title="マージの確認" minHeight={merging ? 0 : undefined} onClose={merging ? () => {} : onClose}
       footer={<>
         <BtnSecondary onClick={onClose} disabled={merging}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleMerge} disabled={merging}
