@@ -68,6 +68,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   // ナレッジノート（静的セグメントなので /:projectSlug/:segment より優先される）
   { path: "/:projectSlug/knowledge", element: <KnowledgePage /> },
   { path: "/:projectSlug/knowledge/:docId", element: <KnowledgePage /> },
+  // リリースノート（静的セグメントなので /:projectSlug/:segment より優先される）
+  { path: "/:projectSlug/release-notes", element: <ReleaseNotesPage /> },
   // GitHub連携（静的セグメントなので /:projectSlug/:segment より優先される）
   { path: "/:projectSlug/github", element: <GithubPage /> },
   { path: "/:projectSlug/whiteboard", element: <WhiteboardPage /> },

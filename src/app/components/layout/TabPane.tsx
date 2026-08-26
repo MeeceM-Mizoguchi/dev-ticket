@@ -51,7 +51,8 @@ export function TabPane({ tab, active }: { tab: Tab; active: boolean }) {
     >
       {active && <ActiveLocationReporter tabId={tab.id} />}
       <Topbar />
-      <main style={{ flex: 1, overflow: "auto" }}>
+      {/* scrollbarGutter については AppShell の <main> と同じ（位置ずれ防止） */}
+      <main style={{ flex: 1, overflow: "auto", scrollbarGutter: "stable" }}>
         {/* アクティブは location 未指定(=実ルーター現在地)、非アクティブは固定。
             refreshNonce を key にしてソフト更新時に再マウント→各ページの初期fetchを再実行する。 */}
         <div key={refreshNonce} style={{ display: "contents" }}>
