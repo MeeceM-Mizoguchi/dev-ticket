@@ -8,6 +8,9 @@
 // 行と行の間はグレーの棒でつないである。上の行が100%になると、その棒が上から下へ
 // 緑色に伸びて次の行へ渡る。どこまで進んだかを目で追えるようにするため。
 // 降りきるまでは 1.5 秒かけてゆっくり流す（速いと「もう次へ行った」だけで、動きが読み取れない）。
+//
+// 寸法は「離れて見ても読める」ことを優先して大きめに取ってある（BRU13-034）。
+// 輪・丸・棒・文字の比率が崩れると途端に安っぽく見えるので、下の定数でまとめて持つ。
 import { useEffect, useState } from "react";
 import { Check, Minus } from "lucide-react";
 
@@ -15,6 +18,15 @@ const GREEN = "#059669";
 const AMBER = "#B45309";
 /** つなぎの棒（まだ進んでいない部分） */
 const RAIL = "#E7E3DC";
+
+/** 行の左端に置く丸の直径。棒の位置もこれを基準に決める */
+const DOT = 22;
+/** つなぎの棒の太さ */
+const RAIL_W = 4;
+/** 丸と棒の間に空ける隙間（丸に棒が刺さって見えないように） */
+const DOT_GAP = 3;
+/** 進捗の輪の直径 */
+const RING = 48;
 
 /**
  * つなぎの棒を緑が降りきるまでの時間。
@@ -41,8 +53,8 @@ export interface ProgressStep {
 const KEYFRAMES = `
 @keyframes sp-spin { to { transform: rotate(360deg); } }
 @keyframes sp-pulse {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(5,150,105,0.16); }
-  50% { box-shadow: 0 0 0 6px rgba(5,150,105,0.04); }
+  0%, 100% { box-shadow: 0 0 0 4px rgba(5,150,105,0.16); }
+  50% { box-shadow: 0 0 0 9px rgba(5,150,105,0.04); }
 }`;
 
 /** 完了（成否は問わない）。棒を緑／橙で埋める合図でもある */
@@ -77,13 +89,15 @@ function useCreepingPercent(running: boolean) {
 
 /** 進捗の輪。実行中は回しながら伸ばし、真ん中に％を出す */
 function Ring({ pct, color, spinning, label }: { pct: number; color: string; spinning: boolean; label: string }) {
-  const R = 16;
+  const SW = 4.5;
+  const R = (RING - SW) / 2;
   const C = 2 * Math.PI * R;
+  const mid = RING / 2;
   return (
-    <div style={{ position: "relative", width: 36, height: 36, flexShrink: 0 }}>
-      <svg width={36} height={36} viewBox="0 0 36 36" style={{ display: "block", transform: "rotate(-90deg)" }}>
-        <circle cx="18" cy="18" r={R} fill="none" stroke={RAIL} strokeWidth={3} />
-        <circle cx="18" cy="18" r={R} fill="none" stroke={color} strokeWidth={3} strokeLinecap="round"
+    <div style={{ position: "relative", width: RING, height: RING, flexShrink: 0 }}>
+      <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} style={{ display: "block", transform: "rotate(-90deg)" }}>
+        <circle cx={mid} cy={mid} r={R} fill="none" stroke={RAIL} strokeWidth={SW} />
+        <circle cx={mid} cy={mid} r={R} fill="none" stroke={color} strokeWidth={SW} strokeLinecap="round"
           strokeDasharray={C} strokeDashoffset={C * (1 - Math.min(pct, 100) / 100)}
           style={{
             transition: "stroke-dashoffset .45s ease, stroke .3s ease",
@@ -93,7 +107,7 @@ function Ring({ pct, color, spinning, label }: { pct: number; color: string; spi
       </svg>
       <div style={{
         position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 10, fontWeight: 800, letterSpacing: "-0.03em", fontVariantNumeric: "tabular-nums",
+        fontSize: 13, fontWeight: 800, letterSpacing: "-0.03em", fontVariantNumeric: "tabular-nums",
         color: pct >= 100 ? color : "#6B6458",
       }}>
         {label}
@@ -110,15 +124,16 @@ function Rail({ place, filled, color, delayed }: {
   /** 直前の棒が伸び切ってから動かす（上の行の下半分 → この行の上半分、と続けて見せるため） */
   delayed?: boolean;
 }) {
+  const clear = DOT / 2 + DOT_GAP;
   const box = place === "top"
-    ? { top: 0, height: "calc(50% - 11px)" }
-    : { top: "calc(50% + 11px)", bottom: 0 };
+    ? { top: 0, height: `calc(50% - ${clear}px)` }
+    : { top: `calc(50% + ${clear}px)`, bottom: 0 };
   // 前半・後半で半分ずつ。後半は前半が降りきった時刻から動かすので、切れ目で止まって見えない
   const half = RAIL_FILL_MS / 2;
   return (
-    <div style={{ position: "absolute", left: 6.5, width: 3, borderRadius: 2, background: RAIL, overflow: "hidden", ...box }}>
+    <div style={{ position: "absolute", left: (DOT - RAIL_W) / 2, width: RAIL_W, borderRadius: RAIL_W / 2, background: RAIL, overflow: "hidden", ...box }}>
       <div style={{
-        width: "100%", height: filled ? "100%" : 0, background: color, borderRadius: 2,
+        width: "100%", height: filled ? "100%" : 0, background: color, borderRadius: RAIL_W / 2,
         transition: `height ${half}ms ${delayed ? RAIL_EASE_IN : RAIL_EASE_OUT} ${delayed ? half : 0}ms`,
       }} />
     </div>
@@ -142,33 +157,33 @@ function StepRow({ step, first, last, prevState }: {
       : step.state === "pending" ? "#B0A9A4" : "#6B6458";
 
   return (
-    <div style={{ display: "flex", alignItems: "stretch", gap: 12, minHeight: 48 }}>
-      <div style={{ position: "relative", width: 16, flexShrink: 0 }}>
+    <div style={{ display: "flex", alignItems: "stretch", gap: 16, minHeight: 64 }}>
+      <div style={{ position: "relative", width: DOT, flexShrink: 0 }}>
         {!first && prevState && (
           <Rail place="top" filled={isFinished(prevState)} color={stateColor(prevState)} delayed />
         )}
         {!last && <Rail place="bottom" filled={finished} color={color} />}
         <div style={{
           position: "absolute", top: "50%", left: 0, transform: "translateY(-50%)",
-          width: 16, height: 16, borderRadius: "50%", boxSizing: "border-box" as const,
+          width: DOT, height: DOT, borderRadius: "50%", boxSizing: "border-box" as const,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: finished ? color : "#FFF",
-          border: finished ? "none" : `2px solid ${running ? GREEN : "#DDD8D0"}`,
+          border: finished ? "none" : `2.5px solid ${running ? GREEN : "#DDD8D0"}`,
           animation: running ? "sp-pulse 1.6s ease-in-out infinite" : undefined,
           transition: "background .3s ease, border-color .3s ease",
         }}>
           {finished && (step.state === "failed"
-            ? <Minus style={{ width: 10, height: 10, color: "#FFF" }} strokeWidth={3.5} />
-            : <Check style={{ width: 10, height: 10, color: "#FFF" }} strokeWidth={3.5} />)}
-          {running && <span style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN }} />}
+            ? <Minus style={{ width: 14, height: 14, color: "#FFF" }} strokeWidth={3.5} />
+            : <Check style={{ width: 14, height: 14, color: "#FFF" }} strokeWidth={3.5} />)}
+          {running && <span style={{ width: 8, height: 8, borderRadius: "50%", background: GREEN }} />}
         </div>
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, alignSelf: "center", paddingRight: 4 }}>
-        <p style={{ fontSize: 12, fontWeight: running ? 700 : 600, color: textColor, lineHeight: 1.6, transition: "color .3s ease" }}>
+      <div style={{ flex: 1, minWidth: 0, alignSelf: "center", paddingRight: 6 }}>
+        <p style={{ fontSize: 15, fontWeight: running ? 700 : 600, color: textColor, lineHeight: 1.55, transition: "color .3s ease" }}>
           {step.text}
         </p>
-        {step.hint && <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.6, marginTop: 2 }}>{step.hint}</p>}
+        {step.hint && <p style={{ fontSize: 13, color: "#A09790", lineHeight: 1.6, marginTop: 3 }}>{step.hint}</p>}
       </div>
 
       <div style={{ alignSelf: "center" }}>
@@ -196,9 +211,9 @@ export function StepProgress({ steps }: { steps: ProgressStep[] }) {
 /** 枠付きで出す版。ダイアログの本文にそのまま置ける */
 export function StepProgressPanel({ steps, note }: { steps: ProgressStep[]; note?: string }) {
   return (
-    <div style={{ background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "14px 16px" }}>
+    <div style={{ background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, padding: "18px 20px" }}>
       <StepProgress steps={steps} />
-      {note && <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.7, marginTop: 12 }}>{note}</p>}
+      {note && <p style={{ fontSize: 13, color: "#A09790", lineHeight: 1.7, marginTop: 14 }}>{note}</p>}
     </div>
   );
 }

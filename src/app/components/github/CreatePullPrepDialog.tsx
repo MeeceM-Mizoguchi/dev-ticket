@@ -48,7 +48,7 @@ export function CreatePullPrepDialog({ state, onCancel }: { state: PrepState; on
   });
 
   return (
-    <DialogShell title="プルリクエストの準備" size="sm" onClose={onCancel}
+    <DialogShell title="プルリクエストの準備" size="md" minHeight={0} onClose={onCancel}
       footer={<BtnSecondary onClick={onCancel}>キャンセル</BtnSecondary>}>
       <StepProgressPanel steps={steps} note="準備ができ次第、プルリクエストの作成画面を開きます。" />
     </DialogShell>
