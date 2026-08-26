@@ -5,7 +5,6 @@ import { RouteNotFoundPage } from "@/app/components/shared/NotFoundView";
 import { Dashboard } from "@/app/pages/Dashboard";
 import { ProjectsPage } from "@/app/pages/ProjectsPage";
 import { SprintPage } from "@/app/pages/SprintPage";
-import { SprintDetailPage } from "@/app/pages/SprintDetailPage";
 import { ClientsPage } from "@/app/pages/ClientsPage";
 import { MembersPage } from "@/app/pages/MembersPage";
 import { PermissionsPage } from "@/app/pages/PermissionsPage";
@@ -74,8 +73,10 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/github", element: <GithubPage /> },
   { path: "/:projectSlug/whiteboard", element: <WhiteboardPage /> },
   { path: "/:projectSlug/whiteboard/:boardId", element: <WhiteboardPage /> },
-  // Sprint detail (チケット一覧) with optional ticket open
-  { path: "/:projectSlug/:segment", element: <SprintDetailPage /> },
+  // チケット一覧(スプリント詳細)画面は廃止した。配布済みのチケットURL(/PJ/BRU4-016)を
+  // 生かすため、この経路もスプリント一覧が引き受ける。スプリント識別子だけのURLは
+  // スプリント一覧へ寄せ、どちらでもないセグメントはその場で404を出す。
+  { path: "/:projectSlug/:segment", element: <SprintPage /> },
   // どのルートにも当たらないURL。黙ってダッシュボードへ飛ばすと「リンクが壊れている」のか
   // 「打ち間違えた」のかが分からないため、理由とURLを出す 404 を描画する。
   // 保護シェル配下に置いてあるので、サイドバー付きのまま表示される。

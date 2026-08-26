@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { ChevronDown, ChevronRight, Trash2, ExternalLink, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, Plus, Pencil, GitBranch, X, FolderKanban, Save, Download } from "lucide-react";
 import type { Sprint, SprintTicket, SortCol } from "@/app/types";
 import { formatDate, getSprintStatusMeta, sprintProgress, TICKET_STATUSES, getTicketStatusMeta, computeSprintStatus, sprintHasPending, htmlToText, calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
 import { SelBox } from "@/app/components/sprints/SelBox";
@@ -261,10 +261,9 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, prLinkedTicketIds = null }: {
+export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, prLinkedTicketIds = null }: {
   sprints: Sprint[];
   loading?: boolean;
-  onSelectSprint: (s: Sprint) => void;
   onDeleteSprint?: (s: Sprint) => void;
   onEditSprint?: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
@@ -755,12 +754,6 @@ export function SprintListView({ sprints, loading, onSelectSprint, onDeleteSprin
                       <FolderKanban style={{ width: 11, height: 11 }} />Myフィルタ
                     </button>
 
-                    <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
-                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                      <ExternalLink style={{ width: 11, height: 11 }} />詳細
-                    </button>
                     <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureCsvExport} placement="bottom-left">
                       <button onClick={e => { e.stopPropagation(); if (plan.featureCsvExport) downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }}
                         style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureCsvExport ? "#059669" : "#9CA3AF", background: plan.featureCsvExport ? "#ECFDF5" : "#F3F4F6", border: `1px solid ${plan.featureCsvExport ? "rgba(5,150,105,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureCsvExport ? "pointer" : "not-allowed" }}

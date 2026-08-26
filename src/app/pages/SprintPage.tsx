@@ -25,7 +25,7 @@ import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDia
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
-import { projectAccessView } from "@/app/components/shared/NotFoundView";
+import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { SprintSettingsMenu } from "@/app/components/sprints/SprintSettingsMenu";
 import { SprintOrderDialog } from "@/app/components/sprints/SprintOrderDialog";
 import { fetchSprintOrder, applySprintOrder, saveSprintOrder, type SprintOrderScope } from "@/app/lib/sprintOrder";
@@ -63,8 +63,23 @@ function EnvMemoTag({ m }: { m: EnvMemo }) {
   );
 }
 
+// URLの2セグメント目(例: /PJ/BRU4-016)を「スプリント識別子」と「チケットWBS」に切り分ける。
+// チケット一覧(スプリント詳細)画面を廃止したあとも、配布済みのチケットURLを開けるようにするため
+// スプリント一覧(この画面)が /:projectSlug/:segment も引き受ける。
+function parseSprintSegment(segment: string): { sprintIdentifier: string; ticketWbs: string | null } {
+  // 子チケット: {sprintId}-{3桁以上の親番号}-{子番号}  例: BRU2-016-1
+  const childMatch = segment.match(/^(.+)-\d{3,}-\d+$/);
+  if (childMatch) return { sprintIdentifier: childMatch[1], ticketWbs: segment };
+  // 親チケット: {sprintId}-{番号}  例: BRU2-016
+  const parentMatch = segment.match(/^(.+)-\d+$/);
+  if (parentMatch) return { sprintIdentifier: parentMatch[1], ticketWbs: segment };
+  // スプリントのみ
+  return { sprintIdentifier: segment, ticketWbs: null };
+}
+
 export function SprintPage() {
-  const { projectSlug } = useParams<{ projectSlug: string }>();
+  const { projectSlug, segment = "" } = useParams<{ projectSlug: string; segment?: string }>();
+  const { ticketWbs: segmentTicketWbs } = parseSprintSegment(segment);
   const [searchParams] = useSearchParams();
   const anchor = searchParams.get("anchor") ?? undefined;
   const navigate = useNavigate();
@@ -283,6 +298,33 @@ export function SprintPage() {
     return () => window.removeEventListener('popstate', onPop);
   }, [projectSlug]);
 
+  // 🌟 チケット一覧(スプリント詳細)画面の廃止にともない、/:projectSlug/:segment もこの画面が受ける。
+  //    ・チケットWBS      … 一覧に着地して詳細パネルを開く（配布済みのチケットURLを生かす）
+  //    ・スプリント識別子 … 専用画面が無くなったのでスプリント一覧へ寄せる（URLも /PJ に付け替え）
+  //    ・どちらでもない   … 削除済みリンク／打ち間違いなので、その場に404を出す
+  //    解決は「そのセグメントについて一度だけ」。パネルを閉じてURLを /PJ に付け替えた後や、
+  //    チケットを削除した後の再読み込みで、開き直し・404への転落が起きないようにするため。
+  const resolvedSegmentRef = useRef<string | null>(null);
+  const [segmentMissing, setSegmentMissing] = useState(false);
+  useEffect(() => {
+    if (loading || !project) return;
+    if (resolvedSegmentRef.current === segment) return;
+    resolvedSegmentRef.current = segment;
+    if (!segment) { setSegmentMissing(false); return; }
+    // 「BRU4-2」のような識別子もあるため、チケットWBSより先にスプリントとして照合する
+    if (sprints.some(sp => sp.identifier === segment || sp.id === segment)) {
+      setSegmentMissing(false);
+      navigate(`/${projectSlug}`, { replace: true });
+      return;
+    }
+    if (segmentTicketWbs && sprints.some(sp => sp.tickets.some(t => t.wbs === segmentTicketWbs))) {
+      setSegmentMissing(false);
+      setSelectedTicketWbs(segmentTicketWbs);
+      return;
+    }
+    setSegmentMissing(true);
+  }, [loading, project, sprints, segment, segmentTicketWbs, projectSlug]);
+
   // 🌟 BRU10-068: 保存された並び順を適用した一覧。未設定ならこれまで通り開始日順のまま。
   const orderedSprints = useMemo(() => applySprintOrder(sprints, sprintOrder), [sprints, sprintOrder]);
 
@@ -326,13 +368,23 @@ export function SprintPage() {
     }
   };
 
-  const goToSprint = (sprint: Sprint) => navigate(`/${projectSlug}/${sprint.identifier || sprint.id}`);
-
   // 黙って /projects へ飛ばすと「リンクを貼り損ねたのか、権限が無いのか」が分からないため、
   // 理由と開こうとしたURLを出す共通画面をその場に描画する。
   // 別組織なら404（存在を明かさない）、同組織の未アサインなら403。判定は projectAccess に集約。
   const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
   if (!loading && accessBlocked) return accessBlocked;
+
+  // URLのセグメントがこのプロジェクトのチケット／スプリントのどちらでもなかったとき。
+  // 黙って一覧を出すと「開けたつもりで別のものを見ている」ため、理由とURLを出す404に留める。
+  if (!loading && segmentMissing) {
+    return (
+      <NotFoundView
+        kind="resource"
+        label={segmentTicketWbs ? "チケット" : "スプリント"}
+        backTo={{ label: "スプリント一覧へ", to: `/${projectSlug}` }}
+      />
+    );
+  }
 
   const viewBtns: { mode: SprintView; label: string; Icon: ElementType }[] = [
     { mode: "list", label: "リスト", Icon: Layers },
@@ -413,9 +465,9 @@ export function SprintPage() {
 
       {/* 🌟 BRU5-043: 固定バーより下＝通常スクロール領域。左右/下パディングはここで付与 */}
       <div style={{ padding: "0 24px 24px" }}>
-        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onSelectSprint={goToSprint} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} prLinkedTicketIds={linkedTicketIds} />}
-        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
-        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectSprint={goToSprint} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
+        {viewMode === "list" && <SprintListView sprints={orderedSprints} loading={loading} onDeleteSprint={canEditDeleteSprint ? s => setDeleteTarget(s) : undefined} onEditSprint={canEditDeleteSprint ? s => setEditTarget(s) : undefined} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} targetTicketWbs={selectedTicketWbs ?? closedHighlightWbs ?? createdHighlightWbs ?? highlightWbs} targetSprintId={createdHighlightSprintId} highlightWbsList={highlightWbsList} onMoved={handleTicketsMoved} onOpenMyFilter={setMyFilterSprintId} stickyTop={headerH} onUpdated={refreshSprints} projectMembers={project?.members} projectSlug={projectSlug} prLinkedTicketIds={linkedTicketIds} />}
+        {viewMode === "board" && <SprintBoardView sprints={orderedSprints} loading={loading} canEdit={canEditDeleteSprint} onSelectTicket={handleSelectTicket} onUpdated={refreshSprints} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
+        {viewMode === "gantt" && <SprintGanttView sprints={orderedSprints} onSelectTicket={handleSelectTicket} onCreateTicket={canCreateTicket ? setCreateForSprintId : undefined} onBulkCreate={canCreateTicket ? openBulkCreate : undefined} onApiIntegration={canCreateTicket ? setApiIntegrationSprintId : undefined} highlightWbsList={highlightWbsList} stickyTop={headerH} />}
 
         {showCreate && <NewSprintDialog onClose={() => setShowCreate(false)} projectId={projectId!} onCreated={(sid) => { refreshSprints(); if (sid) setCreatedHighlightSprintId(sid); }} currentSprintCount={sprints.length} />}
 

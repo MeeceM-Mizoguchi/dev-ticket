@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
-import { ExternalLink, X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight, ChevronDown } from "lucide-react";
+import { X, MessageSquare, Paperclip, User, Plus, AlertCircle, ChevronsRight, ChevronDown } from "lucide-react";
 import type { Sprint, SprintTicket, TicketStatus } from "@/app/types";
 import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
@@ -188,11 +188,10 @@ function DropColumn({ sprintId, col, tickets, allTickets, onDrop, onSelectTicket
   );
 }
 
-function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, onApiIntegration, highlightWbsList, stickyTop }: {
+function SprintBoardInner({ sprints, loading, canEdit = true, onSelectTicket, onUpdated, onCreateTicket, onBulkCreate, onApiIntegration, highlightWbsList, stickyTop }: {
   sprints: Sprint[];
   loading?: boolean;
   canEdit?: boolean;
-  onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;
@@ -439,12 +438,6 @@ function SprintBoardInner({ sprints, loading, canEdit = true, onSelectSprint, on
           )}
           {!currentSprint.goal && <div style={{ flex: 1 }} />}
           <span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" as const, flexShrink: 0 }}>{formatDate(currentSprint.startDate)} → {formatDate(currentSprint.endDate)}</span>
-          <button onClick={() => onSelectSprint(currentSprint)}
-            style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 7, cursor: "pointer", flexShrink: 0 }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-            <ExternalLink style={{ width: 11, height: 11 }} />詳細
-          </button>
           {/* 「一括作成」ボタンは廃止し、「新規チケット」メニューへ集約した */}
           {onCreateTicket && canCreateTicket && (() => {
             const ticketAtLimit = plan.maxTicketsPerSprint !== null && currentSprint.tickets.length >= plan.maxTicketsPerSprint;
@@ -658,7 +651,6 @@ export default function SprintBoardView(props: {
   sprints: Sprint[];
   loading?: boolean;
   canEdit?: boolean;
-  onSelectSprint: (s: Sprint) => void;
   onSelectTicket?: (t: SprintTicket) => void;
   onUpdated?: () => void;
   onCreateTicket?: (sprintId: string) => void;

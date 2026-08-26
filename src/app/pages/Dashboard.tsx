@@ -850,7 +850,8 @@ function DashboardGantt({ projectNames, sprints, navigate }: { projectNames: str
   };
   const hideHover = () => { hoverTimer.current = setTimeout(() => setHover(null), 200); };
   const keepHover = () => { if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; } };
-  const openSprint = (s: GanttSprint) => navigate(`/${s.projectSlug}/${s.identifier || s.id}`);
+  // チケット一覧(スプリント詳細)画面は廃止したので、スプリント一覧へ送る
+  const openSprint = (s: GanttSprint) => navigate(`/${s.projectSlug}`);
 
   const LABEL_W = 200;
   const DAY = 86400000;
