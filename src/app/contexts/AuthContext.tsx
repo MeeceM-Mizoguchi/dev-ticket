@@ -73,7 +73,9 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true, canAccessAdminSettings: role === "admin",
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessReports: true,
       wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
-      whiteboardPermission: "edit", githubPermission: "merge",
+      whiteboardPermission: "edit",
+      // GitHub だけは admin/PM でも既定 none。付与はアサイン計画でのみ行う（BRU13-034）
+      githubPermission: "none",
     };
   }
   return { ...DEFAULT_PERMISSIONS };
