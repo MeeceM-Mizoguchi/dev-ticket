@@ -40,6 +40,7 @@ import { PrLinkLeaveDialog } from "@/app/components/github/PrLinkLeaveDialog";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
+import { submitOnEnter } from "@/app/lib/submitKey";
 
 function truncateQuoteHtml(html: string, maxLength = 100): string {
   if (!html) return "";
@@ -3001,7 +3002,7 @@ export function TicketDetailPanel({
                             type="number" min={0} step={0.1} autoFocus
                             value={childHoursInput}
                             onChange={e => setChildHoursInput(e.target.value)}
-                            onKeyDown={e => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditChildHours(false); }}
+                            onKeyDown={submitOnEnter(commit, { onCancel: () => setEditChildHours(false) })}
                             style={{ width: 90, padding: "6px 8px", fontSize: 14, fontWeight: 700, color: "#1A1714", background: "#FFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, fontFamily: "var(--font-mono)" }}
                           />
                           <button onClick={commit}

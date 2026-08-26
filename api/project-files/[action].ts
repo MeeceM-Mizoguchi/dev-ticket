@@ -17,6 +17,7 @@ import crypto from "crypto";
 //   POST /api/project-files/upload-url  { projectId, fileName }  → { path, token }
 //   POST /api/project-files/register    { projectId, path, fileName, fileSize, fileType } → { file }
 //   POST /api/project-files/signed-url  { fileId, mode }         → { url, ... }
+//   POST /api/project-files/rename      { fileId, newName }        → { fileName }
 //   POST /api/project-files/delete      { fileId }               → { ok: true }
 
 const BUCKET = "project-files";
@@ -78,6 +79,12 @@ function extOf(fileName: string): string {
 function splitName(fileName: string): { base: string; ext: string } {
   const i = fileName.lastIndexOf(".");
   return i > 0 ? { base: fileName.slice(0, i), ext: fileName.slice(i) } : { base: fileName, ext: "" };
+}
+
+// 保存キーやURLを壊す文字を落とす。パス区切りは階層を作られないよう潰す。
+function sanitizeFileName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "").trim().replace(/^\.+/, "").slice(0, 200).trim();
 }
 
 /**
@@ -206,6 +213,60 @@ export default async function handler(req: any, res: any) {
     const base = process.env.PUBLIC_URL || `${proto}://${req.headers.host}`;
     // URL 末尾を実ファイル名にしておくと、Office のタイトルバーに正しい名前が出る
     return res.json({ url: `${base}/api/dav/${token}/${encodeURIComponent(file.file_name)}` });
+  }
+
+  // ── 名前の変更（同名ファイルの全バージョン + コメントの引き当てキー） ──
+  // file_name は「どのファイルか」を指す引き当てキーそのもの（版・コメント・WebDAV が
+  // これで引く）。1行だけ書き換えると版が分裂し、コメントも迷子になるので、
+  // 削除と同じ粒度＝同名の全行をまとめて付け替える。
+  if (action === "rename") {
+    const fileId = String(body.fileId ?? "");
+    const rawName = String(body.newName ?? "");
+    if (!fileId || !rawName.trim()) return res.status(400).json({ error: "fileId and newName are required" });
+
+    const { data: file } = await sb.from("project_files")
+      .select("project_id, file_name, is_folder").eq("id", fileId).maybeSingle();
+    if (!file) return res.status(404).json({ error: "File not found" });
+    if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+
+    let newName = sanitizeFileName(rawName);
+    if (!newName) return res.status(400).json({ error: "使用できない名前です" });
+
+    // 拡張子はファイルの種別そのもの（ビューアの判定・Officeの起動・保存キーの拡張子）。
+    // 消したり書き換えたりされると開けないファイルになるため、元の拡張子を必ず保つ。
+    if (!file.is_folder) {
+      const orgExt = splitName(String(file.file_name)).ext;
+      if (orgExt && splitName(newName).ext.toLowerCase() !== orgExt.toLowerCase()) {
+        newName = `${splitName(newName).base}${orgExt}`;
+      }
+    }
+
+    if (newName === file.file_name) return res.json({ fileName: newName });
+
+    // 版番号の採番・手動アップロード時の重複回避がプロジェクト全体で file_name を見ているので、
+    // ここでの重複判定も同じ範囲に揃える（自分自身の版は除く）。
+    const { data: rows } = await sb.from("project_files")
+      .select("file_name").eq("project_id", file.project_id).neq("file_name", file.file_name);
+    newName = nextFreeName(newName, new Set((rows ?? []).map(r => String(r.file_name))));
+
+    // フォルダは版もコメントも持たず、別の階層に同名が並びうる。
+    // 巻き込み更新をしていいのはファイル（＝同名が同一ファイルの版）だけ。
+    const update = sb.from("project_files").update({ file_name: newName });
+    const { error } = await (file.is_folder
+      ? update.eq("id", fileId)
+      : update.eq("project_id", file.project_id).eq("file_name", file.file_name));
+    if (error) return res.status(500).json({ error: error.message });
+
+    // コメント(BRU12-025)は project_files への FK を持たず (project_id, file_name) で引くので、
+    // ここで一緒に付け替えないとリネームした瞬間に全部見えなくなる。
+    if (!file.is_folder) {
+      const { error: cErr } = await sb.from("project_file_comments")
+        .update({ file_name: newName })
+        .eq("project_id", file.project_id).eq("file_name", file.file_name);
+      if (cErr) console.error("[project-files] comment rename failed:", cErr.message);
+    }
+
+    return res.json({ fileName: newName });
   }
 
   // ── 削除（同名ファイルの全バージョン + ストレージ実体） ──────

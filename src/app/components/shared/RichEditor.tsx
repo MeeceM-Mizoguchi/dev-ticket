@@ -14,7 +14,7 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
 // 貼り付けた Markdown テキスト（Claude のコピーボタン等）を書式つきで取り込む
 import { markdownToHtml, markdownFileToHtml } from "@/app/lib/markdown";
-import { isSubmitShortcut } from "@/app/lib/submitKey";
+import { isSubmitShortcut, isImeComposing } from "@/app/lib/submitKey";
 import { useToast } from "@/app/contexts/ToastContext";
 import type { NodeViewProps } from "@tiptap/react";
 import type { SuggestionKeyDownProps } from "@tiptap/suggestion";
@@ -358,6 +358,8 @@ const MentionList = forwardRef<MentionListHandle, MentionListProps>(({ items, co
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
+      // 日本語変換中の ↑↓ は候補送り、Enter は変換確定。ここで拾うと打ちかけで挿入されてしまう
+      if (isImeComposing(event)) return false;
       if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
@@ -415,6 +417,8 @@ const LinkMentionList = forwardRef<MentionListHandle, LinkMentionListProps>(({ i
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
+      // 日本語変換中の ↑↓ は候補送り、Enter は変換確定。ここで拾うと打ちかけで挿入されてしまう
+      if (isImeComposing(event)) return false;
       if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
@@ -489,6 +493,8 @@ const FileMentionList = forwardRef<MentionListHandle, FileMentionListProps>(({ i
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
+      // 日本語変換中の ↑↓ は候補送り、Enter は変換確定。ここで拾うと打ちかけで挿入されてしまう
+      if (isImeComposing(event)) return false;
       if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {
@@ -559,6 +565,8 @@ const TicketMentionList = forwardRef<MentionListHandle, TicketMentionListProps>(
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }) => {
+      // 日本語変換中の ↑↓ は候補送り、Enter は変換確定。ここで拾うと打ちかけで挿入されてしまう
+      if (isImeComposing(event)) return false;
       if (event.key === "ArrowUp") { setSel(i => (i - 1 + items.length) % items.length); return true; }
       if (event.key === "ArrowDown") { setSel(i => (i + 1) % items.length); return true; }
       if (event.key === "Enter") {

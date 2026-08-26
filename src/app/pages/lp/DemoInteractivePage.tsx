@@ -8,6 +8,7 @@ import {
   Calendar, MoreHorizontal,
   Pencil, Trash2, CheckCheck, AlertCircle, ExternalLink,
 } from 'lucide-react';
+import { submitOnModEnter } from '@/app/lib/submitKey';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 const s = (o: React.CSSProperties): React.CSSProperties => o;
@@ -536,7 +537,7 @@ function TicketDetailModal({ ticket: initTicket, onClose, onStatusChange }: {
               <div style={{ flex: 1, display: 'flex', gap: 8 }}>
                 <textarea value={commentText} onChange={e => setCommentText(e.target.value)}
                   rows={2} placeholder="コメントを追加... (Ctrl+Enter で投稿)"
-                  onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddComment(); }}
+                  onKeyDown={submitOnModEnter(handleAddComment)}
                   style={{ ...iStyle, flex: 1, resize: 'none', lineHeight: 1.5 }} />
                 <button onClick={handleAddComment} disabled={!commentText.trim()}
                   style={{ padding: '8px 14px', borderRadius: 8, fontSize: 11, fontWeight: 700, border: 'none', background: commentText.trim() ? '#059669' : '#F4F5F6', color: commentText.trim() ? '#fff' : '#B0A9A4', cursor: commentText.trim() ? 'pointer' : 'default', alignSelf: 'flex-end', whiteSpace: 'nowrap' as const }}>

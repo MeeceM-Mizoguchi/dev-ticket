@@ -12,6 +12,7 @@ import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
 import type { SprintTicket, ActionMemo, ActionMemoCategory, TicketStatus } from "@/app/types";
+import { isImeComposing } from "@/app/lib/submitKey";
 
 interface ActionTicket extends SprintTicket {
   projectSlug: string;
@@ -846,6 +847,8 @@ function MentionTextarea({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!ms) return;
+    // 変換中の ↑↓ は候補選択、Enter は変換確定。ここで拾うとポップアップが誤作動する
+    if (isImeComposing(e)) return;
     const items = ms.stage === "project" ? filteredProjects : filteredTickets;
     if (e.key === "ArrowDown") {
       e.preventDefault();
