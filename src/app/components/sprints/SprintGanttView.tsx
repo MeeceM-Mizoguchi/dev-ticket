@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { ChevronDown, ChevronRight, ExternalLink, Plus, GitBranch } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, GitBranch } from "lucide-react";
 import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, getTicketStatusMeta, computeSprintStatus } from "@/app/lib/helpers";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -12,8 +12,8 @@ const LOCAL_STORAGE_KEY = "sprint_accordion_states";
 /** 一括作成の直後に強調表示する行の背景色 */
 const BULK_HL_BG = "#FFFBEB";
 
-export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, highlightWbsList, stickyTop }: {
-  sprints: Sprint[]; onSelectSprint: (s: Sprint) => void; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
+export function SprintGanttView({ sprints, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, highlightWbsList, stickyTop }: {
+  sprints: Sprint[]; onSelectTicket?: (t: SprintTicket) => void; onCreateTicket?: (sprintId: string) => void;
   onBulkCreate?: (sprintId: string, mode: BulkCreateMode) => void;
   /** 「新規チケット」メニューの「API連携」 */
   onApiIntegration?: (sprintId: string) => void;
@@ -262,12 +262,6 @@ export function SprintGanttView({ sprints, onSelectSprint, onSelectTicket, onCre
                       <span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{sprintProgress(sprint)}%</span>
                     </div>
                   </div>
-                  <button onClick={e => { e.stopPropagation(); onSelectSprint(sprint); }}
-                    style={{ padding: 4, borderRadius: 5, border: "none", background: "transparent", cursor: "pointer", color: "#C9C4BB", flexShrink: 0, display: "flex", alignItems: "center" }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                    <ExternalLink style={{ width: 11, height: 11 }} />
-                  </button>
                   {/* 「一括作成」の＋は廃止し、この＋のメニューへ集約した */}
                   {onCreateTicket && (() => {
                     const ticketAtLimit = plan.maxTicketsPerSprint !== null && sprint.tickets.length >= plan.maxTicketsPerSprint;

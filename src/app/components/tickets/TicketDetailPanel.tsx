@@ -2308,11 +2308,12 @@ export function TicketDetailPanel({
                 <span style={{ color: "#D5D0CB", fontSize: 10 }}>/</span>
                 {(projectSlug && (sprintSlug || breadcrumbSprintIdentifier)) ? (
                   <a
-                    href={`/${projectSlug}/${sprintSlug || breadcrumbSprintIdentifier}`}
+                    href={`/${projectSlug}`}
                     onClick={(e) => {
                       e.preventDefault();
                       if (ticket?.wbs) sessionStorage.setItem('hl_wbs', ticket.wbs);
-                      { const u = `/${projectSlug}/${sprintSlug || breadcrumbSprintIdentifier}`; if (!navigateInActiveTab(u)) window.location.href = u; }
+                      // チケット一覧(スプリント詳細)画面は廃止したので、スプリント一覧へ戻す
+                      { const u = `/${projectSlug}`; if (!navigateInActiveTab(u)) window.location.href = u; }
                     }}
                     style={{ color: breadcrumbParentTicket ? "#9E9690" : "#6B6458", fontWeight: 700, textDecoration: "none", transition: "color 0.15s" }}
                     onMouseEnter={ev => ev.currentTarget.style.color = "#1A1714"}

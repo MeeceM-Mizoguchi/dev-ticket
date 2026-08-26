@@ -338,7 +338,8 @@ export function GlobalSearch() {
         navigate(`/${result.projectSlug}/${result.ticketWbs}?anchor=comment:${result.id}`);
         break;
       case "sprint":
-        navigate(result.identifier ? `/${result.projectSlug}/${result.identifier}` : `/${result.projectSlug}`);
+        // チケット一覧(スプリント詳細)画面は廃止したので、スプリント一覧へ送る
+        navigate(`/${result.projectSlug}`);
         break;
       case "project":
         navigate(`/${result.slug}`);
