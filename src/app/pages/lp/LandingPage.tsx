@@ -3,7 +3,7 @@ import { useNavigate, Link, useLocation } from 'react-router';
 import { Button } from '@/app/components/ui/button';
 import { Card, CardContent } from '@/app/components/ui/card';
 import { Badge } from '@/app/components/ui/badge';
-import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X, Fingerprint, AppWindow, Monitor, Tablet, Smartphone, Sparkles, Brain, Target, Scale, TrendingUp, RotateCcw, RotateCw, UserRound, Moon, type LucideIcon } from 'lucide-react';
+import { CheckCircle2, LayoutDashboard, Ticket, Users, FolderKanban, BarChart3, Shield, Clock, ArrowRight, CheckCheck, Building2, MessageSquare, Search, Bell, Download, Lock, GitPullRequest, SlidersHorizontal, ListPlus, GitMerge, Tag, Activity, Timer, Link2, Layers, BookOpen, ClipboardList, Rocket, Zap, CalendarRange, UserCog, BellRing, Paperclip, ArrowRightLeft, ChevronLeft, ChevronRight, Bot, Play, Pause, GitBranch, Menu, X, Fingerprint, AppWindow, Monitor, Tablet, Smartphone, Sparkles, Brain, Target, Scale, TrendingUp, RotateCcw, RotateCw, UserRound, Moon, Github, AlertTriangle, RefreshCw, ShieldCheck, CircleDot, GitCommitHorizontal, type LucideIcon } from 'lucide-react';
 import { MockDashboard } from '@/app/components/lp/mocks/MockDashboard';
 import { MockSprintList } from '@/app/components/lp/mocks/MockSprintList';
 import { MockSprintBoard } from '@/app/components/lp/mocks/MockSprintBoard';
@@ -505,6 +505,717 @@ const STORY_ROUTES = [
 type DemoMode = 'none' | 'video' | 'interactive';
 type FeatureId = 'dashboard' | 'projects' | 'sprint' | 'views' | 'members' | 'clients' | 'review' | 'comments' | 'search' | 'slack' | 'csv' | 'permissions' | 'filter' | 'bulk';
 
+// ─── GitHub連携セクション ──────────────────────────────────────────────────
+// GitHub の色に寄せた暗色パネル。GitHub 由来の要素だけ GitHub の配色を使い、
+// Dev Ticket 側の要素はプロダクトのエメラルドで出す（本体アプリと同じ使い分け）。
+const GH = {
+  bg: '#0d1117', panel: '#161b22', head: '#1c2128', border: '#30363d',
+  text: '#e6edf3', muted: '#8b949e', green: '#3fb950', btn: '#238636',
+  red: '#f85149', purple: '#a371f7', yellow: '#d29922', blue: '#58a6ff',
+};
+
+const GH_STEPS = [
+  {
+    icon: GitBranch,
+    label: 'ブランチを検知',
+    title: 'push しただけで、\nPR未作成のブランチが並ぶ',
+    desc: 'ブランチ名に含まれるチケット番号を手がかりに、「まだプルリクエストが作られていないブランチ」だけを拾い上げます。GitHub を開いて探す必要はありません。',
+  },
+  {
+    icon: GitPullRequest,
+    label: 'PRを作成',
+    title: 'タイトルも本文も、\n下書きまで済んでいる',
+    desc: 'チケットの件名と内容を読み込んで、プルリクエストの下書きを自動生成。そのまま Dev Ticket の画面から作成でき、作成した PR はチケットへ自動で紐付きます。',
+  },
+  {
+    icon: AlertTriangle,
+    label: 'コンフリクト検知',
+    title: 'マージできない理由を、\n押す前に日本語で',
+    desc: 'コンフリクト・必須チェック未通過・レビュー不足・ベースブランチより古い。理由を先に出すので、GitHub 側で弾かれてから戻ってくることがありません。',
+  },
+  {
+    icon: GitMerge,
+    label: 'マージ＆自動反映',
+    title: 'まとめてマージ、\nチケットは自動でリリース済みへ',
+    desc: '複数の PR を選んで一括マージ。マージ方法も選べます。既定ブランチに入った PR に紐付くチケットは、自動で「リリース済み」まで進みます。',
+  },
+];
+
+/** モックパネル内の小さなタブ（プルリクエスト／Issue／コミット／ブランチ） */
+function GhTab({ label, active }: { label: string; active?: boolean }) {
+  return (
+    <span
+      className="px-2 sm:px-2.5 py-1 rounded-md text-[10px] sm:text-[11px] font-bold whitespace-nowrap"
+      style={{ color: active ? GH.text : GH.muted, background: active ? 'rgba(110,118,129,0.22)' : 'transparent' }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** 状態バッジ（CI通過・コンフリクト など） */
+function GhChip({ icon: Icon, label, color }: { icon: LucideIcon; label: string; color: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ color, background: `${color}1f`, border: `1px solid ${color}59` }}>
+      <Icon className="w-3 h-3" />{label}
+    </span>
+  );
+}
+
+/** ステップごとの画面モック（実画面の要素をそのまま縮めたもの） */
+function GhMock({ step }: { step: number }) {
+  const rowBase = 'flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 sm:py-3';
+
+  if (step === 0) {
+    const branches = [
+      { name: 'DEMO-104/list-filter', wbs: 'DEMO-104', at: '4分前', hot: true },
+      { name: 'DEMO-103/file-rename', wbs: 'DEMO-103', at: '1時間前' },
+      { name: 'DEMO-102/input-fix', wbs: 'DEMO-102', at: '昨日' },
+    ];
+    return (
+      <div>
+        <div className="px-3 sm:px-4 py-2 text-[11px] font-bold flex items-center gap-2" style={{ color: GH.muted, borderBottom: `1px solid ${GH.border}` }}>
+          <GitBranch className="w-3.5 h-3.5" style={{ color: GH.yellow }} />
+          まだプルリクエストが作られていないブランチ
+          <span className="ml-auto" style={{ color: GH.text }}>3件</span>
+        </div>
+        {branches.map(b => (
+          <div key={b.name} className={rowBase} style={{ borderBottom: `1px solid ${GH.border}`, background: b.hot ? 'rgba(63,185,80,0.06)' : 'transparent' }}>
+            <GitBranch className="w-4 h-4 flex-shrink-0" style={{ color: GH.muted }} />
+            <div className="min-w-0">
+              <p className="text-[11px] sm:text-xs font-mono truncate" style={{ color: GH.text }}>{b.name}</p>
+              <p className="text-[10px] mt-0.5" style={{ color: GH.muted }}>
+                <span style={{ color: '#6EE7B7' }}>{b.wbs}</span> のチケットに一致 ・ {b.at}
+              </p>
+            </div>
+            <span
+              className="ml-auto flex-shrink-0 rounded-md px-2 sm:px-2.5 py-1 text-[10px] sm:text-[11px] font-bold"
+              style={b.hot
+                ? { background: GH.btn, color: '#fff', boxShadow: '0 0 0 3px rgba(63,185,80,0.18)' }
+                : { color: GH.text, background: 'rgba(110,118,129,0.15)', border: `1px solid ${GH.border}` }}
+            >
+              PRを作成
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (step === 1) {
+    return (
+      <div className="p-3 sm:p-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="rounded-md px-2 py-1 text-[10px] sm:text-[11px] font-mono" style={{ background: 'rgba(110,118,129,0.18)', color: GH.text, border: `1px solid ${GH.border}` }}>DEMO-104/list-filter</span>
+          <ArrowRight className="w-3.5 h-3.5" style={{ color: GH.muted }} />
+          <span className="rounded-md px-2 py-1 text-[10px] sm:text-[11px] font-mono" style={{ background: 'rgba(110,118,129,0.18)', color: GH.text, border: `1px solid ${GH.border}` }}>main</span>
+          <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-bold" style={{ color: '#6EE7B7' }}>
+            <Sparkles className="w-3 h-3" />チケットから自動入力
+          </span>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold mb-1" style={{ color: GH.muted }}>タイトル</p>
+          <div className="rounded-md px-2.5 py-2 text-[11px] sm:text-xs" style={{ background: GH.bg, border: `1px solid ${GH.blue}`, color: GH.text, boxShadow: `0 0 0 3px ${GH.blue}26` }}>
+            DEMO-104 一覧に絞り込みを追加
+          </div>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold mb-1" style={{ color: GH.muted }}>本文</p>
+          <div className="rounded-md px-2.5 py-2 text-[11px] leading-relaxed space-y-1" style={{ background: GH.bg, border: `1px solid ${GH.border}`, color: GH.muted }}>
+            <p style={{ color: GH.text }}>## 概要</p>
+            <p>一覧に絞り込み条件を追加し、状態を保持できるようにする。</p>
+            <p className="font-mono" style={{ color: GH.blue }}>Ticket: DEMO-104</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <span className="rounded-md px-2.5 py-1.5 text-[11px] font-bold" style={{ color: GH.text, background: 'rgba(110,118,129,0.15)', border: `1px solid ${GH.border}` }}>Draft で作成</span>
+          <span className="rounded-md px-3 py-1.5 text-[11px] font-bold" style={{ background: GH.btn, color: '#fff', boxShadow: '0 0 0 3px rgba(63,185,80,0.18)' }}>プルリクエストを作成</span>
+        </div>
+      </div>
+    );
+  }
+
+  const pulls = [
+    { n: 12, title: 'DEMO-104 一覧に絞り込みを追加', chip: { icon: CheckCircle2, label: 'マージ可能', color: GH.green }, note: 'CI 通過 ・ レビュー 1件' },
+    { n: 11, title: 'DEMO-103 ファイルの名称変更に対応', chip: { icon: AlertTriangle, label: 'コンフリクトがあります', color: GH.red }, note: 'main の変更と競合しています' },
+    { n: 10, title: 'DEMO-102 入力欄の確定操作を修正', chip: { icon: Clock, label: '必須チェックが未完了', color: GH.yellow }, note: 'build / test を待っています' },
+  ];
+
+  if (step === 2) {
+    return (
+      <div>
+        {pulls.map(p => (
+          <div key={p.n} className={rowBase} style={{ borderBottom: `1px solid ${GH.border}`, background: p.chip.color === GH.red ? 'rgba(248,81,73,0.07)' : 'transparent' }}>
+            <GitPullRequest className="w-4 h-4 flex-shrink-0" style={{ color: GH.green }} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] sm:text-xs truncate" style={{ color: GH.text }}>
+                <span style={{ color: GH.muted }}>#{p.n}</span> {p.title}
+              </p>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <GhChip icon={p.chip.icon} label={p.chip.label} color={p.chip.color} />
+                <span className="text-[10px]" style={{ color: GH.muted }}>{p.note}</span>
+              </div>
+            </div>
+            <span
+              className="hidden sm:inline-block ml-auto flex-shrink-0 rounded-md px-2.5 py-1 text-[11px] font-bold"
+              style={p.chip.color === GH.green
+                ? { background: GH.btn, color: '#fff' }
+                : { color: 'rgba(230,237,243,0.35)', background: 'rgba(110,118,129,0.1)', border: `1px solid ${GH.border}` }}
+            >
+              マージ
+            </span>
+          </div>
+        ))}
+        <div className="px-3 sm:px-4 py-2.5 text-[10px] sm:text-[11px] flex items-start gap-2" style={{ color: GH.muted }}>
+          <Shield className="w-3.5 h-3.5 flex-shrink-0 mt-px" style={{ color: GH.yellow }} />
+          マージできない PR はボタン自体が押せません。理由が分かるので、GitHub を開き直す必要がありません。
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="px-3 sm:px-4 py-2 text-[11px] font-bold flex items-center gap-2" style={{ color: GH.muted, borderBottom: `1px solid ${GH.border}` }}>
+        <GitMerge className="w-3.5 h-3.5" style={{ color: GH.purple }} />
+        まとめてマージ
+        <span className="ml-auto" style={{ color: GH.text }}>スカッシュしてマージ</span>
+      </div>
+      {[
+        { n: 12, title: 'DEMO-104 一覧に絞り込みを追加', done: true },
+        { n: 10, title: 'DEMO-102 入力欄の確定操作を修正', done: true },
+      ].map(p => (
+        <div key={p.n} className={rowBase} style={{ borderBottom: `1px solid ${GH.border}` }}>
+          <GitMerge className="w-4 h-4 flex-shrink-0" style={{ color: GH.purple }} />
+          <p className="text-[11px] sm:text-xs truncate min-w-0 flex-1" style={{ color: GH.text }}>
+            <span style={{ color: GH.muted }}>#{p.n}</span> {p.title}
+          </p>
+          <GhChip icon={CheckCircle2} label="マージ完了" color={GH.purple} />
+        </div>
+      ))}
+      <div className="p-3 sm:p-4">
+        <div className="rounded-xl p-3" style={{ background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.32)' }}>
+          <p className="text-[10px] font-bold mb-2 flex items-center gap-1.5" style={{ color: '#6EE7B7' }}>
+            <RefreshCw className="w-3 h-3" />Dev Ticket 側のチケットが自動で進む
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="rounded-md px-2 py-1 text-[10px] sm:text-[11px] font-bold" style={{ background: 'rgba(110,118,129,0.18)', color: GH.muted, textDecoration: 'line-through' }}>リリース待ち</span>
+            <ArrowRight className="w-3.5 h-3.5" style={{ color: '#34D399' }} />
+            <span className="rounded-md px-2 py-1 text-[10px] sm:text-[11px] font-bold" style={{ background: 'rgba(52,211,153,0.2)', color: '#6EE7B7', border: '1px solid rgba(52,211,153,0.5)' }}>リリース済み</span>
+            <span className="text-[10px] ml-auto" style={{ color: GH.muted }}>DEMO-104 ／ DEMO-102</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const GH_FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
+  { icon: Users, title: 'メンバーにGitHubアカウントは不要', body: 'GitHub 側の操作は、管理者が App を1回インストールするときだけ。以降 PR を見る・作る・マージするメンバーには GitHub アカウントが要りません。見えるかどうかは Dev Ticket の権限だけで決まります。' },
+  { icon: Link2, title: 'チケットとPRが勝手に繋がる', body: 'ブランチ名やタイトルのチケット番号から自動で紐付け。連携した直後には、過去のプルリクエストまで遡って紐付けます。' },
+  { icon: AlertTriangle, title: '紐付け漏れを取り逃さない', body: '「リリース待ちまで進んだのに PR が1件も無い」チケットは一覧で赤く表示。PR が発生しない作業は「PR不要」で畳めます。' },
+  { icon: GitMerge, title: '複数のPRをまとめてマージ', body: '選んだ PR を順番にマージし、成功と失敗を1件ずつ結果表示。スカッシュ／リベース／マージコミットから選べます。' },
+  { icon: RefreshCw, title: 'リリース済みへ自動反映', body: '既定ブランチへ入った PR を毎日検知して、チケットを「リリース済み」へ。すぐ反映したいときは手動同期ボタンで。' },
+  { icon: ShieldCheck, title: '誰が操作したか残る', body: 'マージコミットに実行者名を書き込み、Dev Ticket 側にも操作ログを保存。アプリ名義でのマージでも、追跡できなくなりません。' },
+];
+
+function GithubSection() {
+  const [step, setStep] = useState(0);
+  const [restart, setRestart] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setStep(s => (s + 1) % GH_STEPS.length), 5200);
+    return () => clearInterval(t);
+  }, [restart]);
+
+  const current = GH_STEPS[step];
+
+  return (
+    <section id="github" className="py-12 sm:py-20 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(165deg, #010409 0%, #0d1117 45%, #0b1f1a 100%)' }}>
+      <style>{`
+        @keyframes ghFade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        .gh-fade { animation: ghFade .45s ease-out both; }
+        @keyframes ghBar { from { width: 0%; } to { width: 100%; } }
+        .gh-bar { animation: ghBar 5.2s linear both; }
+        @keyframes ghPulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+        .gh-pulse { animation: ghPulse 2s ease-in-out infinite; }
+      `}</style>
+      {/* 背景デコ */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-32 -left-24 w-[28rem] h-[28rem] rounded-full" style={{ background: 'radial-gradient(circle, rgba(163,113,247,0.18) 0%, transparent 65%)' }} />
+        <div className="absolute -bottom-32 -right-20 w-[30rem] h-[30rem] rounded-full" style={{ background: 'radial-gradient(circle, rgba(52,211,153,0.16) 0%, transparent 65%)' }} />
+      </div>
+
+      <div className="max-w-7xl mx-auto relative z-10">
+        {/* 見出し */}
+        <div className="text-center mb-10 sm:mb-14">
+          <div className="inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-bold mb-5" style={{ background: 'rgba(52,211,153,0.14)', border: '1px solid rgba(52,211,153,0.42)', color: '#6EE7B7' }}>
+            <Sparkles className="w-3.5 h-3.5" />
+            NEW — GitHub連携
+          </div>
+          <h2 className="font-black leading-tight text-3xl sm:text-5xl mb-5" style={{ color: '#fff' }}>
+            PRを作る。マージする。<br className="sm:hidden" />
+            <span style={{ background: 'linear-gradient(90deg,#34D399,#58a6ff)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>GitHubを開かずに。</span>
+          </h2>
+          <p className="text-sm sm:text-lg leading-relaxed max-w-3xl mx-auto" style={{ color: 'rgba(230,237,243,0.72)' }}>
+            プルリクエストの作成からコンフリクトの検知、マージ、チケットのリリース済み反映まで。
+            開発の一連の流れが、Dev Ticket の画面の中で完結します。
+          </p>
+          <div className="flex items-center justify-center gap-2 sm:gap-3 mt-6 flex-wrap">
+            {[
+              { icon: Github, label: 'GitHub App 連携' },
+              { icon: Lock, label: 'Private リポジトリ対応' },
+              { icon: Users, label: '使うメンバーはアカウント不要' },
+            ].map(({ icon: Icon, label }) => (
+              <span key={label} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] sm:text-xs font-bold" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(230,237,243,0.9)' }}>
+                <Icon className="w-3.5 h-3.5" style={{ color: '#34D399' }} />{label}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* 本体：左＝4ステップ／右＝画面モック */}
+        <div className="grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] gap-8 lg:gap-12 items-start">
+          {/* 左 */}
+          <div>
+            <div className="space-y-2 mb-6">
+              {GH_STEPS.map((s, i) => {
+                const Icon = s.icon;
+                const active = i === step;
+                return (
+                  <button
+                    key={s.label}
+                    onClick={() => { setStep(i); setRestart(r => r + 1); }}
+                    className="w-full flex items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all"
+                    style={{
+                      background: active ? 'rgba(52,211,153,0.12)' : 'rgba(255,255,255,0.04)',
+                      border: `1px solid ${active ? 'rgba(52,211,153,0.45)' : 'rgba(255,255,255,0.08)'}`,
+                    }}
+                  >
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: active ? 'rgba(52,211,153,0.2)' : 'rgba(255,255,255,0.06)' }}>
+                      <Icon className="w-4 h-4" style={{ color: active ? '#34D399' : 'rgba(230,237,243,0.5)' }} />
+                    </div>
+                    <span className="text-xs sm:text-sm font-bold" style={{ color: active ? '#fff' : 'rgba(230,237,243,0.6)' }}>
+                      <span className="mr-2" style={{ color: active ? '#6EE7B7' : 'rgba(230,237,243,0.35)' }}>{String(i + 1).padStart(2, '0')}</span>
+                      {s.label}
+                    </span>
+                    {active && (
+                      <span className="ml-auto flex-shrink-0 w-1.5 h-1.5 rounded-full gh-pulse" style={{ background: '#34D399' }} />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div key={step} className="gh-fade">
+              <h3 className="font-black text-xl sm:text-2xl leading-snug mb-3 whitespace-pre-line" style={{ color: '#fff' }}>{current.title}</h3>
+              <p className="text-sm leading-relaxed" style={{ color: 'rgba(230,237,243,0.7)' }}>{current.desc}</p>
+            </div>
+          </div>
+
+          {/* 右：GitHub風ウィンドウ */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: GH.panel, border: `1px solid ${GH.border}`, boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
+            {/* ウィンドウのヘッダ */}
+            <div className="flex items-center gap-2 px-3 sm:px-4 py-2.5" style={{ background: GH.head, borderBottom: `1px solid ${GH.border}` }}>
+              <div className="flex gap-1.5 flex-shrink-0">
+                {['#ff5f57', '#febc2e', '#28c840'].map(c => <span key={c} className="w-2.5 h-2.5 rounded-full" style={{ background: c }} />)}
+              </div>
+              <div className="mx-auto flex items-center gap-1.5 rounded-md px-2.5 py-1 min-w-0" style={{ background: GH.bg, border: `1px solid ${GH.border}` }}>
+                <Ticket className="w-3 h-3 flex-shrink-0" style={{ color: '#34D399' }} />
+                <span className="text-[10px] font-mono truncate" style={{ color: GH.muted }}>dv-ticket.com/projects/dev-ticket/github</span>
+              </div>
+            </div>
+            {/* リポジトリ行 ＋ サブタブ */}
+            <div className="px-3 sm:px-4 pt-3 pb-2" style={{ borderBottom: `1px solid ${GH.border}` }}>
+              <div className="flex items-center gap-2 mb-2.5">
+                <Github className="w-4 h-4 flex-shrink-0" style={{ color: GH.text }} />
+                <span className="text-[11px] sm:text-xs font-mono truncate" style={{ color: GH.text }}>meece-inc / dev-ticket</span>
+                <span className="ml-auto flex-shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ color: GH.muted, border: `1px solid ${GH.border}` }}>
+                  <Lock className="w-2.5 h-2.5" />Private
+                </span>
+              </div>
+              <div className="flex items-center gap-1 overflow-x-auto">
+                <GhTab label="プルリクエスト" active />
+                <GhTab label="Issue" />
+                <GhTab label="コミット" />
+                <GhTab label="ブランチ" />
+              </div>
+            </div>
+            {/* 中身 */}
+            <div key={step} className="gh-fade" style={{ minHeight: 268 }}>
+              <GhMock step={step} />
+            </div>
+            {/* 進行バー */}
+            <div className="h-0.5 w-full" style={{ background: 'rgba(255,255,255,0.06)' }}>
+              <div key={`${step}-${restart}`} className="h-full gh-bar" style={{ background: 'linear-gradient(90deg,#34D399,#58a6ff)' }} />
+            </div>
+          </div>
+        </div>
+
+        {/* 機能カード */}
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-12 sm:mt-16">
+          {GH_FEATURES.map(({ icon: Icon, title, body }) => (
+            <div key={title} className="rounded-2xl p-5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-3" style={{ background: 'rgba(52,211,153,0.14)' }}>
+                <Icon className="w-[18px] h-[18px]" style={{ color: '#34D399' }} />
+              </div>
+              <p className="font-bold text-sm mb-1.5" style={{ color: '#fff' }}>{title}</p>
+              <p className="text-xs leading-relaxed" style={{ color: 'rgba(230,237,243,0.62)' }}>{body}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* 下段：閲覧できるもの ＋ 導入は3ステップ */}
+        <div className="grid md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-4 mt-4">
+          <div className="rounded-2xl p-5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+            <p className="text-xs font-black mb-3.5 flex items-center gap-1.5" style={{ color: '#6EE7B7' }}>
+              <CheckCheck className="w-3.5 h-3.5" />アプリの中で見られるもの
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[
+                { icon: GitPullRequest, label: 'プルリクエスト' },
+                { icon: CircleDot, label: 'Issue' },
+                { icon: GitCommitHorizontal, label: 'コミット' },
+                { icon: GitBranch, label: 'ブランチ' },
+              ].map(({ icon: Icon, label }) => (
+                <div key={label} className="flex items-center gap-2 rounded-lg px-2.5 py-2" style={{ background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.26)' }}>
+                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: '#34D399' }} />
+                  <span className="text-[11px] font-bold truncate" style={{ color: '#fff' }}>{label}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] mt-3.5 leading-relaxed" style={{ color: 'rgba(230,237,243,0.55)' }}>
+              チケット詳細の「関連PR」からも、その場で PR の作成・マージ・リンクのコピーができます。
+            </p>
+          </div>
+          <div className="rounded-2xl p-5" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}>
+            <p className="text-xs font-black mb-3.5 flex items-center gap-1.5" style={{ color: '#6EE7B7' }}>
+              <Zap className="w-3.5 h-3.5" />導入は3ステップ
+            </p>
+            <div className="space-y-2.5">
+              {[
+                { t: 'GitHub App を組織に1回だけインストール', where: 'GitHub', note: '組織の管理者権限が必要です', gh: true },
+                { t: 'プロジェクトとリポジトリを紐付け', where: 'Dev Ticket' },
+                { t: 'メンバーへ「閲覧」「マージ可」を付与', where: 'Dev Ticket' },
+              ].map((s, i) => (
+                <div key={s.t} className="flex items-start gap-2.5">
+                  <span className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 text-[10px] font-black" style={{ background: 'rgba(52,211,153,0.18)', color: '#6EE7B7' }}>{i + 1}</span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] leading-snug" style={{ color: 'rgba(230,237,243,0.82)' }}>
+                      {s.t}
+                      <span
+                        className="ml-1.5 inline-block align-middle rounded px-1.5 py-px text-[9px] font-bold whitespace-nowrap"
+                        style={s.gh
+                          ? { background: 'rgba(230,237,243,0.12)', color: 'rgba(230,237,243,0.75)', border: '1px solid rgba(230,237,243,0.2)' }
+                          : { background: 'rgba(52,211,153,0.16)', color: '#6EE7B7', border: '1px solid rgba(52,211,153,0.35)' }}
+                      >
+                        {s.where}
+                      </span>
+                    </p>
+                    {s.note && <p className="text-[10px] mt-0.5" style={{ color: 'rgba(230,237,243,0.45)' }}>{s.note}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] mt-3.5 pt-3.5 leading-relaxed" style={{ color: 'rgba(230,237,243,0.55)', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+              GitHub 側の操作は①だけ、組織につき1回きり。②③と日々の運用は Dev Ticket の中で完結します。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * ヒーローの製品ビジュアル：起票からリリースまでの一連の流れ。
+ *
+ * 紙芝居にすると「切り替わる絵」になってしまうので、場面は最初から全部置いておき、
+ * 進行に合わせて要素が増える／灯る形にしている（前の段階の結果が残り続ける）。
+ * 動きは React の状態で駆動し、見た目は CSS の transition に任せる。
+ * prefers-reduced-motion では最後の状態で止める。
+ */
+const FLOW_STEPS = [
+  { icon: Ticket,       label: '起票',     caption: 'チケットを起票する',             sub: 'WBS番号・見積り・スプリントを決める' },
+  { icon: Users,        label: 'アサイン', caption: '担当者を決める',                 sub: '実績をもとにアサインAIが候補を出す' },
+  { icon: GitBranch,    label: 'コミット', caption: 'ブランチを切って実装する',       sub: 'ブランチ名の番号でチケットと繋がる' },
+  { icon: GitMerge,     label: 'マージ',   caption: 'PRを作ってマージする',           sub: 'Dev Ticket の画面から完結できる' },
+  { icon: Rocket,       label: 'デプロイ', caption: '本番環境へ反映する',             sub: '既定ブランチに入った変更が公開される' },
+  { icon: CheckCircle2, label: 'リリース', caption: 'チケットが自動でリリース済みに', sub: 'マージを検知してステータスが進む' },
+];
+
+const FLOW_STATUS = [
+  { t: '未着手',       bg: '#f1f5f9', fg: '#64748b', bd: '#e2e8f0' },
+  { t: '進行中',       bg: '#eff6ff', fg: '#1d4ed8', bd: '#bfdbfe' },
+  { t: '進行中',       bg: '#eff6ff', fg: '#1d4ed8', bd: '#bfdbfe' },
+  { t: 'レビュー中',   bg: '#faf5ff', fg: '#7e22ce', bd: '#e9d5ff' },
+  { t: 'リリース待ち', bg: '#fffbeb', fg: '#b45309', bd: '#fde68a' },
+  { t: 'リリース済み', bg: '#ecfdf5', fg: '#047857', bd: '#a7f3d0' },
+];
+
+const FLOW_ASSIGNEES = [
+  { n: '田', c: 'linear-gradient(135deg,#14b8a6,#059669)' },
+  { n: '鈴', c: 'linear-gradient(135deg,#38bdf8,#0284c7)' },
+  { n: '佐', c: 'linear-gradient(135deg,#a78bfa,#7c3aed)' },
+];
+
+const FLOW_MS = 2600;
+
+function HeroFlow() {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      setStep(FLOW_STEPS.length - 1);
+      return;
+    }
+    const t = setInterval(() => setStep(s => (s + 1) % FLOW_STEPS.length), FLOW_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  const cur = FLOW_STEPS[step];
+  const st = FLOW_STATUS[step];
+  const last = FLOW_STEPS.length - 1;
+
+  return (
+    <div className="relative w-full aspect-[16/10] bg-white flex flex-col overflow-hidden">
+      <style>{`
+        @keyframes flowCap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        @keyframes flowPing { 0% { transform: scale(.7); opacity: .55; } 70%,100% { transform: scale(1.9); opacity: 0; } }
+        .flow-cap { animation: flowCap .45s ease-out both; }
+        .flow-ping { animation: flowPing 2s ease-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .flow-cap, .flow-ping { animation: none !important; } }
+      `}</style>
+
+      {/* ── レール ───────────────────────────────── */}
+      <div className="px-5 sm:px-7 lg:px-8 pt-5 sm:pt-6 flex-shrink-0">
+        <div className="relative">
+          <div className="absolute left-4 right-4 top-[17px] h-[3px] rounded-full bg-slate-100" />
+          <div
+            className="absolute left-4 top-[17px] h-[3px] rounded-full"
+            style={{
+              width: `calc((100% - 2rem) * ${step / last})`,
+              background: 'linear-gradient(90deg,#2dd4bf,#059669)',
+              transition: 'width .8s cubic-bezier(.4,0,.2,1)',
+            }}
+          />
+          <div className="relative flex justify-between">
+            {FLOW_STEPS.map((s, i) => {
+              const Icon = s.icon;
+              const done = i < step;
+              const active = i === step;
+              return (
+                <div key={s.label} className="flex flex-col items-center gap-1.5" style={{ width: 64 }}>
+                  <span className="relative flex items-center justify-center flex-shrink-0">
+                    {active && <span className="absolute inset-0 rounded-full flow-ping" style={{ background: 'rgba(5,150,105,0.45)' }} />}
+                    <span
+                      className="relative w-[34px] h-[34px] rounded-full flex items-center justify-center"
+                      style={{
+                        background: done || active ? 'linear-gradient(135deg,#2dd4bf,#059669)' : '#ffffff',
+                        border: done || active ? '1px solid transparent' : '2px solid #e2e8f0',
+                        boxShadow: active ? '0 0 0 4px rgba(5,150,105,0.14), 0 8px 16px -8px rgba(5,150,105,0.7)' : 'none',
+                        transition: 'all .5s ease',
+                      }}
+                    >
+                      <Icon className="w-[15px] h-[15px]" style={{ color: done || active ? '#fff' : '#94a3b8', transition: 'color .5s ease' }} />
+                    </span>
+                  </span>
+                  <span
+                    className="text-[10px] font-black whitespace-nowrap"
+                    style={{ color: active ? '#0f172a' : done ? '#059669' : '#94a3b8', transition: 'color .5s ease' }}
+                  >
+                    {s.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── 場面 ─────────────────────────────────── */}
+      <div className="flex-1 min-h-0 px-5 sm:px-7 lg:px-8 py-3 sm:py-4 grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,0.85fr)] gap-3 lg:gap-4 items-center">
+
+        {/* 左：チケット */}
+        <div
+          className="rounded-2xl bg-white p-3.5"
+          style={{ border: '1px solid #e8edf2', boxShadow: '0 14px 30px -22px rgba(15,23,42,0.55)' }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-black tracking-wider text-teal-700">DEMO-104</span>
+            <span
+              className="text-[10px] font-bold rounded-full px-2 py-0.5 whitespace-nowrap"
+              style={{ background: st.bg, color: st.fg, border: `1px solid ${st.bd}`, transition: 'all .5s ease' }}
+            >
+              {st.t}
+            </span>
+          </div>
+          <p className="text-[13px] font-black text-slate-900 mt-1.5 leading-snug">サンプルチケット：一覧に絞り込みを追加</p>
+          <p className="text-[10px] text-slate-400 mt-1">スプリント3 ・ 見積り 5h</p>
+
+          <div className="mt-3 pt-2.5 flex items-center gap-1.5" style={{ borderTop: '1px solid #f1f5f9' }}>
+            <span className="text-[9px] font-bold text-slate-400 mr-0.5">担当</span>
+            {FLOW_ASSIGNEES.map((a, i) => (
+              <span
+                key={a.n}
+                className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black text-white flex-shrink-0"
+                style={{
+                  background: a.c,
+                  opacity: step >= 1 ? 1 : 0,
+                  transform: step >= 1 ? 'none' : 'translateY(-12px) scale(.8)',
+                  transition: `opacity .45s ${i * 0.13}s ease, transform .45s ${i * 0.13}s cubic-bezier(.34,1.4,.64,1)`,
+                }}
+              >
+                {a.n}
+              </span>
+            ))}
+            <span
+              className="ml-auto text-[9px] font-black text-emerald-600 whitespace-nowrap"
+              style={{ opacity: step >= 1 ? 1 : 0, transition: 'opacity .5s .5s ease' }}
+            >
+              AI 推奨
+            </span>
+          </div>
+        </div>
+
+        {/* 中：ブランチとマージ */}
+        <div className="relative">
+          <svg viewBox="0 0 300 130" className="w-full" aria-hidden="true">
+            <defs>
+              <linearGradient id="flowBranch" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#2dd4bf" />
+                <stop offset="100%" stopColor="#059669" />
+              </linearGradient>
+            </defs>
+            {/* 既定ブランチ（main） */}
+            <path d="M4 104H296" stroke="#e2e8f0" strokeWidth="4" strokeLinecap="round" fill="none" />
+            <text x="4" y="122" fill="#94a3b8" style={{ fontSize: 10, fontWeight: 800 }}>main</text>
+            {/* 作業ブランチ */}
+            <path
+              d="M34 104C62 104 66 44 96 44H206C238 44 242 104 272 104"
+              stroke="url(#flowBranch)" strokeWidth="3.5" strokeLinecap="round" fill="none"
+              strokeDasharray="420"
+              style={{ strokeDashoffset: step >= 2 ? 0 : 420, transition: 'stroke-dashoffset 1.4s cubic-bezier(.4,0,.2,1)' }}
+            />
+            {/* コミット */}
+            {[112, 151, 190].map((x, i) => (
+              <circle
+                key={x} cx={x} cy="44" r="6" fill="#fff" stroke="#059669" strokeWidth="3"
+                style={{
+                  opacity: step >= 2 ? 1 : 0,
+                  transformOrigin: `${x}px 44px`,
+                  transform: step >= 2 ? 'scale(1)' : 'scale(.3)',
+                  transition: `opacity .4s ${0.5 + i * 0.22}s ease, transform .4s ${0.5 + i * 0.22}s cubic-bezier(.34,1.5,.64,1)`,
+                }}
+              />
+            ))}
+            {/* マージ点 */}
+            <circle
+              cx="272" cy="104" r="9" fill="#a371f7"
+              style={{
+                opacity: step >= 3 ? 1 : 0,
+                transformOrigin: '272px 104px',
+                transform: step >= 3 ? 'scale(1)' : 'scale(.3)',
+                transition: 'opacity .45s ease, transform .45s cubic-bezier(.34,1.5,.64,1)',
+              }}
+            />
+            <path
+              d="M268 104h8M272 100v8" stroke="#fff" strokeWidth="2.2" strokeLinecap="round"
+              style={{ opacity: step >= 3 ? 1 : 0, transition: 'opacity .45s .1s ease' }}
+            />
+          </svg>
+
+          {/* PRカード */}
+          <div
+            className="absolute left-1/2 -translate-x-1/2 top-0 rounded-xl px-3 py-2 bg-white flex items-center gap-2 whitespace-nowrap"
+            style={{
+              border: `1px solid ${step >= 3 ? 'rgba(163,113,247,0.45)' : '#e8edf2'}`,
+              boxShadow: '0 14px 28px -18px rgba(15,23,42,0.5)',
+              opacity: step >= 3 ? 1 : 0,
+              transform: step >= 3 ? 'translate(-50%, 0)' : 'translate(-50%, 8px)',
+              transition: 'all .5s ease',
+            }}
+          >
+            <span className="w-5 h-5 rounded-md bg-slate-900 flex items-center justify-center flex-shrink-0">
+              <Github className="w-3 h-3 text-white" />
+            </span>
+            <span className="text-[11px] font-black text-slate-800">#12 merged</span>
+            <span className="text-[9px] font-bold rounded-full px-1.5 py-0.5" style={{ background: '#faf5ff', color: '#7e22ce', border: '1px solid #e9d5ff' }}>CI 通過</span>
+          </div>
+        </div>
+
+        {/* 右：デプロイとユーザー */}
+        <div className="flex flex-col gap-2.5">
+          <div
+            className="rounded-2xl p-3"
+            style={{
+              border: `1px solid ${step >= 4 ? '#a7f3d0' : '#e8edf2'}`,
+              background: step >= 4 ? '#f4fdf8' : '#ffffff',
+              boxShadow: '0 14px 30px -24px rgba(15,23,42,0.5)',
+              transition: 'all .5s ease',
+            }}
+          >
+            <p className="text-[9px] font-black tracking-[0.16em] text-slate-400 flex items-center gap-1">
+              <Rocket className="w-3 h-3" style={{ color: step >= 4 ? '#059669' : '#94a3b8', transition: 'color .5s' }} />DEPLOY
+            </p>
+            <p className="text-[11px] font-black text-slate-800 mt-1 leading-tight">本番環境へ反映</p>
+            <div className="mt-2 h-1.5 rounded-full overflow-hidden" style={{ background: '#eef2f6' }}>
+              <div
+                className="h-full rounded-full"
+                style={{ width: step >= 4 ? '100%' : '0%', background: 'linear-gradient(90deg,#2dd4bf,#059669)', transition: 'width 1.4s cubic-bezier(.4,0,.2,1)' }}
+              />
+            </div>
+          </div>
+
+          <div
+            className="rounded-2xl p-3"
+            style={{
+              border: `1px solid ${step >= last ? '#a7f3d0' : '#e8edf2'}`,
+              background: step >= last ? '#f4fdf8' : '#ffffff',
+              boxShadow: '0 14px 30px -24px rgba(15,23,42,0.5)',
+              transition: 'all .5s ease',
+            }}
+          >
+            <p className="text-[9px] font-black tracking-[0.16em] text-slate-400">USERS</p>
+            <div className="flex items-center mt-2 -space-x-1.5">
+              {[0, 1, 2, 3].map(i => (
+                <span
+                  key={i}
+                  className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center flex-shrink-0"
+                  style={{
+                    background: step >= last ? 'linear-gradient(135deg,#34d399,#059669)' : '#e2e8f0',
+                    transition: `background .5s ${i * 0.1}s ease`,
+                  }}
+                >
+                  <UserRound className="w-3 h-3" style={{ color: step >= last ? '#fff' : '#94a3b8', transition: `color .5s ${i * 0.1}s ease` }} />
+                </span>
+              ))}
+            </div>
+            <p
+              className="text-[10px] font-bold mt-2 leading-snug"
+              style={{ color: step >= last ? '#047857' : '#94a3b8', transition: 'color .5s ease' }}
+            >
+              {step >= last ? '新しい機能が届きました' : '反映を待っています'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── いま何をしているか ───────────────────── */}
+      <div className="px-5 sm:px-7 lg:px-8 pb-5 sm:pb-6 flex-shrink-0" style={{ borderTop: '1px solid #f1f5f9', paddingTop: 14 }}>
+        <div key={step} className="flow-cap">
+          <p className="text-[13px] sm:text-sm font-black text-slate-900 flex items-center gap-2">
+            <span className="w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-black text-white flex-shrink-0" style={{ background: 'linear-gradient(135deg,#2dd4bf,#059669)' }}>
+              {step + 1}
+            </span>
+            {cur.caption}
+          </p>
+          <p className="text-[11px] sm:text-xs text-slate-500 mt-1 ml-7">{cur.sub}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function LandingPage() {
   const navigate = useNavigate();
   const { pathname, hash } = useLocation();
@@ -565,6 +1276,10 @@ export function LandingPage() {
                 AI
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#d1fae5', color: '#059669' }}>搭載</span>
               </button>
+              <button onClick={() => scrollToSection('github')} className="flex items-center gap-1.5 text-slate-600 hover:text-teal-600 transition-colors">
+                GitHub連携
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>NEW</span>
+              </button>
               <button onClick={() => scrollToSection('resources')} className="flex items-center gap-1.5 text-slate-600 hover:text-teal-600 transition-colors">
                 リソース調達
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#ffedd5', color: '#ea580c' }}>準備中</span>
@@ -595,6 +1310,10 @@ export function LandingPage() {
                 AI
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#d1fae5', color: '#059669' }}>搭載</span>
               </button>
+              <button onClick={() => { scrollToSection('github'); setMobileMenuOpen(false); }} className="flex items-center gap-2 text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">
+                GitHub連携
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>NEW</span>
+              </button>
               <button onClick={() => { scrollToSection('resources'); setMobileMenuOpen(false); }} className="flex items-center gap-2 text-left px-2 py-2.5 text-slate-700 hover:text-teal-600 font-medium transition-colors rounded-md hover:bg-slate-50">
                 リソース調達
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#ffedd5', color: '#ea580c' }}>準備中</span>
@@ -611,49 +1330,208 @@ export function LandingPage() {
         </div>
       </nav>
 
-      {/* Hero Section（メインビジュアル：ビューポート高さにフィットさせワンビュー表示） */}
-      <section className="min-h-[100svh] flex flex-col pt-16 overflow-x-hidden px-4 sm:px-6 lg:px-8 border-b border-slate-200">
-        <div className="max-w-7xl mx-auto w-full flex-1 flex items-center py-10">
-          <div className="w-full grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-14 items-center">
-            <div className="flex flex-col justify-center">
-              <Badge className="mb-4 sm:mb-5 bg-teal-100 text-teal-700 hover:bg-teal-100 w-fit text-sm sm:text-base px-3 py-1">
-                チームの生産性を最大化
-              </Badge>
-              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-slate-900 mb-5 sm:mb-7 leading-tight">
-                プロジェクトを、<br />
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-600 to-emerald-600">
-                  スマートに。
-                </span>
-              </h1>
-              <p className="text-lg sm:text-xl lg:text-2xl text-slate-600 mb-9 sm:mb-10 leading-relaxed">
-                チケット・スプリント・メンバーを一元管理。<br />
-                チームの生産性を最大化するツール。
-              </p>
-              <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-                <Button size="lg" onClick={() => navigate('/book-demo')} className="bg-teal-600 hover:bg-teal-700 text-white text-lg sm:text-xl px-8 sm:px-10 py-5 sm:py-7">
-                  今すぐ無料で始める
-                  <ArrowRight className="ml-2 w-5 h-5 sm:w-6 sm:h-6" />
-                </Button>
-                <Button size="lg" variant="outline" onClick={() => setDemoMode('video')} className="text-lg sm:text-xl px-8 sm:px-10 py-5 sm:py-7 border-slate-300 hover:border-teal-600 hover:text-teal-600">
-                  デモを見る
-                </Button>
+      {/* Hero Section（メインビジュアル：ビューポート高さにフィットさせワンビュー表示）
+          背景は装飾ではなく「進捗そのもの」。バーンダウンの面と、右肩上がりのベロシティ線を敷く。
+          背景レイヤーは上段（コピー＋画面）の中だけに置く。下段のストリップまで敷くと、
+          半透明の帯ごしに波が透けて「アニメーションが途中で隠れている」ように見えるため。 */}
+      <section className="relative isolate min-h-[100svh] flex flex-col pt-16 border-b border-slate-200">
+        <style>{`
+          @keyframes heroRise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+          @keyframes heroFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+          @keyframes heroDash { to { stroke-dashoffset: -560; } }
+          @keyframes heroGlow { 0%, 100% { opacity: .55; } 50% { opacity: .9; } }
+          .hero-rise { animation: heroRise .7s cubic-bezier(.22,.9,.3,1) both; }
+          .hero-float { animation: heroFloat 6s ease-in-out infinite; }
+          .hero-glow { animation: heroGlow 7s ease-in-out infinite; }
+          @media (prefers-reduced-motion: reduce) {
+            .hero-rise, .hero-float, .hero-glow { animation: none !important; }
+          }
+        `}</style>
+
+        {/* ── 上段（背景つき） ─────────────────────────────── */}
+        <div className="relative flex-1 flex items-center overflow-hidden">
+          {/* 背景 */}
+          <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none" style={{ background: 'linear-gradient(168deg, #ffffff 0%, #fbfffe 22%, #f3fdfb 48%, #eefcf4 74%, #f8fef0 100%)' }}>
+            <div className="hero-glow absolute -top-40 -left-28 w-[38rem] h-[38rem] rounded-full" style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.24) 0%, transparent 66%)', filter: 'blur(20px)' }} />
+            <div className="hero-glow absolute -top-24 right-[-10rem] w-[42rem] h-[42rem] rounded-full" style={{ background: 'radial-gradient(circle, rgba(16,185,129,0.22) 0%, transparent 66%)', filter: 'blur(20px)', animationDelay: '2s' }} />
+            <div className="hero-glow absolute bottom-[-16rem] left-1/4 w-[40rem] h-[40rem] rounded-full" style={{ background: 'radial-gradient(circle, rgba(163,230,53,0.20) 0%, transparent 66%)', filter: 'blur(20px)', animationDelay: '4s' }} />
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(13,148,136,0.15) 1px, transparent 0)',
+                backgroundSize: '24px 24px',
+                maskImage: 'radial-gradient(90% 70% at 55% 35%, #000 0%, transparent 78%)',
+                WebkitMaskImage: 'radial-gradient(90% 70% at 55% 35%, #000 0%, transparent 78%)',
+              }}
+            />
+            {/* 文字が乗る面に白の膜を掛ける。本文が黒なので、下地に緑が残っていると
+                読みづらくなる。モバイルは上から、PCは左（コピー側）からだけ白を足し、
+                右の図の側には色を残す */}
+            <div
+              className="absolute inset-0 lg:hidden"
+              style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.66) 32%, rgba(255,255,255,0.22) 58%, rgba(255,255,255,0) 76%)' }}
+            />
+            <div
+              className="absolute inset-0 hidden lg:block"
+              style={{ background: 'linear-gradient(100deg, rgba(255,255,255,0.74) 0%, rgba(255,255,255,0.42) 28%, rgba(255,255,255,0) 56%)' }}
+            />
+            <svg className="absolute bottom-0 left-0 w-full h-[38%] sm:h-[44%]" viewBox="0 0 1440 420" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="heroArea1" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#5eead4" stopOpacity="0.34" />
+                  <stop offset="100%" stopColor="#5eead4" stopOpacity="0" />
+                </linearGradient>
+                <linearGradient id="heroArea2" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#a3e635" stopOpacity="0.30" />
+                  <stop offset="100%" stopColor="#a3e635" stopOpacity="0" />
+                </linearGradient>
+                <linearGradient id="heroLine" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stopColor="#14b8a6" />
+                  <stop offset="55%" stopColor="#059669" />
+                  <stop offset="100%" stopColor="#84cc16" />
+                </linearGradient>
+              </defs>
+              <path d="M0 420V300c180-14 240 44 400 30s250-96 420-104 300 44 420 22.5c110-20 200-60 200-60V420z" fill="url(#heroArea2)" />
+              <path d="M0 420V336c200 12 280-52 460-64s280 62 460 40 340-84 520-96V420z" fill="url(#heroArea1)" />
+              <path
+                d="M0 336c200 12 280-52 460-64s280 62 460 40 340-84 520-96"
+                fill="none" stroke="url(#heroLine)" strokeWidth="3" strokeLinecap="round"
+                strokeDasharray="10 14" style={{ animation: 'heroDash 22s linear infinite' }} opacity="0.75"
+              />
+            </svg>
+          </div>
+
+          {/* 本体 */}
+          <div className="relative max-w-[1520px] mx-auto w-full px-4 sm:px-6 lg:px-10 py-8 sm:py-10">
+            <div className="w-full grid lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.58fr)] gap-10 lg:gap-8 xl:gap-10 items-center">
+
+              {/* 左：コピー */}
+              <div className="hero-rise flex flex-col justify-center">
+                {/* キッカー。塗りつぶしのピルを重ねると、狭い画面で文字の背後に
+                    濃い色の板が入り込んで読みにくくなるので、線と点だけで区切る */}
+                <div className="inline-flex flex-wrap items-center gap-x-2.5 gap-y-1 w-fit rounded-2xl sm:rounded-full px-3.5 py-2 mb-5 sm:mb-6 bg-white/85 backdrop-blur" style={{ border: '1px solid rgba(13,148,136,0.26)', boxShadow: '0 6px 20px rgba(13,148,136,0.12)' }}>
+                  <span className="flex items-center gap-1.5 text-[11px] sm:text-xs font-black text-teal-700">
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'linear-gradient(135deg,#2dd4bf,#059669)' }} />
+                    プロジェクト管理 SaaS
+                  </span>
+                  <span className="hidden sm:block w-px h-3 bg-slate-200" />
+                  <span className="text-[11px] sm:text-xs font-bold text-slate-500">チケット・スプリント・GitHub を1本で</span>
+                </div>
+
+                <h1 className="font-black text-slate-900 leading-[1.18] sm:leading-[1.14] tracking-tight text-[2.1rem] sm:text-[2.9rem] xl:text-[3.35rem] mb-5 sm:mb-6">
+                  起票から<br />
+                  <span className="relative inline-block">
+                    <span aria-hidden className="absolute left-0 right-0 bottom-[0.1em] h-[0.26em] rounded-full" style={{ background: 'linear-gradient(90deg, rgba(45,212,191,0.42), rgba(163,230,53,0.42))' }} />
+                    <span className="relative z-[1] text-transparent bg-clip-text" style={{ backgroundImage: 'linear-gradient(105deg,#0d9488 0%,#059669 55%,#4d7c0f 100%)' }}>リリース</span>
+                  </span>
+                  まで、<br />
+                  ひとつの画面で。
+                </h1>
+
+                <p className="text-[15px] sm:text-xl text-slate-600 leading-relaxed mb-7 sm:mb-8 max-w-xl">
+                  チケット・スプリント・ガント・メンバーの稼働、そして GitHub の PR まで。
+                  ツールを行き来せずに、<span className="font-bold text-slate-800">チームの現在地と次の一手</span>が分かります。
+                </p>
+
+                <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
+                  <Button
+                    size="lg"
+                    onClick={() => navigate('/book-demo')}
+                    className="text-base sm:text-lg font-bold px-8 sm:px-9 py-5 sm:py-6 text-white border-0 transition-transform hover:-translate-y-0.5"
+                    style={{ background: 'linear-gradient(135deg,#0d9488 0%,#059669 100%)', boxShadow: '0 14px 30px -10px rgba(5,150,105,0.65)' }}
+                  >
+                    今すぐ無料で始める
+                    <ArrowRight className="ml-2 w-5 h-5" />
+                  </Button>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    onClick={() => setDemoMode('video')}
+                    className="text-base sm:text-lg font-bold px-8 sm:px-9 py-5 sm:py-6 bg-white/80 backdrop-blur border-slate-300 hover:border-teal-600 hover:text-teal-700 transition-transform hover:-translate-y-0.5"
+                  >
+                    <Play className="mr-2 w-4 h-4" />
+                    デモを見る
+                  </Button>
+                </div>
+
+                <div className="mt-6 sm:mt-7 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm sm:text-base text-slate-600">
+                  {['商談予約可能', 'すぐに利用開始'].map(t => (
+                    <span key={t} className="flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-teal-600" />{t}
+                    </span>
+                  ))}
+                </div>
               </div>
-              <div className="mt-7 sm:mt-9 flex items-center gap-5 sm:gap-7 text-base sm:text-lg text-slate-600">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-600" />
-                  <span>商談予約可能</span>
+
+              {/* 右：製品ビジュアル
+                  ・画面は ScaledDashboard（1180×664で描いてから縮小）を通す。
+                    固定ピクセルのモックを箱に押し込むと中身が潰れるため、これが唯一の正解。
+                  ・中身は起票→リリースまでの一連の流れ（HeroFlow）。薄いガラスの縁だけを回す。
+                  ・端末の幅は画面の高さからも上限を掛け、ヒーロー全体が1画面に収まるようにする。 */}
+              <div
+                className="hero-rise relative hidden md:block w-full ml-auto"
+                style={{
+                  animationDelay: '.12s',
+                  // 図の高さ ≒ 幅×0.625 + 縁12px。ナビ・下段の帯・上下余白を引いた
+                  // 残りに収まる幅を上限にして、背の低いディスプレイでも1画面から溢れさせない
+                  maxWidth: 'calc((100svh - 268px) * 1.6)',
+                }}
+              >
+                {/* 背後の光 */}
+                <div className="absolute -inset-10 -z-10 rounded-[3rem]" style={{ background: 'radial-gradient(58% 56% at 52% 44%, rgba(20,184,166,0.34) 0%, transparent 72%)', filter: 'blur(28px)' }} />
+
+                {/* 薄いガラスの縁だけを回して、中身（流れの図）に寄せる */}
+                <div
+                  className="rounded-[22px] p-1.5"
+                  style={{
+                    background: 'linear-gradient(155deg, rgba(255,255,255,0.95) 0%, rgba(209,250,229,0.72) 55%, rgba(255,255,255,0.9) 100%)',
+                    border: '1px solid rgba(255,255,255,0.9)',
+                    boxShadow: '0 56px 96px -38px rgba(6,78,59,0.42), 0 20px 44px -26px rgba(15,23,42,0.20)',
+                  }}
+                >
+                  <div className="rounded-[16px] overflow-hidden bg-white" style={{ border: '1px solid rgba(15,23,42,0.07)' }}>
+                    <HeroFlow />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 text-teal-600" />
-                  <span>すぐに利用開始</span>
-                </div>
+
+                {/* 接地影 */}
+                <div className="absolute left-[6%] right-[6%] -bottom-4 h-7 -z-10 pointer-events-none" style={{ background: 'radial-gradient(closest-side, rgba(6,78,59,0.26) 0%, transparent 100%)', filter: 'blur(16px)' }} />
+
               </div>
             </div>
-            <div className="hidden md:block relative">
-              {/* PCモニター比率(5:4)。中段グラフがゆったり収まる高さ */}
-              <div className="relative w-full rounded-2xl overflow-hidden border border-slate-200 aspect-[5/4]" style={{ boxShadow: '0 8px 48px rgba(0,0,0,0.07)' }}>
-                <MockDashboard fillHeight />
-              </div>
+          </div>
+        </div>
+
+        {/* ── 下段：何が入っているかを1行で ─────────────────── */}
+        <div className="relative bg-white border-t border-slate-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            {/* 罫線は divide-* だと2列×2段のときに余計な線が出るので、位置から明示的に引く */}
+            <div className="grid grid-cols-2 lg:grid-cols-4">
+              {[
+                { icon: LayoutDashboard, title: 'チケット・スプリント', sub: 'リスト／ボード／ガントで進捗を管理', to: 'features' },
+                { icon: Github, title: 'GitHub連携', sub: 'PR作成・マージ・コンフリクト検知', to: 'github', badge: 'NEW' },
+                { icon: Brain, title: 'アサインAI', sub: '実績から担当者をレコメンド', to: 'ai', badge: '搭載' },
+                { icon: Monitor, title: 'Mac / iPad アプリ', sub: 'ネイティブアプリを開発中', to: 'native' },
+              ].map(({ icon: Icon, title, sub, to, badge }, i) => (
+                <button
+                  key={title}
+                  onClick={() => scrollToSection(to)}
+                  className={`group flex items-start gap-2.5 sm:gap-3 px-3 sm:px-5 py-4 sm:py-5 text-left transition-colors hover:bg-teal-50/50 border-slate-200 ${i % 2 === 1 ? 'border-l' : ''} ${i >= 2 ? 'border-t' : ''} lg:border-t-0 ${i > 0 ? 'lg:border-l' : 'lg:border-l-0'}`}
+                >
+                  <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-105" style={{ background: 'linear-gradient(135deg,rgba(20,184,166,0.16),rgba(5,150,105,0.16))' }}>
+                    <Icon className="w-4 h-4 sm:w-[18px] sm:h-[18px] text-teal-700" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs sm:text-sm font-black text-slate-800 flex items-center gap-1.5 flex-wrap leading-snug">
+                      {title}
+                      {badge && (
+                        <span className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>{badge}</span>
+                      )}
+                    </p>
+                    <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5 leading-snug">{sub}</p>
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
         </div>
@@ -820,6 +1698,22 @@ export function LandingPage() {
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">依頼・承認・差し戻しをシステム化</p>
                 </div>
               </div>
+
+              <button
+                onClick={() => scrollToSection('github')}
+                className="flex items-start gap-3 bg-white rounded-xl border border-slate-100 p-4 text-left hover:border-teal-300 hover:shadow-md transition-all"
+              >
+                <div className="w-8 h-8 rounded-lg bg-slate-900 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Github className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+                    GitHub連携
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: '#dcfce7', color: '#15803d' }}>NEW</span>
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">PR作成・マージ・コンフリクト検知をアプリ内で</p>
+                </div>
+              </button>
 
               <div className="flex items-start gap-3 bg-white rounded-xl border border-slate-100 p-4">
                 <div className="w-8 h-8 rounded-lg bg-cyan-50 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -1045,6 +1939,9 @@ export function LandingPage() {
         </div>
       </section>
 
+      {/* GitHub Section（GitHub連携：PR作成・マージ・コンフリクト検知） */}
+      <GithubSection />
+
       {/* AI Section（アサインAI／分析AI 搭載）— 幅・縦幅とも Mac/iPad セクションに合わせた2カラム構成 */}
       <section id="ai" className="py-12 sm:py-20 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(180deg, #ffffff 0%, #f2fdf9 45%, #e3fbf1 100%)' }}>
         {/* 背景デコ */}
@@ -1196,7 +2093,7 @@ export function LandingPage() {
       </section>
 
       {/* Native App Section（Mac/iPadアプリ 開発中） */}
-      <section className="py-12 sm:py-20 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(160deg, #0f172a 0%, #134e4a 55%, #115e59 100%)' }}>
+      <section id="native" className="py-12 sm:py-20 px-4 sm:px-6 lg:px-8 relative overflow-hidden" style={{ background: 'linear-gradient(160deg, #0f172a 0%, #134e4a 55%, #115e59 100%)' }}>
         {/* 背景デコ */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full" style={{ background: 'radial-gradient(circle, rgba(52,211,153,0.16) 0%, transparent 65%)' }} />

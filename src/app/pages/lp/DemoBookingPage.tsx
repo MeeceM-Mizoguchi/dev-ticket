@@ -1,8 +1,8 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
-  ArrowLeft, Building2, User, Mail, Phone, CheckCircle2,
-  ChevronRight, ChevronLeft, CalendarDays, Ticket,
+  ArrowLeft, Building2, User, Mail, Phone, CheckCircle2, Check,
+  ChevronRight, ChevronLeft, CalendarDays, Ticket, Video, Clock, AlertCircle,
 } from 'lucide-react';
 import { Calendar } from '@/app/components/ui/calendar';
 import { addDays, format, startOfDay } from 'date-fns';
@@ -26,49 +26,96 @@ const TIME_OPTIONS: { value: TimePreference; label: string }[] = [
   { value: 'anytime', label: 'どちらでも可' },
 ];
 
+const PLAN_LABELS: Record<string, string> = {
+  free:         '無料',
+  starter:      'スターター',
+  professional: 'プロフェッショナル',
+  enterprise:   'エンタープライズ',
+};
+
+/** 商談で何をするか。左のパネルに出して、フォームを埋める前に見返せるようにする */
+const AGENDA = [
+  '実際の画面を操作しながら、機能をご説明します',
+  'チームの進め方に合わせた設定をご相談いただけます',
+  '料金プランと、導入までの進め方をご案内します',
+];
+
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 function inputClass(hasError: boolean, disabled?: boolean) {
-  const base = 'w-full px-4 py-2.5 rounded-lg border text-sm transition-colors focus:outline-none focus:ring-2';
-  if (disabled) return `${base} bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed`;
-  if (hasError) return `${base} border-red-400 focus:border-red-500 focus:ring-red-200`;
-  return `${base} border-slate-300 focus:border-teal-500 focus:ring-teal-200`;
+  const base = 'w-full pl-11 pr-4 py-3.5 rounded-xl border text-[15px] transition-all focus:outline-none focus:ring-4 placeholder:text-slate-300';
+  if (disabled) return `${base} bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed`;
+  if (hasError) return `${base} bg-white border-red-300 focus:border-red-400 focus:ring-red-100`;
+  return `${base} bg-white border-slate-200 hover:border-slate-300 focus:border-teal-500 focus:ring-teal-100`;
+}
+
+/** ラベル・アイコン・エラーをひとまとめにした入力欄。3箇所で同じ形を繰り返さないため */
+function Field({ icon: Icon, label, required, error, children }: {
+  icon: typeof Mail; label: string; required?: boolean; error?: string; children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="block text-[13px] font-black text-slate-700 mb-2">
+        {label}
+        {required && <span className="text-red-500 ml-1">*</span>}
+      </label>
+      <div className="relative">
+        <Icon className={`absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none ${error ? 'text-red-400' : 'text-slate-400'}`} />
+        {children}
+      </div>
+      {error && (
+        <p className="flex items-center gap-1 text-red-500 text-xs mt-1.5 font-medium">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />{error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
 
 function StepBar({ step }: { step: 'form' | 'calendar' | 'success' }) {
   const steps = [
-    { key: 'form', label: 'STEP1 お客様情報' },
-    { key: 'calendar', label: 'STEP2 日程選択' },
+    { key: 'form', label: 'お客様情報' },
+    { key: 'calendar', label: '日程の選択' },
     { key: 'success', label: '完了' },
   ] as const;
   const activeIdx = steps.findIndex(s => s.key === step);
   return (
-    <div className="hidden sm:flex items-center gap-2 text-sm">
+    <ol className="flex items-center mb-8 sm:mb-10">
       {steps.map((s, i) => {
         const done = i < activeIdx;
         const active = i === activeIdx;
         return (
-          <span key={s.key} className="flex items-center gap-2">
-            <span className={active ? 'font-bold text-teal-600' : done ? 'text-slate-400 line-through' : 'text-slate-400'}>
-              {s.label}
-            </span>
-            {i < steps.length - 1 && <span className="text-slate-300">›</span>}
-          </span>
+          <li key={s.key} className={`flex items-center ${i < steps.length - 1 ? 'flex-1' : ''}`}>
+            <div className="flex items-center gap-2.5 flex-shrink-0">
+              <span
+                className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-black flex-shrink-0 transition-all"
+                style={
+                  done
+                    ? { background: 'linear-gradient(135deg,#2dd4bf,#059669)', color: '#fff' }
+                    : active
+                      ? { background: '#fff', color: '#047857', border: '2px solid #059669', boxShadow: '0 0 0 4px rgba(5,150,105,0.12)' }
+                      : { background: '#f1f5f9', color: '#94a3b8' }
+                }
+              >
+                {done ? <Check className="w-3.5 h-3.5" strokeWidth={3} /> : i + 1}
+              </span>
+              <span className={`text-[13px] font-bold whitespace-nowrap ${active ? 'text-slate-900' : done ? 'text-slate-500' : 'text-slate-400'}`}>
+                {s.label}
+              </span>
+            </div>
+            {i < steps.length - 1 && (
+              <span className="mx-3 h-0.5 flex-1 rounded-full" style={{ background: done ? 'linear-gradient(90deg,#2dd4bf,#059669)' : '#e2e8f0' }} />
+            )}
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }
 
 // ─── Page component ───────────────────────────────────────────────────────────
-
-const PLAN_LABELS: Record<string, string> = {
-  starter:      'スターター',
-  professional: 'プロフェッショナル',
-  enterprise:   'エンタープライズ',
-};
 
 export function DemoBookingPage() {
   const navigate = useNavigate();
@@ -87,14 +134,14 @@ export function DemoBookingPage() {
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // 操作日から1週間後以降のみ選択可能
+  // 準備期間として、本日から1週間後以降のみ選択できる
   const minDate = addDays(startOfDay(new Date()), 7);
 
-  // ── Form helpers ─────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────────
 
   const setField = <K extends keyof FormData>(key: K, value: FormData[K]) => {
     setForm(f => ({ ...f, [key]: value }));
-    setErrors(e => { const n = { ...e }; delete n[key]; return n; });
+    setErrors(e => { const n = { ...e }; delete n[key as string]; return n; });
   };
 
   const validate = () => {
@@ -102,18 +149,16 @@ export function DemoBookingPage() {
     if (!form.isIndividual && !form.companyName.trim()) e.companyName = '会社名を入力してください';
     if (!form.contactName.trim()) e.contactName = '担当者名を入力してください';
     if (!form.email.trim()) e.email = 'メールアドレスを入力してください';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = '有効なメールアドレスを入力してください';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = 'メールアドレスの形式が正しくありません';
     if (!form.phone.trim()) e.phone = '電話番号を入力してください';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
-  // ── Calendar helpers ──────────────────────────────────────────────────────────
-
   const sortedDates = [...selectedDates].sort((a, b) => a.getTime() - b.getTime());
 
   const isTimeSelectionComplete = selectedDates.length > 0 &&
-    selectedDates.every(d => !!timePrefs[format(d, 'yyyy-MM-dd')]);
+    sortedDates.every(d => timePrefs[format(d, 'yyyy-MM-dd')]);
 
   const handleDateSelect = (dates: Date[] | undefined) => {
     const next = dates ?? [];
@@ -129,8 +174,6 @@ export function DemoBookingPage() {
     });
     setErrors(e => { const n = { ...e }; delete n.calendar; return n; });
   };
-
-  // ── Submit ────────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     if (selectedDates.length === 0) {
@@ -157,74 +200,135 @@ export function DemoBookingPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
+  // 日程選択だけカレンダーと候補日を横に並べるので、本文の幅を広く取る
+  const bodyWidth = step === 'calendar' ? 'max-w-[1000px]' : step === 'success' ? 'max-w-[620px]' : 'max-w-[560px]';
+
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 overflow-x-hidden">
+    <div className="min-h-[100svh] lg:h-[100svh] flex flex-col lg:flex-row bg-white overflow-hidden">
       <style>{`
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes scaleIn {
-          from { opacity: 0; transform: scale(0.8); }
-          to { opacity: 1; transform: scale(1); }
-        }
-        @keyframes pulseRing {
-          0% { transform: scale(0.95); opacity: 0.5; }
-          50% { transform: scale(1.05); opacity: 0.3; }
-          100% { transform: scale(0.95); opacity: 0.5; }
-        }
-        .animate-fade-in-up {
-          animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        }
-        .animate-scale-in {
-          animation: scaleIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-        }
-        .animate-pulse-ring {
-          animation: pulseRing 3s ease-in-out infinite;
+        @keyframes bkRise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+        @keyframes bkPop { from { opacity: 0; transform: scale(.82); } to { opacity: 1; transform: scale(1); } }
+        @keyframes bkRing { 0%,100% { transform: scale(.95); opacity: .45; } 50% { transform: scale(1.06); opacity: .25; } }
+        @keyframes bkDash { to { stroke-dashoffset: -400; } }
+        .bk-rise { animation: bkRise .6s cubic-bezier(.22,.9,.3,1) both; }
+        .bk-pop { animation: bkPop .5s cubic-bezier(.34,1.56,.64,1) both; }
+        .bk-ring { animation: bkRing 3s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .bk-rise, .bk-pop, .bk-ring { animation: none !important; }
         }
       `}</style>
 
+      {/* ── 左：何のための時間なのかを置いておくパネル ─────────────────
+          縦位置は auto マージンではなく flex-1 + justify-center で決める。
+          `lg:mt-0` と `lg:my-auto` を併記すると、Tailwind の出力順で mt-0 が後に来て
+          margin-top だけ 0 に潰され、中身がロゴに張り付く（下だけ余白が残る）ため。 */}
+      <aside
+        className="relative flex-shrink-0 lg:w-[400px] xl:w-[452px] lg:h-full overflow-hidden border-b lg:border-b-0 lg:border-r border-slate-200"
+        style={{ background: 'linear-gradient(170deg,#f6fffc 0%,#ecfdf5 46%,#f7fee7 100%)' }}
+      >
+        {/* 背景の光だけ。細かいドットは小さい面では砂粒にしか見えないので敷かない */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+          <div className="absolute -top-40 -left-28 w-[28rem] h-[28rem] rounded-full" style={{ background: 'radial-gradient(closest-side, rgba(45,212,191,0.30) 0%, transparent 100%)' }} />
+          <div className="absolute -bottom-40 -right-28 w-[26rem] h-[26rem] rounded-full" style={{ background: 'radial-gradient(closest-side, rgba(163,230,53,0.26) 0%, transparent 100%)' }} />
+        </div>
 
-      {/* ヘッダー */}
-      <header className="sticky top-0 w-full bg-white/90 backdrop-blur-md border-b border-slate-200 z-50 h-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div
-              className="w-8 h-8 rounded-xl flex items-center justify-center"
-              style={{ background: 'linear-gradient(145deg, #34D399, #059669)', boxShadow: '0 3px 8px rgba(5,150,105,0.35)' }}
-            >
-              <Ticket className="w-5 h-5 text-white" />
-            </div>
-            <span className="text-lg font-bold text-slate-900">Dev Ticket</span>
-          </div>
+        {/* 下端の帯。ここには何も重ねないので、線は最後まで見える */}
+        <svg className="absolute bottom-0 left-0 w-full h-20 lg:h-28 pointer-events-none" viewBox="0 0 452 120" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="bkLine" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor="#14b8a6" />
+              <stop offset="100%" stopColor="#84cc16" />
+            </linearGradient>
+            <linearGradient id="bkFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#5eead4" stopOpacity="0.34" />
+              <stop offset="100%" stopColor="#5eead4" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <path d="M0 120V74c70 4 96-22 160-28s96 20 160 12 132-26 132-26V120z" fill="url(#bkFill)" />
+          <path
+            d="M0 74c70 4 96-22 160-28s96 20 160 12 132-26 132-26"
+            fill="none" stroke="url(#bkLine)" strokeWidth="2.5" strokeLinecap="round"
+            strokeDasharray="8 12" opacity="0.7" style={{ animation: 'bkDash 18s linear infinite' }}
+          />
+        </svg>
 
-          <StepBar step={step} />
-
-          {step !== 'success' && (
+        <div className="relative h-full flex flex-col px-6 sm:px-8 lg:px-10 pt-5 lg:pt-9 pb-24 lg:pb-32">
+          {/* ロゴ＋戻る */}
+          <div className="flex items-center justify-between gap-3 flex-shrink-0">
+            <button onClick={() => navigate('/')} className="flex items-center gap-2">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'linear-gradient(145deg,#34D399,#059669)', boxShadow: '0 4px 12px rgba(5,150,105,0.35)' }}>
+                <Ticket className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-lg font-bold text-slate-900">Dev Ticket</span>
+            </button>
             <button
               onClick={() => navigate('/')}
-              className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 font-medium px-3 py-2 rounded-lg hover:bg-slate-100 transition-colors"
+              className="flex items-center gap-1.5 text-[13px] font-bold text-slate-500 hover:text-teal-700 px-2.5 py-1.5 rounded-lg hover:bg-white/70 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
-              トップに戻る
+              トップ
             </button>
-          )}
-        </div>
-      </header>
-
-      {/* ── STEP 1: お客様情報フォーム ── */}
-      {step === 'form' && (
-        <main className="flex-1 flex flex-col justify-start sm:justify-center max-w-4xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
-          <div className="text-center mb-4 sm:mb-8">
-            <h1 className="text-2xl font-bold text-slate-900 mb-1">商談のご予約</h1>
-            <p className="text-slate-500 text-sm">お客様情報をご入力ください</p>
           </div>
 
-          <div className="bg-white rounded-3xl p-5 sm:p-8 lg:p-10 shadow-xl shadow-slate-200/50 border border-slate-200">
-            <div className="grid lg:grid-cols-2 gap-5 sm:gap-8">
+          {/* 中身（PCでは縦中央） */}
+          <div className="flex-1 flex flex-col justify-center py-8 lg:py-10">
+            {plan && PLAN_LABELS[plan] && (
+              <span className="inline-flex items-center gap-1.5 w-fit rounded-full px-3 py-1 mb-4 text-[11px] font-black bg-white/85 text-teal-700" style={{ border: '1px solid rgba(13,148,136,0.28)' }}>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {PLAN_LABELS[plan]}プランのご相談
+              </span>
+            )}
+            <h1 className="text-[1.75rem] lg:text-[2.1rem] font-black text-slate-900 leading-[1.25] tracking-tight">
+              商談のご予約
+            </h1>
+            <p className="mt-3 text-[13px] lg:text-sm text-slate-600 leading-relaxed">
+              ご入力は2ステップ、1分ほどで終わります。オンラインで、実際の画面をご覧いただきながらご説明します。
+            </p>
+
+            <ul className="mt-6 lg:mt-7 space-y-2.5">
+              {AGENDA.map(t => (
+                <li key={t} className="flex items-start gap-2.5">
+                  <span className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-px" style={{ background: 'linear-gradient(135deg,#2dd4bf,#059669)' }}>
+                    <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                  </span>
+                  <span className="text-[13px] text-slate-700 leading-snug">{t}</span>
+                </li>
+              ))}
+            </ul>
+
+            {/* 約束（PCのみ。モバイルはフォームまでの距離を詰める） */}
+            <div className="hidden lg:block mt-8 rounded-2xl p-4 bg-white/80 backdrop-blur" style={{ border: '1px solid rgba(13,148,136,0.18)', boxShadow: '0 10px 26px -14px rgba(6,78,59,0.30)' }}>
+              {[
+                { icon: Video, t: 'オンラインで実施', s: '商談URL（Google Meet 等）をメールでお送りします' },
+                { icon: Clock, t: '2営業日以内にご連絡', s: '担当者が候補日を確認のうえ日程を確定します' },
+              ].map(({ icon: Icon, t, s }, i) => (
+                <div key={t} className={`flex items-start gap-2.5 ${i > 0 ? 'mt-3 pt-3 border-t border-slate-200/70' : ''}`}>
+                  <Icon className="w-4 h-4 text-teal-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-[12px] font-black text-slate-800 leading-tight">{t}</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{s}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── 右：本体 ───────────────────────────────────────────────── */}
+      <main className="flex-1 lg:h-full lg:overflow-y-auto">
+        <div className={`mx-auto w-full ${bodyWidth} px-5 sm:px-8 lg:px-12 py-8 lg:py-12 lg:min-h-full flex flex-col justify-center`}>
+          <StepBar step={step} />
+
+          {/* ── STEP 1: お客様情報 ── */}
+          {step === 'form' && (
+            <div className="bk-rise">
+              <h2 className="text-xl font-black text-slate-900 mb-1">お客様情報</h2>
+              <p className="text-[13px] text-slate-500 mb-6">ご連絡先をご入力ください。<span className="text-red-500">*</span> は必須項目です。</p>
+
               <div className="space-y-5">
-                {/* 個人事業主チェック */}
-                <label className="flex items-center gap-3 p-4 bg-teal-50 rounded-2xl cursor-pointer select-none">
+                {/* 個人事業主 */}
+                <label className="flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer select-none transition-colors" style={{ background: form.isIndividual ? 'rgba(20,184,166,0.10)' : '#f8fafc', border: `1px solid ${form.isIndividual ? 'rgba(13,148,136,0.35)' : '#e2e8f0'}` }}>
                   <input
                     type="checkbox"
                     checked={form.isIndividual}
@@ -235,19 +339,14 @@ export function DemoBookingPage() {
                         setErrors(er => { const n = { ...er }; delete n.companyName; return n; });
                       }
                     }}
-                    className="w-5 h-5 rounded accent-teal-600 flex-shrink-0"
+                    className="w-4.5 h-4.5 rounded accent-teal-600 flex-shrink-0"
+                    style={{ width: 18, height: 18 }}
                   />
-                  <span className="text-sm font-semibold text-slate-700">
-                    個人事業主の方はこちら
-                  </span>
+                  <span className="text-[13px] font-bold text-slate-700">個人事業主の方はこちら</span>
+                  <span className="ml-auto text-[11px] text-slate-400">会社名の入力を省略します</span>
                 </label>
 
-                {/* 会社名 */}
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">
-                    <Building2 className="inline w-4 h-4 mr-2 text-slate-400" />
-                    会社名{!form.isIndividual && <span className="text-red-500 ml-1">*</span>}
-                  </label>
+                <Field icon={Building2} label="会社名" required={!form.isIndividual} error={errors.companyName}>
                   <input
                     type="text"
                     value={form.companyName}
@@ -256,15 +355,9 @@ export function DemoBookingPage() {
                     placeholder={form.isIndividual ? '（個人事業主のため不要）' : '株式会社○○'}
                     className={inputClass(!!errors.companyName, form.isIndividual)}
                   />
-                  {errors.companyName && <p className="text-red-500 text-xs mt-1.5">{errors.companyName}</p>}
-                </div>
+                </Field>
 
-                {/* 担当者名 */}
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">
-                    <User className="inline w-4 h-4 mr-2 text-slate-400" />
-                    担当者名 <span className="text-red-500">*</span>
-                  </label>
+                <Field icon={User} label="担当者名" required error={errors.contactName}>
                   <input
                     type="text"
                     value={form.contactName}
@@ -272,18 +365,10 @@ export function DemoBookingPage() {
                     placeholder="田中 太郎"
                     className={inputClass(!!errors.contactName)}
                   />
-                  {errors.contactName && <p className="text-red-500 text-xs mt-1.5">{errors.contactName}</p>}
-                </div>
-              </div>
+                </Field>
 
-              <div>
-                <div className="space-y-5">
-                  {/* メールアドレス */}
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">
-                      <Mail className="inline w-4 h-4 mr-2 text-slate-400" />
-                      メールアドレス <span className="text-red-500">*</span>
-                    </label>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <Field icon={Mail} label="メールアドレス" required error={errors.email}>
                     <input
                       type="email"
                       value={form.email}
@@ -291,15 +376,9 @@ export function DemoBookingPage() {
                       placeholder="example@company.com"
                       className={inputClass(!!errors.email)}
                     />
-                    {errors.email && <p className="text-red-500 text-xs mt-1.5">{errors.email}</p>}
-                  </div>
+                  </Field>
 
-                  {/* 電話番号 */}
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">
-                      <Phone className="inline w-4 h-4 mr-2 text-slate-400" />
-                      電話番号 <span className="text-red-500">*</span>
-                    </label>
+                  <Field icon={Phone} label="電話番号" required error={errors.phone}>
                     <input
                       type="tel"
                       value={form.phone}
@@ -307,184 +386,212 @@ export function DemoBookingPage() {
                       placeholder="03-1234-5678"
                       className={inputClass(!!errors.phone)}
                     />
-                    {errors.phone && <p className="text-red-500 text-xs mt-1.5">{errors.phone}</p>}
-                  </div>
+                  </Field>
                 </div>
               </div>
-            </div>
 
-            <div className="pt-6 sm:pt-8 flex flex-col sm:flex-row sm:justify-end">
               <button
                 onClick={() => { if (validate()) setStep('calendar'); }}
-                className="flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-bold px-10 py-4 rounded-2xl transition-all shadow-lg shadow-teal-600/20 w-full sm:w-auto"
+                className="mt-8 w-full flex items-center justify-center gap-2 text-white font-bold text-[15px] px-8 py-4 rounded-xl transition-transform hover:-translate-y-0.5 active:translate-y-0"
+                style={{ background: 'linear-gradient(135deg,#0d9488,#059669)', boxShadow: '0 14px 28px -12px rgba(5,150,105,0.7)' }}
               >
-                次へ：日程選択
+                次へ：日程の選択
                 <ChevronRight className="w-5 h-5" />
               </button>
+              <p className="mt-3 text-[11px] text-slate-400 text-center">この時点ではまだ予約は確定しません。</p>
             </div>
-          </div>
-        </main>
-      )}
+          )}
 
-      {/* ── STEP 2: 商談候補日時カレンダー ── */}
-      {step === 'calendar' && (
-        <main className="flex-1 flex flex-col justify-start sm:justify-center max-w-6xl mx-auto w-full px-3 sm:px-6 py-4 sm:py-8">
-          <div className="text-center mb-3 sm:mb-4">
-            <h1 className="text-xl sm:text-3xl font-bold text-slate-900 mb-1 tracking-tight">商談候補日時を選択</h1>
-            <p className="text-slate-500 text-sm mb-3">ご都合の良い日程を最大3つまでお選びください</p>
-            <span className="inline-flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 sm:px-5 py-1.5 font-bold">
-              <CalendarDays className="w-4 h-4" />
-              本日より1週間後以降の日付から選択できます
-            </span>
-          </div>
-          <div className="bg-white rounded-3xl p-3 sm:p-6 lg:p-8 shadow-2xl shadow-slate-200/60 border border-slate-100 min-h-0">
-            <div className="lg:grid lg:grid-cols-[400px_1fr] lg:gap-8 items-start">
-              {/* カレンダー */}
-              <div className="flex justify-center mb-4 lg:mb-0 bg-slate-50 rounded-2xl p-3 sm:p-6 border border-slate-100">
-                <div className="transform origin-center">
+          {/* ── STEP 2: 候補日時 ── */}
+          {step === 'calendar' && (
+            <div className="bk-rise">
+              <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
+                <div>
+                  <h2 className="text-xl font-black text-slate-900 mb-1">候補日時の選択</h2>
+                  <p className="text-[13px] text-slate-500">ご都合の良い日を最大3つ、それぞれ時間帯までお選びください。</p>
+                </div>
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1.5">
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  本日より1週間後以降が選べます
+                </span>
+              </div>
+
+              <div className="grid lg:grid-cols-[368px_1fr] gap-5">
+                {/* カレンダー */}
+                <div className="rounded-2xl bg-white p-4" style={{ border: '1px solid #e2e8f0', boxShadow: '0 12px 30px -18px rgba(15,23,42,0.25)' }}>
                   <Calendar
                     mode="multiple"
                     selected={selectedDates}
                     onSelect={handleDateSelect as (dates: Date[] | undefined) => void}
                     disabled={{ before: minDate }}
                     locale={ja}
-                    className="rounded-lg"
+                    className="p-0"
+                    classNames={{
+                      months: 'flex flex-col',
+                      month: 'flex flex-col gap-3 w-full',
+                      caption_label: 'text-[15px] font-black text-slate-800',
+                      nav_button: 'size-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 inline-flex items-center justify-center transition-colors',
+                      table: 'w-full border-collapse',
+                      head_row: 'flex justify-between',
+                      head_cell: 'w-11 font-bold text-[11px] text-slate-400',
+                      row: 'flex w-full mt-1 justify-between',
+                      cell: 'relative p-0 text-center',
+                      day: 'size-11 p-0 rounded-xl text-sm font-bold text-slate-700 hover:bg-teal-50 hover:text-teal-700 transition-colors inline-flex items-center justify-center',
+                      day_selected: 'text-white hover:text-white shadow-md shadow-teal-600/30 !bg-teal-600 hover:!bg-teal-700',
+                      day_today: 'ring-1 ring-inset ring-teal-300 text-teal-700',
+                      day_outside: 'text-slate-300 hover:bg-transparent',
+                      day_disabled: 'text-slate-300 opacity-60 hover:bg-transparent hover:text-slate-300 cursor-not-allowed',
+                    }}
                   />
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400">選択中</span>
+                    <div className="flex items-center gap-1">
+                      {[0, 1, 2].map(i => (
+                        <span key={i} className="w-6 h-1.5 rounded-full" style={{ background: i < sortedDates.length ? 'linear-gradient(90deg,#2dd4bf,#059669)' : '#e2e8f0' }} />
+                      ))}
+                      <span className="ml-1.5 text-[11px] font-black text-slate-600">{sortedDates.length} / 3</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              {/* 選択済み候補日 + 時間帯 */}
-              <div className="flex flex-col min-h-0 overflow-y-auto">
-                {sortedDates.length > 0 && (
-                  <div className="space-y-2 lg:border-t-0 lg:pt-0">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-2">
-                      選択した候補日（{sortedDates.length}/3）— 時間帯を選択してください
-                    </p>
-                    {sortedDates.map(date => {
-                      const key = format(date, 'yyyy-MM-dd');
-                      const selected = timePrefs[key];
-                      return (
-                        <div key={key} className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 bg-teal-50/60 border border-teal-100/50 rounded-2xl transition-all hover:shadow-md hover:bg-teal-50">
-                          <div className="flex items-center gap-2 sm:w-40 flex-shrink-0">
-                            <CalendarDays className="w-4 h-4 text-teal-600 flex-shrink-0" />
-                            <span className="text-base font-bold text-slate-900">
-                              {format(date, 'M月d日（EEE）', { locale: ja })}
-                            </span>
-                          </div>
-                          <div className="flex gap-2 flex-wrap">
-                            {TIME_OPTIONS.map(opt => (
+                {/* 選択済み候補日 + 時間帯 */}
+                <div className="flex flex-col gap-3">
+                  {sortedDates.length === 0 && (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center rounded-2xl px-6 py-12" style={{ border: '2px dashed #e2e8f0', background: '#fafbfc' }}>
+                      <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-3" style={{ background: 'rgba(20,184,166,0.10)' }}>
+                        <CalendarDays className="w-6 h-6 text-teal-600" />
+                      </div>
+                      <p className="text-sm font-black text-slate-700">左のカレンダーから日を選んでください</p>
+                      <p className="text-[12px] text-slate-400 mt-1">最大3日まで選べます</p>
+                    </div>
+                  )}
+
+                  {sortedDates.map((date, i) => {
+                    const key = format(date, 'yyyy-MM-dd');
+                    const selected = timePrefs[key];
+                    return (
+                      <div
+                        key={key}
+                        className="rounded-2xl p-4 transition-all"
+                        style={{
+                          background: selected ? 'rgba(20,184,166,0.07)' : '#ffffff',
+                          border: `1px solid ${selected ? 'rgba(13,148,136,0.32)' : '#e2e8f0'}`,
+                          boxShadow: selected ? '0 10px 24px -16px rgba(5,150,105,0.55)' : '0 8px 20px -18px rgba(15,23,42,0.25)',
+                        }}
+                      >
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <span className="w-6 h-6 rounded-lg flex items-center justify-center text-[11px] font-black flex-shrink-0" style={{ background: 'linear-gradient(135deg,#2dd4bf,#059669)', color: '#fff' }}>
+                            {i + 1}
+                          </span>
+                          <span className="text-[15px] font-black text-slate-900">
+                            {format(date, 'M月d日（EEE）', { locale: ja })}
+                          </span>
+                          {selected
+                            ? <CheckCircle2 className="w-4 h-4 text-teal-600 ml-auto flex-shrink-0" />
+                            : <span className="ml-auto text-[11px] font-bold text-amber-600 flex-shrink-0">時間帯を選択</span>}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {TIME_OPTIONS.map(opt => {
+                            const on = selected === opt.value;
+                            return (
                               <button
                                 key={opt.value}
                                 onClick={() => setTimePrefs(p => ({ ...p, [key]: opt.value }))}
-                                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-                                  selected === opt.value
-                                    ? 'bg-teal-600 text-white shadow-md'
-                                    : 'bg-white text-slate-600 border border-slate-200 hover:border-teal-400 hover:bg-teal-50'
-                                }`}
+                                className="px-3.5 py-2 rounded-xl text-[12px] font-bold transition-all"
+                                style={on
+                                  ? { background: 'linear-gradient(135deg,#0d9488,#059669)', color: '#fff', boxShadow: '0 8px 18px -10px rgba(5,150,105,0.75)' }
+                                  : { background: '#fff', color: '#475569', border: '1px solid #e2e8f0' }}
                               >
                                 {opt.label}
                               </button>
-                            ))}
-                          </div>
+                            );
+                          })}
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {sortedDates.length === 0 && (
-                  <div className="flex-1 flex flex-col items-center justify-center text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl p-8 bg-slate-50/30 min-h-[200px]">
-                    <CalendarDays className="w-10 h-10 mb-3 opacity-20" />
-                    <p className="text-base font-bold">カレンダーから日程を選択してください</p>
-                  </div>
-                )}
-
-                {errors.calendar && (
-                  <p className="text-red-500 text-xs mt-2 text-center font-bold tracking-tight">{errors.calendar}</p>
-                )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
 
-            <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
-              <button
-                onClick={() => setStep('form')}
-                className="flex items-center gap-1.5 text-slate-600 hover:text-slate-800 text-sm font-medium px-4 py-2 rounded-xl hover:bg-slate-100 transition-colors"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                戻る
-              </button>
-              <div className="flex flex-col items-end gap-1">
+              {/* 操作 */}
+              <div className="mt-6 pt-5 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                 <button
-                  onClick={handleSubmit}
-                  disabled={submitting || selectedDates.length === 0 || !isTimeSelectionComplete}
-                  className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed text-white font-bold px-10 py-3 rounded-2xl transition-all shadow-xl shadow-teal-600/30 text-lg active:scale-95"
+                  onClick={() => setStep('form')}
+                  className="flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900 text-sm font-bold px-4 py-2.5 rounded-xl hover:bg-slate-100 transition-colors"
                 >
-                  {submitting ? '送信中...' : '商談を申し込む'}
-                  {!submitting && <ChevronRight className="w-5 h-5" />}
+                  <ChevronLeft className="w-4 h-4" />
+                  お客様情報に戻る
                 </button>
-                {!isTimeSelectionComplete && selectedDates.length > 0 && (
-                  <p className="text-red-500 text-xs font-bold mr-2">時間帯を選択してください</p>
-                )}
+                <div className="flex flex-col items-stretch sm:items-end gap-1.5">
+                  <button
+                    onClick={handleSubmit}
+                    disabled={submitting || selectedDates.length === 0 || !isTimeSelectionComplete}
+                    className="flex items-center justify-center gap-2 text-white font-bold text-[15px] px-8 py-3.5 rounded-xl transition-transform enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed"
+                    style={submitting || selectedDates.length === 0 || !isTimeSelectionComplete
+                      ? { background: '#cbd5e1' }
+                      : { background: 'linear-gradient(135deg,#0d9488,#059669)', boxShadow: '0 14px 28px -12px rgba(5,150,105,0.7)' }}
+                  >
+                    {submitting ? '送信中…' : '商談を申し込む'}
+                    {!submitting && <ChevronRight className="w-5 h-5" />}
+                  </button>
+                  {(errors.calendar || (!isTimeSelectionComplete && selectedDates.length > 0)) && (
+                    <p className="flex items-center gap-1 text-[11px] font-bold text-amber-600">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      {errors.calendar ?? 'すべての候補日で時間帯を選択してください'}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </main>
-      )}
+          )}
 
-      {/* ── 完了画面 ── */}
-      {step === 'success' && (
-        <main className="flex-1 flex flex-col justify-start sm:justify-center items-center max-w-2xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
-          <div className="bg-white rounded-3xl sm:rounded-[40px] p-6 sm:p-12 shadow-2xl shadow-slate-200/60 border border-slate-100 w-full text-center animate-fade-in-up">
-            <div className="relative w-24 h-24 mx-auto mb-8">
-              <div className="absolute inset-0 bg-teal-100 rounded-full animate-pulse-ring" />
-              <div className="relative w-24 h-24 bg-gradient-to-br from-teal-500 to-emerald-600 rounded-full flex items-center justify-center shadow-lg shadow-teal-600/30 animate-scale-in">
-                <CheckCircle2 className="w-12 h-12 text-white" />
+          {/* ── 完了 ── */}
+          {step === 'success' && (
+            <div className="bk-rise text-center">
+              <div className="relative w-20 h-20 mx-auto mb-7">
+                <div className="absolute inset-0 rounded-full bk-ring" style={{ background: 'rgba(20,184,166,0.28)' }} />
+                <div className="relative w-20 h-20 rounded-full flex items-center justify-center bk-pop" style={{ background: 'linear-gradient(135deg,#2dd4bf,#059669)', boxShadow: '0 16px 32px -14px rgba(5,150,105,0.7)' }}>
+                  <CheckCircle2 className="w-10 h-10 text-white" />
+                </div>
               </div>
-            </div>
 
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 mb-3 sm:mb-4 tracking-tight">
-              商談予約のリクエストを<br className="sm:hidden" />完了しました
-            </h1>
+              <h2 className="text-2xl sm:text-[1.75rem] font-black text-slate-900 leading-snug tracking-tight mb-3">
+                商談予約のリクエストを<br className="sm:hidden" />受け付けました
+              </h2>
+              <p className="text-[15px] text-slate-600 leading-relaxed mb-8">
+                ご予約ありがとうございます。内容を確認のうえ、<br className="hidden sm:block" />
+                2営業日以内に担当者より日程確定のご連絡を差し上げます。
+              </p>
 
-            <p className="text-slate-600 mb-8 text-base leading-relaxed max-w-md mx-auto">
-              ご予約ありがとうございます。入力いただいた内容を確認し、<br className="hidden sm:block" />
-              2営業日以内に担当者より日程確定のご連絡を差し上げます。
-            </p>
-
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-8 text-left max-w-md mx-auto">
-              <div className="flex items-center gap-2 mb-3 text-amber-700">
-                <CalendarDays className="w-4 h-4" />
-                <span className="text-sm font-bold">今後の流れ</span>
+              <div className="rounded-2xl p-5 mb-8 text-left" style={{ background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                <p className="text-[11px] font-black tracking-[0.16em] text-slate-400 mb-3">今後の流れ</p>
+                {[
+                  '入力いただいたメールアドレス宛に、自動返信の確認メールが届きます。',
+                  '担当者が候補日を確認し、商談URL（Google Meet 等）を発行してメールでご連絡します。',
+                ].map((t, i) => (
+                  <div key={t} className={`flex gap-3 ${i > 0 ? 'mt-3 pt-3 border-t border-slate-200' : ''}`}>
+                    <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white flex-shrink-0" style={{ background: 'linear-gradient(135deg,#2dd4bf,#059669)' }}>{i + 1}</span>
+                    <span className="text-[13px] text-slate-600 leading-relaxed">{t}</span>
+                  </div>
+                ))}
               </div>
-              <ul className="text-xs text-slate-600 space-y-2.5 leading-relaxed">
-                <li className="flex gap-2">
-                  <span className="text-teal-600 font-bold">1.</span>
-                  <span>ご入力いただいたメールアドレス宛に、自動返信の確認メールが届きます。</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="text-teal-600 font-bold">2.</span>
-                  <span>担当者が候補日を確認し、商談URL（Google Meet等）を発行してメールにてご連絡します。</span>
-                </li>
-              </ul>
-            </div>
 
-            <div className="flex flex-col items-center gap-6">
-              <p className="text-sm text-slate-400">
-                <Mail className="inline w-4 h-4 mr-1.5 opacity-60" />
+              <p className="flex items-center justify-center gap-1.5 text-[13px] text-slate-400 mb-7">
+                <Mail className="w-4 h-4" />
                 {form.email} 宛にメールを送信しました
               </p>
 
               <button
                 onClick={() => navigate('/')}
-                className="group bg-slate-900 hover:bg-slate-800 text-white font-bold px-10 py-4 rounded-2xl transition-all shadow-xl shadow-slate-900/20 flex items-center gap-2"
+                className="group inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white font-bold px-8 py-3.5 rounded-xl transition-colors"
               >
-                トップページへ戻る
                 <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-1" />
+                トップページへ戻る
               </button>
             </div>
-          </div>
-        </main>
-      )}
+          )}
+        </div>
+      </main>
     </div>
   );
 }
