@@ -7,6 +7,7 @@
 //
 // 行と行の間はグレーの棒でつないである。上の行が100%になると、その棒が上から下へ
 // 緑色に伸びて次の行へ渡る。どこまで進んだかを目で追えるようにするため。
+// 降りきるまでは 1.5 秒かけてゆっくり流す（速いと「もう次へ行った」だけで、動きが読み取れない）。
 import { useEffect, useState } from "react";
 import { Check, Minus } from "lucide-react";
 
@@ -14,6 +15,16 @@ const GREEN = "#059669";
 const AMBER = "#B45309";
 /** つなぎの棒（まだ進んでいない部分） */
 const RAIL = "#E7E3DC";
+
+/**
+ * つなぎの棒を緑が降りきるまでの時間。
+ * 棒は「上の行の下半分」と「次の行の上半分」の2本に分かれているので、
+ * 半分ずつ受け渡して合計でこの秒数になるようにしている（体感で1本の線が降りてくるように）。
+ */
+const RAIL_FILL_MS = 1500;
+/** 前半＝行から出ていくところは加速、後半＝次の行へ入るところは減速。2本合わせて ease-in-out に見せる */
+const RAIL_EASE_OUT = "cubic-bezier(0.55, 0, 0.85, 0.45)";
+const RAIL_EASE_IN = "cubic-bezier(0.15, 0.55, 0.45, 1)";
 
 /** pending … これから／running … 実行中／done … 完了／none … 完了したが該当なし／failed … 失敗／skipped … 行ごと出さない */
 export type StepState = "pending" | "running" | "done" | "none" | "failed" | "skipped";
@@ -102,11 +113,13 @@ function Rail({ place, filled, color, delayed }: {
   const box = place === "top"
     ? { top: 0, height: "calc(50% - 11px)" }
     : { top: "calc(50% + 11px)", bottom: 0 };
+  // 前半・後半で半分ずつ。後半は前半が降りきった時刻から動かすので、切れ目で止まって見えない
+  const half = RAIL_FILL_MS / 2;
   return (
     <div style={{ position: "absolute", left: 6.5, width: 3, borderRadius: 2, background: RAIL, overflow: "hidden", ...box }}>
       <div style={{
         width: "100%", height: filled ? "100%" : 0, background: color, borderRadius: 2,
-        transition: `height .32s ease ${delayed ? ".3s" : "0s"}`,
+        transition: `height ${half}ms ${delayed ? RAIL_EASE_IN : RAIL_EASE_OUT} ${delayed ? half : 0}ms`,
       }} />
     </div>
   );

@@ -622,6 +622,7 @@ export function TicketPrSection({
             branches={createTarget.branches}
             defaultBranch={createTarget.defaultBranch}
             initialHead={createTarget.head}
+            ticketWbs={wbs}
             onClose={() => setCreateTarget(null)}
             onCreated={handleCreated}
           />
