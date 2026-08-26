@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, type ElementType } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
-import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Settings2, Megaphone } from "lucide-react";
+import { FolderKanban, ChevronRight, Plus, Layers, LayoutDashboard, BarChart2, Settings2 } from "lucide-react";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -367,19 +367,6 @@ export function SprintPage() {
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
                 <Settings2 style={{ width: 13, height: 13 }} />
-              </button>
-              {/* 🌟 BRU10-076: リリースノート画面への導線 */}
-              <button
-                onClick={() => {
-                  if (project?.id) localStorage.setItem("releaseNotes:selectedProjectId", project.id);
-                  navigate(`/release-notes`);
-                }}
-                title="リリースノート"
-                style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(26,23,20,0.12)", background: "#fff", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, marginLeft: 4 }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}>
-                <Megaphone style={{ width: 12, height: 12 }} />
-                リリースノート
               </button>
             </div>
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>

@@ -57,7 +57,10 @@ export function AppShell() {
       <Sidebar />
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
         <Topbar />
-        <main style={{ flex: 1, overflow: "auto", position: "relative" }}>
+        {/* scrollbarGutter: スクロールバーの幅(theme.css で 5px)を常に確保する。
+            確保しないと「スクロールが出る画面」だけ中身が5px左へ寄り、
+            画面を移るたびに上部のタブ・ボタン類の位置がずれて見える。 */}
+        <main style={{ flex: 1, overflow: "auto", position: "relative", scrollbarGutter: "stable" }}>
           {/* refreshNonce を key にして、ソフト更新時にページを再マウント→初期fetchを再実行する。
               display:contents でレイアウトには影響を与えない。 */}
           <div key={refreshNonce} style={{ display: "contents" }}>

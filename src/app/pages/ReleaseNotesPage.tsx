@@ -1,16 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Info, CheckCircle2, X, GripVertical } from "lucide-react";
+import { useNavigate, useParams } from "react-router";
+import { ChevronLeft, ChevronRight, Info, CheckCircle2, X, GripVertical, FolderKanban } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
-import { mapSprintTicket } from "@/app/lib/mappers";
+import { mapSprintTicket, mapProject } from "@/app/lib/mappers";
 import { escStack } from "@/app/lib/escStack";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useWindowSize } from "@/app/hooks/useWindowSize";
-import type { SprintTicket } from "@/app/types";
+import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
+import { projectAccessView } from "@/app/components/shared/NotFoundView";
+import type { SprintTicket, Project, AccessLevel, UserPermissions } from "@/app/types";
 
 interface ReleaseItem {
   ticket: SprintTicket;
@@ -31,6 +34,14 @@ function truncateText(text: string, maxLen = 20): string {
   return text.slice(0, maxLen) + "...";
 }
 
+/**
+ * リリースノート（カレンダー）。
+ *
+ * 2つの入口を1つの画面で兼ねる。
+ *   ・/release-notes            … サイドメニュー版。組織・プロジェクトを自分で選ぶ
+ *   ・/:projectSlug/release-notes … プロジェクト内タブ版（BRU13-031）。対象PJはURL固定なので
+ *                                   組織／プロジェクトの切替プルダウンは出さない
+ */
 export function ReleaseNotesPage() {
   const todayObj = new Date();
   // 🌟 修正：UTCベースの toISOString() ではなく、ローカルのタイムゾーン（JST）で「今日」を生成
@@ -41,6 +52,10 @@ export function ReleaseNotesPage() {
 
   const { userId, userName, userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
+  const navigate = useNavigate();
+  // プロジェクト内タブとして開かれているか（URLに :projectSlug があるか）
+  const { projectSlug } = useParams<{ projectSlug?: string }>();
+  const projectMode = !!projectSlug;
   const isOwner = userRole === "owner";
   const [myProjects, setMyProjects] = useState<{ id: string; name: string }[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
@@ -49,9 +64,56 @@ export function ReleaseNotesPage() {
 
   const { height } = useWindowSize();
 
+  // ── プロジェクト内タブ用 ────────────────────────────────
+  const [scopedProject, setScopedProject] = useState<Project | null>(null);
+  const [scopedNotFound, setScopedNotFound] = useState(false);
+  const [scopedLoading, setScopedLoading] = useState(projectMode);
+  // サブナビに出す他ページの権限。リリースノート自身はプロジェクトメンバーなら使える
+  const [subNavPerms, setSubNavPerms] = useState<{ wiki: AccessLevel; backlog: AccessLevel; minutes: AccessLevel; whiteboard: AccessLevel }>(
+    { wiki: "edit", backlog: "edit", minutes: "edit", whiteboard: "edit" }
+  );
+  const isAdminRole = userRole === "owner" || userRole === "admin";
+
   useEffect(() => {
+    // サイドメニュー版でしか使わない。プロジェクト内タブは対象PJがURLで決まる
+    if (projectMode) return;
     if (selectedProjectId) localStorage.setItem("releaseNotes:selectedProjectId", selectedProjectId);
-  }, [selectedProjectId]);
+  }, [selectedProjectId, projectMode]);
+
+  useEffect(() => {
+    if (!projectMode || !isSupabaseEnabled) return;
+    let alive = true;
+    (async () => {
+      setScopedLoading(true);
+      const { data: bySlug } = await (supabase as NonNullable<typeof supabase>)
+        .from("projects").select("*").eq("slug", projectSlug).limit(1);
+      const row = bySlug?.[0] ?? (await (supabase as NonNullable<typeof supabase>)
+        .from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
+      if (!alive) return;
+      if (!row) { setScopedNotFound(true); setScopedLoading(false); return; }
+      const p = mapProject(row);
+      setScopedProject(p);
+      setScopedNotFound(false);
+
+      // サブナビの中身を他画面と揃える。権限が無いページはここでも出さない
+      if (isAdminRole) {
+        setSubNavPerms({ wiki: "edit", backlog: "edit", minutes: "edit", whiteboard: "edit" });
+      } else {
+        const { data: permRow } = await (supabase as NonNullable<typeof supabase>)
+          .from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle();
+        if (!alive) return;
+        const perms = permRow?.permissions as Partial<UserPermissions> | null;
+        setSubNavPerms({
+          wiki: (perms?.wikiPermission as AccessLevel | undefined) ?? "none",
+          backlog: (perms?.backlogPermission as AccessLevel | undefined) ?? "none",
+          minutes: (perms?.minutesPermission as AccessLevel | undefined) ?? "none",
+          whiteboard: (perms?.whiteboardPermission as AccessLevel | undefined) ?? "none",
+        });
+      }
+      setScopedLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [projectMode, projectSlug, isAdminRole, userId]);
 
   const [items, setItems] = useState<ReleaseItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,7 +190,9 @@ export function ReleaseNotesPage() {
   useEffect(() => { load(); }, [load]);
 
   // Load projects (owner: all projects in selected org / others: assigned projects only)
+  // プロジェクト内タブでは対象PJがURLで決まるので、この一覧（＝切替プルダウンの中身）は要らない
   useEffect(() => {
+    if (projectMode) return;
     if (!isSupabaseEnabled || (!userId && !userName)) return;
 
     let q = (supabase as NonNullable<typeof supabase>)
@@ -174,7 +238,7 @@ export function ReleaseNotesPage() {
         setSelectedProjectId("");
       }
     });
-  }, [userId, userName, isOwner, selectedOrgId, userOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userId, userName, isOwner, selectedOrgId, userOrgId, projectMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esc key: close list panel (TicketDetailPanel inside handles its own Esc via escStack)
   useEffect(() => {
@@ -205,12 +269,16 @@ export function ReleaseNotesPage() {
 
   // アクセス可能なプロジェクトIDセット（組織フィルタ済み）
   const accessibleProjectIds = new Set(myProjects.map(p => p.id));
+  // 表示対象のプロジェクトがあるか。プロジェクト内タブはURLのPJが読めていれば常にある
+  const hasScope = projectMode ? !!scopedProject : myProjects.length > 0;
   // プロジェクトが0件のときは空 / 選択中プロジェクトがあれば単一絞り込み / なければ全アクセス可能プロジェクト
-  const filteredItems = myProjects.length === 0
-    ? []
-    : selectedProjectId
-      ? items.filter(i => i.projectId === selectedProjectId)
-      : items.filter(i => accessibleProjectIds.has(i.projectId));
+  const filteredItems = projectMode
+    ? (scopedProject ? items.filter(i => i.projectId === scopedProject.id) : [])
+    : myProjects.length === 0
+      ? []
+      : selectedProjectId
+        ? items.filter(i => i.projectId === selectedProjectId)
+        : items.filter(i => accessibleProjectIds.has(i.projectId));
 
   // Group items by release_date
   // 明示的に is_release_date_undecided=true のチケットのみ未定エリアへ。
@@ -312,18 +380,135 @@ export function ReleaseNotesPage() {
 
   const listItems = selectedDate ? (byDate.get(selectedDate) ?? []) : [];
 
-  const isShowingSpinner = loading && !initializedRef.current;
+  // 「今日」＋月送り。サイドメニュー版・プロジェクト内タブ版のどちらのヘッダーにも出す
+  const monthControls = (
+    <>
+          {/* 今日ボタン */}
+          <button
+            onClick={goToday}
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#059669", whiteSpace: "nowrap" as const }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
+          >
+            今日
+          </button>
+          {/* Month navigation */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button onClick={prevMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
+              <ChevronLeft style={{ width: 16, height: 16 }} />
+            </button>
 
-  if (isShowingSpinner) {
-    return (
-      <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#FAFAF8" }}>
-        <div style={{ width: 28, height: 28, border: "3px solid #E5E0DA", borderTopColor: "#059669", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-      </div>
-    );
+            {/* Year/Month picker trigger */}
+            <div ref={pickerRef} style={{ position: "relative" }}>
+              <button
+                onClick={openPicker}
+                style={{
+                  fontSize: 15, fontWeight: 700, color: "#1A1714", minWidth: 108, textAlign: "center" as const,
+                  background: showPicker ? "#F4F5F6" : "transparent",
+                  border: "1px solid transparent", borderRadius: 8, cursor: "pointer", padding: "5px 10px",
+                  transition: "background 0.15s",
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = showPicker ? "#F4F5F6" : "transparent"; }}
+              >
+                {year}年 {MONTH_NAMES[month]}
+              </button>
+
+              {/* Picker popup */}
+              {showPicker && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 8px)", left: "50%",
+                  transform: "translateX(-50%)", zIndex: 100,
+                  background: "#FFF", borderRadius: 14,
+                  border: "1px solid rgba(26,23,20,0.10)",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.13)", padding: "14px 14px 10px",
+                  width: 252,
+                }}>
+                  {/* Year row */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <button
+                      onClick={() => setPickerYear(y => y - 1)}
+                      style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E8E4DF"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                    >
+                      <ChevronLeft style={{ width: 14, height: 14 }} />
+                    </button>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: "#1A1714" }}>{pickerYear}年</span>
+                    <button
+                      onClick={() => setPickerYear(y => y + 1)}
+                      style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E8E4DF"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                    >
+                      <ChevronRight style={{ width: 14, height: 14 }} />
+                    </button>
+                  </div>
+                  {/* Month grid: 3 cols × 4 rows */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+                    {MONTH_NAMES.map((name, i) => {
+                      const isSel = pickerYear === year && i === month;
+                      const isNow = pickerYear === todayObj.getFullYear() && i === todayObj.getMonth();
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => selectPickerMonth(pickerYear, i)}
+                          style={{
+                            padding: "8px 0", borderRadius: 8, border: "none",
+                            background: isSel ? "#059669" : isNow ? "#F0FDF4" : "transparent",
+                            color: isSel ? "#FFF" : isNow ? "#059669" : "#1A1714",
+                            fontWeight: isSel || isNow ? 700 : 500,
+                            fontSize: 13, cursor: "pointer",
+                            transition: "background 0.12s",
+                          }}
+                          onMouseEnter={e => { if (!isSel) (e.currentTarget as HTMLElement).style.background = isNow ? "#DCFCE7" : "#F4F5F6"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isSel ? "#059669" : isNow ? "#F0FDF4" : "transparent"; }}
+                        >
+                          {name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* 今日へジャンプ */}
+                  <div style={{ marginTop: 10, borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 8 }}>
+                    <button
+                      onClick={() => selectPickerMonth(todayObj.getFullYear(), todayObj.getMonth())}
+                      style={{ width: "100%", padding: "7px 0", background: "#F0FDF4", color: "#059669", fontWeight: 700, fontSize: 12, border: "none", borderRadius: 8, cursor: "pointer", transition: "background 0.12s" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
+                    >
+                      今月にジャンプ
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button onClick={nextMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
+              <ChevronRight style={{ width: 16, height: 16 }} />
+            </button>
+          </div>
+    </>
+  );
+
+  const isShowingSpinner = (loading && !initializedRef.current) || (projectMode && scopedLoading);
+
+  // プロジェクト内タブは他のプロジェクト配下の画面と同じガードを通す。
+  // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
+  if (projectMode && !scopedLoading) {
+    const blocked = projectAccessView(scopedNotFound ? null : scopedProject, { userRole, userName, userOrgId });
+    if (blocked) return blocked;
   }
 
+  // プロジェクト内タブは背景も他のタブ（スプリント管理など）に合わせる
+  const pageBg = projectMode ? "#F5F6F8" : "#FAFAF8";
+
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#FAFAF8", overflow: "hidden" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: pageBg, overflow: "hidden" }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
@@ -447,7 +632,36 @@ export function ReleaseNotesPage() {
         </div>
       )}
 
-      {/* Header */}
+      {/* Header。プロジェクト内タブ版は、パンくず・見出し・サブナビの並びを他のプロジェクト配下の画面と揃える。
+          対象プロジェクトはURLで決まるので、組織／プロジェクトの切替プルダウンは出さない */}
+      {projectMode ? (
+      <div style={{ padding: "24px 24px 0", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+          <button onClick={() => navigate("/projects")}
+            style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+          </button>
+          <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+          <span style={{ color: "#1A1714", fontWeight: 600 }}>{scopedProject?.name ?? projectSlug ?? ""}</span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>リリースノート</h1>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{scopedProject?.name ?? "..."}</p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <ProjectSubNav projectSlug={projectSlug ?? scopedProject?.slug ?? ""} active="release-notes" marginBottom={0}
+              wikiPerm={subNavPerms.wiki} backlogPerm={subNavPerms.backlog}
+              minutesPerm={subNavPerms.minutes} whiteboardPerm={subNavPerms.whiteboard} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12 }}>
+          {monthControls}
+        </div>
+      </div>
+      ) : (
       <div style={{ padding: "16px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFF", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
           <div style={{ flexShrink: 0 }}>
@@ -472,121 +686,19 @@ export function ReleaseNotesPage() {
 
             {/* Divider */}
             <div style={{ width: 1, height: 24, background: "rgba(26,23,20,0.10)", flexShrink: 0 }} />
-            {/* 今日ボタン */}
-            <button
-              onClick={goToday}
-              style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#059669", whiteSpace: "nowrap" as const }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}
-            >
-              今日
-            </button>
-            {/* Month navigation */}
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <button onClick={prevMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
-                <ChevronLeft style={{ width: 16, height: 16 }} />
-              </button>
-
-              {/* Year/Month picker trigger */}
-              <div ref={pickerRef} style={{ position: "relative" }}>
-                <button
-                  onClick={openPicker}
-                  style={{
-                    fontSize: 15, fontWeight: 700, color: "#1A1714", minWidth: 108, textAlign: "center" as const,
-                    background: showPicker ? "#F4F5F6" : "transparent",
-                    border: "1px solid transparent", borderRadius: 8, cursor: "pointer", padding: "5px 10px",
-                    transition: "background 0.15s",
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = showPicker ? "#F4F5F6" : "transparent"; }}
-                >
-                  {year}年 {MONTH_NAMES[month]}
-                </button>
-
-                {/* Picker popup */}
-                {showPicker && (
-                  <div style={{
-                    position: "absolute", top: "calc(100% + 8px)", left: "50%",
-                    transform: "translateX(-50%)", zIndex: 100,
-                    background: "#FFF", borderRadius: 14,
-                    border: "1px solid rgba(26,23,20,0.10)",
-                    boxShadow: "0 8px 32px rgba(0,0,0,0.13)", padding: "14px 14px 10px",
-                    width: 252,
-                  }}>
-                    {/* Year row */}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                      <button
-                        onClick={() => setPickerYear(y => y - 1)}
-                        style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E8E4DF"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                      >
-                        <ChevronLeft style={{ width: 14, height: 14 }} />
-                      </button>
-                      <span style={{ fontSize: 14, fontWeight: 800, color: "#1A1714" }}>{pickerYear}年</span>
-                      <button
-                        onClick={() => setPickerYear(y => y + 1)}
-                        style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(26,23,20,0.10)", background: "#F4F5F6", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#6B6458" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#E8E4DF"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                      >
-                        <ChevronRight style={{ width: 14, height: 14 }} />
-                      </button>
-                    </div>
-                    {/* Month grid: 3 cols × 4 rows */}
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
-                      {MONTH_NAMES.map((name, i) => {
-                        const isSel = pickerYear === year && i === month;
-                        const isNow = pickerYear === todayObj.getFullYear() && i === todayObj.getMonth();
-                        return (
-                          <button
-                            key={i}
-                            onClick={() => selectPickerMonth(pickerYear, i)}
-                            style={{
-                              padding: "8px 0", borderRadius: 8, border: "none",
-                              background: isSel ? "#059669" : isNow ? "#F0FDF4" : "transparent",
-                              color: isSel ? "#FFF" : isNow ? "#059669" : "#1A1714",
-                              fontWeight: isSel || isNow ? 700 : 500,
-                              fontSize: 13, cursor: "pointer",
-                              transition: "background 0.12s",
-                            }}
-                            onMouseEnter={e => { if (!isSel) (e.currentTarget as HTMLElement).style.background = isNow ? "#DCFCE7" : "#F4F5F6"; }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = isSel ? "#059669" : isNow ? "#F0FDF4" : "transparent"; }}
-                          >
-                            {name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {/* 今日へジャンプ */}
-                    <div style={{ marginTop: 10, borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 8 }}>
-                      <button
-                        onClick={() => selectPickerMonth(todayObj.getFullYear(), todayObj.getMonth())}
-                        style={{ width: "100%", padding: "7px 0", background: "#F0FDF4", color: "#059669", fontWeight: 700, fontSize: 12, border: "none", borderRadius: 8, cursor: "pointer", transition: "background 0.12s" }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#DCFCE7"; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F0FDF4"; }}
-                      >
-                        今月にジャンプ
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <button onClick={nextMonth} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.12)", background: "#FFF", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B6458" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FFF"; }}>
-                <ChevronRight style={{ width: 16, height: 16 }} />
-              </button>
-            </div>
+            {monthControls}
           </div>
         </div>
       </div>
+      )}
 
-      {/* Calendar body */}
-      {myProjects.length === 0 ? (
+      {/* Calendar body。読み込み中もヘッダー・サブナビは出したままにして、
+          中身だけ差し替える（画面ごと消して出し直すとチカつくため） */}
+      {isShowingSpinner ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ width: 28, height: 28, border: "3px solid #E5E0DA", borderTopColor: "#059669", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+        </div>
+      ) : !hasScope ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
           <div style={{ width: 56, height: 56, borderRadius: 16, background: "#F4F5F6", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#B0A9A4" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -597,7 +709,7 @@ export function ReleaseNotesPage() {
           </div>
         </div>
       ) : (
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "10px 20px 14px", minHeight: 0, minWidth: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: projectMode ? "10px 24px 18px" : "10px 20px 14px", minHeight: 0, minWidth: 0 }}>
 
         {/* Day-of-week header */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4, flexShrink: 0 }}>

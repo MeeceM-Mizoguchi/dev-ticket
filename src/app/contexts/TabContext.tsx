@@ -107,6 +107,7 @@ export function titleForPath(path: string): string {
     if (sub === "wiki") return `${slug} / Wiki`;
     if (sub === "minutes") return `${slug} / 議事録`;
     if (sub === "github") return `${slug} / GitHub`;
+    if (sub === "release-notes") return `${slug} / リリースノート`;
     return `${slug} / ${sub}`;
   }
   return slug;
