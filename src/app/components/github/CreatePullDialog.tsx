@@ -21,7 +21,14 @@ import { inputCls, labelCls } from "@/app/lib/helpers";
 import type { GithubBranch } from "@/app/types";
 
 const BLACK = "#1F2328";
-const WBS_RE = /[A-Z][A-Z0-9]*-\d+/;
+/**
+ * ブランチ名に含まれる WBS 番号らしき並び。
+ * WBS の綴りはプロジェクトが決めるもので、大文字（BRU13-029）とは限らず
+ * 小文字（demo-079）のプロジェクトもある。どちらのブランチ名からも拾えるよう
+ * 大文字小文字を問わずに拾い、突き合わせるときだけ大文字へ揃える。
+ * 1本のブランチに複数含まれることがあるので全部拾う（g）
+ */
+const WBS_RE = /[A-Za-z][A-Za-z0-9]*-\d+/g;
 /** ブランチを取り直す間隔 */
 const WATCH_MS = 10_000;
 /** 自動確認を続ける上限（10分）。開きっぱなしで放置されたときに叩き続けないための打ち切り */
@@ -141,21 +148,50 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
     }
   }, [projectId]);
 
-  // ブランチ名の WBS 番号から、このプロジェクトのチケットを引く
+  /** 検出の実行回。head を続けて変えたときに、古い問い合わせの結果を後から被せない */
+  const lookupRunRef = useRef(0);
+
+  /**
+   * ブランチ名の WBS 番号から、このプロジェクトのチケットを引く。
+   *
+   * 突き合わせは必ず大文字小文字を無視する。チケット側の wbs はプロジェクトが決めた
+   * 綴りのままで、大文字（BRU13-029）のプロジェクトもあれば小文字（demo-079）の
+   * プロジェクトもあるため、完全一致で引くと後者だけ1件も当たらず、
+   * ブランチを選んでもタイトル・本文が空のままだった（サーバー側の紐付けは
+   * 既に ilike で引いており、GitHub画面ではチケット名が出ていた）。
+   *
+   * 表示・タイトルにはDBに入っている綴りをそのまま使う。正規化した大文字を出すと、
+   * 本文に入れるチケットのURLが実在しないものになる。
+   */
   const lookupTicket = useCallback(async (branch: string) => {
+    const run = ++lookupRunRef.current;
     setDetected(null);
-    const m = branch.toUpperCase().match(WBS_RE);
-    if (!m || !isSupabaseEnabled) return;
-    const wbs = m[0];
+    if (!isSupabaseEnabled) return;
+
+    // 拾った番号は突き合わせ用に大文字へ揃える（重複も畳む）
+    const hits = Array.from(new Set((branch.match(WBS_RE) ?? []).map(w => w.toUpperCase())));
+    if (!hits.length) return;
+
+    // チケット詳細から開いたときは、そのチケットの番号を最優先で見る。
+    // ブランチ名に別の番号も混じっている場合に、関係の無いチケットを拾わないため
+    const mine = ticketWbs?.toUpperCase();
+    const order = mine && hits.includes(mine) ? [mine, ...hits.filter(w => w !== mine)] : hits;
+
+    // WBS は英数字とハイフンだけなので、ilike のワイルドカードが混ざることはない
     const { data } = await supabase!
       .from("sprint_tickets")
       .select("wbs, title, sprints!inner(project_id)")
-      .eq("wbs", wbs)
       .eq("sprints.project_id", projectId)
-      .limit(1);
-    const t = (data ?? [])[0] as any;
+      .or(order.map(w => `wbs.ilike.${w}`).join(","))
+      .limit(order.length);
+    if (lookupRunRef.current !== run) return;
+
+    const rows = (data ?? []) as any[];
+    const t = order
+      .map(w => rows.find(r => String(r.wbs ?? "").toUpperCase() === w))
+      .find(Boolean);
     if (t) setDetected({ wbs: t.wbs, title: t.title });
-  }, [projectId]);
+  }, [projectId, ticketWbs]);
 
   useEffect(() => { if (head) void lookupTicket(head); }, [head, lookupTicket]);
 
@@ -204,6 +240,23 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
     const hit = freshNames.find(n => n.toUpperCase().includes(upper) && n !== base);
     if (hit) setHead(hit);
   }, [freshNames, head, ticketWbs, base]);
+
+  /** 開いた直後の自動選択を1回で打ち切る目印。利用者が「選択してください」に戻したら尊重する */
+  const autoHeadRef = useRef(false);
+
+  // 開いた時点で head が決まっていないときの受け皿。
+  //
+  // 呼び出し元は「まだPRが無いブランチ」の走査（pending-branches）で head を決めているが、
+  // それは GraphQL・compare を挟む重い判定で、失敗したり件数の上限で漏れたりする。
+  // その場合でもブランチ一覧そのものには載っているので、チケットの番号を含むブランチを
+  // ここで拾って選んでおく。番号の綴りは大文字小文字を問わない
+  useEffect(() => {
+    if (autoHeadRef.current || head || !ticketWbs || !liveBranches.length) return;
+    autoHeadRef.current = true;
+    const upper = ticketWbs.toUpperCase();
+    const hit = liveBranches.find(b => b.name !== base && b.name.toUpperCase().includes(upper));
+    if (hit) setHead(hit.name);
+  }, [liveBranches, head, ticketWbs, base]);
 
   /** 手動の「更新」。自動確認を打ち切ったあとの再開も兼ねる */
   const manualRefresh = () => {
