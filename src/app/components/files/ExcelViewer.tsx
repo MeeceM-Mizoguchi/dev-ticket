@@ -5,6 +5,7 @@ import type { DrawingObject, Paragraph } from "@/app/lib/xlsxDrawing";
 import { parseThemePalette, resolveCellColor, resolveFill } from "@/app/lib/xlsxCellColor";
 import { textWidth, wrapHeight, spillExtents, shouldWrap, fitColumnWidth } from "@/app/lib/xlsxTextLayout";
 import { fetchFileWithRetry } from "@/app/lib/projectFiles";
+import { parseMergeRefs, buildMergeIndex, isMergeMaster, isMergeHidden } from "@/app/lib/xlsxMerge";
 
 // ENHA2-035 Excel(.xlsx/.xlsm) ビューア
 //
@@ -329,19 +330,8 @@ export function ExcelViewer({ url }: { url: string }) {
           };
           const baseRowPx = (i: number) => Math.round((ws.getRow(i + 1)?.height ?? defRowH) * PT_TO_PX);
 
-          // 結合セル: "A1:C3" → 左上に span を持たせ、それ以外は hidden
-          const spans = new Map<string, { cs: number; rs: number }>();
-          const covered = new Set<string>();
-          for (const range of Object.values((ws.model as any)?.merges ?? {}) as string[]) {
-            const m = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(String(range));
-            if (!m) continue;
-            const toNum = (s: string) => s.split("").reduce((a, c) => a * 26 + (c.charCodeAt(0) - 64), 0);
-            const c1 = toNum(m[1]), r1 = Number(m[2]), c2 = toNum(m[3]), r2 = Number(m[4]);
-            spans.set(`${r1}:${c1}`, { cs: c2 - c1 + 1, rs: r2 - r1 + 1 });
-            for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) {
-              if (!(r === r1 && c === c1)) covered.add(`${r}:${c}`);
-            }
-          }
+          // 結合セル（編集画面と共通の解析）。左上に span を持たせ、それ以外は hidden にする
+          const mergeIndex = buildMergeIndex(parseMergeRefs((ws.model as any)?.merges));
 
           // まず実データのある範囲だけ組み立てる（図形ぶんの余白は後から足す）。
           // 折り返しの行高計算に中身が要るので、描画レイヤーの解析より先に行う。
@@ -358,7 +348,8 @@ export function ExcelViewer({ url }: { url: string }) {
               const fillFg = resolveFill(cell.fill, themePalette);
               const al = cell.alignment?.horizontal;
               const va = cell.alignment?.vertical;
-              const span = spans.get(`${r}:${c}`);
+              const mg = mergeIndex.get(`${r - 1}:${c - 1}`);
+              const master = isMergeMaster(mg, r - 1, c - 1);
               cells.push({
                 ...emptyCell(),
                 text: cellText(cell.text),
@@ -369,8 +360,8 @@ export function ExcelViewer({ url }: { url: string }) {
                 align: al === "center" ? "center" : al === "right" ? "right" : "left",
                 vAlign: va === "top" ? "top" : va === "bottom" ? "bottom" : "middle",
                 wrap: !!cell.alignment?.wrapText,
-                colSpan: span?.cs ?? 1, rowSpan: span?.rs ?? 1,
-                hidden: covered.has(`${r}:${c}`),
+                colSpan: master ? mg!.colspan : 1, rowSpan: master ? mg!.rowspan : 1,
+                hidden: isMergeHidden(mg, r - 1, c - 1),
               });
             }
             rows.push(cells);

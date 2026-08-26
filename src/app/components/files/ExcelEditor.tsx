@@ -2,11 +2,16 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import { HotTable } from "@handsontable/react";
 import { registerAllModules } from "handsontable/registry";
 import { textRenderer } from "handsontable/renderers";
-import { Loader2, Save, PaintBucket, Square, Circle, MessageSquare, Minus, MoveRight, Type, Trash2, BringToFront, SendToBack, AlignLeft, AlignCenter, AlignRight, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, Plus, Pencil, Undo2, Redo2, WrapText, MoveHorizontal } from "lucide-react";
+import { Loader2, Save, PaintBucket, Square, Circle, MessageSquare, Minus, MoveRight, Type, Trash2, BringToFront, SendToBack, AlignLeft, AlignCenter, AlignRight, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, Plus, Pencil, Undo2, Redo2, WrapText, MoveHorizontal, TableCellsMerge, TableCellsSplit } from "lucide-react";
 import type { ProjectFile } from "@/app/types";
 import { uploadProjectFile, fetchSignedUrl } from "@/app/lib/projectFiles";
 import { patchXlsx, colLetter, type CellEdit } from "@/app/lib/xlsxEdit";
-import { insertRows, removeRows, insertCols, removeCols, copyRows, copyCols, setColWidths, setRowHeights, addHyperlinks } from "@/app/lib/xlsxStructure";
+import { insertRows, removeRows, insertCols, removeCols, copyRows, copyCols, setColWidths, setRowHeights, addHyperlinks, setMerges } from "@/app/lib/xlsxStructure";
+import {
+  parseMergeRefs, buildMergeIndex, isMergeHidden, mergesInRange,
+  insertLines, removeLines, copyLines, remapLines,
+  type MergeCell,
+} from "@/app/lib/xlsxMerge";
 import { addSheet, removeSheet, renameSheet, validateSheetName } from "@/app/lib/xlsxSheets";
 import { parseXlsxDrawings, type DrawingObject } from "@/app/lib/xlsxDrawing";
 import { patchXlsxDrawing, repairDrawings, findDrawingDefects } from "@/app/lib/xlsxDrawingWrite";
@@ -95,7 +100,21 @@ interface SheetModel {
   drawings: DrawingObject[]; // 画像・図形（表示のみ）
   drawingPath: string | null; // 書き戻し先（xl/drawings/drawingN.xml）
   totalW: number; totalH: number;
+  merges: MergeCell[];                 // 結合セル（BRU13-029）
+  mergeIndex: Map<string, MergeCell>;  // 結合に含まれる全セル "r:c" → その結合
 }
+
+// 結合セルを差し替える（索引も作り直す）
+function applyMerges(m: SheetModel, merges: MergeCell[]) {
+  m.merges = merges;
+  m.mergeIndex = buildMergeIndex(merges);
+}
+// 配列の [a, b) の合計（列幅・行高の帯の長さ）
+const sumRange = (arr: number[], a: number, b: number) => {
+  let n = 0;
+  for (let i = a; i < b; i++) n += arr[i] ?? 0;
+  return n;
+};
 
 const ROW_HEADER_W = 50; // Handsontable の行ヘッダ幅（固定）
 
@@ -268,6 +287,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   // 未登録のセルは元ファイル（baseWrap）のまま。
   const cellWrapRef = useRef<Record<string, Map<string, boolean>>>({});
   const [cellWrapSel, setCellWrapSel] = useState<boolean | null>(null); // ツールバーのハイライト用
+  // 結合セル（BRU13-029）。変更したシートだけ保存時に <mergeCells> を書き直す。
+  const mergeChgRef = useRef<Record<string, boolean>>({});
+  const [mergeTick, setMergeTick] = useState(0);            // 結合が変わったら HotTable へ渡し直す
+  const [cellMergeSel, setCellMergeSel] = useState(false);  // 選択セルが結合済みか（ツールバー用）
   const [, setLayoutTick] = useState(0); // 行高が変わったときに React 側も描き直すためのカウンタ
   // 構造編集・幅・リンク（保存時に xlsx へ反映）
   // copyRow / copyCol は src（複製元・1始まり）から count 本を at へ複製挿入する。
@@ -356,6 +379,12 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           // 中身が無くても最低限の広さは出す（Excel と同じく空欄をすぐ使えるように）
           const minRows = Math.min(Math.max(baseRows, MIN_ROWS), MAX_ROWS);
           const minCols = Math.min(Math.max(baseCols, MIN_COLS), MAX_COLS);
+          // 結合セル（閲覧画面と共通の解析）。飲み込まれたセルは exceljs が左上と
+          // 同じ値を返すので、ここで空にしておく（列幅の自動調整まで狂うため）。
+          const merges = parseMergeRefs((ws.model as any)?.merges);
+          const mergeIndex = buildMergeIndex(merges);
+          const mergeAt0 = (r: number, c: number) => mergeIndex.get(`${r}:${c}`);
+
           const raw: Grid = [];
           const baseFills: (string | null)[][] = [];
           const baseWrap: boolean[][] = [];
@@ -365,7 +394,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
             const wrapLine: boolean[] = [];
             for (let c = 1; c <= baseCols; c++) {
               const cell = ws.getRow(r).getCell(c);
-              line.push(cellToRaw(cell));
+              line.push(isMergeHidden(mergeAt0(r - 1, c - 1), r - 1, c - 1) ? "" : cellToRaw(cell));
               // 元ファイルのセル色。テーマ色＋tint 指定が大半なので解決してから表示する
               fillLine.push(resolveFill(cell.fill, themePalette));
               wrapLine.push(!!cell.alignment?.wrapText);
@@ -390,12 +419,17 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
           // 開いた時点で文字が見えない列を広げる（閲覧画面と共通の規則）。広げるだけで狭めない。
           for (let c = 0; c < baseCols; c++) {
             const w = fitColumnWidth(
-              Array.from({ length: baseRows }, (_, r) => ({
-                text: display[r]?.[c] ?? "",
-                wrap: baseWrap[r]?.[c] ?? false,
-                font: fontAt(r, c),
-                spillable: (display[r]?.[c + 1] ?? "") === "",
-              })), HOT_PAD_X);
+              Array.from({ length: baseRows }, (_, r) => {
+                // 結合セルは1列だけ広げても意味が無いので対象外（閲覧画面と同じ）
+                const mg = mergeAt0(r, c);
+                const skip = !!mg && (mg.colspan > 1 || isMergeHidden(mg, r, c));
+                return {
+                  text: skip ? "" : (display[r]?.[c] ?? ""),
+                  wrap: !skip && (baseWrap[r]?.[c] ?? false),
+                  font: fontAt(r, c),
+                  spillable: (display[r]?.[c + 1] ?? "") === "",
+                };
+              }), HOT_PAD_X);
             if (w > colWidths[c]) colWidths[c] = w;
           }
 
@@ -408,11 +442,15 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
             for (let c = 0; c < baseCols; c++) {
               const t = display[r]?.[c] ?? "";
               if (!t) continue;
+              // 縦結合セルは Excel でも自動調整の対象外。横結合は結合ぶんの幅で測る
+              const mg = mergeAt0(r, c);
+              if (mg && (isMergeHidden(mg, r, c) || mg.rowspan > 1)) continue;
+              const cw = mg ? sumRange(colWidths, c, c + mg.colspan) : colWidths[c];
               const f = fontAt(r, c);
               const lh = lineHeightOf(f);
               // 折り返しは行数ぶん、そうでなくても大きい文字は1行ぶんの高さを確保する
               out = Math.max(out, baseWrap[r]?.[c]
-                ? wrapHeight(t, contentWidth(colWidths[c]), f, lh, 2)
+                ? wrapHeight(t, contentWidth(cw), f, lh, 2)
                 : lh + 2);
             }
             return out;
@@ -462,6 +500,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
             drawings, drawingPath,
             totalW: colWidths.reduce((a, b) => a + b, 0),
             totalH: rowHeights.reduce((a, b) => a + b, 0),
+            merges, mergeIndex,
           });
         }
         disposeRef.current = () => disposers.forEach(d => d());
@@ -494,6 +533,29 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     gridDataRef.current = d;
     return d;
   }, [sheet?.name, gridVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // HotTable へ渡す結合セル。グリッドの外へはみ出すものは Handsontable が警告を出すので落とす。
+  const gridMerges = useMemo(() => {
+    const nR = sheet?.raw.length ?? 0, nC = sheet?.colWidths.length ?? 0;
+    return (sheet?.merges ?? [])
+      .filter(mg => mg.row + mg.rowspan <= nR && mg.col + mg.colspan <= nC)
+      .map(mg => ({ ...mg }));
+  }, [sheet?.name, gridVersion, mergeTick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 結合は「変わったときだけ」Handsontable へ渡す。
+  // props として毎レンダー渡すと、そのたびにプラグインが結合を作り直して
+  // グリッド全体が何度も描き直されるため（クリックのたびに重くなる）。
+  const appliedMergesRef = useRef<{ hot: unknown; merges: unknown } | null>(null);
+  useEffect(() => {
+    const hot: any = (hotRef.current as any)?.hotInstance;
+    if (!hot || hot.isDestroyed) return;
+    const cur = appliedMergesRef.current;
+    if (cur && cur.hot === hot && cur.merges === gridMerges) return;
+    // 結合が無いシートを開いただけなら、プラグインを起こす必要も無い
+    if (!cur && gridMerges.length === 0) { appliedMergesRef.current = { hot, merges: gridMerges }; return; }
+    appliedMergesRef.current = { hot, merges: gridMerges };
+    hot.updateSettings({ mergeCells: gridMerges });
+  });
 
   const colHeaders = useMemo(() => {
     const n = sheet?.raw[0]?.length ?? 0;
@@ -552,7 +614,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       rowHeights: m.rowHeights.slice(), colWidths: m.colWidths.slice(),
       baseRowHeights: m.baseRowHeights.slice(), autoRowH: m.autoRowH.slice(),
       drawings: m.drawings.map(o => ({ ...o })), totalW: m.totalW, totalH: m.totalH,
+      merges: m.merges.map(x => ({ ...x })),
     })),
+    mergeChg: { ...mergeChgRef.current },
     align: cloneMapRec(cellAlignRef.current), wrap: cloneMapRec(cellWrapRef.current),
     links: cloneMapRec(linksRef.current),
     shapeEdits: cloneShapeEdits(shapeEditsRef.current), structOps: cloneStructOps(structOpsRef.current),
@@ -572,7 +636,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       m.rowHeights = ms.rowHeights.slice(); m.colWidths = ms.colWidths.slice();
       m.baseRowHeights = ms.baseRowHeights.slice(); m.autoRowH = ms.autoRowH.slice();
       m.drawings = ms.drawings.map((o: any) => ({ ...o })); m.totalW = ms.totalW; m.totalH = ms.totalH;
+      applyMerges(m, (ms.merges ?? []).map((x: MergeCell) => ({ ...x })));
     });
+    mergeChgRef.current = { ...snap.mergeChg };
+    setMergeTick(v => v + 1);
     cellAlignRef.current = cloneMapRec(snap.align); cellWrapRef.current = cloneMapRec(snap.wrap);
     linksRef.current = cloneMapRec(snap.links);
     shapeEditsRef.current = cloneShapeEdits(snap.shapeEdits); structOpsRef.current = cloneStructOps(snap.structOps);
@@ -640,11 +707,15 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       for (let c = 0; c < m.colWidths.length; c++) {
         const t = m.display[r]?.[c] ?? "";
         if (!t) continue;
+        // 縦結合セルは Excel でも自動調整の対象外。横結合は結合ぶんの幅で測る
+        const mg = m.mergeIndex.get(`${r}:${c}`);
+        if (mg && (isMergeHidden(mg, r, c) || mg.rowspan > 1)) continue;
+        const cw = mg ? sumRange(m.colWidths, c, c + mg.colspan) : m.colWidths[c];
         const f = cellFont(m, r, c);
         const lh = lineHeightOf(f);
         // 折り返しセルは行数ぶん、そうでなくても大きい文字は1行ぶんの高さを確保する
         h = Math.max(h, wrapOf(m, r, c)
-          ? wrapHeight(t, contentWidth(m.colWidths[c]), f, lh, 2)
+          ? wrapHeight(t, contentWidth(cw), f, lh, 2)
           : lh + 2);
       }
       // ここでは上限を掛けない（長文セルの中身が勝手に隠れないように）。
@@ -676,7 +747,11 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   }, [pushUndo]);
 
   const afterChange = useCallback((changes: any[] | null, source: string) => {
-    if (!changes || source === "recompute" || source === "loadData" || source === "updateData") return;
+    // "mergeCells" は結合プラグインが飲み込まれたセルを空にする内部処理。
+    // こちらは自前のモデルで既に空にしているので、変更として扱わない（開いた直後に
+    // 未保存扱いになってしまうため）。
+    if (!changes || source === "recompute" || source === "loadData" || source === "updateData"
+      || source === "mergeCells") return;
     const m = sheetsRef.current?.[active];
     if (!m) return;
     for (const [row, col, , next] of changes) {
@@ -775,7 +850,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
   // BRU10-055 セル文字の見切れ対策。
   // 折り返しなら td 内で改行し、そうでなければ隣が空セルの間だけ文字をはみ出させる。
   // td は Handsontable が使い回すので、どの分岐でも必ず全プロパティを設定し直す。
-  const applyTextLayout = useCallback((td: HTMLElement, m: SheetModel, row: number, col: number, align: "left" | "center" | "right", valign: "top" | "middle" | "bottom") => {
+  const applyTextLayout = useCallback((td: HTMLElement, m: SheetModel, row: number, col: number, align: "left" | "center" | "right", valign: "top" | "middle" | "bottom", mg?: MergeCell) => {
     td.style.position = "relative";
     if (wrapOf(m, row, col)) {
       td.style.whiteSpace = "pre-wrap";
@@ -790,12 +865,16 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     const line = m.display[row] ?? [];
     const text = flatText(line[col] ?? "");
     if (!text) return;
-    const contentW = contentWidth(m.colWidths[col] ?? 0);
+    // 結合セルは結合ぶんの幅を1つのセルとして扱う
+    const cellW = mg ? sumRange(m.colWidths, mg.col, mg.col + mg.colspan) : (m.colWidths[col] ?? 0);
+    const contentW = contentWidth(cellW);
     const tw = textWidth(text, cellFont(m, row, col));
     if (tw <= contentW) return;
 
     const { left, right } = spillExtents({
-      col, widths: m.colWidths, isEmpty: (c) => (line[c] ?? "") === "",
+      col, span: mg?.colspan ?? 1, widths: m.colWidths,
+      // 結合に飲み込まれたセルは「空」ではない（そこまで文字を伸ばせない）
+      isEmpty: (c) => (line[c] ?? "") === "" && !m.mergeIndex.has(`${row}:${c}`),
       align, textW: tw, contentW,
     });
     if (left <= 0 && right <= 0) return;
@@ -808,7 +887,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     box.className = "xls-spill";
     box.textContent = text;
     box.style.left = `${-left}px`;
-    box.style.width = `${(m.colWidths[col] ?? 0) + left + right}px`;
+    box.style.width = `${cellW + left + right}px`;
     box.style.justifyContent = align === "center" ? "center" : align === "right" ? "flex-end" : "flex-start";
     box.style.alignItems = valign === "middle" ? "center" : valign === "bottom" ? "flex-end" : "flex-start";
     box.style.color = td.style.color;
@@ -849,7 +928,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       if (linksRef.current[m?.name ?? ""]?.has(`${row}:${col}`)) {
         td.style.color = "#2563EB"; td.style.textDecoration = "underline"; td.style.cursor = "pointer";
       }
-      if (m) applyTextLayout(td, m, row, col, al?.h ?? "left", al?.v ?? "top");
+      if (m) applyTextLayout(td, m, row, col, al?.h ?? "left", al?.v ?? "top", m.mergeIndex.get(`${row}:${col}`));
     },
   }), [active, applyTextLayout, xfFontAt, cellFont]);
 
@@ -909,6 +988,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     const m = sheetsRef.current?.[active];
     setCellSel(m ? (cellAlignRef.current[m.name]?.get(`${r}:${c}`) ?? {}) : {});
     setCellWrapSel(m && r >= 0 && c >= 0 ? wrapOf(m, r, c) : null);
+    setCellMergeSel(!!(m && r >= 0 && c >= 0 && m.mergeIndex.has(`${r}:${c}`)));
   }, [active, wrapOf]);
 
   // セルの揃えを CellEdit に反映するための参照（handleSave 用）
@@ -942,6 +1022,55 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       if (hot && !hot.isDestroyed) hot.render();
     });
   }, [recalcRowHeights]);
+
+  // ── セルの結合（BRU13-029）──────────────────────────────────
+  // 選択範囲を1つのセルにする／結合を解除する。Excel と同じく、結合すると
+  // 左上以外の値は捨てられる（残っていると Excel 側で結合が壊れるため）。
+  const applyMergeCells = useCallback((merge: boolean) => {
+    const hot: any = (hotRef.current as any)?.hotInstance;
+    const m = sheetsRef.current?.[active];
+    if (!hot || !m) return;
+    const ranges = (hot.getSelected() as number[][] | undefined)?.map(([ra, ca, rb, cb]) => ({
+      r0: Math.max(0, Math.min(ra, rb)), r1: Math.max(0, Math.max(ra, rb)),
+      c0: Math.max(0, Math.min(ca, cb)), c1: Math.max(0, Math.max(ca, cb)),
+    }));
+    if (!ranges?.length) return;
+    // 何も変わらないなら、元に戻すの履歴も汚さない
+    const hits = ranges.map(g => mergesInRange(m.merges, g.r0, g.c0, g.r1, g.c1));
+    const willChange = ranges.some((g, i) => hits[i].length > 0 || (merge && !(g.r0 === g.r1 && g.c0 === g.c1)));
+    if (!willChange) return;
+    // Excel と同じ確認。左上以外にも中身があるときだけ聞く。
+    if (merge && ranges.some(g => {
+      for (let r = g.r0; r <= g.r1; r++) {
+        for (let c = g.c0; c <= g.c1; c++) {
+          if (r === g.r0 && c === g.c0) continue;
+          if ((m.raw[r]?.[c] ?? "") !== "") return true;
+        }
+      }
+      return false;
+    }) && !window.confirm("選択範囲には複数のデータが含まれています。結合すると左上のセルの値だけが残ります。よろしいですか？")) return;
+
+    pushUndo();
+    let list = m.merges.slice();
+    ranges.forEach((g, i) => {
+      // 範囲に掛かっている結合はいったん全部ほどく
+      if (hits[i].length) list = list.filter(x => !hits[i].includes(x));
+      if (!merge || (g.r0 === g.r1 && g.c0 === g.c1)) return;
+      for (let r = g.r0; r <= g.r1; r++) {
+        for (let c = g.c0; c <= g.c1; c++) {
+          if ((r === g.r0 && c === g.c0) || !m.raw[r]) continue;
+          m.raw[r][c] = "";
+        }
+      }
+      list.push({ row: g.r0, col: g.c0, rowspan: g.r1 - g.r0 + 1, colspan: g.c1 - g.c0 + 1 });
+    });
+    applyMerges(m, list);
+    mergeChgRef.current[m.name] = true;
+    setDirty(true);
+    setMergeTick(v => v + 1);
+    setCellMergeSel(m.mergeIndex.has(`${ranges[0].r0}:${ranges[0].c0}`));
+    refreshCells(m, false);
+  }, [active, pushUndo, refreshCells]);
 
   // 選択範囲を ClipCell の表にする（値・数式・塗り・揃え・折り返し・リンク）
   const readClipCells = useCallback((m: SheetModel, g: { r0: number; r1: number; c0: number; c1: number }): ClipCell[][] => {
@@ -1250,6 +1379,14 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     m.drawings = moved;
   };
 
+  // 行/列の増減で結合の形も変わる。xlsx 側の best-effort な調整に任せると
+  // 画面と食い違うことがあるので、触ったシートは保存時に画面と同じ形で書き直す。
+  const remapSheetMerges = (m: SheetModel, next: MergeCell[]) => {
+    if (m.merges.length === 0 && next.length === 0) return;
+    applyMerges(m, next);
+    mergeChgRef.current[m.name] = true;
+  };
+
   const doInsertRows = useCallback((index0: number, cnt: number) => {
     const m = sheetsRef.current?.[active]; if (!m) return;
     pushUndo();
@@ -1271,8 +1408,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapKeys(linksRef.current[m.name], (r, c) => r >= index0 ? [r + cnt, c] : [r, c]);
     shiftDrawings(m, "y", boundary, cnt * 24);
     remapIdxSet(rowHeightChgRef.current[m.name], r => r >= index0 ? r + cnt : r);
+    remapSheetMerges(m, insertLines(m.merges, "row", index0, cnt));
     (structOpsRef.current[m.name] ??= []).push({ type: "insertRow", at: index0 + 1, count: cnt });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active]);
 
   const doRemoveRows = useCallback((index0: number, cnt: number) => {
@@ -1287,8 +1425,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapKeys(linksRef.current[m.name], (r, c) => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? [r - cnt, c] : [r, c]));
     shiftDrawings(m, "y", boundary, -deleted);
     remapIdxSet(rowHeightChgRef.current[m.name], r => (r >= index0 && r < index0 + cnt) ? null : (r >= index0 + cnt ? r - cnt : r));
+    remapSheetMerges(m, removeLines(m.merges, "row", index0, cnt));
     (structOpsRef.current[m.name] ??= []).push({ type: "removeRow", at: index0 + 1, count: cnt });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active]);
 
   const doInsertCols = useCallback((index0: number, cnt: number) => {
@@ -1306,8 +1445,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapKeys(linksRef.current[m.name], (r, c) => c >= index0 ? [r, c + cnt] : [r, c]);
     shiftDrawings(m, "x", boundary, cnt * 64);
     remapIdxSet(colWidthChgRef.current[m.name], c => c >= index0 ? c + cnt : c);
+    remapSheetMerges(m, insertLines(m.merges, "col", index0, cnt));
     (structOpsRef.current[m.name] ??= []).push({ type: "insertCol", at: index0 + 1, count: cnt });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active]);
 
   const doRemoveCols = useCallback((index0: number, cnt: number) => {
@@ -1322,8 +1462,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapKeys(linksRef.current[m.name], (r, c) => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? [r, c - cnt] : [r, c]));
     shiftDrawings(m, "x", boundary, -deleted);
     remapIdxSet(colWidthChgRef.current[m.name], c => (c >= index0 && c < index0 + cnt) ? null : (c >= index0 + cnt ? c - cnt : c));
+    remapSheetMerges(m, removeLines(m.merges, "col", index0, cnt));
     (structOpsRef.current[m.name] ??= []).push({ type: "removeCol", at: index0 + 1, count: cnt });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active]);
 
   // ── 行/列のコピー挿入・入れ替え（BRU13-019）───────────────────
@@ -1366,9 +1507,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapIdxSet(heightChg, r => r >= at0 ? r + cnt : r);
     copiedH.forEach(r => heightChg?.add(r));
     shiftDrawings(m, "y", boundary, addedPx);
+    remapSheetMerges(m, copyLines(m.merges, "row", src0, cnt, at0));
     forceFormulaRewrite(m, at0, at0 + cnt, 0, m.colWidths.length);
     (structOpsRef.current[m.name] ??= []).push({ type: "copyRow", at: at0 + 1, count: cnt, src: src0 + 1 });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active, pushUndo]);
 
   const doCopyCols = useCallback((src0: number, cnt: number, at0: number) => {
@@ -1388,9 +1530,10 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapIdxSet(widthChg, c => c >= at0 ? c + cnt : c);
     for (let i = 0; i < cnt; i++) widthChg.add(at0 + i);
     shiftDrawings(m, "x", boundary, addedPx);
+    remapSheetMerges(m, copyLines(m.merges, "col", src0, cnt, at0));
     forceFormulaRewrite(m, 0, m.raw.length, at0, at0 + cnt);
     (structOpsRef.current[m.name] ??= []).push({ type: "copyCol", at: at0 + 1, count: cnt, src: src0 + 1 });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active, pushUndo]);
 
   // dest0 は「移動後にブロックの先頭が来る位置」（配列 splice と同じ意味）
@@ -1409,6 +1552,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapKeys(linksRef.current[m.name], (r, c) => [mapIdx(r), c]);
     remapIdxSet(rowHeightChgRef.current[m.name], mapIdx);
     moveDrawings(m, "y", oldStarts, cumPx(m.rowHeights), mapIdx, Math.min(src0, dest0), Math.max(src0, dest0) + cnt);
+    remapSheetMerges(m, remapLines(m.merges, "row", mapIdx));
     forceFormulaRewrite(m, dest0, dest0 + cnt, 0, m.colWidths.length);
     // xlsx 側は「複製して差し込む → 元を消す」で同じ並びにする
     const ops = (structOpsRef.current[m.name] ??= []);
@@ -1416,7 +1560,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     const removeAt = dest0 <= src0 ? src0 + cnt + 1 : src0 + 1;
     ops.push({ type: "copyRow", at: insertAt, count: cnt, src: src0 + 1 });
     ops.push({ type: "removeRow", at: removeAt, count: cnt });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active, pushUndo]);
 
   const doMoveCols = useCallback((src0: number, cnt: number, dest0: number) => {
@@ -1437,13 +1581,14 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     remapIdxSet(widthChg, mapIdx);
     for (let i = 0; i < cnt; i++) widthChg.add(dest0 + i); // 移動先には <cols> が無いので幅を明示する
     moveDrawings(m, "x", oldStarts, cumPx(m.colWidths), mapIdx, Math.min(src0, dest0), Math.max(src0, dest0) + cnt);
+    remapSheetMerges(m, remapLines(m.merges, "col", mapIdx));
     forceFormulaRewrite(m, 0, m.raw.length, dest0, dest0 + cnt);
     const ops = (structOpsRef.current[m.name] ??= []);
     const insertAt = dest0 <= src0 ? dest0 + 1 : dest0 + cnt + 1;
     const removeAt = dest0 <= src0 ? src0 + cnt + 1 : src0 + 1;
     ops.push({ type: "copyCol", at: insertAt, count: cnt, src: src0 + 1 });
     ops.push({ type: "removeCol", at: removeAt, count: cnt });
-    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1);
+    recalcTotals(m); setDirty(true); setGridVersion(v => v + 1); setMergeTick(v => v + 1);
   }, [active, pushUndo]);
 
   // ── シートの追加・名前変更・削除（BRU13-019）──────────────────
@@ -1455,12 +1600,13 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       rec[to] = rec[from]; delete rec[from];
     };
     move(cellAlignRef.current); move(cellWrapRef.current); move(linksRef.current);
-    move(shapeEditsRef.current); move(structOpsRef.current);
+    move(shapeEditsRef.current); move(structOpsRef.current); move(mergeChgRef.current);
     move(colWidthChgRef.current); move(rowHeightChgRef.current);
   };
   const dropSheetKeys = (name: string) => {
     for (const rec of [cellAlignRef.current, cellWrapRef.current, linksRef.current,
-      shapeEditsRef.current, structOpsRef.current, colWidthChgRef.current, rowHeightChgRef.current]) {
+      shapeEditsRef.current, structOpsRef.current, mergeChgRef.current,
+      colWidthChgRef.current, rowHeightChgRef.current]) {
       delete (rec as Record<string, unknown>)[name];
     }
   };
@@ -1482,6 +1628,7 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       drawings: [], drawingPath: null,
       totalW: colWidths.reduce((a, b) => a + b, 0),
       totalH: rowHeights.reduce((a, b) => a + b, 0),
+      merges: [], mergeIndex: new Map(),
     };
   }, []);
 
@@ -1598,6 +1745,9 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       const t = m.display[r]?.[c] ?? "";
       // 折り返しセルは「折り返して収める」ものなので幅を広げる対象にしない（Excel と同じ）
       if (!t || wrapOf(m, r, c)) continue;
+      // 横結合セルは1列だけ広げても意味が無いので対象外
+      const mg = m.mergeIndex.get(`${r}:${c}`);
+      if (mg && (mg.colspan > 1 || isMergeHidden(mg, r, c))) continue;
       w = Math.max(w, textWidth(flatText(t), cellFont(m, r, c)));
     }
     if (w <= 0) return m.colWidths[c] ?? AUTOFIT_MIN_W;   // 測るものが無ければ今の幅のまま
@@ -1609,9 +1759,13 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
     for (let c = 0; c < m.colWidths.length; c++) {
       const t = m.display[r]?.[c] ?? "";
       if (!t) continue;
+      // 縦結合セルは Excel でも自動調整の対象外。横結合は結合ぶんの幅で測る
+      const mg = m.mergeIndex.get(`${r}:${c}`);
+      if (mg && (isMergeHidden(mg, r, c) || mg.rowspan > 1)) continue;
+      const cw = mg ? sumRange(m.colWidths, c, c + mg.colspan) : m.colWidths[c];
       const f = cellFont(m, r, c);
       const lh = lineHeightOf(f);
-      h = Math.max(h, wrapOf(m, r, c) ? wrapHeight(t, contentWidth(m.colWidths[c]), f, lh, 2) : lh + 2);
+      h = Math.max(h, wrapOf(m, r, c) ? wrapHeight(t, contentWidth(cw), f, lh, 2) : lh + 2);
     }
     return Math.min(AUTOFIT_MAX_H, Math.max(AUTOFIT_MIN_H, h));
   }, [wrapOf, cellFont]);
@@ -1747,10 +1901,17 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
       sep4: { name: "---------" },
       wrap_on: { name: "折り返して全体を表示", callback: () => applyCellWrap(true) },
       wrap_off: { name: "折り返さない（はみ出し表示）", callback: () => applyCellWrap(false) },
+      sep_merge: { name: "---------" },
+      mg_on: {
+        name: "セルを結合",
+        disabled: () => { const g = curRange(); return !g || (g.r0 === g.r1 && g.c0 === g.c1); },
+        callback: () => applyMergeCells(true),
+      },
+      mg_off: { name: "セルの結合を解除", callback: () => applyMergeCells(false) },
       sep5: { name: "---------" },
       link: { name: "リンクを挿入/編集", callback: (_k: any, sel: any[]) => insertLink(sel) },
     },
-  }), [active, curRange, menuCopy, menuPaste, fitCols, fitRows, doInsertRows, doRemoveRows, doInsertCols, doRemoveCols, doCopyRows, doCopyCols, doMoveRows, doMoveCols, applyCellAlign, applyCellWrap, insertLink]);
+  }), [active, curRange, menuCopy, menuPaste, fitCols, fitRows, doInsertRows, doRemoveRows, doInsertCols, doRemoveCols, doCopyRows, doCopyCols, doMoveRows, doMoveCols, applyCellAlign, applyCellWrap, applyMergeCells, insertLink]);
 
   // 行/列ヘッダのドラッグでの入れ替え。Handsontable 側の並べ替えは常に打ち切り（false）、
   // 自前のモデルを動かして描き直す（保存の構造編集と食い違わないようにするため）。
@@ -1839,6 +2000,14 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         const rh = [...(rowHeightChgRef.current[m.name] ?? [])].filter(ri => m.rowHeights[ri] != null).map(ri => ({ row: ri + 1, px: m.rowHeights[ri] }));
         if (cw.length) { out = setColWidths(out, m.name, cw); structuralTouched = true; }
         if (rh.length) { out = setRowHeights(out, m.name, rh); structuralTouched = true; }
+      }
+      // 2.5) 結合セル（変更したシートだけ、いまの形をそのまま書き直す）
+      for (const m of models) {
+        if (!mergeChgRef.current[m.name]) continue;
+        out = setMerges(out, m.name, m.merges.map(mg => ({
+          r1: mg.row + 1, c1: mg.col + 1, r2: mg.row + mg.rowspan, c2: mg.col + mg.colspan,
+        })));
+        structuralTouched = true;
       }
       // 3) セル値・色・揃え
       out = patchXlsx(out, edits);
@@ -1991,6 +2160,12 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         <button onMouseDown={keepSel} onClick={() => applyCellWrap(false)} style={abtn(cellWrapSel === false)}
           title="折り返さない（隣が空セルならはみ出して表示）"><MoveHorizontal style={sIc} /></button>
         <div style={sep} />
+        {/* セルの結合（BRU13-029） */}
+        <button onMouseDown={keepSel} onClick={() => applyMergeCells(true)} style={abtn(cellMergeSel)}
+          title="選択したセルを結合（左上のセルの値だけが残ります）"><TableCellsMerge style={sIc} /></button>
+        <button onMouseDown={keepSel} onClick={() => applyMergeCells(false)} style={shapeBtn}
+          title="セルの結合を解除"><TableCellsSplit style={sIc} /></button>
+        <div style={sep} />
         {/* 図形の追加（いつでも） */}
         <button onClick={() => overlayRef.current?.addShape("rect")} style={shapeBtn} title="矩形を追加"><Square style={sIc} /></button>
         <button onClick={() => overlayRef.current?.addShape("roundRect")} style={shapeBtn} title="角丸矩形"><Square style={{ ...sIc, borderRadius: 3 }} /></button>
@@ -2033,7 +2208,8 @@ export const ExcelEditor = forwardRef<EditorHandle, Props>(function ExcelEditor(
         （他アプリとの行き来では文字・背景・揃え・折り返しのみ）。
         右クリックで行/列の挿入・削除・入れ替え・コピーして挿入・リンク・揃え・折り返し。行/列ヘッダをドラッグしても入れ替えできます。
         境界ドラッグで列幅/行高を変更、<strong>境界ダブルクリックで内容に合わせて自動調整</strong>（右クリックの「〜を内容に合わせる」でも可）。
-        セル内改行（Alt+Enter）を入れると折り返し表示になり、行の高さが自動で伸びます。図形はクリックで選択して編集。
+        セル内改行（Alt+Enter）を入れると折り返し表示になり、行の高さが自動で伸びます。
+        <strong>セルの結合</strong>はツールバーの結合ボタン（右クリックの「セルを結合／解除」でも可）。結合すると左上のセルの値だけが残ります。図形はクリックで選択して編集。
         ⚠ 行/列の挿入・削除では数式の参照は自動補正されません。図形編集の保存時は図形レイヤーが再生成されます。
         {sheet.truncated && `（大きいシートのため先頭 ${MAX_ROWS}行×${MAX_COLS}列 のみ編集対象）`}
       </p>

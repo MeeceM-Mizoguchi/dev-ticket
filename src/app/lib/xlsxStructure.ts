@@ -369,3 +369,48 @@ export function addHyperlinks(bytes: Uint8Array, sheetName: string, links: { ref
     files[relsPath] = strToU8(serializeXml(relsDoc, relsText));
   });
 }
+
+// ── 結合セル（BRU13-029）─────────────────────────────────────
+// 編集画面が持っている結合の一覧で <mergeCells> を丸ごと置き換える。
+// 追加・解除の差分を追うより、最終形をそのまま書くほうが行/列の増減と食い違わない。
+
+// CT_Worksheet の子要素の並び順（この順でないと Excel が「修復が必要」と言う）
+const WS_CHILD_ORDER = [
+  "sheetPr", "dimension", "sheetViews", "sheetFormatPr", "cols", "sheetData", "sheetCalcPr",
+  "sheetProtection", "protectedRanges", "scenarios", "autoFilter", "sortState", "dataConsolidate",
+  "customSheetViews", "mergeCells", "phoneticPr", "conditionalFormatting", "dataValidations",
+  "hyperlinks", "printOptions", "pageMargins", "pageSetup", "headerFooter", "rowBreaks", "colBreaks",
+  "customProperties", "cellWatches", "ignoredErrors", "smartTags", "drawing", "legacyDrawing",
+  "legacyDrawingHF", "drawingHF", "picture", "oleObjects", "controls", "webPublishItems",
+  "tableParts", "extLst",
+];
+
+/** 1始まり・両端を含むセル範囲 */
+export interface MergeRange { r1: number; c1: number; r2: number; c2: number }
+
+export function setMerges(bytes: Uint8Array, sheetName: string, ranges: MergeRange[]): Uint8Array {
+  return withSheet(bytes, sheetName, doc => {
+    const root = doc.documentElement;
+    let mc = doc.getElementsByTagName("mergeCells")[0] ?? null;
+    if (ranges.length === 0) {
+      if (mc) mc.parentNode?.removeChild(mc);
+      return;
+    }
+    if (!mc) {
+      mc = el(doc, "mergeCells");
+      const myPos = WS_CHILD_ORDER.indexOf("mergeCells");
+      const after = Array.from(root.children).find(c => {
+        const i = WS_CHILD_ORDER.indexOf(c.localName);
+        return i >= 0 && i > myPos;
+      }) ?? null;
+      if (after) root.insertBefore(mc, after); else root.appendChild(mc);
+    }
+    while (mc.firstChild) mc.removeChild(mc.firstChild);
+    for (const r of ranges) {
+      const c = el(doc, "mergeCell");
+      c.setAttribute("ref", `${colLetter(r.c1)}${r.r1}:${colLetter(r.c2)}${r.r2}`);
+      mc.appendChild(c);
+    }
+    mc.setAttribute("count", String(ranges.length));
+  });
+}
