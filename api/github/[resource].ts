@@ -505,6 +505,11 @@ async function getCaller(sb: SupabaseClient, req: any): Promise<Caller | null> {
  *   ③ roles.base_permissions
  *   ④ owner は常に merge
  * PermissionsPage / AuthContext と同じ優先順位にしてある。
+ *
+ * どこにも書かれていなければ "none"。role が admin / project-manager でも例外にしない
+ * （BRU13-034）。GitHub権限の付与はアサイン計画の画面だけで行う決まりなので、
+ * ロールを根拠に暗黙で merge を配ると、その画面の表示（＝未設定なら「権限なし」）と
+ * 実際の挙動がずれる。owner だけは自分で自分を締め出せると詰むため常に merge。
  */
 async function resolveGithubLevel(sb: SupabaseClient, caller: Caller, projectId: string): Promise<GithubLevel> {
   if (caller.role === "owner") return "merge";
@@ -539,8 +544,6 @@ async function resolveGithubLevel(sb: SupabaseClient, caller: Caller, projectId:
   const fromRole = (role?.base_permissions as any)?.githubPermission as GithubLevel | undefined;
   if (fromRole) return fromRole;
 
-  // roles テーブルが未seedの環境では admin / PM を merge にフォールバック（AuthContext と同じ）
-  if (caller.role === "admin" || caller.role === "project-manager") return "merge";
   return "none";
 }
 

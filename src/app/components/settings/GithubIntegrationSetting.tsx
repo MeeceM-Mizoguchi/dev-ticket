@@ -129,9 +129,8 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     }
     for (const p of profiles as any[]) {
       const role = p.role as string;
-      const base: GithubAccessLevel = role === "owner"
-        ? "merge"
-        : roleLevel.get(role) ?? (role === "admin" || role === "project-manager" ? "merge" : "none");
+      // admin / PM でも既定は none。付与はアサイン計画でのみ行う（BRU13-034）
+      const base: GithubAccessLevel = role === "owner" ? "merge" : roleLevel.get(role) ?? "none";
       levels.set(p.id, base);
     }
 

@@ -166,7 +166,7 @@ export interface UserPermissions {
 | [PermissionsPage.tsx:1292/1378/1519](../src/app/pages/PermissionsPage.tsx#L1292) | グループ編集・グループ一覧・個人モーダルに GitHub ブロックを描画 |
 | [AuthContext.tsx:8](../src/app/contexts/AuthContext.tsx#L8) | `DEFAULT_PERMISSIONS` に `githubPermission: "none"` |
 | [AuthContext.tsx:53-63](../src/app/contexts/AuthContext.tsx#L53-L63) | owner は `"merge"` |
-| [AuthContext.tsx:67-76](../src/app/contexts/AuthContext.tsx#L67-L76) | admin / project-manager の fallback も `"merge"` |
+| [AuthContext.tsx:67-76](../src/app/contexts/AuthContext.tsx#L67-L76) | admin / project-manager の fallback は `"none"`（BRU13-034 で `"merge"` から変更） |
 | [ProjectSubNav.tsx:10](../src/app/components/layout/ProjectSubNav.tsx#L10) | `{ id: "github", label: "GitHub", icon: Github, path: "/github", permKey: "github" }` |
 
 **DBマイグレーションは不要**（`permissions` は jsonb でキーが増えるだけ）。
@@ -174,8 +174,16 @@ export interface UserPermissions {
 
 ### 5-3. 既定は「誰にも見えない」
 
-未設定のメンバーは全員 `none`。導入直後は owner / admin / PM 以外に GitHub タブが出ない。
+未設定のメンバーは全員 `none`。導入直後は **owner 以外の全員**に GitHub タブが出ない。
 これは意図した挙動（見せたくない人がいる、という要望への安全側の既定）。
+
+**admin / project-manager も例外にしない（BRU13-034）。** 当初は他のページ権限に合わせて
+admin / PM を暗黙で `merge` にしていたが、GitHub権限の付与はアサイン計画の画面だけで行う
+決まりなので、その画面に「権限なし」と表示されている人が PR を閲覧・マージできてしまい、
+表示と挙動が食い違っていた（一度「保存する」を押すとキーが入って直る、という症状）。
+ロールを根拠にした暗黙の付与はサーバー・クライアントの両方から削除し、
+既存レコードは [`supabase/fix_github_permission_defaults.sql`](../supabase/fix_github_permission_defaults.sql) で
+`githubPermission: "none"` を明示的に埋めて揃える。
 そのぶん **「なぜ見えないか」が画面から分かること**が重要になるため、7-1 と 7-3 で明示する。
 
 ### 5-4. サーバー側での再判定
@@ -187,7 +195,8 @@ export interface UserPermissions {
 1. project_member_permissions(project_id, member_id).permissions.githubPermission
 2. 無ければ、そのメンバーが属する permission_groups の権限
 3. 無ければ、roles.base_permissions.githubPermission
-4. role === "owner" は常に "merge"
+4. どれにも無ければ "none"（role が admin / PM でも例外にしない）
+5. role === "owner" は常に "merge"
 ```
 
 読み取り系で `"none"` なら 403、書き込み系で `"merge"` 以外なら 403。
