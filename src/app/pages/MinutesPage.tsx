@@ -162,6 +162,8 @@ export function MinutesPage() {
   const [mdImportProgress, setMdImportProgress] = useState<{ done: number; total: number } | null>(null);
   const singleMdInputRef = useRef<HTMLInputElement | null>(null);
   const bulkMdInputRef = useRef<HTMLInputElement | null>(null);
+  // どのフォルダへ取り込むか。input は1組を使い回すので、開く直前にここへ入れて change で読む。
+  const mdImportParentRef = useRef<string | null>(null);
 
   const handleSelectTicketByWbs = useCallback(async (wbs: string) => {
     if (!isSupabaseEnabled || !project) {
@@ -459,7 +461,8 @@ export function MinutesPage() {
   // ── MDファイル取り込み（単体 / 一括） ──────────────────────────
   // 1ファイル = 1議事録。タイトル・開催日・出席者は本文の前置きから拾い、
   // 残りはすべて本文（貼り付けと同じ変換経路なので見出し・表・コードブロックまで揃う）。
-  const handleImportMdFiles = useCallback(async (files: File[]) => {
+  // parentId を渡すとそのフォルダ直下に入る（ツリーのフォルダメニュー / フォルダ画面から）。
+  const handleImportMdFiles = useCallback(async (files: File[], parentId: string | null = null) => {
     if (!project || files.length === 0) return;
     setMdImportProgress({ done: 0, total: files.length });
 
@@ -475,7 +478,7 @@ export function MinutesPage() {
 
     const today = new Date().toISOString().slice(0, 10);
     const rows = imported.map(m => ({
-      id: crypto.randomUUID(), project_id: project.id,
+      id: crypto.randomUUID(), project_id: project.id, parent_id: parentId,
       title: m.title, meeting_date: m.meetingDate || today,
       attendees: m.attendees, content: m.content,
       created_by: userName || null,
@@ -494,13 +497,24 @@ export function MinutesPage() {
     toast(`${rows.length}件の議事録を作成しました${skipped.length ? `（${skipped.length}件はスキップ）` : ""}`);
     const first = (inserted ?? []).find(r => r.id === rows[0].id);
     navigate(`/${projectSlug ?? project.slug}/minutes/${toMinuteSlug(first?.created_at) || rows[0].id}`);
-  }, [project, userName, load, toast, navigate, projectSlug]);
+    // フォルダへ取り込んだときは畳んだ中に入って見えないので、開いて光らせる
+    flashCreated(rows.map(r => r.id));
+  }, [project, userName, load, toast, navigate, projectSlug, flashCreated]);
+
+  // フォルダのメニューから開いたときは、そのフォルダを親にして取り込む
+  const handleOpenMdPicker = useCallback((parentId: string | null, multiple: boolean) => {
+    mdImportParentRef.current = parentId;
+    (multiple ? bulkMdInputRef : singleMdInputRef).current?.click();
+  }, []);
 
   const handleMdInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files ?? []);
     // 同じファイルを続けて選び直せるように値をクリアする
     e.target.value = "";
-    if (picked.length > 0) void handleImportMdFiles(picked);
+    // 取り込み先は「開く直前に指定されたフォルダ」。次回にひきずらないよう毎回リセットする
+    const parentId = mdImportParentRef.current;
+    mdImportParentRef.current = null;
+    if (picked.length > 0) void handleImportMdFiles(picked, parentId);
   };
 
   const handleDelete = async (m: MeetingMinute) => {
@@ -609,10 +623,10 @@ export function MinutesPage() {
                     <DropdownMenuItem onSelect={() => handleAdd(null)}>
                       <FileText style={{ width: 14, height: 14 }} />新規議事録を作成
                     </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => singleMdInputRef.current?.click()}>
+                    <DropdownMenuItem onSelect={() => handleOpenMdPicker(null, false)}>
                       <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
                     </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => bulkMdInputRef.current?.click()}>
+                    <DropdownMenuItem onSelect={() => handleOpenMdPicker(null, true)}>
                       <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
                     </DropdownMenuItem>
                   </DropdownMenuContent>
@@ -678,6 +692,7 @@ export function MinutesPage() {
               onMove={handleMoveNode}
               onOpenMoveModal={node => { const m = minuteById.get(node.id); if (m) setMovingNodeTarget(m); }}
               onCopyLink={handleCopyLink}
+              onImportMd={handleOpenMdPicker}
               highlightIds={highlightIds}
               scrollToId={scrollToId}
               renderItemRow={(node, isSelected) => {
@@ -724,6 +739,35 @@ export function MinutesPage() {
                     style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#FFFFFF", color: "#6B6458", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                     <Plus style={{ width: 13, height: 13 }} />このフォルダに議事録を追加
                   </button>
+                )}
+                {/* フォルダを開いた状態からも取り込めるようにする。取り込み先はこのフォルダ。 */}
+                {canEdit && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
+                      <button
+                        style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#FFFFFF", color: "#6B6458", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
+                        {mdImportProgress ? (
+                          <>
+                            <Loader2 style={{ width: 13, height: 13, animation: "minutes-md-spin 1s linear infinite" }} />
+                            取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
+                          </>
+                        ) : (
+                          <>
+                            <FileUp style={{ width: 13, height: 13 }} />MDから追加
+                            <ChevronDown style={{ width: 11, height: 11 }} />
+                          </>
+                        )}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
+                      <DropdownMenuItem onSelect={() => handleOpenMdPicker(selected.id, false)}>
+                        <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => handleOpenMdPicker(selected.id, true)}>
+                        <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 )}
               </div>
             </div>

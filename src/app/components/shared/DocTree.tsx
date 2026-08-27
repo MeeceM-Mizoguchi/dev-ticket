@@ -13,13 +13,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ChevronRight, ChevronDown, Plus, FolderPlus, Folder, FolderOpen,
-  FolderTree, Pencil, Trash2, MoreVertical, Link2, X,
+  FolderTree, Pencil, Trash2, MoreVertical, Link2, X, FileUp, Upload,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from "@/app/components/ui/dropdown-menu";
 import {
   ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
+  ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent,
 } from "@/app/components/ui/context-menu";
 
 /** ツリーが必要とする最小の形。実データ(議事録/バックログ)はこれを満たしていればよい */
@@ -83,6 +85,13 @@ export interface DocTreeProps {
   onReorder?: (draggedId: string, targetId: string) => void | Promise<void>;
   onOpenMoveModal: (node: DocTreeNode) => void;
   onCopyLink: (node: DocTreeNode) => void;
+  /**
+   * フォルダのメニューに「MDから追加」を出す。未指定なら項目ごと出さない。
+   * multiple=true が一括取り込み。取り込んだものは parentId のフォルダ直下に入る。
+   */
+  onImportMd?: (parentId: string, multiple: boolean) => void;
+  /** 「MDから追加」の文言 */
+  importMdLabel?: string;
   /** フォルダ以外の行の中身（アイコン〜ラベル）。flex:1 の中に置かれる */
   renderItemRow: (node: DocTreeNode, isSelected: boolean) => ReactNode;
   /** 作成直後に一時的に色を付けるノード */
@@ -104,7 +113,7 @@ export function DocTree(props: DocTreeProps) {
 function DocTreeRow({
   node, depth, selectedId, canEdit, onSelect, onAddChild, addItemLabel, addFolderLabel,
   onRename, onDelete, onMove, onReorder, onOpenMoveModal, onCopyLink, renderItemRow,
-  highlightIds, scrollToId, tree,
+  onImportMd, importMdLabel, highlightIds, scrollToId, tree,
 }: DocTreeProps & { node: DocTreeNode; depth: number }) {
   const [expanded, setExpanded] = useState(true);
   const [hovered, setHovered] = useState(false);
@@ -177,12 +186,25 @@ function DocTreeRow({
 
   // 3点リーダー(Dropdown)と右クリック(ContextMenu)で同じ項目を描く。
   // Radix の Dropdown/Context は別プリミティブなので、同名APIのコンポーネントを差し替えて再利用する。
-  const renderMenuItems = (P: { Item: React.ElementType; Separator: React.ElementType }) => (
+  const renderMenuItems = (P: {
+    Item: React.ElementType; Separator: React.ElementType;
+    Sub: React.ElementType; SubTrigger: React.ElementType; SubContent: React.ElementType;
+  }) => (
     <>
       {canEdit && isFolder && (
         <>
           <P.Item onSelect={() => onAddChild(node.id, false)}><Plus style={menuIconStyle} />{addItemLabel}</P.Item>
           <P.Item onSelect={() => onAddChild(node.id, true)}><FolderPlus style={menuIconStyle} />{addFolderLabel ?? "サブフォルダを追加"}</P.Item>
+          {/* このフォルダを親にして取り込む。トップの「新規◯◯」からだとルートにしか作れなかった */}
+          {onImportMd && (
+            <P.Sub>
+              <P.SubTrigger><FileUp style={menuIconStyle} />{importMdLabel ?? "MDから追加"}</P.SubTrigger>
+              <P.SubContent>
+                <P.Item onSelect={() => onImportMd(node.id, false)}><FileUp style={menuIconStyle} />MDファイルから作成</P.Item>
+                <P.Item onSelect={() => onImportMd(node.id, true)}><Upload style={menuIconStyle} />一括MD取り込み</P.Item>
+              </P.SubContent>
+            </P.Sub>
+          )}
         </>
       )}
       {canEdit && (
@@ -301,14 +323,20 @@ function DocTreeRow({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" onClick={e => e.stopPropagation()}>
-                  {renderMenuItems({ Item: DropdownMenuItem, Separator: DropdownMenuSeparator })}
+                  {renderMenuItems({
+                    Item: DropdownMenuItem, Separator: DropdownMenuSeparator,
+                    Sub: DropdownMenuSub, SubTrigger: DropdownMenuSubTrigger, SubContent: DropdownMenuSubContent,
+                  })}
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          {renderMenuItems({ Item: ContextMenuItem, Separator: ContextMenuSeparator })}
+          {renderMenuItems({
+            Item: ContextMenuItem, Separator: ContextMenuSeparator,
+            Sub: ContextMenuSub, SubTrigger: ContextMenuSubTrigger, SubContent: ContextMenuSubContent,
+          })}
         </ContextMenuContent>
       </ContextMenu>
 
@@ -320,6 +348,7 @@ function DocTreeRow({
           addItemLabel={addItemLabel} addFolderLabel={addFolderLabel}
           onRename={onRename} onDelete={onDelete} onMove={onMove} onReorder={onReorder}
           onOpenMoveModal={onOpenMoveModal} onCopyLink={onCopyLink} renderItemRow={renderItemRow}
+          onImportMd={onImportMd} importMdLabel={importMdLabel}
           highlightIds={highlightIds} scrollToId={scrollToId}
         />
       ))}
