@@ -11,9 +11,38 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, GithubApiError } from "@/app/lib/github";
 import { MergePrecheckNotice } from "@/app/components/github/MergePrecheckNotice";
-import type { GithubPull, GithubMergeMethod, GithubMergePrecheckResult } from "@/app/types";
+import { CheckGateNotice, REASON_MIN } from "@/app/components/github/CheckGateNotice";
+import type {
+  GithubPull, GithubMergeMethod, GithubMergePrecheckResult, GithubMergePrecheckRow,
+} from "@/app/types";
 
 const METHODS: GithubMergeMethod[] = ["merge", "squash", "rebase"];
+
+/**
+ * 押す前に出す警告の材料。
+ *
+ * サーバーの事前チェックを待たずに、一覧・詳細で既に分かっている CI の状態から組み立てる。
+ * 押してから初めて理由が出る状態にしないため（BRU13-038 と同じ方針）。
+ */
+function warningFromPull(pull: GithubPull): GithubMergePrecheckRow[] {
+  if (pull.checkState !== "failure") return [];
+  const failed = (pull.checks ?? []).filter(c => c.state === "failure")
+    .map(c => (c.description ? `${c.name}（${c.description}）` : c.name));
+  return [{
+    number: pull.number,
+    title: pull.title,
+    ok: true,
+    conflict: false,
+    checkGate: {
+      level: "warn",
+      summary: pull.checkSummary,
+      // 詳細を開いていない場合は個別のチェック名が無いので、要約だけを出す
+      failed: failed.length ? failed : [pull.checkSummary].filter(Boolean),
+      blockedDeploy: !!pull.checkBlocked,
+    },
+    checkUnavailable: pull.checkUnavailable,
+  }];
+}
 
 export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck, onMerge }: {
   pull: GithubPull;
@@ -24,9 +53,10 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
   onPrecheck: (number: number) => Promise<GithubMergePrecheckResult>;
   /**
    * マージの実行。GitHub へのマージが終わった時点で onMerged を呼ぶと、
-   * 進捗の2段目が完了して「画面の更新」へ進む。呼ばなくても動く（最後まで2段目のまま）
+   * 進捗の2段目が完了して「画面の更新」へ進む。呼ばなくても動く（最後まで2段目のまま）。
+   * reason は「失敗チェックのまま続ける理由」（層A）。
    */
-  onMerge: (method: GithubMergeMethod, onMerged: () => void) => Promise<void>;
+  onMerge: (method: GithubMergeMethod, onMerged: () => void, reason: string) => Promise<void>;
 }) {
   const [method, setMethod] = useState<GithubMergeMethod>(loadMergeMethod());
   /** idle … 確認中／checking … コンフリクト確認中／merging … GitHubへ依頼中／refreshing … 呼び出し元が画面を取り直している最中 */
@@ -34,7 +64,15 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
   const [error, setError] = useState("");
   /** コンフリクトチェックで止めた結果。入っているときはマージしていない */
   const [precheck, setPrecheck] = useState<GithubMergePrecheckResult | null>(null);
+  /** 失敗チェックのまま続ける理由（層A）。サーバーが要求したときだけ必須になる */
+  const [reason, setReason] = useState("");
+  const [needsReason, setNeedsReason] = useState(false);
   const merging = phase !== "idle";
+
+  // サーバーが返した結果があればそれを、まだ押していなければ手元の CI 状態を使う
+  const gateRows = precheck?.results.filter(r => r.checkGate) ?? warningFromPull(pull);
+  const hardBlocked = gateRows.some(r => r.checkGate?.level === "block");
+  const reasonMissing = needsReason && reason.trim().length < REASON_MIN;
 
   const handleMerge = async () => {
     setError("");
@@ -44,8 +82,17 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
     setPhase("checking");
     try {
       const checked = await onPrecheck(pull.number);
+      // 失敗チェックがあり、理由がまだ書かれていない（層A）。
+      // ここで止めて入力欄を出す。マージはしていない
+      if (checked.needsReason && reason.trim().length < REASON_MIN) {
+        setPrecheck(checked);
+        setNeedsReason(true);
+        setPhase("idle");
+        return;
+      }
       if (!checked.ok) {
         setPrecheck(checked);
+        setNeedsReason(!!checked.needsReason);
         setPhase("idle");
         return;
       }
@@ -57,14 +104,17 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
 
     setPhase("merging");
     try {
-      await onMerge(method, () => setPhase("refreshing"));
+      await onMerge(method, () => setPhase("refreshing"), reason.trim());
       saveMergeMethod(method);
       onClose();
     } catch (e) {
       // 閉じずに理由を見せる。
       // 確認してから押すまでの間に状態が変わり、サーバー側のチェックで止まった場合は
       // 理由まで返っているので、そのまま出す（マージはされていない）
-      if (e instanceof GithubApiError && e.precheck?.results?.length) setPrecheck(e.precheck);
+      if (e instanceof GithubApiError && e.precheck?.results?.length) {
+        setPrecheck(e.precheck);
+        setNeedsReason(!!e.precheck.needsReason);
+      }
       setError((e as Error)?.message ?? "マージに失敗しました。");
       setPhase("idle");
     }
@@ -97,13 +147,15 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
     <DialogShell title="マージの確認" minHeight={merging ? 0 : undefined} onClose={merging ? () => {} : onClose}
       footer={<>
         <BtnSecondary onClick={onClose} disabled={merging}>キャンセル</BtnSecondary>
-        <button type="button" onClick={handleMerge} disabled={merging}
-          style={{ padding: "9px 20px", background: merging ? "#9CA3AF" : "#1F2328", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: merging ? "not-allowed" : "pointer" }}>
+        <button type="button" onClick={handleMerge} disabled={merging || hardBlocked || reasonMissing}
+          title={hardBlocked ? "失敗しているチェックがあるためマージできません" : reasonMissing ? "続ける理由を入力してください" : undefined}
+          style={{ padding: "9px 20px", background: (merging || hardBlocked || reasonMissing) ? "#9CA3AF" : "#1F2328", color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: (merging || hardBlocked || reasonMissing) ? "not-allowed" : "pointer" }}>
           {phase === "checking" ? "コンフリクト確認中..."
             : phase === "merging" ? "マージ中..."
               : phase === "refreshing" ? "画面を更新中..."
-                : precheck ? "もう一度確認してマージする"
-                  : "マージする"}
+                : needsReason ? "理由を添えてマージする"
+                  : precheck ? "もう一度確認してマージする"
+                    : "マージする"}
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
@@ -116,6 +168,13 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
           <Row label="プルリク" value={`#${pull.number}  ${pull.title}`} />
           <Row label="マージ先" value={`${pull.base}  ←  ${pull.head}`} />
           <Row label="CI" value={pull.checkSummary || "—"} tone={pull.checkState === "failure" ? "bad" : pull.checkState === "success" ? "good" : "normal"} />
+          {/* 確認できていない情報源があるなら、CI行の直下で言い添える。
+              「チェックなし」を「問題なし」と読ませないため（BRU13-041） */}
+          {(pull.checkUnavailable?.length ?? 0) > 0 && (
+            <p style={{ fontSize: 11, color: "#B45309", paddingLeft: 88, lineHeight: 1.6 }}>
+              {pull.checkUnavailable!.join("・")} は権限が無いため確認できていません。
+            </p>
+          )}
           <Row label="レビュー" value={pull.reviewSummary || "—"} tone={pull.reviewState === "approved" ? "good" : pull.reviewState === "changes_requested" ? "bad" : "normal"} />
         </div>
 
@@ -146,6 +205,19 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
           </p>
         </div>
         </>)}
+
+        {/* 層A: 失敗しているチェックのままマージしようとしている。
+            押す前から出す（precheck が無いうちは手元の CI 状態から組み立てる） */}
+        {gateRows.length > 0 && (
+          <CheckGateNotice
+            rows={gateRows}
+            repo={repo}
+            needsReason={needsReason}
+            reason={reason}
+            onReasonChange={setReason}
+            disabled={merging}
+          />
+        )}
 
         {precheck && <MergePrecheckNotice precheck={precheck} repo={repo} single />}
 

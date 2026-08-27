@@ -19,14 +19,15 @@ import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { PendingBranches } from "@/app/components/github/PendingBranches";
 import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
+import { DeployStatusBanner } from "@/app/components/github/DeployStatusBanner";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import {
   fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, mergePullsBulk,
-  precheckMerge, mergeBlockReason, relativeTime, GithubApiError,
+  precheckMerge, mergeBlockReason, relativeTime, fetchDeployStatus, runDeployCheck, GithubApiError,
 } from "@/app/lib/github";
 import type {
   Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, GithubPendingBranch, TicketGithubLink,
-  GithubAccessLevel, GithubMergeMethod, GithubPermissionBlock,
+  GithubAccessLevel, GithubMergeMethod, GithubPermissionBlock, GithubDeployStatus,
 } from "@/app/types";
 
 const BLACK = "#1F2328";
@@ -84,6 +85,14 @@ export function GithubPage() {
    * 一覧を取った時点でサーバーから受け取り、実行の入口を閉じる。
    */
   const [writeBlock, setWriteBlock] = useState<GithubPermissionBlock | null>(null);
+  /**
+   * 本番反映の状態（docs/deploy-verification-design.md 層C）。
+   *
+   * PR一覧とは別に取る。一覧の取得を待たせないためと、
+   * 「マージは全部済んでいるのに本番に届いていない」はPRの一覧を見ても分からないため。
+   */
+  const [deploy, setDeploy] = useState<GithubDeployStatus | null>(null);
+  const [deployChecking, setDeployChecking] = useState(false);
 
   // ── プロジェクトの解決 ────────────────────────────────────
   useEffect(() => {
@@ -148,6 +157,41 @@ export function GithubPage() {
     if (!project?.id || !access.linked || access.level === "none" || !access.level) return;
     void loadTab(tab);
   }, [project?.id, tab, access.linked, access.level, loadTab]);
+
+  /**
+   * 本番反映の状態を取る。取れなくても画面は成立するので、失敗は握って何も出さない
+   * （押していない処理の失敗をトーストで知らせても直しようがない。BRU13-015 と同じ方針）。
+   */
+  const loadDeploy = useCallback(async () => {
+    if (!project?.id) return;
+    try {
+      const r = await fetchDeployStatus(project.id);
+      setDeploy(r.deploy);
+    } catch {
+      // すでに出している帯は消さない。取得に失敗しただけで消えると
+      // 「直った」と誤って読まれる（BUG-02 と同じ考え方）
+    }
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!project?.id || !access.linked || access.level === "none" || !access.level) return;
+    void loadDeploy();
+  }, [project?.id, access.linked, access.level, loadDeploy]);
+
+  /** 帯の「今すぐ確認」。本番へ問い合わせ直す */
+  const handleDeployRecheck = async () => {
+    if (!project?.id || deployChecking) return;
+    setDeployChecking(true);
+    try {
+      const r = await runDeployCheck(project.id);
+      setDeploy(r.deploy);
+      if (r.deploy.state === "in-sync") toast("本番は最新です", "success");
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "本番反映を確認できませんでした", "error");
+    } finally {
+      setDeployChecking(false);
+    }
+  };
 
   /** ブランチ一覧を一度だけ取る。PR作成ダイアログとコミットタブの切り替え欄で共用する */
   const ensureBranches = useCallback(async () => {
@@ -230,14 +274,17 @@ export function GithubPage() {
 
   // onMerged は「GitHub 側のマージが終わった」合図。ダイアログの進捗を次の段
   //（一覧の取り直し）へ進めるために呼ぶ
-  const handleMerge = async (method: GithubMergeMethod, onMerged: () => void) => {
+  const handleMerge = async (method: GithubMergeMethod, onMerged: () => void, reason: string) => {
     if (!project?.id || !mergeTarget) return;
-    await mergePull(project.id, mergeTarget.number, method);
+    await mergePull(project.id, mergeTarget.number, method, reason);
     onMerged();
     toast(`#${mergeTarget.number} をマージしました`, "success");
     // loadedTabs は落とさない。落とすと取り直しの間だけページ全体がローダーに変わり、
     // 進捗を出しているダイアログの裏で表示が二度切り替わって見える
     await loadTab("pulls", true);
+    // マージした直後は必ず未反映になる。ここで取り直しておくと
+    // 「マージしたのに本番に出ない」に最短で気づける
+    void loadDeploy();
   };
 
   const isManager = userPermissions.canAccessAdminSettings;
@@ -300,6 +347,17 @@ export function GithubPage() {
         isManager ? <UnlinkedAdmin onOpenSettings={() => navigate("/admin-settings?tab=github")} /> : <UnlinkedMember />
       ) : (
         <>
+          {/* 本番反映の状態（層C）。
+              PRの一覧より上に置く。「マージは全部済んでいるのに本番に届いていない」は
+              一覧をいくら眺めても分からず、この帯だけが伝えられる情報のため */}
+          <DeployStatusBanner
+            deploy={deploy}
+            onRecheck={handleDeployRecheck}
+            checking={deployChecking}
+            canManage={isManager}
+            onOpenSettings={() => navigate("/admin-settings?tab=github")}
+          />
+
           {/* リポジトリ帯 */}
           <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, padding: "12px 16px", marginBottom: 14 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const }}>
@@ -315,7 +373,7 @@ export function GithubPage() {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {fetchedAt && <span style={{ fontSize: 11, color: "#B0A9A4" }}>{relativeTime(fetchedAt)}に取得</span>}
-                <button onClick={() => loadTab(tab, true)} disabled={fetching}
+                <button onClick={() => { void loadTab(tab, true); void loadDeploy(); }} disabled={fetching}
                   style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#4B4540", cursor: fetching ? "default" : "pointer", opacity: fetching ? 0.6 : 1 }}>
                   <RefreshCw style={{ width: 11, height: 11 }} />{fetching ? "更新中..." : "更新"}
                 </button>
@@ -453,9 +511,10 @@ export function GithubPage() {
           actorName={userName}
           onClose={() => setBulkTargets(null)}
           onPrecheck={numbers => precheckMerge(project.id, numbers)}
-          onMerge={(numbers, method) => mergePullsBulk(project.id, numbers, method)}
+          onMerge={(numbers, method, reason) => mergePullsBulk(project.id, numbers, method, reason)}
           onDone={async () => {
             await loadTab("pulls", true);
+            void loadDeploy();
           }}
         />
       )}

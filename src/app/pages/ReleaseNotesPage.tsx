@@ -13,7 +13,9 @@ import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useWindowSize } from "@/app/hooks/useWindowSize";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
-import type { SprintTicket, Project, AccessLevel, UserPermissions } from "@/app/types";
+import { DeployStatusBanner } from "@/app/components/github/DeployStatusBanner";
+import { fetchDeployStatus } from "@/app/lib/github";
+import type { SprintTicket, Project, AccessLevel, UserPermissions, GithubDeployStatus } from "@/app/types";
 
 interface ReleaseItem {
   ticket: SprintTicket;
@@ -79,6 +81,30 @@ export function ReleaseNotesPage() {
     if (projectMode) return;
     if (selectedProjectId) localStorage.setItem("releaseNotes:selectedProjectId", selectedProjectId);
   }, [selectedProjectId, projectMode]);
+
+  // ── 本番反映の状態（docs/deploy-verification-design.md 層C） ──
+  //
+  // この画面は「リリース済み」を並べる画面なので、本番に届いていないときに
+  // いちばん嘘をつく。実際、11件が「リリース済み」として並んだまま
+  // 本番には1件も入っていない状態が続いた。
+  // 取れなくても画面は成立するので、失敗は握って何も出さない。
+  const focusedProjectId = projectMode ? (scopedProject?.id ?? "") : selectedProjectId;
+  const [deploy, setDeploy] = useState<GithubDeployStatus | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseEnabled || !focusedProjectId) { setDeploy(null); return; }
+    let alive = true;
+    setDeploy(null);
+    (async () => {
+      try {
+        const r = await fetchDeployStatus(focusedProjectId);
+        if (alive) setDeploy(r.deploy);
+      } catch {
+        if (alive) setDeploy(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, [focusedProjectId]);
 
   useEffect(() => {
     if (!projectMode || !isSupabaseEnabled) return;
@@ -690,6 +716,15 @@ export function ReleaseNotesPage() {
           </div>
         </div>
       </div>
+      )}
+
+      {/* この画面は「リリース済み」を並べる画面なので、本番に届いていないときに
+          いちばん嘘をつく。遅れているときだけ、カレンダーの上に必ず出す。
+          反映済み・未設定のときは出さない（ここは設定画面ではないため） */}
+      {deploy && (deploy.state === "behind" && deploy.level !== "none") && (
+        <div style={{ padding: "0 24px", flexShrink: 0 }}>
+          <DeployStatusBanner deploy={deploy} />
+        </div>
       )}
 
       {/* Calendar body。読み込み中もヘッダー・サブナビは出したままにして、

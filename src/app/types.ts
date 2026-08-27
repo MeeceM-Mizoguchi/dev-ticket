@@ -336,6 +336,12 @@ export interface Project {
   githubRepoFullName?: string | null;
   githubDefaultBranch?: string | null;
   githubEnabled?: boolean;
+  // 本番反映の確認（docs/deploy-verification-design.md）。
+  // 「マージ済み」と「本番反映済み」を別の事実として扱うための設定。
+  deployCheckUrl?: string | null;
+  deployCheckKey?: string | null;
+  deployCheckMode?: GithubDeployCheckMode;
+  requireChecksMode?: GithubRequireChecksMode;
 }
 export interface Client {
   id: string; name: string; industry: string; email: string;
@@ -668,6 +674,11 @@ export interface GithubStatus {
    *   "install" … 宣言は足りていて、承認がまだ
    */
   permissionScope: "app" | "install" | null;
+  /**
+   * 無くても動くが、あるとデプロイの事故を検知できる権限（Commit statuses / Deployments）。
+   * 足りなくても操作は失敗しないので、missingPermissions とは別に弱く案内する。
+   */
+  optionalMissingPermissions?: GithubMissingPermission[];
   /** App の権限設定ページ（App の所有者だけが開ける） */
   appPermissionsUrl: string | null;
   /** 組織にインストール済みか */
@@ -716,13 +727,23 @@ export interface GithubPull {
   mergeableState?: string | null;
   checkState: GithubCheckState;
   checkSummary: string;
+  /**
+   * 「落ちた」ではなく「ビルドされる前に止められている」状態（Vercel の Deployment was blocked 等）。
+   * 人がやることが違うので、失敗と同じ扱いにしない。
+   */
+  checkBlocked?: boolean;
+  /**
+   * 権限不足などで確認できなかった情報源（Commit statuses / Deployments）。
+   * 空でなければ「チェックなし＝問題なし」と読ませてはいけない。
+   */
+  checkUnavailable?: string[];
   reviewState: GithubReviewState;
   reviewSummary: string;
   body?: string;
   changedFiles?: number;
   additions?: number;
   deletions?: number;
-  checks?: { name: string; state: GithubCheckState }[];
+  checks?: { name: string; state: GithubCheckState; description?: string; url?: string | null }[];
   /** ブランチ名・タイトルから拾ったWBS番号（大文字に正規化済み） */
   detectedWbs: string[];
   /** 正規化したWBS番号 → 実際に書かれていた綴り。大文字小文字の食い違いの表示に使う */
@@ -823,6 +844,26 @@ export interface GithubBulkMergeResult {
   permission?: GithubPermissionBlock;
 }
 
+// ── マージ前の必須チェック（層A / docs/deploy-verification-design.md） ────────
+
+/** 失敗チェックをマージ前にどう扱うか。プロジェクトごとに決める */
+export type GithubRequireChecksMode = "off" | "warn" | "reason" | "block";
+
+/**
+ * 失敗しているチェックがある状態。
+ *
+ * GitHub のブランチ保護が未設定だと mergeable_state は clean のままなので、
+ * これが唯一の関門になる。level で「注意だけ／理由が要る／通さない」を分ける。
+ */
+export interface GithubCheckGate {
+  level: "warn" | "reason" | "block";
+  summary: string;
+  /** 失敗しているチェックの名前（＋説明） */
+  failed: string[];
+  /** 「落ちた」ではなく「止められている」場合 */
+  blockedDeploy: boolean;
+}
+
 /** マージ前のコンフリクトチェックの結果（1件ごと） */
 export interface GithubMergePrecheckRow {
   number: number;
@@ -831,6 +872,10 @@ export interface GithubMergePrecheckRow {
   /** コンフリクトが理由かどうか。CI・レビュー待ちと区別して案内するために持つ */
   conflict: boolean;
   reason?: string;
+  /** 失敗しているチェックがある場合。ok とは別（block のときだけ ok も false になる） */
+  checkGate?: GithubCheckGate;
+  /** 確認できなかった情報源。空でなければ「問題なし」と言い切らない */
+  checkUnavailable?: string[];
 }
 
 /**
@@ -841,7 +886,102 @@ export interface GithubMergePrecheckResult {
   ok: boolean;
   conflicts: number;
   blocked: number;
+  /** 失敗チェックがあり、理由を書けば通せる状態（層A）。画面はここを見て入力欄を出す */
+  needsReason?: boolean;
+  /** 失敗チェックが見つかった件数（warn を含む） */
+  checkWarnings?: number;
+  requireChecksMode?: GithubRequireChecksMode;
   results: GithubMergePrecheckRow[];
+}
+
+// ── 本番反映の確認（層B・層C / docs/deploy-verification-design.md） ──────────
+
+/** 本番反映の確認をどこまで効かせるか */
+export type GithubDeployCheckMode = "off" | "warn" | "gate";
+
+/**
+ * not-configured … 確認先URLが未設定。確認していないので「問題なし」ではない
+ * in-sync        … 本番に既定ブランチの先頭まで入っている
+ * behind         … 本番が遅れている（＝マージだけ済んで届いていない状態）
+ * unreachable    … 確認先URLに届かなかった
+ * unknown        … 値は取れたがコミットとして突き合わせられなかった
+ * error          … GitHub 側の取得に失敗
+ */
+export type GithubDeployState =
+  | "not-configured" | "in-sync" | "behind" | "unreachable" | "unknown" | "error";
+
+/** 遅れの深刻度。時間で段階が上がる（マージ直後を異常と呼ばないため） */
+export type GithubDeployLevel = "none" | "notice" | "slack" | "critical";
+
+export interface GithubDeployPendingPull {
+  number: number;
+  title: string;
+  url: string;
+}
+
+export interface GithubDeployPendingTicket {
+  wbs: string;
+  title: string;
+  status: string;
+}
+
+export interface GithubDeployCheckDetail {
+  name: string;
+  state: GithubCheckState;
+  source?: "check" | "status" | "deployment";
+  description?: string;
+  url?: string | null;
+}
+
+/** GET /api/github/deploy-status の戻り */
+export interface GithubDeployStatus {
+  /** 確認先URLが入っているか */
+  configured: boolean;
+  mode: GithubDeployCheckMode;
+  requireChecksMode: GithubRequireChecksMode;
+  checkUrl: string | null;
+  checkKey: string | null;
+  state: GithubDeployState;
+  ok: boolean;
+  level: GithubDeployLevel;
+  checkedAt: string | null;
+  /** 本番から取れた値そのもの */
+  deployedRef: string | null;
+  deployedSha: string | null;
+  headSha: string | null;
+  headMessage: string | null;
+  headCommittedAt: string | null;
+  behindBy: number;
+  /** ずれ始めた時刻＝未反映のうち最も古いコミットの日時 */
+  behindSince: string | null;
+  pendingPulls: GithubDeployPendingPull[];
+  pendingTickets: GithubDeployPendingTicket[];
+  checkState: GithubCheckState | null;
+  checkSummary: string | null;
+  checkDetail: GithubDeployCheckDetail[];
+  checkUnavailable: string[];
+  message: string | null;
+  error: string | null;
+  repo: string | null;
+  defaultBranch: string | null;
+}
+
+/** 外部連携画面の診断（組織のプロジェクトを横に並べる） */
+export interface GithubDeployOverviewRow {
+  projectId: string;
+  projectName: string;
+  repo: string;
+  defaultBranch: string | null;
+  /** 既定ブランチにブランチ保護が掛かっているか。判定できなければ null */
+  branchProtected: boolean | null;
+  deploy: GithubDeployStatus;
+}
+
+export interface GithubDeployOverview {
+  rows: GithubDeployOverviewRow[];
+  /** 件数上限で見ていないプロジェクト数。黙って隠さず出す */
+  truncated: number;
+  optionalMissingPermissions: GithubMissingPermission[];
 }
 
 /** リリース待ち → リリース済み の自動反映の結果 */
@@ -849,10 +989,16 @@ export interface GithubReleaseSyncResult {
   ok: true;
   /** リリース済みにしたチケットの総数 */
   released: number;
+  /** 本番へ反映されていないプロジェクトの数 */
+  behind?: number;
   details: {
     projectId: string;
     projectName: string;
     released: { wbs: string; title: string; pulls: number[] }[];
+    /** 本番反映を確認できず、前へ進めなかった理由（deployCheckMode=gate） */
+    deployHold?: string;
+    deployState?: GithubDeployState;
+    deployMessage?: string;
     error?: string;
   }[];
 }

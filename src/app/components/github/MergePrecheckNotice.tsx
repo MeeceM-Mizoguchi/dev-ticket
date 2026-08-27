@@ -15,7 +15,8 @@ export function MergePrecheckNotice({ precheck, repo, single }: {
   /** 1件だけマージしようとした場合。文言から「まとめて」を外す */
   single?: boolean;
 }) {
-  const bad = precheck.results.filter(r => !r.ok);
+  // 失敗チェックで止まったものは CheckGateNotice が理由も入力欄も出すので、ここでは重ねない
+  const bad = precheck.results.filter(r => !r.ok && !r.checkGate);
   if (!bad.length) return null;
 
   return (

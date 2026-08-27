@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { Plus, Minus, Globe, Github } from "lucide-react";
-import type { Project, EnvMemo, GithubRepo } from "@/app/types";
+import type {
+  Project, EnvMemo, GithubRepo, GithubDeployCheckMode, GithubRequireChecksMode,
+} from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -12,7 +14,10 @@ import { FieldInput } from "@/app/components/shared/FieldInput";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { inputCls, labelCls } from "@/app/lib/helpers";
 import { submitOnModEnter } from "@/app/lib/submitKey";
-import { fetchGithubStatus, fetchGithubRepos, backfillGithubLinks } from "@/app/lib/github";
+import {
+  fetchGithubStatus, fetchGithubRepos, backfillGithubLinks,
+  DEPLOY_MODE_LABELS, REQUIRE_CHECKS_LABELS,
+} from "@/app/lib/github";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
@@ -43,6 +48,15 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
   const [ghRepos, setGhRepos] = useState<GithubRepo[]>([]);
   const [ghRepo, setGhRepo] = useState(project.githubRepoFullName ?? "");
   const [ghBranch, setGhBranch] = useState(project.githubDefaultBranch ?? "");
+
+  // ── 本番反映の確認（docs/deploy-verification-design.md） ──
+  // 「マージした」と「本番に届いた」を別の事実として扱うための設定。
+  // ここが未設定だと、デプロイが止まっていても全件「リリース済み」になる。
+  const [deployUrl, setDeployUrl] = useState(project.deployCheckUrl ?? "");
+  const [deployKey, setDeployKey] = useState(project.deployCheckKey ?? "");
+  const [deployCheckMode, setDeployCheckMode] = useState<GithubDeployCheckMode>(project.deployCheckMode ?? "off");
+  const [requireChecks, setRequireChecks] = useState<GithubRequireChecksMode>(project.requireChecksMode ?? "warn");
+  const [deployError, setDeployError] = useState("");
 
   useEffect(() => {
     if (!plan.featureGithub || !isSupabaseEnabled) { setGhInstalled(false); return; }
@@ -90,6 +104,19 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
     }
     setSlugError("");
 
+    // 確認先URLが無いのに「反映まで待つ」を選ぶと、チケットが永久にリリース待ちで止まる。
+    // 保存させてから気づくのでは遅いので、ここで弾く
+    const trimmedDeployUrl = deployUrl.trim();
+    if (!trimmedDeployUrl && deployCheckMode !== "off") {
+      setDeployError("本番反映の確認先URLを入力してください（未入力なら「確認しない」を選んでください）。");
+      return;
+    }
+    if (trimmedDeployUrl && !/^https?:\/\//i.test(trimmedDeployUrl)) {
+      setDeployError("確認先URLは http:// または https:// から入力してください。");
+      return;
+    }
+    setDeployError("");
+
     const cleanedMemos = envMemos.filter(m => m.name.trim() || m.url.trim() || (m.memo ?? "").trim());
 
     if (isSupabaseEnabled) {
@@ -107,6 +134,10 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
         github_repo_full_name: ghRepo || null,
         github_default_branch: ghRepo ? (ghBranch || null) : null,
         github_enabled: !!ghRepo,
+        deploy_check_url: trimmedDeployUrl || null,
+        deploy_check_key: trimmedDeployUrl ? (deployKey.trim() || "buildId") : null,
+        deploy_check_mode: trimmedDeployUrl ? deployCheckMode : "off",
+        require_checks_mode: requireChecks,
       }).eq("id", project.id).select("id");
       setSaving(false);
       if (error) {
@@ -192,6 +223,77 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
                   <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 6 }}>
                     選択すると、このプロジェクトに GitHub タブが表示されます（閲覧できるのは権限を付与されたメンバーだけです）。
                   </p>
+
+                  {/* 本番反映の確認（docs/deploy-verification-design.md）。
+                      リポジトリを紐付けているプロジェクトでだけ意味を持つのでここに置く */}
+                  {ghRepo && (
+                    <div style={{ marginTop: 14, paddingTop: 13, borderTop: "1px solid rgba(26,23,20,0.07)" }}>
+                      <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 4 }}>本番反映の確認</p>
+                      <p style={{ fontSize: 11, color: "#9CA3AF", lineHeight: 1.75, marginBottom: 10 }}>
+                        本番が公開しているバージョン情報を読み、いま動いているコミットと {ghBranch || "main"} を突き合わせます。
+                        マージは成功しているのにデプロイが止まっている状態を、そのまま「リリース済み」にしないための設定です。
+                      </p>
+
+                      <label className={labelCls}>確認先URL</label>
+                      <input
+                        className={inputCls}
+                        placeholder="https://example.com/version.json"
+                        value={deployUrl}
+                        onChange={e => { setDeployUrl(e.target.value); setDeployError(""); }}
+                      />
+                      <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 3, lineHeight: 1.7 }}>
+                        JSON を返すURLを指定してください。社内・ローカル向けのアドレスは指定できません。
+                      </p>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 8 }}>
+                        <div style={{ flex: "0 0 180px" }}>
+                          <label className={labelCls}>コミットのキー名</label>
+                          <input
+                            className={inputCls}
+                            placeholder="buildId"
+                            value={deployKey}
+                            disabled={!deployUrl.trim()}
+                            onChange={e => setDeployKey(e.target.value)}
+                          />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <label className={labelCls}>反映を確認できないとき</label>
+                          <CustomSelect
+                            value={deployCheckMode}
+                            options={(Object.keys(DEPLOY_MODE_LABELS) as GithubDeployCheckMode[])
+                              .map(v => ({ value: v, label: DEPLOY_MODE_LABELS[v] }))}
+                            onChange={v => { setDeployCheckMode(v as GithubDeployCheckMode); setDeployError(""); }}
+                          />
+                        </div>
+                      </div>
+                      <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 3, lineHeight: 1.7 }}>
+                        値がコミットSHA（先頭7桁以上）であれば比較できます。
+                        {deployCheckMode === "gate" && (
+                          <><br />
+                            <span style={{ color: "#B45309" }}>
+                              「リリース済みにしない」を選ぶと、本番への反映を確認できない間はチケットが「リリース待ち」のまま残ります。
+                            </span>
+                          </>
+                        )}
+                      </p>
+
+                      <div style={{ marginTop: 10 }}>
+                        <label className={labelCls}>マージ前に失敗しているチェックがあるとき</label>
+                        <CustomSelect
+                          value={requireChecks}
+                          options={(Object.keys(REQUIRE_CHECKS_LABELS) as GithubRequireChecksMode[])
+                            .map(v => ({ value: v, label: REQUIRE_CHECKS_LABELS[v] }))}
+                          onChange={v => setRequireChecks(v as GithubRequireChecksMode)}
+                        />
+                        <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 3, lineHeight: 1.7 }}>
+                          GitHub のブランチ保護が未設定でも、Dev Ticket 側で同じ関門を作ります。
+                          「理由を入力しないとマージできない」を選ぶと、押し切った理由が監査ログに残ります。
+                        </p>
+                      </div>
+
+                      {deployError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 6 }}>{deployError}</p>}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div style={{ padding: "14px 16px", background: "#F9FAFB", borderRadius: 10, border: "1px dashed rgba(26,23,20,0.12)" }}>
