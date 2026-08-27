@@ -816,9 +816,32 @@ export interface GithubBulkMergeResult {
   ok: true;
   merged: number;
   failed: number;
-  results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string }[];
+  /** 失敗を受けて途中で打ち切ったかどうか */
+  aborted?: boolean;
+  results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string; skipped?: boolean }[];
   /** 権限で止まったときだけ入る。直しに行く画面を結果画面から出すために使う */
   permission?: GithubPermissionBlock;
+}
+
+/** マージ前のコンフリクトチェックの結果（1件ごと） */
+export interface GithubMergePrecheckRow {
+  number: number;
+  title: string;
+  ok: boolean;
+  /** コンフリクトが理由かどうか。CI・レビュー待ちと区別して案内するために持つ */
+  conflict: boolean;
+  reason?: string;
+}
+
+/**
+ * マージ前のコンフリクトチェックの結果。
+ * ok が false なら1件もマージしない（BRU13-038）
+ */
+export interface GithubMergePrecheckResult {
+  ok: boolean;
+  conflicts: number;
+  blocked: number;
+  results: GithubMergePrecheckRow[];
 }
 
 /** リリース待ち → リリース済み の自動反映の結果 */

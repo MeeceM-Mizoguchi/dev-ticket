@@ -7,16 +7,23 @@ import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
   TicketGithubLink, TicketGithubLinkCandidate, GithubMergeMethod, GithubAccessLevel,
   GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult, GithubPermissionBlock,
+  GithubMergePrecheckResult,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
   status: number;
   /** 権限で止められたときだけ入る。直しに行く画面のURLを画面から出すために使う */
   permission?: GithubPermissionBlock;
-  constructor(status: number, message: string, permission?: GithubPermissionBlock) {
+  /**
+   * 実行直前のコンフリクトチェックで止められたときだけ入る。
+   * 画面で確認したあとに状態が変わった場合に返るので、どのPRで止まったかをそのまま出す
+   */
+  precheck?: GithubMergePrecheckResult;
+  constructor(status: number, message: string, permission?: GithubPermissionBlock, precheck?: GithubMergePrecheckResult) {
     super(message);
     this.status = status;
     this.permission = permission;
+    this.precheck = precheck;
   }
 }
 
@@ -37,7 +44,7 @@ async function call<T>(resource: string, opts?: { query?: Record<string, string 
   });
 
   const json = await res.json().catch(() => null) as any;
-  if (!res.ok) throw new GithubApiError(res.status, json?.error ?? "処理に失敗しました。", json?.permission);
+  if (!res.ok) throw new GithubApiError(res.status, json?.error ?? "処理に失敗しました。", json?.permission, json?.precheck);
   return json as T;
 }
 
@@ -142,6 +149,16 @@ export function createPull(projectId: string, input: {
   return call<{ ok: true; number: number | null; url: string | null; title: string }>(
     "create-pull", { body: { projectId, ...input } },
   );
+}
+
+/**
+ * マージ前のコンフリクトチェック。実行はしない。
+ *
+ * 1件でも通らなければ1件もマージしない、を画面から先に確かめるためのもの。
+ * まとめてマージでも1件のマージでも、必ずこれを通してから実行する（BRU13-038）
+ */
+export function precheckMerge(projectId: string, numbers: number[]) {
+  return call<GithubMergePrecheckResult>("merge-precheck", { body: { projectId, numbers } });
 }
 
 export function mergePull(projectId: string, number: number, method: GithubMergeMethod) {
