@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, Fragment } from 'react';
+﻿import { useState, useEffect, useLayoutEffect, useRef, Fragment } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router';
 import { Button } from '@/app/components/ui/button';
 import { Card, CardContent } from '@/app/components/ui/card';
@@ -1216,6 +1216,86 @@ function HeroFlow() {
   );
 }
 
+/**
+ * ヒーロー上段（コピー＋製品ビジュアル）の寸法を、画面の実寸から決める。
+ *
+ * ビジュアルの上限幅は `calc(100svh - 定数)` で当てていたが、差し引くべき下段ストリップは
+ * 画面幅によって1段にも2段にもなるため、定数では実際の空きとずれる。結果としてビジュアルが
+ * 空きより大きくなり、% で高さを決めていた背景の波と重なって、波が図の下で途切れて見えていた。
+ * ここでは次の2つを画面サイズの変化に追従させる。
+ *   ・ビジュアルの上限幅 … ナビ・下段ストリップ・上下の余白を引いた残りから、16:10 で逆算する
+ *   ・波の高さ           … 「ビジュアル下端から上段の下端まで」の実測の空きに、波の絵が
+ *                          ちょうど収まる高さ（svg の透明な上半分だけが図の裏へ回る）
+ *
+ * 波は絶対配置なので、高さを変えても観測している要素のレイアウトには影響しない（測り直しの
+ * 無限ループにならない）。上限幅は window の高さとストリップからしか決まらないので、同じ値に
+ * 落ち着く。
+ */
+const HERO_NAV_H = 64;            // 固定ナビ（h-16）ぶん。section の pt-16 と対応
+const HERO_VISUAL_RATIO = 0.625;  // 中身は aspect-[16/10]
+const HERO_VISUAL_FRAME = 14;     // ガラスの縁 p-1.5 ×2 と枠線ぶん
+const HERO_VISUAL_CLEARANCE = 72; // ビジュアルの上下にあけておく最小の余白（波の置き場）
+// 波の絵（面と線）は viewBox 0..420 のうち y=212 から下にしか無い。つまり svg の上半分は
+// 透明なので、この割合ぶんはビジュアルの裏に潜り込ませてよい。
+const HERO_WAVE_INK = 212 / 420;
+const HERO_WAVE_MIN = 120;
+const HERO_WAVE_MAX = 420;
+
+function useHeroMetrics() {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const visualRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [metrics, setMetrics] = useState<{ visualMaxWidth?: number; waveHeight?: number }>({});
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const stripH = stripRef.current?.offsetHeight ?? 0;
+      // 上段に割り当てられる高さ。ビジュアルは上下に余白を残してここへ収める
+      const stageH = Math.max(320, window.innerHeight - HERO_NAV_H - stripH);
+      // 1画面に収める必要があるのは、コピーと横並びになる lg 以上だけ。
+      // それ未満は縦に積まれてどのみちスクロールするので、幅は列に任せる
+      const sideBySide = window.matchMedia('(min-width: 1024px)').matches;
+      const visualMaxWidth = sideBySide
+        ? Math.round((stageH - HERO_VISUAL_CLEARANCE * 2 - HERO_VISUAL_FRAME) / HERO_VISUAL_RATIO)
+        : undefined;
+
+      const stage = stageRef.current?.getBoundingClientRect();
+      const visual = visualRef.current?.getBoundingClientRect();
+      // ビジュアルを出していない幅（md未満）では波の高さは CSS の % 指定に任せる
+      const gap = stage && visual && visual.height > 0 ? stage.bottom - visual.bottom : undefined;
+      // 絵が始まる位置がちょうど空きの中に来る高さ。透明な上半分だけが図に隠れる
+      const waveHeight = gap === undefined
+        ? undefined
+        : Math.round(Math.min(
+            HERO_WAVE_MAX,
+            (stage?.height ?? HERO_WAVE_MAX) * 0.46,
+            Math.max(HERO_WAVE_MIN, (gap - 8) / (1 - HERO_WAVE_INK)),
+          ));
+
+      setMetrics(prev => (
+        prev.visualMaxWidth === visualMaxWidth && prev.waveHeight === waveHeight
+          ? prev
+          : { visualMaxWidth, waveHeight }
+      ));
+    };
+
+    measure();
+    const ro = new ResizeObserver(measure);
+    for (const el of [stageRef.current, visualRef.current, stripRef.current]) {
+      if (el) ro.observe(el);
+    }
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+    };
+  }, []);
+
+  return { stageRef, visualRef, stripRef, ...metrics };
+}
+
 export function LandingPage() {
   const navigate = useNavigate();
   const { pathname, hash } = useLocation();
@@ -1227,6 +1307,8 @@ export function LandingPage() {
   const [storySlide, setStorySlide] = useState(0);
   const [storyAuto, setStoryAuto] = useState(true);
   const [storyTimerKey, setStoryTimerKey] = useState(0);
+  // ヒーロー：製品ビジュアルの上限幅と、背景の波の高さを画面の実寸から決める
+  const hero = useHeroMetrics();
 
   useEffect(() => {
     if (!storyAuto) return;
@@ -1349,7 +1431,7 @@ export function LandingPage() {
         `}</style>
 
         {/* ── 上段（背景つき） ─────────────────────────────── */}
-        <div className="relative flex-1 flex items-center overflow-hidden">
+        <div ref={hero.stageRef} className="relative flex-1 flex items-center overflow-hidden">
           {/* 背景 */}
           <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none" style={{ background: 'linear-gradient(168deg, #ffffff 0%, #fbfffe 22%, #f3fdfb 48%, #eefcf4 74%, #f8fef0 100%)' }}>
             <div className="hero-glow absolute -top-40 -left-28 w-[38rem] h-[38rem] rounded-full" style={{ background: 'radial-gradient(circle, rgba(45,212,191,0.24) 0%, transparent 66%)', filter: 'blur(20px)' }} />
@@ -1375,7 +1457,14 @@ export function LandingPage() {
               className="absolute inset-0 hidden lg:block"
               style={{ background: 'linear-gradient(100deg, rgba(255,255,255,0.74) 0%, rgba(255,255,255,0.42) 28%, rgba(255,255,255,0) 56%)' }}
             />
-            <svg className="absolute bottom-0 left-0 w-full h-[38%] sm:h-[44%]" viewBox="0 0 1440 420" preserveAspectRatio="none" aria-hidden="true">
+            {/* 波の帯。高さは % ではなく、製品ビジュアルの下にできた実測の空きから決める。
+                % のままだと絵の始まりが図の下端より上に来てしまい、波が図に切られて見える。
+                class の % は JS が測る前／md未満（図なし）のための既定値 */}
+            <svg
+              className="absolute bottom-0 left-0 w-full h-[38%] sm:h-[44%]"
+              style={hero.waveHeight ? { height: hero.waveHeight } : undefined}
+              viewBox="0 0 1440 420" preserveAspectRatio="none" aria-hidden="true"
+            >
               <defs>
                 <linearGradient id="heroArea1" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#5eead4" stopOpacity="0.34" />
@@ -1464,17 +1553,19 @@ export function LandingPage() {
               </div>
 
               {/* 右：製品ビジュアル
-                  ・画面は ScaledDashboard（1180×664で描いてから縮小）を通す。
-                    固定ピクセルのモックを箱に押し込むと中身が潰れるため、これが唯一の正解。
                   ・中身は起票→リリースまでの一連の流れ（HeroFlow）。薄いガラスの縁だけを回す。
-                  ・端末の幅は画面の高さからも上限を掛け、ヒーロー全体が1画面に収まるようにする。 */}
+                  ・幅の上限は useHeroMetrics が画面の実寸から出す。ナビ・下段ストリップ・
+                    背景の波の帯を引いた残りに必ず収まるので、背の低いディスプレイでも
+                    1画面から溢れず、波とも重ならない。
+                  ・上限が効いて列より細くなったときは、コピーとの間隔が片側だけ開かないよう
+                    列の中央に置く。 */}
               <div
-                className="hero-rise relative hidden md:block w-full ml-auto"
+                ref={hero.visualRef}
+                className="hero-rise relative hidden md:block w-full mx-auto"
                 style={{
                   animationDelay: '.12s',
-                  // 図の高さ ≒ 幅×0.625 + 縁12px。ナビ・下段の帯・上下余白を引いた
-                  // 残りに収まる幅を上限にして、背の低いディスプレイでも1画面から溢れさせない
-                  maxWidth: 'calc((100svh - 268px) * 1.6)',
+                  // JS が測る前（初回描画・計測不能時）のための保険
+                  maxWidth: hero.visualMaxWidth ?? 'calc((100svh - 268px) * 1.6)',
                 }}
               >
                 {/* 背後の光 */}
@@ -1502,8 +1593,10 @@ export function LandingPage() {
           </div>
         </div>
 
-        {/* ── 下段：何が入っているかを1行で ─────────────────── */}
-        <div className="relative bg-white border-t border-slate-200">
+        {/* ── 下段：何が入っているかを1行で ───────────────────
+            画面幅で 2列×2段 にも 4列×1段 にもなる。上段に残る高さが変わるので、
+            ここの高さは実測して useHeroMetrics に渡す */}
+        <div ref={hero.stripRef} className="relative bg-white border-t border-slate-200">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             {/* 罫線は divide-* だと2列×2段のときに余計な線が出るので、位置から明示的に引く */}
             <div className="grid grid-cols-2 lg:grid-cols-4">
