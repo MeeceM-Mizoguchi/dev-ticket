@@ -3,6 +3,11 @@
   "crons": [
     { "path": "/api/github/sync-released", "schedule": "*/15 * * * *" }
   ],
+  "functions": {
+    "api/github/[resource].ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     { "source": "/api/dav/:path*", "destination": "/api/dav-open?path=:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

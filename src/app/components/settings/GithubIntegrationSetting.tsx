@@ -10,10 +10,16 @@ import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { PageLoader } from "@/app/components/shared/PageLoader";
-import { fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, syncReleasedTickets, backfillGithubLinks, GithubApiError } from "@/app/lib/github";
+import {
+  fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, syncReleasedTickets,
+  backfillGithubLinks, fetchDeployOverview, runDeployCheck, elapsedSince, relativeTime, GithubApiError,
+} from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
-import type { GithubStatus, GithubRepo, GithubAccessLevel, GithubReleaseSyncResult } from "@/app/types";
+import type {
+  GithubStatus, GithubRepo, GithubAccessLevel, GithubReleaseSyncResult, GithubDeployOverview,
+  GithubDeployOverviewRow,
+} from "@/app/types";
 
 const GITHUB_BLACK = "#1F2328";
 
@@ -60,10 +66,18 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   const [copied, setCopied] = useState(false);
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [grantCounts, setGrantCounts] = useState<{ merge: number; view: number; none: number } | null>(null);
+  /**
+   * 本番反映の診断（docs/deploy-verification-design.md 層D）。
+   * 「main が未保護」「反映確認が未設定」「本番が遅れている」を1画面で見せる。
+   */
+  const [overview, setOverview] = useState<GithubDeployOverview | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [recheckingId, setRecheckingId] = useState<string | null>(null);
 
   const linkRef = useRef<HTMLDivElement>(null);
   const permRef = useRef<HTMLDivElement>(null);
   const connectRef = useRef<HTMLDivElement>(null);
+  const deployRef = useRef<HTMLDivElement>(null);
 
   // ── 読み込み ──────────────────────────────────────────────
   const loadStatus = useCallback(async () => {
@@ -175,6 +189,21 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     setGrantCounts({ merge, view, none });
   }, [orgId, rows]);
 
+  /**
+   * 診断は GitHub をリポジトリ件数ぶん叩くので、接続済みのときだけ・別に読む。
+   * 取れなくても他の設定は使えるため、失敗しても画面は止めない。
+   */
+  const loadOverview = useCallback(async () => {
+    setOverviewLoading(true);
+    try {
+      setOverview(await fetchDeployOverview(orgId));
+    } catch {
+      setOverview(null);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }, [orgId]);
+
   useEffect(() => {
     if (!isAdmin) { setLoading(false); return; }
     let alive = true;
@@ -185,9 +214,10 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
       await loadProjects();
       if (s?.installed && !s.revoked) await loadRepos();
       if (alive) setLoading(false);
+      if (alive && s?.installed && !s.revoked) void loadOverview();
     })();
     return () => { alive = false; };
-  }, [isAdmin, loadStatus, loadProjects, loadRepos]);
+  }, [isAdmin, loadStatus, loadProjects, loadRepos, loadOverview]);
 
   useEffect(() => { void loadGrantCounts(); }, [loadGrantCounts]);
 
@@ -333,6 +363,28 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     }
   };
 
+  /** 1プロジェクトだけ本番反映を確認し直す */
+  const handleRecheckDeploy = async (row: GithubDeployOverviewRow) => {
+    setRecheckingId(row.projectId);
+    try {
+      const r = await runDeployCheck(row.projectId);
+      setOverview(prev => prev && ({
+        ...prev,
+        rows: prev.rows.map(x => (x.projectId === row.projectId ? { ...x, deploy: r.deploy } : x)),
+      }));
+      toast(
+        r.deploy.state === "in-sync" ? `${row.projectName}: 本番は最新です`
+          : r.deploy.state === "behind" ? `${row.projectName}: ${r.deploy.behindBy}コミット未反映です`
+            : `${row.projectName}: ${r.deploy.message ?? "確認できませんでした"}`,
+        r.deploy.state === "in-sync" ? "success" : "error",
+      );
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "確認に失敗しました", "error");
+    } finally {
+      setRecheckingId(null);
+    }
+  };
+
   const handleCopyUrl = async () => {
     if (await copyText(window.location.href)) {
       setCopied(true);
@@ -470,6 +522,34 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
                   </a>
                 </>
               )}
+            </>
+          )}
+        </Notice>
+      )}
+
+      {/* 無くても動くが、無いとデプロイの事故を取りこぼす権限。
+          必須権限と同じ強さで出すと「操作が失敗する」と誤読されるので、青い案内にする。
+          Vercel の「Deployment was blocked」は Checks ではなく commit status 側に出ることがあり、
+          この権限が無いと失敗ですらなく「チェックなし」に見える */}
+      {(status?.optionalMissingPermissions?.length ?? 0) > 0 && (
+        <Notice tone="info" title="デプロイの失敗を検知するための権限が不足しています">
+          この権限が無くても、閲覧・マージ・リリース反映はこれまでどおり動きます。
+          ただし <strong>デプロイが止まっている（blocked）ことを検知できません</strong>。
+          <br />
+          {status!.optionalMissingPermissions!.map(p => (
+            <span key={p.key} style={{ display: "block", marginTop: 4, fontSize: 11 }}>
+              ・<strong>{p.label}</strong>：{p.current} → <strong>{p.need}</strong> があると検知できます（{p.why}）
+            </span>
+          ))}
+          <br />
+          App の所有者が権限を追加し、インストール画面で更新を承認してください。
+          {status!.appPermissionsUrl && (
+            <>
+              {" "}
+              <a href={status!.appPermissionsUrl} target="_blank" rel="noopener noreferrer"
+                style={{ color: "#075985", fontWeight: 700, textDecoration: "underline" }}>
+                App の権限設定をひらく
+              </a>
             </>
           )}
         </Notice>
@@ -683,6 +763,18 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
                     {syncResult.details.flatMap(d => d.released.map(r => r.wbs)).filter(Boolean).join(" / ")}
                   </p>
                 )}
+                {/* 本番反映を確認できず前へ進めなかったものは、必ず理由まで出す。
+                    黙って0件で返すと「対象が無かった」と読まれて放置される */}
+                {syncResult?.details.filter(d => d.deployHold).map(d => (
+                  <p key={d.projectId} style={{ fontSize: 11, color: "#B45309", marginTop: 3, lineHeight: 1.7 }}>
+                    {d.projectName}: {d.deployHold}
+                  </p>
+                ))}
+                {(syncResult?.behind ?? 0) > 0 && (
+                  <p style={{ fontSize: 11, color: "#B91C1C", marginTop: 3, fontWeight: 600 }}>
+                    本番へ反映されていないプロジェクトが {syncResult!.behind}件あります（下の⑤をご確認ください）。
+                  </p>
+                )}
               </div>
               <button onClick={handleSyncReleased} disabled={syncing}
                 style={{ padding: "8px 16px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#1A1714", cursor: syncing ? "default" : "pointer", opacity: syncing ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
@@ -713,12 +805,73 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
             </div>
 
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
+              既定では、判定に使うのは GitHub 上のPRの状態だけです。
+              <strong>本番へのデプロイが止まっていても「リリース済み」になります</strong>。
+              これを防ぐには、下の⑤で本番反映の確認を設定してください。
+              <br />
               前へ進めるのは「リリース待ち」からだけです。他のステータスのチケットは動かしません。
               <br />
               判定はブランチ名・PRタイトルの WBS 番号を根拠にしています（紐付けが無いマージ済みPRも遡って突き合わせます）。
               番号を含まないブランチのPRは自動では拾えないため、その場合はチケット詳細の「関連PR」から手動で紐付けてください。
               <br />
               未マージのまま閉じたPRは取り下げとみなして無視し、まだ開いているPRが残っているチケットは反映を見送ります。
+            </p>
+          </section>
+
+          {/* ⑤ 本番反映の確認（docs/deploy-verification-design.md 層D） */}
+          <section ref={deployRef} style={cardStyle}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, marginBottom: 4 }}>
+              <SectionTitle no="⑤" title="本番反映の確認" />
+              <button onClick={() => void loadOverview()} disabled={overviewLoading}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 11, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#4B4540", cursor: overviewLoading ? "default" : "pointer", opacity: overviewLoading ? 0.6 : 1 }}>
+                <RefreshCw style={{ width: 10, height: 10 }} />{overviewLoading ? "確認中..." : "診断を更新"}
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 12, lineHeight: 1.8 }}>
+              GitHub 上でマージが成功していても、デプロイが止まっていれば本番には何も届きません。
+              その状態はマージの成否からは分からないため、
+              <strong>本番が公開しているバージョン情報を読んで、既定ブランチと突き合わせます</strong>。
+              <br />
+              確認先URLと判定の強さは、各プロジェクトの「設定」ダイアログで指定します。
+            </p>
+
+            {overviewLoading && !overview ? (
+              <p style={{ fontSize: 12, color: "#B0A9A4", padding: "12px 0" }}>診断中...</p>
+            ) : !overview || overview.rows.length === 0 ? (
+              <p style={{ fontSize: 12, color: "#B0A9A4", padding: "12px 0" }}>
+                リポジトリを紐付けたプロジェクトがまだありません。
+              </p>
+            ) : (
+              <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 110px 1fr 92px", gap: 10, padding: "8px 12px", background: "#F9F8F6", borderBottom: "1px solid rgba(26,23,20,0.07)", fontSize: 10, fontWeight: 700, color: "#8A837B", letterSpacing: "0.06em" }}>
+                  <span>プロジェクト</span><span>ブランチ保護</span><span>本番反映</span><span />
+                </div>
+                {overview.rows.map((r, i) => (
+                  <DeployOverviewRow
+                    key={r.projectId}
+                    row={r}
+                    last={i === overview.rows.length - 1}
+                    rechecking={recheckingId === r.projectId}
+                    onRecheck={() => handleRecheckDeploy(r)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* 打ち切った件数は黙って隠さない。隠すと「全部見た」と読まれる */}
+            {(overview?.truncated ?? 0) > 0 && (
+              <p style={{ fontSize: 11, color: "#B45309", marginTop: 8 }}>
+                プロジェクトが多いため、{overview!.truncated}件は診断していません。
+              </p>
+            )}
+
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
+              <strong>ブランチ保護が未設定</strong>のリポジトリでは、チェックが失敗していても GitHub 側はマージを止めません。
+              その場合は各プロジェクトの設定で「マージ前に失敗しているチェックがあるとき」を
+              「理由を入力しないとマージできない」にすると、Dev Ticket 側で同じ関門を作れます。
+              <br />
+              遅れは{DEPLOY_GRACE_LABEL}を過ぎると画面に、{DEPLOY_SLACK_LABEL}を過ぎるとプロジェクトの Slack チャンネルに出ます
+              （Slack通知が有効なプロジェクトのみ）。
             </p>
           </section>
         </div>
@@ -729,6 +882,71 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
 
 // ── 部品 ─────────────────────────────────────────────────────
 const cardStyle = { background: "#FFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "18px 20px" } as const;
+
+// サーバー側の閾値（DEPLOY_GRACE_MIN / DEPLOY_SLACK_MIN）と合わせている。
+// 数字がずれると案内が嘘になるので、変えるときは api/github/[resource].ts も直すこと。
+const DEPLOY_GRACE_LABEL = "30分";
+const DEPLOY_SLACK_LABEL = "2時間";
+
+/** 診断の1行。状態は「良い／注意／悪い／確認できていない」の4つに落として出す */
+function DeployOverviewRow({ row, last, rechecking, onRecheck }: {
+  row: GithubDeployOverviewRow;
+  last: boolean;
+  rechecking: boolean;
+  onRecheck: () => void;
+}) {
+  const d = row.deploy;
+  const tone = d.state === "behind"
+    ? (d.level === "critical" ? "bad" : d.level === "none" ? "info" : "warn")
+    : d.state === "in-sync" ? "good"
+      : d.state === "not-configured" ? "muted" : "warn";
+
+  const color = tone === "good" ? "#059669"
+    : tone === "bad" ? "#DC2626"
+      : tone === "warn" ? "#D97706"
+        : tone === "info" ? "#0284C7" : "#A09790";
+
+  const text = d.state === "not-configured" ? "未設定（確認していません）"
+    : d.state === "in-sync" ? "最新"
+      : d.state === "behind"
+        ? `${d.behindBy}コミット未反映${d.behindSince ? `（${elapsedSince(d.behindSince)}前から）` : ""}`
+        : d.message ?? "確認できませんでした";
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1.2fr 110px 1fr 92px", gap: 10, padding: "9px 12px", alignItems: "center", borderBottom: last ? "none" : "1px solid rgba(26,23,20,0.05)" }}>
+      <div style={{ minWidth: 0 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{row.projectName}</p>
+        <p style={{ fontSize: 10, color: "#A09790", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{row.repo}</p>
+      </div>
+
+      {/* ブランチ保護。未保護＝「失敗していてもマージできる」ので、判定できたときは必ず出す */}
+      <span style={{ fontSize: 11, fontWeight: 700, color: row.branchProtected === null ? "#A09790" : row.branchProtected ? "#059669" : "#D97706" }}>
+        {row.branchProtected === null ? "判定できず" : row.branchProtected ? "✔ 保護あり" : "⚠ 未保護"}
+      </span>
+
+      <div style={{ minWidth: 0 }}>
+        <p style={{ fontSize: 12, color, fontWeight: tone === "good" || tone === "muted" ? 500 : 700, lineHeight: 1.5, wordBreak: "break-word" as const }}>
+          {text}
+        </p>
+        {d.checkState === "failure" && d.checkSummary && (
+          <p style={{ fontSize: 10, color: "#B91C1C", marginTop: 1 }}>{row.defaultBranch ?? "main"}: {d.checkSummary}</p>
+        )}
+        {d.checkedAt && d.state !== "not-configured" && (
+          <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>{relativeTime(d.checkedAt)}に確認</p>
+        )}
+      </div>
+
+      {d.configured ? (
+        <button onClick={onRecheck} disabled={rechecking}
+          style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#4B4540", cursor: rechecking ? "default" : "pointer", opacity: rechecking ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
+          {rechecking ? "確認中" : "今すぐ確認"}
+        </button>
+      ) : (
+        <span style={{ fontSize: 10, color: "#B0A9A4", lineHeight: 1.4 }}>プロジェクト設定で指定</span>
+      )}
+    </div>
+  );
+}
 
 function SectionTitle({ no, title }: { no: string; title: string }) {
   return (

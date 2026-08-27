@@ -340,9 +340,10 @@ export function TicketPrSection({
 
   // onMerged は「GitHub 側のマージが終わった」合図。ダイアログの進捗を次の段
   //（この画面の取り直し）へ進めるために呼ぶ
-  const handleMerge = async (method: GithubMergeMethod, onMerged: () => void) => {
+  // reason は「失敗チェックのまま続ける理由」（層A / docs/deploy-verification-design.md）
+  const handleMerge = async (method: GithubMergeMethod, onMerged: () => void, reason: string) => {
     if (!mergeTarget) return;
-    await mergePull(projectId, mergeTarget.number, method);
+    await mergePull(projectId, mergeTarget.number, method, reason);
     onMerged();
     toast(`#${mergeTarget.number} をマージしました`, "success");
     await load();

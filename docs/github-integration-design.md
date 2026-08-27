@@ -262,6 +262,10 @@ RLS は既存テーブルと同じ方針（`can_access_project()` ベース）�
   同一プロジェクトのチケットに `auto_linked = true` で紐付ける。PR一覧の取得時にまとめて解決する。
 - **手動**: チケット詳細の「関連PR」から PR 番号を選んで追加（`merge` 権限が必要）。
 
+> **注意（BRU13-041）**: 「マージ済み＝リリース済み」はデプロイの成否を見ていない。
+> デプロイがブロックされていても、この判定はチケットを「リリース済み」に進めてしまう。
+> 本番への反映まで確認する設定は [本番反映の確認 設計書](./deploy-verification-design.md) を参照。
+
 自動紐付けは**表示のみに使い、チケットのステータスは自動変更しない**。
 既知の再発バグ（順番が変わる・チカチカする）を踏まないよう、既存のチケット更新経路には触れない。
 
@@ -969,6 +973,18 @@ GitHub App は user access token も発行できるため、「自分の GitHub 
 | Issues | Read | Issue一覧 |
 | Checks | Read | CI状態の表示 |
 
+任意（無くても動くが、あるとデプロイの事故を検知できる。
+→ [本番反映の確認 設計書](./deploy-verification-design.md)）:
+
+| 権限 | レベル | 用途 |
+|---|---|---|
+| Commit statuses | Read | **Vercel の「Deployment was blocked」の検知**。これが無いと `check-runs` にしか出ない情報しか見えず、失敗ですらなく「チェックなし」に見える |
+| Deployments | Read | 本番デプロイの成否・環境ごとの状態 |
+
+> 任意の権限は `OPTIONAL_PERMISSIONS`（`api/github/[resource].ts`）で管理し、
+> 不足していても操作は止めない。代わりに `checkUnavailable` に情報源名を入れ、
+> 画面に「確認できていません」と出す。**「チェックなし」を「問題なし」と読ませないため。**
+
 > **Contents は Read では足りない。**
 > マージ（`PUT /repos/{owner}/{repo}/pulls/{n}/merge`）は「マージ先ブランチに commit を積む」書き込み操作なので、
 > `Contents: Read & write` が必要。Read のままだと GitHub は `403 Resource not accessible by integration` を返し、
@@ -1025,8 +1041,27 @@ App 側の設定:
 
 ## 13. 将来拡張（今回は入れない）
 
-- Webhook（`pull_request` / `push`）による紐付けとステータスの即時同期
 - 本人名義でのマージ（user access token）
-- マージをトリガーにしたチケットステータスの自動遷移
 - マージ後のブランチ削除
 - コード差分・行コメントの表示
+
+実装済みになったもの:
+
+- Webhook（`pull_request`）による紐付けとステータスの即時同期（7章）
+- マージをトリガーにしたチケットステータスの自動遷移（`sync-released`）
+- **本番へ反映されたかの確認 → [本番反映の確認 設計書](./deploy-verification-design.md)（BRU13-041）**
+
+## 14. 「マージ済み」と「本番反映済み」は別（BRU13-041）
+
+本設計では長らく「PRが既定ブランチへマージされた＝リリース済み」としてきた。
+**この割り切りが原因で、11コミットが11日間気づかれずに本番へ届かない事故が起きた。**
+
+デプロイがブロックされていても GitHub 上のマージは成功するため、
+マージの成否からは区別が付かない。判定は
+[本番反映の確認 設計書](./deploy-verification-design.md) に分離し、本書の判定は
+「確認しない（`deploy_check_mode = off`）」ときの既定動作として残している。
+
+- マージの入口で失敗チェックを見る（層A）… `require_checks_mode`
+- 本番に届くまで「リリース済み」にしない（層B）… `deploy_check_mode = gate`
+- 反映の遅れを観測して知らせる（層C）… 既存 cron に相乗り
+- 未保護・未設定を診断する（層D）… 外部連携画面の⑤

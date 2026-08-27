@@ -7,7 +7,8 @@ import type {
   GithubStatus, GithubRepo, GithubPull, GithubIssue, GithubCommit, GithubBranch,
   TicketGithubLink, TicketGithubLinkCandidate, GithubMergeMethod, GithubAccessLevel,
   GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult, GithubPermissionBlock,
-  GithubMergePrecheckResult,
+  GithubMergePrecheckResult, GithubRequireChecksMode, GithubDeployStatus, GithubDeployOverview,
+  GithubDeployLevel, GithubDeployCheckMode,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -100,6 +101,8 @@ export function fetchPulls(projectId: string, opts?: { light?: boolean }) {
     links: TicketGithubLink[];
     /** マージが権限で止まる状態なら入る（light では返らない） */
     writeBlock: GithubPermissionBlock | null;
+    /** 失敗チェックをマージ前にどう扱うか（層A） */
+    requireChecksMode?: GithubRequireChecksMode;
   }>("pulls", { query: { projectId, light: opts?.light ? 1 : undefined } });
 }
 
@@ -161,13 +164,18 @@ export function precheckMerge(projectId: string, numbers: number[]) {
   return call<GithubMergePrecheckResult>("merge-precheck", { body: { projectId, numbers } });
 }
 
-export function mergePull(projectId: string, number: number, method: GithubMergeMethod) {
-  return call<{ ok: true; sha: string | null }>("merge", { body: { projectId, number, method } });
+/**
+ * reason は「失敗しているチェックがあるのに続ける」ときの理由（層A）。
+ * 空のまま送ると、対象プロジェクトの設定によっては 409 が返って理由を求められる。
+ * 書かれた理由は監査ログ（github_action_logs）に残る。
+ */
+export function mergePull(projectId: string, number: number, method: GithubMergeMethod, reason?: string) {
+  return call<{ ok: true; sha: string | null }>("merge", { body: { projectId, number, method, reason } });
 }
 
 /** 選択した複数のPRを、1件ずつ順番にマージする */
-export function mergePullsBulk(projectId: string, numbers: number[], method: GithubMergeMethod) {
-  return call<GithubBulkMergeResult>("merge-bulk", { body: { projectId, numbers, method } });
+export function mergePullsBulk(projectId: string, numbers: number[], method: GithubMergeMethod, reason?: string) {
+  return call<GithubBulkMergeResult>("merge-bulk", { body: { projectId, numbers, method, reason } });
 }
 
 export function reviewPull(projectId: string, number: number, event: "APPROVE" | "REQUEST_CHANGES", body: string) {
@@ -200,6 +208,54 @@ export function resolveLinkCandidate(projectId: string, ticketId: string, number
  */
 export function backfillGithubLinks(projectId: string) {
   return call<{ ok: true; skipped: boolean; scanned: number }>("backfill-links", { body: { projectId } });
+}
+
+// ── 本番反映の確認（docs/deploy-verification-design.md） ──────
+//
+// 「マージした」と「本番に届いた」は別の事実。
+// GitHub 上のマージだけを見ていると、デプロイが止まっていても全件リリース済みに見える。
+
+/**
+ * このプロジェクトの本番反映の状態。
+ * 観測結果はサーバー側に保存されていて、古ければ取得のついでに取り直される。
+ * fresh を付けると必ず取り直す。
+ */
+export function fetchDeployStatus(projectId: string, opts?: { fresh?: boolean }) {
+  return call<{ deploy: GithubDeployStatus; level: GithubAccessLevel }>(
+    "deploy-status", { query: { projectId, fresh: opts?.fresh ? 1 : undefined } },
+  );
+}
+
+/** 「今すぐ確認する」。本番へ問い合わせて観測をやり直す */
+export function runDeployCheck(projectId: string) {
+  return call<{ deploy: GithubDeployStatus; level: GithubAccessLevel }>(
+    "deploy-check", { body: { projectId } },
+  );
+}
+
+/** 外部連携画面の診断（組織全体の未保護・未設定・遅延） */
+export function fetchDeployOverview(orgId?: string | null) {
+  return call<GithubDeployOverview>("deploy-overview", { query: { orgId: orgId ?? undefined } });
+}
+
+/** 遅れ具合の見せ方。時間で色と言い方を変える */
+export const DEPLOY_LEVEL_TONE: Record<GithubDeployLevel, { bg: string; border: string; text: string }> = {
+  none:     { bg: "#F0F9FF", border: "rgba(2,132,199,0.28)", text: "#075985" },
+  notice:   { bg: "#FFFBEB", border: "rgba(217,119,6,0.28)", text: "#92400E" },
+  slack:    { bg: "#FFFBEB", border: "rgba(217,119,6,0.40)", text: "#92400E" },
+  critical: { bg: "#FEF2F2", border: "rgba(220,38,38,0.35)", text: "#B91C1C" },
+};
+
+/** 「8時間前から」のような経過表示。遅れの重さは日数ではなく時間で伝わる */
+export function elapsedSince(iso: string | null): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const m = Math.floor((Date.now() - t) / 60000);
+  if (m < 60) return `${Math.max(m, 1)}分`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}時間`;
+  return `${Math.floor(h / 24)}日`;
 }
 
 // ── 表示ヘルパー ─────────────────────────────────────────────
@@ -239,6 +295,21 @@ export const MERGE_METHOD_LABELS: Record<GithubMergeMethod, string> = {
   merge: "マージコミットを作成",
   squash: "スカッシュしてマージ",
   rebase: "リベースしてマージ",
+};
+
+/** マージ前に失敗チェックをどう扱うか（層A）。プロジェクト設定のセレクトに出す */
+export const REQUIRE_CHECKS_LABELS: Record<GithubRequireChecksMode, string> = {
+  off: "何もしない",
+  warn: "警告を出す（マージは可能）",
+  reason: "理由を入力しないとマージできない",
+  block: "マージさせない",
+};
+
+/** 本番反映の確認をどこまで効かせるか（層B）。プロジェクト設定のセレクトに出す */
+export const DEPLOY_MODE_LABELS: Record<GithubDeployCheckMode, string> = {
+  off: "確認しない（マージ＝リリース済み）",
+  warn: "確認して警告を出す（ステータスは進める）",
+  gate: "本番へ反映されるまで「リリース済み」にしない",
 };
 
 /** 「3分前」形式。GitHub の日時をそのまま出すと読みにくいため */

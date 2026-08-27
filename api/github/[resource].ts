@@ -11,6 +11,9 @@
 //   GET  /api/github/commits?projectId=&branch=
 //   GET  /api/github/branches?projectId=
 //   GET  /api/github/links?projectId=&ticketId=   … チケットに紐付いたPR/Issue
+//   GET  /api/github/deploy-status?projectId=     … 本番反映の状態（遅れ・未反映PR・理由）
+//   POST /api/github/deploy-check   { projectId } … 本番反映を今すぐ確認し直す
+//   GET  /api/github/deploy-overview?orgId=       … 組織全体の診断（未保護・未設定・遅延）
 //   POST /api/github/merge     { projectId, number, method }
 //   POST /api/github/review    { projectId, number, event, body }
 //   POST /api/github/comment   { projectId, number, body }
@@ -31,6 +34,7 @@
 // ============================================================
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import dns from "dns";
 
 const GITHUB_API = "https://api.github.com";
 const UA = "dev-ticket";
@@ -261,9 +265,27 @@ const REQUIRED_PERMISSIONS: { key: string; label: string; need: "read" | "write"
   { key: "checks", label: "Checks", need: "read", why: "CI状態の表示" },
 ];
 
+/**
+ * 「無くても機能は動くが、あると事故を検知できる」権限。
+ *
+ * 本番反映の確認（docs/deploy-verification-design.md）で使う。
+ * Vercel の「Deployment was blocked」は Checks ではなく commit status 側に出ることがあり、
+ * checks だけを見ていると失敗ですらなく「チェックなし」に見える。
+ *
+ * REQUIRED_PERMISSIONS に混ぜないのは、混ぜると既存のインストール全部に
+ * 「その操作は実行しても必ず失敗します」という誤った警告が出るため。
+ * こちらは「確認できていない」という別の弱い案内として出す。
+ */
+const OPTIONAL_PERMISSIONS: { key: string; label: string; need: "read" | "write"; why: string }[] = [
+  { key: "statuses", label: "Commit statuses", need: "read", why: "Vercel等のデプロイ結果（blocked）の検知" },
+  { key: "deployments", label: "Deployments", need: "read", why: "本番デプロイの成否の検知" },
+];
+
 const PERMISSION_RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
 
-const PERMISSION_META = new Map(REQUIRED_PERMISSIONS.map(p => [p.key, p]));
+const PERMISSION_META = new Map(
+  [...REQUIRED_PERMISSIONS, ...OPTIONAL_PERMISSIONS].map(p => [p.key, p]),
+);
 
 export interface MissingPermission { key: string; label: string; need: string; current: string; why: string }
 
@@ -554,6 +576,10 @@ interface ProjectCtx {
   defaultBranch: string;
   installationId: string;
   level: GithubLevel;
+  /** 本番反映の確認をどこまで効かせるか（docs/deploy-verification-design.md） */
+  deployCheckMode: DeployCheckMode;
+  /** マージ前に失敗チェックをどう扱うか（層A） */
+  requireChecksMode: RequireChecksMode;
 }
 
 /**
@@ -575,7 +601,7 @@ async function projectContext(
   // アクセス不可で弾く場合に権限クエリが1回無駄になるが、判定順は下で従来どおり保つ
   const [{ data: project }, level] = await Promise.all([
     sb.from("projects")
-      .select("id, organization_id, members, github_repo_full_name, github_default_branch, github_enabled")
+      .select("id, organization_id, members, github_repo_full_name, github_default_branch, github_enabled, deploy_check_mode, require_checks_mode")
       .eq("id", projectId)
       .maybeSingle(),
     resolveGithubLevel(sb, caller, projectId),
@@ -613,6 +639,8 @@ async function projectContext(
     defaultBranch: (project.github_default_branch as string | null) || "",
     installationId,
     level,
+    deployCheckMode: deployMode((project as any).deploy_check_mode),
+    requireChecksMode: requireChecksMode((project as any).require_checks_mode),
   };
 }
 
@@ -720,22 +748,6 @@ function mapPull(p: any) {
   };
 }
 
-/** チェック結果を1つの状態にまとめる */
-function summarizeChecks(runs: any[]): { state: "success" | "failure" | "pending" | "none"; summary: string; checks: { name: string; state: any }[] } {
-  if (!runs.length) return { state: "none", summary: "チェックなし", checks: [] };
-  const checks = runs.map(r => ({
-    name: r.name as string,
-    state: r.status !== "completed"
-      ? "pending"
-      : (r.conclusion === "success" || r.conclusion === "neutral" || r.conclusion === "skipped") ? "success" : "failure",
-  }));
-  const failure = checks.filter(c => c.state === "failure").length;
-  const pending = checks.filter(c => c.state === "pending").length;
-  if (failure) return { state: "failure", summary: `CI ${failure}件失敗`, checks };
-  if (pending) return { state: "pending", summary: `CI 実行中(${checks.length - pending}/${checks.length})`, checks };
-  return { state: "success", summary: `CI ${checks.length}件成功`, checks };
-}
-
 function summarizeReviews(reviews: any[]): { state: "approved" | "changes_requested" | "pending"; summary: string } {
   // 同じ人が複数回レビューしている場合は最後のものだけを見る
   const latest = new Map<string, string>();
@@ -749,6 +761,823 @@ function summarizeReviews(reviews: any[]): { state: "approved" | "changes_reques
   if (changes) return { state: "changes_requested", summary: `変更依頼 ${changes}件` };
   if (approved) return { state: "approved", summary: `${approved}件承認` };
   return { state: "pending", summary: "未承認" };
+}
+
+// ============================================================
+// 本番反映の確認（docs/deploy-verification-design.md）
+//
+// これまでは「PRが既定ブランチへマージされた＝リリース済み」としていた。
+// マージは成功しているのにデプロイが止まっている（Vercel の blocked 等）と、
+// 本番に何も届いていないのに Dev Ticket 上は全件「リリース済み」になり、
+// 気づく手立てが無くなる。実際に11コミットが滞留した事故が起きている。
+//
+// 対策は3つ。
+//   層A … マージの入口で「失敗しているチェック」を見て止める（checkGateOf）
+//   層B … 本番に反映されたことを確認してから「リリース済み」にする（deploy_check_mode=gate）
+//   層C … 反映の遅れを定期的に観測して知らせる（runDeployCheck → Slack）
+//
+// 判定の中心は「本番が公開しているバージョン情報」と「既定ブランチの先頭」の
+// 突き合わせにしている。デプロイ先（Vercel / Netlify / 自前）に依存せず、
+// ブロックでもビルド失敗でもキャッシュでも、原因を問わず「届いていない」事実を掴めるため。
+// ============================================================
+
+type DeployCheckMode = "off" | "warn" | "gate";
+type RequireChecksMode = "off" | "warn" | "reason" | "block";
+
+function deployMode(v: unknown): DeployCheckMode {
+  return v === "warn" || v === "gate" ? v : "off";
+}
+
+/** 本番反映の確認が有効なプロジェクトか。URLが入っていても off なら確認しない */
+function deployActive(project: any): boolean {
+  return deployMode(project?.deploy_check_mode) !== "off"
+    && !!String(project?.deploy_check_url ?? "").trim();
+}
+function requireChecksMode(v: unknown): RequireChecksMode {
+  return v === "off" || v === "reason" || v === "block" ? v : "warn";
+}
+
+/** 本番への確認の待ち時間。長く待たせると画面が固まるので短くする */
+const DEPLOY_PROBE_TIMEOUT_MS = 8000;
+/** 応答が巨大でも読み切らない。バージョン情報は先頭にあれば足りる */
+const DEPLOY_PROBE_MAX_CHARS = 200_000;
+
+/**
+ * 反映の遅れをどこから「異常」とみなすか（分）。
+ * ビルドとデプロイには時間がかかるので、マージ直後を異常と呼ばない猶予を置く。
+ */
+const DEPLOY_GRACE_MIN = 30;
+/** Slack に流す閾値 */
+const DEPLOY_SLACK_MIN = 120;
+/** 赤帯（重大）に切り替える閾値 */
+const DEPLOY_CRITICAL_MIN = 1440;
+
+/** deploy_check_key が未設定・的外れだったときに拾いにいくキー名の候補 */
+const DEPLOY_REF_KEYS = [
+  "buildId", "commit", "commitSha", "commit_sha", "gitCommitSha",
+  "sha", "revision", "gitSha", "build", "version",
+];
+
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+// ── 確認先URLの安全確認 ──────────────────────────────────────
+//
+// このURLは組織の管理者が入力し、サーバーが代わりに取りに行く。
+// 社内アドレスやクラウドのメタデータ（169.254.169.254）を指されると、
+// サーバーからしか見えないものを覗く踏み台になるため、名前解決の結果まで見て弾く。
+
+function isPrivateIp(ip: string): boolean {
+  if (ip.includes(":")) {
+    const v = ip.toLowerCase();
+    if (v === "::" || v === "::1") return true;
+    if (v.startsWith("fe80") || v.startsWith("fc") || v.startsWith("fd")) return true;
+    // ::ffff:10.0.0.1 のような IPv4 射影アドレス
+    const m = v.match(/(\d+\.\d+\.\d+\.\d+)$/);
+    return m ? isPrivateIp(m[1]) : false;
+  }
+  const p = ip.split(".").map(Number);
+  // 判別できないものは通さない（安全側）
+  if (p.length !== 4 || p.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const [a, b] = p;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;            // リンクローカル（メタデータ）
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;  // CGNAT
+  if (a >= 224) return true;                          // マルチキャスト・予約
+  return false;
+}
+
+async function assertPublicUrl(raw: string): Promise<URL> {
+  let url: URL;
+  try { url = new URL(raw.trim()); } catch { throw new Error("確認先URLの形式が正しくありません。"); }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("確認先URLは http または https で指定してください。");
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (/^(localhost|.+\.local|.+\.internal|.+\.localdomain)$/i.test(host)) {
+    throw new Error("社内・ローカル向けのURLは確認先に指定できません。");
+  }
+  let addrs: { address: string }[];
+  try {
+    addrs = await dns.promises.lookup(host, { all: true });
+  } catch {
+    throw new Error("確認先URLのホスト名を解決できませんでした。");
+  }
+  if (!addrs.length || addrs.some(a => isPrivateIp(a.address))) {
+    throw new Error("社内・ローカル向けのURLは確認先に指定できません。");
+  }
+  return url;
+}
+
+// ── 本番が今どのコミットで動いているか ───────────────────────
+interface DeployProbe {
+  /** 本番から取れた値そのもの（コミットSHAとは限らない） */
+  ref: string | null;
+  /** 実際に読めたキー名。設定値と違う場合は画面で直させる */
+  usedKey: string | null;
+  error: string | null;
+}
+
+/** "build.commit" のようなドット区切りにも対応する */
+function pickPath(obj: any, path: string): unknown {
+  return path.split(".").reduce<any>((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+async function probeDeployedRef(rawUrl: string, key: string): Promise<DeployProbe> {
+  let url: URL;
+  try {
+    url = await assertPublicUrl(rawUrl);
+  } catch (e) {
+    return { ref: null, usedKey: null, error: (e as Error).message };
+  }
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), DEPLOY_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url.toString(), {
+      signal: ac.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json,text/plain;q=0.9,*/*;q=0.8",
+        // CDN のキャッシュを掴むと「古いまま」に見えるので都度取り直す
+        "Cache-Control": "no-cache",
+      },
+    });
+    if (!res.ok) {
+      return { ref: null, usedKey: null, error: `確認先URLが ${res.status} を返しました。` };
+    }
+    const text = (await res.text()).slice(0, DEPLOY_PROBE_MAX_CHARS);
+    const parsed = (() => { try { return JSON.parse(text); } catch { return null; } })();
+
+    if (parsed && typeof parsed === "object") {
+      // 設定されたキーを最優先し、外れていたら定番のキー名も見る。
+      // 「キー名だけ違って永久に未設定扱い」を避けるため
+      const keys = Array.from(new Set([key.trim(), ...DEPLOY_REF_KEYS].filter(Boolean)));
+      for (const k of keys) {
+        const v = pickPath(parsed, k);
+        if (typeof v === "string" && v.trim()) return { ref: v.trim(), usedKey: k, error: null };
+        if (typeof v === "number" && Number.isFinite(v)) return { ref: String(v), usedKey: k, error: null };
+      }
+      return {
+        ref: null, usedKey: null,
+        error: `確認先の応答に「${key || DEPLOY_REF_KEYS[0]}」が見つかりませんでした。キー名をご確認ください。`,
+      };
+    }
+
+    // JSON でない場合は、本文からコミットSHAらしき文字列を1つだけ拾う
+    const m = text.match(/\b[0-9a-f]{7,40}\b/i);
+    if (m) return { ref: m[0], usedKey: null, error: null };
+    return { ref: null, usedKey: null, error: "確認先の応答からバージョンを読み取れませんでした。" };
+  } catch (e) {
+    const aborted = (e as Error)?.name === "AbortError";
+    return {
+      ref: null, usedKey: null,
+      error: aborted ? "確認先URLへの接続がタイムアウトしました。" : "確認先URLへ接続できませんでした。",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── コミット1つ分のチェック状況（Checks / commit status / Deployments） ──
+//
+// check-runs だけを見ていると、Vercel の「Deployment was blocked」のように
+// commit status 側に出るものを取りこぼし、失敗ですらなく「チェックなし」に見える。
+// 3系統をまとめて見て、見られなかった系統は unavailable に残す
+//（「問題なし」と「確認できていない」を混同しない）。
+
+type ShaCheckState = "success" | "failure" | "pending" | "none";
+type CheckSource = "check" | "status" | "deployment";
+
+interface ShaCheck {
+  name: string;
+  state: ShaCheckState;
+  source: CheckSource;
+  description: string;
+  url: string | null;
+}
+
+interface ShaCheckSummary {
+  state: ShaCheckState;
+  summary: string;
+  checks: ShaCheck[];
+  /** 見られなかった情報源（権限不足など） */
+  unavailable: string[];
+  /** 「ビルドされる前に止められている」疑い（Vercel の blocked など） */
+  blocked: boolean;
+}
+
+const EMPTY_CHECK_SUMMARY: ShaCheckSummary = {
+  state: "none", summary: "チェックなし", checks: [], unavailable: [], blocked: false,
+};
+
+/** blocked / canceled のように「実行されていない」ことを示す言い回し */
+const BLOCKED_RE = /(blocked|canceled|cancelled|paused|suspend|not\s*built|skipped due)/i;
+
+function statusState(s: string): ShaCheckState {
+  if (s === "success" || s === "neutral" || s === "skipped" || s === "active") return "success";
+  if (s === "pending" || s === "queued" || s === "in_progress" || s === "expected" || s === "waiting") return "pending";
+  if (s === "failure" || s === "error" || s === "cancelled" || s === "timed_out" || s === "action_required") return "failure";
+  return "none";
+}
+
+function rollUp(checks: ShaCheck[], unavailable: string[]): ShaCheckSummary {
+  // 成功しているものは見ない。名前に "canceled" を含む正常なチェックを
+  // 「止められている」と誤判定しないため
+  const blocked = checks.some(c => c.state !== "success" && BLOCKED_RE.test(`${c.name} ${c.description}`));
+  if (!checks.length) {
+    return {
+      state: "none",
+      summary: unavailable.length ? "チェックを確認できませんでした" : "チェックなし",
+      checks, unavailable, blocked: false,
+    };
+  }
+  const failure = checks.filter(c => c.state === "failure").length;
+  const pending = checks.filter(c => c.state === "pending").length;
+  if (failure) {
+    // 「blocked」は落ちたのではなく止められている。人がやることが違うので言い分ける
+    const label = blocked ? `デプロイが止められています（${failure}件）` : `CI ${failure}件失敗`;
+    return { state: "failure", summary: label, checks, unavailable, blocked };
+  }
+  if (pending) return { state: "pending", summary: `CI 実行中(${checks.length - pending}/${checks.length})`, checks, unavailable, blocked };
+  return { state: "success", summary: `CI ${checks.length}件成功`, checks, unavailable, blocked };
+}
+
+async function summarizeSha(
+  token: string, repo: string, sha: string, opts?: { deployments?: boolean },
+): Promise<ShaCheckSummary> {
+  if (!sha) return EMPTY_CHECK_SUMMARY;
+
+  const [runsRes, statusRes, deploysRes] = await Promise.all([
+    gh(token, `/repos/${repo}/commits/${sha}/check-runs?per_page=50`).then(r => ({ ok: true, data: r })).catch(() => ({ ok: false, data: null })),
+    gh(token, `/repos/${repo}/commits/${sha}/status?per_page=50`).then(r => ({ ok: true, data: r })).catch(() => ({ ok: false, data: null })),
+    opts?.deployments
+      ? gh(token, `/repos/${repo}/deployments?sha=${sha}&per_page=10`).then(r => ({ ok: true, data: r })).catch(() => ({ ok: false, data: null }))
+      : Promise.resolve({ ok: true, data: null as any }),
+  ]);
+
+  const checks: ShaCheck[] = [];
+  const unavailable: string[] = [];
+
+  if (runsRes.ok) {
+    for (const r of ((runsRes.data as any)?.check_runs ?? []) as any[]) {
+      checks.push({
+        name: String(r?.name ?? ""),
+        state: r?.status !== "completed" ? "pending" : statusState(String(r?.conclusion ?? "")),
+        source: "check",
+        description: String(r?.output?.title ?? r?.output?.summary ?? "").slice(0, 200),
+        url: (r?.html_url as string) ?? null,
+      });
+    }
+  } else {
+    unavailable.push("Checks");
+  }
+
+  if (statusRes.ok) {
+    for (const s of ((statusRes.data as any)?.statuses ?? []) as any[]) {
+      checks.push({
+        name: String(s?.context ?? ""),
+        state: statusState(String(s?.state ?? "")),
+        source: "status",
+        description: String(s?.description ?? "").slice(0, 200),
+        url: (s?.target_url as string) ?? null,
+      });
+    }
+  } else {
+    // Commit statuses は追加権限。無くても他で判定できるので機能は止めない
+    unavailable.push("Commit statuses");
+  }
+
+  if (opts?.deployments) {
+    if (deploysRes.ok) {
+      const list = (Array.isArray(deploysRes.data) ? deploysRes.data : []) as any[];
+      const withState = await Promise.all(list.slice(0, 5).map(async d => {
+        const st = await gh(token, `/repos/${repo}/deployments/${d?.id}/statuses?per_page=1`).catch(() => null);
+        const latest = Array.isArray(st) ? st[0] : null;
+        return { d, latest };
+      }));
+      for (const { d, latest } of withState) {
+        if (!latest) continue;
+        checks.push({
+          name: `デプロイ: ${String(d?.environment ?? "production")}`,
+          state: statusState(String(latest?.state ?? "")),
+          source: "deployment",
+          description: String(latest?.description ?? "").slice(0, 200),
+          url: (latest?.target_url as string) ?? (latest?.environment_url as string) ?? null,
+        });
+      }
+    } else {
+      unavailable.push("Deployments");
+    }
+  }
+
+  return rollUp(checks, unavailable);
+}
+
+// ── 層A: マージ前の必須チェック ──────────────────────────────
+//
+// GitHub のブランチ保護（Required status checks）が未設定だと、チェックが失敗していても
+// mergeable_state は clean のままで、Dev Ticket からも普通にマージできてしまう。
+// 実際、失敗が積み上がったまま11件がマージされ、誰も気づかなかった。
+// ブランチ保護の有無に関わらず、Dev Ticket 側で同じ関門を作る。
+
+interface CheckGate {
+  /** warn … 注意だけ／reason … 理由を書けば通す／block … 通さない */
+  level: "warn" | "reason" | "block";
+  summary: string;
+  failed: string[];
+  /** 「落ちた」ではなく「止められている」場合 */
+  blockedDeploy: boolean;
+}
+
+function checkGateOf(mode: RequireChecksMode, sum: ShaCheckSummary | null): CheckGate | null {
+  if (!sum || mode === "off") return null;
+  // 実行中（pending）では止めない。日常の作業が回らなくなるため
+  if (sum.state !== "failure") return null;
+  const failed = sum.checks
+    .filter(c => c.state === "failure")
+    .map(c => (c.description ? `${c.name}（${c.description}）` : c.name));
+  return {
+    level: mode === "warn" ? "warn" : mode,
+    summary: sum.summary,
+    failed,
+    blockedDeploy: sum.blocked,
+  };
+}
+
+function checkGateMessage(gate: CheckGate, number: number): string {
+  const head = gate.blockedDeploy
+    ? `#${number} はデプロイが止められています`
+    : `#${number} は失敗しているチェックがあります`;
+  const tail = gate.level === "block"
+    ? "このプロジェクトでは、失敗したままのマージを禁止しています。"
+    : "このままマージしても本番に反映されない可能性があります。続ける場合は理由を入力してください。";
+  return `${head}（${gate.failed.slice(0, 3).join(" / ") || gate.summary}）。${tail}`;
+}
+
+// ── 層B/C: 本番反映の観測 ────────────────────────────────────
+interface DeployPendingPull { number: number; title: string; url: string }
+interface DeployPendingTicket { wbs: string; title: string; status: string }
+
+interface DeployEval {
+  configured: boolean;
+  /**
+   * not-configured … 確認先URLが未設定（＝確認していない。成功扱いにはしない）
+   * in-sync        … 本番に既定ブランチの先頭まで入っている
+   * behind         … 本番が遅れている（＝今回の事故の状態）
+   * unreachable    … 確認先URLに届かなかった
+   * unknown        … 値は取れたがコミットとして突き合わせられなかった
+   * error          … GitHub 側の取得に失敗
+   */
+  state: "not-configured" | "in-sync" | "behind" | "unreachable" | "unknown" | "error";
+  ok: boolean;
+  mode: DeployCheckMode;
+  deployedRef: string | null;
+  deployedSha: string | null;
+  headSha: string | null;
+  headMessage: string | null;
+  headCommittedAt: string | null;
+  behindBy: number;
+  /** ずれ始めた時刻＝未反映コミットのうち最も古いもの。前回値に頼らず毎回導出する */
+  behindSince: string | null;
+  /** 未反映のコミット。リリース反映のゲートで使う */
+  pendingShas: string[];
+  pendingPulls: DeployPendingPull[];
+  pendingTickets: DeployPendingTicket[];
+  check: ShaCheckSummary | null;
+  message: string;
+  error: string | null;
+}
+
+function notConfigured(mode: DeployCheckMode): DeployEval {
+  return {
+    configured: false, state: "not-configured", ok: false, mode,
+    deployedRef: null, deployedSha: null, headSha: null, headMessage: null, headCommittedAt: null,
+    behindBy: 0, behindSince: null, pendingShas: [], pendingPulls: [], pendingTickets: [],
+    check: null,
+    message: "本番反映の確認が未設定です。マージ＝リリース済みとして扱っています。",
+    error: null,
+  };
+}
+
+/** マージコミットのメッセージからPR番号とタイトルを拾う */
+function pullFromCommitMessage(message: string): { number: number; title: string } | null {
+  const first = message.split("\n")[0] ?? "";
+  const squash = first.match(/\(#(\d+)\)\s*$/);
+  if (squash) return { number: Number(squash[1]), title: first.replace(/\s*\(#\d+\)\s*$/, "").trim() };
+  const merge = first.match(/^Merge pull request #(\d+)/);
+  if (merge) {
+    // "Merge pull request #12 from owner/branch" の次行に本来のタイトルが入る
+    const title = (message.split("\n").slice(1).find(l => l.trim()) ?? first).trim();
+    return { number: Number(merge[1]), title };
+  }
+  return null;
+}
+
+/**
+ * 本番に何が乗っているかを観測する。GitHub とプロジェクトの設定だけを使い、
+ * 呼び出し側（画面・cron・リリース反映）で結果を使い分ける。
+ */
+async function evaluateDeploy(sb: SupabaseClient, project: any): Promise<DeployEval> {
+  const mode = deployMode(project?.deploy_check_mode);
+  const url = String(project?.deploy_check_url ?? "").trim();
+  const key = String(project?.deploy_check_key ?? "").trim();
+  const repo = String(project?.github_repo_full_name ?? "");
+  if (!url || !repo) return notConfigured(mode);
+
+  const base = notConfigured(mode);
+  base.configured = true;
+
+  let token: string;
+  try {
+    token = await installationToken(await getInstallationId(sb, project.organization_id));
+  } catch (e) {
+    return { ...base, state: "error", message: "GitHubとの接続が確認できませんでした。", error: String((e as Error)?.message ?? e).slice(0, 200) };
+  }
+
+  // 本番への確認と GitHub 側の取得は依存していないので同時に投げる
+  const [probe, repoInfo] = await Promise.all([
+    probeDeployedRef(url, key),
+    gh(token, `/repos/${repo}`).catch(() => null),
+  ]);
+
+  const branch = repoInfo?.default_branch || project.github_default_branch || "main";
+  const headCommit = await gh(token, `/repos/${repo}/commits/${encodeURIComponent(branch)}`).catch(() => null);
+  const headSha = String(headCommit?.sha ?? "");
+  const headMessage = String(headCommit?.commit?.message ?? "").split("\n")[0] || null;
+  const headCommittedAt = headCommit?.commit?.committer?.date ?? headCommit?.commit?.author?.date ?? null;
+
+  // 既定ブランチ先頭のチェックは、遅れている理由（blocked など）を出すために必ず取る
+  const check = headSha ? await summarizeSha(token, repo, headSha, { deployments: true }) : null;
+  const common = { ...base, headSha: headSha || null, headMessage, headCommittedAt, check };
+
+  if (!headSha) {
+    return { ...common, state: "error", message: `既定ブランチ（${branch}）の先頭を取得できませんでした。`, error: null };
+  }
+  if (probe.error || !probe.ref) {
+    return {
+      ...common, state: "unreachable",
+      message: probe.error ?? "本番のバージョンを取得できませんでした。",
+      error: probe.error,
+    };
+  }
+
+  const ref = probe.ref;
+  if (!SHA_RE.test(ref)) {
+    return {
+      ...common, state: "unknown", deployedRef: ref,
+      message: `本番から取得した「${ref}」はコミットSHAではないため、${branch} と突き合わせられません。`
+        + "確認先のキーにコミットSHA（先頭7桁以上）を出すよう変更してください。",
+      error: null,
+    };
+  }
+
+  let cmp: any = null;
+  try {
+    cmp = await gh(token, `/repos/${repo}/compare/${encodeURIComponent(ref)}...${encodeURIComponent(headSha)}`);
+  } catch (e) {
+    if (e instanceof GithubError && e.status === 404) {
+      return {
+        ...common, state: "unknown", deployedRef: ref,
+        message: `本番のコミット ${ref.slice(0, 7)} がリポジトリに見つかりません（別リポジトリの値か、履歴が書き換えられた可能性があります）。`,
+        error: null,
+      };
+    }
+    return { ...common, state: "error", deployedRef: ref, message: "本番と既定ブランチの比較に失敗しました。", error: String((e as Error)?.message ?? e).slice(0, 200) };
+  }
+
+  const status = String(cmp?.status ?? "");
+  const deployedSha = String(cmp?.base_commit?.sha ?? ref);
+
+  // "behind"（本番の方が新しい）は、ホットフィックスや別経路のデプロイで起こり得る。
+  // 未反映は無いので警告しない
+  if (status === "identical" || status === "behind") {
+    return {
+      ...common, state: "in-sync", ok: true, deployedRef: ref, deployedSha,
+      message: status === "identical"
+        ? "本番は最新です。"
+        : "本番の方が新しいコミットで動いています（未反映の変更はありません）。",
+      error: null,
+    };
+  }
+
+  const behindBy = Number(cmp?.ahead_by ?? 0);
+  const commits = (Array.isArray(cmp?.commits) ? cmp.commits : []) as any[];
+  const pendingShas = commits.map(c => String(c?.sha ?? "")).filter(Boolean);
+
+  // ずれ始めた時刻＝未反映のうち最も古いコミットの日時。
+  // 前回の観測値を引き継がないので、cron が止まっていた期間があっても正しく出る
+  const dates = commits
+    .map(c => c?.commit?.committer?.date ?? c?.commit?.author?.date)
+    .filter(Boolean)
+    .map((d: string) => new Date(d).getTime())
+    .filter((t: number) => Number.isFinite(t));
+  const behindSince = dates.length ? new Date(Math.min(...dates)).toISOString() : headCommittedAt;
+
+  // 未反映のPR。マージコミットのメッセージから拾う（PR一覧を引き直すより桁違いに軽い）
+  const pullMap = new Map<number, DeployPendingPull>();
+  const wbsSet = new Set<string>();
+  for (const c of commits) {
+    const message = String(c?.commit?.message ?? "");
+    const hit = pullFromCommitMessage(message);
+    if (hit && !pullMap.has(hit.number)) {
+      pullMap.set(hit.number, { number: hit.number, title: hit.title, url: `https://github.com/${repo}/pull/${hit.number}` });
+    }
+    for (const w of detectWbs("", message).list) wbsSet.add(w);
+  }
+
+  // 未反映のチケット。「リリース済みと言われているのに本番に無い」ものを名指しできるようにする
+  let pendingTickets: DeployPendingTicket[] = [];
+  if (wbsSet.size) {
+    const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", project.id);
+    const sprintIds = (sprints ?? []).map(s => (s as any).id);
+    const rows = await ticketsByWbs(sb, sprintIds, Array.from(wbsSet), "wbs, title, status");
+    // 並び順を固定する。DBの返す順は一定でないため、放置すると
+    // 更新のたびに未反映チケットの並びが入れ替わって見える（BUG-01）
+    pendingTickets = rows
+      .map(t => ({ wbs: String(t.wbs ?? ""), title: String(t.title ?? ""), status: String(t.status ?? "") }))
+      .sort((a, b) => a.wbs.localeCompare(b.wbs));
+  }
+
+  const short = ref.slice(0, 7);
+  return {
+    ...common,
+    state: "behind", ok: false, deployedRef: ref, deployedSha,
+    behindBy, behindSince, pendingShas,
+    pendingPulls: Array.from(pullMap.values()).sort((a, b) => a.number - b.number),
+    pendingTickets,
+    message: `本番は ${short} で動いており、${branch} より ${behindBy}コミット遅れています。`,
+    error: null,
+  };
+}
+
+/** 遅れの深刻度。時間で段階を上げる（マージ直後を異常と呼ばないため） */
+function deployAlertLevel(ev: DeployEval): "none" | "notice" | "slack" | "critical" {
+  if (ev.state !== "behind" || !ev.behindSince) return "none";
+  const minutes = (Date.now() - new Date(ev.behindSince).getTime()) / 60_000;
+  if (minutes >= DEPLOY_CRITICAL_MIN) return "critical";
+  if (minutes >= DEPLOY_SLACK_MIN) return "slack";
+  if (minutes >= DEPLOY_GRACE_MIN) return "notice";
+  return "none";
+}
+
+/** プロジェクトの Slack チャンネルへ投稿する。設定が無ければ何もしない */
+async function postProjectSlack(sb: SupabaseClient, projectId: string, text: string): Promise<boolean> {
+  const { data } = await sb.from("projects")
+    .select("slack_access_token, slack_channel, slack_notifications_enabled")
+    .eq("id", projectId).maybeSingle();
+  const token = (data as any)?.slack_access_token;
+  const channel = (data as any)?.slack_channel;
+  if (!token || !channel || (data as any)?.slack_notifications_enabled === false) return false;
+  try {
+    const res = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ channel, text }),
+    });
+    const json = await res.json() as { ok: boolean; error?: string };
+    if (!json.ok) console.error("[github deploy-check] slack:", json.error);
+    return json.ok;
+  } catch (e) {
+    console.error("[github deploy-check] slack:", (e as Error)?.message);
+    return false;
+  }
+}
+
+function slackAlertText(project: any, ev: DeployEval, level: "slack" | "critical"): string {
+  const head = level === "critical"
+    ? `:rotating_light: *本番に反映されていません（24時間以上）* — ${project.name}`
+    : `:warning: *本番に反映されていません* — ${project.name}`;
+  const lines = [
+    head,
+    `${ev.message}`,
+    ev.deployedSha ? `本番: \`${ev.deployedSha.slice(0, 7)}\` / main: \`${(ev.headSha ?? "").slice(0, 7)}\`` : "",
+    ev.pendingPulls.length ? `未反映のPR: ${ev.pendingPulls.map(p => `#${p.number}`).join(" ")}` : "",
+    ev.pendingTickets.length ? `未反映のチケット: ${ev.pendingTickets.map(t => t.wbs).filter(Boolean).join(" / ")}` : "",
+    ev.check?.state === "failure" ? `main のチェック: ${ev.check.summary}｜${ev.check.checks.filter(c => c.state === "failure").map(c => `${c.name}: ${c.description}`).join(" / ")}` : "",
+    `<https://github.com/${project.github_repo_full_name}/commits|GitHubで確認する>`,
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+/**
+ * 観測して保存し、必要なら知らせる。
+ * notify=false（画面からの取得）では通知しない。通知は定期実行に集約して重複を避ける。
+ */
+async function runDeployCheck(
+  sb: SupabaseClient, project: any, opts?: { notify?: boolean },
+): Promise<DeployEval> {
+  const ev = await evaluateDeploy(sb, project);
+
+  const { data: prev } = await sb.from("project_deploy_status")
+    .select("alerted_level, alerted_sha").eq("project_id", project.id).maybeSingle();
+  const prevLevel = String((prev as any)?.alerted_level ?? "none");
+  const prevSha = String((prev as any)?.alerted_sha ?? "");
+
+  const level = deployAlertLevel(ev);
+  let alertedLevel = prevLevel;
+  let alertedSha = prevSha;
+  let alertedAt: string | null = null;
+
+  if (opts?.notify) {
+    if ((level === "slack" || level === "critical")
+      && (prevLevel !== level || prevSha !== (ev.headSha ?? ""))) {
+      const sent = await postProjectSlack(sb, project.id, slackAlertText(project, ev, level));
+      if (sent) { alertedLevel = level; alertedSha = ev.headSha ?? ""; alertedAt = new Date().toISOString(); }
+    } else if (ev.state === "in-sync" && (prevLevel === "slack" || prevLevel === "critical")) {
+      // 直ったことも必ず言う。言わないと「まだ止まっているのか」を毎回確かめに行くことになる
+      await postProjectSlack(sb, project.id,
+        `:white_check_mark: *本番へ反映されました* — ${project.name}\n本番: \`${(ev.deployedSha ?? "").slice(0, 7)}\``);
+      alertedLevel = "none"; alertedSha = ""; alertedAt = new Date().toISOString();
+    }
+  }
+
+  const row: Record<string, unknown> = {
+    project_id: project.id,
+    checked_at: new Date().toISOString(),
+    state: ev.state,
+    ok: ev.ok,
+    deployed_ref: ev.deployedRef,
+    deployed_sha: ev.deployedSha,
+    head_sha: ev.headSha,
+    head_message: ev.headMessage,
+    head_committed_at: ev.headCommittedAt,
+    behind_by: ev.behindBy,
+    behind_since: ev.behindSince,
+    // 一覧に出すのは先頭だけで足りる。全部入れると行が肥大する
+    pending_pulls: ev.pendingPulls.slice(0, 50),
+    pending_tickets: ev.pendingTickets.slice(0, 50),
+    check_state: ev.check?.state ?? null,
+    check_summary: ev.check?.summary ?? null,
+    check_detail: (ev.check?.checks ?? []).slice(0, 30),
+    check_unavailable: ev.check?.unavailable ?? [],
+    message: ev.message,
+    error: ev.error,
+    alerted_level: alertedLevel,
+    alerted_sha: alertedSha || null,
+    updated_at: new Date().toISOString(),
+    ...(alertedAt ? { alerted_at: alertedAt } : {}),
+  };
+  const { error } = await sb.from("project_deploy_status").upsert(row, { onConflict: "project_id" });
+  if (error) console.error("[github deploy-check] 保存に失敗:", error.message);
+
+  return ev;
+}
+
+/** 保存済みの観測結果を画面向けの形に整える */
+function mapDeployRow(row: any, project: any): Record<string, unknown> {
+  const mode = deployMode(project?.deploy_check_mode);
+  const level = row?.state === "behind" && row?.behind_since
+    ? (() => {
+        const m = (Date.now() - new Date(row.behind_since).getTime()) / 60_000;
+        return m >= DEPLOY_CRITICAL_MIN ? "critical" : m >= DEPLOY_SLACK_MIN ? "slack" : m >= DEPLOY_GRACE_MIN ? "notice" : "none";
+      })()
+    : "none";
+  return {
+    // 「確認が有効か」。URLが入っていても mode=off なら確認していない
+    configured: deployActive(project),
+    mode,
+    requireChecksMode: requireChecksMode(project?.require_checks_mode),
+    checkUrl: project?.deploy_check_url ?? null,
+    checkKey: project?.deploy_check_key ?? null,
+    state: row?.state ?? "not-configured",
+    ok: !!row?.ok,
+    level,
+    checkedAt: row?.checked_at ?? null,
+    deployedRef: row?.deployed_ref ?? null,
+    deployedSha: row?.deployed_sha ?? null,
+    headSha: row?.head_sha ?? null,
+    headMessage: row?.head_message ?? null,
+    headCommittedAt: row?.head_committed_at ?? null,
+    behindBy: row?.behind_by ?? 0,
+    behindSince: row?.behind_since ?? null,
+    pendingPulls: row?.pending_pulls ?? [],
+    pendingTickets: row?.pending_tickets ?? [],
+    checkState: row?.check_state ?? null,
+    checkSummary: row?.check_summary ?? null,
+    checkDetail: row?.check_detail ?? [],
+    checkUnavailable: row?.check_unavailable ?? [],
+    message: row?.message ?? null,
+    error: row?.error ?? null,
+    repo: project?.github_repo_full_name ?? null,
+    defaultBranch: project?.github_default_branch ?? null,
+  };
+}
+
+/** 画面から見て観測が古いか。開くたびに本番へ投げないための線引き */
+const DEPLOY_FRESH_MS = 10 * 60_000;
+
+const DEPLOY_PROJECT_COLUMNS =
+  "id, name, organization_id, github_repo_full_name, github_default_branch, "
+  + "deploy_check_url, deploy_check_key, deploy_check_mode, require_checks_mode";
+
+async function handleDeployStatus(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view", { installation: false });
+  const { data: project } = await sb.from("projects").select(DEPLOY_PROJECT_COLUMNS).eq("id", ctx.id).maybeSingle();
+  if (!project) throw new HttpError(404, "プロジェクトが見つかりません。");
+
+  const { data: row } = await sb.from("project_deploy_status").select("*").eq("project_id", ctx.id).maybeSingle();
+
+  const active = deployActive(project);
+  const stale = !row?.checked_at || Date.now() - new Date(row.checked_at as string).getTime() > DEPLOY_FRESH_MS;
+  const force = req.query?.fresh === "1" || req.query?.fresh === 1;
+
+  if (active && (stale || force)) {
+    // 通知は定期実行に任せる。画面を開くたびに Slack が鳴ると誰も見なくなる
+    await runDeployCheck(sb, project, { notify: false }).catch(e => {
+      console.error("[github deploy-status]", ctx.id, (e as Error)?.message);
+    });
+    const { data: fresh } = await sb.from("project_deploy_status").select("*").eq("project_id", ctx.id).maybeSingle();
+    return res.status(200).json({ deploy: mapDeployRow(fresh, project), level: ctx.level });
+  }
+
+  return res.status(200).json({ deploy: mapDeployRow(row, project), level: ctx.level });
+}
+
+/** 画面の「今すぐ確認する」。観測だけを強制的にやり直す */
+async function handleDeployCheck(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  const body = parseBody(req);
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "view", { installation: false });
+  const { data: project } = await sb.from("projects").select(DEPLOY_PROJECT_COLUMNS).eq("id", ctx.id).maybeSingle();
+  if (!project) throw new HttpError(404, "プロジェクトが見つかりません。");
+  if (!deployActive(project)) {
+    throw new HttpError(409, "このプロジェクトでは本番反映の確認が有効になっていません（設定でURLと確認の強さを指定してください）。");
+  }
+  await runDeployCheck(sb, project, { notify: false });
+  const { data: row } = await sb.from("project_deploy_status").select("*").eq("project_id", ctx.id).maybeSingle();
+  return res.status(200).json({ deploy: mapDeployRow(row, project), level: ctx.level });
+}
+
+/**
+ * 外部連携画面の診断。組織のプロジェクトを横に並べて
+ * 「未保護」「反映確認 未設定」「遅延中」を1画面で見せる。
+ *
+ * ブランチ保護の判定はリポジトリ1件につき1リクエストなので、件数に上限を置く。
+ * 打ち切った場合は黙って隠さず、件数を返して画面に出す。
+ */
+const DEPLOY_OVERVIEW_MAX = 40;
+/** 同時に GitHub へ投げるプロジェクト数（1件あたり2リクエスト） */
+const DEPLOY_OVERVIEW_CHUNK = 5;
+
+async function handleDeployOverview(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  await requireOrgAdmin(sb, caller);
+  const orgId = targetOrgId(caller, req);
+
+  let q = sb.from("projects").select(`${DEPLOY_PROJECT_COLUMNS}, github_enabled`).order("name");
+  if (orgId) q = q.eq("organization_id", orgId);
+  const { data: all } = await q;
+  const projects = ((all ?? []) as any[]).filter(p => p.github_enabled && p.github_repo_full_name);
+
+  const { data: statuses } = await sb.from("project_deploy_status").select("*");
+  const byProject = new Map(((statuses ?? []) as any[]).map(s => [String(s.project_id), s]));
+
+  // ブランチ保護は GitHub を叩かないと分からない。接続が無ければ判定不能のまま返す
+  let token = "";
+  let installationId = "";
+  try {
+    installationId = await getInstallationId(sb, orgId);
+    token = await installationToken(installationId);
+  } catch { /* 未接続。protected は null のまま */ }
+
+  const targets = projects.slice(0, DEPLOY_OVERVIEW_MAX);
+  const rows: any[] = [];
+  // 全件を一度に投げると GitHub 側の連続アクセス制限に当たる。少しずつ進める
+  for (let i = 0; i < targets.length; i += DEPLOY_OVERVIEW_CHUNK) {
+    const chunk = await Promise.all(targets.slice(i, i + DEPLOY_OVERVIEW_CHUNK).map(async p => {
+      let branchProtected: boolean | null = null;
+      let defaultBranch: string = p.github_default_branch ?? "";
+      if (token) {
+        const info = await gh(token, `/repos/${p.github_repo_full_name}`).catch(() => null);
+        defaultBranch = info?.default_branch || defaultBranch || "main";
+        const branch = await gh(token, `/repos/${p.github_repo_full_name}/branches/${encodeURIComponent(defaultBranch)}`).catch(() => null);
+        if (branch) branchProtected = !!branch.protected;
+      }
+      return {
+        projectId: p.id,
+        projectName: p.name,
+        repo: p.github_repo_full_name,
+        defaultBranch: defaultBranch || null,
+        branchProtected,
+        deploy: mapDeployRow(byProject.get(String(p.id)), p),
+      };
+    }));
+    rows.push(...chunk);
+  }
+
+  // 追加権限が無いと commit status / Deployments が読めず、Vercel の blocked を取りこぼす。
+  // 「不足している」と「確認していない」を分けるため、判定できたときだけ返す
+  const optionalMissingPermissions = installationId
+    ? shortage((await installationPermissions(installationId)).perms, OPTIONAL_PERMISSIONS)
+    : [];
+
+  return res.status(200).json({
+    rows,
+    truncated: Math.max(0, projects.length - targets.length),
+    optionalMissingPermissions,
+  });
 }
 
 // ── ハンドラ ─────────────────────────────────────────────────
@@ -791,9 +1620,11 @@ export default async function handler(req: any, res: any) {
     switch (resource) {
       case "install-start": return await installStart(sb, caller, req, res);
       case "sync-released": {
-        // 画面からの手動実行。自分の組織だけを対象にする
+        // 画面からの手動実行。自分の組織だけを対象にする。
+        // 押すたびに Slack が鳴ると誰も見なくなるので、通知は定期実行だけに任せる
         await requireOrgAdmin(sb, caller);
-        return await runReleaseSync(sb, targetOrgId(caller, req) || String(caller.organizationId ?? ""), res);
+        return await runReleaseSync(
+          sb, targetOrgId(caller, req) || String(caller.organizationId ?? ""), res, { notify: false });
       }
       case "adopt":    return await handleAdopt(sb, caller, req, res);
       case "status":   return await handleStatus(sb, caller, req, res);
@@ -804,6 +1635,9 @@ export default async function handler(req: any, res: any) {
       case "commits":  return await handleCommits(sb, caller, req, res);
       case "branches": return await handleBranches(sb, caller, req, res);
       case "pending-branches": return await handlePendingBranches(sb, caller, req, res);
+      case "deploy-status":   return await handleDeployStatus(sb, caller, req, res);
+      case "deploy-check":    return await handleDeployCheck(sb, caller, req, res);
+      case "deploy-overview": return await handleDeployOverview(sb, caller, req, res);
       case "links":    return await handleLinks(sb, caller, req, res);
       case "create-pull": return await handleCreatePull(sb, caller, req, res);
       case "merge-precheck": return await handleMergePrecheck(sb, caller, req, res);
@@ -900,6 +1734,8 @@ interface PrState {
   open: boolean;
   title: string;
   url: string;
+  /** マージ結果のコミット。本番へ反映済みかの判定に使う（docs/deploy-verification-design.md） */
+  mergeCommitSha: string;
   /** 自動紐付けの根拠（ブランチ名／タイトルのどちらで WBS を拾ったか） */
   reason: string | null;
 }
@@ -914,6 +1750,7 @@ function toPrState(p: any): PrState {
     open: p?.state === "open",
     title,
     url: p?.html_url ?? "",
+    mergeCommitSha: String(p?.merge_commit_sha ?? ""),
     reason: detectWbs(head, title).reason,
   };
 }
@@ -922,12 +1759,17 @@ interface ReleaseSyncDetail {
   projectId: string;
   projectName: string;
   released: { wbs: string; title: string; pulls: number[] }[];
+  /** 本番反映を確認できなかったので前へ進めなかった場合の理由（deploy_check_mode=gate） */
+  deployHold?: string;
+  /** 本番反映の観測結果。遅れているプロジェクトを一覧で返すために持つ */
+  deployState?: string;
+  deployMessage?: string;
   error?: string;
 }
 
-async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any) {
+async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any, opts?: { notify?: boolean }) {
   let q = sb.from("projects")
-    .select("id, name, organization_id, github_repo_full_name, github_default_branch")
+    .select(DEPLOY_PROJECT_COLUMNS)
     .eq("github_enabled", true)
     .not("github_repo_full_name", "is", null);
   if (orgId) q = q.eq("organization_id", orgId);
@@ -937,25 +1779,85 @@ async function runReleaseSync(sb: SupabaseClient, orgId: string | null, res: any
 
   const details: ReleaseSyncDetail[] = [];
   let released = 0;
+  let behind = 0;
 
   for (const p of (projects ?? []) as any[]) {
     const detail: ReleaseSyncDetail = { projectId: p.id, projectName: p.name, released: [] };
+
+    // ① 先に本番反映を観測する（層C）。
+    //    リリース待ちのチケットが1件も無くても必ず走らせる。
+    //    「リリース済みにしたものが無い＝問題なし」ではないため、ここを条件付きにしない。
+    //    ここで得た結果を②へ渡し、同じ確認を二度走らせない。
+    let ev: DeployEval | undefined;
+    if (deployMode(p.deploy_check_mode) !== "off") {
+      try {
+        ev = await runDeployCheck(sb, p, { notify: opts?.notify !== false });
+        detail.deployState = ev.state;
+        detail.deployMessage = ev.message;
+        if (ev.state === "behind") behind++;
+      } catch (e) {
+        console.error("[github deploy-check]", p.id, (e as Error)?.message);
+      }
+    }
+
+    // ② リリース待ち → リリース済み
     try {
-      await syncProjectReleases(sb, p, detail, SYNC_FULL);
+      await syncProjectReleases(sb, p, detail, SYNC_FULL, ev);
       released += detail.released.length;
     } catch (e) {
       // 1プロジェクトの失敗で全体を止めない（接続が切れている組織などがあり得る）
       detail.error = String((e as Error)?.message ?? e).slice(0, 200);
       console.error("[github sync-released]", p.id, detail.error);
     }
-    if (detail.released.length || detail.error) details.push(detail);
+
+    if (detail.released.length || detail.error || detail.deployHold || detail.deployState === "behind") {
+      details.push(detail);
+    }
   }
 
-  return res.status(200).json({ ok: true, released, details });
+  return res.status(200).json({ ok: true, released, behind, details });
+}
+
+/**
+ * 層B: 「本番に反映されたか」で前へ進めてよいかを決める材料を用意する。
+ *
+ * mode が gate のときだけ効く。返すのは
+ *   hold    … 反映を確認できていない理由（入っていたら1件も進めない）
+ *   pending … まだ本番に入っていないマージコミット
+ *
+ * ★ 保存済みの観測結果で済ませない ★
+ *   マージ直後にも呼ばれる経路（syncReleasesNow）があるため、数分前の
+ *   「本番は最新」をそのまま使うと、たった今マージしたぶんまで反映済みと判定してしまう。
+ *   定期実行からは直前の観測結果を pre で渡して二度手間を避ける。
+ */
+async function deployGateFor(
+  sb: SupabaseClient, project: any, pre?: DeployEval,
+): Promise<{ pending: Set<string>; hold: string } | null> {
+  if (deployMode(project?.deploy_check_mode) !== "gate") return null;
+  if (!String(project?.deploy_check_url ?? "").trim()) {
+    return { pending: new Set(), hold: "本番反映の確認先URLが未設定のため、リリース済みにできません。" };
+  }
+
+  const ev = pre ?? await runDeployCheck(sb, project, { notify: false });
+
+  if (ev.state === "in-sync") return { pending: new Set(), hold: "" };
+  if (ev.state === "behind") {
+    // compare が返すコミットは最大250件。それを超えると未反映の一覧が欠け、
+    // 「入っていないのに入っている」と誤判定する。数が合わないときは進めない
+    if (ev.behindBy > ev.pendingShas.length) {
+      return { pending: new Set(), hold: `未反映が${ev.behindBy}コミットあり、内訳を取り切れないため保留しています。` };
+    }
+    return { pending: new Set(ev.pendingShas), hold: "" };
+  }
+  // unreachable / unknown / error / not-configured。
+  // 確認できないまま「リリース済み」にすると、確認する仕組みを入れた意味が無くなる
+  return { pending: new Set(), hold: ev.message || "本番への反映を確認できないため保留しています。" };
 }
 
 async function syncProjectReleases(
   sb: SupabaseClient, project: any, detail: ReleaseSyncDetail, depth: ReleaseSyncDepth,
+  /** 直前に観測済みなら渡す。同じ確認を二度走らせないため */
+  preDeploy?: DeployEval,
 ) {
   const { data: sprints } = await sb.from("sprints").select("id").eq("project_id", project.id);
   const sprintIds = (sprints ?? []).map(s => (s as any).id);
@@ -967,6 +1869,14 @@ async function syncProjectReleases(
     .in("sprint_id", sprintIds).eq("status", "waiting-release");
   // 対象が無ければ GitHub は一切叩かない（PR一覧の表示のたびに呼ばれるため）
   if (!tickets?.length) return;
+
+  // 層B: 本番へ反映されたことを確認できるまで「リリース済み」にしない。
+  // hold が入っているプロジェクトは、この回は1件も進めない
+  const gate = await deployGateFor(sb, project, preDeploy);
+  if (gate?.hold) {
+    detail.deployHold = gate.hold;
+    return;
+  }
 
   const installationId = await getInstallationId(sb, project.organization_id);
   const token = await installationToken(installationId);
@@ -1054,6 +1964,13 @@ async function syncProjectReleases(
     const merged = (states as PrState[]).filter(s => s.merged && s.base === defaultBranch);
     if (!merged.length) continue;
 
+    // マージ済みでも、そのマージコミットがまだ本番に入っていなければ進めない（層B）。
+    // マージコミットが分からないものも「確認できていない」として見送る
+    if (gate) {
+      const notDeployed = merged.some(m => !m.mergeCommitSha || gate.pending.has(m.mergeCommitSha));
+      if (notDeployed) continue;
+    }
+
     targets.push({
       id: t.id, wbs: t.wbs ?? "", title: t.title ?? "",
       pulls: merged.map(m => m.number).sort((a, b) => a - b),
@@ -1124,7 +2041,7 @@ async function syncProjectReleases(
 async function syncReleasesNow(sb: SupabaseClient, projectId: string) {
   try {
     const { data: project } = await sb.from("projects")
-      .select("id, name, organization_id, github_repo_full_name, github_default_branch")
+      .select(DEPLOY_PROJECT_COLUMNS)
       .eq("id", projectId).maybeSingle();
     if (!project || !(project as any).github_repo_full_name) return;
     await syncProjectReleases(sb, project, {
@@ -1218,7 +2135,7 @@ async function githubWebhook(sb: SupabaseClient, req: any, res: any) {
   }
 
   const { data: projects } = await sb.from("projects")
-    .select("id, name, organization_id, github_repo_full_name, github_default_branch")
+    .select(DEPLOY_PROJECT_COLUMNS)
     .eq("github_repo_full_name", repo).eq("github_enabled", true);
   if (!projects?.length) return res.status(200).json({ ok: true, skipped: "未接続のリポジトリ" });
 
@@ -1434,6 +2351,11 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
      * 直しに行く画面が違うため、まとめずに分けて持つ。
      */
     permissionScope: null as "app" | "install" | null,
+    /**
+     * 無くても動くが、あるとデプロイの事故を検知できる権限（Commit statuses / Deployments）。
+     * 不足していても操作は失敗しないので、missingPermissions とは分けて弱く案内する。
+     */
+    optionalMissingPermissions: [] as MissingPermission[],
     /** App の権限設定ページ。所有者だけが開ける */
     appPermissionsUrl: appPermissionsUrl(),
     installed: false,
@@ -1506,18 +2428,24 @@ async function handleStatus(sb: SupabaseClient, caller: Caller, req: any, res: a
   // どちらか一方しか見ないと、案内どおりに操作しても直らない状態が続く。
   // 判定できなくても接続そのものは使えるので、失敗は握って空のままにする
   if (!revoked) {
-    const declaredShort = missingPermissions(await appPermissions());
+    const declared = await appPermissions();
+    const declaredShort = missingPermissions(declared);
+    const inst = await installationPermissions(String(data.installation_id), true);
     if (declaredShort.length) {
       base.missingPermissions = declaredShort;
       base.permissionScope = "app";
     } else {
-      const inst = await installationPermissions(String(data.installation_id), true);
       const installShort = missingPermissions(inst.perms);
       if (installShort.length) {
         base.missingPermissions = installShort;
         base.permissionScope = "install";
       }
     }
+    // 任意の権限は App の宣言とインストールの両方を見て、足りない側を出す。
+    // 足りなくても操作は失敗しないので、警告の強さは変える
+    base.optionalMissingPermissions = shortage(declared, OPTIONAL_PERMISSIONS).length
+      ? shortage(declared, OPTIONAL_PERMISSIONS)
+      : shortage(inst.perms, OPTIONAL_PERMISSIONS);
   }
 
   return res.status(200).json({
@@ -1643,9 +2571,12 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   const enriched = light ? pulls : await Promise.all(pulls.map(async (p: any, i: number) => {
     if (i >= 15) return p;
     try {
-      const [detail0, runs, reviews] = await Promise.all([
+      // チェックは check-runs だけでなく commit status も見る。
+      // Vercel の「Deployment was blocked」は status 側に出ることがあり、
+      // check-runs しか見ていないと失敗ですらなく「チェックなし」に化ける（BRU13-041）
+      const [detail0, c, reviews] = await Promise.all([
         gh(token, `/repos/${ctx.repo}/pulls/${p.number}`).catch(() => null),
-        p.headSha ? gh(token, `/repos/${ctx.repo}/commits/${p.headSha}/check-runs?per_page=50`).catch(() => null) : null,
+        summarizeSha(token, ctx.repo, p.headSha),
         gh(token, `/repos/${ctx.repo}/pulls/${p.number}/reviews?per_page=50`).catch(() => null),
       ]);
       // GitHub のマージ可否は「聞かれてから」計算される。しばらく触られていないPRは
@@ -1656,13 +2587,13 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
         ? await sleep(MERGEABLE_RETRY_MS).then(() =>
             gh(token, `/repos/${ctx.repo}/pulls/${p.number}`).catch(() => detail0))
         : detail0;
-      const c = summarizeChecks(runs?.check_runs ?? []);
       const r = summarizeReviews(reviews ?? []);
       return {
         ...p,
         mergeable: detail?.mergeable ?? p.mergeable,
         mergeableState: detail?.mergeable_state ?? p.mergeableState,
         checkState: c.state, checkSummary: c.summary,
+        checkBlocked: c.blocked, checkUnavailable: c.unavailable,
         reviewState: r.state, reviewSummary: r.summary,
       };
     } catch { return p; }
@@ -1673,7 +2604,11 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
   // 「リリース待ち」が無ければ GitHub は叩かないので、通常は追加の負荷にならない
   if (!light) await syncReleasesNow(sb, ctx.id);
   const links = await loadLinksForProject(sb, ctx.id);
-  return res.status(200).json({ pulls: enriched, level: ctx.level, repo: ctx.repo, links, writeBlock });
+  return res.status(200).json({
+    pulls: enriched, level: ctx.level, repo: ctx.repo, links, writeBlock,
+    // 画面が「失敗チェックのままマージしようとしている」を先に出せるようにする
+    requireChecksMode: ctx.requireChecksMode,
+  });
 }
 
 async function handlePull(sb: SupabaseClient, caller: Caller, req: any, res: any) {
@@ -1687,11 +2622,11 @@ async function handlePull(sb: SupabaseClient, caller: Caller, req: any, res: any
   const p = needsMergeableRetry(first)
     ? await sleep(MERGEABLE_RETRY_MS).then(() => gh(token, `/repos/${ctx.repo}/pulls/${number}`).catch(() => first))
     : first;
-  const [runs, reviews] = await Promise.all([
-    gh(token, `/repos/${ctx.repo}/commits/${p.head?.sha}/check-runs?per_page=50`).catch(() => null),
+  // 詳細では Deployments まで見る。「なぜ本番に出ないのか」を1画面で読ませるため
+  const [c, reviews] = await Promise.all([
+    summarizeSha(token, ctx.repo, String(p.head?.sha ?? ""), { deployments: true }),
     gh(token, `/repos/${ctx.repo}/pulls/${number}/reviews?per_page=50`).catch(() => null),
   ]);
-  const c = summarizeChecks(runs?.check_runs ?? []);
   const r = summarizeReviews(reviews ?? []);
 
   return res.status(200).json({
@@ -1701,7 +2636,9 @@ async function handlePull(sb: SupabaseClient, caller: Caller, req: any, res: any
       changedFiles: p.changed_files ?? 0,
       additions: p.additions ?? 0,
       deletions: p.deletions ?? 0,
-      checkState: c.state, checkSummary: c.summary, checks: c.checks,
+      checkState: c.state, checkSummary: c.summary,
+      checks: c.checks.map(x => ({ name: x.name, state: x.state, description: x.description, url: x.url })),
+      checkBlocked: c.blocked, checkUnavailable: c.unavailable,
       reviewState: r.state, reviewSummary: r.summary,
     },
     level: ctx.level,
@@ -2459,6 +3396,16 @@ interface PrecheckRow {
   /** コンフリクトが理由かどうか */
   conflict: boolean;
   reason?: string;
+  /**
+   * 失敗しているチェックがある場合（層A）。
+   *
+   * ok とは別に持つ。ブランチ保護が無いリポジトリでは GitHub が clean を返すので
+   * ok は true のままだが、そのままマージすると本番に届かない。
+   * level が "block" のときだけ ok も false にする。
+   */
+  checkGate?: CheckGate;
+  /** 権限不足などでチェックを確認できなかった情報源。空でなければ「問題なし」と言い切らない */
+  checkUnavailable?: string[];
 }
 
 /**
@@ -2475,16 +3422,34 @@ async function fetchPullForMerge(token: string, repo: string, number: number) {
     : first;
 }
 
-async function precheckPull(token: string, repo: string, number: number): Promise<PrecheckRow> {
+async function precheckPull(
+  token: string, repo: string, number: number, mode: RequireChecksMode = "off",
+): Promise<PrecheckRow> {
   try {
     const p = await fetchPullForMerge(token, repo, number);
     const blocked = mergeBlockReasonOf(p);
+
+    // 失敗チェックの判定（層A）。コンフリクト等で既に止まっているなら見に行かない
+    // （余計なリクエストを増やさない。止める理由はもう決まっている）。
+    // Deployments までは見ない。まとめてマージでPR件数ぶん走るので、
+    // 1件あたりのリクエストを増やさない（blocked は commit status 側に出る）
+    let gate: CheckGate | null = null;
+    let unavailable: string[] = [];
+    if (!blocked && mode !== "off") {
+      const sum = await summarizeSha(token, repo, String(p?.head?.sha ?? ""));
+      gate = checkGateOf(mode, sum);
+      unavailable = sum.unavailable;
+    }
+
     return {
       number,
       title: p?.title ?? `#${number}`,
-      ok: !blocked,
+      // "block" のときだけマージ自体を止める。warn / reason は画面で判断させる
+      ok: !blocked && gate?.level !== "block",
       conflict: !!blocked?.conflict,
       ...(blocked ? { reason: blocked.message } : {}),
+      ...(gate ? { checkGate: gate, ...(gate.level === "block" ? { reason: checkGateMessage(gate, number) } : {}) } : {}),
+      ...(unavailable.length ? { checkUnavailable: unavailable } : {}),
     };
   } catch (e) {
     // 取得そのものに失敗したものも「確認できていない」ので通さない
@@ -2516,14 +3481,75 @@ async function handleMergePrecheck(sb: SupabaseClient, caller: Caller, req: any,
   const numbers = parseMergeNumbers(body.numbers);
 
   const token = await installationToken(ctx.installationId);
-  const results = await Promise.all(numbers.map(n => precheckPull(token, ctx.repo, n)));
+  const results = await Promise.all(numbers.map(n => precheckPull(token, ctx.repo, n, ctx.requireChecksMode)));
 
   return res.status(200).json({
     ok: results.every(r => r.ok),
     conflicts: results.filter(r => r.conflict).length,
     blocked: results.filter(r => !r.ok && !r.conflict).length,
+    // 失敗チェックがあり、理由を書けば通せる状態（層A）。画面はここを見て入力欄を出す
+    needsReason: results.some(r => r.checkGate?.level === "reason"),
+    checkWarnings: results.filter(r => r.checkGate).length,
+    requireChecksMode: ctx.requireChecksMode,
     results,
   });
+}
+
+/**
+ * 層A: 失敗しているチェックのままマージしようとしていないかを、実行直前にもう一度見る。
+ *
+ * ブランチ保護（Required status checks）が未設定のリポジトリでは、チェックが真っ赤でも
+ * GitHub は mergeable_state=clean を返す。つまり GitHub 側には関門が無く、
+ * ここが唯一の関門になる。実際に、失敗が積み上がったまま11件がマージされて
+ * 本番へ何も届かない状態が11日間続いた。
+ *
+ * 止める場合は HttpError を投げる。理由を書いて押し切った場合は監査ログに必ず残す
+ *（残さないと「毎回みんな押し切っている」ことに誰も気付けない）。
+ */
+async function enforceCheckGate(
+  sb: SupabaseClient, ctx: ProjectCtx, caller: Caller,
+  token: string, pull: any, number: number, reason: string,
+): Promise<CheckGate | null> {
+  if (ctx.requireChecksMode === "off") return null;
+
+  const sum = await summarizeSha(token, ctx.repo, String(pull?.head?.sha ?? ""));
+  const gate = checkGateOf(ctx.requireChecksMode, sum);
+  if (!gate) return null;
+
+  const row: PrecheckRow = {
+    number,
+    title: pull?.title ?? `#${number}`,
+    ok: gate.level !== "block",
+    conflict: false,
+    reason: checkGateMessage(gate, number),
+    checkGate: gate,
+    checkUnavailable: sum.unavailable,
+  };
+  // 形は merge-precheck と揃える。画面側が同じ表示を使い回せるように
+  const payload = (needsReason: boolean) => ({
+    precheck: {
+      ok: false, conflicts: 0, blocked: 1,
+      needsReason, checkWarnings: 1, requireChecksMode: ctx.requireChecksMode,
+      results: [row],
+    },
+  });
+
+  if (gate.level === "block") {
+    await writeLog(sb, ctx, caller, "merge", number, "blocked", `checks / ${gate.failed.join(" / ")}`);
+    throw new HttpError(409, checkGateMessage(gate, number), payload(false));
+  }
+  if (gate.level === "reason" && !reason) {
+    throw new HttpError(409, checkGateMessage(gate, number), payload(true));
+  }
+
+  await writeLog(sb, ctx, caller, "merge", number, "override",
+    `checks / ${gate.failed.slice(0, 3).join(" / ")}${reason ? ` / 理由: ${reason}` : ""}`);
+  return gate;
+}
+
+/** 押し切るときの理由。長すぎるものは監査ログの都合で切る */
+function overrideReason(body: Record<string, any>): string {
+  return String(body?.reason ?? "").trim().slice(0, 300);
 }
 
 async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: any) {
@@ -2559,6 +3585,9 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
       },
     });
   }
+
+  // 層A。ここを通さないと、失敗したままのPRが黙って本番ブランチへ入る
+  await enforceCheckGate(sb, ctx, caller, token, p, number, overrideReason(body));
 
   const retry = { refreshed: false };
   try {
@@ -2623,14 +3652,43 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
 
   // 全件チェック。画面側でも事前に同じことを確かめているが、
   // 確認してから押すまでの間に状態が変わることがあるのでサーバー側でもやり直す
-  const checks = await Promise.all(numbers.map(n => precheckPull(token, ctx.repo, n)));
+  const checks = await Promise.all(numbers.map(n => precheckPull(token, ctx.repo, n, ctx.requireChecksMode)));
   const bad = checks.filter(c => !c.ok);
   if (bad.length) {
     const label = bad.map(b => `#${b.number}`).join("、");
     await writeLog(sb, ctx, caller, "merge", 0, "blocked", `bulk precheck / ${bad.map(b => `#${b.number}:${b.reason ?? ""}`).join(" / ")}`);
     throw new HttpError(409,
       `${label} がマージできない状態のため、1件もマージしていません。解消してからやり直してください。`,
-      { precheck: { ok: false, conflicts: bad.filter(b => b.conflict).length, blocked: bad.filter(b => !b.conflict).length, results: checks } });
+      {
+        precheck: {
+          ok: false,
+          conflicts: bad.filter(b => b.conflict).length,
+          blocked: bad.filter(b => !b.conflict).length,
+          needsReason: false,
+          checkWarnings: checks.filter(c => c.checkGate).length,
+          requireChecksMode: ctx.requireChecksMode,
+          results: checks,
+        },
+      });
+  }
+
+  // 層A: 失敗チェックがあるものは、理由を書かないと1件も実行しない。
+  // 全件チェックと同じ「1件でも引っかかれば1件もマージしない」の考え方に揃える（BRU13-038）
+  const reason = overrideReason(body);
+  const needReason = checks.filter(c => c.checkGate?.level === "reason");
+  if (needReason.length && !reason) {
+    const label = needReason.map(b => `#${b.number}`).join("、");
+    throw new HttpError(409,
+      `${label} に失敗しているチェックがあります。このままマージすると本番に反映されない可能性があるため、1件もマージしていません。続ける場合は理由を入力してください。`,
+      {
+        precheck: {
+          ok: false, conflicts: 0, blocked: needReason.length,
+          needsReason: true,
+          checkWarnings: checks.filter(c => c.checkGate).length,
+          requireChecksMode: ctx.requireChecksMode,
+          results: checks,
+        },
+      });
   }
 
   const results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string; skipped?: boolean }[] = [];
@@ -2658,6 +3716,9 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
 
       const nowBlocked = mergeBlockReasonOf(p);
       if (nowBlocked) throw new HttpError(409, nowBlocked.message);
+
+      // 実行直前にもう一度チェックを見る。前のマージで走り直したCIが落ちていることがある
+      await enforceCheckGate(sb, ctx, caller, token, p, number, reason);
 
       const result = await runWithFreshToken(ctx.installationId, retry, t =>
         gh(t, `/repos/${ctx.repo}/pulls/${number}/merge`, {

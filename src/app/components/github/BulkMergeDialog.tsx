@@ -18,8 +18,10 @@ import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/St
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, mergeBlockReason, GithubApiError } from "@/app/lib/github";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
 import { MergePrecheckNotice } from "@/app/components/github/MergePrecheckNotice";
+import { CheckGateNotice, REASON_MIN } from "@/app/components/github/CheckGateNotice";
 import type {
   GithubPull, GithubMergeMethod, GithubBulkMergeResult, GithubPermissionBlock, GithubMergePrecheckResult,
+  GithubMergePrecheckRow,
 } from "@/app/types";
 
 const METHODS: GithubMergeMethod[] = ["merge", "squash", "rebase"];
@@ -59,7 +61,8 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
   onClose: () => void;
   /** マージ前のコンフリクトチェック。1件でも通らなければマージには進まない */
   onPrecheck: (numbers: number[]) => Promise<GithubMergePrecheckResult>;
-  onMerge: (numbers: number[], method: GithubMergeMethod) => Promise<GithubBulkMergeResult>;
+  /** reason は「失敗チェックのまま続ける理由」（層A）。監査ログに残る */
+  onMerge: (numbers: number[], method: GithubMergeMethod, reason: string) => Promise<GithubBulkMergeResult>;
   /** 実行後に一覧を取り直すためのコールバック */
   onDone: () => void | Promise<void>;
 }) {
@@ -82,6 +85,38 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
   /** マージ自体は終わったが、一覧の取り直しだけが失敗した状態 */
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [order, setOrder] = useState<GithubPull[]>(() => inCreatedOrder(pulls));
+  /** 失敗チェックのまま続ける理由（層A）。サーバーが要求したときだけ必須になる */
+  const [reason, setReason] = useState("");
+  const [needsReason, setNeedsReason] = useState(false);
+
+  /**
+   * 押す前に出す警告の材料。
+   * サーバーの事前チェックを待たず、一覧で既に分かっている CI の状態から組み立てる。
+   * 選んだ時点で「これは本番に届かないかもしれない」と分かるようにするため。
+   */
+  const gateRows: GithubMergePrecheckRow[] = useMemo(() => {
+    const fromServer = precheck?.results.filter(r => r.checkGate) ?? [];
+    if (fromServer.length) return fromServer;
+    return order
+      .filter(p => p.checkState === "failure")
+      .map(p => {
+        const failed = (p.checks ?? []).filter(c => c.state === "failure")
+          .map(c => (c.description ? `${c.name}（${c.description}）` : c.name));
+        return {
+          number: p.number, title: p.title, ok: true, conflict: false,
+          checkGate: {
+            level: "warn" as const,
+            summary: p.checkSummary,
+            failed: failed.length ? failed : [p.checkSummary].filter(Boolean),
+            blockedDeploy: !!p.checkBlocked,
+          },
+          checkUnavailable: p.checkUnavailable,
+        };
+      });
+  }, [precheck, order]);
+
+  const hardBlocked = gateRows.some(r => r.checkGate?.level === "block");
+  const reasonMissing = needsReason && reason.trim().length < REASON_MIN;
 
   // 選択が変わったら並びも作り直す。並べ替えの途中で作り直さないよう、
   // 見るのは「どのPRが選ばれているか」だけにする
@@ -118,8 +153,17 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
     setPhase("checking");
     try {
       const checked = await onPrecheck(numbers);
+      // 失敗チェックがあり、理由がまだ書かれていない（層A）。
+      // 全件チェックと同じで、ここで止めた時点では1件もマージしていない
+      if (checked.needsReason && reason.trim().length < REASON_MIN) {
+        setPrecheck(checked);
+        setNeedsReason(true);
+        setPhase("idle");
+        return;
+      }
       if (!checked.ok) {
         setPrecheck(checked);
+        setNeedsReason(!!checked.needsReason);
         setPhase("idle");
         return;
       }
@@ -133,13 +177,16 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
     setPhase("merging");
     let r: GithubBulkMergeResult;
     try {
-      r = await onMerge(numbers, method);
+      r = await onMerge(numbers, method, reason.trim());
     } catch (e) {
       // 実行前に権限で弾かれた場合。1件もマージされていないので、直し先だけを出す
       if (e instanceof GithubApiError && e.permission) setBlocked(e.permission);
       // 確認してから押すまでの間に状態が変わり、サーバー側のチェックで止まった場合。
       // どのPRで止まったかまで返っているので、そのまま出す（1件もマージされていない）
-      if (e instanceof GithubApiError && e.precheck?.results?.length) setPrecheck(e.precheck);
+      if (e instanceof GithubApiError && e.precheck?.results?.length) {
+        setPrecheck(e.precheck);
+        setNeedsReason(!!e.precheck.needsReason);
+      }
       setError((e as Error)?.message ?? "マージに失敗しました。");
       setPhase("idle");
       return;
@@ -257,14 +304,16 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
       footer={<>
         <BtnSecondary onClick={onClose} disabled={merging}>キャンセル</BtnSecondary>
         {/* 権限で弾かれたあとは押させない。押しても同じ理由で必ず失敗するため */}
-        <button type="button" onClick={handleRun} disabled={merging || !!blocked}
-          style={{ padding: "9px 20px", background: merging || blocked ? "#9CA3AF" : BLACK, color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: merging || blocked ? "not-allowed" : "pointer" }}>
+        <button type="button" onClick={handleRun} disabled={merging || !!blocked || hardBlocked || reasonMissing}
+          title={hardBlocked ? "失敗しているチェックがあるためマージできません" : reasonMissing ? "続ける理由を入力してください" : undefined}
+          style={{ padding: "9px 20px", background: (merging || blocked || hardBlocked || reasonMissing) ? "#9CA3AF" : BLACK, color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: (merging || blocked || hardBlocked || reasonMissing) ? "not-allowed" : "pointer" }}>
           {phase === "checking" ? "コンフリクト確認中..."
             : phase === "merging" ? "マージ中..."
               : phase === "refreshing" ? "一覧を更新中..."
-                // 一度止めたあとは「もう一度確認してから」だと分かる文言にする
-                : precheck ? "もう一度確認してマージする"
-                  : `${pulls.length}件をマージする`}
+                : needsReason ? "理由を添えてマージする"
+                  // 一度止めたあとは「もう一度確認してから」だと分かる文言にする
+                  : precheck ? "もう一度確認してマージする"
+                    : `${pulls.length}件をマージする`}
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
@@ -353,6 +402,19 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
           </p>
         </div>
         </>)}
+
+        {/* 層A: 失敗しているチェックのままマージしようとしている。
+            選んだ時点で分かるよう、押す前から出す */}
+        {gateRows.length > 0 && (
+          <CheckGateNotice
+            rows={gateRows}
+            repo={repo}
+            needsReason={needsReason}
+            reason={reason}
+            onReasonChange={setReason}
+            disabled={merging}
+          />
+        )}
 
         {/* コンフリクトで止めたときは、権限の案内より先にこちらを出す
             （実際に押して止まった理由はこちらのため） */}
