@@ -27,7 +27,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
   fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches,
-  linkTicket, unlinkTicket, mergePull, resolveLinkCandidate, GithubApiError,
+  linkTicket, unlinkTicket, mergePull, precheckMerge, resolveLinkCandidate, GithubApiError,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
@@ -635,6 +635,7 @@ export function TicketPrSection({
             repo={repo}
             actorName={userName}
             onClose={() => setMergeTarget(null)}
+            onPrecheck={n => precheckMerge(projectId, [n])}
             onMerge={handleMerge}
           />
         </div>, document.body)}

@@ -22,7 +22,7 @@ import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNo
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import {
   fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, mergePullsBulk,
-  mergeBlockReason, relativeTime, GithubApiError,
+  precheckMerge, mergeBlockReason, relativeTime, GithubApiError,
 } from "@/app/lib/github";
 import type {
   Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, GithubPendingBranch, TicketGithubLink,
@@ -441,6 +441,7 @@ export function GithubPage() {
           repo={repo}
           actorName={userName}
           onClose={() => setMergeTarget(null)}
+          onPrecheck={n => precheckMerge(project.id, [n])}
           onMerge={handleMerge}
         />
       )}
@@ -451,6 +452,7 @@ export function GithubPage() {
           repo={repo}
           actorName={userName}
           onClose={() => setBulkTargets(null)}
+          onPrecheck={numbers => precheckMerge(project.id, numbers)}
           onMerge={(numbers, method) => mergePullsBulk(project.id, numbers, method)}
           onDone={async () => {
             await loadTab("pulls", true);

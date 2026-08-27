@@ -1,6 +1,10 @@
 // 複数のプルリクエストをまとめてマージする（docs/github-integration-design.md）。
 //
-// 1件ずつ順番に実行するため、途中で失敗しても残りは続行する。
+// 実行の前に必ず全件のコンフリクトチェックを行い、1件でも引っかかったら
+// 1件もマージしない（BRU13-038）。途中まで入ってしまうと「マージ済みの分」と
+// 「コンフリクトで残った分」が混ざり、直すときに取り漏れが出るため。
+// チェックを通ったあとは1件ずつ順番に実行し、そこで失敗した場合も残りは実行しない。
+//
 // 結果は1件ごとに表示し、失敗した理由をその場で読めるようにする。
 //
 // 並び順は「PRを作った順（古い順）」を既定にする。一覧の並び（更新の新しい順）を
@@ -13,7 +17,10 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, mergeBlockReason, GithubApiError } from "@/app/lib/github";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
-import type { GithubPull, GithubMergeMethod, GithubBulkMergeResult, GithubPermissionBlock } from "@/app/types";
+import { MergePrecheckNotice } from "@/app/components/github/MergePrecheckNotice";
+import type {
+  GithubPull, GithubMergeMethod, GithubBulkMergeResult, GithubPermissionBlock, GithubMergePrecheckResult,
+} from "@/app/types";
 
 const METHODS: GithubMergeMethod[] = ["merge", "squash", "rebase"];
 const BLACK = "#1F2328";
@@ -45,18 +52,20 @@ function inCreatedOrder(list: GithubPull[]): GithubPull[] {
   });
 }
 
-export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDone }: {
+export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, onMerge, onDone }: {
   pulls: GithubPull[];
   repo: string;
   actorName: string;
   onClose: () => void;
+  /** マージ前のコンフリクトチェック。1件でも通らなければマージには進まない */
+  onPrecheck: (numbers: number[]) => Promise<GithubMergePrecheckResult>;
   onMerge: (numbers: number[], method: GithubMergeMethod) => Promise<GithubBulkMergeResult>;
   /** 実行後に一覧を取り直すためのコールバック */
   onDone: () => void | Promise<void>;
 }) {
   const [method, setMethod] = useState<GithubMergeMethod>(loadMergeMethod());
-  /** idle … 確認中／merging … 実行中／refreshing … 一覧を取り直している最中 */
-  const [phase, setPhase] = useState<"idle" | "merging" | "refreshing">("idle");
+  /** idle … 確認中／checking … コンフリクト確認中／merging … 実行中／refreshing … 一覧を取り直している最中 */
+  const [phase, setPhase] = useState<"idle" | "checking" | "merging" | "refreshing">("idle");
   const merging = phase !== "idle";
   const [result, setResult] = useState<GithubBulkMergeResult | null>(null);
   const [error, setError] = useState("");
@@ -65,6 +74,11 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
    * 「失敗しました」で終わらせず、直しに行く画面まで出すために持つ。
    */
   const [blocked, setBlocked] = useState<GithubPermissionBlock | null>(null);
+  /**
+   * コンフリクトチェックで止めた結果。入っているときは1件もマージしていない。
+   * 直したあとに同じ画面から押し直せるよう、結果画面には切り替えずここに出す
+   */
+  const [precheck, setPrecheck] = useState<GithubMergePrecheckResult | null>(null);
   /** マージ自体は終わったが、一覧の取り直しだけが失敗した状態 */
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [order, setOrder] = useState<GithubPull[]>(() => inCreatedOrder(pulls));
@@ -95,15 +109,37 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   };
 
   const handleRun = async () => {
-    setPhase("merging");
+    const numbers = order.map(p => p.number);
     setError("");
     setBlocked(null);
+    setPrecheck(null);
+
+    // マージの前に必ず全件を確認する。1件でも通らなければ1件もマージしない（BRU13-038）
+    setPhase("checking");
+    try {
+      const checked = await onPrecheck(numbers);
+      if (!checked.ok) {
+        setPrecheck(checked);
+        setPhase("idle");
+        return;
+      }
+    } catch (e) {
+      if (e instanceof GithubApiError && e.permission) setBlocked(e.permission);
+      setError((e as Error)?.message ?? "コンフリクトの確認に失敗しました。");
+      setPhase("idle");
+      return;
+    }
+
+    setPhase("merging");
     let r: GithubBulkMergeResult;
     try {
-      r = await onMerge(order.map(p => p.number), method);
+      r = await onMerge(numbers, method);
     } catch (e) {
       // 実行前に権限で弾かれた場合。1件もマージされていないので、直し先だけを出す
       if (e instanceof GithubApiError && e.permission) setBlocked(e.permission);
+      // 確認してから押すまでの間に状態が変わり、サーバー側のチェックで止まった場合。
+      // どのPRで止まったかまで返っているので、そのまま出す（1件もマージされていない）
+      if (e instanceof GithubApiError && e.precheck?.results?.length) setPrecheck(e.precheck);
       setError((e as Error)?.message ?? "マージに失敗しました。");
       setPhase("idle");
       return;
@@ -125,25 +161,37 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
   };
 
   // 実行はサーバー側で1件ずつ進み、途中経過は返らない。
-  // 出せるのは「実行中か」「一覧の取り直しに移ったか」の2段階まで
+  // 出せるのは「コンフリクト確認中か」「実行中か」「一覧の取り直しに移ったか」の3段階まで
   const steps: ProgressStep[] = [
     {
+      key: "precheck",
+      state: phase === "checking" ? "running" : "done",
+      text: phase === "checking"
+        ? `${order.length}件のコンフリクトを確認しています...`
+        : `${order.length}件のコンフリクトを確認しました`,
+      hint: phase === "checking" ? "1件でもコンフリクトしていれば、1件もマージしません" : undefined,
+    },
+    {
       key: "merge",
-      state: phase === "merging" ? "running" : "done",
-      text: phase === "merging"
-        ? `${order.length}件を上から順にマージしています...`
-        : `${order.length}件のマージを実行しました`,
+      state: phase === "checking" ? "pending" : phase === "merging" ? "running" : "done",
+      text: phase === "checking"
+        ? "マージの開始を待っています"
+        : phase === "merging"
+          ? `${order.length}件を上から順にマージしています...`
+          : `${order.length}件のマージを実行しました`,
       hint: phase === "merging" ? "1件ずつ順番に実行するため、件数ぶんの時間がかかります" : undefined,
     },
     {
       key: "refresh",
-      state: phase === "merging" ? "pending" : "running",
-      text: phase === "merging" ? "一覧の更新を待っています" : "一覧を最新の状態にしています...",
+      state: phase === "refreshing" ? "running" : "pending",
+      text: phase === "refreshing" ? "一覧を最新の状態にしています..." : "一覧の更新を待っています",
     },
   ];
 
   // 実行後は結果表示だけにする（同じ内容を二度実行させない）
   if (result) {
+    const skippedCount = result.results.filter(r => r.skipped).length;
+    const failedCount = result.failed - skippedCount;
     return (
       <DialogShell title="まとめてマージの結果" size="lg" onClose={onClose}
         footer={<BtnSecondary onClick={onClose}>閉じる</BtnSecondary>}>
@@ -152,20 +200,26 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
             {result.merged > 0
               ? <><strong style={{ color: "#059669" }}>{result.merged}件</strong> をマージしました</>
               : <>マージできたものはありません</>}
-            {result.failed > 0 && <>／<strong style={{ color: "#DC2626" }}>{result.failed}件</strong> は失敗しました</>}
+            {/* 失敗と未実行は分けて数える。まとめると「何件直せばいいのか」が読めない */}
+            {failedCount > 0 && <>／<strong style={{ color: "#DC2626" }}>{failedCount}件</strong> は失敗しました</>}
+            {skippedCount > 0 && <>／<strong style={{ color: "#6B6458" }}>{skippedCount}件</strong> は未実行です</>}
           </p>
           {/* 原因が App の権限なら、直しに行く画面をここで出し切る。
               「管理者に依頼してください」で終わると、依頼先の画面が分からず何度も同じ失敗を繰り返す */}
           {blocked && <PermissionBlockNotice block={blocked} compact />}
           <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "hidden" }}>
             {result.results.map((r, i) => (
-              <div key={r.number} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 13px", borderBottom: i < result.results.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none", background: r.ok ? "#FFF" : "#FEF2F2" }}>
-                <span style={{ fontSize: 13, color: r.ok ? "#059669" : "#DC2626", flexShrink: 0 }}>{r.ok ? "✔" : "✕"}</span>
+              // 未実行（打ち切りで飛ばした分）は失敗と同じ赤にしない。
+              // 「このPRに問題があった」と読まれると、直す相手を間違える
+              <div key={r.number} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 13px", borderBottom: i < result.results.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none", background: r.ok ? "#FFF" : r.skipped ? "#F9F8F6" : "#FEF2F2" }}>
+                <span style={{ fontSize: 13, color: r.ok ? "#059669" : r.skipped ? "#A09790" : "#DC2626", flexShrink: 0 }}>
+                  {r.ok ? "✔" : r.skipped ? "—" : "✕"}
+                </span>
                 <div style={{ minWidth: 0 }}>
                   <p style={{ fontSize: 12, color: "#1A1714" }}>
                     <span style={{ fontFamily: "var(--font-mono)", color: "#8A837B" }}>#{r.number}</span> {r.title}
                   </p>
-                  {r.error && <p style={{ fontSize: 11, color: "#B91C1C", marginTop: 2, lineHeight: 1.6 }}>{r.error}</p>}
+                  {r.error && <p style={{ fontSize: 11, color: r.skipped ? "#A09790" : "#B91C1C", marginTop: 2, lineHeight: 1.6 }}>{r.error}</p>}
                 </div>
               </div>
             ))}
@@ -175,10 +229,13 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
           {result.failed > 0 && result.merged > 0 && (
             <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
               前のマージでマージ先が進むため、後続がコンフリクトになることがあります。
-              失敗した分は一覧を更新してから、あらためてお試しください。
+              {result.aborted && <>失敗した時点で<strong>残りは実行していません</strong>。</>}
+              一覧を更新してから、残りをあらためてお試しください。
             </p>
           )}
-          {result.failed > 0 && result.merged === 0 && !blocked && (
+          {/* 打ち切りで未実行になった分があるときは出さない。
+              「全件が同じ理由で落ちた」ときの案内で、1件失敗して残りを止めた場合とは別の話 */}
+          {failedCount > 0 && result.merged === 0 && skippedCount === 0 && !blocked && (
             <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
               1件も通っていないため、PRごとの事情ではなく設定側が原因の可能性があります。
               上の理由が全件で同じ場合は、管理者に「外部連携」画面の確認を依頼してください。
@@ -202,7 +259,12 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
         {/* 権限で弾かれたあとは押させない。押しても同じ理由で必ず失敗するため */}
         <button type="button" onClick={handleRun} disabled={merging || !!blocked}
           style={{ padding: "9px 20px", background: merging || blocked ? "#9CA3AF" : BLACK, color: "#fff", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: merging || blocked ? "not-allowed" : "pointer" }}>
-          {phase === "merging" ? "マージ中..." : phase === "refreshing" ? "一覧を更新中..." : `${pulls.length}件をマージする`}
+          {phase === "checking" ? "コンフリクト確認中..."
+            : phase === "merging" ? "マージ中..."
+              : phase === "refreshing" ? "一覧を更新中..."
+                // 一度止めたあとは「もう一度確認してから」だと分かる文言にする
+                : precheck ? "もう一度確認してマージする"
+                  : `${pulls.length}件をマージする`}
         </button>
       </>}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
@@ -283,12 +345,18 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onMerge, onDo
         <div style={{ display: "flex", gap: 9, padding: "11px 13px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.2)", borderRadius: 9 }}>
           <AlertTriangle style={{ width: 14, height: 14, color: "#DC2626", flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 11, color: "#B91C1C", lineHeight: 1.7 }}>
-            この操作は取り消せません。1件ずつ<strong>上から順番に</strong>実行し、途中で失敗しても残りは続行します。<br />
+            この操作は取り消せません。実行前に<strong>全件のコンフリクトを確認</strong>し、
+            1件でも引っかかっていれば<strong>1件もマージしません</strong>。<br />
+            チェックを通ったあとは1件ずつ上から順番に実行し、そこで失敗した場合も<strong>残りは実行しません</strong>。<br />
             前のマージでマージ先が進むため、<strong>順番を誤ると後続がコンフリクトになることがあります</strong>。<br />
             GitHub 上は Dev Ticket[bot] 名義で記録され、各マージコミットに「{actorName}」が実行者として残ります。
           </p>
         </div>
         </>)}
+
+        {/* コンフリクトで止めたときは、権限の案内より先にこちらを出す
+            （実際に押して止まった理由はこちらのため） */}
+        {precheck && <MergePrecheckNotice precheck={precheck} repo={repo} />}
 
         {blocked
           ? <PermissionBlockNotice block={blocked} compact />
