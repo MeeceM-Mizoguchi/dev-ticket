@@ -22,7 +22,7 @@ const RAIL = "#E7E3DC";
 /** 行の左端に置く丸の直径。棒の位置もこれを基準に決める */
 const DOT = 22;
 /** つなぎの棒の太さ */
-const RAIL_W = 4;
+const RAIL_W = 6;
 /** 丸と棒の間に空ける隙間（丸に棒が刺さって見えないように） */
 const DOT_GAP = 3;
 /** 進捗の輪の直径 */
@@ -125,15 +125,21 @@ function Rail({ place, filled, color, delayed }: {
   delayed?: boolean;
 }) {
   const clear = DOT / 2 + DOT_GAP;
+  // 行と行の境目で 1px はみ出させる。ぴったり突き合わせだと拡大率によっては
+  // 隙間が出て、1本の線が切れて見えるため
   const box = place === "top"
-    ? { top: 0, height: `calc(50% - ${clear}px)` }
-    : { top: `calc(50% + ${clear}px)`, bottom: 0 };
+    ? { top: -1, height: `calc(50% - ${clear - 1}px)` }
+    : { top: `calc(50% + ${clear}px)`, bottom: -1 };
+  // 角を丸めるのは丸に接する側だけ。境目まで丸めると継ぎ目がくびれて、
+  // 1本のはずの線が2本に分かれて見える
+  const r = RAIL_W / 2;
+  const radius = place === "top" ? `0 0 ${r}px ${r}px` : `${r}px ${r}px 0 0`;
   // 前半・後半で半分ずつ。後半は前半が降りきった時刻から動かすので、切れ目で止まって見えない
   const half = RAIL_FILL_MS / 2;
   return (
-    <div style={{ position: "absolute", left: (DOT - RAIL_W) / 2, width: RAIL_W, borderRadius: RAIL_W / 2, background: RAIL, overflow: "hidden", ...box }}>
+    <div style={{ position: "absolute", left: (DOT - RAIL_W) / 2, width: RAIL_W, borderRadius: radius, background: RAIL, overflow: "hidden", ...box }}>
       <div style={{
-        width: "100%", height: filled ? "100%" : 0, background: color, borderRadius: RAIL_W / 2,
+        width: "100%", height: filled ? "100%" : 0, background: color,
         transition: `height ${half}ms ${delayed ? RAIL_EASE_IN : RAIL_EASE_OUT} ${delayed ? half : 0}ms`,
       }} />
     </div>
