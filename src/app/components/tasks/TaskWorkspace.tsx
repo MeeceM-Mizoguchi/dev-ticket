@@ -651,7 +651,7 @@ export function TaskWorkspace({
       {visible.length === 0 && (
         <p style={{ fontSize: 11.5, color: "#A09790", margin: "0 0 8px 2px" }}>
           {tasks.length === 0
-            ? "まだタスクがありません。下の行にそのまま入力して Enter で追加できます。"
+            ? "まだタスクがありません。表の1行目にそのまま入力して Enter で追加できます。"
             : "条件に合うタスクがありません。フィルタを見直してみてください。"}
         </p>
       )}
@@ -673,7 +673,7 @@ export function TaskWorkspace({
           quickAdd={
             <TaskQuickAddRow
               projects={projects} members={members} categoryOptions={categoryOptions}
-              showProject={!isProjectScope} fixedProjectId={projectId}
+              showProject={!isProjectScope} fixedProjectId={projectId} atTop
               focusSignal={addFocus} creatorName={userName} onCreate={handleCreate}
             />
           } />

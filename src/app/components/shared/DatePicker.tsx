@@ -41,6 +41,8 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
 
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
+  /** Tab で欄に入っているか。枠を出すためだけの状態（cell のみ） */
+  const [focused, setFocused] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);   // portal popup — NOT inside wrapRef
@@ -71,6 +73,18 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
     calcPosition();
     setOpen(o => !o);
   }, [calcPosition, disabled]);
+
+  /**
+   * キーボードだけで日付欄を扱えるようにする（表を1行ぶん Tab で打ち切れるように）。
+   * Enter / Space で開閉、Esc で閉じる。Tab は止めない（次の欄へそのまま抜ける）ので、
+   * 開いたままカレンダーが残らないようここで閉じる。
+   */
+  const handleTriggerKey = (e: React.KeyboardEvent) => {
+    if (disabled) return;
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleToggle(); return; }
+    if (e.key === "Escape" && open) { e.preventDefault(); setOpen(false); return; }
+    if (e.key === "Tab" && open) setOpen(false);
+  };
 
   // Close on outside click — check both the trigger wrapper AND the portal popup
   useEffect(() => {
@@ -179,6 +193,12 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
       {variant === "cell" ? (
         // 表のセル。枠は出さず、カレンダーの絵は触ったときだけ出す
         <div ref={triggerRef} onClick={handleToggle}
+          // Tab で回ってくる欄のひとつとして扱う（表を1行ぶん打ち切れるように）。
+          // 押して開くのは Enter / Space、Tab はそのまま次の欄へ抜ける
+          tabIndex={disabled ? -1 : 0}
+          onKeyDown={handleTriggerKey}
+          onFocus={() => !disabled && setFocused(true)}
+          onBlur={() => setFocused(false)}
           onMouseEnter={() => !disabled && setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           style={{
@@ -186,13 +206,18 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
             fontSize: 11, color: displayValue ? "#6B6458" : "#B7B1AA",
             cursor: disabled ? "default" : "pointer", userSelect: "none" as const,
             whiteSpace: "nowrap" as const, overflow: "hidden",
+            // Tab で来たときは、いまどのセルに居るかが分かるよう枠を出す
+            // （幅を動かさないよう outline で描く＝進捗率の欄と同じ作り）
+            outline: focused ? "1px solid #059669" : "none",
+            outlineOffset: 3,
+            borderRadius: focused ? 6 : undefined,
             ...cellStyle,
           }}>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayValue || placeholder}</span>
           {!disabled && (
             <Calendar style={{
               width: 11, height: 11, color: "#A09790", flexShrink: 0,
-              opacity: open || hovered ? 0.9 : 0, transition: "opacity 0.12s",
+              opacity: open || hovered || focused ? 0.9 : 0, transition: "opacity 0.12s",
             }} />
           )}
         </div>

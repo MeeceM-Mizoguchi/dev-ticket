@@ -1,7 +1,7 @@
 // ENHA2-032 タスクのリストビュー（既定・最軽量）。
 //
 // この表がタスク編集の場そのもの。詳細パネルは持たず、行のどのセルもその場で直せる。
-// 見出し・データ行・追加行（TaskQuickAddRow）はすべて TASK_COLS の同じ幅を使うので、
+// 見出し・追加行（TaskQuickAddRow）・データ行はすべて TASK_COLS の同じ幅を使うので、
 // 3者が縦に揃う。セルの見た目は「素の文字」で、枠は出さない（.task-cell）。
 //
 // 文字のセル（タイトル・詳細）は打っている間は保存せず、Enter か欄から離れたときに
@@ -11,7 +11,7 @@
 //
 // サブタスク（子チケットと同じく1階層のみ）は親行の下にぶら下げる。
 // 親行の ▸ で開閉し、開いた中に「サブタスクを追加」の入力行が生えている。
-// その追加行も表の最終行と同じ全項目ぶんの入力欄（renderSubtaskAdd で受け取る）。
+// その追加行も見出し下の追加行と同じ全項目ぶんの入力欄（renderSubtaskAdd で受け取る）。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, ChevronRight, CornerDownRight, Hash, Trash2, Users } from "lucide-react";
@@ -531,7 +531,7 @@ export function TaskListView({
   onShare: (t: Task) => void;
   /** 親を開いたときに下へ生やす「サブタスクを追加」行（TaskQuickAddRow） */
   renderSubtaskAdd: (parent: Task) => React.ReactNode;
-  /** 表の最終行に生やす追加行（TaskQuickAddRow）。渡さなければ出ない */
+  /** 見出しの下に生やす追加行（TaskQuickAddRow）。渡さなければ出ない */
   quickAdd?: React.ReactNode;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -617,6 +617,10 @@ export function TaskListView({
         <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
       </div>
 
+      {/* 追加行は見出しのすぐ下（BRU13-044）。
+          件数が増えるほど最終行は遠くなり、足すたびに一番下まで送られてしまうため */}
+      {quickAdd}
+
       {roots.map(t => {
         const c = counts.get(t.id) ?? { total: 0, done: 0 };
         const isOpen = expanded.has(t.id);
@@ -652,8 +656,6 @@ export function TaskListView({
           </div>
         );
       })}
-
-      {quickAdd}
     </div>
   );
 }

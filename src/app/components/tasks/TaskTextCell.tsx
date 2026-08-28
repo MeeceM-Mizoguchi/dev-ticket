@@ -33,6 +33,32 @@ const OVERLAY_TEXT: React.CSSProperties = {
 
 type Box = { top: number; left: number; width: number };
 
+/** Tab で移りたい欄（ブラウザ標準の順番と同じもの） */
+const FOCUSABLE = [
+  "a[href]", "button:not([disabled])", "input:not([disabled])",
+  "select:not([disabled])", "textarea:not([disabled])", "[tabindex]:not([tabindex=\"-1\"])",
+].join(",");
+
+/**
+ * 隣の欄へフォーカスを移す。
+ *
+ * 重ねる入力欄は body 直下に出しているので、そのまま Tab を押すと
+ * ブラウザは「body の末尾の次」へ飛ばしてしまい、右の列へ移れない。
+ * 元のセル（表の中にある入力欄）を基準に、画面の並び順で次／前を探して渡す。
+ *
+ * @param from  基準にするセルの入力欄
+ * @param back  Shift+Tab（前へ戻る）か
+ * @param skip  数えたくない要素（重ねている入力欄そのもの）
+ */
+export function focusAdjacentCell(from: HTMLElement, back: boolean, skip?: HTMLElement | null) {
+  const all = Array.from(document.querySelectorAll<HTMLElement>(FOCUSABLE))
+    // 隠れている欄（閉じたメニューの中など）は飛ばす。基準そのものは必ず残す
+    .filter(el => el === from || (el !== skip && el.tabIndex >= 0 && el.offsetParent !== null));
+  const i = all.indexOf(from);
+  if (i < 0) return;
+  all[back ? i - 1 : i + 1]?.focus();
+}
+
 /**
  * マウスを乗せたセルの中身を全文出す。
  *
@@ -230,6 +256,16 @@ export function ExpandingInput({
             if (e.key === "Enter" && !e.nativeEvent.isComposing) {
               e.preventDefault();
               if (onEnter) onEnter(); else close();
+              return;
+            }
+            // Tab は「打ち終えて右の列へ」。ここで閉じてから自分で次の欄へ渡す
+            // （重ねた欄は body 直下にあるので、標準の Tab では右の列へ移れない）
+            if (e.key === "Tab" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              const cell = localRef.current;
+              const overlay = areaRef.current;
+              close();
+              if (cell) focusAdjacentCell(cell, e.shiftKey, overlay);
               return;
             }
             if (e.key === "Escape") { onEscape?.(); close(); }
