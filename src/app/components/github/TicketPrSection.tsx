@@ -343,7 +343,7 @@ export function TicketPrSection({
   // reason は「失敗チェックのまま続ける理由」（層A / docs/deploy-verification-design.md）
   const handleMerge = async (method: GithubMergeMethod, onMerged: () => void, reason: string) => {
     if (!mergeTarget) return;
-    await mergePull(projectId, mergeTarget.number, method, reason);
+    await mergePull(projectId, mergeTarget.number, method, reason, projectSlug);
     onMerged();
     toast(`#${mergeTarget.number} をマージしました`, "success");
     await load();

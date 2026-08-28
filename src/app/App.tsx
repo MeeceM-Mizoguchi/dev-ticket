@@ -8,6 +8,7 @@ import { AuthProvider } from "@/app/contexts/AuthContext";
 import { PreviewPanelProvider } from "@/app/contexts/PreviewPanelContext";
 import { LinkPreviewPanel } from "@/app/components/shared/LinkPreviewPanel";
 import { ExportProgressOverlay } from "@/app/components/shared/ExportProgressOverlay";
+import { GithubRunOverlay } from "@/app/components/github/GithubRunOverlay";
 import { ProtectedShell } from "@/app/components/layout/AppShell";
 import { PROTECTED_ROUTES } from "@/app/components/layout/AppRoutes";
 import { LoginPage } from "@/app/pages/LoginPage";
@@ -65,6 +66,9 @@ export default function App() {
           <WebNavBridge />
           <LinkPreviewPanel />
           <ExportProgressOverlay />
+          {/* 閉じたあともサーバー側で続いていたマージ・PR作成を、ログイン直後に拾って
+              進捗モーダルを出し直す。どの画面から戻ってきても効くようにここに置く */}
+          <GithubRunOverlay />
           <Routes>
             <Route path="/" element={<RootRoute />} />
             <Route path="/book-demo" element={<DemoBookingPage />} />

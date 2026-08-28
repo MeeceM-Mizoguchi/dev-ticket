@@ -1639,10 +1639,15 @@ export default async function handler(req: any, res: any) {
       case "deploy-check":    return await handleDeployCheck(sb, caller, req, res);
       case "deploy-overview": return await handleDeployOverview(sb, caller, req, res);
       case "links":    return await handleLinks(sb, caller, req, res);
-      case "create-pull": return await handleCreatePull(sb, caller, req, res);
+      // 取り消しの効かない3つだけは「実行中」を残す。閉じて開き直したときに
+      // 結果まで見届けられるようにするため（withActionRun のコメント参照）
+      case "create-pull":
+        return await withActionRun(sb, caller, "create-pull", req, res, r => handleCreatePull(sb, caller, req, r));
       case "merge-precheck": return await handleMergePrecheck(sb, caller, req, res);
-      case "merge":    return await handleMerge(sb, caller, req, res);
-      case "merge-bulk": return await handleMergeBulk(sb, caller, req, res);
+      case "merge":
+        return await withActionRun(sb, caller, "merge", req, res, r => handleMerge(sb, caller, req, r));
+      case "merge-bulk":
+        return await withActionRun(sb, caller, "merge-bulk", req, res, r => handleMergeBulk(sb, caller, req, r));
       case "review":   return await handleReview(sb, caller, req, res);
       case "comment":  return await handleComment(sb, caller, req, res);
       case "link":     return await handleLink(sb, caller, req, res);
@@ -3293,6 +3298,92 @@ async function writeLog(sb: SupabaseClient, ctx: ProjectCtx, caller: Caller, act
     result,
     detail: detail.slice(0, 500),
   });
+}
+
+// ── 実行中の記録（supabase/add_github_action_runs.sql） ───────
+//
+// マージもPR作成も、GitHubの呼び出しからリリース反映まで全部この関数の中で終わる。
+// クライアントが切断されても実行は止まらないので、タブやブラウザを閉じても
+// 処理そのものは最後まで走り切る。止まるのは「画面の取り直し」だけ。
+//
+// ただし github_action_logs は終わったことしか書かないため、開き直した画面からは
+// 「まだ実行中」と「もう終わった」を見分けられなかった。
+// そこで開始時に running を1行置き、終わったら結果ごと書き換える。
+// 画面はログイン直後にこの行を見て、実行中なら進捗モーダルを出し直す。
+
+/** 記録に使う実行ID。画面が作った UUID をそのまま主キーにする */
+const RUN_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 記録を残す日数を超えた行は消す。復帰にしか使わないので溜め込まない */
+const RUN_KEEP_MS = 24 * 60 * 60 * 1000;
+
+async function finishActionRun(
+  sb: SupabaseClient, runId: string, actorId: string,
+  state: "done" | "error", message: string, result: unknown,
+) {
+  // 記録の書き込みで実行そのものを失敗させない。ここが落ちても
+  // GitHub 側の処理は終わっているので、応答は必ず返す
+  try {
+    await sb.from("github_action_runs").update({
+      state,
+      message: message ? message.slice(0, 500) : null,
+      result: result ?? null,
+      finished_at: new Date().toISOString(),
+    }).eq("id", runId);
+    // 復帰にしか使わない記録なので溜め込まない。
+    // 実行した本人の古い行だけを消す（そのぶん索引がそのまま効く）
+    await sb.from("github_action_runs").delete()
+      .eq("actor_id", actorId)
+      .lt("started_at", new Date(Date.now() - RUN_KEEP_MS).toISOString());
+  } catch { /* 記録は補助。落ちても実行結果には影響させない */ }
+}
+
+/**
+ * 実行を running で記録してから中身を走らせ、終わったら結果を書き戻す。
+ *
+ * 画面が runId を付けてこなかった場合（古い版・記録用の表が未適用）は、
+ * 何も記録せずそのまま実行する。記録の有無で実行の可否を変えない。
+ */
+async function withActionRun(
+  sb: SupabaseClient, caller: Caller, kind: string, req: any, res: any,
+  run: (res: any) => Promise<any>,
+): Promise<any> {
+  const body = parseBody(req);
+  const runId = String(body.runId ?? "");
+  if (!RUN_ID_RE.test(runId)) return await run(res);
+
+  const tracked = await sb.from("github_action_runs").insert({
+    id: runId,
+    project_id: String(body.projectId ?? ""),
+    project_slug: String(body.runSlug ?? "") || null,
+    actor_id: caller.id,
+    kind,
+    label: String(body.runLabel ?? "").slice(0, 200) || null,
+  }).then(r => !r.error, () => false);
+  if (!tracked) return await run(res);
+
+  // 応答をそのまま記録へ写すために、書き出しを一度こちらで受ける。
+  // 3つのハンドラはどれも res.status(...).json(...) しか使わない
+  const sent = { status: 200, body: null as any };
+  const recorder = {
+    status(code: number) { sent.status = code; return this; },
+    json(payload: any) { sent.body = payload; return res.status(sent.status).json(payload); },
+    setHeader: (k: string, v: string) => res.setHeader(k, v),
+  };
+
+  try {
+    const out = await run(recorder);
+    // ハンドラが自分でエラー応答を返すことがある（権限・GitHub側の失敗）。
+    // 投げられたかどうかではなく、返したステータスで成否を決める
+    const failed = sent.status >= 400;
+    await finishActionRun(sb, runId, caller.id, failed ? "error" : "done",
+      failed ? String(sent.body?.error ?? "") : "", sent.body);
+    return out;
+  } catch (e) {
+    const m = e instanceof HttpError ? { message: e.message } : jaMessage(e);
+    await finishActionRun(sb, runId, caller.id, "error", m.message, null);
+    throw e;
+  }
 }
 
 /**
