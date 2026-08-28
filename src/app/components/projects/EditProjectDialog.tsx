@@ -10,6 +10,7 @@ import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 // 🌟 追加: CustomSelect コンポーネントをインポート
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { computeProjectStatus } from "@/app/lib/helpers";
+import { findSlugConflict, SLUG_CONFLICT_MESSAGE } from "@/app/lib/projectResolve";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
@@ -62,11 +63,8 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
     if (isSupabaseEnabled) {
       setSaving(true);
       if (finalSlug && finalSlug !== project.slug) {
-        let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug).neq("id", project.id);
-        if (orgId) dupQ = dupQ.eq("organization_id", orgId);
-        else dupQ = dupQ.is("organization_id", null);
-        const { data: dup } = await dupQ.maybeSingle();
-        if (dup) { setSlugError("この組織内ですでに使用されている識別子です。"); setSaving(false); return; }
+        const conflict = await findSlugConflict(finalSlug, orgId, project.id);
+        if (conflict) { setSlugError(SLUG_CONFLICT_MESSAGE[conflict]); setSaving(false); return; }
       }
       const { error } = await supabase!.from("projects").update({
         name, description,
@@ -76,6 +74,7 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
         is_manual_status: isManualStatus,
         slug: finalSlug || null,
       }).eq("id", project.id);
+      // 旧識別子は projects の UPDATE トリガーが project_slug_aliases に残す（lib/projectResolve.ts 参照）
       setSaving(false);
       if (error?.code === "23505") {
         setSlugError("その識別子はすでに使用されています。");

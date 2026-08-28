@@ -30,6 +30,8 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { readMinutesMarkdownFiles, MINUTES_MD_ACCEPT } from "@/app/lib/minutesMdImport";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 
 function formatDate(d: string) {
   if (!d) return "";
@@ -132,6 +134,8 @@ export function MinutesPage() {
   const [minutes, setMinutes] = useState<MeetingMinute[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [meetingDate, setMeetingDate] = useState("");
@@ -224,9 +228,10 @@ export function MinutesPage() {
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
     setNotFound(false);
-    const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-    const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
-    if (!p) { setNotFound(true); setLoading(false); return; }
+    const found = await findProjectBySlug(projectSlug);
+    if (!found) { setNotFound(true); setLoading(false); return; }
+    const p = found.row;
+    setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
     setProject(mapProject(p));
     const [{ data }, permResult, { data: actionData }] = await Promise.all([
       supabase!.from("meeting_minutes").select("*").eq("project_id", p.id).order("meeting_date", { ascending: false }),
@@ -260,6 +265,9 @@ export function MinutesPage() {
   }, [projectSlug, userId, isAdminRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   // URLパスパラメータからアイテム選択（UUID後方互換 + yyyymmdd-hhmmss スラグ対応 + フォルダ）
   useEffect(() => {

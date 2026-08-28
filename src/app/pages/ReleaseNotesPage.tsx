@@ -16,6 +16,8 @@ import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { DeployStatusBanner } from "@/app/components/github/DeployStatusBanner";
 import { fetchDeployStatus } from "@/app/lib/github";
 import type { SprintTicket, Project, AccessLevel, UserPermissions, GithubDeployStatus } from "@/app/types";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 
 interface ReleaseItem {
   ticket: SprintTicket;
@@ -70,6 +72,8 @@ export function ReleaseNotesPage() {
   const [scopedProject, setScopedProject] = useState<Project | null>(null);
   const [scopedNotFound, setScopedNotFound] = useState(false);
   const [scopedLoading, setScopedLoading] = useState(projectMode);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   // サブナビに出す他ページの権限。リリースノート自身はプロジェクトメンバーなら使える
   const [subNavPerms, setSubNavPerms] = useState<{ wiki: AccessLevel; backlog: AccessLevel; minutes: AccessLevel; whiteboard: AccessLevel }>(
     { wiki: "edit", backlog: "edit", minutes: "edit", whiteboard: "edit" }
@@ -111,13 +115,11 @@ export function ReleaseNotesPage() {
     let alive = true;
     (async () => {
       setScopedLoading(true);
-      const { data: bySlug } = await (supabase as NonNullable<typeof supabase>)
-        .from("projects").select("*").eq("slug", projectSlug).limit(1);
-      const row = bySlug?.[0] ?? (await (supabase as NonNullable<typeof supabase>)
-        .from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
+      const found = await findProjectBySlug(projectSlug!);
       if (!alive) return;
-      if (!row) { setScopedNotFound(true); setScopedLoading(false); return; }
-      const p = mapProject(row);
+      if (!found) { setScopedNotFound(true); setScopedLoading(false); return; }
+      setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
+      const p = mapProject(found.row);
       setScopedProject(p);
       setScopedNotFound(false);
 
@@ -140,6 +142,9 @@ export function ReleaseNotesPage() {
     })();
     return () => { alive = false; };
   }, [projectMode, projectSlug, isAdminRole, userId]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   const [items, setItems] = useState<ReleaseItem[]>([]);
   const [loading, setLoading] = useState(true);

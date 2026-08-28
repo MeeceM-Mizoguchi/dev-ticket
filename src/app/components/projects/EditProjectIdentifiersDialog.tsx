@@ -6,6 +6,7 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
+import { findSlugConflict, SLUG_CONFLICT_MESSAGE } from "@/app/lib/projectResolve";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 
@@ -35,12 +36,11 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
     if (isSupabaseEnabled) {
       setSaving(true);
       if (finalSlug !== project.slug) {
-        let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug).neq("id", project.id);
-        if (orgId) dupQ = dupQ.eq("organization_id", orgId);
-        else dupQ = dupQ.is("organization_id", null);
-        const { data: dup } = await dupQ.maybeSingle();
-        if (dup) { setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。"); setSaving(false); return; }
+        const conflict = await findSlugConflict(finalSlug, orgId, project.id);
+        if (conflict) { setSlugError(SLUG_CONFLICT_MESSAGE[conflict]); setSaving(false); return; }
       }
+      // 旧識別子は projects の UPDATE トリガーが project_slug_aliases に残す。
+      // ここで足さないのは、識別子を変える画面が他にもあるため（lib/projectResolve.ts 参照）。
       const { error } = await supabase!.from("projects").update({ slug: finalSlug }).eq("id", project.id);
       setSaving(false);
       if (error?.code === "23505") {
@@ -65,7 +65,13 @@ export function EditProjectIdentifiersDialog({ project, onClose, onUpdated }: {
         <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 4 }}>
           URLに使用されます: <code style={{ background: "#F3F4F6", padding: "1px 6px", borderRadius: 4, fontSize: 11 }}>{slug || "TEST"}/TS-00001</code>
         </p>
-        {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 4 }}>{slugError}</p>}
+        {/* 旧識別子は project_slug_aliases に残るので、配布済みのURLは無効にならない */}
+        {!!project.slug && !!slug && slug !== project.slug && (
+          <p style={{ fontSize: 11, color: "#6B7280", marginTop: 4, lineHeight: 1.6 }}>
+            これまでの <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>/{project.slug}/…</code> のURLも引き続き開けます（開いたときに新しいURLへ切り替わります）。
+          </p>
+        )}
+        {slugError && <p style={{ fontSize: 11, color: "#DC2626", marginTop: 4, lineHeight: 1.6 }}>{slugError}</p>}
       </div>
     </DialogShell>
   );

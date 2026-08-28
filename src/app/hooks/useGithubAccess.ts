@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
 import type { GithubAccessLevel, UserPermissions } from "@/app/types";
 
 export interface GithubAccess {
@@ -80,11 +81,8 @@ export function useGithubAccess(projectSlug: string | undefined): GithubAccess {
 
     let alive = true;
     (async () => {
-      // スラッグでもIDでも開けるようにしている既存ページと同じ引き方
-      const { data: bySlug } = await supabase!
-        .from("projects").select("id, github_repo_full_name, github_enabled").eq("slug", projectSlug).limit(1);
-      const p = bySlug?.[0]
-        ?? (await supabase!.from("projects").select("id, github_repo_full_name, github_enabled").eq("id", projectSlug).maybeSingle()).data;
+      // スラッグでもIDでも旧スラッグでも開けるようにしている既存ページと同じ引き方
+      const p = (await findProjectBySlug(projectSlug, "id, github_repo_full_name, github_enabled"))?.row;
       if (!alive) return;
       if (!p) {
         setState({ level: undefined, linked: false, projectId: null, loading: false });

@@ -17,6 +17,7 @@ import { checkProjectAccess } from "@/app/lib/projectAccess";
 import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor, setBoardVisibility, broadcastBoardEvicted } from "@/app/lib/whiteboardService";
 import { getWbControl } from "@/app/lib/whiteboardControlBus";
 import { COMMENT_LINK_PARAM, ELEMENT_LINK_PARAM, REPLY_LINK_PARAM } from "@/app/lib/whiteboardLink";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 import type { AccessLevel, Whiteboard } from "@/app/types";
 
 const WhiteboardCanvas = lazy(() => import("@/app/components/whiteboard/WhiteboardCanvas"));
@@ -49,6 +50,8 @@ export function WhiteboardPage() {
   const [perms, setPerms] = useState<Perms>({ whiteboard: "view", wiki: "view", backlog: "view", minutes: "view" });
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   // 初期値は useState 初期化関数で同期的に読む。useEffect で後から反映すると
   // リロード時にサイドバーが一瞬出て消える（チカチカ）ため。
   const [collapsed, setCollapsed] = useState(() => {
@@ -64,6 +67,7 @@ export function WhiteboardPage() {
     setNotFound(false);
     const p = await resolveProject(projectSlug);
     if (!p) { setNotFound(true); setLoading(false); return; }
+    setAliasCanonicalSlug(p.viaAlias ? p.slug : null);
     setProjectId(p.id);
     setProjectName(p.name);
     setProjectAccessInfo({ members: p.members ?? [], organizationId: p.organizationId });
@@ -80,6 +84,9 @@ export function WhiteboardPage() {
   }, [projectSlug, isAdminRole, userId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   const canEdit = perms.whiteboard === "edit";
 

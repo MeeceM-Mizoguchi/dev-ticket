@@ -31,6 +31,8 @@ import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { readWikiMarkdownFiles, WIKI_MD_ACCEPT } from "@/app/lib/wikiMdImport";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 
 interface TreeNode extends WikiPageType {
   children: TreeNode[];
@@ -336,6 +338,8 @@ export function WikiPage() {
   const [pages, setPages] = useState<WikiPageType[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -438,9 +442,10 @@ export function WikiPage() {
     // 引きずらないよう毎回クリアしてから引き直す。
     setNotFound(false);
 
-    const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-    const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
-    if (!p) { setNotFound(true); setLoading(false); return; }
+    const found = await findProjectBySlug(projectSlug);
+    if (!found) { setNotFound(true); setLoading(false); return; }
+    const p = found.row;
+    setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
     setProject(mapProject(p));
     const [{ data }, permResult] = await Promise.all([
       supabase!.from("wiki_pages").select("*").eq("project_id", p.id).order("sort_order"),
@@ -481,6 +486,9 @@ export function WikiPage() {
   }, [projectSlug, userId, isAdminRole, getUUIDFromURL]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   const tree = useMemo(() => buildTree(pages), [pages]);
   const selected = useMemo(() => pages.find(p => p.id === selectedId) ?? null, [pages, selectedId]);

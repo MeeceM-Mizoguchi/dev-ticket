@@ -19,6 +19,7 @@ import {
   DEPLOY_MODE_LABELS, REQUIRE_CHECKS_LABELS,
 } from "@/app/lib/github";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
+import { findSlugConflict, SLUG_CONFLICT_MESSAGE } from "@/app/lib/projectResolve";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 const MAX_ENV_MEMOS = 10;
@@ -122,11 +123,8 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
     if (isSupabaseEnabled) {
       setSaving(true);
       if (finalSlug !== project.slug) {
-        let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug).neq("id", project.id);
-        if (orgId) dupQ = dupQ.eq("organization_id", orgId);
-        else dupQ = dupQ.is("organization_id", null);
-        const { data: dup } = await dupQ.maybeSingle();
-        if (dup) { setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。"); setSaving(false); return; }
+        const conflict = await findSlugConflict(finalSlug, orgId, project.id);
+        if (conflict) { setSlugError(SLUG_CONFLICT_MESSAGE[conflict]); setSaving(false); return; }
       }
       const { data, error } = await supabase!.from("projects").update({
         slug: finalSlug,
@@ -150,6 +148,7 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
         setSlugError("保存できませんでした。編集権限をご確認ください。");
         return;
       }
+      // 旧識別子は projects の UPDATE トリガーが project_slug_aliases に残す（lib/projectResolve.ts 参照）
       // 紐付けたリポジトリの過去PRを1回だけ遡って埋める。
       // 同じリポジトリで2回目以降はサーバー側が何もせずに返す
       if (ghRepo) {

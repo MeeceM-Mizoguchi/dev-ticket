@@ -44,6 +44,8 @@ import { downloadBlob } from "@/app/lib/articleExport/download";
 import { warmup, onModelDownload, getUnavailableReason } from "@/app/lib/knowledge/embed";
 import { outlineFromMarkdown, flattenOutline, resolveSection, type OutlineNode } from "@/app/lib/knowledge/outline";
 import { submitOnModEnter } from "@/app/lib/submitKey";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 
 const PHASE_LABEL: Record<KnowledgeImportProgress["phase"], string> = {
   reading: "読み込み中", chunking: "分割中", saving: "保存中",
@@ -248,6 +250,8 @@ export function KnowledgePage() {
   const [docs, setDocs] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
 
   // サブナビに出す他ページの権限。ナレッジノート自身はプロジェクトメンバーなら使える
@@ -337,9 +341,10 @@ export function KnowledgePage() {
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
     setNotFound(false);
-    const { data } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-    if (!data || data.length === 0) { setNotFound(true); setLoading(false); return; }
-    const p = mapProject(data[0]);
+    const found = await findProjectBySlug(projectSlug);
+    if (!found) { setNotFound(true); setLoading(false); return; }
+    setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
+    const p = mapProject(found.row);
     setProject(p);
 
     // サブナビの中身を他画面と揃える。権限が無いページはここでも出さない
@@ -382,6 +387,9 @@ export function KnowledgePage() {
   }, [projectSlug, toast, userId, isAdminRole]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   useEffect(() => {
     warmup();

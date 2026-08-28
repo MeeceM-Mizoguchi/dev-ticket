@@ -12,6 +12,8 @@ import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { TaskWorkspace } from "@/app/components/tasks/TaskWorkspace";
 import type { AccessLevel, Project, UserPermissions } from "@/app/types";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 
 export function ProjectTasksPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
@@ -20,6 +22,8 @@ export function ProjectTasksPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
 
   // サブナビに出す他ページの権限（タスク自体はPJメンバーなら誰でも使える）
   const [wikiPerm, setWikiPerm] = useState<AccessLevel>("edit");
@@ -34,9 +38,10 @@ export function ProjectTasksPage() {
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
     setNotFound(false);
-    const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-    const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
-    if (!p) { setNotFound(true); setLoading(false); return; }
+    const found = await findProjectBySlug(projectSlug);
+    if (!found) { setNotFound(true); setLoading(false); return; }
+    const p = found.row;
+    setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
     setProject(mapProject(p));
 
     if (isAdminRole) {
@@ -55,6 +60,9 @@ export function ProjectTasksPage() {
   }, [projectSlug, userId, isAdminRole]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
   // アサイン判定はここまで無かったので追加した（DB側は tasks_select の can_access_project() が
