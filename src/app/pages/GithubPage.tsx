@@ -276,7 +276,7 @@ export function GithubPage() {
   //（一覧の取り直し）へ進めるために呼ぶ
   const handleMerge = async (method: GithubMergeMethod, onMerged: () => void, reason: string) => {
     if (!project?.id || !mergeTarget) return;
-    await mergePull(project.id, mergeTarget.number, method, reason);
+    await mergePull(project.id, mergeTarget.number, method, reason, projectSlug ?? project.slug);
     onMerged();
     toast(`#${mergeTarget.number} をマージしました`, "success");
     // loadedTabs は落とさない。落とすと取り直しの間だけページ全体がローダーに変わり、
@@ -511,7 +511,7 @@ export function GithubPage() {
           actorName={userName}
           onClose={() => setBulkTargets(null)}
           onPrecheck={numbers => precheckMerge(project.id, numbers)}
-          onMerge={(numbers, method, reason) => mergePullsBulk(project.id, numbers, method, reason)}
+          onMerge={(numbers, method, reason) => mergePullsBulk(project.id, numbers, method, reason, projectSlug ?? project.slug)}
           onDone={async () => {
             await loadTab("pulls", true);
             void loadDeploy();

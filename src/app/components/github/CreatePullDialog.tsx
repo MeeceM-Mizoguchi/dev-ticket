@@ -297,7 +297,7 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
     setError("");
     let created: { number: number | null; url: string | null };
     try {
-      const r = await createPull(projectId, { head, base, title: title.trim(), body, draft });
+      const r = await createPull(projectId, { head, base, title: title.trim(), body, draft }, projectSlug);
       created = { number: r.number, url: r.url };
     } catch (e) {
       // 失敗しても閉じない。差分が無い・既にPRがある、など理由を読ませる
@@ -316,7 +316,7 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   };
 
   return (
-    <DialogShell title="プルリクエストを作成" size="lg" minHeight={busy ? 0 : undefined} onClose={busy ? () => {} : onClose}
+    <DialogShell title="プルリクエストを作成" size="lg" minHeight={busy ? 0 : undefined} onClose={onClose} busy={busy}
       footer={<>
         <BtnSecondary onClick={onClose} disabled={busy}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleCreate} disabled={!canCreate}

@@ -144,13 +144,46 @@ export function fetchTicketLinks(projectId: string, ticketId: string) {
 }
 
 // ── 書き込み ─────────────────────────────────────────────────
+//
+// 取り消しの効かない操作（PR作成・マージ）には実行IDを付けて送る。
+// サーバーは受け取った時点で「実行中」を1行残し、終わったら結果ごと書き換える
+// （supabase/add_github_action_runs.sql）。
+// タブを閉じても処理はサーバー側で走り切るので、開き直した画面はこの行を見て
+// 進捗モーダルを出し直し、結果まで見届ける。
 
-/** プルリクエストの作成。GitHub の画面へ行かずに Dev Ticket 側で完結させるためのもの */
+/**
+ * 実行ID。記録の主キーになるので UUID の形で作る。
+ * randomUUID が無い WebView 向けの受け皿も置く（形さえ合っていればよく、
+ * 万一ぶつかっても記録の挿入が失敗して「記録なし」に落ちるだけで実行は通る）。
+ */
+function newRunId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const hex = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
+}
+
+/**
+ * 実行の記録に添える情報。
+ * label は復帰したモーダルにそのまま出る一言、slug は「GitHubの画面をひらく」の行き先。
+ */
+function runFields(label: string, slug?: string) {
+  return { runId: newRunId(), runLabel: label, runSlug: slug };
+}
+
+/**
+ * プルリクエストの作成。GitHub の画面へ行かずに Dev Ticket 側で完結させるためのもの。
+ * projectSlug は実行の記録にだけ使う（復帰したモーダルからの戻り先）。
+ */
 export function createPull(projectId: string, input: {
   head: string; base: string; title: string; body: string; draft: boolean;
-}) {
+}, projectSlug?: string) {
   return call<{ ok: true; number: number | null; url: string | null; title: string }>(
-    "create-pull", { body: { projectId, ...input } },
+    "create-pull", {
+      body: {
+        projectId, ...input,
+        ...runFields(`プルリクエストを作成（${input.base} ← ${input.head}）`, projectSlug),
+      },
+    },
   );
 }
 
@@ -169,13 +202,24 @@ export function precheckMerge(projectId: string, numbers: number[]) {
  * 空のまま送ると、対象プロジェクトの設定によっては 409 が返って理由を求められる。
  * 書かれた理由は監査ログ（github_action_logs）に残る。
  */
-export function mergePull(projectId: string, number: number, method: GithubMergeMethod, reason?: string) {
-  return call<{ ok: true; sha: string | null }>("merge", { body: { projectId, number, method, reason } });
+export function mergePull(
+  projectId: string, number: number, method: GithubMergeMethod, reason?: string, projectSlug?: string,
+) {
+  return call<{ ok: true; sha: string | null }>("merge", {
+    body: { projectId, number, method, reason, ...runFields(`#${number} をマージ`, projectSlug) },
+  });
 }
 
 /** 選択した複数のPRを、1件ずつ順番にマージする */
-export function mergePullsBulk(projectId: string, numbers: number[], method: GithubMergeMethod, reason?: string) {
-  return call<GithubBulkMergeResult>("merge-bulk", { body: { projectId, numbers, method, reason } });
+export function mergePullsBulk(
+  projectId: string, numbers: number[], method: GithubMergeMethod, reason?: string, projectSlug?: string,
+) {
+  return call<GithubBulkMergeResult>("merge-bulk", {
+    body: {
+      projectId, numbers, method, reason,
+      ...runFields(`${numbers.length}件をまとめてマージ`, projectSlug),
+    },
+  });
 }
 
 export function reviewPull(projectId: string, number: number, event: "APPROVE" | "REQUEST_CHANGES", body: string) {
