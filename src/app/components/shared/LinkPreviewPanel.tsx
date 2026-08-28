@@ -198,9 +198,12 @@ export function LinkPreviewPanel() {
   }, [data]);
 
   // タブモードではアクティブタブの現在地、Web/iPhone では実URLを基準にする。
+  // ただし呼び出し元が所属プロジェクトを知っている場合（貼られたURLから開いたとき）はそちらを優先する。
+  // 現在地から引くと、別プロジェクトのリンクで「このページを開く」が今いるPJに化けてしまう。
   const basePath = getActiveTabPath()
     ?? (typeof window !== "undefined" ? window.location.pathname : "");
-  const projectSlug = basePath.split("?")[0].split("/").filter(Boolean)[0] ?? "";
+  const projectSlug = target?.projectSlug
+    || (basePath.split("?")[0].split("/").filter(Boolean)[0] ?? "");
 
   // マウント/アンマウントアニメーション
   useEffect(() => {
