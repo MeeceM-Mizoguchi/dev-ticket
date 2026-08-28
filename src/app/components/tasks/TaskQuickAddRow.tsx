@@ -1,7 +1,12 @@
-// ENHA2-032 タスクの追加行（リストの最終行にそのまま生えている入力欄）。
+// ENHA2-032 タスクの追加行（リストの見出しのすぐ下に生えている入力欄）。
 //
 // タスクは「思いついた瞬間に1行足す」ものなので、モーダルを開く・閉じるという
-// 往復を挟まない。表の続きにそのまま打ち込んで Enter で確定する。
+// 往復を挟まない。表の1行目にそのまま打ち込んで Enter で確定する
+// （BRU13-044: 最終行だと件数が増えるほど遠くなり、足すたびに下へ送られてしまう）。
+//
+// Enter は「打ち終えた1件をそのまま登録」、Tab は「同じ行の右の列へ移る」。
+// タイトルと詳細は body 直下に重ねた入力欄で打っているので、Tab は標準任せにできず
+// TaskTextCell 側で次の欄へ渡している。
 // 確定後もフォーカスと プロジェクト/担当者/優先度 は残るので、続けて何行でも打てる。
 //
 // 列幅は TASK_COLS を使う（見出し・データ行と縦を揃えるため）。
@@ -27,7 +32,8 @@ const STATUS_OPTIONS: PickerOption[] = TASK_STATUSES.map(s => ({ value: s.value,
 
 export function TaskQuickAddRow({
   projects, members, categoryOptions, showProject, fixedProjectId, lockProject, defaultStatus = "todo",
-  indent = 0, placeholder = "タスクを入力して Enter で追加", focusSignal, creatorName = "", onCreate,
+  indent = 0, placeholder = "タスクを入力して Enter で追加", focusSignal, creatorName = "",
+  atTop = false, onCreate,
 }: {
   projects: ProjectOption[];
   members: MemberOption[];
@@ -47,6 +53,8 @@ export function TaskQuickAddRow({
   focusSignal?: number;
   /** 起票者の列に出す自分の名前（BRU11-040）。追加した瞬間にこの名前で入るので先に見せる */
   creatorName?: string;
+  /** 見出しのすぐ下に置くとき。区切り線を下側に出す（見出しの線と二重にしないため） */
+  atTop?: boolean;
   onCreate: (input: Omit<NewTaskInput, "ownerId" | "createdBy">) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState("");
@@ -114,7 +122,9 @@ export function TaskQuickAddRow({
     <div style={{
       display: "flex", alignItems: "center", gap: TASK_COLS.gap,
       padding: `8px ${TASK_COLS.padX}px`,
-      borderTop: "1px solid rgba(26,23,20,0.05)",
+      ...(atTop
+        ? { borderBottom: "1px solid rgba(26,23,20,0.07)" }
+        : { borderTop: "1px solid rgba(26,23,20,0.05)" }),
       background: filled ? "#F0FDF4" : indent > 0 ? "#FCFCFB" : "#FAFAF9",
     }}>
       {/* ＋ 自体が確定ボタン（Enter が主、マウスだけでも完結できる） */}
