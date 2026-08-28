@@ -15,11 +15,17 @@ export function appOrigin(): string {
   return /^https?:/.test(o) ? o : "";
 }
 
+// 本番の公開ドメイン。VITE_PUBLIC_APP_ORIGIN が未設定の環境（ローカル開発・プレビュー配信・
+// ネイティブアプリ）でも、本番URLを貼れば「自分のアプリのリンク」として認識できるようにするため、
+// 判定側にだけ定数で持たせる。URL生成には使わない（生成は必ず appOrigin() を通す）。
+const PRODUCTION_ORIGINS = ["https://dv-ticket.com", "https://www.dv-ticket.com"];
+
 // 内部リンク判定に使う「自分のアプリとみなすオリジン」一覧。
 export function knownAppOrigins(): string[] {
   const list: string[] = [];
   const env = appOrigin();
   if (env) list.push(env);
   if (typeof window !== "undefined" && window.location.origin) list.push(window.location.origin);
+  list.push(...PRODUCTION_ORIGINS);
   return Array.from(new Set(list));
 }

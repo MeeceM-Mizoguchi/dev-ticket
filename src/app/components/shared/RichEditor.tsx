@@ -27,6 +27,11 @@ import { openExternalUrl } from "@/lib/openExternal";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { parseWhiteboardLink } from "@/app/lib/whiteboardLink";
 import { requestWhiteboardFocus } from "@/app/lib/whiteboardFocusBus";
+// 貼られた DevTicket 内リンク(チケット/バックログ/Wiki/議事録/ファイル/ボード)をチップ表示にする
+import { InternalLinkNode, INTERNAL_LINK_NODE_NAME, convertInternalUrlsInEditor } from "./InternalLinkChip";
+import type { InternalLinkHandlers } from "./InternalLinkChip";
+import { navigateInActiveTab, getActiveTabPath } from "@/app/contexts/TabContext";
+import { useNavigate } from "react-router";
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 
 // ── Markdown ファイル取り込み ────────────────────────────────
@@ -735,6 +740,8 @@ export function RichEditor({
   const [mermaidModalOpen, setMermaidModalOpen] = useState(false);
   // ホワイトボードのオブジェクトリンク用。Provider の外(LP等)で使われても既定値が no-op なので安全。
   const { open: openPreviewPanel } = usePreviewPanel();
+  // 内部リンクのチップから飛ぶための遷移手段（タブモードではアクティブタブ内で動かす）
+  const navigate = useNavigate();
   // Markdown ファイルの取り込み（ツールバーの「MD取込」／エディタへのドロップ）
   const mdInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -762,6 +769,9 @@ export function RichEditor({
       Table.configure({ resizable: true, cellMinWidth: 60 }),
       TableRow, TableCell, TableHeader,
       NormalizeTableWidths,
+      // 生URLのアンカーを内部リンクのチップに読み替える。Link マークより先に <a> を判定するため
+      // StarterKit より後ろに置き、拡張自体の priority を上げてある。
+      InternalLinkNode,
       SuggestionStore,
       Mention.configure({
         HTMLAttributes: {},
@@ -960,6 +970,8 @@ export function RichEditor({
           // ここで拾わないと**コピーした文字から改行だけが消える**（BRU11-037）。
           // 段落内の改行は Markdown 取込(escText)やShift+Enterで普通に入るため、実害が大きい。
           if (node.type?.name === 'hardBreak') return '\n';
+          // 内部リンクのチップはURLとしてコピーする（貼り直せば同じチップに戻る）
+          if (node.type?.name === 'internalLink') return node.attrs?.href ?? '';
           if (node.type?.name === 'mention') {
             const char = node.attrs?.mentionSuggestionChar ?? '@';
             if (char === '#') return `#${node.attrs?.id ?? ''}`;
@@ -998,6 +1010,7 @@ export function RichEditor({
         function block(node: any): string {
           if (node.isText) return node.text ?? '';
           const t: string = node.type.name;
+          if (t === 'internalLink') return node.attrs?.href ?? '';
           if (t === 'mention') {
             const char = node.attrs?.mentionSuggestionChar ?? '@';
             if (char === '#') return `#${node.attrs?.id ?? ''}`;
@@ -1053,7 +1066,47 @@ export function RichEditor({
     editor.storage.suggestionStore.wikiItems = wikiItems;
     editor.storage.suggestionStore.minuteItems = minuteItems;
     editor.storage.suggestionStore.fileItems = fileItems;
-  }, [editor, members, tickets, backlogItems, wikiItems, minuteItems]);
+  }, [editor, members, tickets, backlogItems, wikiItems, minuteItems, fileItems]);
+
+  // 内部リンクチップのクリック先。画面ごとに違うので editor.storage 経由で最新を渡す
+  // （NodeView は useEditor の外側にいるため props では届かない）。
+  useLayoutEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    // タブモードではアクティブタブの現在地、Web/iPhone では実URLを基準にする
+    const basePath = getActiveTabPath() ?? (typeof window !== "undefined" ? window.location.pathname : "");
+    const handlers: InternalLinkHandlers = {
+      openPreview: openPreviewPanel,
+      navigate: (path) => { if (!navigateInActiveTab(path)) navigate(path); },
+      onTicketClick,
+      currentProjectSlug: basePath.split("?")[0].split("/").filter(Boolean)[0] ?? "",
+    };
+    editor.storage[INTERNAL_LINK_NODE_NAME].handlers = handlers;
+  }, [editor, openPreviewPanel, navigate, onTicketClick]);
+
+  // 「URLを打って、空白も入れずにそのまま保存」に備える。autolink は末尾に空白か改行が来ないと
+  // 動かないので、フォーカスが外れた時点で生URLを拾い直してチップにする。
+  //
+  // 走らせるのは「そのフォーカス中に実際に編集があったとき」だけ。読むために開いただけの本文まで
+  // 書き換えると、触っていないのに更新扱い(更新者・更新日時の変化)になってしまう。
+  useEffect(() => {
+    if (!editor) return;
+    let editedSinceFocus = false;
+    const onFocus = () => { editedSinceFocus = false; };
+    const onUpdate = () => { editedSinceFocus = true; };
+    const onBlur = () => {
+      if (!editedSinceFocus) return;
+      editedSinceFocus = false;
+      convertInternalUrlsInEditor(editor);
+    };
+    editor.on("focus", onFocus);
+    editor.on("update", onUpdate);
+    editor.on("blur", onBlur);
+    return () => {
+      editor.off("focus", onFocus);
+      editor.off("update", onUpdate);
+      editor.off("blur", onBlur);
+    };
+  }, [editor]);
 
   useEffect(() => {
     if (!editor) return;
@@ -1072,6 +1125,10 @@ export function RichEditor({
     const dom = editor.view.dom;
     const handler = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
+
+      // 貼り付けたURLのチップは、見た目をそろえるため同じクラスを付けているが、行き先の決め方が違う
+      // （別プロジェクトも指せる／議事録はURLのslugを正規IDに直す必要がある）。自分の onClick に任せる。
+      if (el.closest(".internal-link-chip")) return;
 
       // メンション対象の要素を取得
       const mentionEl = el.closest(".ticket-mention, .backlog-mention, .wiki-mention, .minute-mention, .file-mention") as HTMLElement | null;
@@ -1310,6 +1367,10 @@ export function RichEditor({
     const href = anchor.getAttribute("href");
     if (!href) return;
 
+    // 内部リンクのチップは自分の onClick で行き先を決める（プレビューを開く / 画面内で開く）。
+    // ここで拾うと外部ブラウザに逃げてしまうので、必ず先に降りる。
+    if (anchor.classList.contains("internal-link-chip")) return;
+
     // ホワイトボードのオブジェクトリンクは外部ブラウザではなくアプリ内で開く。
     //   ・そのボードが既に見えている（＝ホワイトボード画面を開いている）→ その場で対象へ移動
     //     （同じボードを2枚マウントすると Yjs/保存が二重化するため）
@@ -1384,6 +1445,23 @@ export function RichEditor({
         .tiptap .minute-mention:hover { background: #A7F3D0; }
         .tiptap .file-mention { color: #0891B2; font-weight: 700; background: #CFFAFE; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
         .tiptap .file-mention:hover { background: #A5F3FC; }
+        /* 🌟 BRU13-043: 貼り付けた DevTicket 内リンクのチップ。既存の #/$/% メンションと同じ見た目に
+           そろえたうえで、メンションに無い種別（スプリント/ホワイトボード/プロジェクト）を足す。 */
+        .tiptap .sprint-mention { color: #B45309; font-weight: 700; background: #FEF3C7; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .sprint-mention:hover { background: #FDE68A; }
+        .tiptap .whiteboard-mention { color: #4F46E5; font-weight: 700; background: #E0E7FF; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .whiteboard-mention:hover { background: #C7D2FE; }
+        .tiptap .project-mention { color: #475569; font-weight: 700; background: #E2E8F0; padding: 1px 6px; border-radius: 4px; cursor: pointer; }
+        .tiptap .project-mention:hover { background: #CBD5E1; }
+        /* チップ共通。<a> なので、リンクの既定色と hover 下線を打ち消す */
+        .tiptap a.internal-link-chip { text-decoration: none; white-space: nowrap; }
+        .tiptap a.internal-link-chip:hover { text-decoration: none; }
+        /* タイトル取得中。色は確定してから付けるので、ここで一度だけ落ち着いて切り替わる */
+        .tiptap a.internal-link-chip.is-pending { opacity: 0.75; }
+        /* 存在しないリンク（削除済み / 権限なし / 打ち間違い）。理由は title 属性で出す */
+        .tiptap a.internal-link-chip.is-missing { color: #DC2626; background: #FEE2E2; font-weight: 700; padding: 1px 6px; border-radius: 4px; cursor: not-allowed; text-decoration: line-through; text-decoration-color: rgba(220,38,38,0.5); }
+        .tiptap a.internal-link-chip.is-missing:hover { background: #FECACA; text-decoration: line-through; }
+        .tiptap .internal-link-chip-icon { width: 11px; height: 11px; display: inline-block; vertical-align: -1px; margin-right: 3px; }
         .tiptap img { max-width: 100%; }
       `}</style>
       {!readOnly && toolbar && (
