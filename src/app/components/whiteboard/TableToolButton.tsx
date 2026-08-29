@@ -111,8 +111,9 @@ export function TableToolButton({ api, containerRef }: { api: any; containerRef:
   return createPortal(
     <>
       {/* 外側クリックで閉じる透明バックドロップ */}
-      <div style={{ position: "fixed", inset: 0, zIndex: 4000 }} onMouseDown={() => setOpen(false)} />
+      <div data-wbc-ui style={{ position: "fixed", inset: 0, zIndex: 4000 }} onMouseDown={() => setOpen(false)} />
       <div
+        data-wbc-ui
         style={{
           position: "fixed", top: pos.top, left: pos.left, zIndex: 4001,
           background: "#fff", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)",
