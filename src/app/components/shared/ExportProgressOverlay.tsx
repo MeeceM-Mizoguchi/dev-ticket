@@ -1,9 +1,9 @@
-// エクスポート(Excel/Word/PDF)生成中に表示するグローバル進捗オーバーレイ。
+// エクスポート(Excel/Word/PDF/Markdown)生成中に表示するグローバル進捗オーバーレイ。
 // 生成処理はメインスレッドを一時ブロックするため、プログレスバーは transform ベースの
 // CSSアニメ(コンポジタ駆動)にして、生成中でも滑らかに動き続けるようにしている。
 // アプリ直下に1つだけマウントする。進捗は exportProgress ストアから購読。
 import { useSyncExternalStore } from "react";
-import { FileSpreadsheet, FileText, FileType2 } from "lucide-react";
+import { FileCode2, FileSpreadsheet, FileText, FileType2 } from "lucide-react";
 import { subscribeExportProgress, getExportProgress } from "@/app/lib/articleExport/exportProgress";
 import type { ExportFormat } from "@/app/lib/articleExport";
 
@@ -11,6 +11,7 @@ const META: Record<ExportFormat, { label: string; c1: string; c2: string; Icon: 
   xlsx: { label: "Excel", c1: "#059669", c2: "#34D399", Icon: FileSpreadsheet },
   docx: { label: "Word", c1: "#2563EB", c2: "#60A5FA", Icon: FileText },
   pdf: { label: "PDF", c1: "#DC2626", c2: "#F87171", Icon: FileType2 },
+  md: { label: "Markdown", c1: "#7C3AED", c2: "#A78BFA", Icon: FileCode2 },
 };
 
 const KEYFRAMES = `

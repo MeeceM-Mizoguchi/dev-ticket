@@ -4,7 +4,7 @@
 // 特別扱いせず textContent をそのまま Run として取り込む。
 import type { Block, ListBlock, ListItem, Run, TableBlock, TableCell } from "./types";
 
-interface Marks { bold?: boolean; italic?: boolean; strike?: boolean; code?: boolean }
+interface Marks { bold?: boolean; italic?: boolean; strike?: boolean; code?: boolean; href?: string }
 
 function tagOf(node: Node): string {
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element).tagName.toLowerCase() : "";
@@ -34,7 +34,13 @@ function runsOf(nodes: Iterable<ChildNode>, marks: Marks): Run[] {
       if (text) out.push({ text, ...marks });
       continue;
     }
-    // a / その他インライン：中身を辿る
+    if (tag === "a") {
+      // リンク先を持ち回る（Markdown 出力で [文字](URL) に戻すため）。
+      const href = el.getAttribute("href") ?? "";
+      out.push(...runsOf(el.childNodes, href ? { ...marks, href } : marks));
+      continue;
+    }
+    // その他インライン：中身を辿る
     out.push(...runsOf(el.childNodes, marks));
   }
   return out;

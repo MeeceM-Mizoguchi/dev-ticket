@@ -8,6 +8,8 @@ export interface Run {
   italic?: boolean;
   strike?: boolean;
   code?: boolean;
+  /** リンク先(<a href>)。Markdown 出力だけが使う。他フォーマットは無視して本文だけ描く。 */
+  href?: string;
 }
 
 export interface HeadingBlock { type: "heading"; level: 1 | 2 | 3; runs: Run[] }
@@ -49,4 +51,4 @@ export interface ArticleDoc {
   actionItems?: ActionItemRow[]; // 議事録のアクションアイテム
 }
 
-export type ExportFormat = "pdf" | "docx" | "xlsx";
+export type ExportFormat = "pdf" | "docx" | "xlsx" | "md";
