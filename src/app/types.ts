@@ -471,15 +471,28 @@ export interface MeetingMinute {
   images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
+/** プライベートボードの共有相手（whiteboard_shares の1行） */
+export interface WhiteboardShareMember {
+  /** profiles.id（= auth.uid()）。userId と同じ空間 */
+  id: string;
+  name: string;
+}
 export interface Whiteboard {
   id: string; projectId: string; title: string;
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
-  /** 'project'=PJメンバーが見られる（既定） / 'private'=作成者だけが見られる */
+  /** 'project'=PJメンバーが見られる（既定） / 'private'=作成者と共有相手だけが見られる */
   visibility: "project" | "private";
   /** プライベート所有者のuserId。公開時は "" */
   privateBy: string;
   /** Realtimeチャンネル名に混ぜる秘密トークン（RLSで所有者以外には見えない）。公開時は "" */
   privateKey: string;
+  /**
+   * プライベート中の限定公開先。空 = 作成者だけが見られる（＝素のプライベート）。
+   * 公開ボードでは常に空（解除時に共有行ごと消す）。
+   */
+  sharedWith: WhiteboardShareMember[];
+  /** 作成者の表示名。プライベートボードだけ解決する（共有相手がメンション通知の可否を判断するのに使う） */
+  createdByName: string;
 }
 // ── ナレッジノート（プロジェクト単位の資料の保管・閲覧・検索） ──
 // 表示名は「ナレッジノート」。内部識別子は knowledge_ に統一する。

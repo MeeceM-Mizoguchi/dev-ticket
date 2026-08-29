@@ -12,7 +12,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { ErrorBoundary } from "@/app/components/ErrorBoundary";
 import { escStack } from "@/app/lib/escStack";
-import { getBoardMeta, loadWhiteboardPerms, wbUserColor, type BoardMeta } from "@/app/lib/whiteboardService";
+import { getBoardMeta, loadWhiteboardPerms, wbUserColor, type BoardMeta, type WbAccessEvent } from "@/app/lib/whiteboardService";
 import { buildWhiteboardPath } from "@/app/lib/whiteboardLink";
 import { PrivateBadge } from "./PrivateBadge";
 import type { AccessLevel } from "@/app/types";
@@ -49,6 +49,9 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
   const [perm, setPerm] = useState<AccessLevel | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);      // リンク先オブジェクトが見つからない
+  // 共有が外れて秘密トークンが作り直された時に meta を引き直すためのカウンタ。
+  // 引き直さないと古いチャンネルに繋がったままになり、同期が静かに止まる。
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [narrow, setNarrow] = useState(() => window.innerWidth < NARROW_SCREEN);
   const [width, setWidth] = useState(() => {
     const saved = Number(localStorage.getItem(WIDTH_LS_KEY));
@@ -61,7 +64,7 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
     let cancelled = false;
     setMeta(null); setPerm(null); setLoadError(null); setNotFound(false);
     (async () => {
-      const m = await getBoardMeta(boardId);
+      const m = await getBoardMeta(boardId, userId);
       if (cancelled) return;
       if (!m) { setLoadError("ボードが見つかりませんでした"); return; }
       const perms = await loadWhiteboardPerms(m.projectId, userId, isAdminRole);
@@ -70,7 +73,14 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
       setPerm(perms.whiteboard);
     })();
     return () => { cancelled = true; };
-  }, [boardId, userId, isAdminRole]);
+  }, [boardId, userId, isAdminRole, reloadNonce]);
+
+  // 見ている最中に公開範囲が変わった。締め出されたらパネルを閉じ、
+  // 鍵の作り直しならボード情報を引き直して新しいチャンネルへ張り直す。
+  const handleAccessEvent = useCallback((ev: WbAccessEvent) => {
+    if (ev.kind === "evicted") onClose();
+    else setReloadNonce((n) => n + 1);
+  }, [onClose]);
 
   // 画面幅の変化に追従（狭い端末では全面表示に切り替える）
   useEffect(() => {
@@ -187,8 +197,8 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
             {meta && <span style={{ fontWeight: 500, color: "#A09790" }}>{` · ${meta.projectName}`}</span>}
           </div>
         </div>
-        {/* ここに来られている＝RLSを通った＝所有者本人。他人には meta が null で返る */}
-        {meta?.isPrivate && <PrivateBadge />}
+        {/* ここに来られている＝RLSを通った＝作成者か共有された人。それ以外には meta が null で返る */}
+        {meta?.isPrivate && <PrivateBadge sharedWith={meta.sharedWith} isOwner={meta.isOwner} />}
         {perm === "view" && (
           <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)", whiteSpace: "nowrap" }}>閲覧のみ</span>
         )}
@@ -226,7 +236,7 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
           <ErrorBoundary resetKeys={[boardId]}>
             <Suspense fallback={<Centered>ホワイトボードを読み込み中…</Centered>}>
               <WhiteboardCanvas
-                key={`${boardId}:${meta.isPrivate ? "private" : "project"}`}
+                key={`${boardId}:${meta.isPrivate ? "private" : "project"}:${meta.privateKey}`}
                 boardId={boardId}
                 title={meta.title || "whiteboard"}
                 user={user}
@@ -234,8 +244,11 @@ export function WhiteboardLinkPreview({ boardId, elementId, commentId = null, re
                 projectSlug={meta.projectSlug}
                 projectId={meta.projectId}
                 isPrivate={meta.isPrivate}
+                sharedWith={meta.sharedWith}
+                isBoardOwner={meta.isOwner}
+                boardOwnerName={meta.createdByName}
                 channelKey={meta.privateKey || null}
-                onEvicted={onClose}
+                onAccessEvent={handleAccessEvent}
                 focusElementId={elementId}
                 focusCommentId={commentId}
                 focusReplyId={replyId}

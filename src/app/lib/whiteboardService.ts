@@ -2,7 +2,7 @@
 // リアルタイム同期そのものは SupabaseYjsProvider が担い、ここは DB との橋渡しのみ。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
-import type { AccessLevel, UserPermissions, Whiteboard } from "@/app/types";
+import type { AccessLevel, UserPermissions, Whiteboard, WhiteboardShareMember } from "@/app/types";
 
 interface WhiteboardRow {
   id: string;
@@ -32,7 +32,60 @@ export function mapWhiteboard(r: WhiteboardRow): Whiteboard {
     visibility: r.visibility === "private" ? "private" : "project",
     privateBy: r.private_by ?? "",
     privateKey: r.private_key ?? "",
+    // 共有相手と作成者名は別テーブル（whiteboard_shares / profiles）から後から載せる。
+    // ここでは空で置き、listBoards / getBoardMeta が attachShareInfo で埋める。
+    sharedWith: [],
+    createdByName: "",
   };
+}
+
+// ── 限定公開（whiteboard_shares）の読み込み ────────────────────
+// プライベートボードは「作成者だけ」が既定だが、作成者が選んだPJメンバーにだけ見せることもできる。
+// 誰に共有されているかは RLS で守られている（作成者・共有相手・本人だけが行を読める）ので、
+// 画面はここで取れたものをそのまま信じてよい。
+
+/** 共有行をボードIDごとにまとめて引く。RLS で見えない行はそもそも返らない */
+export async function loadShareMap(boardIds: string[]): Promise<Record<string, WhiteboardShareMember[]>> {
+  if (!isSupabaseEnabled || boardIds.length === 0) return {};
+  const { data, error } = await supabase!
+    .from("whiteboard_shares")
+    .select("whiteboard_id, profile_id, profiles(name)")
+    .in("whiteboard_id", boardIds)
+    .order("created_at", { ascending: true });
+  // add_whiteboard_shares.sql 未適用のDB（テーブルが無い）でも一覧が全滅しないようにする
+  if (error) return {};
+  const out: Record<string, WhiteboardShareMember[]> = {};
+  for (const r of (data ?? []) as any[]) {
+    const m: WhiteboardShareMember = { id: r.profile_id, name: (r.profiles?.name as string | undefined) ?? "" };
+    const list = out[r.whiteboard_id];
+    if (list) list.push(m); else out[r.whiteboard_id] = [m];
+  }
+  return out;
+}
+
+/**
+ * ボードに「共有相手」と「作成者名」を載せる。
+ * 作成者名を引くのは、共有相手がコメントのメンション通知先を判断するのに要るため
+ * （プライベート中は「ボードを見られる人」にしか通知を飛ばさない）。
+ */
+async function attachShareInfo(boards: Whiteboard[]): Promise<Whiteboard[]> {
+  const privates = boards.filter((b) => b.visibility === "private");
+  if (privates.length === 0) return boards;
+  const shareMap = await loadShareMap(privates.map((b) => b.id));
+  const creatorIds = Array.from(new Set(privates.map((b) => b.createdBy).filter(Boolean)));
+  const nameMap = await loadProfileNames(creatorIds);
+  return boards.map((b) => (b.visibility === "private"
+    ? { ...b, sharedWith: shareMap[b.id] ?? [], createdByName: nameMap[b.createdBy] ?? "" }
+    : b));
+}
+
+/** profiles.id → 表示名。共有相手の名前は埋め込みで取れるので、ここは作成者の解決だけに使う */
+async function loadProfileNames(ids: string[]): Promise<Record<string, string>> {
+  if (!isSupabaseEnabled || ids.length === 0) return {};
+  const { data } = await supabase!.from("profiles").select("id, name").in("id", ids);
+  const out: Record<string, string> = {};
+  for (const r of (data ?? []) as any[]) out[r.id] = (r.name as string | null) ?? "";
+  return out;
 }
 
 // ── Uint8Array <-> base64（Yjs stateの永続化・Broadcast運搬用） ──
@@ -80,18 +133,24 @@ export async function resolveProject(projectSlug: string): Promise<ResolvedProje
 // ── ボード単体のメタ情報（リンクから開く時に、所属プロジェクトを逆引きする） ──
 export interface BoardMeta {
   id: string; title: string; projectId: string; projectSlug: string; projectName: string;
-  /** プライベートモードのボードか（バッジ表示用。ここに来る時点で所有者本人と確定している） */
+  /** プライベートモードのボードか（バッジ表示用。ここに来る時点で作成者か共有相手と確定している） */
   isPrivate: boolean;
   /** Realtimeチャンネル名に混ぜるトークン。公開ボードは "" */
   privateKey: string;
+  /** 自分がこのボードの作成者か（＝共有先を触れる側か） */
+  isOwner: boolean;
+  /** 限定公開先。空 = 作成者だけが見られる */
+  sharedWith: WhiteboardShareMember[];
+  /** 作成者の表示名（プライベートボードのみ解決）。コメント通知の宛先判定に使う */
+  createdByName: string;
 }
 
-export async function getBoardMeta(boardId: string): Promise<BoardMeta | null> {
+export async function getBoardMeta(boardId: string, userId?: string): Promise<BoardMeta | null> {
   if (!isSupabaseEnabled) return null;
-  // プライベートボードは RLS で行ごと消えるため、他人が開くと下の !b で「見つからない」に落ちる。
+  // プライベートボードは RLS で行ごと消えるため、権限のない人が開くと下の !b で「見つからない」に落ちる。
   // 「存在するが見えない」と「存在しない」を区別しない（区別すると存在自体が漏れる）。
   const res = await supabase!
-    .from("whiteboards").select("id, title, project_id, visibility, private_key").eq("id", boardId).maybeSingle();
+    .from("whiteboards").select("id, title, project_id, visibility, private_key, created_by").eq("id", boardId).maybeSingle();
   // add_whiteboard_private.sql 未適用のDB（列が無い）でもプレビューが全滅しないようにする
   const b: any = res.error
     ? (await supabase!.from("whiteboards").select("id, title, project_id").eq("id", boardId).maybeSingle()).data
@@ -99,14 +158,22 @@ export async function getBoardMeta(boardId: string): Promise<BoardMeta | null> {
   if (!b) return null;
   const { data: p } = await supabase!.from("projects").select("id, name, slug").eq("id", (b as any).project_id).maybeSingle();
   if (!p) return null;
+  const isPrivate = (b as any).visibility === "private";
+  const createdBy = ((b as any).created_by as string | null) ?? "";
+  const [shareMap, nameMap] = isPrivate
+    ? await Promise.all([loadShareMap([boardId]), loadProfileNames(createdBy ? [createdBy] : [])])
+    : [{} as Record<string, WhiteboardShareMember[]>, {} as Record<string, string>];
   return {
     id: (b as any).id,
     title: (b as any).title ?? "",
     projectId: (p as any).id,
     projectSlug: (p as any).slug,
     projectName: (p as any).name,
-    isPrivate: (b as any).visibility === "private",
+    isPrivate,
     privateKey: ((b as any).private_key as string | null) ?? "",
+    isOwner: !!userId && createdBy === userId,
+    sharedWith: shareMap[boardId] ?? [],
+    createdByName: nameMap[createdBy] ?? "",
   };
 }
 
@@ -156,7 +223,16 @@ export async function listBoards(projectId: string): Promise<Whiteboard[]> {
     .select("*")
     .eq("project_id", projectId)
     .order("updated_at", { ascending: false });
-  return (data ?? []).map((r) => mapWhiteboard(r as WhiteboardRow));
+  return attachShareInfo((data ?? []).map((r) => mapWhiteboard(r as WhiteboardRow)));
+}
+
+/** ボード1件を引き直す（共有を張り替えた直後など、行だけ最新化したい時） */
+export async function reloadBoard(boardId: string): Promise<Whiteboard | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data } = await supabase!.from("whiteboards").select("*").eq("id", boardId).maybeSingle();
+  if (!data) return null;
+  const [board] = await attachShareInfo([mapWhiteboard(data as WhiteboardRow)]);
+  return board ?? null;
 }
 
 export async function createBoard(projectId: string, title: string, userId: string): Promise<Whiteboard | null> {
@@ -181,8 +257,9 @@ export async function deleteBoard(id: string): Promise<void> {
 }
 
 // ── プライベートモード ──────────────────────────────────────
-// 切り替えの唯一の入口。実際に「作成者かどうか」を判定しているのは RLS の with check なので、
-// 作成者でない人がここを叩いても update が 0 行になり null が返る（＝UIでメニューを隠すのは補助）。
+// 切り替えの唯一の入口。実際に「作成者かどうか」を判定しているのは DB 側
+// （whiteboards_guard_ownership トリガー）なので、作成者でない人がここを叩くと
+// update がエラーになり null が返る（＝UIでメニューを隠すのは補助）。
 export async function setBoardVisibility(
   board: Whiteboard, makePrivate: boolean, userId: string,
 ): Promise<Whiteboard | null> {
@@ -197,7 +274,104 @@ export async function setBoardVisibility(
     .select("*")
     .single();
   if (error || !data) return null;
-  return mapWhiteboard(data as WhiteboardRow);
+  // 公開に戻したら限定公開の設定も畳む。残しておくと、次にプライベート化した時に
+  // 前の共有先が黙って復活してしまい「自分だけのつもり」が崩れる。
+  if (!makePrivate) await clearBoardShares(board.id);
+  const next = mapWhiteboard(data as WhiteboardRow);
+  return makePrivate ? { ...next, createdByName: board.createdByName } : next;
+}
+
+// ── 限定公開（共有先の付け外し） ─────────────────────────────
+// 付け外しできるのはボードの作成者だけ。判定は RLS（wb_shares_write）が持っている。
+
+/** 選んだメンバーへまとめて共有を張る。既に張ってある相手は upsert で素通しする */
+export async function addBoardShares(boardId: string, memberIds: string[], byUserId: string): Promise<boolean> {
+  if (!isSupabaseEnabled || memberIds.length === 0) return true;
+  const rows = memberIds.map((id) => ({ whiteboard_id: boardId, profile_id: id, created_by: byUserId }));
+  const { error } = await supabase!
+    .from("whiteboard_shares").upsert(rows, { onConflict: "whiteboard_id,profile_id" });
+  if (error) { console.error("[whiteboard_shares] add failed:", error.message); return false; }
+  return true;
+}
+
+/** 共有を外す。呼び出し側は必ず rotatePrivateKey も走らせること（下のコメント参照） */
+export async function removeBoardShare(boardId: string, memberId: string): Promise<boolean> {
+  if (!isSupabaseEnabled) return false;
+  const { error } = await supabase!
+    .from("whiteboard_shares").delete().eq("whiteboard_id", boardId).eq("profile_id", memberId);
+  if (error) { console.error("[whiteboard_shares] remove failed:", error.message); return false; }
+  return true;
+}
+
+/** 共有をすべて畳む（プライベート解除時） */
+export async function clearBoardShares(boardId: string): Promise<void> {
+  if (!isSupabaseEnabled) return;
+  const { error } = await supabase!.from("whiteboard_shares").delete().eq("whiteboard_id", boardId);
+  if (error) console.error("[whiteboard_shares] clear failed:", error.message);
+}
+
+/**
+ * Realtime チャンネルの秘密トークンを作り直す。共有を外した直後に必ず呼ぶ。
+ *
+ * RLS はテーブルしか守らない。外された人は `wb:{boardId}:{private_key}` というチャンネル名を
+ * 覚えているので、鍵を替えないと Broadcast に居座って同期内容を覗き続けられる
+ * （SupabaseYjsProvider は後入りに対してドキュメント全体を配る）。
+ * 鍵が変わると、残っているメンバーのキャンバスも張り直しが要る（＝ボード行の再読込）。
+ */
+export async function rotatePrivateKey(boardId: string, userId: string): Promise<Whiteboard | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data, error } = await supabase!
+    .from("whiteboards")
+    .update({ private_key: newPrivateKey(), updated_by: userId, updated_at: new Date().toISOString() })
+    .eq("id", boardId)
+    .select("*")
+    .single();
+  if (error || !data) return null;
+  const [board] = await attachShareInfo([mapWhiteboard(data as WhiteboardRow)]);
+  return board ?? null;
+}
+
+/** 共有先に選べるメンバー（＝そのプロジェクトにアサインされている人） */
+export interface ShareCandidate extends WhiteboardShareMember {
+  /** ホワイトボードを開ける権限があるか。無い人に共有しても画面に辿り着けないので注意書きを出す */
+  canOpenWhiteboard: boolean;
+}
+
+/**
+ * 共有先の候補。projects.members は「名前」の配列なので、組織の profiles と名前で突き合わせて id を得る
+ * （whiteboard_shares.profile_id は profiles.id = auth.uid()）。
+ * 併せて project_member_permissions を引き、ホワイトボード権限が none の人に印を付ける。
+ */
+export async function loadShareCandidates(
+  projectId: string, orgId: string | null, excludeUserId: string,
+): Promise<ShareCandidate[]> {
+  if (!isSupabaseEnabled || !projectId) return [];
+  const [{ data: proj }, permsRes] = await Promise.all([
+    supabase!.from("projects").select("members").eq("id", projectId).maybeSingle(),
+    supabase!.from("project_member_permissions").select("member_id, permissions").eq("project_id", projectId),
+  ]);
+  const memberNames = new Set(((proj as any)?.members ?? []) as string[]);
+  if (memberNames.size === 0) return [];
+
+  let q = supabase!.from("profiles").select("id, name, role").neq("status", "inactive");
+  if (orgId) q = q.eq("organization_id", orgId);
+  const { data: profiles } = await q.order("name");
+
+  const permByMember = new Map<string, string>();
+  for (const r of (permsRes.data ?? []) as any[]) {
+    permByMember.set(r.member_id, ((r.permissions ?? {}).whiteboardPermission as string) ?? "none");
+  }
+
+  return ((profiles ?? []) as any[])
+    .filter((p) => p.id !== excludeUserId && p.name && memberNames.has(p.name))
+    .map((p) => ({
+      id: p.id as string,
+      name: p.name as string,
+      // owner/admin は project_member_permissions を経由せず edit 固定（loadWhiteboardPerms と同じ判定）
+      canOpenWhiteboard: p.role === "owner" || p.role === "admin"
+        ? true
+        : (permByMember.get(p.id) ?? "none") !== "none",
+    }));
 }
 
 function newPrivateKey(): string {
@@ -214,38 +388,70 @@ export function wbChannelName(boardId: string, privateKey?: string | null): stri
   return privateKey ? `wb:${boardId}:${privateKey}` : `wb:${boardId}`;
 }
 
-// ── 退去通知（プライベート化した瞬間に、開いている他メンバーを閉じさせる） ──
-// これを送らないと、他メンバーの画面は編集できるのに保存だけ RLS に弾かれ、書いた内容が黙って消える。
-// 図形同期チャンネル（wb:{id}）に相乗りさせないのは、プライベート化するとチャンネル名が
+// ── アクセス変更の通知（開いている人の画面をその場で追随させる） ──
+// これを送らないと、締め出された人の画面は編集できるのに保存だけ RLS に弾かれ、書いた内容が黙って消える。
+// 図形同期チャンネル（wb:{id}）に相乗りさせないのは、プライベート化や鍵の作り直しでチャンネル名が
 // 変わってしまい「変更後に旧チャンネルへ送る」ができなくなるため、ボードIDだけで決まる別トピックにする。
 const EVICT_EVENT = "wb-evict";
 const evictTopic = (boardId: string) => `wb:${boardId}:evict`;
 
+/** private=プライベート化 / unshare=共有を外した / rekey=鍵を作り直した */
+export type WbAccessReason = "private" | "unshare" | "rekey";
+
+export interface WbAccessPayload {
+  /** 送信者。自分発は無視する */
+  by: string;
+  /**
+   * 締め出す相手の userId。
+   * null = 「送信者以外の全員」（プライベート化の瞬間はまだ共有先が無いのでこれで足りる）。
+   * 配列 = そこに載っている人だけが締め出され、残りは「鍵が変わったので張り直し」になる。
+   */
+  targets: string[] | null;
+  reason: WbAccessReason;
+}
+
+/** 受け取り側が取るべき行動。evicted=ボードから出る / refresh=ボード行を読み直して張り直す */
+export interface WbAccessEvent { kind: "evicted" | "refresh"; reason: WbAccessReason }
+
+function classifyAccessEvent(payload: unknown, selfUserId: string): WbAccessEvent | null {
+  const p = payload as Partial<WbAccessPayload> | undefined;
+  if (!p || p.by === selfUserId) return null;   // 自分が切り替えた側なら無視
+  const reason: WbAccessReason = p.reason ?? "private";
+  const targets = Array.isArray(p.targets) ? p.targets : null;
+  return { kind: targets === null || targets.includes(selfUserId) ? "evicted" : "refresh", reason };
+}
+
 /**
- * 退去通知の購読（ボードを開いている間だけ）。
+ * アクセス変更の購読（ボードを開いている間だけ）。
  * 戻り値の broadcast は「今このボードを開いている自分」が送る用。
  * 既に張ってあるチャンネルから送るので、同じトピックへ二重 join せずに済む。
  */
-export function subscribeBoardEvicted(boardId: string, selfUserId: string, onEvicted: () => void): {
-  broadcast: () => void; dispose: () => void;
-} {
-  if (!isSupabaseEnabled) return { broadcast: () => {}, dispose: () => {} };
+export function subscribeBoardAccess(
+  boardId: string, selfUserId: string, onEvent: (ev: WbAccessEvent) => void,
+): { broadcast: (p: Omit<WbAccessPayload, "by">) => Promise<void>; dispose: () => void } {
+  if (!isSupabaseEnabled) return { broadcast: async () => {}, dispose: () => {} };
   const ch = supabase!.channel(evictTopic(boardId), { config: { broadcast: { self: false, ack: false } } });
   ch.on("broadcast", { event: EVICT_EVENT }, ({ payload }) => {
-    if ((payload as any)?.by === selfUserId) return; // 自分がプライベート化した側なら無視
-    onEvicted();
+    const ev = classifyAccessEvent(payload, selfUserId);
+    if (ev) onEvent(ev);
   }).subscribe();
   return {
-    broadcast: () => { void ch.send({ type: "broadcast", event: EVICT_EVENT, payload: { by: selfUserId } }); },
+    // 送信直後にチャンネルごと張り直る（鍵の作り直し）ことがあるので、送り切るまで待てるようにする
+    broadcast: async (p) => {
+      await Promise.resolve(ch.send({ type: "broadcast", event: EVICT_EVENT, payload: { ...p, by: selfUserId } }))
+        .catch(() => {});
+    },
     dispose: () => { void ch.unsubscribe(); },
   };
 }
 
 /**
- * そのボードを開いていない状態から退去通知だけ送る（一覧から切り替えた時のフォールバック）。
- * 開いている場合は subscribeBoardEvicted の broadcast を使う。
+ * そのボードを開いていない状態から通知だけ送る（一覧から切り替えた時のフォールバック）。
+ * 開いている場合は subscribeBoardAccess の broadcast を使う。
  */
-export async function broadcastBoardEvicted(boardId: string, byUserId: string): Promise<void> {
+export async function broadcastBoardAccess(
+  boardId: string, byUserId: string, p: Omit<WbAccessPayload, "by">,
+): Promise<void> {
   if (!isSupabaseEnabled) return;
   const ch = supabase!.channel(evictTopic(boardId), { config: { broadcast: { self: false, ack: false } } });
   await new Promise<void>((resolve) => {
@@ -254,7 +460,7 @@ export async function broadcastBoardEvicted(boardId: string, byUserId: string): 
     const timer = setTimeout(finish, 2000); // 接続できない時に待ち続けない
     ch.subscribe((status) => {
       if (status !== "SUBSCRIBED") return;
-      Promise.resolve(ch.send({ type: "broadcast", event: EVICT_EVENT, payload: { by: byUserId } }))
+      Promise.resolve(ch.send({ type: "broadcast", event: EVICT_EVENT, payload: { ...p, by: byUserId } }))
         .catch(() => {})
         .finally(() => { clearTimeout(timer); finish(); });
     });

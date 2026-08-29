@@ -1,6 +1,6 @@
 // ホワイトボード一覧サイドバー（議事録の分割ペインUXに合わせる）。
 import { useEffect, useRef, useState } from "react";
-import { Plus, Search, X, Trash2, Pencil, PenTool, MoreVertical, Lock, LockOpen } from "lucide-react";
+import { Plus, Search, X, Trash2, Pencil, PenTool, MoreVertical, Lock, LockOpen, Users } from "lucide-react";
 import type { Whiteboard } from "@/app/types";
 import { BoardListToggle } from "./BoardListToggle";
 import { PRIVATE_BG, PRIVATE_BORDER, PRIVATE_COLOR } from "./PrivateBadge";
@@ -20,10 +20,12 @@ interface Props {
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   onTogglePrivate: (id: string) => void;
+  /** プライベートボードの共有先ダイアログを開く（作成者のみ） */
+  onOpenShare: (id: string) => void;
   onCollapse: () => void;
 }
 
-export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId, onSelect, onCreate, onRename, onDelete, onTogglePrivate, onCollapse }: Props) {
+export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId, onSelect, onCreate, onRename, onDelete, onTogglePrivate, onOpenShare, onCollapse }: Props) {
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -91,9 +93,19 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId,
         {!loading && filtered.map((b) => {
           const active = b.id === selectedId;
           const isPrivate = b.visibility === "private";
-          // プライベート切替は作成者本人にだけ出す（実際の可否は RLS の with check が決める）。
-          const canTogglePrivate = !!userId && b.createdBy === userId;
-          const RowIcon = isPrivate ? Lock : PenTool;
+          // プライベート切替・共有先の設定は作成者本人にだけ出す
+          // （実際の可否は DB 側の whiteboards_guard_ownership / RLS が決める）。
+          const isOwner = !!userId && b.createdBy === userId;
+          const shareCount = b.sharedWith.length;
+          // 作成者から見た印は「自分のみ / N人に共有」、共有された側から見た印は「共有」。
+          // 共有された側にとっては人数より「これは限定公開のボードだ」という事実の方が大事。
+          const privateLabel = !isOwner ? "共有" : shareCount > 0 ? `${shareCount}人に共有` : "自分のみ";
+          const privateHint = !isOwner
+            ? "作成者から共有された、選ばれたメンバーだけが見られるボードです"
+            : shareCount > 0
+              ? `あなたと ${b.sharedWith.map((m) => m.name || "（不明なユーザー）").join("、")} だけが見られます`
+              : "自分だけが見られるボードです";
+          const RowIcon = isPrivate ? (shareCount > 0 ? Users : Lock) : PenTool;
           const iconColor = isPrivate ? PRIVATE_COLOR : active ? "#059669" : "#C9C4BB";
           return (
             <div key={b.id} onClick={() => onSelect(b.id)}
@@ -110,9 +122,9 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId,
                 <>
                   <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: active ? 600 : 500, color: "#1A1714", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.title}</span>
                   {isPrivate && (
-                    <span title="自分だけが見られるボードです"
+                    <span title={privateHint}
                       style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: "3px 5px", borderRadius: 4, color: PRIVATE_COLOR, background: PRIVATE_BG, border: `1px solid ${PRIVATE_BORDER}` }}>
-                      自分のみ
+                      {privateLabel}
                     </span>
                   )}
                 </>
@@ -131,12 +143,22 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId,
                     <DropdownMenuItem onSelect={() => { setEditingId(b.id); setDraft(b.title); }}>
                       <Pencil style={{ width: 13, height: 13 }} />名前変更
                     </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => onDelete(b.id)}>
-                      <Trash2 style={{ width: 13, height: 13 }} />ボード削除
-                    </DropdownMenuItem>
-                    {canTogglePrivate && (
+                    {/* プライベートボードを消せるのは作成者だけ（RLS の wb_delete）。
+                        共有された側に出すと、押しても何も起きないメニューになる */}
+                    {(!isPrivate || isOwner) && (
+                      <DropdownMenuItem onSelect={() => onDelete(b.id)}>
+                        <Trash2 style={{ width: 13, height: 13 }} />ボード削除
+                      </DropdownMenuItem>
+                    )}
+                    {isOwner && (
                       <>
                         <DropdownMenuSeparator />
+                        {/* 共有先はプライベート中だけ意味を持つ（公開ボードはPJ全員が見られる） */}
+                        {isPrivate && (
+                          <DropdownMenuItem onSelect={() => onOpenShare(b.id)}>
+                            <Users style={{ width: 13, height: 13 }} />共有するメンバー
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem onSelect={() => onTogglePrivate(b.id)}>
                           {isPrivate
                             ? <><LockOpen style={{ width: 13, height: 13 }} />プライベートモード解除</>
