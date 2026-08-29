@@ -81,6 +81,7 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
    */
   const handleTriggerKey = (e: React.KeyboardEvent) => {
     if (disabled) return;
+    // ime-ok: ここは入力欄ではなく tabIndex を振っただけの表示用トリガー。打ち込む先が無く、変換確定のEnterは飛んでこない
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleToggle(); return; }
     if (e.key === "Escape" && open) { e.preventDefault(); setOpen(false); return; }
     if (e.key === "Tab" && open) setOpen(false);
