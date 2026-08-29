@@ -44,7 +44,26 @@
 //              スクロールが動いていればパン、図形の指紋が変わっていれば図形のドラッグなので対象外。
 //   離した時 … ほとんど動いていなければただのクリック＝ピンの選択を解く。
 // 追従は「掴んだ瞬間の図形（リーダー）が動いた量」をそのままピンへ足すだけ。図形側には
-// 一切手を入れない（矢印の結合・フレームの所属・ラベルの追従は Excalidraw 本体の担当）。
+// 一切手を入れない（矢印の結合・ラベルの追従は Excalidraw 本体の担当）。
+//
+// 【フレームで囲って動かす仕組み】フレームの中身の追従（whiteboardFrames.followFrameMoves）も
+// Excalidraw 要素だけが対象なので、ピンはここで自前に運ぶ。考え方はそれと同じで、
+//   毎フレーム、各フレームの位置を前回と見比べて“純移動”（サイズが変わらない移動）を拾い、
+//   その「移動前の矩形」に入っているピンを同じだけ平行移動する（入れ子は内側＝面積の小さい方を優先）。
+// リサイズは対象外（枠を広げても中身は動かない・BRU5-061 と同じ判断）。ピンは要素ではないので
+// 所属(customData.wbParent)を持たず、毎フレームの幾何だけで決める。
+// 「掴んだ瞬間にスナップショットを取る」方式にしないのは、フレームは枠線・名前・中身のどこからでも
+// 掴めて、押した場所から操作の種類を当てにいくと取りこぼすため（＝ピンが置いていかれる）。
+// 動かすのは自分が操作している間（ポインタを押している間＋離した直後の余韻／矢印キーの猶予窓）だけ。
+// 相手の操作では相手側が moveComments で書いた結果が Yjs で届くので、こちらでも足すと二重に動く。
+// Yjs へ書くのは操作が終わってから1回だけ（途中経過は配らない）。
+//
+// 【元に戻す(undo/redo)】コメントは Excalidraw の履歴に載らない。そこで2本立てで戻す:
+//   フレームと一緒に動いた分 … undo でフレームが元の位置へ戻る動きに、上の追従がそのまま乗る
+//                              （undo/redo のキーでも追従の猶予窓を開ける）。
+//   ピンだけを動かした分     … whiteboardCommentMove の自前履歴で戻す。横取りしていいのは
+//                              「そのあとシーンが変わっていない＝いちばん新しい操作」の時だけで、
+//                              間に図形の操作が挟まっていれば標準の undo に譲る（順番が狂わない）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { viewportCoordsToSceneCoords, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import {
@@ -59,11 +78,16 @@ import { escStack } from "@/app/lib/escStack";
 import { isActiveWbInstance } from "@/app/lib/whiteboardInstance";
 import { loadProjectMemberNames, wbUserColor } from "@/app/lib/whiteboardService";
 import {
+  COMMENT_PIN_SIZE,
   addComment, addReply, deleteComment, deleteReply, formatCommentTime, initialOf,
   moveComments, observeComments, readComments, readReplies, setCommentResolved, updateComment, updateReply,
   type WbComment, type WbCommentReply,
 } from "@/app/lib/whiteboardComments";
 import { notifyWhiteboardMentions, notifyWhiteboardReply } from "@/app/lib/whiteboardCommentNotify";
+import {
+  buildMoveEntry, carryPins, detectFrameMoves, newMoveHistory, pushMove, takeMove,
+  type FrameBox,
+} from "@/app/lib/whiteboardCommentMove";
 import { Avatar, Composer, ItemMenu, PIN_CURSOR } from "../comments/CommentKit";
 import { CommentListPanel } from "./CommentListPanel";
 import { MentionText } from "./MentionText";
@@ -105,10 +129,12 @@ const REPLY_LIST_MAX_H = 176;  // 返信リストの最大高さ（約2件ぶん
 const HOVER_CLOSE_MS = 220;    // ピン⇔吹き出し間をマウスが渡る猶予
 const FOCUS_RETRY_MS = 200;    // リンク着地: 対象が現れるまでの再探索間隔
 const FOCUS_RETRY_MAX = 30;    // 同 最大回数（≒6秒。Yjs の後追い差分を待つ）
-const PIN_SIZE = 26;           // ピンの一辺(px・画面)。位置は左下＝コメント座標
+const PIN_SIZE = COMMENT_PIN_SIZE; // ピンの一辺(px・画面)。位置は左下＝コメント座標
 const DRAG_SLOP = 3;           // これ未満の動きはクリック（＝吹き出しを開く）として扱う
 const SELECT_ACCENT = "#6965db"; // Excalidraw の選択色に合わせる
 const KEY_MOVE_MS = 400;       // 矢印キーでの移動を「ひと続き」とみなす猶予
+const FOLLOW_GRACE_MS = 300;   // 指を離した後も追従を続ける猶予（確定の updateScene が遅れて届くため）
+const UNDO_GRACE_MS = 600;     // undo/redo でフレームが戻る動きにピンを追従させる猶予
 const HIT_PAD = 8;             // 選択枠の掴み判定に足す余白(px・画面)
 const PIN_Z = 5;               // ピン層: Excalidraw標準UI(layer-ui=6)より下＝パネルの下に潜る
 const PANEL_Z = 22;            // パネル層: 吹き出し・入力欄・一覧は標準UIより上
@@ -125,6 +151,7 @@ const COMMENT_MODE_CSS = `
 .wb-comment-mode .excalidraw .excalidraw-canvas-buttons {
   cursor: ${PIN_CURSOR} !important;
 }
+.wb-pins-inert [data-wbc-ui] { pointer-events: none !important; }
 `;
 
 export function CommentLayer({
@@ -148,6 +175,7 @@ export function CommentLayer({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const layerRef = useRef<HTMLDivElement>(null);
+  const pinLayerRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeId = stickyId ?? hoverId;
   const activeIdRef = useRef<string | null>(null);
@@ -174,6 +202,12 @@ export function CommentLayer({
   // 図形の移動をピンへ写すためのセッション（key=矢印キー起点。時間切れで確定する）
   const followRef = useRef<{ id: string; x: number; y: number; base: Pos; last: Pos | null; key: boolean } | null>(null);
   const keyMoveUntil = useRef(0);
+  // フレームと一緒にピンを運ぶための控え（毎フレーム、フレームの位置を前回と見比べる）
+  const framePrev = useRef<Map<string, FrameBox>>(new Map());
+  const pinPending = useRef<Pos>(new Map()); // 未コミットのピン位置（操作が終わったらまとめて書く）
+  const pointerHeld = useRef(false);         // キャンバスでポインタを押している間
+  const localUntil = useRef(0);              // 離した直後の余韻。この間も追従する
+  const moveHistory = useRef(newMoveHistory()); // ピンだけを動かした分の undo/redo
 
   // ── Yjs 購読 ───────────────────────────────────────────
   // docRef.current は親（useWhiteboardSync）の effect で入る。万一まだ空でも
@@ -419,6 +453,8 @@ export function CommentLayer({
         pinDrag.current = null;
         if (d.moved) {
           suppressClick.current = true;
+          // ピンだけを動かした操作は自前の履歴に積む（Excalidraw の履歴には載らないため）
+          if (dragPos.current) pushMove(moveHistory.current, buildMoveEntry(d.base, dragPos.current, sceneSignature()));
           commitPositions(dragPos.current);
           dragPos.current = null;
         }
@@ -438,15 +474,105 @@ export function CommentLayer({
     };
   }, [api, applySelection, closeTooltip, commitPositions, endFollow, paintPositions, pinsInRect, sceneSignature, toScene, zoomOf]);
 
+  // 「いま自分が操作している」かどうかの見張り（フレーム→ピンの追従を有効にする窓）。
+  // フレームは枠線・名前・中身のどこからでも掴めるので、押した場所や対象では判定しない。
+  // Excalidraw やコメントモードの swallow に握り潰されないよう window のキャプチャで拾う。
+  useEffect(() => {
+    const press = (e: PointerEvent) => { if (e.button === 0) pointerHeld.current = true; };
+    const release = () => {
+      pointerHeld.current = false;
+      localUntil.current = Date.now() + FOLLOW_GRACE_MS; // 離した後に届く確定ぶんも拾う
+    };
+    window.addEventListener("pointerdown", press, true);
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("pointerdown", press, true);
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+      window.removeEventListener("blur", release);
+    };
+  }, []);
+
+  /**
+   * 自前の履歴からピンの位置を戻す/やり直す。フレームや図形と一緒に動いた分は
+   * 「フレームが元の位置へ戻る」動きに追従して戻るので、その猶予窓もここで開ける。
+   * @returns 自前の履歴を使った（＝標準の undo は動かさない）なら true
+   */
+  const applyUndo = useCallback((dir: "undo" | "redo"): boolean => {
+    localUntil.current = Date.now() + UNDO_GRACE_MS; // フレームが戻る動きにピンを追従させる
+    const to = takeMove(moveHistory.current, dir, sceneSignature(), (id) => {
+      const c = commentsRef.current.find((x) => x.id === id);
+      return c ? { x: c.x, y: c.y } : null;
+    });
+    if (!to) return false;
+    const doc = docRef.current;
+    if (!doc) return false;
+    moveComments(doc, Array.from(to, ([id, p]) => ({ id, x: p.x, y: p.y })));
+    return true;
+  }, [docRef, sceneSignature]);
+
+  // ── 元に戻す / やり直す ──────────────────────────────
+  // フレームや図形と一緒に動いた分は、undo で「フレームが元の位置へ戻る」動きに追従して戻るので、
+  // ここでは追従の猶予窓を開けるだけ。ピンだけを動かした分は自前の履歴から戻し、
+  // その時は Excalidraw の履歴を消費させない（関係のない操作まで戻ってしまうため）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      const isRedo = (k === "z" && e.shiftKey) || k === "y";
+      const isUndo = k === "z" && !e.shiftKey;
+      if (!isUndo && !isRedo) return;
+      if (!isActiveWbInstance(instanceKey)) return; // キャンバスが2枚あるとき両方に効かせない
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (containerRef.current?.querySelector(".excalidraw-wysiwyg")) return; // 図形の文字編集中
+      if (!applyUndo(isUndo ? "undo" : "redo")) return; // 自前の履歴の出番ではない＝標準の undo に任せる
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // Excalidraw 標準の元に戻す/やり直すボタン（キャンバス左下）からも同じ扱いにする。
+    // ボタンが押下と click のどちらで動くかに依らないよう、押下で判断し click も塞ぐ。
+    const findBtn = (e: Event): HTMLElement | null => {
+      const t = e.target as HTMLElement | null;
+      const btn = t?.closest?.('[data-testid="button-undo"], [data-testid="button-redo"]') as HTMLElement | null;
+      return btn && containerRef.current?.contains(btn) ? btn : null;
+    };
+    let handledAt = 0;
+    const onBtnDown = (e: PointerEvent) => {
+      const btn = findBtn(e);
+      if (!btn) return;
+      if (!applyUndo(btn.dataset.testid === "button-undo" ? "undo" : "redo")) return;
+      handledAt = Date.now();
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const onBtnClick = (e: MouseEvent) => {
+      if (!findBtn(e) || Date.now() - handledAt > 1000) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onBtnDown, true);
+    window.addEventListener("click", onBtnClick, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onBtnDown, true);
+      window.removeEventListener("click", onBtnClick, true);
+    };
+  }, [applyUndo, containerRef, instanceKey]);
+
   // 矢印キーでの移動にも追従させる（Excalidraw が図形を動かした分をそのまま写す）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.key.startsWith("Arrow") || !selectedRef.current.length) return;
+      if (!e.key.startsWith("Arrow")) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       keyMoveUntil.current = Date.now() + KEY_MOVE_MS;
-      if (followRef.current) return;
-      try { startFollow(api.getAppState(), true); } catch { /* noop */ }
+      if (selectedRef.current.length && !followRef.current) {
+        try { startFollow(api.getAppState(), true); } catch { /* noop */ }
+      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -618,6 +744,35 @@ export function CommentLayer({
         }
       }
 
+      // フレームの移動をピンへ写す。各フレームの位置を前回と見比べて“純移動”を拾い、
+      // 「移動前の矩形」に入っているピンを同じだけ動かす（followFrameMoves の図形版と同じ考え方）。
+      // サイズが変わっていれば移動ではなくリサイズなので動かさない（枠を広げても中身は動かない）。
+      {
+        let els: any[] = [];
+        try { els = api.getSceneElements() as any[]; } catch { /* noop */ }
+        const { moved, cur } = detectFrameMoves(framePrev.current, els);
+        framePrev.current = cur;
+        // 追従するのは自分が操作している間だけ（相手の操作は相手側の moveComments が Yjs で届く）
+        const now = Date.now();
+        const following = pointerHeld.current || now < localUntil.current || now < keyMoveUntil.current;
+        if (following) {
+          // ピン自身のドラッグ／選択ごとの追従で動かしている分は二重に足さない
+          carryPins(moved, commentsRef.current, pinPending.current,
+            (id) => !!pinDrag.current?.base.has(id) || !!followRef.current?.base.has(id));
+        }
+        if (pinPending.current.size) {
+          // 操作中は毎フレーム塗る（別の再レンダーが挟まっても位置が巻き戻らない）。
+          // 操作が終わったら、その結果をまとめて1回だけ Yjs へ書く。
+          if (following) paintPositions(pinPending.current);
+          else { const done = pinPending.current; pinPending.current = new Map(); commitPositions(done); }
+        }
+      }
+
+      // 図形ツール（フレーム含む）を使っている間はピンをクリック透過にする。
+      // ピンは canvas より前面に居る DOM なので、これが無いとピンの上から囲い始められない。
+      const tool = st.activeTool?.type;
+      pinLayerRef.current?.classList.toggle("wb-pins-inert", !!tool && tool !== "selection");
+
       const rect = container.getBoundingClientRect();
       const zoom = st.zoom?.value ?? 1;
       const dx = st.scrollX * zoom + (st.offsetLeft ?? 0) - rect.left;
@@ -647,7 +802,7 @@ export function CommentLayer({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [api, containerRef, endFollow, paintPositions]);
+  }, [api, containerRef, commitPositions, endFollow, paintPositions]);
 
   // ── コメントへ移動して開く（リンク着地・一覧からのジャンプ共通） ──
   const focusTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -923,7 +1078,7 @@ export function CommentLayer({
       {/* ラッパーは z-index を持たない（重ね文脈を作らないので、下の2層がそれぞれの高さで効く） */}
       <div ref={layerRef} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
       {/* ── ピン層（Excalidraw標準UIの下） ─────────────────── */}
-      <div style={{ position: "absolute", inset: 0, zIndex: PIN_Z, pointerEvents: "none", overflow: "hidden" }}>
+      <div ref={pinLayerRef} data-wbc-pins style={{ position: "absolute", inset: 0, zIndex: PIN_Z, pointerEvents: "none", overflow: "hidden" }}>
         {comments.map((c) => {
           const list = replies[c.id] ?? [];
           const active = activeId === c.id;

@@ -41,6 +41,12 @@ export interface WbCommentReply {
 
 export interface WbCommentAuthor { id: string; name: string }
 
+/**
+ * ピンの一辺(px・画面)。位置(x,y)はピンの左下＝コメント座標。
+ * 描画する CommentLayer と、フレームで囲う対象を強調する FrameHighlightLayer で同じ寸法を使う。
+ */
+export const COMMENT_PIN_SIZE = 26;
+
 const COMMENTS_KEY = "wbComments";
 const REPLIES_KEY = "wbCommentReplies";
 
