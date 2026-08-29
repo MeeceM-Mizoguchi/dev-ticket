@@ -21,6 +21,8 @@ import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
 import { DeployStatusBanner } from "@/app/components/github/DeployStatusBanner";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 import {
   fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, mergePullsBulk,
   precheckMerge, mergeBlockReason, relativeTime, fetchDeployStatus, runDeployCheck, GithubApiError,
@@ -50,6 +52,8 @@ export function GithubPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
 
   const access = useGithubAccess(projectSlug);
 
@@ -102,15 +106,18 @@ export function GithubPage() {
     setNotFound(false);
     setLoading(true);
     (async () => {
-      const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-      const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
+      const found = await findProjectBySlug(projectSlug);
       if (!alive) return;
-      if (!p) { setNotFound(true); setLoading(false); return; }
-      setProject(mapProject(p));
+      if (!found) { setNotFound(true); setLoading(false); return; }
+      setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
+      setProject(mapProject(found.row));
       setLoading(false);
     })();
     return () => { alive = false; };
   }, [projectSlug]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   // ── データ取得（自動ポーリングはしない） ────────────────
   const loadTab = useCallback(async (which: SubTab, force = false) => {

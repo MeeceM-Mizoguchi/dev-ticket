@@ -30,6 +30,8 @@ import { SprintSettingsMenu } from "@/app/components/sprints/SprintSettingsMenu"
 import { SprintOrderDialog } from "@/app/components/sprints/SprintOrderDialog";
 import { fetchSprintOrder, applySprintOrder, saveSprintOrder, type SprintOrderScope } from "@/app/lib/sprintOrder";
 import { useScrollRestore } from "@/app/hooks/useScrollRestore";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 
 function EnvMemoTag({ m }: { m: EnvMemo }) {
   const [open, setOpen] = useState(false);
@@ -136,6 +138,8 @@ export function SprintPage() {
   const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   const [selectedTicketWbs, setSelectedTicketWbs] = useState<string | null>(null);
   const [backgroundParentWbs, setBackgroundParentWbs] = useState<string | null>(null);
   const [isParentNav, setIsParentNav] = useState(false);
@@ -263,10 +267,10 @@ export function SprintPage() {
       // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
       // 引きずらないよう毎回クリアしてから引き直す。
       setNotFound(false);
-      const { data: bySlugRows } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-      const p = bySlugRows?.[0]
-        ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
-      if (!p) { setNotFound(true); setLoading(false); return; }
+      const found = await findProjectBySlug(projectSlug);
+      if (!found) { setNotFound(true); setLoading(false); return; }
+      const p = found.row;
+      setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
       setProject(mapProject(p));
       const [{ data: s }, { data: pmp }, order] = await Promise.all([
         supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", p.id).order("start_date").order("created_at", { referencedTable: "sprint_tickets" }).order("id", { referencedTable: "sprint_tickets" }),
@@ -281,6 +285,9 @@ export function SprintPage() {
     };
     lookupProject().catch(() => { setNotFound(true); setProjectPermissionsLoaded(true); setLoading(false); });
   }, [projectSlug, userId]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   useEffect(() => {
     if (!isSupabaseEnabled || !projectId) return;

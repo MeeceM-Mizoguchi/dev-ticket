@@ -8,6 +8,7 @@
 // 権限（RLS）で読めない行は 0件で返るため、削除済みと区別できない。
 // ユーザーに出す文言は「見つかりません（削除されたか、閲覧権限がない可能性があります）」に寄せる。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { findProjectBySlug } from "./projectResolve";
 import {
   INTERNAL_LINK_KIND_LABEL,
   internalLinkKey,
@@ -136,13 +137,9 @@ async function getProject(slug: string): Promise<ProjectRow | null> {
   if (running) return running;
 
   const p = (async () => {
-    const { data } = await supabase!.from("projects").select("id, name, slug").eq("slug", slug).limit(1);
-    let row = (data?.[0] as ProjectRow | undefined) ?? null;
-    // MinutesPage 等が「slug でも id でも開ける」作りになっているので、UUID なら id でも引く
-    if (!row && isUuid(slug)) {
-      const { data: byId } = await supabase!.from("projects").select("id, name, slug").eq("id", slug).limit(1);
-      row = (byId?.[0] as ProjectRow | undefined) ?? null;
-    }
+    // 「slug でも id でも旧slugでも開ける」引き当ては lib/projectResolve に集約してある。
+    // 旧slugを拾えるおかげで、識別子を変える前に貼られたチップが赤×にならない。
+    const row = ((await findProjectBySlug<ProjectRow>(slug, "id, name, slug"))?.row) ?? null;
     projectCache.set(slug, row);
     projectInflight.delete(slug);
     return row;

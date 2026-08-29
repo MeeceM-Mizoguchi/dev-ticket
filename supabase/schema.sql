@@ -215,3 +215,7 @@ on conflict (id) do nothing;
 
 -- PR未紐付けアラートの抑止（add_pr_link_waived.sql）
 -- alter table sprint_tickets add column if not exists pr_link_waived boolean not null default false;
+
+-- プロジェクト識別子(slug)の旧値エイリアス（add_project_slug_aliases.sql を別途実行）
+-- 識別子を変えても、配布済みの旧URL（/旧SLUG/…）が現行プロジェクトへ橋渡しされる。
+-- テーブル本体・RLS・記録トリガーはすべて上記ファイルにまとまっている。

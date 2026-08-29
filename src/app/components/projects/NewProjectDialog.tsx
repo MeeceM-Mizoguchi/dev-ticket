@@ -11,6 +11,7 @@ import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { usePlan } from "@/app/contexts/PlanContext";
+import { findSlugConflict, SLUG_CONFLICT_MESSAGE } from "@/app/lib/projectResolve";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 
@@ -108,15 +109,10 @@ export function NewProjectDialog({ onClose, clients, onCreated, currentProjectCo
     if (isSupabaseEnabled) {
       setSaving(true);
 
-      let dupQ = supabase!.from("projects").select("id").eq("slug", finalSlug);
-      if (projectOrgId) {
-        dupQ = dupQ.eq("organization_id", projectOrgId);
-      } else {
-        dupQ = dupQ.is("organization_id", null);
-      }
-      const { data: existing } = await dupQ.maybeSingle();
-      if (existing) {
-        setSlugError("この組織内ですでに使用されている識別子です。別の名前を使用してください。");
+      // 他プロジェクトの「旧識別子」も予約済みとして弾く（配布済みの旧URLの行き先を守るため）
+      const conflict = await findSlugConflict(finalSlug, projectOrgId);
+      if (conflict) {
+        setSlugError(SLUG_CONFLICT_MESSAGE[conflict]);
         setSaving(false);
         return;
       }

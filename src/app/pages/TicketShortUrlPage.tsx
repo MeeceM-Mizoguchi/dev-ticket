@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
 
 export function TicketShortUrlPage() {
   const { projectSlug, ticketWbs } = useParams<{ projectSlug: string; ticketWbs: string }>();
@@ -12,14 +13,12 @@ export function TicketShortUrlPage() {
     if (!isSupabaseEnabled) { navigate("/dashboard", { replace: true }); return; }
 
     (async () => {
-      // 1. プロジェクトをslugで検索
-      const { data: project, error: pErr } = await supabase!
-        .from("projects")
-        .select("id, name, slug")
-        .eq("slug", projectSlug.toUpperCase())
-        .single();
+      // 1. プロジェクトをslugで検索（旧識別子でも引き当てる）
+      const project = (await findProjectBySlug<{ id: string; name: string; slug: string }>(
+        projectSlug.toUpperCase(), "id, name, slug",
+      ))?.row;
 
-      if (pErr || !project) {
+      if (!project) {
         setError(`プロジェクト「${projectSlug}」が見つかりません。`);
         return;
       }

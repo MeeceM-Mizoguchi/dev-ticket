@@ -8,6 +8,7 @@ import { escStack } from "@/app/lib/escStack";
 import { submitOnModEnter } from "@/app/lib/submitKey";
 import { APP_VERSION } from "@/lib/version";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
 import type { BugCategory, BugSeverity, BugReport } from "@/app/types";
 
 const CATEGORY_OPTIONS: { value: BugCategory; label: string }[] = [
@@ -159,8 +160,8 @@ export function BugReportModal({ onClose }: Props) {
 
       const inquirySlug = import.meta.env.VITE_INQUIRY_PROJECT_SLUG as string | undefined;
       if (inquirySlug) {
-        const { data: proj } = await supabase!.from("projects").select("id")
-          .eq("slug", inquirySlug).maybeSingle();
+        // 問い合わせ先PJの識別子が変わっていても拾えるよう、旧識別子も見る
+        const proj = (await findProjectBySlug<{ id: string }>(inquirySlug, "id"))?.row;
 
         if (proj?.id) {
           const { data: lastItem } = await supabase!.from("backlog_items").select("id")

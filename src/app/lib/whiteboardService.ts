@@ -1,6 +1,7 @@
 // ホワイトボードの Supabase 永続化レイヤ（CRUD / doc_state 保存復元 / 画像アップロード）。
 // リアルタイム同期そのものは SupabaseYjsProvider が担い、ここは DB との橋渡しのみ。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
 import type { AccessLevel, UserPermissions, Whiteboard } from "@/app/types";
 
 interface WhiteboardRow {
@@ -58,19 +59,21 @@ export function base64ToBytes(b64: string): Uint8Array {
 export interface ResolvedProject {
   id: string; name: string; slug: string;
   members: string[]; organizationId: string | null;
+  /** 旧識別子(project_slug_aliases)で引き当てたか。呼び出し側がURLを正へ寄せるのに使う */
+  viaAlias: boolean;
 }
 
 export async function resolveProject(projectSlug: string): Promise<ResolvedProject | null> {
   if (!isSupabaseEnabled) return null;
   const cols = "id, name, slug, members, organization_id";
-  const { data: bySlug } = await supabase!.from("projects").select(cols).eq("slug", projectSlug).limit(1);
-  const row: any = bySlug?.[0]
-    ?? (await supabase!.from("projects").select(cols).eq("id", projectSlug).maybeSingle()).data;
-  if (!row) return null;
+  const found = await findProjectBySlug(projectSlug, cols);
+  if (!found) return null;
+  const row: any = found.row;
   return {
     id: row.id, name: row.name, slug: row.slug,
     members: (row.members ?? []) as string[],
     organizationId: (row.organization_id ?? null) as string | null,
+    viaAlias: found.viaAlias,
   };
 }
 

@@ -14,6 +14,8 @@ import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { FILE_COMMENT_PARAM, FILE_REPLY_PARAM } from "@/app/lib/fileCommentLink";
 import { FILE_FOLDER_PARAM } from "@/app/lib/shareLink";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
+import { findProjectBySlug } from "@/app/lib/projectResolve";
+import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 import { submitOnEnter } from "@/app/lib/submitKey";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -83,6 +85,8 @@ export function FileBoxPage() {
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
+  const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -117,9 +121,10 @@ export function FileBoxPage() {
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
     setNotFound(false);
-    const { data: bySlug } = await supabase!.from("projects").select("*").eq("slug", projectSlug).limit(1);
-    const p = bySlug?.[0] ?? (await supabase!.from("projects").select("*").eq("id", projectSlug).maybeSingle()).data;
-    if (!p) { setNotFound(true); setLoading(false); return; }
+    const found = await findProjectBySlug(projectSlug);
+    if (!found) { setNotFound(true); setLoading(false); return; }
+    const p = found.row;
+    setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
     setProject(mapProject(p));
 
     const [{ data }, permResult] = await Promise.all([
@@ -145,6 +150,9 @@ export function FileBoxPage() {
   }, [projectSlug, userId, isAdminRole]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
+  useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   // アプリ側(Excel/Word)での保存はブラウザの外で起きるため、この画面は気づけない。
   // タブに戻ってきたタイミングで一覧を取り直し、新しいバージョンを反映する。
