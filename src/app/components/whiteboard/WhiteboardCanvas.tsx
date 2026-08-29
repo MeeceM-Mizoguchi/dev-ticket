@@ -709,6 +709,33 @@ export default function WhiteboardCanvas({
     return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [api, docLoaded, canEdit, bridgeRef]);
 
+  // ドラッグの後始末（BRU13-050）。onChange の静穏フェーズは「1tick に updateScene は1つだけ」を
+  // 守るため、他のヘルパーが反映した tick を飛ばして次tickへ回す。ドラッグ最後の onChange が
+  // ちょうどその tick に当たると、フレーム装飾の影矩形(BRU5-063)だけが元の位置に取り残され、
+  // 枠が二重に見える（＝フレームが複製されたような表示。次に何か操作するまで直らない）。
+  // 指を離したあとに明示的に走らせて必ず収束させる（変化が無ければ内部で何もしない）。
+  useEffect(() => {
+    if (!api || !docLoaded || !canEdit) return;
+    const settle = () => {
+      try {
+        if (!isActiveWbInstance(instanceKey)) return;
+        if (bridgeRef.current?.isApplyingRemote?.()) return;
+        // 指を離した後なので、もう何も描いていない。newElement が残っていても
+        // 「描画中だから触らない」ガードに引っかからせない（残っていると永久に収束しない）。
+        syncFrameDecorRects(api, { ...api.getAppState(), newElement: null }, false);
+      } catch { /* noop */ }
+    };
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const onUp = () => { timers.push(setTimeout(settle, 80), setTimeout(settle, 320)); };
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      timers.forEach(clearTimeout);
+    };
+  }, [api, docLoaded, canEdit, bridgeRef, instanceKey]);
+
   // Cmd/Ctrl+Shift+C … 選択中の要素を画像でクリップボードへコピー。
   // ブラウザのデベロッパーツール起動を抑止しつつ、選択範囲のみをPNG化してコピーする。
   // ※ブラウザによってはDevToolsショートカットがブラウザ側で先取りされ preventDefault が
