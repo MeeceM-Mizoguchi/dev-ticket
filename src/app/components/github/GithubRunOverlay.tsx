@@ -16,6 +16,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { escStack } from "@/app/lib/escStack";
+import type { GithubRunProgress } from "@/app/types";
 
 /** 実行中の行を見に行く間隔 */
 const POLL_MS = 2000;
@@ -35,10 +36,38 @@ interface RunRow {
   state: "running" | "done" | "error";
   message: string | null;
   result: { merged?: number; failed?: number; number?: number | null } | null;
+  /** サーバー側の現在地（supabase/add_github_action_run_progress.sql） */
+  progress: GithubRunProgress | null;
   started_at: string;
 }
 
-const COLUMNS = "id, project_slug, kind, label, state, message, result, started_at";
+const BASE_COLUMNS = "id, project_slug, kind, label, state, message, result, started_at";
+const COLUMNS = `${BASE_COLUMNS}, progress`;
+
+/**
+ * 途中経過の列がまだ適用されていない環境では、progress 込みの select がまるごと失敗する。
+ * ここで復帰モーダルごと出なくなると元の機能まで巻き添えになるので、
+ * 一度失敗したら以降は列を外して引く（途中経過が出ないだけになる）。
+ */
+let withProgress = true;
+const columns = () => (withProgress ? COLUMNS : BASE_COLUMNS);
+
+/**
+ * 現在地の1行。
+ * 「実行中です」だけだと、まだ確認の段なのか、もうマージ先に入り始めたのかが分からない。
+ * ここが読めるかどうかで、待っていてよいのかの判断が変わる（BRU13-042）。
+ */
+function progressLine(p: GithubRunProgress | null): string | null {
+  if (!p) return null;
+  const count = p.total > 0 ? `（${p.done}／${p.total}件）` : "";
+  if (p.step === "precheck") return `マージ可否を確認しています${count}`;
+  if (p.step === "trial") {
+    return p.trialSkipped
+      ? "試しマージは不要でした。マージへ進みます"
+      : `使い捨てのブランチへ順番どおりに積んでいます${count}`;
+  }
+  return `マージ先へ順にマージしています${count}`;
+}
 
 const KEYFRAMES = `
 @keyframes gro-fade { from { opacity: 0 } to { opacity: 1 } }
@@ -79,14 +108,16 @@ export function GithubRunOverlay() {
     if (!isSupabaseEnabled || !userId) return;
     let alive = true;
     (async () => {
-      const { data } = await supabase!
+      const find = () => supabase!
         .from("github_action_runs")
-        .select(COLUMNS)
+        .select(columns())
         .eq("actor_id", userId)
         .eq("state", "running")
         .gt("started_at", new Date(Date.now() - STALE_MS).toISOString())
         .order("started_at", { ascending: false })
         .limit(1);
+      let { data, error } = await find();
+      if (error && withProgress) { withProgress = false; ({ data } = await find()); }
       const row = (data?.[0] ?? null) as RunRow | null;
       if (!alive || !row || closedRef.current.has(row.id)) return;
       setStale(false);
@@ -107,8 +138,10 @@ export function GithubRunOverlay() {
     if (!running || !runId || !startedAt) return;
     const id = window.setInterval(async () => {
       if (elapsedMs(startedAt) > STALE_MS) { setStale(true); return; }
-      const { data } = await supabase!
-        .from("github_action_runs").select(COLUMNS).eq("id", runId).maybeSingle();
+      const find = () => supabase!
+        .from("github_action_runs").select(columns()).eq("id", runId).maybeSingle();
+      let { data, error } = await find();
+      if (error && withProgress) { withProgress = false; ({ data } = await find()); }
       if (data) setRun(data as RunRow);
     }, POLL_MS);
     return () => window.clearInterval(id);
@@ -168,6 +201,14 @@ export function GithubRunOverlay() {
           <div style={{ position: "relative", height: 8, borderRadius: 999, background: "#EEF0F1", overflow: "hidden", marginBottom: 12 }}>
             <div style={{ position: "absolute", top: 0, left: 0, height: "100%", width: "42%", borderRadius: 999, background: "linear-gradient(90deg, #059669, #34D399)", animation: "gro-slide 1.15s ease-in-out infinite", willChange: "transform" }} />
           </div>
+        )}
+
+        {/* 何をしている最中かは、待てるかどうかの判断に直結するので本文より先に出す。
+            記録用の列が未適用の環境では出ないだけで、実行は従来どおり動く */}
+        {running && progressLine(run.progress) && (
+          <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", lineHeight: 1.7, marginBottom: 8 }}>
+            {progressLine(run.progress)}
+          </p>
         )}
 
         <p style={{ fontSize: 12, color: "#6B6458", lineHeight: 1.8 }}>

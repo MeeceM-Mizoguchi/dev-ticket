@@ -518,7 +518,8 @@ export function GithubPage() {
           actorName={userName}
           onClose={() => setBulkTargets(null)}
           onPrecheck={numbers => precheckMerge(project.id, numbers)}
-          onMerge={(numbers, method, reason) => mergePullsBulk(project.id, numbers, method, reason, projectSlug ?? project.slug)}
+          onMerge={(numbers, method, reason, runId) =>
+            mergePullsBulk(project.id, numbers, method, reason, projectSlug ?? project.slug, runId)}
           onDone={async () => {
             await loadTab("pulls", true);
             void loadDeploy();

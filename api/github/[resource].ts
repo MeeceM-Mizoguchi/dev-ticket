@@ -705,6 +705,15 @@ function mapUser(u: any) {
 /** マージ可否の再取得までの待ち時間。GitHub 側の計算が終わるのを少しだけ待つ */
 const MERGEABLE_RETRY_MS = 1200;
 
+/**
+ * マージ実行の手前で「判定中」を待つときの間隔。
+ *
+ * 一覧・詳細は1回だけ引き直せば十分だが（待たせるより「判定中」と出した方がよい）、
+ * マージの可否判定を諦めると、本当はマージできるものを失敗として記録してしまう。
+ * 実行経路だけは決まるまで少しずつ長く待つ（BRU13-042）。
+ */
+const MERGEABLE_POLL_MS = [700, 1000, 1500, 2200];
+
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /**
@@ -3317,6 +3326,36 @@ const RUN_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 /** 記録を残す日数を超えた行は消す。復帰にしか使わないので溜め込まない */
 const RUN_KEEP_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 実行の途中経過（supabase/add_github_action_run_progress.sql）。
+ *
+ * まとめてマージは押してから終わるまで数十秒かかることがあり、その間クライアントには
+ * 何も返らない。「今どこを走っているか」を画面から読めるように、段ごとにここへ書く。
+ */
+interface RunProgress {
+  step: "precheck" | "trial" | "merge";
+  /** step の中で終わった件数 */
+  done: number;
+  total: number;
+  /** いま扱っているPR番号 */
+  current?: number;
+  /** 試しマージが不要だったので省いた（変更ファイルが重ならない等） */
+  trialSkipped?: boolean;
+}
+
+/**
+ * 途中経過を記録へ書く。
+ *
+ * 記録は補助なので、書けなくても実行は止めない（列が未適用の環境では毎回失敗するが、
+ * 画面がこれまでどおりの大まかな表示に落ちるだけで、マージ自体は従来どおり動く）。
+ */
+async function reportProgress(sb: SupabaseClient, runId: string, progress: RunProgress) {
+  if (!runId) return;
+  try {
+    await sb.from("github_action_runs").update({ progress }).eq("id", runId);
+  } catch { /* 記録は補助。落ちても実行結果には影響させない */ }
+}
+
 async function finishActionRun(
   sb: SupabaseClient, runId: string, actorId: string,
   state: "done" | "error", message: string, result: unknown,
@@ -3462,19 +3501,23 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
  * conflict を分けて持つのは、まとめてマージを止めた理由が「コンフリクト」なのか
  * 「CI・レビュー待ち」なのかで、人がやることが変わるため。
  */
-function mergeBlockReasonOf(p: any): { conflict: boolean; message: string } | null {
-  if (!p) return { conflict: false, message: "プルリクエストを取得できませんでした。" };
-  if (p.merged_at || p.merged) return { conflict: false, message: "すでにマージされています。" };
-  if (p.state && p.state !== "open") return { conflict: false, message: "クローズ済みのためマージできません。" };
-  if (p.draft) return { conflict: false, message: "Draft のためマージできません。" };
+function mergeBlockReasonOf(p: any): { conflict: boolean; pending: boolean; message: string } | null {
+  const at = (conflict: boolean, message: string) => ({ conflict, pending: false, message });
+  if (!p) return at(false, "プルリクエストを取得できませんでした。");
+  if (p.merged_at || p.merged) return at(false, "すでにマージされています。");
+  if (p.state && p.state !== "open") return at(false, "クローズ済みのためマージできません。");
+  if (p.draft) return at(false, "Draft のためマージできません。");
   if (p.mergeable === false || p.mergeable_state === "dirty") {
-    return { conflict: true, message: "コンフリクトがあります。GitHub上で解消してください。" };
+    return at(true, "コンフリクトがあります。GitHub上で解消してください。");
   }
   switch (p.mergeable_state) {
-    case "blocked": return { conflict: false, message: "必須チェックまたはレビュー承認が不足しています。" };
-    case "behind": return { conflict: false, message: "ベースブランチより古いため更新が必要です。" };
-    case "draft": return { conflict: false, message: "Draft のためマージできません。" };
-    case "unknown": return { conflict: false, message: "GitHub側でマージ可否を判定中です。少し待ってから再度お試しください。" };
+    case "blocked": return at(false, "必須チェックまたはレビュー承認が不足しています。");
+    case "behind": return at(false, "ベースブランチより古いため更新が必要です。");
+    case "draft": return at(false, "Draft のためマージできません。");
+    // 「まだ計算が終わっていない」だけで、マージできないと決まったわけではない。
+    // 呼ぶ側が pending を見て、待つのか先へ進むのかを決める（BRU13-042）
+    case "unknown":
+      return { conflict: false, pending: true, message: "GitHub側でマージ可否を判定中です。少し待ってから再度お試しください。" };
     default: return null;
   }
 }
@@ -3497,20 +3540,38 @@ interface PrecheckRow {
   checkGate?: CheckGate;
   /** 権限不足などでチェックを確認できなかった情報源。空でなければ「問題なし」と言い切らない */
   checkUnavailable?: string[];
+  /**
+   * 試しマージで分かった「このPRより先に積んだPR」（BRU13-042）。
+   * 単体では通るのに、この順番だと通らない、を画面で言い分けるために持つ。
+   */
+  conflictAfter?: number[];
+  /** 試しマージに使う。画面では使わないがサーバー内で持ち回る */
+  headSha?: string;
+  /** マージ先ブランチ。マージ先ごとに試しマージを分けるために持つ */
+  base?: string;
 }
 
 /**
  * マージ前の状態チェック（1件）。
  *
- * GitHub のマージ可否は「聞かれてから」計算されるため、判定中（unknown）なら一度だけ引き直す。
+ * GitHub のマージ可否は「聞かれてから」計算されるため、判定中（unknown）なら引き直す。
  * それでも決まらないものは「判定中」として止める。分からないまま実行すると、
  * まとめてマージの途中でコンフリクトに当たり、一部だけ入った状態になる（BRU13-038）。
+ *
+ * poll=false は「決まっていなくても待たない」。まとめてマージの実行ループで使う。
+ * 1件マージするたびにマージ先が動き、残り全部の計算がやり直しになるため、
+ * ここで毎回待つと件数ぶんの待ち時間が積み上がる。ループ側は捨てブランチでの
+ * 試しマージを通してあるので、判定中でもそのまま実行してよい（BRU13-042）。
  */
-async function fetchPullForMerge(token: string, repo: string, number: number) {
-  const first = await gh(token, `/repos/${repo}/pulls/${number}`);
-  return needsMergeableRetry(first)
-    ? await sleep(MERGEABLE_RETRY_MS).then(() => gh(token, `/repos/${repo}/pulls/${number}`).catch(() => first))
-    : first;
+async function fetchPullForMerge(token: string, repo: string, number: number, poll = true) {
+  let last = await gh(token, `/repos/${repo}/pulls/${number}`);
+  if (!poll) return last;
+  for (const wait of MERGEABLE_POLL_MS) {
+    if (!needsMergeableRetry(last)) return last;
+    await sleep(wait);
+    last = await gh(token, `/repos/${repo}/pulls/${number}`).catch(() => last);
+  }
+  return last;
 }
 
 async function precheckPull(
@@ -3538,6 +3599,8 @@ async function precheckPull(
       // "block" のときだけマージ自体を止める。warn / reason は画面で判断させる
       ok: !blocked && gate?.level !== "block",
       conflict: !!blocked?.conflict,
+      headSha: String(p?.head?.sha ?? ""),
+      base: String(p?.base?.ref ?? ""),
       ...(blocked ? { reason: blocked.message } : {}),
       ...(gate ? { checkGate: gate, ...(gate.level === "block" ? { reason: checkGateMessage(gate, number) } : {}) } : {}),
       ...(unavailable.length ? { checkUnavailable: unavailable } : {}),
@@ -3712,19 +3775,196 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
 /** 一度に扱えるPRの上限。多すぎると実行時間が読めなくなるため */
 const MAX_BULK_MERGE = 20;
 
+// ── 試しマージ（BRU13-042） ──────────────────────────────────────
+//
+// GitHub の mergeable は「今のマージ先の先端に対して」しか計算されない。
+// まとめてマージは1件入れるたびにマージ先が動くので、押した時点で全件 clean でも
+// 2件目以降がコンフリクトになることがある。これは何回聞いても分からないので、
+// 実際に同じ順番で積んでみるしかない。
+//
+// 積むのは本番のマージ先ではなく、その場で作って必ず消す捨てブランチ。
+// 途中で失敗しても本番側には何も残らないので、戻す作業が発生しない。
+
+/** 捨てブランチの名前の頭。GitHub 上で見かけたときに用途が分かるようにしておく */
+const TRIAL_BRANCH_PREFIX = "dev-ticket/merge-trial";
+
+/**
+ * 試しマージに使ってよい時間。
+ *
+ * 関数全体の上限は 60 秒（vercel.json）。使い切ったら「確認しきれなかった」として
+ * 1件もマージしない。確認できていないものを通す方向には倒さない。
+ */
+const TRIAL_BUDGET_MS = 32_000;
+
+/** 変更ファイル一覧を見に行くページ数の上限（100件×3ページ） */
+const TRIAL_FILE_PAGES = 3;
+
+/** 試しマージで止まった1件 */
+interface TrialFailure {
+  number: number;
+  /** このPRより先に積み終わっていたPR。「#50〜#52 のあとだと通らない」と言うために持つ */
+  after: number[];
+  conflict: boolean;
+  reason: string;
+}
+
+/**
+ * PRが変更したファイルの一覧。
+ * 取り切れなかったときは null を返す（「重なっていない」と言い切れないため）。
+ */
+async function changedFiles(token: string, repo: string, number: number): Promise<Set<string> | null> {
+  const files = new Set<string>();
+  for (let page = 1; page <= TRIAL_FILE_PAGES; page++) {
+    const list = await gh(token, `/repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`) as any[];
+    for (const f of list ?? []) {
+      if (f?.filename) files.add(String(f.filename));
+      // リネームは元の名前でも衝突しうるので両方入れる
+      if (f?.previous_filename) files.add(String(f.previous_filename));
+    }
+    if (!list || list.length < 100) return files;
+  }
+  return null;
+}
+
+/**
+ * 試しマージが要るかどうか。
+ *
+ * 変更ファイルが1つも重ならないPR同士は、順番を入れ替えても結果が変わらない。
+ * 後から入れる側が触るファイルを、先に入れた側が動かしていないためで、
+ * 「前のマージでマージ先が進んだせいで衝突する」が起こりえない。
+ * この場合は捨てブランチを作らずに済ませる（GitHub 側に余計な痕跡を残さない）。
+ *
+ * 判断がつかないときは true を返す。確認を省く方向には倒さない。
+ */
+async function needsTrial(token: string, repo: string, numbers: number[]): Promise<boolean> {
+  const sets = await Promise.all(numbers.map(n => changedFiles(token, repo, n).catch(() => null)));
+  if (sets.some(x => x === null)) return true;
+  const seen = new Set<string>();
+  for (const set of sets as Set<string>[]) {
+    for (const f of set) {
+      if (seen.has(f)) return true;
+      seen.add(f);
+    }
+  }
+  return false;
+}
+
+/**
+ * squash / rebase を捨てブランチ上で再現する。
+ *
+ * どちらも「PRのブランチとのつながりを残さず、中身だけをマージ先に載せる」方式。
+ * 試しマージの結果（本物のマージコミット）をそのまま積むと、つながりが残るぶん
+ * 後続が実際より通りやすくなる。特に前のブランチの上に積んで作ったPRで差が出る。
+ * マージ結果のツリーだけを引き継いだ、親が1つのコミットへ置き換えて先端を進める。
+ */
+async function flattenTrialTip(
+  token: string, repo: string, branch: string, parent: string, merged: any, number: number,
+): Promise<string> {
+  const tree = String(merged?.commit?.tree?.sha ?? "");
+  if (!tree) return String(merged?.sha ?? parent);
+  const commit = await gh(token, `/repos/${repo}/git/commits`, {
+    method: "POST",
+    body: { message: `dev-ticket trial squash #${number}`, tree, parents: [parent] },
+  });
+  await gh(token, `/repos/${repo}/git/refs/heads/${branch}`, {
+    method: "PATCH", body: { sha: commit.sha, force: true },
+  });
+  return String(commit.sha);
+}
+
+/**
+ * 選んだPRを、実際に入れる順番どおりに捨てブランチへ積んでみる。
+ *
+ * failure が null なら全件通った＝本番でも同じ順番で通る。
+ * baseSha は試した時点のマージ先の先端。実行に移る直前、ここが動いていないかを見る
+ * （動いていたら試した結果はもう当てにならない）。
+ */
+async function trialMerge(
+  token: string, repo: string, base: string,
+  rows: { number: number; headSha: string }[],
+  method: string, deadline: number,
+  /** 1件積むごとに呼ぶ。画面の進捗に出すためだけのもので、失敗させない */
+  onStacked?: (number: number) => Promise<void>,
+): Promise<{ baseSha: string; failure: TrialFailure | null }> {
+  const ref = await gh(token, `/repos/${repo}/git/ref/heads/${encodeURI(base)}`);
+  const baseSha = String(ref?.object?.sha ?? "");
+  if (!baseSha) throw new HttpError(502, `マージ先ブランチ「${base}」を取得できませんでした。`);
+
+  const branch = `${TRIAL_BRANCH_PREFIX}/${crypto.randomBytes(6).toString("hex")}`;
+  await gh(token, `/repos/${repo}/git/refs`, {
+    method: "POST", body: { ref: `refs/heads/${branch}`, sha: baseSha },
+  });
+
+  let tip = baseSha;
+  const done: number[] = [];
+  try {
+    for (const r of rows) {
+      if (Date.now() > deadline) {
+        return {
+          baseSha,
+          failure: {
+            number: r.number, after: [...done], conflict: false,
+            reason: "確認に時間がかかりすぎたため中断しました。件数を減らしてお試しください。",
+          },
+        };
+      }
+      let merged: any;
+      try {
+        merged = await gh(token, `/repos/${repo}/merges`, {
+          method: "POST",
+          body: { base: branch, head: r.headSha, commit_message: `dev-ticket trial merge #${r.number}` },
+        });
+      } catch (e) {
+        // 409 = コンフリクト。それ以外（404 など）は確認そのものができなかった側
+        const conflict = e instanceof GithubError && (e.status === 409 || e.status === 405);
+        return {
+          baseSha,
+          failure: {
+            number: r.number, after: [...done], conflict,
+            reason: conflict
+              ? "この順番で入れるとコンフリクトします。GitHub上で解消してください。"
+              : jaMessage(e).message,
+          },
+        };
+      }
+      // 204（取り込むものが無い）のときは先端が動かない
+      if (merged?.sha) {
+        tip = method === "merge"
+          ? String(merged.sha)
+          : await flattenTrialTip(token, repo, branch, tip, merged, r.number);
+      }
+      done.push(r.number);
+      await onStacked?.(r.number);
+    }
+    return { baseSha, failure: null };
+  } finally {
+    // 捨てブランチは必ず消す。消せなくても本処理は止めない（残っても実害は無い）
+    await gh(token, `/repos/${repo}/git/refs/heads/${branch}`, { method: "DELETE" }).catch(() => null);
+  }
+}
+
 /**
  * 複数のPRをまとめてマージする。
  *
- * まず全件のコンフリクトチェックを行い、1件でも通らなければ1件もマージしない（BRU13-038）。
- * 途中まで入ってしまうと「マージ済みの分」と「コンフリクトで残った分」が混ざり、
- * 直すときに取り漏れが出るため。
+ * 手順は3段階。押すのは1回で、途中の確認はすべてこの中で完結する。
  *
- * チェックを通ったあとは1件ずつ順番に実行する。前のPRがマージされるとベースブランチが
- * 進むため、後続のマージ可否は都度取り直さないと判定できない（実行直前にもう一度引く）。
- * それでも失敗した場合は、そこで打ち切って残りは実行しない。
+ *   1. 全件のマージ可否チェック（BRU13-038）
+ *        今のマージ先に対して、1件ずつ単独で見る。1件でも通らなければ1件もマージしない。
+ *   2. 捨てブランチでの試しマージ（BRU13-042）
+ *        1 で見ているのは「今のマージ先に対して」だけ。1件マージするたびにマージ先が
+ *        進むので、2件目以降が通るかどうかは実際に同じ順番で積んでみないと分からない。
+ *        本番には触らず捨てブランチの上で積み、1件でも失敗したら1件もマージしない。
+ *   3. 本番のマージ
+ *        ここまで来て初めてマージ先へ入れる。
+ *
+ * 3 でもなお失敗した場合（マージ先が第三者に動かされた、CIが走り直して落ちた等）は、
+ * そこで打ち切って残りは実行しない。
  */
 async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res: any) {
   if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  // 試しマージに使ってよい時間はここから数える。関数全体の上限（60秒）のうち、
+  // 本番のマージに回すぶんを必ず残すため、確認の側に先に締め切りを置く
+  const startedAt = Date.now();
   const body = parseBody(req);
   const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "merge");
   const method = ["merge", "squash", "rebase"].includes(body.method) ? body.method : "squash";
@@ -3740,6 +3980,12 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
   }
 
   const token = await installationToken(ctx.installationId);
+
+  // 押してから終わるまでの間、何をしている最中かを画面へ流す。
+  // 記録が無い環境（列が未適用・古い画面）では書かないだけで、実行は変わらない
+  const runId = RUN_ID_RE.test(String(body.runId ?? "")) ? String(body.runId) : "";
+  const total = numbers.length;
+  await reportProgress(sb, runId, { step: "precheck", done: 0, total });
 
   // 全件チェック。画面側でも事前に同じことを確かめているが、
   // 確認してから押すまでの間に状態が変わることがあるのでサーバー側でもやり直す
@@ -3782,12 +4028,98 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
       });
   }
 
+  // ── 試しマージ。ここを通るまで本番のマージ先には一切触らない ──────────
+  // マージ先ごとに分ける。マージ先が違うPR同士は互いに影響しないため、
+  // 1本の捨てブランチにまとめて積むと実際とは違う結果になる
+  const byBase = new Map<string, { number: number; headSha: string }[]>();
+  for (const n of numbers) {
+    const c = checks.find(x => x.number === n);
+    if (!c?.headSha || !c.base) continue;
+    byBase.set(c.base, [...(byBase.get(c.base) ?? []), { number: n, headSha: c.headSha }]);
+  }
+
+  await reportProgress(sb, runId, { step: "precheck", done: total, total });
+
+  // 何本の捨てブランチで何件を試すのかを先に決める。進捗に総数を出すため
+  const plan: { base: string; rows: { number: number; headSha: string }[] }[] = [];
+  for (const [base, rows] of byBase) {
+    // 1件だけならマージ先が動く前に終わるので、順番の影響が無い
+    if (rows.length < 2) continue;
+    // 変更ファイルが1つも重ならない同士も、順番で結果が変わらないので試す必要が無い
+    if (!(await needsTrial(token, ctx.repo, rows.map(r => r.number)))) continue;
+    plan.push({ base, rows });
+  }
+  const trialTotal = plan.reduce((n, g) => n + g.rows.length, 0);
+  await reportProgress(sb, runId, {
+    step: "trial", done: 0, total: trialTotal, ...(trialTotal ? {} : { trialSkipped: true }),
+  });
+
+  const deadline = startedAt + TRIAL_BUDGET_MS;
+  /** 試した時点のマージ先の先端。実行に移る直前、動いていないかを見るために持つ */
+  const trialedBase = new Map<string, string>();
+  /** 進捗に出す「積み終わった件数」。捨てブランチをまたいで通しで数える */
+  let stacked = 0;
+
+  for (const { base, rows } of plan) {
+    let trial: { baseSha: string; failure: TrialFailure | null };
+    try {
+      trial = await trialMerge(token, ctx.repo, base, rows, method, deadline, async n => {
+        stacked += 1;
+        await reportProgress(sb, runId, { step: "trial", done: stacked, total: trialTotal, current: n });
+      });
+    } catch (e) {
+      // 試しマージ自体ができなかった（捨てブランチを作れない等）。
+      // 確認できていない以上、通す方向には倒さない
+      await writeLog(sb, ctx, caller, "merge", 0, "blocked", `bulk trial / failed / ${(e as Error)?.message ?? ""}`);
+      throw new HttpError(jaMessage(e).status,
+        `マージできるかどうかの確認ができなかったため、1件もマージしていません。（${jaMessage(e).message}）`);
+    }
+    const { baseSha, failure } = trial;
+    trialedBase.set(base, baseSha);
+    if (!failure) continue;
+
+    const after = failure.after;
+    const head = after.length
+      ? `#${failure.number} は ${after.map(n => `#${n}`).join("、")} のあとに入れるとマージできません`
+      : `#${failure.number} をマージできません`;
+    await writeLog(sb, ctx, caller, "merge", 0, "blocked",
+      `bulk trial / #${failure.number} after:${after.join(",") || "-"} / ${failure.reason}`);
+    throw new HttpError(409, `${head}。1件もマージしていません。`, {
+      precheck: {
+        ok: false,
+        conflicts: failure.conflict ? 1 : 0,
+        blocked: failure.conflict ? 0 : 1,
+        needsReason: false,
+        checkWarnings: checks.filter(c => c.checkGate).length,
+        requireChecksMode: ctx.requireChecksMode,
+        // 単独では通ったが、この順番だと通らなかった、と画面で言い分けるための印
+        trial: true,
+        results: checks.map(c => c.number === failure.number
+          ? { ...c, ok: false, conflict: failure.conflict, reason: failure.reason, conflictAfter: after }
+          : c),
+      },
+    });
+  }
+
+  // 試している間にマージ先が動いていたら、試した結果はもう当てにならない。
+  // そのまま流すと「一部だけ入る」に逆戻りするので、1件もマージせずに戻す
+  for (const [base, sha] of trialedBase) {
+    const now = await gh(token, `/repos/${ctx.repo}/git/ref/heads/${encodeURI(base)}`).catch(() => null);
+    if (now?.object?.sha && String(now.object.sha) !== sha) {
+      await writeLog(sb, ctx, caller, "merge", 0, "blocked", `bulk trial / base moved / ${base}`);
+      throw new HttpError(409,
+        `確認している間にマージ先「${base}」が更新されました。1件もマージしていません。一覧を更新してから、もう一度お試しください。`);
+    }
+  }
+
   const results: { number: number; ok: boolean; title: string; sha?: string | null; error?: string; skipped?: boolean }[] = [];
   const retry = { refreshed: false };
   /** 権限で止まったと分かった時点で、残りは叩かずに同じ理由を並べる */
   let blocked: PermissionBlock | null = null;
   /** 1件でも失敗したら以降は実行しない。中途半端に入る件数を増やさないため */
   let stopped = false;
+
+  await reportProgress(sb, runId, { step: "merge", done: 0, total });
 
   for (const number of numbers) {
     const checked = checks.find(c => c.number === number);
@@ -3800,13 +4132,18 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
       continue;
     }
     try {
-      // 直前の状態を必ず引き直す。前のマージでベースが進んでいる可能性があるため
-      // （判定中で返ることがあるので、ここでも一度だけ待って引き直す）
-      const p = await fetchPullForMerge(token, ctx.repo, number);
+      // 直前の状態を必ず引き直す。前のマージでマージ先が進んでいる可能性があるため。
+      // ただし「判定中」を待つことはしない（poll=false）。1件マージするたびに
+      // 残り全部の計算がやり直しになるので、待つと件数ぶんの待ち時間が積み上がる
+      const p = await fetchPullForMerge(token, ctx.repo, number, false);
       title = p?.title ?? title;
 
       const nowBlocked = mergeBlockReasonOf(p);
-      if (nowBlocked) throw new HttpError(409, nowBlocked.message);
+      // 「判定中」では止めない。中身が衝突しないことは試しマージで確かめてあり、
+      // GitHub 側の再計算が追いついていないだけ。ここで失敗にすると、直す必要の無い
+      // ものを直しに行かせてしまう（BRU13-042）。本当にマージできなければ
+      // マージAPI自体が理由を返すので、判断はそちらに任せる
+      if (nowBlocked && !nowBlocked.pending) throw new HttpError(409, nowBlocked.message);
 
       // 実行直前にもう一度チェックを見る。前のマージで走り直したCIが落ちていることがある
       await enforceCheckGate(sb, ctx, caller, token, p, number, reason);
@@ -3825,6 +4162,9 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
         }));
       await writeLog(sb, ctx, caller, "merge", number, "ok", `bulk / ${method} / ${result?.sha ?? ""}`);
       results.push({ number, ok: true, title, sha: result?.sha ?? null });
+      await reportProgress(sb, runId, {
+        step: "merge", done: results.filter(r => r.ok).length, total, current: number,
+      });
     } catch (e) {
       blocked = await explainForbidden(ctx.installationId, "merge", e);
       const message = blocked ? blocked.message : e instanceof HttpError ? e.message : jaMessage(e).message;
