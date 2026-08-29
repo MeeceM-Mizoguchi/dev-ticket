@@ -16,6 +16,7 @@ import { ProjectTasksPage } from "@/app/pages/ProjectTasksPage";
 import { ReleaseNotesPage } from "@/app/pages/ReleaseNotesPage";
 import { ReportsPage } from "@/app/pages/ReportsPage";
 import { BacklogPage } from "@/app/pages/BacklogPage";
+import { TicketSearchPage } from "@/app/pages/TicketSearchPage";
 import { BugReportsPage } from "@/app/pages/BugReportsPage";
 import { WikiPage } from "@/app/pages/WikiPage";
 import { MinutesPage } from "@/app/pages/MinutesPage";
@@ -45,6 +46,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/organization", element: <OrganizationPage /> },
   // Sprint list
   { path: "/:projectSlug", element: <SprintPage /> },
+  // ENHA2-048 チケット一覧検索（静的セグメントなので /:projectSlug/:segment より優先される）
+  { path: "/:projectSlug/ticket-search", element: <TicketSearchPage /> },
   { path: "/:projectSlug/backlog", element: <BacklogPage /> },
   // フォルダ用の静的セグメントなので /:itemId より優先される
   { path: "/:projectSlug/backlog/folders/:folderId", element: <BacklogPage /> },

@@ -23,6 +23,10 @@ interface Props {
   cellStyle?: React.CSSProperties;
 }
 
+// カレンダー本体の幅（下の popup の width と必ず同じにすること）と、画面端に残す余白
+const POPUP_W = 262;
+const EDGE_MARGIN = 8;
+
 const MONTH_NAMES = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
 const DOW = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -65,7 +69,10 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
     const POPUP_H = 320;
     const spaceBelow = window.innerHeight - rect.bottom - 8;
     const top = spaceBelow >= POPUP_H ? rect.bottom + 6 : Math.max(8, rect.top - POPUP_H - 6);
-    setPopupPos({ top, left: rect.left });
+    // 欄の左端にそろえるのが基本。ただし画面の右端に近い欄だとカレンダーが
+    // はみ出して切れてしまうので、画面内に収まる位置まで左へ寄せる。
+    const left = Math.max(EDGE_MARGIN, Math.min(rect.left, window.innerWidth - POPUP_W - EDGE_MARGIN));
+    setPopupPos({ top, left });
   }, []);
 
   const handleToggle = useCallback(() => {
@@ -86,6 +93,20 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
     if (e.key === "Escape" && open) { e.preventDefault(); setOpen(false); return; }
     if (e.key === "Tab" && open) setOpen(false);
   };
+
+  // カレンダーは position:fixed で body 直下に出しているので、開いたまま画面が
+  // スクロール・リサイズされると欄から離れてしまう。開いている間は位置を追いかける。
+  // （capture:true なのは、ページ本体の <main> など内側のスクロールも拾うため）
+  useEffect(() => {
+    if (!open) return;
+    const follow = () => calcPosition();
+    window.addEventListener("scroll", follow, true);
+    window.addEventListener("resize", follow);
+    return () => {
+      window.removeEventListener("scroll", follow, true);
+      window.removeEventListener("resize", follow);
+    };
+  }, [open, calcPosition]);
 
   // Close on outside click — check both the trigger wrapper AND the portal popup
   useEffect(() => {
@@ -124,7 +145,7 @@ export function DatePicker({ value, onChange, label, placeholder = "年/月/日"
   const todayInRange = today >= (min ?? "0000-00-00") && today <= (max ?? "9999-99-99");
 
   const calendarPopup = (
-    <div ref={popupRef} style={{ position: "fixed", top: popupPos.top, left: popupPos.left, zIndex: 9999, background: "#FFFFFF", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.07)", border: "1px solid rgba(26,23,20,0.09)", padding: "14px 14px 12px", width: 262 }}>
+    <div ref={popupRef} style={{ position: "fixed", top: popupPos.top, left: popupPos.left, zIndex: 9999, background: "#FFFFFF", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.07)", border: "1px solid rgba(26,23,20,0.09)", padding: "14px 14px 12px", width: POPUP_W }}>
       {/* Month nav */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <button onClick={e => { e.stopPropagation(); prevMonth(); }} style={{ padding: "3px 6px", borderRadius: 6, border: "none", background: "#F4F5F6", cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center" }}>
