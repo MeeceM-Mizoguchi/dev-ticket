@@ -115,7 +115,7 @@ export function LoginPage() {
   return (
     <AuthScreen
       heroTitle={<>プロジェクトを、<br /><AuthHeroWord>スマート</AuthHeroWord>に。</>}
-      heroLead="チケット・スプリント・ガント・メンバーの稼働、そして GitHub の PR まで。起票からリリースまでを、ひとつの画面で。"
+      heroLead={<>チケット・スプリント・ガント・メンバーの稼働、そして GitHub の PR まで。<br />起票からリリースまでを、ひとつの画面で。</>}
       title="ログイン"
       description="アカウントにアクセスしてください"
       below={recentUsers.length > 0 ? (
