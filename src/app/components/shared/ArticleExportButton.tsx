@@ -1,7 +1,7 @@
-// wiki記事 / 議事録 を Excel / Word / PDF に出力するエクスポートボタン(ドロップダウン)。
+// wiki記事 / 議事録 を Excel / Word / PDF / Markdown に出力するエクスポートボタン(ドロップダウン)。
 // 実体の生成は articleExport モジュールを動的 import で遅延ロードする。
 import { useState } from "react";
-import { Download, FileSpreadsheet, FileText, FileType2, Loader2 } from "lucide-react";
+import { Download, FileCode2, FileSpreadsheet, FileText, FileType2, Loader2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { useToast } from "@/app/contexts/ToastContext";
 import type { ExportFormat } from "@/app/lib/articleExport";
@@ -9,16 +9,21 @@ import type { ExportFormat } from "@/app/lib/articleExport";
 interface Props {
   // フォーマットを受け取り、生成～ダウンロードまで行う非同期処理
   onExport: (format: ExportFormat) => Promise<void>;
+  // 出すメニュー項目。省略時は Excel / Word / PDF の3つ
+  formats?: ExportFormat[];
   disabled?: boolean;
 }
 
-const OPTIONS: { format: ExportFormat; label: string; Icon: typeof FileText }[] = [
-  { format: "xlsx", label: "Excel (.xlsx)", Icon: FileSpreadsheet },
-  { format: "docx", label: "Word (.docx)", Icon: FileText },
-  { format: "pdf", label: "PDF (.pdf)", Icon: FileType2 },
-];
+const OPTION: Record<ExportFormat, { label: string; Icon: typeof FileText }> = {
+  xlsx: { label: "Excel (.xlsx)", Icon: FileSpreadsheet },
+  docx: { label: "Word (.docx)", Icon: FileText },
+  pdf: { label: "PDF (.pdf)", Icon: FileType2 },
+  md: { label: "Markdown (.md)", Icon: FileCode2 },
+};
 
-export function ArticleExportButton({ onExport, disabled }: Props) {
+const DEFAULT_FORMATS: ExportFormat[] = ["xlsx", "docx", "pdf"];
+
+export function ArticleExportButton({ onExport, formats = DEFAULT_FORMATS, disabled }: Props) {
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
 
@@ -53,12 +58,15 @@ export function ArticleExportButton({ onExport, disabled }: Props) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {OPTIONS.map(({ format, label, Icon }) => (
-          <DropdownMenuItem key={format} onSelect={() => handle(format)} disabled={busy}>
-            <Icon style={{ width: 15, height: 15 }} />
-            {label}
-          </DropdownMenuItem>
-        ))}
+        {formats.map(format => {
+          const { label, Icon } = OPTION[format];
+          return (
+            <DropdownMenuItem key={format} onSelect={() => handle(format)} disabled={busy}>
+              <Icon style={{ width: 15, height: 15 }} />
+              {label}
+            </DropdownMenuItem>
+          );
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -15,7 +15,7 @@ const CATEGORY_LABEL: Record<ActionMemoCategory, string> = {
   todo: "TODO", review: "レビュー", test: "テスト", memo: "メモ",
 };
 
-const EXT: Record<ExportFormat, string> = { pdf: "pdf", docx: "docx", xlsx: "xlsx" };
+const EXT: Record<ExportFormat, string> = { pdf: "pdf", docx: "docx", xlsx: "xlsx", md: "md" };
 
 function fmtDateTime(iso: string | undefined | null): string {
   if (!iso) return "";
@@ -56,6 +56,12 @@ async function rasterizeMermaidBlocks(blocks: Block[]): Promise<Block[]> {
 }
 
 async function render(doc: ArticleDoc, format: ExportFormat): Promise<Blob> {
+  // Markdown は画像URL・Mermaidコードをそのまま書き出すテキストなので、
+  // 画像の取得(base64化)も Mermaid のラスタライズも通さない。
+  if (format === "md") {
+    reportRender();
+    return (await import("./exportMd")).renderMd(doc);
+  }
   const blocks = await rasterizeMermaidBlocks(doc.blocks);
   doc = { ...doc, blocks };
   const urls = collectImageUrls(doc.blocks as any);
