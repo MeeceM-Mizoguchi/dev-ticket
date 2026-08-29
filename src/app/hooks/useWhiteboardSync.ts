@@ -6,7 +6,7 @@ import { Awareness } from "y-protocols/awareness";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { SupabaseYjsProvider, REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvider";
 import { ExcalidrawYjsBridge } from "@/app/components/whiteboard/ExcalidrawYjsBridge";
-import { loadDocState, saveDocState, base64ToBytes, bytesToBase64, wbChannelName, subscribeBoardEvicted } from "@/app/lib/whiteboardService";
+import { loadDocState, saveDocState, base64ToBytes, bytesToBase64, wbChannelName, subscribeBoardAccess, type WbAccessEvent } from "@/app/lib/whiteboardService";
 import { registerWbControl } from "@/app/lib/whiteboardControlBus";
 import { setRemoteEditingIds } from "@/app/lib/whiteboardRemoteEdit";
 
@@ -22,10 +22,13 @@ const REMOTE_SAVE_JITTER_MS = 4000;
 /**
  * @param channelKey プライベートモードのボードだけが持つ秘密トークン。
  *   チャンネル名に混ぜることで、所有者以外は Broadcast のトピック名を計算できなくなる。
- * @param onEvicted そのボードがプライベート化され、自分が締め出された時に呼ばれる。
+ * @param onAccessEvent そのボードの公開範囲が変わった時に呼ばれる。
+ *   kind="evicted" は自分が締め出された（プライベート化・共有解除）、
+ *   kind="refresh" は鍵が作り直されたのでボード行を読み直して張り直す必要がある、の意味。
  */
 export function useWhiteboardSync(
-  boardId: string | null, user: WbUser, channelKey?: string | null, onEvicted?: () => void,
+  boardId: string | null, user: WbUser, channelKey?: string | null,
+  onAccessEvent?: (ev: WbAccessEvent) => void,
 ) {
   const bridgeRef = useRef<ExcalidrawYjsBridge | null>(null);
   const awarenessRef = useRef<Awareness | null>(null);
@@ -50,8 +53,8 @@ export function useWhiteboardSync(
   // 最新の user を参照するための ref（依存配列に入れず再購読を避ける）
   const userRef = useRef(user);
   userRef.current = user;
-  const onEvictedRef = useRef(onEvicted);
-  onEvictedRef.current = onEvicted;
+  const onAccessEventRef = useRef(onAccessEvent);
+  onAccessEventRef.current = onAccessEvent;
 
   useEffect(() => {
     if (!boardId || !isSupabaseEnabled || !supabase) return;
@@ -83,10 +86,11 @@ export function useWhiteboardSync(
       if (apiRef.current) bridge.setApi(apiRef.current);
       bridge.applyInitial();
 
-      // 2-2) 締め出し通知。誰かがこのボードをプライベート化したら開いている画面を閉じる。
-      //      自分が切り替える側の時は、この同じチャンネルから送る（下の broadcastEvict）。
-      const evict = subscribeBoardEvicted(boardId, userRef.current.id, () => {
-        if (!disposed) onEvictedRef.current?.();
+      // 2-2) アクセス変更の通知。プライベート化・共有解除なら開いている画面を閉じ、
+      //      鍵の作り直しならページ側にボード行を読み直させる（新しいチャンネルへ張り直る）。
+      //      自分が切り替える側の時は、この同じチャンネルから送る（下の broadcastAccess）。
+      const evict = subscribeBoardAccess(boardId, userRef.current.id, (ev) => {
+        if (!disposed) onAccessEventRef.current?.(ev);
       });
 
       // 3) 永続化（デバウンス保存）
@@ -139,7 +143,7 @@ export function useWhiteboardSync(
           clearTimeout(saveTimer); saveTimer = null;
           await persist();
         },
-        broadcastEvict: () => evict.broadcast(),
+        broadcastAccess: (p) => evict.broadcast(p),
       });
 
       // 4) awareness → collaborators / チャット
