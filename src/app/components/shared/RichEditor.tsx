@@ -5,13 +5,14 @@ import { Table } from "@tiptap/extension-table";
 import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
-import { TableMap } from "@tiptap/pm/tables";
+import { TableMap, CellSelection } from "@tiptap/pm/tables";
 import Mention from "@tiptap/extension-mention";
 import { MermaidNode } from "./MermaidNode";
 import { MermaidEditModal } from "./MermaidEditModal";
 import { ImageLightbox, useImageLightbox } from "./ImageLightbox";
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { DOMParser as PMDOMParser } from "@tiptap/pm/model";
 // 貼り付けた Markdown テキスト（Claude のコピーボタン等）を書式つきで取り込む
 import { markdownToHtml, markdownFileToHtml } from "@/app/lib/markdown";
@@ -96,116 +97,123 @@ const NormalizeTableWidths = Extension.create({
           return tr;
         },
       }),
-      // 🌟 BRU4-049: 表がエディタ幅を超えないようにするクランプ。列幅の合計が利用可能幅(=表ラッパーの
-      //   実幅)を超えたら、全列を比例縮小してフィットさせ横スクロールを抑止する。合計が幅未満のときは
-      //   何もしないので「左寄せ・内容幅」は維持される。DOM実測が要るので view プラグインで実装し、
-      //   コンテナのリサイズにも ResizeObserver で追従する。
-      new Plugin({
-        key: new PluginKey("clampTableWidths"),
-        view: (editorView) => {
-          const run = () => {
-            const view = editorView;
-            if (!view || !view.dom || !view.dom.isConnected) return;
-            let tr: any = null;
-            view.state.doc.descendants((node: any, pos: number) => {
-              if (node.type.name !== "table") return;
-              const firstRow = node.firstChild;
-              if (!firstRow) return false;
-              // 先頭行の colwidth 合計（全列に幅がある表のみ対象。partは normalize が先に補完）
-              let total = 0;
-              let allSized = true;
-              firstRow.forEach((cell: any) => {
-                const colspan: number = cell.attrs.colspan || 1;
-                const cw: (number | null)[] | null = cell.attrs.colwidth;
-                for (let j = 0; j < colspan; j++) {
-                  const w = cw && cw[j];
-                  if (!w) allSized = false;
-                  total += w || 60;
-                }
-              });
-              if (!allSized) return false;
-              const dom = view.nodeDOM(pos);
-              if (!(dom instanceof HTMLElement)) return false;
-              const avail = dom.clientWidth; // 表ラッパーの表示幅（横スクロールバーは高さ側なので影響なし）
-              if (avail < 80 || total <= avail) return false; // 未レイアウト or 収まっている
-              const scale = (avail - 2) / total;
-              const tableStart = pos + 1;
-              node.forEach((rowNode: any, rowOffset: number) => {
-                let cellPos = tableStart + rowOffset + 1;
-                rowNode.forEach((cellNode: any) => {
-                  const cw: (number | null)[] | null = cellNode.attrs.colwidth;
-                  if (cw) {
-                    const scaled = cw.map((w) => (w ? Math.max(60, Math.floor(w * scale)) : w));
-                    if (scaled.some((w, i) => w !== cw[i])) {
-                      if (!tr) tr = view.state.tr;
-                      tr.setNodeMarkup(cellPos, null, { ...cellNode.attrs, colwidth: scaled });
-                    }
-                  }
-                  cellPos += cellNode.nodeSize;
-                });
-              });
-              return false;
-            });
-            if (tr) {
-              tr.setMeta("addToHistory", false);
-              view.dispatch(tr);
-            }
-          };
-          // ドラッグ中は prosemirror-tables が DOM を直接広げる（トランザクション未発火）ため、
-          // 上の run() では間に合わず一瞬枠を超える。そこで毎フレーム DOM を直接キャップして
-          // 描画前にフィットさせ、ドラッグ中も横スクロールを一切出さない（確定時の run() と同じ比例縮小）。
-          const dragCapDom = () => {
-            const view = editorView;
-            if (!view || !view.dom || !view.dom.isConnected) return;
-            const wrappers = view.dom.querySelectorAll(".tableWrapper");
-            wrappers.forEach((wrapper: any) => {
-              const table = wrapper.querySelector("table");
-              const colgroup = table && table.firstChild;
-              if (!table || !colgroup || !colgroup.children.length) return;
-              const cols = colgroup.children;
-              let total = 0;
-              for (let i = 0; i < cols.length; i++) total += parseFloat(cols[i].style.width) || 0;
-              const avail = wrapper.clientWidth;
-              if (!total || avail < 80 || total <= avail) return;
-              const scale = (avail - 2) / total;
-              let newTotal = 0;
-              const widths: number[] = [];
-              for (let i = 0; i < cols.length; i++) {
-                const w = parseFloat(cols[i].style.width) || 0;
-                const nw = w ? Math.max(60, Math.floor(w * scale)) : 0;
-                widths.push(nw);
-                newTotal += nw;
-              }
-              for (let i = 0; i < cols.length; i++) cols[i].style.width = widths[i] + "px";
-              table.style.width = newTotal + "px";
-              table.style.minWidth = "";
-            });
-          };
-          let raf = 0;
-          const loop = () => { dragCapDom(); raf = requestAnimationFrame(loop); };
-          const onDown = () => { if (!raf) raf = requestAnimationFrame(loop); };
-          const onUp = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } dragCapDom(); };
-          editorView.dom.addEventListener("mousedown", onDown);
-          window.addEventListener("mouseup", onUp);
+      // 🌟 BRU13-045: 以前ここにあった「エディタ幅に収める比例縮小(clampTableWidths)」は撤去した。
+      //   列を広げても画面幅で頭打ちになり、列数の多い設計書のような表が潰れて読めなくなるため。
+      //   幅が溢れたぶんは表ラッパー(.tableWrapper)の横スクロールで見る。
+    ];
+  },
+});
 
-          let ro: ResizeObserver | null = null;
-          if (typeof ResizeObserver !== "undefined") {
-            ro = new ResizeObserver(() => run());
-            ro.observe(editorView.dom);
-          }
-          run();
-          return {
-            update: (v: any, prev: any) => { if (v.state.doc !== prev.doc) run(); },
-            destroy: () => {
-              if (ro) ro.disconnect();
-              if (raf) cancelAnimationFrame(raf);
-              editorView.dom.removeEventListener("mousedown", onDown);
-              window.removeEventListener("mouseup", onUp);
-            },
-          };
+// 🌟 BRU13-045: 列の内容にフィットする幅(px)を実測する。
+//   セルのHTMLごと複製して測るので、チップ・画像・太字などもそのままの見た目で幅に反映される。
+//   上限は長文セル1つで列が数千pxに伸びるのを防ぐため。手動ドラッグ側には上限を設けない。
+const TABLE_FIT_MAX_WIDTH = 640;
+const TABLE_MIN_COL_WIDTH = 60;
+function measureCellsWidth(cells: HTMLTableCellElement[]): number {
+  const m = document.createElement("div");
+  // 本文と同じ .tiptap のスタイル（リストの字下げ・メンションチップの余白など）を効かせて測るため
+  // クラスを合わせる。エディタ本体の中に入れると ProseMirror が編集とみなすので body 直下に置く。
+  m.className = "tiptap";
+  m.style.cssText = "position:absolute;visibility:hidden;left:-9999px;top:0;padding:0;margin:0;min-height:0;white-space:nowrap;width:max-content;";
+  document.body.appendChild(m);
+  let max = 0;
+  try {
+    for (const cell of cells) {
+      if (!cell) continue;
+      const cs = getComputedStyle(cell);
+      m.style.fontFamily = cs.fontFamily;
+      m.style.fontSize = cs.fontSize;
+      m.style.fontWeight = cs.fontWeight;
+      m.style.fontStyle = cs.fontStyle;
+      m.style.letterSpacing = cs.letterSpacing;
+      m.innerHTML = cell.innerHTML;
+      // 子要素の折り返し・幅制限（img の max-width:100% など）を外して自然幅にする
+      m.querySelectorAll<HTMLElement>("*").forEach(el => { el.style.whiteSpace = "nowrap"; el.style.maxWidth = "none"; });
+      if (m.scrollWidth > max) max = m.scrollWidth;
+      // 稀に複製が測れない（0）ときはテキストだけで測り直す
+      if (!m.scrollWidth) {
+        for (const line of (cell.innerText || "").split("\n")) {
+          m.textContent = line || " ";
+          if (m.scrollWidth > max) max = m.scrollWidth;
+        }
+      }
+    }
+  } finally {
+    document.body.removeChild(m);
+  }
+  // padding(10px*2) + 罫線 + わずかな余白
+  return Math.min(TABLE_FIT_MAX_WIDTH, Math.max(TABLE_MIN_COL_WIDTH, Math.ceil(max) + 24));
+}
+// 列内の全セルを見て、その列が内容に合う幅を返す
+function measureColWidthDom(tableDom: HTMLTableElement, colIndex: number): number {
+  return measureCellsWidth(Array.from(tableDom.rows).map(r => r.cells[colIndex]).filter(Boolean));
+}
+
+// 🌟 BRU13-045: 行罫線のハイライト（列の .column-resize-handle と同じ緑線）とドラッグ中の高さ表示。
+//   どちらもデコレーションで当てる。<tr> の style や class を直接いじると、
+//   prosemirror-tables の TableView.ignoreMutation が tbody 内（＝行）の変更を無視しない作りなので、
+//   ProseMirror が「外から編集された」と判断してその場で描き直し、見た目が即座に元へ戻ってしまう。
+//   （列側が DOM 直接操作で成立しているのは、colgroup が tbody の外にあり無視対象だから）
+//   height:null は「罫線にホバー中（緑線だけ）」、数値は「ドラッグ中（その高さで表示）」を表す。
+//   複数行を選択したままドラッグすると、選択中の行すべてが同じ高さで動くので positions は配列。
+type RowResizeState = { positions: number[]; height: number | null } | null;
+const rowResizeKey = new PluginKey<RowResizeState>("rowResize");
+const RowResizeDecoration = Extension.create({
+  name: "rowResizeDecoration",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<RowResizeState>({
+        key: rowResizeKey,
+        state: {
+          init: () => null,
+          apply(tr, value) {
+            const meta = tr.getMeta(rowResizeKey);
+            if (meta !== undefined) return meta as RowResizeState;
+            if (!value) return null;
+            return tr.docChanged ? { ...value, positions: value.positions.map(p => tr.mapping.map(p)) } : value;
+          },
+        },
+        props: {
+          decorations(state) {
+            const v = rowResizeKey.getState(state);
+            if (!v) return null;
+            const attrs: Record<string, string> = { class: "row-resize-active" };
+            if (v.height !== null) attrs.style = `height: ${v.height}px`;
+            const decos = v.positions.flatMap(pos => {
+              const node = state.doc.nodeAt(pos);
+              if (!node || node.type.name !== "tableRow") return [];
+              return [Decoration.node(pos, pos + node.nodeSize, attrs)];
+            });
+            return decos.length ? DecorationSet.create(state.doc, decos) : null;
+          },
         },
       }),
     ];
+  },
+});
+
+// 🌟 BRU13-045: 行の高さ(rowheight)を持てる tableRow。
+//   prosemirror-tables は列幅(colwidth)しか持たないため、行だけ「内容なり」で固定だった。
+//   横罫線のドラッグで高さを変えられるようにし、ダブルクリックで内容にフィット(=高さ解除)する。
+//   HTML の <tr style="height:NNpx"> として保存するので、Excel/Word から貼った行高も引き継げる。
+const ResizableTableRow = TableRow.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      rowheight: {
+        default: null,
+        parseHTML: (element: HTMLElement) => {
+          const raw = element.style.height || element.getAttribute("data-rowheight") || element.getAttribute("height") || "";
+          const n = parseFloat(raw);
+          return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+        },
+        renderHTML: (attributes: Record<string, any>) => {
+          const h = attributes.rowheight;
+          if (!h) return {};
+          return { style: `height: ${h}px`, "data-rowheight": String(h) };
+        },
+      },
+    };
   },
 });
 
@@ -767,8 +775,9 @@ export function RichEditor({
       CustomImage,
       // 🌟 BRU4-049: 列幅ドラッグ可変。両端固定はやめ、表は左寄せで右方向へ伸縮。最小列幅60px。
       Table.configure({ resizable: true, cellMinWidth: 60 }),
-      TableRow, TableCell, TableHeader,
+      ResizableTableRow, TableCell, TableHeader,
       NormalizeTableWidths,
+      RowResizeDecoration,
       // 生URLのアンカーを内部リンクのチップに読み替える。Link マークより先に <a> を判定するため
       // StarterKit より後ろに置き、拡張自体の priority を上げてある。
       InternalLinkNode,
@@ -1202,86 +1211,334 @@ export function RichEditor({
     return () => dom.removeEventListener("click", handler);
   }, [editor, onTicketClick, onBacklogClick, onWikiClick, onMinuteClick, onFileClick]);
 
-  // 🌟 BRU4-049: 縦罫線をダブルクリックで、その列の最長1行の自然幅に自動フィット
+  // 🌟 BRU4-049 / BRU13-045: 罫線の操作。
+  //   - 縦罫線をダブルクリック → その列の内容にフィットした幅へ自動調整
+  //   - 横罫線をダブルクリック → その行の高さ指定を解除して内容にフィット
+  //   - 横罫線をドラッグ       → その行の高さを変更（列幅ドラッグの行版。prosemirror-tables は列しか持たない）
   useEffect(() => {
     if (!editor || readOnly) return;
     const dom = editor.view.dom;
+    const EDGE = 5;          // 縦罫線の当たり判定(px)。prosemirror-tables の列ハンドル(5px)に合わせる
+    const ROW_EDGE = 6;      // 横罫線の当たり判定(px)
+    const MIN_ROW_HEIGHT = 24;
 
-    // 列内の全セルを計測し、最長1行の自然幅（+左右padding）を返す。下限は最小列幅60px。
-    const measureColWidth = (tableDom: HTMLTableElement, colIndex: number): number => {
-      const m = document.createElement("div");
-      m.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:0;padding:0;margin:0;";
-      document.body.appendChild(m);
-      let max = 0;
-      try {
-        for (const row of Array.from(tableDom.rows)) {
-          const cell = row.cells[colIndex];
-          if (!cell) continue;
-          const cs = getComputedStyle(cell);
-          m.style.fontFamily = cs.fontFamily;
-          m.style.fontSize = cs.fontSize;
-          m.style.fontWeight = cs.fontWeight;
-          m.style.fontStyle = cs.fontStyle;
-          m.style.letterSpacing = cs.letterSpacing;
-          for (const line of (cell.innerText || "").split("\n")) {
-            m.textContent = line || " ";
-            if (m.scrollWidth > max) max = m.scrollWidth;
-          }
-        }
-      } finally {
-        document.body.removeChild(m);
-      }
-      // padding(10px*2) + 罫線 + わずかな余白
-      return Math.max(60, Math.ceil(max) + 24);
-    };
-
-    // 指定列の全行セルに colwidth をセットする（アプリ内の表はセル結合なし前提でDOM列index=マップ列index）
-    const setColumnWidth = (cellDomInCol: HTMLElement, colIndex: number, width: number) => {
+    // セルDOMから、その表のノード・位置・マップをまとめて引く
+    type TableInfo = { table: any; tableStart: number; map: TableMap };
+    const tableInfoAt = (cellDom: HTMLElement): TableInfo | null => {
       const view = editor.view;
-      const $pos = view.state.doc.resolve(view.posAtDOM(cellDomInCol, 0));
+      const $pos = view.state.doc.resolve(view.posAtDOM(cellDom, 0));
       let d = $pos.depth;
       while (d > 0 && $pos.node(d).type.name !== "table") d--;
-      if (d === 0) return;
+      if (d === 0) return null;
       const table = $pos.node(d);
-      const tableStart = $pos.start(d);
+      return { table, tableStart: $pos.start(d), map: TableMap.get(table) };
+    };
+
+    // セル選択（複数セルをドラッグで選んだ状態）の範囲。列 [left,right) 行 [top,bottom)
+    const selectedRect = (): { left: number; right: number; top: number; bottom: number; info: TableInfo } | null => {
+      const sel: any = editor.view.state.selection;
+      if (!(sel instanceof CellSelection)) return null;
+      const table = sel.$anchorCell.node(-1);
+      const tableStart = sel.$anchorCell.start(-1);
       const map = TableMap.get(table);
+      const rect = map.rectBetween(sel.$anchorCell.pos - tableStart, sel.$headCell.pos - tableStart);
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, info: { table, tableStart, map } };
+    };
+
+    // 指定列（複数可）の全行セルに colwidth をセットする
+    // （アプリ内の表はセル結合なし前提でDOM列index=マップ列index）
+    const applyColWidths = (info: TableInfo, widths: Map<number, number>) => {
+      const view = editor.view;
       const tr = view.state.tr;
-      const seen = new Set<number>();
-      for (let r = 0; r < map.height; r++) {
-        const cellRel = map.map[r * map.width + colIndex];
-        if (seen.has(cellRel)) continue;
-        seen.add(cellRel);
-        const cellNode = table.nodeAt(cellRel);
-        if (!cellNode) continue;
-        tr.setNodeMarkup(tableStart + cellRel, null, { ...cellNode.attrs, colwidth: [width] });
-      }
+      widths.forEach((width, colIndex) => {
+        const seen = new Set<number>();
+        for (let r = 0; r < info.map.height; r++) {
+          const cellRel = info.map.map[r * info.map.width + colIndex];
+          if (seen.has(cellRel)) continue;
+          seen.add(cellRel);
+          const cellNode = info.table.nodeAt(cellRel);
+          if (!cellNode) continue;
+          tr.setNodeMarkup(info.tableStart + cellRel, null, { ...cellNode.attrs, colwidth: [width] });
+        }
+      });
       if (tr.docChanged) view.dispatch(tr);
     };
 
-    const handler = (e: MouseEvent) => {
-      const cell = (e.target as HTMLElement).closest("td, th") as HTMLTableCellElement | null;
-      if (!cell || !cell.parentElement) return;
-      const rect = cell.getBoundingClientRect();
-      const nearRight = Math.abs(e.clientX - rect.right) <= 6;
-      const nearLeft = Math.abs(e.clientX - rect.left) <= 6;
-      if (!nearRight && !nearLeft) return; // 縦罫線の近傍以外は通常のダブルクリック（単語選択など）に委ねる
-      const row = cell.parentElement as HTMLTableRowElement;
-      let targetCell: HTMLTableCellElement = cell;
-      let colIndex = Array.from(row.cells).indexOf(cell);
-      // 右罫線でなく左罫線をダブルクリックした場合は、左隣の列を対象にする（Excel的挙動）
-      if (nearLeft && !nearRight) {
-        const prev = cell.previousElementSibling as HTMLTableCellElement | null;
-        if (prev) { targetCell = prev; colIndex -= 1; }
+    // 行(<tr>)に対応する tableRow ノードの位置を引く。以降は DOM ではなくこの位置で行を追う
+    // （属性だけの変更では前方の位置がずれないので、ドラッグ中も同じ pos を使い続けられる）
+    const rowPosAt = (rowDom: HTMLTableRowElement): number | null => {
+      const view = editor.view;
+      const cell = rowDom.cells[0];
+      if (!cell) return null;
+      const $pos = view.state.doc.resolve(view.posAtDOM(cell, 0));
+      for (let d = $pos.depth; d > 0; d--) {
+        if ($pos.node(d).type.name === "tableRow") return $pos.before(d);
       }
-      const tableDom = cell.closest("table") as HTMLTableElement | null;
-      if (!tableDom || colIndex < 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setColumnWidth(targetCell, colIndex, measureColWidth(tableDom, colIndex));
+      return null;
     };
 
-    dom.addEventListener("dblclick", handler);
-    return () => dom.removeEventListener("dblclick", handler);
+    // tbody の中での行index。選択範囲（行index基準）との突き合わせに使う
+    const rowIndexOf = (rowDom: HTMLTableRowElement): number =>
+      rowDom.parentElement ? Array.prototype.indexOf.call(rowDom.parentElement.children, rowDom) : -1;
+    const rowDomAt = (tableDom: HTMLTableElement, index: number): HTMLTableRowElement | null =>
+      (tableDom.rows[index] as HTMLTableRowElement | undefined) ?? null;
+
+    // 行index範囲 [from,to) に対応する tableRow の位置
+    const rowPositionsIn = (info: TableInfo, from: number, to: number): number[] => {
+      const out: number[] = [];
+      info.table.forEach((_rowNode: any, offset: number, index: number) => {
+        if (index >= from && index < to) out.push(info.tableStart + offset);
+      });
+      return out;
+    };
+
+    // 行の高さを保存する。null を渡すと指定解除＝内容にフィット。あわせてドラッグ表示も畳む
+    const setRowHeights = (positions: number[], height: number | null) => {
+      const view = editor.view;
+      const tr = view.state.tr;
+      for (const pos of positions) {
+        const node = view.state.doc.nodeAt(pos);
+        if (!node || node.type.name !== "tableRow") continue;
+        if ((node.attrs.rowheight ?? null) === height) continue;
+        tr.setNodeMarkup(pos, null, { ...node.attrs, rowheight: height });
+      }
+      tr.setMeta(rowResizeKey, { positions, height: null }); // 緑線は残したままドラッグ表示だけ解除
+      view.dispatch(tr);
+    };
+
+    // 罫線のハイライト／ドラッグ中の高さはデコレーションで見せる
+    // （DOMを直接いじると ProseMirror に戻される）。変化がないときは何も流さない
+    const setRowResize = (next: RowResizeState) => {
+      const view = editor.view;
+      const cur = rowResizeKey.getState(view.state) ?? null;
+      if (!cur && !next) return;
+      if (cur && next && cur.height === next.height && cur.positions.length === next.positions.length
+        && cur.positions.every((p, i) => p === next.positions[i])) return;
+      view.dispatch(view.state.tr.setMeta(rowResizeKey, next));
+    };
+
+    // その行のセルが折り返さずに収まるよう、足りない列だけを広げる。
+    // 行の高さは内容（＝列幅による折り返し）で決まるので、「行を内容に合わせる」の実体はこれになる。
+    // すでに収まっている列は触らない（他の行を巻き込んで崩さないため）。
+    const fitColumnsForRows = (rowDoms: HTMLTableRowElement[]) => {
+      const first = rowDoms[0]?.cells[0];
+      if (!first) return;
+      const info = tableInfoAt(first);
+      if (!info) return;
+      const widths = new Map<number, number>();
+      for (const rowDom of rowDoms) {
+        Array.from(rowDom.cells).forEach((cellDom, colIndex) => {
+          if (colIndex >= info.map.width) return;
+          const need = measureCellsWidth([cellDom]);
+          if (need <= Math.round(cellDom.getBoundingClientRect().width) + 1) return;
+          widths.set(colIndex, Math.max(widths.get(colIndex) ?? 0, need));
+        });
+      }
+      if (widths.size) applyColWidths(info, widths);
+    };
+
+    // 罫線の当たり判定。縦罫線を優先し（角では列リサイズを優先）、なければ横罫線を見る
+    type Edge =
+      | { kind: "col"; cell: HTMLTableCellElement; colIndex: number; tableDom: HTMLTableElement }
+      | { kind: "row"; rowDom: HTMLTableRowElement };
+    const edgeAt = (e: MouseEvent): Edge | null => {
+      const cell = (e.target as HTMLElement).closest("td, th") as HTMLTableCellElement | null;
+      if (!cell || !cell.parentElement) return null;
+      const rect = cell.getBoundingClientRect();
+      const nearRight = Math.abs(e.clientX - rect.right) <= EDGE;
+      const nearLeft = Math.abs(e.clientX - rect.left) <= EDGE;
+      const row = cell.parentElement as HTMLTableRowElement;
+      const tableDom = cell.closest("table") as HTMLTableElement | null;
+      if (nearRight || nearLeft) {
+        if (!tableDom) return null;
+        let targetCell: HTMLTableCellElement = cell;
+        let colIndex = Array.from(row.cells).indexOf(cell);
+        // 右罫線でなく左罫線を掴んだ場合は、左隣の列を対象にする（Excel的挙動。先頭列の左端は自列のまま）
+        if (nearLeft && !nearRight) {
+          const prev = cell.previousElementSibling as HTMLTableCellElement | null;
+          if (prev) { targetCell = prev; colIndex -= 1; }
+        }
+        if (colIndex < 0) return null;
+        return { kind: "col", cell: targetCell, colIndex, tableDom };
+      }
+      const nearBottom = Math.abs(e.clientY - rect.bottom) <= ROW_EDGE;
+      const nearTop = Math.abs(e.clientY - rect.top) <= ROW_EDGE;
+      if (nearBottom) return { kind: "row", rowDom: row };
+      // 上罫線を掴んだ場合は、上の行を対象にする（先頭行の上端は対象なし）
+      if (nearTop) {
+        const prevRow = row.previousElementSibling as HTMLTableRowElement | null;
+        if (prevRow && prevRow.cells.length) return { kind: "row", rowDom: prevRow };
+      }
+      return null;
+    };
+
+    // 掴んだ罫線が「選択範囲の中の列/行」なら、選択している列/行すべてを対象にする（Excel/Excel的挙動）。
+    // 選択の外の罫線を掴んだときは、これまで通りその1列/1行だけ。
+    const targetCols = (colIndex: number, info: TableInfo): number[] => {
+      const rect = selectedRect();
+      // 別の表を選択したまま隣の表の罫線を掴んでも巻き込まないよう、同じ表かを見る
+      if (rect && rect.info.tableStart === info.tableStart
+        && colIndex >= rect.left && colIndex < rect.right && rect.right - rect.left > 1) {
+        return Array.from({ length: rect.right - rect.left }, (_, i) => rect.left + i);
+      }
+      return [colIndex];
+    };
+    const targetRows = (rowDom: HTMLTableRowElement): { doms: HTMLTableRowElement[]; positions: number[] } => {
+      const tableDom = rowDom.closest("table") as HTMLTableElement | null;
+      const index = rowIndexOf(rowDom);
+      const rect = selectedRect();
+      const own = rowDom.cells[0] ? tableInfoAt(rowDom.cells[0]) : null;
+      if (tableDom && rect && own && rect.info.tableStart === own.tableStart
+        && index >= rect.top && index < rect.bottom && rect.bottom - rect.top > 1) {
+        const doms: HTMLTableRowElement[] = [];
+        for (let i = rect.top; i < rect.bottom; i++) {
+          const d = rowDomAt(tableDom, i);
+          if (d) doms.push(d);
+        }
+        return { doms, positions: rowPositionsIn(rect.info, rect.top, rect.bottom) };
+      }
+      const pos = rowPosAt(rowDom);
+      return { doms: [rowDom], positions: pos === null ? [] : [pos] };
+    };
+
+    // ドラッグ状態。行はデコレーション、列は colgroup の直接更新でプレビューする
+    // （colgroup は tbody の外なので TableView.ignoreMutation の対象＝直接いじってよい）
+    let drag:
+      | { kind: "row"; positions: number[]; startY: number; startH: number; height: number; raf: number }
+      | { kind: "col"; cols: number[]; info: TableInfo; tableDom: HTMLTableElement; startX: number; startW: number; width: number; raf: number }
+      | null = null;
+
+    // 横罫線の近くでは、その罫線を緑でハイライトしカーソルを row-resize にして掴めることを示す
+    // （縦罫線側で prosemirror-tables がやっていることの行版）
+    const onMove = (e: MouseEvent) => {
+      if (drag) return;
+      const edge = edgeAt(e);
+      const isRow = !!edge && edge.kind === "row";
+      dom.classList.toggle("row-resize-cursor", isRow);
+      // IME変換中はデコレーションを動かさない（変換が途切れる）
+      if (editor.view.composing) return;
+      if (!isRow) { setRowResize(null); return; }
+      const { positions } = targetRows((edge as { rowDom: HTMLTableRowElement }).rowDom);
+      setRowResize(positions.length ? { positions, height: null } : null);
+    };
+    const onLeave = () => {
+      if (drag) return;
+      dom.classList.remove("row-resize-cursor");
+      setRowResize(null);
+    };
+
+    // 罫線のドラッグ開始。行は常に自前で処理し、列は「複数列を選択中」のときだけ横取りする
+    // （単独列は prosemirror-tables の列リサイズに任せる＝従来どおりの挙動）
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const edge = edgeAt(e);
+      if (!edge) return;
+      if (edge.kind === "row") {
+        const { positions } = targetRows(edge.rowDom);
+        if (!positions.length) return;
+        // ProseMirror 側の選択開始を止める（capture 段階で握りつぶす）
+        e.preventDefault();
+        e.stopPropagation();
+        const h = edge.rowDom.getBoundingClientRect().height;
+        drag = { kind: "row", positions, startY: e.clientY, startH: h, height: h, raf: 0 };
+        dom.classList.add("row-resize-cursor");
+      } else {
+        const info = tableInfoAt(edge.cell);
+        if (!info) return;
+        const cols = targetCols(edge.colIndex, info);
+        if (cols.length < 2) return; // 単独列は prosemirror-tables に任せる
+        e.preventDefault();
+        e.stopPropagation();
+        const w = Math.round(edge.cell.getBoundingClientRect().width);
+        drag = { kind: "col", cols, info, tableDom: edge.tableDom, startX: e.clientX, startW: w, width: w, raf: 0 };
+      }
+      window.addEventListener("mousemove", onDragMove, true);
+      window.addEventListener("mouseup", onDragEnd, true);
+    };
+
+    // ドラッグ中の列幅は colgroup を直接書き換えて見せる（prosemirror-tables と同じやり方）
+    const previewColWidths = (tableDom: HTMLTableElement, cols: number[], width: number) => {
+      const colgroup = tableDom.querySelector("colgroup");
+      if (!colgroup) return;
+      const els = colgroup.children as HTMLCollectionOf<HTMLElement>;
+      for (const c of cols) if (els[c]) els[c].style.width = `${width}px`;
+      let total = 0;
+      for (let i = 0; i < els.length; i++) total += parseFloat(els[i].style.width) || 0;
+      if (total) { tableDom.style.width = `${total}px`; tableDom.style.minWidth = ""; }
+    };
+
+    const onDragMove = (e: MouseEvent) => {
+      if (!drag) return;
+      if (drag.kind === "row") {
+        drag.height = Math.max(MIN_ROW_HEIGHT, Math.round(drag.startH + (e.clientY - drag.startY)));
+      } else {
+        drag.width = Math.max(TABLE_MIN_COL_WIDTH, Math.round(drag.startW + (e.clientX - drag.startX)));
+      }
+      // 1フレームに1回だけ反映する（mousemove ごとに描き直すと重い）
+      if (drag.raf) return;
+      drag.raf = requestAnimationFrame(() => {
+        if (!drag) return;
+        drag.raf = 0;
+        if (drag.kind === "row") setRowResize({ positions: drag.positions, height: drag.height });
+        else previewColWidths(drag.tableDom, drag.cols, drag.width);
+      });
+    };
+    const onDragEnd = () => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      if (d.raf) cancelAnimationFrame(d.raf);
+      dom.classList.remove("row-resize-cursor");
+      window.removeEventListener("mousemove", onDragMove, true);
+      window.removeEventListener("mouseup", onDragEnd, true);
+      if (d.kind === "row") {
+        // 動いていなければ（＝罫線をクリックしただけなら）高さは変えず、ハイライトだけ残す
+        if (Math.abs(d.height - d.startH) < 2) { setRowResize({ positions: d.positions, height: null }); return; }
+        setRowHeights(d.positions, d.height);
+      } else {
+        if (Math.abs(d.width - d.startW) < 2) return;
+        applyColWidths(d.info, new Map(d.cols.map(c => [c, d.width])));
+      }
+    };
+
+    const onDblClick = (e: MouseEvent) => {
+      const edge = edgeAt(e);
+      if (!edge) return; // 罫線の近傍以外は通常のダブルクリック（単語選択など）に委ねる
+      e.preventDefault();
+      e.stopPropagation();
+      if (edge.kind === "col") {
+        const info = tableInfoAt(edge.cell);
+        if (!info) return;
+        // 選択中の列はそれぞれ自分の中身に合わせる（同じ幅に揃えるのではなく各列を最適化）
+        const widths = new Map(targetCols(edge.colIndex, info).map(c => [c, measureColWidthDom(edge.tableDom, c)]));
+        applyColWidths(info, widths);
+        return;
+      }
+      const { doms, positions } = targetRows(edge.rowDom);
+      if (!positions.length) return;
+      // 手で高さを付けた行があれば、まずその指定を外す（＝内容ぴったりの高さに戻す）
+      const sized = positions.filter(p => editor.view.state.doc.nodeAt(p)?.attrs.rowheight);
+      if (sized.length) { setRowHeights(sized, null); return; }
+      // すでに内容ぴったり＝高さは列幅で決まっている。対象行のセルが折り返さずに収まるよう
+      // 列側を広げて、行を詰める（狭い列に長文が入って縦長になった表の救済）
+      fitColumnsForRows(doms);
+    };
+
+    dom.addEventListener("dblclick", onDblClick);
+    dom.addEventListener("mousedown", onDown, true);
+    dom.addEventListener("mousemove", onMove);
+    dom.addEventListener("mouseleave", onLeave);
+    return () => {
+      dom.removeEventListener("dblclick", onDblClick);
+      dom.removeEventListener("mousedown", onDown, true);
+      dom.removeEventListener("mousemove", onMove);
+      dom.removeEventListener("mouseleave", onLeave);
+      window.removeEventListener("mousemove", onDragMove, true);
+      window.removeEventListener("mouseup", onDragEnd, true);
+      dom.classList.remove("row-resize-cursor");
+      // 表示専用へ切り替わったときなどに緑線が残らないようにする
+      if (!editor.isDestroyed) setRowResize(null);
+    };
   }, [editor, readOnly]);
 
   if (!editor) return null;
@@ -1322,6 +1579,54 @@ export function RichEditor({
   const handleInsertTable = () => {
     editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
     ensureColWidths();
+  };
+
+  // 🌟 BRU13-045: 表全体の自動調整。全列を内容に合う幅にし、手で付けた行の高さは解除する。
+  //   罫線のダブルクリックは1列/1行ずつなので、取り込んだ設計書のように列が潰れた表を
+  //   一発で読める状態に戻す入口をツールバーにも置く。カーソルが表の外なら本文の最初の表を対象にする。
+  const autoFitTable = () => {
+    const view = editor.view;
+    let tablePos = -1;
+    const { $from } = view.state.selection;
+    for (let d = $from.depth; d > 0; d--) {
+      if ($from.node(d).type.name === "table") { tablePos = $from.before(d); break; }
+    }
+    if (tablePos < 0) {
+      view.state.doc.descendants((node, pos) => {
+        if (tablePos >= 0) return false;
+        if (node.type.name === "table") { tablePos = pos; return false; }
+        return true;
+      });
+    }
+    if (tablePos < 0) return;
+    const table = view.state.doc.nodeAt(tablePos);
+    const dom = view.nodeDOM(tablePos);
+    const tableDom = dom instanceof HTMLElement
+      ? (dom instanceof HTMLTableElement ? dom : dom.querySelector("table"))
+      : null;
+    if (!table || !tableDom) return;
+    const map = TableMap.get(table);
+    const tableStart = tablePos + 1;
+    const tr = view.state.tr;
+    for (let col = 0; col < map.width; col++) {
+      const width = measureColWidthDom(tableDom, col);
+      const seen = new Set<number>();
+      for (let r = 0; r < map.height; r++) {
+        const cellRel = map.map[r * map.width + col];
+        if (seen.has(cellRel)) continue;
+        seen.add(cellRel);
+        const cellNode = table.nodeAt(cellRel);
+        if (!cellNode) continue;
+        tr.setNodeMarkup(tableStart + cellRel, null, { ...cellNode.attrs, colwidth: [width] });
+      }
+    }
+    // 属性だけの変更なので前方の位置はずれない。行の高さ指定もまとめて解除する
+    table.forEach((rowNode, rowOffset) => {
+      if (rowNode.attrs.rowheight) {
+        tr.setNodeMarkup(tableStart + rowOffset, null, { ...rowNode.attrs, rowheight: null });
+      }
+    });
+    if (tr.docChanged) view.dispatch(tr);
   };
 
   // Mermaid 図を挿入（モーダルで入力 → 図ノードとして挿入。本文中はコードを見せない）。
@@ -1417,15 +1722,23 @@ export function RichEditor({
         .tiptap .mermaid-node-inner { position: relative; border: 1px solid rgba(26,23,20,0.12); border-radius: 8px; padding: 12px; background: #FFFFFF; }
         .tiptap .mermaid-svg svg { max-width: 100%; height: auto; }
         .tiptap .mermaid-node.ProseMirror-selectednode .mermaid-node-inner { outline: 2px solid #059669; outline-offset: 1px; }
-        /* 🌟 BRU4-049: 列幅リサイズ対応。表は左寄せ・内容幅(width:auto)。合計がエディタ幅を超えたら
-           clampプラグインが全列を比例縮小してフィットさせるので、横スクロールは基本発生しない。
-           (列数が多く最小幅60pxでも収まらない極端なケースのみラッパーで横スクロール) */
+        /* 🌟 BRU13-045: 列幅・行高リサイズ対応。表は左寄せ・内容幅(width:auto)で、エディタ幅による
+           制限はかけない（max-width なし）。広げて溢れたぶんはラッパー側の横スクロールで見る。 */
         .tiptap .tableWrapper { overflow-x: auto; max-width: 100%; }
-        .tiptap table { border-collapse: collapse; table-layout: fixed; width: auto; max-width: 100%; margin: 8px 0; }
+        .tiptap table { border-collapse: collapse; table-layout: fixed; width: auto; margin: 8px 0; }
         .tiptap th, .tiptap td { border: 1px solid rgba(26,23,20,0.12); padding: 6px 10px; font-size: 12px; position: relative; }
         .tiptap th { background: #F4F5F6; font-weight: 700; }
         .tiptap .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0; width: 4px; background: #059669; pointer-events: none; z-index: 5; }
         .tiptap.resize-cursor { cursor: col-resize; }
+        /* 🌟 BRU13-045: 横罫線ドラッグ中/近傍のカーソル。列(col-resize)より後ろに置いて優先させる */
+        .tiptap.row-resize-cursor, .tiptap.row-resize-cursor * { cursor: row-resize; }
+        /* 掴める横罫線のハイライト。列の .column-resize-handle と同じ緑線を、行の下端に横一直線で引く
+           （セルごとに ::before を出すので、行全体でつながって見える。::after はセル選択が使う） */
+        .tiptap tr.row-resize-active > td::before,
+        .tiptap tr.row-resize-active > th::before { content: ""; position: absolute; left: 0; right: 0; bottom: -2px; height: 4px; background: #059669; pointer-events: none; z-index: 5; }
+        /* 🌟 BRU13-045: セルをまたいでドラッグしたときの選択（prosemirror-tables の CellSelection）。
+           これまでスタイルが無かったため、隣のセルへ入った瞬間に選択が消えたように見えていた。 */
+        .tiptap .selectedCell::after { content: ""; position: absolute; inset: 0; background: rgba(37,99,235,0.16); pointer-events: none; z-index: 2; }
         .tiptap blockquote { border-left: 3px solid #059669; padding-left: 12px; margin: 8px 0; color: #6B6458; font-style: italic; }
         .tiptap h1 { font-size: 18px; font-weight: 800; margin: 10px 0 6px; }
         .tiptap h2 { font-size: 15px; font-weight: 700; margin: 8px 0 4px; }
@@ -1512,6 +1825,9 @@ export function RichEditor({
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowBefore().run()} title="上に行を挿入">上行+</button>
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().addRowAfter().run()} title="下に行を挿入">下行+</button>
               <button type="button" style={btnStyle()} onClick={() => editor.chain().focus().deleteRow().run()} title="行を削除">行削除</button>
+              <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
+              {/* 🌟 BRU13-045: 全列を内容に合う幅へ。罫線ダブルクリックの表全体版 */}
+              <button type="button" style={btnStyle()} onClick={autoFitTable} title="全ての列幅を中身に合わせて自動調整し、手で付けた行の高さを解除する">幅を自動調整</button>
               <span style={{ width: 1, background: "rgba(26,23,20,0.10)", margin: "0 2px" }} />
               {/* 🌟 追加: 現在選択（またはカーソルが乗っている）している表を丸ごと一発で削除するボタン */}
               <button
