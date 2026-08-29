@@ -118,6 +118,7 @@ export function MermaidToolButton({ api, containerRef }: { api: any; containerRe
 
   return createPortal(
     <div
+      data-wbc-ui data-wbc-modal
       style={{ position: "fixed", inset: 0, zIndex: 4000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
     >
