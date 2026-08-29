@@ -1,31 +1,51 @@
 // 複数のプルリクエストをまとめてマージする（docs/github-integration-design.md）。
 //
-// 実行の前に必ず全件のコンフリクトチェックを行い、1件でも引っかかったら
-// 1件もマージしない（BRU13-038）。途中まで入ってしまうと「マージ済みの分」と
+// 実行の前に必ず全件を確認し、1件でも引っかかったら1件もマージしない
+// （BRU13-038 / BRU13-042）。途中まで入ってしまうと「マージ済みの分」と
 // 「コンフリクトで残った分」が混ざり、直すときに取り漏れが出るため。
-// チェックを通ったあとは1件ずつ順番に実行し、そこで失敗した場合も残りは実行しない。
+//
+// 確認は2段階で、どちらもこの画面からは1回の操作に見える。
+//   1. 1件ずつ単独のマージ可否（サーバーの merge-precheck）
+//   2. 捨てブランチへ実際の順番どおりに積む試しマージ（サーバーの merge-bulk の中）
+// GitHub のマージ可否は「今のマージ先に対して」しか計算されないため、1 だけでは
+// 2件目以降が通るか分からない。押すのは1回のままで、2 の結果もここに出す。
+//
+// 全部通ったときだけ本番のマージへ進む。そこでなお失敗した場合（マージ先が
+// 第三者に動かされた等）は、その時点で打ち切って残りは実行しない。
 //
 // 結果は1件ごとに表示し、失敗した理由をその場で読めるようにする。
 //
 // 並び順は「PRを作った順（古い順）」を既定にする。一覧の並び（更新の新しい順）を
 // そのまま使うと、前のブランチの上に積んで作ったPRが先に来てしまい、
 // 先に入れた側に後続の変更まで含まれてしまう。順番は画面から入れ替えられる。
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, RotateCcw } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
-import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/StepProgress";
-import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, mergeBlockReason, GithubApiError } from "@/app/lib/github";
+import { StepProgressPanel, type ProgressStep, type StepState } from "@/app/components/shared/StepProgress";
+import {
+  MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, mergeBlockReason, GithubApiError,
+  newRunId, fetchRunProgress,
+} from "@/app/lib/github";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
 import { MergePrecheckNotice } from "@/app/components/github/MergePrecheckNotice";
 import { CheckGateNotice, REASON_MIN } from "@/app/components/github/CheckGateNotice";
 import type {
   GithubPull, GithubMergeMethod, GithubBulkMergeResult, GithubPermissionBlock, GithubMergePrecheckResult,
-  GithubMergePrecheckRow,
+  GithubMergePrecheckRow, GithubRunProgress,
 } from "@/app/types";
 
 const METHODS: GithubMergeMethod[] = ["merge", "squash", "rebase"];
 const BLACK = "#1F2328";
+
+/**
+ * サーバーが通しで走らせる段。この並びがそのまま進捗の行の順番になる。
+ * 画面はサーバーが書いた「今どこか」を引いて、手前を完了・その先を待機として出す。
+ */
+const RUN_STEPS = ["precheck", "trial", "merge"] as const;
+
+/** 途中経過を引き直す間隔。1件ごとに書かれるので、これくらいで十分追える */
+const PROGRESS_POLL_MS = 1500;
 
 /** 並べ替えの上下ボタン。押せないときは押せないと分かる見た目にする */
 function OrderButton({ label, disabled, onClick, children }: {
@@ -61,8 +81,11 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
   onClose: () => void;
   /** マージ前のコンフリクトチェック。1件でも通らなければマージには進まない */
   onPrecheck: (numbers: number[]) => Promise<GithubMergePrecheckResult>;
-  /** reason は「失敗チェックのまま続ける理由」（層A）。監査ログに残る */
-  onMerge: (numbers: number[], method: GithubMergeMethod, reason: string) => Promise<GithubBulkMergeResult>;
+  /**
+   * reason は「失敗チェックのまま続ける理由」（層A）。監査ログに残る。
+   * runId は実行の記録の主キー。実行中の途中経過をこの画面から引くために先に作って渡す
+   */
+  onMerge: (numbers: number[], method: GithubMergeMethod, reason: string, runId: string) => Promise<GithubBulkMergeResult>;
   /** 実行後に一覧を取り直すためのコールバック */
   onDone: () => void | Promise<void>;
 }) {
@@ -88,6 +111,30 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
   /** 失敗チェックのまま続ける理由（層A）。サーバーが要求したときだけ必須になる */
   const [reason, setReason] = useState("");
   const [needsReason, setNeedsReason] = useState(false);
+  /**
+   * サーバー側の現在地。実行は1リクエストで通しで走るので、応答を待つ間は
+   * これを引いて「今どこか」を出す（取れない環境では null のまま大まかな表示に落ちる）
+   */
+  const [progress, setProgress] = useState<GithubRunProgress | null>(null);
+  /**
+   * 試しマージの段だけは通り過ぎたあとも中身を出したいので控えておく。
+   * 省かれた場合（変更ファイルが重ならない）に「不要でした」と言えるようにするため
+   */
+  const [trialInfo, setTrialInfo] = useState<GithubRunProgress | null>(null);
+  const runIdRef = useRef("");
+
+  // 実行中だけ引き直す。終わった時点で止める（結果は応答そのものから作る）
+  useEffect(() => {
+    if (phase !== "merging" || !runIdRef.current) return;
+    const id = runIdRef.current;
+    const timer = window.setInterval(async () => {
+      const p = await fetchRunProgress(id).catch(() => null);
+      if (!p) return;
+      setProgress(p);
+      if (p.step === "trial") setTrialInfo(p);
+    }, PROGRESS_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [phase]);
 
   /**
    * 押す前に出す警告の材料。
@@ -148,6 +195,10 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
     setError("");
     setBlocked(null);
     setPrecheck(null);
+    setProgress(null);
+    setTrialInfo(null);
+    // 実行IDは先に作る。サーバーがこのIDで途中経過を書くので、待っている間に引ける
+    runIdRef.current = newRunId();
 
     // マージの前に必ず全件を確認する。1件でも通らなければ1件もマージしない（BRU13-038）
     setPhase("checking");
@@ -177,7 +228,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
     setPhase("merging");
     let r: GithubBulkMergeResult;
     try {
-      r = await onMerge(numbers, method, reason.trim());
+      r = await onMerge(numbers, method, reason.trim(), runIdRef.current);
     } catch (e) {
       // 実行前に権限で弾かれた場合。1件もマージされていないので、直し先だけを出す
       if (e instanceof GithubApiError && e.permission) setBlocked(e.permission);
@@ -207,26 +258,60 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
     setPhase("idle");
   };
 
-  // 実行はサーバー側で1件ずつ進み、途中経過は返らない。
-  // 出せるのは「コンフリクト確認中か」「実行中か」「一覧の取り直しに移ったか」の3段階まで
+  // 実行はサーバー側の1リクエストで通しで走る。「マージ中」の一言で数十秒待たせると、
+  // 待つべきなのか壊れているのかが判断できないので、サーバーが書いた現在地を出す
+  // （記録が引けない環境では最初の段を実行中にしたまま進むだけで、実行には影響しない）。
+  const at = progress?.step ?? "precheck";
+  const stepState = (key: typeof RUN_STEPS[number]): StepState => {
+    if (phase === "checking") return key === "precheck" ? "running" : "pending";
+    if (phase !== "merging") return "done";
+    const d = RUN_STEPS.indexOf(key) - RUN_STEPS.indexOf(at);
+    if (d < 0) return "done";
+    if (d > 0) return "pending";
+    // 試しマージが要らなかった場合は、走っていないことが分かる状態で出す
+    return key === "trial" && progress?.trialSkipped ? "none" : "running";
+  };
+
+  const sPrecheck = stepState("precheck");
+  // 通り過ぎたあとも「省かれた」ことは残す。完了扱いで黙って流すと、
+  // 試したのか試していないのかが後から分からない
+  const sTrial = trialInfo?.trialSkipped && stepState("trial") !== "pending" ? "none" : stepState("trial");
+  const sMerge = stepState("merge");
+  /** 実際に捨てブランチへ積んだ件数。省かれた場合は 0 */
+  const stacked = trialInfo?.total ?? 0;
+
   const steps: ProgressStep[] = [
     {
       key: "precheck",
-      state: phase === "checking" ? "running" : "done",
-      text: phase === "checking"
-        ? `${order.length}件のコンフリクトを確認しています...`
-        : `${order.length}件のコンフリクトを確認しました`,
-      hint: phase === "checking" ? "1件でもコンフリクトしていれば、1件もマージしません" : undefined,
+      state: sPrecheck,
+      text: sPrecheck === "running"
+        ? `${order.length}件のマージ可否を確認しています...`
+        : `${order.length}件のマージ可否を確認しました`,
+      hint: sPrecheck === "running" ? "1件でもマージできなければ、1件もマージしません" : undefined,
+    },
+    {
+      key: "trial",
+      state: sTrial,
+      text: sTrial === "pending"
+        ? "試しマージの開始を待っています"
+        : sTrial === "none"
+          ? "試しマージは不要でした（変更ファイルが重なっていません）"
+          : sTrial === "running"
+            ? `使い捨てのブランチへ、この順番どおりに積んでいます...（${progress?.done ?? 0}／${progress?.total ?? order.length}件）`
+            : `${stacked}件を使い捨てのブランチへ積んで、全件通ることを確認しました`,
+      hint: sTrial === "running"
+        ? "マージ先にはまだ触れていません。1件でも通らなければ、ここで中止して1件もマージしません"
+        : undefined,
     },
     {
       key: "merge",
-      state: phase === "checking" ? "pending" : phase === "merging" ? "running" : "done",
-      text: phase === "checking"
+      state: sMerge,
+      text: sMerge === "pending"
         ? "マージの開始を待っています"
-        : phase === "merging"
-          ? `${order.length}件を上から順にマージしています...`
+        : sMerge === "running"
+          ? `上から順にマージしています...（${progress?.done ?? 0}／${progress?.total ?? order.length}件）`
           : `${order.length}件のマージを実行しました`,
-      hint: phase === "merging" ? "1件ずつ順番に実行するため、件数ぶんの時間がかかります" : undefined,
+      hint: sMerge === "running" ? "全件が通ることは確認済みです" : undefined,
     },
     {
       key: "refresh",
@@ -394,10 +479,10 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
         <div style={{ display: "flex", gap: 9, padding: "11px 13px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.2)", borderRadius: 9 }}>
           <AlertTriangle style={{ width: 14, height: 14, color: "#DC2626", flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 11, color: "#B91C1C", lineHeight: 1.7 }}>
-            この操作は取り消せません。実行前に<strong>全件のコンフリクトを確認</strong>し、
-            1件でも引っかかっていれば<strong>1件もマージしません</strong>。<br />
-            チェックを通ったあとは1件ずつ上から順番に実行し、そこで失敗した場合も<strong>残りは実行しません</strong>。<br />
-            前のマージでマージ先が進むため、<strong>順番を誤ると後続がコンフリクトになることがあります</strong>。<br />
+            この操作は取り消せません。実行前に、<strong>使い捨てのブランチへこの順番どおりに全件を積んで確認</strong>します。
+            1件でも通らなければ<strong>マージ先には一切触れません</strong>（1件もマージされません）。<br />
+            全件通ったときだけ、上から順番に本番のマージを実行します。そこでなお失敗した場合は<strong>残りは実行しません</strong>。<br />
+            前のマージでマージ先が進むため、<strong>順番によって通る／通らないが変わります</strong>。<br />
             GitHub 上は Dev Ticket[bot] 名義で記録され、各マージコミットに「{actorName}」が実行者として残ります。
           </p>
         </div>
