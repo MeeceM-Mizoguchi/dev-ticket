@@ -1,7 +1,7 @@
 // BRU6-002 一括操作の共通ロジック
 //
 // チケットの複数選択と、それに対する一括アクション（自動アサイン / スプリント移動 /
-// リンクコピー / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
+// リンクコピー / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
 // スプリント詳細のチケット一覧でも同じ機能を使うため共通化した。
 // 選択状態・確認ダイアログ・進捗モーダルはすべてこのフックが持ち、呼び出し側は
 // 返り値の ui を描画してチェックボックスを置くだけでよい。
@@ -19,6 +19,7 @@ import { BulkActionBar } from "@/app/components/sprints/BulkActionBar";
 import { BulkAssignProgress, type BulkAssignPhase } from "@/app/components/sprints/BulkAssignProgress";
 import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
 import { bulkDeleteTickets, bulkMoveTickets } from "@/app/lib/bulkTicketOps";
+import { exportTicketList, type TicketExportFormat } from "@/app/lib/ticketExport";
 import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
 import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fireSlackNotify } from "@/app/utils/slackNotify";
@@ -31,8 +32,21 @@ function estimateScale(hours: number): DevScale | null {
   return "XL";
 }
 
+/** 選択したチケットの書き出しに必要な情報。渡さないとエクスポートボタンは出ない。 */
+export interface BulkExportOptions {
+  /** 見出し・ファイル名に使う名前（プロジェクト名など） */
+  title: string;
+  /** プランで許可されているか。false ならボタンは出るが押せない */
+  enabled: boolean;
+  getSprintName: (t: SprintTicket) => string;
+  getCategoryLabel: (t: SprintTicket) => string;
+  /** 出力順に並んだチケット。省略時は tickets の並び（画面の並び替えに追従させたいときに渡す） */
+  order?: SprintTicket[];
+}
+
 export function useBulkTicketActions({
   tickets, moveTargets, projectId, projectSlug, projectMembers, onUpdated, onFlash, onMoved, onBeforeMove,
+  exportOptions,
 }: {
   /** 選択対象になりうるチケット（親・子を含む全件） */
   tickets: SprintTicket[];
@@ -53,6 +67,8 @@ export function useBulkTicketActions({
   onMoved?: (movedWbs: string[], targetSprintId: string) => void;
   /** 移動先候補を遅延取得したい場合に使う。移動ダイアログを開く前に await される */
   onBeforeMove?: () => void | Promise<void>;
+  /** 選択したチケットのエクスポート（CSV/Word/Markdown）。省略するとボタンを出さない */
+  exportOptions?: BulkExportOptions;
 }) {
   const { userOrgId } = useAuth();
   const { showAlert } = useAlert();
@@ -63,6 +79,8 @@ export function useBulkTicketActions({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   // 🌟 BRU10-077: 完了ダイアログを閉じたあとに実行する「移動先の強調表示」の予約
   const [pendingMoved, setPendingMoved] = useState<{ wbsList: string[]; targetSprintId: string } | null>(null);
+  // 書き出し中はバーを操作できないようにする（Word は生成に少し時間がかかる）
+  const [exporting, setExporting] = useState(false);
 
   const selectedTickets = useMemo(() => tickets.filter(t => selectedIds.has(t.id)), [tickets, selectedIds]);
 
@@ -102,6 +120,32 @@ export function useBulkTicketActions({
       setSuccessMessage(`${targets.length}件のチケットのリンクをコピーしました。`);
     } else {
       showAlert("リンクのコピーに失敗しました。", "エラー");
+    }
+  };
+
+  const runBulkExport = async (format: TicketExportFormat) => {
+    if (!exportOptions) return;
+    // 画面に並んでいる順で書き出す（order が無ければ tickets の順）
+    const source = exportOptions.order ?? tickets;
+    const seen = new Set<string>();
+    const items = source
+      .filter(t => selectedIds.has(t.id) && !seen.has(t.id) && (seen.add(t.id), true))
+      .map(t => ({ ticket: t, sprintName: exportOptions.getSprintName(t) }));
+    if (items.length === 0) return;
+    setExporting(true);
+    try {
+      await exportTicketList({
+        format,
+        title: exportOptions.title,
+        items,
+        getCategoryLabel: exportOptions.getCategoryLabel,
+        // 関連PR（ticket_github_links）を引くのに使う
+        projectId,
+      });
+    } catch (e) {
+      showAlert("エクスポートに失敗しました。\n\n" + String(e), "エラー");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -237,10 +281,12 @@ export function useBulkTicketActions({
     <>
       <BulkActionBar
         count={selectedIds.size}
-        disabled={!!assignState}
+        disabled={!!assignState || exporting}
         onAssign={runBulkAssign}
         onMove={async () => { await onBeforeMove?.(); setBulkAction("move"); }}
         onCopyLinks={runBulkCopyLinks}
+        onExport={exportOptions ? runBulkExport : undefined}
+        exportEnabled={exportOptions?.enabled ?? true}
         onDelete={() => setBulkAction("delete")}
         onClear={clearSelection}
       />

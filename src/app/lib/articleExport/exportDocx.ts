@@ -2,27 +2,33 @@
 // リストは numbering 設定を避け、行頭マーカー＋インデントで表現（PDF/Excel と統一）。
 import {
   Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell,
-  WidthType, ImageRun, BorderStyle, TableLayoutType,
+  WidthType, ImageRun, BorderStyle, TableLayoutType, ExternalHyperlink,
 } from "docx";
 import type { ArticleDoc, Block, ListBlock, Run } from "./types";
 import type { LoadedImage } from "./imageLoader";
 
 const CONTENT_PX = 620; // A4縦の本文幅目安(px)
 
-// "\n" を改行として TextRun 列に展開
-function toTextRuns(runs: Run[], base: { font?: string } = {}): TextRun[] {
-  const out: TextRun[] = [];
+// "\n" を改行として TextRun 列に展開。href を持つ Run はクリックできるリンクにする。
+type DocxRun = TextRun | ExternalHyperlink;
+
+function toTextRuns(runs: Run[], base: { font?: string } = {}): DocxRun[] {
+  const out: DocxRun[] = [];
   for (const r of runs) {
     const parts = r.text.split("\n");
     parts.forEach((p, i) => {
-      out.push(new TextRun({
+      const run = new TextRun({
         text: p,
         bold: r.bold,
         italics: r.italic,
         strike: r.strike,
         break: i > 0 ? 1 : undefined,
         font: r.code ? "Consolas" : base.font,
-      }));
+        // リンクは Word の既定色に寄せる（スタイル名に頼ると環境で当たらないことがある）
+        color: r.href ? "0563C1" : undefined,
+        underline: r.href ? {} : undefined,
+      });
+      out.push(r.href ? new ExternalHyperlink({ children: [run], link: r.href }) : run);
     });
   }
   if (!out.length) out.push(new TextRun({ text: "" }));
@@ -116,6 +122,8 @@ function blockToChildren(b: Block, images: Map<string, LoadedImage>): (Paragraph
         shading: { fill: "F4F5F6" },
         children: toTextRuns([{ text: b.code, code: true }]),
       })];
+    case "divider":
+      return [new Paragraph({ text: "", spacing: { before: 160, after: 160 }, border: { bottom: { style: BorderStyle.SINGLE, size: 6, space: 6, color: "D8D3CD" } } })];
     case "table": return [buildTable(b)];
     case "image": { const p = imageParagraph(b.url, images); return p ? [p] : []; }
     default: return [];
