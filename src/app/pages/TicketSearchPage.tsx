@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router";
 import { FolderKanban, ChevronRight } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
+import { usePlan } from "@/app/contexts/PlanContext";
 import { mapProject, mapSprint, mapTicketCategory } from "@/app/lib/mappers";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import type { AccessLevel, Project, Sprint, TicketCategory, UserPermissions } from "@/app/types";
@@ -16,6 +17,7 @@ import {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { TicketSearchFilters, type FilterOption } from "@/app/components/tickets/TicketSearchFilters";
 import { TicketSearchResults } from "@/app/components/tickets/TicketSearchResults";
+import { useBulkTicketActions } from "@/app/components/sprints/useBulkTicketActions";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { applySprintOrder, fetchSprintOrder } from "@/app/lib/sprintOrder";
@@ -44,6 +46,7 @@ export function TicketSearchPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
   const navigate = useNavigate();
   const { userId, userName, userRole, userOrgId } = useAuth();
+  const { plan } = usePlan();
 
   const [project, setProject] = useState<Project | null>(null);
   const [sprints, setSprints] = useState<Sprint[]>([]);
@@ -170,6 +173,31 @@ export function TicketSearchPage() {
     (col: SearchSortCol) => columnOptionsOf(criteriaRows, col),
     [criteriaRows],
   );
+
+  // 一括操作（選択・アサイン・移動・リンクコピー・エクスポート・削除）は
+  // スプリント管理の一覧と共通のフック。選択はスプリントをまたいで保持される。
+  const sprintNameByTicketId = useMemo(() => {
+    const m = new Map<string, string>();
+    orderedSprints.forEach(s => s.tickets.forEach(t => m.set(t.id, s.name)));
+    return m;
+  }, [orderedSprints]);
+
+  const bulk = useBulkTicketActions({
+    tickets: allTickets,
+    moveTargets: orderedSprints,
+    projectId: project?.id ?? null,
+    projectSlug,
+    projectMembers: project?.members,
+    onUpdated: load,
+    exportOptions: {
+      title: `${project?.name || projectSlug || "チケット"} 一覧検索`,
+      enabled: plan.featureCsvExport,
+      getSprintName: t => sprintNameByTicketId.get(t.id) ?? "",
+      getCategoryLabel: t => resolveCategoryLabel(t, categoryMap),
+      // 画面に出ている並び（条件・列フィルタ・並び替え適用後）のままで書き出す
+      order: visibleRows.map(r => r.ticket),
+    },
+  });
 
   // ── 絞り込みの候補 ──────────────────────────────────────────
   const assigneeOptions = useMemo<FilterOption[]>(() => {
@@ -299,6 +327,9 @@ export function TicketSearchPage() {
         onSelect={row => openTicket(row.ticket.wbs)}
         highlightWbs={selectedWbs ?? closedHighlightWbs}
         hasCriteria={hasAnyCriteria(criteria) || hasColumnFilters(columnFilters)}
+        selectedIds={bulk.selectedIds}
+        onToggleTicket={bulk.toggleTicket}
+        onSetSelection={(rs, checked) => bulk.setSelection(rs.map(r => r.ticket), checked)}
       />
 
       <TicketDetailPanel
@@ -320,6 +351,8 @@ export function TicketSearchPage() {
         onMoved={movedWbs => { movedAwayRef.current = movedWbs; }}
         onSelectTicket={t => { if (t.wbs) openTicket(t.wbs); }}
       />
+
+      {bulk.ui}
     </div>
   );
 }

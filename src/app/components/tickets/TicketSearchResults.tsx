@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { GitBranch, Search, X } from "lucide-react";
 import { Avatar } from "@/app/components/shared/Avatar";
+import { SelBox } from "@/app/components/sprints/SelBox";
 import { ColumnFilter } from "@/app/components/shared/ColumnFilter";
 import { formatDate, getTicketStatusMeta, formatPersonDays } from "@/app/lib/helpers";
 import type { ColumnFilters, SearchSortCol, SortDir, TicketSearchRow } from "@/app/lib/ticketSearch";
@@ -29,8 +30,9 @@ const COLS: { col: SearchSortCol; label: string }[] = [
   { col: "actual", label: "実績" },
 ];
 
-// 末尾の30pxは「列の絞り込みを全解除」ボタンの席（スプリント一覧の表と同じ作り）
-const GRID = "84px 150px 1.7fr 104px 104px 52px 124px 68px 68px 76px 70px 30px";
+// 先頭の32pxは一括操作のチェックボックス、末尾の30pxは「列の絞り込みを全解除」ボタンの席
+// （どちらもスプリント一覧の表と同じ作り）
+const GRID = "32px 84px 150px 1.7fr 104px 104px 52px 124px 68px 68px 76px 70px 30px";
 
 // 期限日当日以降かつ未完了なら赤字にする（スプリント一覧と同じ判定）
 function isOverdueOrToday(dueDate: string, status: string): boolean {
@@ -45,7 +47,8 @@ function SkeletonRow({ index }: { index: number }) {
   const titleW = ["62%", "44%", "70%", "38%", "55%"][index % 5];
   return (
     <div style={{ display: "grid", gridTemplateColumns: GRID, gap: 8, alignItems: "center", padding: "11px 16px", borderTop: "1px solid rgba(26,23,20,0.05)", opacity: 1 - index * 0.13 }}>
-      {/* No・スプリント → チケット名（幅広） → 残りの列 の順。実際の列並びに合わせる */}
+      {/* チェックボックス → No・スプリント → チケット名（幅広） → 残りの列 の順。実際の列並びに合わせる */}
+      <span />
       <div className="skeleton-shimmer" style={{ height: 11, borderRadius: 5 }} />
       <div className="skeleton-shimmer" style={{ height: 10, borderRadius: 5 }} />
       <div className="skeleton-shimmer" style={{ height: 12, width: titleW, borderRadius: 5 }} />
@@ -61,6 +64,7 @@ export function TicketSearchResults({
   rows, loading, sortCol, sortDir, onSort, onClearSort,
   columnFilters, onColumnFilterChange, onClearColumnFilters, getColumnOptions,
   onSelect, highlightWbs, hasCriteria, stickyTop = 0,
+  selectedIds, onToggleTicket, onSetSelection,
 }: {
   rows: TicketSearchRow[];
   loading?: boolean;
@@ -79,6 +83,11 @@ export function TicketSearchResults({
   hasCriteria: boolean;
   /** 見出し行を貼り付ける位置（画面上端からの距離） */
   stickyTop?: number;
+  /** 一括操作で選択中のチケットID（スプリント一覧の表と同じ操作） */
+  selectedIds: Set<string>;
+  onToggleTicket: (ticketId: string) => void;
+  /** 見出しのチェックボックス。いま表示している行をまとめて選択／解除する */
+  onSetSelection: (rows: TicketSearchRow[], checked: boolean) => void;
 }) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(false);
@@ -99,6 +108,8 @@ export function TicketSearchResults({
   }, [stickyTop]);
 
   const anyColumnFilter = hasColumnFilters(columnFilters);
+  const allSelected = rows.length > 0 && rows.every(r => selectedIds.has(r.ticket.id));
+  const someSelected = !allSelected && rows.some(r => selectedIds.has(r.ticket.id));
 
   return (
     <div style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
@@ -118,6 +129,8 @@ export function TicketSearchResults({
         boxShadow: pinned ? "0 4px 12px rgba(0,0,0,0.10)" : "none",
         transition: "box-shadow 0.15s, border-radius 0.15s",
       }}>
+        <SelBox checked={allSelected} indeterminate={someSelected}
+          onClick={e => { e.stopPropagation(); onSetSelection(rows, !allSelected); }} />
         {COLS.map(({ col, label }, idx) => (
           <ColumnFilter
             key={col}
@@ -165,7 +178,8 @@ export function TicketSearchResults({
         const priLabel = t.priority === "high" ? "高" : t.priority === "medium" ? "中" : "低";
         const isDone = t.status === "closed" || t.status === "released" || t.status === "on-hold" || t.status === "withdrawn";
         const isHighlighted = !!highlightWbs && t.wbs === highlightWbs;
-        const baseBg = isHighlighted ? "#FFFBEB" : isDone ? "#F5F5F4" : "#FFFFFF";
+        // 選択中はスプリント一覧の表と同じ薄緑
+        const baseBg = selectedIds.has(t.id) ? "#F0FDF4" : isHighlighted ? "#FFFBEB" : isDone ? "#F5F5F4" : "#FFFFFF";
         const isDueAlert = isOverdueOrToday(t.dueDate || "", t.status);
 
         return (
@@ -173,6 +187,9 @@ export function TicketSearchResults({
             style={{ display: "grid", gridTemplateColumns: GRID, gap: 8, alignItems: "center", padding: "10px 16px", borderTop: "1px solid rgba(26,23,20,0.05)", cursor: "pointer", background: baseBg, opacity: isDone ? 0.7 : 1, transition: "background 0.1s" }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECECEB"; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = baseBg; }}>
+            <SelBox checked={selectedIds.has(t.id)}
+              onClick={e => { e.stopPropagation(); onToggleTicket(t.id); }} />
+
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.wbs}</span>
             </div>

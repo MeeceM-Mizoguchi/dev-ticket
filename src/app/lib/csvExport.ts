@@ -42,23 +42,28 @@ function escapeCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-const CSV_HEADERS = [
+/**
+ * チケット一覧の出力項目。CSV だけでなく Word / Markdown 出力
+ * （lib/ticketExport.ts）でも同じ並びを使うので export している。
+ */
+export const TICKET_EXPORT_HEADERS = [
   "No", "スプリント名", "チケットNo", "チケット名", "チケット詳細",
   "分類", "ステータス", "レビュー状況", "優先度", "担当者",
   "開始日", "期限日", "実績工数(人日)",
 ];
 
-function buildRow(
+/** チケット1件ぶんのセル（TICKET_EXPORT_HEADERS と同じ並び）。 */
+export function buildTicketExportCells(
   no: number,
   sprintName: string,
   ticket: SprintTicket,
   getCategoryLabel: (t: SprintTicket) => string
-): string {
+): string[] {
   // progress を見ないと保留(-1)/取下(-2)が元ステータスのまま出力され、
   // 子チケットの closed も「未着手」に誤フォールバックする（getTicketStatusMeta が両方を吸収する）。
   const statusLabel = getTicketStatusMeta(ticket.status, ticket.progress).label;
   const actualHours = calcTicketActualHours(ticket);
-  const cells = [
+  return [
     String(no),
     sprintName,
     ticket.wbs,
@@ -73,10 +78,23 @@ function buildRow(
     ticket.dueDate || "",
     actualHours > 0 ? formatPersonDays(actualHours) : "",
   ];
+}
+
+/** セル配列 → CSV の1行。 */
+export function toCsvLine(cells: string[]): string {
   return cells.map(escapeCell).join(",");
 }
 
-function triggerDownload(csvContent: string, filename: string): void {
+function buildRow(
+  no: number,
+  sprintName: string,
+  ticket: SprintTicket,
+  getCategoryLabel: (t: SprintTicket) => string
+): string {
+  return toCsvLine(buildTicketExportCells(no, sprintName, ticket, getCategoryLabel));
+}
+
+export function triggerCsvDownload(csvContent: string, filename: string): void {
   const bom = "﻿";
   const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -97,7 +115,7 @@ export function downloadSprintCsv(
   displayTickets: SprintTicket[],
   getCategoryLabel: (t: SprintTicket) => string
 ): void {
-  const rows: string[] = [CSV_HEADERS.map(escapeCell).join(",")];
+  const rows: string[] = [toCsvLine(TICKET_EXPORT_HEADERS)];
   let no = 1;
   for (const ticket of displayTickets) {
     rows.push(buildRow(no++, sprint.name, ticket, getCategoryLabel));
@@ -106,7 +124,7 @@ export function downloadSprintCsv(
       rows.push(buildRow(no++, sprint.name, child, getCategoryLabel));
     }
   }
-  triggerDownload(rows.join("\r\n"), `${sprint.name}.csv`);
+  triggerCsvDownload(rows.join("\r\n"), `${sprint.name}.csv`);
 }
 
 /**
@@ -122,7 +140,7 @@ export function downloadProjectCsv(
   categories.forEach(c => { if (c.id && c.name) map[c.id] = c.name; });
   const getCategoryLabel = (t: SprintTicket): string => map[t.categoryId ?? ""] || "分類なし";
 
-  const rows: string[] = [CSV_HEADERS.map(escapeCell).join(",")];
+  const rows: string[] = [toCsvLine(TICKET_EXPORT_HEADERS)];
   let no = 1;
   for (const sprint of sprints) {
     const parents = sprint.tickets.filter(t => !t.parentId);
@@ -134,5 +152,5 @@ export function downloadProjectCsv(
       }
     }
   }
-  triggerDownload(rows.join("\r\n"), `${projectName}.csv`);
+  triggerCsvDownload(rows.join("\r\n"), `${projectName}.csv`);
 }

@@ -116,7 +116,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, prLinkedTicketIds = null }: {
+export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, projectName, prLinkedTicketIds = null }: {
   sprints: Sprint[];
   loading?: boolean;
   onDeleteSprint?: (s: Sprint) => void;
@@ -136,6 +136,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
   onUpdated?: () => void | Promise<void>;
   projectMembers?: string[];
   projectSlug?: string;
+  /** エクスポートの見出し・ファイル名に使う。未指定なら projectSlug を使う */
+  projectName?: string;
   /**
    * PRが紐付いているチケットIDの集合。「リリース待ち以降なのにPRが無い」行を赤くするために使う。
    * null（未取得・リポジトリ未紐付け）のときはアラートを出さない
@@ -502,6 +504,13 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
 
   const allTickets = useMemo(() => sprints.flatMap(s => s.tickets), [sprints]);
 
+  // エクスポートの「スプリント名」列用。チケットは複数スプリントにまたがって選べる
+  const sprintNameByTicketId = useMemo(() => {
+    const m = new Map<string, string>();
+    sprints.forEach(s => s.tickets.forEach(t => m.set(t.id, s.name)));
+    return m;
+  }, [sprints]);
+
   const flashTickets = (ids: string[]) => {
     setHighlightedTicketIds(new Set(ids));
     window.setTimeout(() => setHighlightedTicketIds(new Set()), 6000);
@@ -517,6 +526,13 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
     onUpdated,
     onFlash: flashTickets,
     onMoved,
+    // 選択したチケットの書き出し（CSV/Word/Markdown）。既存のCSVダウンロードと同じプラン判定にそろえる
+    exportOptions: {
+      title: `${projectName || projectSlug || "チケット"} チケット一覧`,
+      enabled: plan.featureCsvExport,
+      getSprintName: t => sprintNameByTicketId.get(t.id) ?? "",
+      getCategoryLabel,
+    },
   });
   const selectedTicketIds = bulk.selectedIds;
 

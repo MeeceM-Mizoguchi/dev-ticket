@@ -34,6 +34,7 @@ const s = StyleSheet.create({
   bullet: { width: 18, fontSize: 10.5 },
   quote: { borderLeftWidth: 3, borderLeftColor: "#D8D3CD", paddingLeft: 10, marginVertical: 6, color: "#6B6458" },
   code: { backgroundColor: "#F4F5F6", borderRadius: 6, padding: 10, marginVertical: 6, fontSize: 9.5, color: "#374151" },
+  hr: { borderBottomWidth: 0.75, borderBottomColor: "#D8D3CD", marginVertical: 10 },
   sectionHead: { fontSize: 13, fontWeight: "bold", marginTop: 16, marginBottom: 8 },
   tCell: { borderWidth: 0.5, borderColor: "#D8D3CD", padding: 5, fontSize: 9.5 },
   tHeadCell: { backgroundColor: "#F4F5F6", fontWeight: "bold" },
@@ -135,6 +136,7 @@ function Blocks({ blocks, images }: { blocks: Block[]; images: Map<string, Loade
           case "codeblock": return <View key={i} style={s.code}><Text>{b.text}</Text></View>;
           // 通常は render() 前に画像化されるが、変換失敗時の保険としてコード表示。
           case "mermaid": return <View key={i} style={s.code}><Text>{b.code}</Text></View>;
+          case "divider": return <View key={i} style={s.hr} />;
           case "table": return <Table key={i} block={b} />;
           case "image": return <Img key={i} url={b.url} images={images} />;
           default: return null;

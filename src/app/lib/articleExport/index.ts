@@ -75,7 +75,9 @@ async function render(doc: ArticleDoc, format: ExportFormat): Promise<Blob> {
 }
 
 // 進捗表示(start/finish)とダウンロードを共通化する。build でドキュメントを組み立てる。
-async function runExport(format: ExportFormat, scope: string, build: () => ArticleDoc | Promise<ArticleDoc>): Promise<void> {
+// 記事以外（チケット一覧の Word/Markdown 出力など）からも ArticleDoc を組み立てて渡せるよう
+// exportArticleDoc として公開している。
+export async function exportArticleDoc(format: ExportFormat, scope: string, build: () => ArticleDoc | Promise<ArticleDoc>): Promise<void> {
   startExport(format, scope);
   try {
     const doc = await build();
@@ -88,7 +90,7 @@ async function runExport(format: ExportFormat, scope: string, build: () => Artic
 
 export async function exportWikiArticle(page: WikiPage, breadcrumbTitles: string[], format: ExportFormat): Promise<void> {
   const title = page.title || "無題のページ";
-  return runExport(format, title, () => {
+  return exportArticleDoc(format, title, () => {
     const meta: MetaField[] = [];
     const place = breadcrumbTitles.filter(Boolean).join(" ＞ ");
     if (place) meta.push({ label: "場所", value: `Wikiホーム ＞ ${place}` });
@@ -126,7 +128,7 @@ export async function exportWikiFolder(folder: WikiPage, allPages: WikiPage[], f
   };
 
   const rootTitle = folder.title || "無題のフォルダ";
-  return runExport(format, rootTitle, () => {
+  return exportArticleDoc(format, rootTitle, () => {
     blocks.push({ type: "heading", level: 1, runs: [{ text: `📁 ${rootTitle}`, bold: true }] });
     walk(folder.id, 1, []);
     return {
@@ -140,7 +142,7 @@ export async function exportWikiFolder(folder: WikiPage, allPages: WikiPage[], f
 
 export async function exportMinuteArticle(minute: MeetingMinute, format: ExportFormat): Promise<void> {
   const title = minute.title || "無題の議事録";
-  return runExport(format, title, async () => {
+  return exportArticleDoc(format, title, async () => {
     const meta: MetaField[] = [];
     if (minute.meetingDate) meta.push({ label: "会議日", value: fmtDate(minute.meetingDate) });
     if (minute.attendees?.length) meta.push({ label: "参加者", value: minute.attendees.join("、") });

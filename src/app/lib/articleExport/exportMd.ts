@@ -56,6 +56,7 @@ function blockToMd(b: Block): MdBlock | null {
     case "codeblock": return { t: "code", lang: "", code: b.text };
     case "table": return b.rows.length ? tableToMd(b.rows) : null;
     case "image": return b.url ? { t: "para", children: [{ t: "image", src: b.url, alt: b.alt ?? "" }] } : null;
+    case "divider": return { t: "hr" };
     case "mermaid": return { t: "mermaid", code: b.code };
   }
 }
