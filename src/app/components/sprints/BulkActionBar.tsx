@@ -10,6 +10,13 @@ import { TICKET_EXPORT_LABEL, type TicketExportFormat } from "@/app/lib/ticketEx
 
 const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
 
+/**
+ * バーが画面下端に貼り付いている分の高さ（bottom:24 + バー本体 ≒ 80px）に余白を足したもの。
+ * 一覧を一番下までスクロールしたときに最後のチケットがバーに隠れないよう、
+ * 選択中はリストの末尾にこの高さのスペーサーを置く（useBulkTicketActions の ui が描画する）。
+ */
+export const BULK_ACTION_BAR_CLEARANCE = 96;
+
 export function BulkActionBar({
   count, onDelete, onMove, onAssign, onCopyLinks, onExport, exportEnabled = true, onClear, disabled,
 }: {
