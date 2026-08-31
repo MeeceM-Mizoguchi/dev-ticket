@@ -15,7 +15,7 @@ import { useAlert } from "@/app/contexts/AlertContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
-import { BulkActionBar } from "@/app/components/sprints/BulkActionBar";
+import { BulkActionBar, BULK_ACTION_BAR_CLEARANCE } from "@/app/components/sprints/BulkActionBar";
 import { BulkAssignProgress, type BulkAssignPhase } from "@/app/components/sprints/BulkAssignProgress";
 import { MoveToSprintDialog } from "@/app/components/sprints/MoveToSprintDialog";
 import { bulkDeleteTickets, bulkMoveTickets } from "@/app/lib/bulkTicketOps";
@@ -279,6 +279,9 @@ export function useBulkTicketActions({
 
   const ui = (
     <>
+      {/* 一番下までスクロールしたとき、最後のチケットが下部バーに隠れないための逃げ */}
+      {selectedIds.size > 0 && <div aria-hidden style={{ height: BULK_ACTION_BAR_CLEARANCE, flexShrink: 0 }} />}
+
       <BulkActionBar
         count={selectedIds.size}
         disabled={!!assignState || exporting}
