@@ -78,6 +78,21 @@ export function TicketSearchPage() {
     { ready: !loading, disabled: !!selectedWbs },
   );
 
+  // 🌟 パンくず〜プロジェクト内タブを画面上部に固定（スプリント管理と同じ扱い）。
+  //   実高さを測って表の見出し行の sticky オフセット(stickyTop)へ渡し、段重ねにする。
+  //   固定値にすると、見出しやタブの高さが変わったときに見出し行が裏に潜り込む。
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerH, setHeaderH] = useState(0);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const update = () => setHeaderH(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // ── データ取得 ──────────────────────────────────────────────
   const load = useCallback(async () => {
     if (!isSupabaseEnabled) {
@@ -268,36 +283,42 @@ export function TicketSearchPage() {
 
   return (
     <div ref={scrollRestoreRef} style={{ padding: "24px 24px 24px", minWidth: 1280 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
-        <button onClick={() => navigate("/projects")}
-          style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
-        </button>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <button onClick={() => navigate(`/${projectSlug}`)}
-          style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>
-          {project?.name ?? projectSlug ?? ""}
-        </button>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>一覧検索</span>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>一覧検索</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>
-            {!project ? "..." : loading ? project.name : `${project.name} · ${orderedSprints.length} スプリント / ${rows.length} チケット`}
-          </p>
+      {/* 🌟 固定ヘッダー。margin の -24px は外側の padding を打ち消すため（背景を左右いっぱいに敷く）。
+          padding の下 14px は詰めない。0にすると中の marginBottom がはみ出して
+          背景の外に隙間ができ、そこをスクロール中の中身が通り抜けて見える */}
+      <div ref={headerRef} style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 14px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+          <button onClick={() => navigate("/projects")}
+            style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+          </button>
+          <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+          <button onClick={() => navigate(`/${projectSlug}`)}
+            style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12 }}>
+            {project?.name ?? projectSlug ?? ""}
+          </button>
+          <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+          <span style={{ color: "#1A1714", fontWeight: 600 }}>一覧検索</span>
         </div>
-        <ProjectSubNav
-          projectSlug={projectSlug ?? project?.slug ?? ""}
-          active="ticket-search" marginBottom={0}
-          wikiPerm={subNavPerm("wikiPermission")}
-          backlogPerm={subNavPerm("backlogPermission")}
-          minutesPerm={subNavPerm("minutesPermission")}
-          whiteboardPerm={subNavPerm("whiteboardPermission")}
-        />
-      </div>
+
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 0 }}>
+          {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>一覧検索</h1>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {!project ? "..." : loading ? project.name : `${project.name} · ${orderedSprints.length} スプリント / ${rows.length} チケット`}
+            </p>
+          </div>
+          <ProjectSubNav
+            projectSlug={projectSlug ?? project?.slug ?? ""}
+            active="ticket-search" marginBottom={0}
+            wikiPerm={subNavPerm("wikiPermission")}
+            backlogPerm={subNavPerm("backlogPermission")}
+            minutesPerm={subNavPerm("minutesPermission")}
+            whiteboardPerm={subNavPerm("whiteboardPermission")}
+          />
+        </div>
+      </div>{/* 固定ヘッダーここまで */}
 
       <TicketSearchFilters
         criteria={criteria}
@@ -327,6 +348,7 @@ export function TicketSearchPage() {
         onSelect={row => openTicket(row.ticket.wbs)}
         highlightWbs={selectedWbs ?? closedHighlightWbs}
         hasCriteria={hasAnyCriteria(criteria) || hasColumnFilters(columnFilters)}
+        stickyTop={headerH}
         selectedIds={bulk.selectedIds}
         onToggleTicket={bulk.toggleTicket}
         onSetSelection={(rs, checked) => bulk.setSelection(rs.map(r => r.ticket), checked)}

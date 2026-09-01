@@ -416,9 +416,10 @@ export function SprintPage() {
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-          <div>
+          {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+          <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>スプリント管理</h1>
+              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>スプリント管理</h1>
               {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
               {/* 🌟 BRU10-068: 設定アイコンはメニュー（プロジェクト設定 / スプリント並び替え）を開く */}
               <button onClick={e => setSettingsMenuRect(e.currentTarget.getBoundingClientRect())} title="設定"
@@ -429,7 +430,7 @@ export function SprintPage() {
               </button>
             </div>
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
-              <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
+              <p style={{ fontSize: 12, color: "#A09790", margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
               {project?.envMemos?.filter(m => m.url || m.memo).map((m, i) => (
                 <EnvMemoTag key={i} m={m} />
               ))}

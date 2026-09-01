@@ -298,8 +298,13 @@ export function GithubPage() {
 
   // パンくず・見出し・タブの並びは他のプロジェクト内ページ（バックログ／議事録など）に合わせる。
   // 読み込み中でも同じ枠を出したいので、先に組み立てて使い回す。
+  // 🌟 パンくず〜プロジェクト内タブを画面上部に固定（スプリント管理と同じ扱い）。
+  //   PRやIssueが増えると下スクロールでタブが見切れ、他画面へ移動できなくなっていた。
+  //   margin の -24px は外側の padding を打ち消すため（背景を左右いっぱいに敷く）。
+  //   padding の下 12px は詰めない。0にすると中の marginBottom がはみ出して
+  //   背景の外に12pxの隙間ができ、そこをスクロール中の中身が通り抜けて見える。
   const pageHead = (
-    <>
+    <div style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/projects")} style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
           <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
@@ -308,16 +313,17 @@ export function GithubPage() {
         <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
       </div>
 
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>GitHub</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project?.name ?? "..."}</p>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 0 }}>
+        {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>GitHub</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project?.name ?? "..."}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="github" marginBottom={0} />
         </div>
       </div>
-    </>
+    </div>
   );
 
   // ── ガード ────────────────────────────────────────────────

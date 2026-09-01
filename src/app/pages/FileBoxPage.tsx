@@ -464,33 +464,42 @@ export function FileBoxPage() {
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
-      {/* パンくず・見出し・サブナビの並びは他のプロジェクト配下の画面（議事録／ナレッジノート等）と揃える。
-          ここだけパンくずが無く、見出しから始まっていたので全体が上にずれていた */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
-        <button onClick={() => navigate("/projects")}
-          style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-          <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
-        </button>
-        <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
-        <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>ファイルボックス</h1>
-          {/* 読み込み中に「0 件」と出てから件数が入れ替わるのを避ける */}
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>
-            {!project ? "..." : loading ? project.name : `${project.name} · ${latestOnly.length} 件`}
-          </p>
+      {/* 🌟 パンくず〜アップロード欄までを画面上部に固定する。
+          ファイルが増えると下スクロールでタブ・検索・パンくずが見切れ、
+          他画面へ移動することも、フォルダを辿ることもできなくなっていた。
+          カードは「固定する上半分」と「スクロールする一覧」に分けて、
+          角丸と枠線をつなぎ合わせて1枚のカードに見せている。
+          margin の -24px は外側の padding を打ち消すため（背景を左右いっぱいに敷く） */}
+      <div style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 0" }}>
+        {/* パンくず・見出し・サブナビの並びは他のプロジェクト配下の画面（議事録／ナレッジノート等）と揃える。
+            ここだけパンくずが無く、見出しから始まっていたので全体が上にずれていた */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
+          <button onClick={() => navigate("/projects")}
+            style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <FolderKanban style={{ width: 12, height: 12 }} /> プロジェクト
+          </button>
+          <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
+          <span style={{ color: "#1A1714", fontWeight: 600 }}>{project?.name ?? projectSlug ?? ""}</span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="files" marginBottom={0}
-            minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm}
-            backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} />
-        </div>
-      </div>
 
-      <div style={{ background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 14 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+          {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ファイルボックス</h1>
+            {/* 読み込み中に「0 件」と出てから件数が入れ替わるのを避ける */}
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {!project ? "..." : loading ? project.name : `${project.name} · ${latestOnly.length} 件`}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="files" marginBottom={0}
+              minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm}
+              backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} />
+          </div>
+        </div>
+        {/* カードの上半分。ここまでが固定側。下の一覧カードと枠線をつなげるため
+            下辺の枠線と角丸は持たせない */}
+        <div style={{ background: "#FFFFFF", borderRadius: "14px 14px 0 0", border: "1px solid rgba(26,23,20,0.07)", borderBottom: "none", padding: "14px 14px 14px" }}>
         {/* 検索・フォルダ作成・パンくず */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
           <div style={{ position: "relative", width: 320 }}>
@@ -541,7 +550,7 @@ export function FileBoxPage() {
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
           onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
-          style={{ marginBottom: 14 }}>
+          style={{ marginBottom: 0 }}>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, cursor: uploading ? "wait" : "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
             {uploading
               ? <Loader2 style={{ width: 14, height: 14, color: "#059669", animation: "spin 1s linear infinite" }} />
@@ -553,7 +562,12 @@ export function FileBoxPage() {
               onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
           </label>
         </div>
+        </div>{/* カードの上半分ここまで */}
+      </div>{/* 固定ヘッダーここまで */}
 
+      {/* 一覧。ここだけがスクロールする。上のカードと枠線をつなげるため、
+          上辺の枠線と角丸は持たせない */}
+      <div style={{ background: "#FFFFFF", borderRadius: "0 0 14px 14px", border: "1px solid rgba(26,23,20,0.07)", borderTop: "none", padding: "0 14px 14px" }}>
         {/* 一覧 */}
         {loading ? (
           <FileListSkeleton />
