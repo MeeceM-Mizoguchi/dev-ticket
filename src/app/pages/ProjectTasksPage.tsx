@@ -74,11 +74,16 @@ export function ProjectTasksPage() {
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
-      <ProjectSubNav
-        projectSlug={projectSlug ?? project.slug} active="tasks" marginBottom={16}
-        wikiPerm={wikiPerm} backlogPerm={backlogPerm}
-        minutesPerm={minutesPerm} whiteboardPerm={whiteboardPerm}
-      />
+      {/* 🌟 プロジェクト内タブを画面上部に固定（スプリント管理と同じ扱い）。
+          タスクが増えると下スクロールでタブが見切れ、他画面へ移動できなくなっていた。
+          margin の -24px は外側の padding を打ち消すため（背景を左右いっぱいに敷く） */}
+      <div style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 16px" }}>
+        <ProjectSubNav
+          projectSlug={projectSlug ?? project.slug} active="tasks" marginBottom={0}
+          wikiPerm={wikiPerm} backlogPerm={backlogPerm}
+          minutesPerm={minutesPerm} whiteboardPerm={whiteboardPerm}
+        />
+      </div>
       <TaskWorkspace
         scopeKey={project.id}
         projectId={project.id}

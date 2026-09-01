@@ -807,13 +807,14 @@ export function KnowledgePage() {
       </div>
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12, flexShrink: 0 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>ナレッジノート</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>
+        {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ナレッジノート</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {project ? `${project.name} · 資料 ${docs.length} 件 · フォルダ ${folders.length} 件` : "..."}
           </p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <ProjectSubNav projectSlug={projectSlug ?? project?.slug ?? ""} active="knowledge" marginBottom={0}
             minutesPerm={effectiveMinutesPerm} wikiPerm={effectiveWikiPerm}
             backlogPerm={effectiveBacklogPerm} whiteboardPerm={effectiveWhiteboardPerm} />

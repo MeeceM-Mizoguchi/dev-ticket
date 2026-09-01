@@ -677,11 +677,12 @@ export function ReleaseNotesPage() {
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-          <div>
-            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>リリースノート</h1>
-            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{scopedProject?.name ?? "..."}</p>
+          {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>リリースノート</h1>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{scopedProject?.name ?? "..."}</p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
             <ProjectSubNav projectSlug={projectSlug ?? scopedProject?.slug ?? ""} active="release-notes" marginBottom={0}
               wikiPerm={subNavPerms.wiki} backlogPerm={subNavPerms.backlog}
               minutesPerm={subNavPerms.minutes} whiteboardPerm={subNavPerms.whiteboard} />
