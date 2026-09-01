@@ -243,6 +243,14 @@ function jaMessage(e: unknown): { status: number; message: string } {
         message: "GitHub App の権限が足りないため実行できませんでした。管理者に「外部連携」画面の確認を依頼してください。",
       };
     }
+    // ブランチ保護（必須チェック・必須レビュー）に弾かれた場合も 405 で返る。
+    // コンフリクトと同じ文言にすると、直しに行く場所を誤って案内することになるので分ける。
+    if (e.status === 405 && /required status check|approving review|review is required|protected branch|changes must be made through a pull request/.test(raw)) {
+      return {
+        status: 422,
+        message: "ブランチ保護の条件を満たしていないためマージできません（必須チェックが未完了か、必須レビューが未承認です）。",
+      };
+    }
     if (e.status === 405 || raw.includes("not mergeable")) {
       return { status: 409, message: "コンフリクトがあるためマージできません。GitHub上で解消してください。" };
     }
