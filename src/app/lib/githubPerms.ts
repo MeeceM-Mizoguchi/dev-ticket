@@ -49,6 +49,15 @@ export function githubPermsFrom(raw: unknown): GithubPerms | null {
   const legacy = fromLegacyGithubLevel(o.githubPermission);
 
   if (pull === undefined && merge === undefined && branch === undefined) return legacy;
+
+  // 3軸とも none なのに旧キーが none でない、という食い違いは、正規の書き込み経路
+  // （githubPermsToJson と移行SQL）では作れない。既定値に3キーを混ぜてしまった時期に
+  // 「旧キーの権限を持っているのに画面上は権限なし」と表示・保存された行がこれに当たる。
+  // 旧キーのほうを正として読み、開き直すだけで元の権限に戻るようにする。
+  if (pull === "none" && merge === "none" && branch === "none" && legacy && canViewGithub(legacy)) {
+    return legacy;
+  }
+
   return {
     pull: pull ?? legacy?.pull ?? "none",
     merge: merge ?? legacy?.merge ?? "none",

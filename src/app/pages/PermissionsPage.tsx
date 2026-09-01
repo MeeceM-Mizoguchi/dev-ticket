@@ -9,6 +9,7 @@ import type {
   GithubActionKey, GithubActionLevel, GithubPerms,
 } from "@/app/types";
 import { NO_GITHUB_PERMS, canViewGithub, githubPermsFrom, githubPermsToJson } from "@/app/lib/githubPerms";
+import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -32,8 +33,12 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   canAccessMinutes: false, canAccessOrganization: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
   whiteboardPermission: "none",
+  // GitHubは旧キーだけを既定に置く。
+  // githubBranchPermission などの新キーをここに足してはいけない（BRU13-054）。
+  // 既定値は保存済みの権限に先立って spread されるため、新キーを足すと
+  // 「旧キーしか持っていない行」に none の新キーが被さり、
+  // 付与済みの権限が画面上「権限なし」に見え、そのまま保存すると消える。
   githubPermission: "none",
-  githubPullPermission: "none", githubMergePermission: "none", githubBranchPermission: "none",
 };
 
 type AccessLevel = "none" | "view" | "edit";
@@ -618,6 +623,8 @@ export function PermissionsPage() {
     }
     setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name, permissions: perms } : g));
     setSettingsGroupId(null);
+    // 上でメンバーの個別権限まで書き換えているので、GitHubタブの判定キャッシュも捨てる
+    invalidateGithubAccessCache();
     toast("グループ設定を保存しました");
   };
 
@@ -1317,10 +1324,12 @@ function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onC
 
 // ── GitHub連携の権限（docs/github-integration-design.md 8-2） ──────────────────
 // 選択中の値の説明を直下に1行だけ出す。3行常時出すと他の権限ブロックより騒がしくなるため。
-function GithubActionRow({ block, value, onChange }: {
+function GithubActionRow({ block, value, onChange, boxed }: {
   block: typeof GITHUB_ACTION_BLOCKS[number];
   value: GithubActionLevel;
   onChange: (v: GithubActionLevel) => void;
+  /** 同じモーダル内の「ページアクセス権限」に合わせる。個人モーダルは枠なし、グループは枠つき */
+  boxed: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1338,14 +1347,23 @@ function GithubActionRow({ block, value, onChange }: {
   const labelOf = (v: GithubActionLevel) => (v === "write" ? block.writeLabel : GITHUB_LEVEL_LABELS[v]);
   const isActive = value !== "none";
 
+  // 枠つきのときだけ、選択中の色を行の背景にも乗せる（ページアクセス権限と同じ見え方）
+  const rowStyle = boxed
+    ? {
+      display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9,
+      background: isActive ? GITHUB_COLOR + "0D" : "#F9F8F6",
+      border: `1.5px solid ${isActive ? GITHUB_COLOR + "30" : "transparent"}`,
+    }
+    : { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 };
+
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, background: isActive ? GITHUB_COLOR + "0D" : "#F9F8F6", border: `1.5px solid ${isActive ? GITHUB_COLOR + "30" : "transparent"}` }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: isActive ? GITHUB_COLOR : "#1A1714", flex: 1 }}>{block.label}</span>
+    <div style={{ marginBottom: boxed ? 8 : 10 }}>
+      <div style={rowStyle}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: boxed && isActive ? GITHUB_COLOR : "#1A1714", flex: 1 }}>{block.label}</span>
         <div ref={ref} style={{ position: "relative" }}>
           <button type="button" onClick={() => setOpen(v => !v)}
             style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", minWidth: 130,
+              display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", minWidth: 160,
               background: isActive ? GITHUB_COLOR + "12" : "#F4F5F6",
               border: `1.5px solid ${isActive ? GITHUB_COLOR + "50" : "rgba(26,23,20,0.12)"}`,
               borderRadius: 8, fontSize: 12, fontWeight: 600,
@@ -1355,7 +1373,7 @@ function GithubActionRow({ block, value, onChange }: {
             <ChevronDown style={{ width: 11, height: 11, opacity: 0.5, flexShrink: 0 }} />
           </button>
           {open && (
-            <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 180, overflow: "hidden" }}>
+            <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 200, overflow: "hidden" }}>
               {options.map(o => (
                 <button key={o} type="button"
                   onClick={() => { onChange(o); setOpen(false); }}
@@ -1374,7 +1392,10 @@ function GithubActionRow({ block, value, onChange }: {
           )}
         </div>
       </div>
-      <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1.6 }}>{block.descs[value]}</p>
+      {/* 説明は行の内側の余白に合わせて字下げする。枠なしのときは行頭に揃える */}
+      <p style={{ fontSize: 11, color: "#A09790", marginTop: 4, lineHeight: 1.6, paddingLeft: boxed ? 12 : 0 }}>
+        {block.descs[value]}
+      </p>
     </div>
   );
 }
@@ -1386,8 +1407,10 @@ function GithubActionRow({ block, value, onChange }: {
  * 「PRは見えるがマージ状況は見えない」といった破綻した組み合わせが設定できてしまうため、
  * GitHubタブが出るかどうかは3つの論理和で決まる。それを下の注記で明示している。
  */
-function GithubPermissionBlock({ value, onChange }: {
+function GithubPermissionBlock({ value, onChange, boxed = true }: {
   value: GithubPerms; onChange: (v: GithubPerms) => void;
+  /** 行の見た目を、同じモーダルの「ページアクセス権限」に合わせるための指定 */
+  boxed?: boolean;
 }) {
   const visible = canViewGithub(value);
 
@@ -1396,11 +1419,11 @@ function GithubPermissionBlock({ value, onChange }: {
       <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>GitHub連携</label>
 
       {GITHUB_ACTION_BLOCKS.map(b => (
-        <GithubActionRow key={b.key} block={b} value={value[b.key]}
+        <GithubActionRow key={b.key} block={b} value={value[b.key]} boxed={boxed}
           onChange={v => onChange({ ...value, [b.key]: v })} />
       ))}
 
-      <p style={{ fontSize: 11, color: "#A09790", marginTop: 2, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, fontWeight: 600, color: visible ? "#059669" : "#A09790", marginTop: 8, lineHeight: 1.6 }}>
         {visible
           ? "GitHubタブが表示されます（3つのうち1つでも「権限なし」以外なら表示）。"
           : "3つとも「権限なし」のため、このメンバーにはGitHubタブが表示されません。"}
@@ -1658,6 +1681,9 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
         .insert({ project_id: projectId, member_id: member.id, permissions: local });
       if (error) { toast("権限の保存に失敗しました", "error"); setSaving(false); return; }
     }
+    // GitHubタブの表示可否はスラッグ単位で60秒キャッシュしている。
+    // 捨てないと、権限を変えた直後に反映されず「保存したのに変わらない」に見える
+    invalidateGithubAccessCache();
     toast(`「${member.name}」のプロジェクト権限を保存しました`);
     setSaving(false);
     onClose();
@@ -1735,7 +1761,9 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
                 ))}
               </div>
 
+              {/* この画面のページアクセス権限は枠なしの行なので、GitHubも揃える */}
               <GithubPermissionBlock
+                boxed={false}
                 value={githubPermsFrom(local) ?? NO_GITHUB_PERMS}
                 onChange={v => setLocal(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
               />

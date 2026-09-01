@@ -563,6 +563,11 @@ function permsFrom(raw: unknown): GithubPerms | null {
   const branch = actionLevel(o.githubBranchPermission);
   const legacy = fromLegacyLevel(o.githubPermission);
   if (pull === undefined && merge === undefined && branch === undefined) return legacy;
+  // 3軸とも none なのに旧キーが none でない行は、正規の書き込み経路では作れない食い違い。
+  // 旧キーのほうを正として読む（src/app/lib/githubPerms.ts と同じ扱い）
+  if (pull === "none" && merge === "none" && branch === "none" && legacy && canView(legacy)) {
+    return legacy;
+  }
   return {
     pull: pull ?? legacy?.pull ?? "none",
     merge: merge ?? legacy?.merge ?? "none",
