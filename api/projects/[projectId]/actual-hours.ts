@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { requireProjectAccess, serviceClient } from "../../_lib/projectAuth";
 
 function calcTicketActualHours(t: {
   started_at: string | null;
@@ -26,11 +26,12 @@ export default async function handler(req: any, res: any) {
   const { projectId } = req.query;
   if (!projectId || typeof projectId !== "string") return res.status(400).json({ error: "projectId is required" });
 
-  const supabaseUrl = process.env.VITE_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) return res.status(500).json({ error: "Supabase not configured" });
+  const sb = serviceClient();
+  if (!sb) return res.status(500).json({ error: "Supabase not configured" });
 
-  const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
+  // service_role で繋ぐため RLS が効かない。ここで絞らないと誰でも全PJの工数が取れる。
+  const denied = await requireProjectAccess(sb, req, projectId);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
 
   // N+1を避けるため、スプリントとチケットを1回のJOINクエリで取得
   const { data: sprints, error } = await sb

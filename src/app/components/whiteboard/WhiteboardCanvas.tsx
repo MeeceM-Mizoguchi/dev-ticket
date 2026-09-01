@@ -1,11 +1,12 @@
 // Excalidraw キャンバス本体（遅延ロードされる重量コンポーネント）。
 // useWhiteboardSync でリアルタイム同期し、フロー接続・カーソルチャット・エクスポートの
 // 各オーバーレイを重ねる。画像は Storage にアップロードして fileId→URL を Yjs で共有する。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Excalidraw, CaptureUpdateAction } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { useWhiteboardSync, type WbUser } from "@/app/hooks/useWhiteboardSync";
-import { uploadWhiteboardImage } from "@/app/lib/whiteboardService";
+import { uploadWhiteboardImage, type WbAccessEvent } from "@/app/lib/whiteboardService";
+import type { WhiteboardShareMember } from "@/app/types";
 import { autoConnectLines, foldSelectedConnectors, followTriangleConnections, healBrokenElbowArrows, isConnectableShape, newFoldResizeState, reconnectDraggedConnectors, remapDuplicatedCustomRefs, remapDuplicatedShapeAnchors, repairOpenTriangles, shapeSig, suppressTrianglePointEditing, syncFoldedViasOnResize, unfoldSelectedConnectors, type DupPlan } from "@/app/lib/whiteboardAutoConnect";
 import { normalizeBraces } from "@/app/lib/whiteboardBrace";
 import { captureFrameChildren, followFrameMoves, reparentDraggedElements } from "@/app/lib/whiteboardFrames";
@@ -58,7 +59,7 @@ import { ConnectorViaOverlay } from "./ConnectorViaOverlay";
 import { HelpButton } from "./HelpButton";
 import { FullscreenButton } from "./FullscreenButton";
 import { PrivateBadge } from "./PrivateBadge";
-import { useOverlayPinchZoom } from "./useOverlayPinchZoom";
+import { useOverlayWheel } from "./useOverlayWheel";
 
 // Excalidraw標準のハンバーガーメニュー/ヘルプ(?)/コラボボタンを非表示にする
 // （メニューは自前、ヘルプは右上アイコンに一本化、コラボは独自Yjs同期を使うため不要）
@@ -276,12 +277,18 @@ interface Props {
   projectSlug: string;
   /** コメントの @メンション候補（projects.members）を引くために使う */
   projectId?: string | null;
-  /** プライベートモードのボードか。右上にバッジを出し、コメントの通知を止める */
+  /** プライベートモードのボードか。右上にバッジを出し、見られない人へのコメント通知を止める */
   isPrivate?: boolean;
+  /** プライベート中の限定公開先。空 = 作成者だけが見られる */
+  sharedWith?: WhiteboardShareMember[];
+  /** 自分がこのボードの作成者か（バッジの文言だけに使う） */
+  isBoardOwner?: boolean;
+  /** ボード作成者の表示名。プライベート中に「通知してよい相手」を決めるのに使う */
+  boardOwnerName?: string;
   /** プライベートボードの Realtime チャンネル用トークン（公開ボードは未指定） */
   channelKey?: string | null;
-  /** 自分が見ている間にこのボードがプライベート化された（＝締め出された） */
-  onEvicted?: () => void;
+  /** 自分が見ている間にこのボードの公開範囲が変わった（締め出し／鍵の作り直し） */
+  onAccessEvent?: (ev: WbAccessEvent) => void;
   /** リンクで指定されたオブジェクト。ロード後にそこへ移動して強調する */
   focusElementId?: string | null;
   /** リンクで指定されたコメント（?comment=&reply=・ENHA2-039）。ピンへ移動して固定表示する */
@@ -299,6 +306,10 @@ interface Props {
   instanceKey?: string;
 }
 
+// 既定値をモジュール定数にしておく（[] を既定にすると毎レンダー新しい配列になり、
+// これを依存に持つ useMemo が毎回作り直しになる）
+const EMPTY_SHARES: WhiteboardShareMember[] = [];
+
 const CURSOR_THROTTLE_MS = 30;
 const UNDO_GRACE = 300;      // undo/redo 直後に「記録どおりのアンカーへ復元」する猶予(ms)
 const UNDO_MAX_GRACE = 3000; // 収束しない時に猶予窓を開きっぱなしにしない絶対上限(ms)
@@ -307,7 +318,8 @@ const FOCUS_RETRY_MAX = 30;  // 同 最大回数（= 約6秒。Yjsの後追い�
 
 export default function WhiteboardCanvas({
   boardId, title, user, canEdit, projectSlug, projectId,
-  isPrivate = false, channelKey = null, onEvicted,
+  isPrivate = false, sharedWith = EMPTY_SHARES, isBoardOwner = true, boardOwnerName = "",
+  channelKey = null, onAccessEvent,
   focusElementId, focusCommentId, focusReplyId, onFocusResult, instanceKey = "page",
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -349,13 +361,21 @@ export default function WhiteboardCanvas({
   const {
     bridgeRef, docRef, registerApi, remoteChats, setCursor, setChat, docLoaded,
     setViewport, snapToFollowed, isApplyingFollow, setEditingElements,
-  } = useWhiteboardSync(boardId, user, channelKey, onEvicted);
+  } = useWhiteboardSync(boardId, user, channelKey, onAccessEvent);
+
+  // プライベート中にコメント通知を飛ばしてよい相手＝そのボードを見られる人（作成者＋共有先）。
+  // それ以外へ飛ばしても RLS で開けず「ボードが見つかりませんでした」になるだけなので、
+  // 死にリンクを配らないようにここで絞る。
+  const privateAllowedNames = useMemo(
+    () => (isPrivate ? [boardOwnerName, ...sharedWith.map((m) => m.name)].filter(Boolean) : []),
+    [isPrivate, boardOwnerName, sharedWith]);
   // ※他メンバーのカーソル反映は useWhiteboardSync 内で命令的に updateScene するため、ここでは扱わない
   //   （Reactの再レンダーを避け、ドラッグ/複製やExcalidraw内部の動作を妨げないため）
 
-  // UI（コメントピン・ツールバー・パネル）の上でのピンチをキャンバスのズームにする（BRU12-033）。
-  // これが無いとブラウザのページズームが働き、画面全体が拡大されてしまう。
-  useOverlayPinchZoom(api, containerRef);
+  // UI（コメントピン・ツールバー・パネル）の上でのホイール／ピンチを、キャンバス上と同じ
+  // 「ボードの移動／ズーム」にする（BRU12-033・BRU13-048）。これが無いと、横スワイプが
+  // ブラウザの「戻る／進む」になり、縦ホイールはページのほうが動き、ピンチは画面全体が拡大する。
+  useOverlayWheel(api, containerRef);
 
   // このキャンバスを「アクティブなインスタンス」として登録する（whiteboardInstance.ts の説明を参照）。
   // リンクプレビューのパネルが開くとキャンバスが2枚になるため、window レベルの処理や
@@ -707,6 +727,33 @@ export default function WhiteboardCanvas({
     });
     return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [api, docLoaded, canEdit, bridgeRef]);
+
+  // ドラッグの後始末（BRU13-050）。onChange の静穏フェーズは「1tick に updateScene は1つだけ」を
+  // 守るため、他のヘルパーが反映した tick を飛ばして次tickへ回す。ドラッグ最後の onChange が
+  // ちょうどその tick に当たると、フレーム装飾の影矩形(BRU5-063)だけが元の位置に取り残され、
+  // 枠が二重に見える（＝フレームが複製されたような表示。次に何か操作するまで直らない）。
+  // 指を離したあとに明示的に走らせて必ず収束させる（変化が無ければ内部で何もしない）。
+  useEffect(() => {
+    if (!api || !docLoaded || !canEdit) return;
+    const settle = () => {
+      try {
+        if (!isActiveWbInstance(instanceKey)) return;
+        if (bridgeRef.current?.isApplyingRemote?.()) return;
+        // 指を離した後なので、もう何も描いていない。newElement が残っていても
+        // 「描画中だから触らない」ガードに引っかからせない（残っていると永久に収束しない）。
+        syncFrameDecorRects(api, { ...api.getAppState(), newElement: null }, false);
+      } catch { /* noop */ }
+    };
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const onUp = () => { timers.push(setTimeout(settle, 80), setTimeout(settle, 320)); };
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      timers.forEach(clearTimeout);
+    };
+  }, [api, docLoaded, canEdit, bridgeRef, instanceKey]);
 
   // Cmd/Ctrl+Shift+C … 選択中の要素を画像でクリップボードへコピー。
   // ブラウザのデベロッパーツール起動を抑止しつつ、選択範囲のみをPNG化してコピーする。
@@ -1416,7 +1463,7 @@ export default function WhiteboardCanvas({
           // ※左上ではなくここに置くのは、左上はボード一覧の展開ボタン(BoardListToggle)と重なるのと、
           //   このスロットはキャンバス内部なので疑似全画面(zIndex:3000)でもバッジが隠れないため。
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
-            {isPrivate && <PrivateBadge variant="canvas" />}
+            {isPrivate && <PrivateBadge variant="canvas" sharedWith={sharedWith} isOwner={isBoardOwner} />}
             <CopyObjectLinkButton api={api} projectSlug={projectSlug} boardId={boardId} onResult={showToast} />
             <HelpButton api={api} />
             <WhiteboardExportMenu api={api} title={title} containerRef={containerRef} />
@@ -1453,7 +1500,8 @@ export default function WhiteboardCanvas({
           {/* コメント（ENHA2-039）。図形の編集権限とは切り離し、閲覧のみのメンバーも投稿・返信できる */}
           <CommentLayer
             api={api} containerRef={containerRef} docRef={docRef} user={user}
-            projectSlug={projectSlug} projectId={projectId} boardId={boardId} boardTitle={title} isPrivate={isPrivate}
+            projectSlug={projectSlug} projectId={projectId} boardId={boardId} boardTitle={title}
+            isPrivate={isPrivate} privateAllowedNames={privateAllowedNames}
             instanceKey={instanceKey}
             commentMode={commentMode} setCommentMode={setCommentMode}
             listOpen={commentListOpen} setListOpen={setCommentListOpen}

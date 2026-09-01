@@ -8,6 +8,8 @@ export interface Run {
   italic?: boolean;
   strike?: boolean;
   code?: boolean;
+  /** リンク先(<a href>)。Markdown 出力だけが使う。他フォーマットは無視して本文だけ描く。 */
+  href?: string;
 }
 
 export interface HeadingBlock { type: "heading"; level: 1 | 2 | 3; runs: Run[] }
@@ -19,6 +21,8 @@ export interface CodeBlock { type: "codeblock"; text: string }
 export interface TableCell { runs: Run[]; header?: boolean }
 export interface TableBlock { type: "table"; rows: TableCell[][]; colWidths?: number[] }
 export interface ImageBlock { type: "image"; url: string; alt?: string }
+/** 区切り線。複数チケットを1ファイルに出すときの境界などに使う。 */
+export interface DividerBlock { type: "divider" }
 // Mermaid 図。エクスポート実行時に render() が SVG→PNG(dataURL) 化して ImageBlock へ変換する。
 // 変換に失敗した場合の保険として、各レンダラーはコードブロックとしてフォールバック描画する。
 export interface MermaidBlock { type: "mermaid"; code: string }
@@ -31,6 +35,7 @@ export type Block =
   | CodeBlock
   | TableBlock
   | ImageBlock
+  | DividerBlock
   | MermaidBlock;
 
 export interface MetaField { label: string; value: string }
@@ -49,4 +54,4 @@ export interface ArticleDoc {
   actionItems?: ActionItemRow[]; // 議事録のアクションアイテム
 }
 
-export type ExportFormat = "pdf" | "docx" | "xlsx";
+export type ExportFormat = "pdf" | "docx" | "xlsx" | "md";

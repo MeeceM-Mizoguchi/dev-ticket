@@ -8,7 +8,7 @@ import type {
   TicketGithubLink, TicketGithubLinkCandidate, GithubMergeMethod, GithubAccessLevel,
   GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult, GithubPermissionBlock,
   GithubMergePrecheckResult, GithubRequireChecksMode, GithubDeployStatus, GithubDeployOverview,
-  GithubDeployLevel, GithubDeployCheckMode,
+  GithubDeployLevel, GithubDeployCheckMode, GithubRunProgress,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -156,7 +156,7 @@ export function fetchTicketLinks(projectId: string, ticketId: string) {
  * randomUUID が無い WebView 向けの受け皿も置く（形さえ合っていればよく、
  * 万一ぶつかっても記録の挿入が失敗して「記録なし」に落ちるだけで実行は通る）。
  */
-function newRunId(): string {
+export function newRunId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const hex = (n: number) => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
   return `${hex(8)}-${hex(4)}-4${hex(3)}-a${hex(3)}-${hex(12)}`;
@@ -166,8 +166,23 @@ function newRunId(): string {
  * 実行の記録に添える情報。
  * label は復帰したモーダルにそのまま出る一言、slug は「GitHubの画面をひらく」の行き先。
  */
-function runFields(label: string, slug?: string) {
-  return { runId: newRunId(), runLabel: label, runSlug: slug };
+function runFields(label: string, slug?: string, runId?: string) {
+  return { runId: runId || newRunId(), runLabel: label, runSlug: slug };
+}
+
+/**
+ * 実行の途中経過を引く（supabase/add_github_action_run_progress.sql）。
+ *
+ * まとめてマージはサーバー側の1リクエストで通しで走るので、応答が返るまで
+ * 画面には何も届かない。実行中はこれを数秒おきに引いて「今どこか」を出す。
+ * 途中経過は補助なので、列が未適用でも取れないだけ（null を返す）で実行には影響しない。
+ */
+export async function fetchRunProgress(runId: string): Promise<GithubRunProgress | null> {
+  if (!supabase || !runId) return null;
+  const { data, error } = await supabase
+    .from("github_action_runs").select("progress").eq("id", runId).maybeSingle();
+  if (error || !data?.progress) return null;
+  return data.progress as GithubRunProgress;
 }
 
 /**
@@ -210,14 +225,21 @@ export function mergePull(
   });
 }
 
-/** 選択した複数のPRを、1件ずつ順番にマージする */
+/**
+ * 選択した複数のPRを、確認してから1件ずつ順番にマージする。
+ *
+ * サーバー側では「単独のマージ可否 → 捨てブランチでの試しマージ → 本番のマージ」を
+ * 通しで走らせる（BRU13-042）。数十秒かかることがあるので、呼ぶ側は runId を先に作って
+ * 渡し、実行中は fetchRunProgress() で途中経過を引きながら待つ。
+ */
 export function mergePullsBulk(
-  projectId: string, numbers: number[], method: GithubMergeMethod, reason?: string, projectSlug?: string,
+  projectId: string, numbers: number[], method: GithubMergeMethod, reason?: string,
+  projectSlug?: string, runId?: string,
 ) {
   return call<GithubBulkMergeResult>("merge-bulk", {
     body: {
       projectId, numbers, method, reason,
-      ...runFields(`${numbers.length}件をまとめてマージ`, projectSlug),
+      ...runFields(`${numbers.length}件をまとめてマージ`, projectSlug, runId),
     },
   });
 }

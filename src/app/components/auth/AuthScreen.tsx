@@ -61,7 +61,8 @@ function BrandMark({ size = 40 }: { size?: number }) {
 export function AuthScreen({ heroTitle, heroLead, title, description, children, below }: {
   /** 左パネルの見出し。強調したい語は <AuthHeroWord> で囲む */
   heroTitle: ReactNode;
-  heroLead: string;
+  /** 見出しの下の説明。改行したい位置には <br /> を入れる */
+  heroLead: ReactNode;
   /** 右のカードの見出しと補足 */
   title: string;
   description: string;
@@ -87,27 +88,40 @@ export function AuthScreen({ heroTitle, heroLead, title, description, children, 
 
         /* 寸法はすべて画面サイズから引く。ブレークポイントで段階的に切り替えるのではなく
            clamp(下限, ビューポート連動, 上限) にして、幅・高さの変化に連続して追従させる。
-           大きなディスプレイで中央に小さな塊が浮くのを避けるのが狙い */
+
+           左右2枚は「ひと組」として中央に置き、左は文章の幅ぴったりで止める。
+           grid の minmax(0, auto) 列だと、justify-content: center を指定しても
+           Chrome は余った幅をこの列に吸わせてしまい（実測で 213px 伸びていた）、
+           文章の右端と列の右端の差がそのまま左右の間の穴になっていた。
+           flex なら flex-grow: 0 の項目は決して伸びないので、組の幅＝中身の幅になり、
+           左右の間隔は gap のぶんだけで済む。 */
         .auth-grid {
-          display: grid;
-          gap: clamp(2.5rem, 4vw, 5.5rem);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: clamp(2rem, 3vw, 3.25rem);
           width: 100%;
-          max-width: 1680px;
           margin-inline: auto;
         }
         @media (min-width: 1024px) {
-          /* 左は「文章の幅」ぶんだけ取り、2列まとめて中央に置く。
-             左を 1fr にすると内容より広い列ができ、その余りが左右の間に穴として残る */
           .auth-grid {
-            grid-template-columns: minmax(0, auto) clamp(400px, 32vw, 560px);
-            justify-content: center;
+            flex-direction: row;
             align-items: center;
+            justify-content: center;
+            gap: clamp(2rem, 2.6vw, 3.5rem);
+            /* 極端に広い画面で間延びしないための上限。通常はここまで届かない */
+            max-width: min(1400px, 92vw);
           }
+          /* 伸びない・中身の幅ちょうど。狭いときだけ縮んで折り返す */
+          .auth-hero { flex: 0 1 auto; min-width: 0; }
+          .auth-card { flex: 0 0 clamp(360px, 26vw, 460px); }
         }
+        /* 文字と丸の大きさは幅だけでなく高さからも引く（min(◯vw, ◯vh)）。
+           横に広く縦の狭いノートPCでも、見出しが伸びすぎて画面に収まらなくなるのを防ぐ */
         .auth-hero {
-          --hero-title: clamp(2.35rem, 3.9vw, 4.6rem);
-          --hero-lead: clamp(1rem, 1.15vw, 1.4rem);
-          --rail-dot: clamp(36px, 2.4vw, 46px);
+          --hero-title: clamp(2.2rem, min(3.7vw, 6.6vh), 4.6rem);
+          --hero-lead: clamp(1rem, min(1.2vw, 2.2vh), 1.4rem);
+          --rail-dot: clamp(34px, min(2.4vw, 4.6vh), 46px);
         }
         .auth-card {
           --card-pad-x: clamp(1.25rem, 1.7vw, 2.25rem);
@@ -166,7 +180,7 @@ export function AuthScreen({ heroTitle, heroLead, title, description, children, 
       </div>
 
       {/* ── 本体 ───────────────────────────────────────────── */}
-      <div className="relative flex-1 flex items-center justify-center px-5 sm:px-8 lg:px-12 xl:px-16 py-8 sm:py-12">
+      <div className="relative flex-1 flex items-center justify-center px-5 sm:px-8 lg:px-10 py-8 sm:py-12">
         <div className="auth-grid">
 
           {/* 左：ブランドと、起票からリリースまでの流れ。
@@ -197,14 +211,14 @@ export function AuthScreen({ heroTitle, heroLead, title, description, children, 
             </h2>
             <p
               className="text-slate-600 leading-relaxed"
-              style={{ fontSize: 'var(--hero-lead)', maxWidth: 'min(100%, 40em)' }}
+              style={{ fontSize: 'var(--hero-lead)', maxWidth: '100%' }}
             >
               {heroLead}
             </p>
 
             {/* 起票→リリースのレール。LPの製品ビジュアル上部と同じ意匠。
                 列いっぱいまで引き伸ばすと丸の間隔が間延びするので、幅に上限を掛ける */}
-            <div className="relative mt-12" style={{ maxWidth: 'min(100%, 560px)' }}>
+            <div className="relative" style={{ marginTop: 'clamp(2rem, 4.5vh, 3.25rem)', maxWidth: 'min(100%, 640px)' }}>
               <div
                 className="absolute h-[3px] rounded-full"
                 style={{

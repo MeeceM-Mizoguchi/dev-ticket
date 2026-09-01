@@ -1,8 +1,9 @@
 # ホワイトボード プライベートモード 設計書
 
 > 対象: ボード単位で「作成者だけが見られる」モードを追加する
-> ステータス: **実装済み（2026-08-09・vite build 緑・未検証／未コミット）**
-> 残作業: `supabase/add_whiteboard_private.sql` の適用（ユーザー作業）
+>       ＋ そこから選んだPJメンバーにだけ見せる「限定公開」（§9・2026-08-30 追加）
+> ステータス: **実装済み（vite build 緑・未検証）**
+> 残作業: `supabase/add_whiteboard_private.sql` と `supabase/add_whiteboard_shares.sql` の適用（ユーザー作業）
 
 ---
 
@@ -309,7 +310,125 @@ export interface Whiteboard {
 
 ## 8. 補足・非対象
 
-- **他人を個別に招待する共有（限定共有）は対象外**。今回は「PJ全体 or 自分だけ」の二値。
-  将来必要になったら `whiteboard_shares` テーブルを足して RLS の `or exists(...)` を 1 項足す形で拡張できる設計になっている。
+- ~~**他人を個別に招待する共有（限定共有）は対象外**。今回は「PJ全体 or 自分だけ」の二値。~~
+  → **§9 で実装した**（予告どおり `whiteboard_shares` テーブル＋RLS 1項の追加）。
 - 一覧の並び順（`updated_at desc`）にプライベート/公開の区別は入れない。混在のまま錠アイコンで判別する。
 - プライベートボードもプロジェクト削除時は従来どおり cascade で消える。
+
+
+---
+
+# 9. 限定公開（特定のメンバーにだけ見せる）— 2026-08-30 追加
+
+> 対象: プライベートモードのボードを「自分＋選んだPJメンバー」にだけ見せられるようにする
+> ステータス: **実装済み（vite build 緑・未検証）**
+> 残作業: `supabase/add_whiteboard_shares.sql` の適用（ユーザー作業。適用まで共有先の設定は失敗する）
+
+## 9-1. 要件と結論
+
+| # | 要件 | 実現方法（結論） |
+|---|------|------------------|
+| ① | プライベートボードを、PJにアサインされている特定メンバー（複数可）にも見せたい | `whiteboard_shares`（ボードID × profiles.id）を足し、RLS に `or 共有されている` を 1 項加える |
+| ② | 共有先を選ぶUI | 3点リーダーに「共有するメンバー」を追加 → `WhiteboardShareDialog`（PJメンバーのチェックリスト） |
+| ③ | 共有中と分かる印 | バッジを「プライベート」→「限定公開 N人」に切替。一覧の行も「自分のみ」→「N人に共有」 |
+| ④ | 共有を外したら見えなくなる | 行の削除＋**秘密トークンの作り直し**＋開いている本人を退去（§9-4） |
+
+### 仕様判断
+
+| 論点 | 決定 | 理由 |
+|------|------|------|
+| `visibility` に 'shared' を足すか | **足さない**。`'private'` + 共有行 = 限定公開 | RLS が「or 共有されている」1項の追加で済む。状態が増えないので既存の分岐を壊さない |
+| 共有相手の権限（閲覧/編集） | **持たせない**。そのメンバーのプロジェクト権限（`whiteboardPermission`）にそのまま従う | ボード単位の権限とPJ単位の権限が二重に効くと、どちらで詰まっているのか誰にも分からなくなる |
+| ホワイトボード権限が `none` の人 | **候補には出すが「権限なし」バッジを付ける** | 共有しても画面に辿り着けない。黙って選ばせるより、先に気づけた方がよい |
+| プライベート解除時の共有設定 | **一緒に消す** | 残すと、次にプライベート化した時に前の共有先が黙って復活する（「自分だけのつもり」が崩れる） |
+| 共有相手はボードを消せるか | **消せない**（RLS `wb_delete` は作成者のみ）。メニューにも出さない | 作成者の持ち物という位置づけを崩さない |
+| 共有相手どうしは互いを見られるか | **見られる**（`wb_shares_select` の3項目） | コメントのメンション通知先を「ボードを見られる人」に絞るのに、共有先の一覧が要る |
+
+## 9-2. データモデル `supabase/add_whiteboard_shares.sql`（新規）
+
+```
+whiteboard_shares(whiteboard_id uuid, profile_id uuid, created_by text, created_at)  -- PK: (whiteboard_id, profile_id)
+```
+
+- 相互参照する RLS（`whiteboards` ⇄ `whiteboard_shares`）は循環して 500 になるので、
+  `is_whiteboard_shared_with_me()` / `is_whiteboard_creator()` の **security definer 関数**を挟む
+  （`add_tasks.sql` の `task_shares` と同型。ENHA2-029 で実際に踏んだ罠）。
+- `wb_select` / `wb_update` / `wb_delete` を張り替え、閲覧と更新に `or is_whiteboard_shared_with_me(id)` を足す。
+
+### RLS の `with check` では守れないので**トリガー**を足した（重要）
+
+共有相手も `doc_state` を保存できないと、書いた内容が黙って消える。
+つまり `wb_update` は共有相手にも通さざるを得ない。
+一方で「プライベート化／解除できるのは作成者だけ」は維持したい。
+**RLS の `with check` は OLD 行を見られない**ため「所有権に関わる列だけ守る」ができない。
+
+→ `whiteboards_guard_ownership()` を **BEFORE UPDATE トリガー**で足した。
+`visibility` / `private_by` / `private_key` / `created_by` のどれかが変わる更新だけを見て、
+作成者でなければ例外にする。内容の保存は素通し。
+`auth.uid()` が無い（SQL Editor / service_role）場合は素通しする ＝ 退職者の救済など運用の直操作を塞がない。
+
+## 9-3. 変更ファイル
+
+| ファイル | 種別 | 概要 |
+|---|---|---|
+| `supabase/add_whiteboard_shares.sql` | 新規 | テーブル＋関数2本＋RLS 張り替え＋所有権ガードのトリガー |
+| `src/app/components/whiteboard/WhiteboardShareDialog.tsx` | 新規 | 共有先の付け外し（現在の共有先／PJメンバーのチェックリスト） |
+| `src/app/types.ts` | 改修 | `WhiteboardShareMember`、`Whiteboard.sharedWith` / `.createdByName` |
+| `src/app/lib/whiteboardService.ts` | 改修 | `loadShareMap` / `addBoardShares` / `removeBoardShare` / `clearBoardShares` / `rotatePrivateKey` / `loadShareCandidates` / `reloadBoard`、退去通知の一般化 |
+| `src/app/lib/whiteboardControlBus.ts` | 改修 | `broadcastEvict` → `broadcastAccess(payload)` |
+| `src/app/hooks/useWhiteboardSync.ts` | 改修 | `onEvicted` → `onAccessEvent`（退去／張り直しの2種） |
+| `src/app/components/whiteboard/PrivateBadge.tsx` | 改修 | 共有先ゼロ=「プライベート」/ ありは「限定公開 N人」 |
+| `src/app/components/whiteboard/BoardListSidebar.tsx` | 改修 | 「共有するメンバー」項目、行バッジ、共有相手には削除を出さない |
+| `src/app/pages/WhiteboardPage.tsx` | 改修 | 共有ダイアログ、付け外しハンドラ、キャンバスの key に `privateKey` |
+| `src/app/components/whiteboard/WhiteboardCanvas.tsx` | 改修 | `sharedWith` / `isBoardOwner` / `boardOwnerName` / `onAccessEvent` |
+| `src/app/components/whiteboard/WhiteboardLinkPreview.tsx` | 改修 | バッジ、鍵の作り直しで meta を引き直す |
+| `src/app/lib/whiteboardCommentNotify.ts` / `CommentLayer.tsx` | 改修 | プライベート中は「ボードを見られる人」にだけ通知 |
+
+## 9-4. 共有を外した時（ここが一番の勘所）
+
+RLS はテーブルしか守らない。外された人は `wb:{boardId}:{private_key}` という**チャンネル名を覚えている**ので、
+行を消すだけでは Broadcast に居座って同期内容を覗き続けられる（`SupabaseYjsProvider` は後入りに全stateを配る）。
+
+そこで解除時は次の順に進める（`WhiteboardPage.handleRemoveShare`）:
+
+1. `flushSave()` — 保存デバウンス(1.5s)の取りこぼしを吐き出す（この後キャンバスが張り直るため）
+2. 共有行を削除
+3. **`rotatePrivateKey()` — 秘密トークンを作り直す**
+4. アクセス変更を broadcast（**鍵を替えた後**に送る。先に送ると受け手が古い行を読み直す）
+5. ローカルのボード行を差し替え → キャンバスの `key` に `privateKey` を入れてあるので自動でリマウント
+
+broadcast のペイロードは `{ by, targets, reason }`。受け手は次のように解釈する（`classifyAccessEvent`）:
+
+| `targets` | 意味 | 受け手の動き |
+|---|---|---|
+| `null` | 送信者以外の全員 | **退去**（プライベート化の瞬間。まだ共有先が無いのでこれで足りる） |
+| 自分が入っている | 名指し | **退去**（共有を外された本人） |
+| 入っていない | 名指し外 | **張り直し**（鍵が変わったのでボード行を読み直す） |
+
+プライベート**解除**時も `targets: []`（＝全員 refresh）を、**更新の後に**送る。
+チャンネル名からトークンが消えるので、送らないと他メンバーが旧チャンネルに残って同期が静かに止まる。
+
+## 9-5. コメント通知
+
+プライベート中は「通知を一切飛ばさない」→「**ボードを見られる人にだけ飛ばす**」に変えた。
+宛先は `privateAllowedNames = [作成者名, ...共有先の名前]`（`WhiteboardCanvas` で組み立て、`CommentLayer` 経由で
+`whiteboardCommentNotify` に渡す）。共有先ゼロなら空配列＝誰にも飛ばない＝従来どおり。
+作成者名を引くために `listBoards` / `getBoardMeta` がプライベートボードの `created_by` を `profiles` で解決している。
+
+## 9-6. 検証チェックリスト（§7 に追加）
+
+| # | シナリオ | 期待 |
+|---|---|---|
+| 15 | A がボードをプライベート化 →「共有するメンバー」で B を選ぶ | バッジが「限定公開 1人」、一覧の行が「1人に共有」 |
+| 16 | B の一覧をリロード | そのボードが出る。開けて編集できる（Bの権限が view なら閲覧のみ） |
+| 17 | C（PJメンバー・非共有）の一覧 | 出ない。URL 直打ちでも開けない |
+| 18 | 組織 owner/admin（非共有） | **見えない**（仕様どおり） |
+| 19 | A と B が同時に開いて図形を描く | 双方に同期する（＝チャンネル名の鍵を B も読めている） |
+| 20 | B が開いたまま A が B の共有を外す | B は退去。A の画面は張り直り、以後 B に同期が届かない |
+| 21 | A・B・D に共有 → B だけ外す | D は張り直しだけ（退去しない）。以後も編集が同期する |
+| 22 | B が DevTools から `whiteboards` を直接 update して private_by を自分に | トリガーが例外を投げて失敗する |
+| 23 | B が共有ボードを削除しようとする | メニューに「ボード削除」が出ない（RLS でも弾かれる） |
+| 24 | 限定公開中に B が A を @メンション | ベル/Slack が飛ぶ |
+| 25 | 限定公開中に C（非共有）を @メンション | 飛ばない（開けないリンクを配らない） |
+| 26 | A が「プライベートモード解除」 | 共有設定も消える。PJ全員に見える。開いていた B は張り直って同期が続く |
+| 27 | ホワイトボード権限が none のメンバー | 候補一覧に「権限なし」バッジが出る |

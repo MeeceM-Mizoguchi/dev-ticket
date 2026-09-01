@@ -471,15 +471,28 @@ export interface MeetingMinute {
   images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
+/** プライベートボードの共有相手（whiteboard_shares の1行） */
+export interface WhiteboardShareMember {
+  /** profiles.id（= auth.uid()）。userId と同じ空間 */
+  id: string;
+  name: string;
+}
 export interface Whiteboard {
   id: string; projectId: string; title: string;
   createdBy: string; updatedBy: string; createdAt: string; updatedAt: string;
-  /** 'project'=PJメンバーが見られる（既定） / 'private'=作成者だけが見られる */
+  /** 'project'=PJメンバーが見られる（既定） / 'private'=作成者と共有相手だけが見られる */
   visibility: "project" | "private";
   /** プライベート所有者のuserId。公開時は "" */
   privateBy: string;
   /** Realtimeチャンネル名に混ぜる秘密トークン（RLSで所有者以外には見えない）。公開時は "" */
   privateKey: string;
+  /**
+   * プライベート中の限定公開先。空 = 作成者だけが見られる（＝素のプライベート）。
+   * 公開ボードでは常に空（解除時に共有行ごと消す）。
+   */
+  sharedWith: WhiteboardShareMember[];
+  /** 作成者の表示名。プライベートボードだけ解決する（共有相手がメンション通知の可否を判断するのに使う） */
+  createdByName: string;
 }
 // ── ナレッジノート（プロジェクト単位の資料の保管・閲覧・検索） ──
 // 表示名は「ナレッジノート」。内部識別子は knowledge_ に統一する。
@@ -832,6 +845,24 @@ export interface TicketGithubLinkCandidate {
 
 export type GithubMergeMethod = "merge" | "squash" | "rebase";
 
+/**
+ * まとめてマージの途中経過（BRU13-042 / supabase/add_github_action_run_progress.sql）。
+ *
+ * 実行はサーバー側の1リクエストで通しで走るため、応答が返るまで画面には何も届かない。
+ * サーバーが段ごとにこれを書き、画面が数秒おきに引いて「今どこか」を出す。
+ */
+export interface GithubRunProgress {
+  /** precheck … 単独のマージ可否／trial … 捨てブランチでの試しマージ／merge … 本番のマージ */
+  step: "precheck" | "trial" | "merge";
+  /** step の中で終わった件数 */
+  done: number;
+  total: number;
+  /** いま扱っているPR番号 */
+  current?: number;
+  /** 試しマージが不要だったので省いた（変更ファイルが重ならない等） */
+  trialSkipped?: boolean;
+}
+
 /** まとめてマージの結果。1件ごとに成否を返す */
 export interface GithubBulkMergeResult {
   ok: true;
@@ -876,6 +907,11 @@ export interface GithubMergePrecheckRow {
   checkGate?: GithubCheckGate;
   /** 確認できなかった情報源。空でなければ「問題なし」と言い切らない */
   checkUnavailable?: string[];
+  /**
+   * 捨てブランチでの試しマージで分かった「このPRより先に積んだPR」（BRU13-042）。
+   * 単独では通るのに、この順番だと通らない、を画面で言い分けるために使う。
+   */
+  conflictAfter?: number[];
 }
 
 /**
@@ -891,6 +927,11 @@ export interface GithubMergePrecheckResult {
   /** 失敗チェックが見つかった件数（warn を含む） */
   checkWarnings?: number;
   requireChecksMode?: GithubRequireChecksMode;
+  /**
+   * 捨てブランチでの試しマージで止めた結果（BRU13-042）。
+   * 単独のチェックは全件通っていて、順番に積んだときだけ失敗した状態を指す。
+   */
+  trial?: boolean;
   results: GithubMergePrecheckRow[];
 }
 

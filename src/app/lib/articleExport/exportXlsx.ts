@@ -145,6 +145,13 @@ function writeBlocks(ws: ExcelJS.Worksheet, wb: ExcelJS.Workbook, cursor: number
         }
         break;
       }
+      case "divider": {
+        // 行の下辺に薄い罫線を引いて区切りにする
+        const c = ws.getCell(row, 1);
+        c.border = { bottom: { style: "thin", color: { argb: "FFD8D3CD" } } };
+        row += 2;
+        break;
+      }
       case "table": row = writeTable(ws, row, b); break;
       case "image": row = writeImage(ws, wb, row, b.url, images); break;
     }

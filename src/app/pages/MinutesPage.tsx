@@ -806,7 +806,7 @@ export function MinutesPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0, display: "flex", alignItems: "center" }}>
                     <Link2 style={{ width: 14, height: 14 }} />
                   </button>
-                  <ArticleExportButton onExport={f => exportMinuteArticle(selected, f)} />
+                  <ArticleExportButton formats={["xlsx", "docx", "pdf", "md"]} onExport={f => exportMinuteArticle(selected, f)} />
                   {canEdit && (
                     <button onClick={() => setDeleteTarget(selected)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0 }}>
                       <Trash2 style={{ width: 14, height: 14 }} />

@@ -10,11 +10,16 @@
 //   ・開こうとしたURL（＝リンクは正しく届いている、という証拠）
 //   ・次にどこへ行けばよいか
 // の3点を必ず出す。詳細は docs/not-found-page-design.md 参照。
-import type { ReactElement } from "react";
-import { useNavigate, useLocation } from "react-router";
+import { useEffect, useState, type ReactElement } from "react";
+import { useNavigate, useLocation, useParams } from "react-router";
 import { SearchX, Lock, FolderKanban, LayoutDashboard, Link2 } from "lucide-react";
 import { appOrigin } from "@/app/lib/appOrigin";
-import { checkProjectAccess, type ProjectAccessTarget, type ProjectAccessViewer } from "@/app/lib/projectAccess";
+import {
+  checkProjectAccess,
+  fetchProjectAccessHint,
+  type ProjectAccessTarget,
+  type ProjectAccessViewer,
+} from "@/app/lib/projectAccess";
 import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 
@@ -93,9 +98,27 @@ export function NotFoundView(props: NotFoundViewProps) {
   const { kind = "route", detail, backTo } = props;
   const navigate = useNavigate();
   const location = useLocation();
+  const { projectSlug } = useParams();
   const { toast } = useToast();
 
-  const copy = buildCopy(props);
+  // BRU14-001 で RLS を締めた結果、未アサインのプロジェクトは行ごと読めなくなり、
+  // 画面からは「存在しない」と区別がつかなくなった。そのままだと同じ組織の
+  // 未アサインPJまで 404 になり、「アサインを依頼してください」の案内が出せない。
+  // そこで 404 を出す直前にDBへ理由だけを聞き直し、403 に差し替える。
+  // 中身は返らないので、これで情報が増えることはない。
+  const [hint, setHint] = useState<{ kind: AccessErrorKind; projectLabel?: string } | null>(null);
+  useEffect(() => {
+    if (kind !== "project" || !projectSlug) { setHint(null); return; }
+    let alive = true;
+    void fetchProjectAccessHint(projectSlug).then(r => {
+      if (!alive || r.access !== "no-access") return;
+      setHint({ kind: "no-access", projectLabel: r.projectName ?? undefined });
+    });
+    return () => { alive = false; };
+  }, [kind, projectSlug]);
+
+  const effective: NotFoundViewProps = hint ? { ...props, ...hint } : props;
+  const copy = buildCopy(effective);
   if (props.body) copy.body = props.body;
   const path = location.pathname + location.search;
   // 共有できる形（＝相手に見せてもよい形）で出す。ネイティブの capacitor:// は appOrigin() が弾く。

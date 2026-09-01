@@ -58,16 +58,24 @@ async function getProfile(sb: SupabaseClient, req: any) {
   const { data, error } = await (sb.auth as unknown as AuthLike).getUser(token);
   if (error || !data?.user) return null;
   const { data: profile } = await sb.from("profiles").select("name, role").eq("id", data.user.id).maybeSingle();
-  return profile ?? null;
+  return profile ? { ...profile, id: data.user.id as string } : null;
 }
 
-// プロジェクトメンバー(または管理者)でなければ false
-async function isMember(sb: SupabaseClient, projectId: string, profile: { name: string; role: string }) {
-  if (profile.role === "admin" || profile.role === "owner") return true;
-  const { data: project } = await sb.from("projects").select("members").eq("id", projectId).maybeSingle();
-  if (!project) return false;
-  const members: string[] = Array.isArray(project.members) ? project.members : [];
-  return members.includes(profile.name);
+// そのプロジェクトを見てよい人か。
+//
+// BRU14-001 まではここが `role === "admin"` で即 true を返しており、
+// 組織を一切見ていなかった。A社の管理者がB社のプロジェクトIDを指定すれば、
+// 非公開バケットのファイルに署名付きURLが発行できてしまう状態だった。
+// 判定は DB の can_user_access_project() に寄せる。RLS と同じ1本の規則を使うため、
+// 「画面は絞れているのにAPIは絞れていない」がここで再発しない。
+async function isMember(sb: SupabaseClient, projectId: string, profile: { id: string }) {
+  const { data, error } = await sb.rpc("can_user_access_project", {
+    p_user_id: profile.id,
+    p_project_id: projectId,
+  });
+  // 関数が無い(=マイグレーション未適用)ときは通さない。
+  if (error) return false;
+  return data === true;
 }
 
 function extOf(fileName: string): string {

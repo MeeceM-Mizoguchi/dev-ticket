@@ -1,15 +1,19 @@
 import type { ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone } from "lucide-react";
+import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone, Search } from "lucide-react";
 import type { AccessLevel, GithubAccessLevel } from "@/app/types";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
+import { TICKET_SEARCH_PATH } from "@/app/lib/ticketSearch";
 
-type ProjectSubPage = "sprints" | "release-notes" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "files" | "knowledge" | "github";
+type ProjectSubPage = "sprints" | "ticket-search" | "release-notes" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "files" | "knowledge" | "github";
 
 // ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
 const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" | "github" }[] = [
   { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
+  // ENHA2-048 チケット一覧検索。スプリントをまたいでチケットを絞り込む画面。
+  // スプリント一覧と同じく、プロジェクトメンバーなら誰でも見られる（個別の権限設定は持たない）
+  { id: "ticket-search", label: "一覧検索",     icon: Search,       path: `/${TICKET_SEARCH_PATH}` },
   // リリースノートはプロジェクト単位のカレンダー。権限設定は持たない（プロジェクトメンバー全員）
   { id: "release-notes", label: "リリースノート", icon: Megaphone, path: "/release-notes" },
   { id: "backlog",    label: "バックログ",     icon: ClipboardList, path: "/backlog",    permKey: "backlog" },

@@ -12,13 +12,18 @@ import { BoardListSidebar } from "@/app/components/whiteboard/BoardListSidebar";
 import { BoardListToggle } from "@/app/components/whiteboard/BoardListToggle";
 import { PrivateBadge } from "@/app/components/whiteboard/PrivateBadge";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
+import { WhiteboardShareDialog } from "@/app/components/whiteboard/WhiteboardShareDialog";
 import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { checkProjectAccess } from "@/app/lib/projectAccess";
-import { listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor, setBoardVisibility, broadcastBoardEvicted } from "@/app/lib/whiteboardService";
+import {
+  listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor,
+  setBoardVisibility, broadcastBoardAccess, addBoardShares, removeBoardShare, rotatePrivateKey, reloadBoard,
+  loadShareCandidates, type ShareCandidate, type WbAccessEvent,
+} from "@/app/lib/whiteboardService";
 import { getWbControl } from "@/app/lib/whiteboardControlBus";
 import { COMMENT_LINK_PARAM, ELEMENT_LINK_PARAM, REPLY_LINK_PARAM } from "@/app/lib/whiteboardLink";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
-import type { AccessLevel, Whiteboard } from "@/app/types";
+import type { AccessLevel, Whiteboard, WhiteboardShareMember } from "@/app/types";
 
 const WhiteboardCanvas = lazy(() => import("@/app/components/whiteboard/WhiteboardCanvas"));
 
@@ -59,12 +64,16 @@ export function WhiteboardPage() {
   });
   // プライベート解除の確認（公開する側だけ確認する。プライベート化は取り返しがつくので即実行）
   const [unprivateTarget, setUnprivateTarget] = useState<Whiteboard | null>(null);
+  // 限定公開（共有するメンバー）のダイアログ。開いた時に候補メンバーを引く
+  const [shareTargetId, setShareTargetId] = useState<string | null>(null);
+  const [shareCandidates, setShareCandidates] = useState<ShareCandidate[] | null>(null);
 
   const load = useCallback(async () => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
     setNotFound(false);
+    setShareCandidates(null);   // 別PJへ移ったら共有先の候補は引き直す
     const p = await resolveProject(projectSlug);
     if (!p) { setNotFound(true); setLoading(false); return; }
     setAliasCanonicalSlug(p.viaAlias ? p.slug : null);
@@ -125,29 +134,81 @@ export function WhiteboardPage() {
   }, [toast, setSearchParams]);
 
   // ── プライベートモードの切替 ───────────────────────────────
-  // 実際の可否は RLS（wb_update の with check）が決める。作成者以外が叩くと update が 0 行になる。
+  // 実際の可否は DB 側（whiteboards_guard_ownership トリガー）が決める。作成者以外が叩くと失敗する。
   const applyVisibility = useCallback(async (board: Whiteboard, makePrivate: boolean) => {
     // 1) 保存デバウンス(1.5s)の取りこぼしを吐き出す。この直後にチャンネル名が変わり、
     //    キャンバスが張り直って doc_state を読み直すため、待たせたままだとその分が消える。
     const control = getWbControl(board.id);
     await control?.flushSave();
-    // 2) 今このボードを開いている他メンバーを退去させる。
-    //    放置すると編集はできるのに保存だけ RLS に弾かれ、書いた内容が黙って消える。
+    // 2) 今このボードを開いている他メンバーに知らせる。
     //    自分がそのボードを開いていれば張ってあるチャンネルから、開いていなければ単発で送る。
-    if (makePrivate) {
-      if (control) control.broadcastEvict();
-      else await broadcastBoardEvicted(board.id, userId);
-    }
+    const notify = async (p: { targets: string[] | null; reason: "private" | "rekey" }) => {
+      if (control) await control.broadcastAccess(p);
+      else await broadcastBoardAccess(board.id, userId, p);
+    };
+    // プライベート化は「更新の前」に送って全員を退去させる（targets:null = 送信者以外の全員）。
+    // 放置すると編集はできるのに保存だけ RLS に弾かれ、書いた内容が黙って消える。
+    if (makePrivate) await notify({ targets: null, reason: "private" });
+
     const next = await setBoardVisibility(board, makePrivate, userId);
     if (!next) {
       toast("切り替えできませんでした（ボードの作成者のみ変更できます）", "error");
       return;
     }
+    // 解除は誰も締め出さないが、チャンネル名（秘密トークン）が消えるので張り直させる
+    // （targets:[] = 該当者なし＝全員 refresh）。放置すると旧チャンネルのまま同期が止まる。
+    // こちらは「更新の後」に送る。先に送ると、受け取った側が古い行を読み直してしまう。
+    if (!makePrivate) await notify({ targets: [], reason: "rekey" });
     setBoards((prev) => prev.map((b) => (b.id === next.id ? next : b)));
     toast(makePrivate
       ? "プライベートモードにしました。このボードはあなただけが見られます"
       : "プライベートモードを解除しました。プロジェクトのメンバーが見られます", "success");
   }, [userId, toast]);
+
+  // ── 限定公開（共有するメンバーの付け外し） ─────────────────
+  // 共有先の候補はダイアログを開いた時に一度だけ引く（PJメンバー＝ほぼ変わらないため）。
+  useEffect(() => {
+    if (!shareTargetId || !projectId || shareCandidates) return;
+    let cancelled = false;
+    void (async () => {
+      const list = await loadShareCandidates(projectId, userOrgId, userId);
+      if (!cancelled) setShareCandidates(list);
+    })();
+    return () => { cancelled = true; };
+  }, [shareTargetId, projectId, shareCandidates, userOrgId, userId]);
+
+  const handleAddShares = useCallback(async (board: Whiteboard, memberIds: string[]) => {
+    if (!await addBoardShares(board.id, memberIds, userId)) {
+      toast("共有できませんでした（ボードの作成者のみ変更できます）", "error");
+      return;
+    }
+    // 追加する側は鍵の作り直しが要らない（相手はこれからボード行ごと private_key を読める）。
+    const next = await reloadBoard(board.id);
+    if (next) setBoards((prev) => prev.map((b) => (b.id === next.id ? next : b)));
+    toast(`${memberIds.length}人に共有しました`, "success");
+  }, [userId, toast]);
+
+  const handleRemoveShare = useCallback(async (board: Whiteboard, member: WhiteboardShareMember) => {
+    // 1) 鍵を作り直すとキャンバスが張り直る（DBから読み直す）ので、先にデバウンス保存を吐き出す
+    const control = getWbControl(board.id);
+    await control?.flushSave();
+    if (!await removeBoardShare(board.id, member.id)) {
+      toast("共有を解除できませんでした（ボードの作成者のみ変更できます）", "error");
+      return;
+    }
+    // 2) Realtime チャンネルの秘密トークンを作り直す。
+    //    外された人はチャンネル名を覚えているので、鍵を替えないと Broadcast に居座って
+    //    同期内容を覗き続けられる（RLS はテーブルしか守らない）。
+    const rotated = await rotatePrivateKey(board.id, userId) ?? await reloadBoard(board.id);
+    // 3) 外した本人は退去、残っているメンバーは新しい鍵で張り直し。鍵を替えた後に送る。
+    const payload = { targets: [member.id], reason: "unshare" as const };
+    if (control) await control.broadcastAccess(payload);
+    else await broadcastBoardAccess(board.id, userId, payload);
+    if (rotated) setBoards((prev) => prev.map((b) => (b.id === rotated.id ? rotated : b)));
+    toast(`${member.name || "メンバー"}さんへの共有を解除しました`, "success");
+  }, [userId, toast]);
+
+  const handleOpenShare = useCallback((id: string) => setShareTargetId(id), []);
 
   const handleTogglePrivate = useCallback((id: string) => {
     const board = boards.find((b) => b.id === id);
@@ -156,9 +217,15 @@ export function WhiteboardPage() {
     else void applyVisibility(board, true);
   }, [boards, applyVisibility]);
 
-  // 開いている最中に、そのボードの作成者がプライベート化した（＝自分は締め出された）
-  const handleEvicted = useCallback(() => {
-    toast("このボードはプライベートモードに変更されました", "info");
+  // 開いている最中に、そのボードの公開範囲が変わった。
+  //   evicted = 自分が締め出された（プライベート化・共有解除）→ 一覧へ戻す
+  //   refresh = 誰かの共有が外れて鍵が作り直された → ボード行を読み直して新しいチャンネルへ張り直す
+  //             （キャンバスの key に privateKey を入れてあるので、行が変われば自動でリマウントされる）
+  const handleAccessEvent = useCallback((ev: WbAccessEvent) => {
+    if (ev.kind === "refresh") { void load(); return; }
+    toast(ev.reason === "unshare"
+      ? "このボードの共有が解除されました"
+      : "このボードはプライベートモードに変更されました", "info");
     navigate(`/${projectSlug}/whiteboard`);
     void load();
   }, [toast, navigate, projectSlug, load]);
@@ -186,6 +253,8 @@ export function WhiteboardPage() {
   const user = { id: userId, name: userName || "匿名", color: wbUserColor(userId || "anon") };
   const currentBoard = boardId ? boards.find((b) => b.id === boardId) ?? null : null;
   const currentIsPrivate = currentBoard?.visibility === "private";
+  const currentIsOwner = !!currentBoard && !!userId && currentBoard.createdBy === userId;
+  const shareBoard = shareTargetId ? boards.find((b) => b.id === shareTargetId) ?? null : null;
 
   // ボード選択状態にかかわらず、collapsed が true のときはサイドバーを折りたたむ
   // （折りたたんだ状態でも再展開用のボタン BoardListToggle が表示されるため展開可能）
@@ -207,7 +276,9 @@ export function WhiteboardPage() {
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{projectName ? `${projectName} · ${boards.length} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {!loading && currentIsPrivate && <PrivateBadge />}
+          {!loading && currentIsPrivate && currentBoard && (
+            <PrivateBadge sharedWith={currentBoard.sharedWith} isOwner={currentIsOwner} />
+          )}
           {!loading && perms.whiteboard === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
@@ -226,6 +297,7 @@ export function WhiteboardPage() {
             onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
             onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
             onTogglePrivate={handleTogglePrivate}
+            onOpenShare={handleOpenShare}
             onCollapse={toggleCollapsed}
           />
         )}
@@ -247,9 +319,9 @@ export function WhiteboardPage() {
             <ErrorBoundary resetKeys={[boardId]}>
               <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#A09790", fontSize: 13 }}>ホワイトボードを読み込み中…</div>}>
                 <WhiteboardCanvas
-                  // プライベート切替でチャンネル名が変わるので、キーに含めて丸ごと張り直す
-                  // （中途半端に生き残ったオーバーレイが古い api を掴むのを避ける）。
-                  key={`${boardId}:${currentBoard.visibility}`}
+                  // プライベート切替や共有解除（＝秘密トークンの作り直し）でチャンネル名が変わるので、
+                  // キーに含めて丸ごと張り直す（中途半端に生き残ったオーバーレイが古い api を掴むのを避ける）。
+                  key={`${boardId}:${currentBoard.visibility}:${currentBoard.privateKey}`}
                   boardId={boardId}
                   title={currentBoard.title}
                   user={user}
@@ -257,8 +329,11 @@ export function WhiteboardPage() {
                   projectSlug={projectSlug ?? ""}
                   projectId={projectId}
                   isPrivate={currentIsPrivate}
+                  sharedWith={currentBoard.sharedWith}
+                  isBoardOwner={currentIsOwner}
+                  boardOwnerName={currentBoard.createdByName}
                   channelKey={currentBoard.privateKey || null}
-                  onEvicted={handleEvicted}
+                  onAccessEvent={handleAccessEvent}
                   focusElementId={focusElementId}
                   focusCommentId={focusCommentId}
                   focusReplyId={focusReplyId}
@@ -276,10 +351,21 @@ export function WhiteboardPage() {
         </div>
       </div>
 
+      {shareBoard && (
+        <WhiteboardShareDialog
+          board={shareBoard}
+          candidates={shareCandidates ?? []}
+          loadingCandidates={shareCandidates === null}
+          onAdd={(ids) => handleAddShares(shareBoard, ids)}
+          onRemove={(m) => handleRemoveShare(shareBoard, m)}
+          onClose={() => setShareTargetId(null)} />
+      )}
+
       {unprivateTarget && (
         <ConfirmDialog
           title="プライベートモードの解除"
-          message={`「${unprivateTarget.title}」をプロジェクトのメンバー全員が見られる状態に戻します。`}
+          message={`「${unprivateTarget.title}」をプロジェクトのメンバー全員が見られる状態に戻します。${
+            unprivateTarget.sharedWith.length > 0 ? "いま設定している共有メンバーの指定も解除されます。" : ""}`}
           confirmLabel="解除する"
           confirmColor="#059669"
           hasWarningText={false}
