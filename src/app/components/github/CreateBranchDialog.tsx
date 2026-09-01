@@ -13,6 +13,7 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { createBranch, GithubApiError } from "@/app/lib/github";
 import { inputCls, labelCls } from "@/app/lib/helpers";
+import { submitOnEnter } from "@/app/lib/submitKey";
 import type { GithubBranch } from "@/app/types";
 
 const BLACK = "#1F2328";
@@ -140,7 +141,7 @@ export function CreateBranchDialog({
         <div>
           <label className={labelCls}>ブランチ名</label>
           <input ref={inputRef} className={inputCls} value={name} onChange={e => setName(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && canCreate) handleCreate(); }}
+            onKeyDown={submitOnEnter(handleCreate, { enabled: canCreate })}
             placeholder="例: DEVTICKET/BRU13-054" spellCheck={false}
             style={{ fontFamily: "var(--font-mono)" }} />
           <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1.7 }}>
