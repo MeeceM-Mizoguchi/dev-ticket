@@ -573,7 +573,39 @@ export type AccessLevel = "none" | "view" | "edit";
 // GitHub連携の権限（docs/github-integration-design.md 5-1）。
 // 「閲覧」と「マージ」をboolean2つに分けると「マージ可・閲覧不可」という
 // 矛盾した組み合わせが作れてしまうため、単一の3段階で持つ。
+//
+// BRU13-054 で操作ごとの GithubPerms に分割した。この型は
+//  ・移行前に保存された jsonb を読むとき
+//  ・サーバー応答の level（＝3軸を1段階に畳んだ表示用の値）
+// のために残してある。新しく権限を判定するコードは GithubPerms を使うこと。
 export type GithubAccessLevel = "none" | "view" | "merge";
+
+/**
+ * GitHub連携の「操作ごと」の権限（BRU13-054）。
+ *
+ * PR作成・マージ・ブランチ作成は取り返しのつきやすさが違う。
+ * 特にブランチ作成は消せば済むのに、マージと同じ権限を要求すると
+ * 「マージはさせたくないがブランチは切らせたい」人に何も渡せなくなる。
+ */
+export type GithubActionLevel = "none" | "view" | "write";
+
+/**
+ * 操作ごとの権限のまとまり。
+ * 「閲覧」だけは軸ごとに分けない。軸ごとに閲覧を持たせると
+ * 「PRは見えるがマージ状況は見えない」のような破綻した組み合わせが作れてしまうため、
+ * GitHubタブを開けるかどうかは「どれか1つでも none 以外」で判定する（canViewGithub）。
+ */
+export interface GithubPerms {
+  /** プルリクエストの作成 */
+  pull: GithubActionLevel;
+  /** 既定ブランチへのマージ・レビュー承認・コメント投稿 */
+  merge: GithubActionLevel;
+  /** ブランチの作成 */
+  branch: GithubActionLevel;
+}
+
+/** GithubPerms のキー。画面と権限設定で共通に回すために配列でも持つ */
+export type GithubActionKey = keyof GithubPerms;
 
 export interface PlanSettings {
   id: string;
@@ -618,7 +650,18 @@ export interface UserPermissions {
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
   whiteboardPermission: AccessLevel;
+  /**
+   * 旧・GitHub権限（BRU13-054 以前）。
+   * 移行SQLで下の3キーへ展開済みだが、SQLを当てていない環境から読むことがあるため
+   * フォールバック元として残す。書き込みは3キー側だけで行う。
+   */
   githubPermission: GithubAccessLevel;
+  /** PRの作成（none: 権限なし / view: 閲覧のみ / write: 作成可） */
+  githubPullPermission?: GithubActionLevel;
+  /** マージ・レビュー承認・コメント投稿 */
+  githubMergePermission?: GithubActionLevel;
+  /** ブランチの作成 */
+  githubBranchPermission?: GithubActionLevel;
 }
 
 // ── GitHub連携 ───────────────────────────────────────────────────────────────
@@ -802,9 +845,36 @@ export interface GithubPendingBranch {
   /** 最終コミットの日時。取得できない環境では null */
   committedDate: string | null;
   authorName: string;
-  /** ブランチ名から拾った WBS 番号 */
+  /** ブランチ名から拾った WBS 番号。DB紐付けで判明した場合はそのチケットのWBS */
   wbs: string | null;
   ticketTitle: string | null;
+  /**
+   * Dev Ticket からブランチを作ったときに残した紐付けで判明したチケット（BRU13-054）。
+   * ブランチ名に WBS 番号が入っていなくても埋まる
+   */
+  ticketId?: string | null;
+}
+
+/**
+ * Dev Ticket から作ったブランチとチケットの紐付け（BRU13-054）。
+ *
+ * 紐付けをブランチ名の WBS 番号だけに頼ると、名前を自由に決めた瞬間に
+ * チケットとの繋がりが切れてしまう。作った時点の事実をDBに残しておけば、
+ * 名前が何であれ、そのブランチから出たPRをチケットへ辿れる。
+ */
+export interface TicketGithubBranch {
+  id: number;
+  projectId: string;
+  ticketId: string;
+  repo: string;
+  branchName: string;
+  baseBranch: string;
+  createdBy: string | null;
+  createdByName: string | null;
+  createdAt: string;
+  /** 表示用にサーバーで引き直したチケット情報 */
+  ticketWbs?: string | null;
+  ticketTitle?: string | null;
 }
 
 export interface TicketGithubLink {

@@ -8,7 +8,7 @@ import type {
   TicketGithubLink, TicketGithubLinkCandidate, GithubMergeMethod, GithubAccessLevel,
   GithubReleaseSyncResult, GithubPendingBranch, GithubBulkMergeResult, GithubPermissionBlock,
   GithubMergePrecheckResult, GithubRequireChecksMode, GithubDeployStatus, GithubDeployOverview,
-  GithubDeployLevel, GithubDeployCheckMode, GithubRunProgress,
+  GithubDeployLevel, GithubDeployCheckMode, GithubRunProgress, GithubPerms, TicketGithubBranch,
 } from "@/app/types";
 
 export class GithubApiError extends Error {
@@ -103,6 +103,8 @@ export function fetchPulls(projectId: string, opts?: { light?: boolean }) {
     writeBlock: GithubPermissionBlock | null;
     /** 失敗チェックをマージ前にどう扱うか（層A） */
     requireChecksMode?: GithubRequireChecksMode;
+    /** 操作ごとの権限（BRU13-054）。SQL未適用のサーバーからは返らない */
+    perms?: GithubPerms;
   }>("pulls", { query: { projectId, light: opts?.light ? 1 : undefined } });
 }
 
@@ -119,18 +121,35 @@ export function fetchCommits(projectId: string, branch?: string) {
 }
 
 export function fetchBranches(projectId: string) {
-  return call<{ branches: GithubBranch[]; defaultBranch: string; repo: string }>("branches", { query: { projectId } });
+  return call<{ branches: GithubBranch[]; defaultBranch: string; repo: string; perms?: GithubPerms }>(
+    "branches", { query: { projectId } },
+  );
 }
 
 /**
  * まだプルリクエストが作られていないブランチ（新しい順）。
  * wbs を渡すと、その番号を含むブランチだけをサーバー側で絞ってから重い判定を掛ける。
  * チケット詳細のように1チケット分しか使わない場合は必ず渡すこと（応答が大幅に速くなる）
+ *
+ * ticketId も一緒に渡すこと。Dev Ticket から作ったブランチは名前を自由に決められるので、
+ * 名前に WBS 番号が入っていないものは wbs だけでは絞り込みから漏れる（BRU13-054）。
  */
-export function fetchPendingBranches(projectId: string, wbs?: string) {
-  return call<{ branches: GithubPendingBranch[]; defaultBranch: string; repo: string; level: GithubAccessLevel }>(
-    "pending-branches", { query: { projectId, wbs } },
-  );
+export function fetchPendingBranches(projectId: string, wbs?: string, ticketId?: string) {
+  return call<{
+    branches: GithubPendingBranch[]; defaultBranch: string; repo: string;
+    level: GithubAccessLevel; perms?: GithubPerms;
+  }>("pending-branches", { query: { projectId, wbs, ticketId } });
+}
+
+/**
+ * Dev Ticket から作ったブランチとチケットの紐付け（BRU13-054）。
+ * GitHub は叩かずDBだけを読むので、チケット詳細を開くたびに呼んでも軽い。
+ */
+export function fetchTicketBranches(projectId: string, ticketId?: string) {
+  return call<{
+    branches: TicketGithubBranch[]; level: GithubAccessLevel; perms?: GithubPerms;
+    repo: string; defaultBranch: string;
+  }>("ticket-branches", { query: { projectId, ticketId } });
 }
 
 export function fetchTicketLinks(projectId: string, ticketId: string) {
@@ -139,6 +158,7 @@ export function fetchTicketLinks(projectId: string, ticketId: string) {
     /** 大文字小文字違いで自動紐付けを見送ったPR。人がどれか1件を選ぶ */
     candidates: TicketGithubLinkCandidate[];
     level: GithubAccessLevel;
+    perms?: GithubPerms;
     repo: string;
   }>("links", { query: { projectId, ticketId } });
 }
@@ -199,6 +219,21 @@ export function createPull(projectId: string, input: {
         ...runFields(`プルリクエストを作成（${input.base} ← ${input.head}）`, projectSlug),
       },
     },
+  );
+}
+
+/**
+ * ブランチの作成（BRU13-054）。
+ *
+ * name は完全に自由。ticketId を渡すと「このブランチはこのチケットのもの」が
+ * サーバー側に記録され、そのブランチから出たPRは名前が何であれチケットへ紐付く。
+ * 逆に言えば ticketId を渡さないと、従来どおりブランチ名の WBS 番号頼みになる。
+ *
+ * 実行の記録（runId）は付けない。数百ミリ秒で終わるうえ、失敗しても作り直せるため。
+ */
+export function createBranch(projectId: string, input: { name: string; base: string; ticketId?: string }) {
+  return call<{ ok: true; name: string; base: string; url: string; linked: boolean }>(
+    "create-branch", { body: { projectId, ...input } },
   );
 }
 

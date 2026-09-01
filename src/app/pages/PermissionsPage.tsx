@@ -4,7 +4,11 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
 import { getRoleMeta } from "@/app/lib/helpers";
 import { escStack } from "@/app/lib/escStack";
-import type { Member, PermissionGroup, UserPermissions, Project, GithubAccessLevel } from "@/app/types";
+import type {
+  Member, PermissionGroup, UserPermissions, Project,
+  GithubActionKey, GithubActionLevel, GithubPerms,
+} from "@/app/types";
+import { NO_GITHUB_PERMS, canViewGithub, githubPermsFrom, githubPermsToJson } from "@/app/lib/githubPerms";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -29,6 +33,7 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
   whiteboardPermission: "none",
   githubPermission: "none",
+  githubPullPermission: "none", githubMergePermission: "none", githubBranchPermission: "none",
 };
 
 type AccessLevel = "none" | "view" | "edit";
@@ -40,15 +45,59 @@ const ACCESS_LEVEL_OPTIONS: { value: AccessLevel; label: string }[] = [
 ];
 
 // GitHub連携（docs/github-integration-design.md 8-2）。
-// ページアクセス権限とは選択肢の意味が違う（閲覧/編集ではなく閲覧/マージ）ため、
+// ページアクセス権限とは選択肢の意味が違う（閲覧/編集ではなく閲覧/作成）ため、
 // ACCESS_LEVEL_OPTIONS には混ぜず独立したブロックにしている。
 const GITHUB_COLOR = "#1F2328";
 
-const GITHUB_LEVEL_OPTIONS: { value: GithubAccessLevel; label: string; desc: string }[] = [
-  { value: "none",  label: "権限なし",  desc: "このメンバーにはGitHubタブが表示されません。" },
-  { value: "view",  label: "閲覧のみ",  desc: "PR・Issue・コミットをDev Ticketの画面内で閲覧できます。マージやレビュー承認はできません。" },
-  { value: "merge", label: "マージ可",  desc: "上記に加えて、PRのマージ・レビュー承認・コメント投稿ができます。" },
+/**
+ * 操作ごとの権限（BRU13-054）。
+ * 1本の段階で持っていた頃は「ブランチを切らせたいがマージはさせたくない」が表現できず、
+ * 結局マージ可を配るしかなかった。取り返しのつきやすさが違うので操作ごとに分ける。
+ *
+ * 並びは取り返しのつく順（ブランチ → PR → マージ）。
+ */
+const GITHUB_ACTION_BLOCKS: { key: GithubActionKey; label: string; writeLabel: string; descs: Record<GithubActionLevel, string> }[] = [
+  {
+    key: "branch", label: "ブランチ作成", writeLabel: "作成可",
+    descs: {
+      none: "ブランチの一覧は見られますが、Dev Ticketからブランチを作成できません。",
+      view: "ブランチの一覧を閲覧できます。作成はできません。",
+      write: "チケットやGitHub画面からブランチを作成できます。作成したブランチは、名前に関係なくチケットへ紐付きます。",
+    },
+  },
+  {
+    key: "pull", label: "プルリクエスト作成", writeLabel: "作成可",
+    descs: {
+      none: "プルリクエストの一覧は見られますが、作成はできません。",
+      view: "プルリクエストを閲覧できます。作成はできません。",
+      write: "Dev Ticketからプルリクエストを作成できます。マージはできません。",
+    },
+  },
+  {
+    key: "merge", label: "マージ", writeLabel: "マージ可",
+    descs: {
+      none: "マージの状況は見られますが、マージ・レビュー承認はできません。",
+      view: "マージ可否やCIの状況を閲覧できます。マージはできません。",
+      write: "PRのマージ・レビュー承認・コメント投稿ができます。",
+    },
+  },
 ];
+
+const GITHUB_LEVEL_LABELS: Record<GithubActionLevel, string> = {
+  none: "権限なし",
+  view: "閲覧のみ",
+  write: "作成可",
+};
+
+/**
+ * グループカードのバッジ。書き込みできる操作を並べ、1つも無ければ「閲覧のみ」。
+ * GitHubがそもそも見えないなら null（バッジ自体を出さない）。
+ */
+function githubBadgeLabel(p: GithubPerms): string | null {
+  if (!canViewGithub(p)) return null;
+  const writes = GITHUB_ACTION_BLOCKS.filter(b => p[b.key] === "write").map(b => b.label);
+  return writes.length ? writes.join("・") : "閲覧のみ";
+}
 
 const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission" | "whiteboardPermission"; label: string; color: string }[] = [
   { key: "backlogPermission", label: "バックログ", color: "#6D28D9" },
@@ -866,7 +915,9 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
             const gmIds = groupMemberships.filter(gm => gm.group_id === group.id).map(gm => gm.member_id);
             const groupMemberList = members.filter(m => gmIds.includes(m.id));
             const activePerms = PROJECT_PERM_FLAGS.filter(f => group.permissions?.[f.key]);
-            const githubLevel = (group.permissions?.githubPermission ?? "none") as GithubAccessLevel;
+            // カードのバッジは一覧の中の1行なので、操作ごとには出さず「何ができるか」を一言で出す
+            const githubPerms = githubPermsFrom(group.permissions) ?? NO_GITHUB_PERMS;
+            const githubBadge = githubBadgeLabel(githubPerms);
 
             return (
               <div key={group.id} draggable
@@ -903,14 +954,14 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
                 </div>
 
                 {/* Permissions */}
-                {(activePerms.length > 0 || githubLevel !== "none") && (
+                {(activePerms.length > 0 || githubBadge) && (
                   <div style={{ padding: "0 10px 6px 10px", display: "flex", flexWrap: "wrap" as const, gap: 3 }}>
                     {activePerms.map(f => (
                       <span key={f.key} style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 10, background: f.color + "15", color: f.color }}>{f.label}</span>
                     ))}
-                    {githubLevel !== "none" && (
+                    {githubBadge && (
                       <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 10, background: GITHUB_COLOR + "15", color: GITHUB_COLOR }}>
-                        GitHub: {githubLevel === "merge" ? "マージ可" : "閲覧のみ"}
+                        GitHub: {githubBadge}
                       </span>
                     )}
                   </div>
@@ -1266,8 +1317,10 @@ function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onC
 
 // ── GitHub連携の権限（docs/github-integration-design.md 8-2） ──────────────────
 // 選択中の値の説明を直下に1行だけ出す。3行常時出すと他の権限ブロックより騒がしくなるため。
-function GithubPermissionBlock({ value, onChange }: {
-  value: GithubAccessLevel; onChange: (v: GithubAccessLevel) => void;
+function GithubActionRow({ block, value, onChange }: {
+  block: typeof GITHUB_ACTION_BLOCKS[number];
+  value: GithubActionLevel;
+  onChange: (v: GithubActionLevel) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1281,51 +1334,79 @@ function GithubPermissionBlock({ value, onChange }: {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const current = GITHUB_LEVEL_OPTIONS.find(o => o.value === value) ?? GITHUB_LEVEL_OPTIONS[0];
+  const options: GithubActionLevel[] = ["none", "view", "write"];
+  const labelOf = (v: GithubActionLevel) => (v === "write" ? block.writeLabel : GITHUB_LEVEL_LABELS[v]);
   const isActive = value !== "none";
 
   return (
-    <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 14, paddingTop: 14 }}>
-      <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>GitHub連携</label>
-
+    <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, background: isActive ? GITHUB_COLOR + "0D" : "#F9F8F6", border: `1.5px solid ${isActive ? GITHUB_COLOR + "30" : "transparent"}` }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: isActive ? GITHUB_COLOR : "#1A1714", flex: 1 }}>GitHub</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: isActive ? GITHUB_COLOR : "#1A1714", flex: 1 }}>{block.label}</span>
         <div ref={ref} style={{ position: "relative" }}>
           <button type="button" onClick={() => setOpen(v => !v)}
             style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", minWidth: 160,
+              display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", minWidth: 130,
               background: isActive ? GITHUB_COLOR + "12" : "#F4F5F6",
               border: `1.5px solid ${isActive ? GITHUB_COLOR + "50" : "rgba(26,23,20,0.12)"}`,
               borderRadius: 8, fontSize: 12, fontWeight: 600,
               color: isActive ? GITHUB_COLOR : "#4B4540", cursor: "pointer", whiteSpace: "nowrap" as const,
             }}>
-            <span style={{ flex: 1, textAlign: "left" as const }}>{current.label}</span>
+            <span style={{ flex: 1, textAlign: "left" as const }}>{labelOf(value)}</span>
             <ChevronDown style={{ width: 11, height: 11, opacity: 0.5, flexShrink: 0 }} />
           </button>
           {open && (
-            <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 210, overflow: "hidden" }}>
-              {GITHUB_LEVEL_OPTIONS.map(o => (
-                <button key={o.value} type="button"
-                  onClick={() => { onChange(o.value); setOpen(false); }}
+            <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 180, overflow: "hidden" }}>
+              {options.map(o => (
+                <button key={o} type="button"
+                  onClick={() => { onChange(o); setOpen(false); }}
                   style={{
                     display: "flex", alignItems: "center", gap: 8, width: "100%",
                     padding: "9px 14px", border: "none", cursor: "pointer",
-                    background: value === o.value ? "rgba(31,35,40,0.06)" : "transparent",
-                    fontSize: 12, fontWeight: value === o.value ? 700 : 400,
-                    color: value === o.value ? GITHUB_COLOR : "#1A1714", textAlign: "left" as const,
+                    background: value === o ? "rgba(31,35,40,0.06)" : "transparent",
+                    fontSize: 12, fontWeight: value === o ? 700 : 400,
+                    color: value === o ? GITHUB_COLOR : "#1A1714", textAlign: "left" as const,
                   }}>
-                  <span style={{ width: 14, flexShrink: 0, color: GITHUB_COLOR }}>{value === o.value ? "✓" : ""}</span>
-                  {o.label}
+                  <span style={{ width: 14, flexShrink: 0, color: GITHUB_COLOR }}>{value === o ? "✓" : ""}</span>
+                  {labelOf(o)}
                 </button>
               ))}
             </div>
           )}
         </div>
       </div>
+      <p style={{ fontSize: 11, color: "#A09790", marginTop: 5, lineHeight: 1.6 }}>{block.descs[value]}</p>
+    </div>
+  );
+}
 
-      <p style={{ fontSize: 11, color: "#A09790", marginTop: 6, lineHeight: 1.6 }}>{current.desc}</p>
+/**
+ * GitHub連携の権限ブロック。操作ごとに1行（BRU13-054）。
+ *
+ * 「閲覧」は操作ごとに分けない。軸ごとの閲覧ゲートを作ると
+ * 「PRは見えるがマージ状況は見えない」といった破綻した組み合わせが設定できてしまうため、
+ * GitHubタブが出るかどうかは3つの論理和で決まる。それを下の注記で明示している。
+ */
+function GithubPermissionBlock({ value, onChange }: {
+  value: GithubPerms; onChange: (v: GithubPerms) => void;
+}) {
+  const visible = canViewGithub(value);
 
-      {value === "merge" && (
+  return (
+    <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 14, paddingTop: 14 }}>
+      <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>GitHub連携</label>
+
+      {GITHUB_ACTION_BLOCKS.map(b => (
+        <GithubActionRow key={b.key} block={b} value={value[b.key]}
+          onChange={v => onChange({ ...value, [b.key]: v })} />
+      ))}
+
+      <p style={{ fontSize: 11, color: "#A09790", marginTop: 2, lineHeight: 1.6 }}>
+        {visible
+          ? "GitHubタブが表示されます（3つのうち1つでも「権限なし」以外なら表示）。"
+          : "3つとも「権限なし」のため、このメンバーにはGitHubタブが表示されません。"}
+      </p>
+
+      {value.merge === "write" && (
         <div style={{ display: "flex", gap: 8, marginTop: 8, padding: "9px 12px", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.18)", borderRadius: 8 }}>
           <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 11, color: "#B91C1C", lineHeight: 1.6 }}>
@@ -1413,8 +1494,8 @@ function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (
             ))}
           </div>
           <GithubPermissionBlock
-            value={perms.githubPermission ?? "none"}
-            onChange={v => setPerms(prev => ({ ...prev, githubPermission: v }))}
+            value={githubPermsFrom(perms) ?? NO_GITHUB_PERMS}
+            onChange={v => setPerms(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
           />
         </div>
         <div style={{ padding: "0 24px 22px", display: "flex", gap: 8 }}>
@@ -1505,8 +1586,8 @@ function GroupSettingsModal({ group, onClose, onSave }: {
             ))}
           </div>
           <GithubPermissionBlock
-            value={local.githubPermission ?? "none"}
-            onChange={v => setLocal(prev => ({ ...prev, githubPermission: v }))}
+            value={githubPermsFrom(local) ?? NO_GITHUB_PERMS}
+            onChange={v => setLocal(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
           />
         </div>
         <div style={{ padding: "14px 24px 22px", display: "flex", gap: 8 }}>
@@ -1582,9 +1663,10 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
     onClose();
   };
 
+  // GitHubは操作ごとに3つあるが、「GitHubが有効か」の1件として数える（BRU13-054）
   const activeCount = PROJECT_PERM_FLAGS.filter(f => local[f.key]).length
     + PAGE_ACCESS_FLAGS.filter(f => (local[f.key] as string) !== "none").length
-    + ((local.githubPermission ?? "none") !== "none" ? 1 : 0);
+    + (canViewGithub(githubPermsFrom(local) ?? NO_GITHUB_PERMS) ? 1 : 0);
 
   return (
     <>
@@ -1654,8 +1736,8 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
               </div>
 
               <GithubPermissionBlock
-                value={local.githubPermission ?? "none"}
-                onChange={v => setLocal(prev => ({ ...prev, githubPermission: v }))}
+                value={githubPermsFrom(local) ?? NO_GITHUB_PERMS}
+                onChange={v => setLocal(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
               />
             </>
           )}

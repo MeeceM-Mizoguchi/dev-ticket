@@ -42,7 +42,19 @@ const UA = "dev-ticket";
 // @vercel/node の型チェックが auth.getUser を解決できないケースがあるため型だけ緩める
 type AuthLike = { getUser: (jwt?: string) => Promise<{ data: { user: any }; error: any }> };
 
+/** 応答に載せる表示用の段階。3軸の権限を1段階に畳んだもの（BRU13-054） */
 type GithubLevel = "none" | "view" | "merge";
+
+/** 操作ごとの権限（BRU13-054）。src/app/lib/githubPerms.ts と同じ判定をここにも置く */
+type GithubActionLevel = "none" | "view" | "write";
+interface GithubPerms {
+  /** プルリクエストの作成 */
+  pull: GithubActionLevel;
+  /** マージ・レビュー承認・コメント投稿 */
+  merge: GithubActionLevel;
+  /** ブランチの作成 */
+  branch: GithubActionLevel;
+}
 
 function admin(): SupabaseClient {
   const url = process.env.VITE_SUPABASE_URL;
@@ -326,19 +338,22 @@ function missingPermissions(perms: Record<string, string> | null | undefined): M
 // ここで両方を見て、どちらが原因かと、直す場所のURLまで確定させる。
 
 /** 操作ごとに「これが無いと必ず失敗する」権限 */
-type OperationKey = "merge" | "create-pull" | "review";
+type OperationKey = "merge" | "create-pull" | "review" | "create-branch";
 
 const OPERATION_NEEDS: Record<OperationKey, { key: string; need: "read" | "write" }[]> = {
   // マージはマージ先ブランチへ commit を積むため Contents: Read & write が要る
   merge: [{ key: "pull_requests", need: "write" }, { key: "contents", need: "write" }],
   "create-pull": [{ key: "pull_requests", need: "write" }, { key: "contents", need: "read" }],
   review: [{ key: "pull_requests", need: "write" }],
+  // ブランチの作成は ref を1本足すだけなので Contents: Read & write で足りる
+  "create-branch": [{ key: "contents", need: "write" }],
 };
 
 const OPERATION_LABELS: Record<OperationKey, string> = {
   merge: "マージ",
   "create-pull": "プルリクエストの作成",
   review: "レビューの送信",
+  "create-branch": "ブランチの作成",
 };
 
 export interface PermissionBlock {
@@ -520,21 +535,80 @@ async function getCaller(sb: SupabaseClient, req: any): Promise<Caller | null> {
   };
 }
 
+const NO_PERMS: GithubPerms = { pull: "none", merge: "none", branch: "none" };
+const FULL_PERMS: GithubPerms = { pull: "write", merge: "write", branch: "write" };
+const PERM_RANK: Record<GithubActionLevel, number> = { none: 0, view: 1, write: 2 };
+
+function actionLevel(v: unknown): GithubActionLevel | undefined {
+  return v === "none" || v === "view" || v === "write" ? v : undefined;
+}
+
+/** 旧 githubPermission (none/view/merge) を3軸へ展開する。移行SQLと同じ対応表 */
+function fromLegacyLevel(v: unknown): GithubPerms | null {
+  if (v === "merge") return { ...FULL_PERMS };
+  if (v === "view") return { pull: "view", merge: "view", branch: "view" };
+  if (v === "none") return { ...NO_PERMS };
+  return null;
+}
+
 /**
- * githubPermission の解決。
+ * 権限が入った jsonb 1件から3軸を取り出す。この階層に何も書かれていなければ null。
+ * 新キーが1つでもあれば新形式とみなし、欠けた軸だけを旧キーで埋める
+ * （移行SQLの適用前後で結論が変わらないようにするため）。
+ */
+function permsFrom(raw: unknown): GithubPerms | null {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const pull = actionLevel(o.githubPullPermission);
+  const merge = actionLevel(o.githubMergePermission);
+  const branch = actionLevel(o.githubBranchPermission);
+  const legacy = fromLegacyLevel(o.githubPermission);
+  if (pull === undefined && merge === undefined && branch === undefined) return legacy;
+  return {
+    pull: pull ?? legacy?.pull ?? "none",
+    merge: merge ?? legacy?.merge ?? "none",
+    branch: branch ?? legacy?.branch ?? "none",
+  };
+}
+
+function strongerPerms(a: GithubPerms, b: GithubPerms): GithubPerms {
+  const pick = (x: GithubActionLevel, y: GithubActionLevel) => (PERM_RANK[x] >= PERM_RANK[y] ? x : y);
+  return { pull: pick(a.pull, b.pull), merge: pick(a.merge, b.merge), branch: pick(a.branch, b.branch) };
+}
+
+/**
+ * GitHubタブ（＝参照系API）を使えるか。
+ * 軸ごとに閲覧ゲートを持たせると「PRは見えるがマージ状況は見えない」という
+ * 破綻した組み合わせが設定できてしまうので、閲覧だけは3軸の論理和で判定する。
+ */
+function canView(p: GithubPerms): boolean {
+  return p.pull !== "none" || p.merge !== "none" || p.branch !== "none";
+}
+
+/** 3軸を旧形式の1段階へ畳む。応答の level は互換のためこの値を返し続ける */
+function toLegacyLevel(p: GithubPerms): GithubLevel {
+  if (p.merge === "write") return "merge";
+  return canView(p) ? "view" : "none";
+}
+
+/**
+ * GitHub権限の解決。
  *   ① project_member_permissions（個別）
  *   ② 所属している permission_groups
  *   ③ roles.base_permissions
- *   ④ owner は常に merge
- * PermissionsPage / AuthContext と同じ優先順位にしてある。
+ *   ④ owner は常に全部 write
+ * PermissionsPage / AuthContext / useGithubAccess と同じ優先順位にしてある。
  *
- * どこにも書かれていなければ "none"。role が admin / project-manager でも例外にしない
- * （BRU13-034）。GitHub権限の付与はアサイン計画の画面だけで行う決まりなので、
- * ロールを根拠に暗黙で merge を配ると、その画面の表示（＝未設定なら「権限なし」）と
- * 実際の挙動がずれる。owner だけは自分で自分を締め出せると詰むため常に merge。
+ * どこにも書かれていなければ全部 "none"。role が admin / project-manager でも
+ * 例外にしない（BRU13-034）。GitHub権限の付与はアサイン計画の画面だけで行う決まりなので、
+ * ロールを根拠に暗黙で配ると、その画面の表示（＝未設定なら「権限なし」）と実際の挙動がずれる。
+ * owner だけは自分で自分を締め出せると詰むため常に全権。
+ *
+ * BRU13-054 で1段階から3軸に分けた。ある階層に「GitHub権限が書かれていた」なら
+ * その階層で確定させる（＝下位へ降りない）のは従来と同じ。軸ごとに別々の階層から
+ * 拾うと、個別で明示的に外した権限がグループ経由で復活してしまう。
  */
-async function resolveGithubLevel(sb: SupabaseClient, caller: Caller, projectId: string): Promise<GithubLevel> {
-  if (caller.role === "owner") return "merge";
+async function resolveGithubPerms(sb: SupabaseClient, caller: Caller, projectId: string): Promise<GithubPerms> {
+  if (caller.role === "owner") return { ...FULL_PERMS };
 
   const { data: individual } = await sb
     .from("project_member_permissions")
@@ -542,7 +616,7 @@ async function resolveGithubLevel(sb: SupabaseClient, caller: Caller, projectId:
     .eq("project_id", projectId)
     .eq("member_id", caller.id)
     .maybeSingle();
-  const fromIndividual = (individual?.permissions as any)?.githubPermission as GithubLevel | undefined;
+  const fromIndividual = permsFrom(individual?.permissions);
   if (fromIndividual) return fromIndividual;
 
   const { data: memberships } = await sb
@@ -551,22 +625,18 @@ async function resolveGithubLevel(sb: SupabaseClient, caller: Caller, projectId:
   if (groupIds.length) {
     const { data: groups } = await sb
       .from("permission_groups").select("permissions").in("id", groupIds);
-    // 複数グループに属している場合は強いほうを採用する（既存の権限も同じ考え方）
-    let best: GithubLevel = "none";
+    // 複数グループに属している場合は軸ごとに強いほうを採用する（既存の権限も同じ考え方）
+    let best: GithubPerms | null = null;
     for (const g of groups ?? []) {
-      const lv = (g as any).permissions?.githubPermission as GithubLevel | undefined;
-      if (lv === "merge") return "merge";
-      if (lv === "view") best = "view";
+      const p = permsFrom((g as any).permissions);
+      if (p) best = best ? strongerPerms(best, p) : p;
     }
-    if (best !== "none") return best;
+    if (best && canView(best)) return best;
   }
 
   const { data: role } = await sb
     .from("roles").select("base_permissions").eq("name", caller.role).maybeSingle();
-  const fromRole = (role?.base_permissions as any)?.githubPermission as GithubLevel | undefined;
-  if (fromRole) return fromRole;
-
-  return "none";
+  return permsFrom(role?.base_permissions) ?? { ...NO_PERMS };
 }
 
 interface ProjectCtx {
@@ -575,7 +645,10 @@ interface ProjectCtx {
   repo: string;
   defaultBranch: string;
   installationId: string;
+  /** 表示用の1段階。3軸を畳んだもの（応答の level はこれ） */
   level: GithubLevel;
+  /** 操作ごとの権限（BRU13-054） */
+  perms: GithubPerms;
   /** 本番反映の確認をどこまで効かせるか（docs/deploy-verification-design.md） */
   deployCheckMode: DeployCheckMode;
   /** マージ前に失敗チェックをどう扱うか（層A） */
@@ -583,8 +656,29 @@ interface ProjectCtx {
 }
 
 /**
+ * projectContext が要求する権限。
+ *   view        … GitHubタブを開ける（3軸のどれかが none 以外）。参照系すべて
+ *   create-pull … PRの作成
+ *   merge       … マージ・レビュー承認・コメント投稿・紐付けの手動編集
+ *   branch      … ブランチの作成
+ */
+type GithubNeed = "view" | "create-pull" | "merge" | "branch";
+
+const NEED_MESSAGE: Record<Exclude<GithubNeed, "view">, string> = {
+  "create-pull": "GitHubのプルリクエスト作成権限がありません。管理者にご相談ください。",
+  merge: "GitHubのマージ権限がありません。管理者にご相談ください。",
+  branch: "GitHubのブランチ作成権限がありません。管理者にご相談ください。",
+};
+
+const NEED_AXIS: Record<Exclude<GithubNeed, "view">, keyof GithubPerms> = {
+  "create-pull": "pull",
+  merge: "merge",
+  branch: "branch",
+};
+
+/**
  * プロジェクト配下のAPIで毎回行う一式:
- *   プロジェクトの実在 → 同一組織か → メンバーか → githubPermission → installation。
+ *   プロジェクトの実在 → 同一組織か → メンバーか → GitHub権限 → installation。
  * 足りなければ Error を投げ、呼び出し側が 4xx にして返す。
  */
 /**
@@ -593,18 +687,18 @@ interface ProjectCtx {
  * チケット詳細を開くたびに走る handleLinks では、この1往復が体感に効く（BRU13-023）
  */
 async function projectContext(
-  sb: SupabaseClient, caller: Caller, projectId: string, need: "view" | "merge",
+  sb: SupabaseClient, caller: Caller, projectId: string, need: GithubNeed,
   opts?: { installation?: boolean },
 ): Promise<ProjectCtx> {
   // 権限の解決はプロジェクト行を必要としないので、待たずに並行して走らせる。
   // 直列にすると、チケットを開くたびにSupabaseへの往復がそのぶん積み上がる（BRU13-023）。
   // アクセス不可で弾く場合に権限クエリが1回無駄になるが、判定順は下で従来どおり保つ
-  const [{ data: project }, level] = await Promise.all([
+  const [{ data: project }, perms] = await Promise.all([
     sb.from("projects")
       .select("id, organization_id, members, github_repo_full_name, github_default_branch, github_enabled, deploy_check_mode, require_checks_mode")
       .eq("id", projectId)
       .maybeSingle(),
-    resolveGithubLevel(sb, caller, projectId),
+    resolveGithubPerms(sb, caller, projectId),
   ]);
   if (!project) throw new HttpError(404, "プロジェクトが見つかりません。");
 
@@ -620,10 +714,11 @@ async function projectContext(
     throw new HttpError(403, "このプロジェクトにアクセスできません。");
   }
 
-  if (level === "none" || (need === "merge" && level !== "merge")) {
-    throw new HttpError(403, need === "merge"
-      ? "GitHubのマージ権限がありません。管理者にご相談ください。"
-      : "GitHubの閲覧権限が付与されていません。管理者にご相談ください。");
+  if (!canView(perms)) {
+    throw new HttpError(403, "GitHubの閲覧権限が付与されていません。管理者にご相談ください。");
+  }
+  if (need !== "view" && perms[NEED_AXIS[need]] !== "write") {
+    throw new HttpError(403, NEED_MESSAGE[need]);
   }
 
   const repo = (project.github_repo_full_name as string | null) ?? "";
@@ -638,7 +733,8 @@ async function projectContext(
     repo,
     defaultBranch: (project.github_default_branch as string | null) || "",
     installationId,
-    level,
+    level: toLegacyLevel(perms),
+    perms,
     deployCheckMode: deployMode((project as any).deploy_check_mode),
     requireChecksMode: requireChecksMode((project as any).require_checks_mode),
   };
@@ -1644,6 +1740,10 @@ export default async function handler(req: any, res: any) {
       case "commits":  return await handleCommits(sb, caller, req, res);
       case "branches": return await handleBranches(sb, caller, req, res);
       case "pending-branches": return await handlePendingBranches(sb, caller, req, res);
+      // ブランチ作成は数百ミリ秒で終わり、失敗しても作り直せる。
+      // 「実行中」を残す3つ（create-pull / merge / merge-bulk）には入れない
+      case "create-branch": return await handleCreateBranch(sb, caller, req, res);
+      case "ticket-branches": return await handleTicketBranches(sb, caller, req, res);
       case "deploy-status":   return await handleDeployStatus(sb, caller, req, res);
       case "deploy-check":    return await handleDeployCheck(sb, caller, req, res);
       case "deploy-overview": return await handleDeployOverview(sb, caller, req, res);
@@ -2172,7 +2272,7 @@ async function applyPullRequestEvent(sb: SupabaseClient, project: any, number: n
   const pr = await gh(token, `/repos/${project.github_repo_full_name}/pulls/${number}`);
   if (!pr?.number) return;
 
-  await autoLink(sb, project.id, [mapPull(pr)]);
+  await autoLink(sb, project.id, String(project.github_repo_full_name ?? ""), [mapPull(pr)]);
   await syncProjectReleases(sb, project, {
     projectId: project.id, projectName: project.name ?? "", released: [],
   }, SYNC_INTERACTIVE);
@@ -2613,13 +2713,13 @@ async function handlePulls(sb: SupabaseClient, caller: Caller, req: any, res: an
     } catch { return p; }
   }));
 
-  await autoLink(sb, ctx.id, enriched);
+  await autoLink(sb, ctx.id, ctx.repo, enriched);
   // 一覧を開いた時点でマージ済みのPRを拾い直す。
   // 「リリース待ち」が無ければ GitHub は叩かないので、通常は追加の負荷にならない
   if (!light) await syncReleasesNow(sb, ctx.id);
   const links = await loadLinksForProject(sb, ctx.id);
   return res.status(200).json({
-    pulls: enriched, level: ctx.level, repo: ctx.repo, links, writeBlock,
+    pulls: enriched, level: ctx.level, perms: ctx.perms, repo: ctx.repo, links, writeBlock,
     // 画面が「失敗チェックのままマージしようとしている」を先に出せるようにする
     requireChecksMode: ctx.requireChecksMode,
   });
@@ -2711,7 +2811,7 @@ async function handleBranches(sb: SupabaseClient, caller: Caller, req: any, res:
     isDefault: b.name === def,
     lastCommitSha: b.commit?.sha ?? "",
   })).sort((a: any, b: any) => (a.isDefault === b.isDefault ? a.name.localeCompare(b.name) : a.isDefault ? -1 : 1));
-  return res.status(200).json({ branches, defaultBranch: def, level: ctx.level, repo: ctx.repo });
+  return res.status(200).json({ branches, defaultBranch: def, level: ctx.level, perms: ctx.perms, repo: ctx.repo });
 }
 
 /**
@@ -2787,9 +2887,21 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
   // チケット詳細から呼ぶときだけ渡ってくる。そのチケットのブランチしか使わないので、
   // 重い判定を掛ける前にここまで絞る（GitHub画面からの呼び出しは従来どおり全件）
   const wbsFilter = String(req.query?.wbs ?? "").trim().toUpperCase();
+  const ticketFilter = String(req.query?.ticketId ?? "").trim();
 
   // 既定ブランチの取得はブランチ走査と依存関係が無いので、待たずに同時に投げる
   const repoInfoPromise = gh(token, `/repos/${ctx.repo}`).catch(() => null);
+
+  // 名前で絞る際の逃し道。Dev Ticket から作ったブランチは名前が自由なので、
+  // WBS 番号を含まないものがある。そのチケットに紐付いた名前を先に控えておき、
+  // 名前一致に加えてこれも残す（BRU13-054）
+  const linkedNamesPromise: Promise<Set<string>> = ticketFilter
+    ? (async () => {
+      const { data } = await sb.from("ticket_github_branches").select("branch_name")
+        .eq("project_id", ctx.id).eq("repo", ctx.repo).eq("ticket_id", ticketFilter);
+      return new Set((data ?? []).map((r: any) => String(r.branch_name)));
+    })()
+    : Promise.resolve(new Set<string>());
 
   type Row = {
     name: string; sha: string; message: string; committedDate: string | null; authorName: string;
@@ -2836,7 +2948,11 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
   // 0段目：チケット詳細からの呼び出しは、その番号を含むブランチしか表示に使わない。
   // ここで先に落としておくと、この後の「取り込み済み判定」(compare は1本につき1リクエスト)が
   // 最大100本から通常0〜数本に減る。チケットを開いたときの待ち時間はここが支配的だった
-  if (wbsFilter) rows = rows.filter(r => r.name.toUpperCase().includes(wbsFilter));
+  if (wbsFilter || ticketFilter) {
+    const linkedNames = await linkedNamesPromise;
+    rows = rows.filter(r =>
+      (wbsFilter && r.name.toUpperCase().includes(wbsFilter)) || linkedNames.has(r.name));
+  }
 
   // 1段目：PR が一度も作られていないブランチだけ残す。
   // 表示は新しい順、新着バナーは先頭を使うので、ここで最終コミット日時の降順に並べ直す
@@ -2881,13 +2997,29 @@ async function handlePendingBranches(sb: SupabaseClient, caller: Caller, req: an
     }
   }
 
+  // Dev Ticket から作ったブランチは、名前に WBS 番号が無くてもチケットが分かる（BRU13-054）。
+  // 名前から拾えた WBS より、作成時に残した記録のほうが確かなので、こちらを優先する
+  const ticketByBranch = await branchTicketMap(sb, ctx.id, ctx.repo, candidates.map(c => c.name));
+  const linkedTickets = new Map<string, { wbs: string | null; title: string | null }>();
+  if (ticketByBranch.size) {
+    const { data: rows } = await sb.from("sprint_tickets")
+      .select("id, wbs, title").in("id", Array.from(new Set(ticketByBranch.values())));
+    for (const t of (rows ?? []) as any[]) {
+      linkedTickets.set(String(t.id), { wbs: t.wbs ?? null, title: t.title ?? null });
+    }
+  }
+
   return res.status(200).json({
     level: ctx.level,
+    perms: ctx.perms,
     repo: ctx.repo,
     defaultBranch,
     branches: candidates.map(({ prCount: _prCount, ...c }) => {
+      const ticketId = ticketByBranch.get(c.name) ?? null;
+      const linked = ticketId ? linkedTickets.get(ticketId) : undefined;
+      if (linked) return { ...c, wbs: linked.wbs, ticketTitle: linked.title, ticketId };
       const wbs = wbsByBranch.get(c.name) ?? null;
-      return { ...c, wbs, ticketTitle: wbs ? (titleByWbs.get(wbs) ?? null) : null };
+      return { ...c, wbs, ticketTitle: wbs ? (titleByWbs.get(wbs) ?? null) : null, ticketId: null };
     }),
   });
 }
@@ -2934,6 +3066,68 @@ async function allPullLinks(sb: SupabaseClient, projectId: string): Promise<any[
 }
 
 /**
+ * ブランチ名 → チケット の紐付けを引く（supabase/add_ticket_github_branches.sql）。
+ *
+ * Dev Ticket からブランチを作ったときに残した記録。ブランチ名に WBS 番号が
+ * 入っていなくてもチケットが分かる、唯一の手がかりになる。
+ * repo も条件に入れるのは、プロジェクトのリポジトリを別のものへ張り替えたときに、
+ * 旧リポジトリの同名ブランチへ誤って紐付けないため。
+ */
+async function branchTicketMap(
+  sb: SupabaseClient, projectId: string, repo: string, names: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const uniq = Array.from(new Set(names.filter(Boolean)));
+  if (!repo || !uniq.length) return out;
+  const { data } = await sb
+    .from("ticket_github_branches")
+    .select("branch_name, ticket_id")
+    .eq("project_id", projectId).eq("repo", repo)
+    .in("branch_name", uniq);
+  for (const r of (data ?? []) as any[]) out.set(String(r.branch_name), String(r.ticket_id));
+  return out;
+}
+
+/**
+ * Dev Ticket で作ったブランチから出たPRを、そのブランチのチケットへ紐付ける（BRU13-054）。
+ *
+ * WBS 番号による紐付けと違い、こちらは作成時に残した事実そのものなので迷う余地がない。
+ * 綴り違いの候補出しにも回さず、そのまま紐付ける。
+ * 手で外した紐付け（auto_linked = false）は上書きしない、という扱いは WBS 側と揃える。
+ */
+async function linkByBranch(sb: SupabaseClient, projectId: string, repo: string, pulls: any[]) {
+  const byBranch = await branchTicketMap(sb, projectId, repo, pulls.map(p => String(p.head ?? "")));
+  if (!byBranch.size) return;
+
+  const existing = await allPullLinks(sb, projectId);
+  const before = new Map(existing.map(e => [`${e.ticket_id}#${e.number}`, e]));
+
+  const toUpsert: Record<string, unknown>[] = [];
+  for (const p of pulls) {
+    const ticketId = byBranch.get(String(p.head ?? ""));
+    if (!ticketId) continue;
+    const row = {
+      project_id: projectId,
+      ticket_id: ticketId,
+      kind: "pull",
+      number: p.number,
+      title: p.title,
+      state: p.merged ? "merged" : p.state,
+      url: p.url,
+      auto_linked: true,
+      auto_reason: `ブランチ ${p.head}（Dev Ticketで作成）`,
+    };
+    const prev = before.get(`${ticketId}#${p.number}`);
+    const next = prev?.auto_linked === false ? { ...row, auto_linked: false, auto_reason: null } : row;
+    // 中身が変わっていない行は書かない（全PRを渡して呼ばれることがあるため）
+    if (prev && prev.state === next.state && prev.title === next.title && prev.url === next.url) continue;
+    toUpsert.push(next);
+  }
+  if (!toUpsert.length) return;
+  await sb.from("ticket_github_links").upsert(toUpsert, { onConflict: "project_id,ticket_id,kind,number" });
+}
+
+/**
  * ブランチ名／タイトルの WBS からチケットへ自動で紐付ける。
  * 表示のためだけの紐付けで、チケットのステータスには一切触らない
  * （既存のチケット更新経路に手を入れると、順番が入れ替わる等の既知不具合を踏むため）。
@@ -2949,7 +3143,11 @@ async function allPullLinks(sb: SupabaseClient, projectId: string): Promise<any[
  * 全PRを渡して呼ばれることがあるので、中身が変わっていない行は書かない。
  * 毎回全件を upsert すると、実質は同じ内容の書き込みが延々と走ることになる。
  */
-async function autoLink(sb: SupabaseClient, projectId: string, pulls: any[]) {
+async function autoLink(sb: SupabaseClient, projectId: string, repo: string, pulls: any[]) {
+  // ブランチ経由の紐付けを先に済ませる。WBS が1件も拾えないPR（＝命名を外したブランチ）でも
+  // ここまでは必ず通す必要があるため、下の早期 return より前に置く
+  await linkByBranch(sb, projectId, repo, pulls).catch(() => {});
+
   const wbsList = Array.from(new Set(pulls.flatMap(p => p.detectedWbs as string[])));
   if (!wbsList.length) return;
 
@@ -3076,7 +3274,7 @@ async function backfillProjectLinks(sb: SupabaseClient, project: any): Promise<n
   }
   // WBS番号を条件に並べて引くので、URLが長くなりすぎないよう小分けにする
   for (let i = 0; i < scanned.length; i += LINK_BACKFILL_CHUNK) {
-    await autoLink(sb, project.id, scanned.slice(i, i + LINK_BACKFILL_CHUNK));
+    await autoLink(sb, project.id, repo, scanned.slice(i, i + LINK_BACKFILL_CHUNK));
   }
   return scanned.length;
 }
@@ -3172,8 +3370,64 @@ async function handleLinks(sb: SupabaseClient, caller: Caller, req: any, res: an
     links: ticketId ? (data ?? []).map(mapLink) : await withWbs(sb, data ?? []),
     candidates: (cand ?? []).map(mapCandidate),
     level: ctx.level,
+    perms: ctx.perms,
     repo: ctx.repo,
   });
+}
+
+/**
+ * Dev Ticket から作ったブランチの一覧（BRU13-054）。
+ *
+ * ticketId を渡すとそのチケットのぶんだけ。渡さなければプロジェクト全体。
+ * GitHub API は叩かない（DBに残した紐付けを読むだけ）ので、
+ * チケット詳細を開くたびに走っても handleLinks と同じくらい軽い。
+ */
+async function handleTicketBranches(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  const ctx = await projectContext(sb, caller, String(req.query?.projectId ?? ""), "view", { installation: false });
+  const ticketId = String(req.query?.ticketId ?? "");
+
+  let q = sb.from("ticket_github_branches").select("*")
+    .eq("project_id", ctx.id).eq("repo", ctx.repo)
+    .order("created_at", { ascending: false });
+  if (ticketId) q = q.eq("ticket_id", ticketId);
+  const { data } = await q;
+  const rows = (data ?? []) as any[];
+
+  // 一覧に「どのチケットのブランチか」を出せるよう、WBS番号とタイトルを添える。
+  // ticketId 指定のとき（チケット詳細）は呼び出し側が最初から知っているので引かない
+  const titles = new Map<string, { wbs: string | null; title: string | null }>();
+  if (!ticketId && rows.length) {
+    const { data: tickets } = await sb.from("sprint_tickets")
+      .select("id, wbs, title").in("id", Array.from(new Set(rows.map(r => String(r.ticket_id)))));
+    for (const t of (tickets ?? []) as any[]) {
+      titles.set(String(t.id), { wbs: t.wbs ?? null, title: t.title ?? null });
+    }
+  }
+
+  return res.status(200).json({
+    branches: rows.map(r => {
+      const t = titles.get(String(r.ticket_id));
+      return { ...mapTicketBranch(r), ticketWbs: t?.wbs ?? null, ticketTitle: t?.title ?? null };
+    }),
+    level: ctx.level,
+    perms: ctx.perms,
+    repo: ctx.repo,
+    defaultBranch: ctx.defaultBranch,
+  });
+}
+
+function mapTicketBranch(r: any) {
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    ticketId: r.ticket_id,
+    repo: r.repo,
+    branchName: r.branch_name,
+    baseBranch: r.base_branch ?? "",
+    createdBy: r.created_by ?? null,
+    createdByName: r.created_by_name ?? null,
+    createdAt: r.created_at,
+  };
 }
 
 function mapCandidate(r: any) {
@@ -3426,13 +3680,126 @@ async function withActionRun(
 }
 
 /**
+ * ブランチ名として使えるかを Git の規則で判定する（git check-ref-format 相当）。
+ *
+ * GitHub に投げれば 422 は返るが、理由が英語1行で「どこが悪いのか」が分からない。
+ * 名前を自由に決められるようにする以上、ここで日本語の理由まで出す。
+ * 返り値が null なら使える。
+ */
+function branchNameError(name: string): string | null {
+  if (!name) return "ブランチ名を入力してください。";
+  if (name.length > 244) return "ブランチ名が長すぎます。";
+  if (/\s/.test(name)) return "ブランチ名に空白は使えません。";
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f~^:?*[\\]/.test(name)) return "ブランチ名に ~ ^ : ? * [ \\ と制御文字は使えません。";
+  if (name.startsWith("/") || name.endsWith("/")) return "ブランチ名の先頭と末尾に / は使えません。";
+  if (name.includes("//")) return "ブランチ名に / を続けて書くことはできません。";
+  if (name.includes("..")) return "ブランチ名に .. は使えません。";
+  if (name.includes("@{")) return "ブランチ名に @{ は使えません。";
+  if (name === "@") return "ブランチ名を @ だけにすることはできません。";
+  if (name.endsWith(".") || name.endsWith(".lock")) return "ブランチ名の末尾に . や .lock は使えません。";
+  if (name.split("/").some(seg => seg.startsWith(".") || seg.endsWith(".lock"))) {
+    return "ブランチ名の各区切りを . で始めたり .lock で終えたりはできません。";
+  }
+  return null;
+}
+
+/**
+ * ブランチの作成（BRU13-054）。
+ *
+ * ブランチ名は完全に自由。チケットとの紐付けは名前ではなく
+ * ticket_github_branches に残した記録で行うので、命名規則に縛る必要がない。
+ * この記録があるおかげで、そのブランチから出たPRは名前が何であれチケットへ辿れる
+ * （linkByBranch）。
+ *
+ * 要求する権限は githubBranchPermission = write。マージと分けてあるのは、
+ * ブランチは消せば済むのに対し main へのマージは戻せないため。
+ */
+async function handleCreateBranch(sb: SupabaseClient, caller: Caller, req: any, res: any) {
+  if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
+  const body = parseBody(req);
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "branch");
+
+  // refs/heads/ を付けて書く人がいるので、受け取り側で剥がす（弾くほどのことではない）
+  const name = String(body.name ?? "").trim().replace(/^refs\/heads\//, "");
+  const ticketId = String(body.ticketId ?? "").trim();
+
+  const nameError = branchNameError(name);
+  if (nameError) throw new HttpError(400, nameError);
+
+  await assertPermitted(ctx.installationId, "create-branch");
+  const token = await installationToken(ctx.installationId);
+
+  // 分岐元。指定が無ければ既定ブランチ。プロジェクト設定より GitHub 側の現在値を優先する
+  const repoInfo = await gh(token, `/repos/${ctx.repo}`).catch(() => null);
+  const base = String(body.base ?? "").trim()
+    || (repoInfo?.default_branch as string | undefined)
+    || ctx.defaultBranch || "main";
+  if (name === base) throw new HttpError(400, "分岐元と同じ名前のブランチは作成できません。");
+
+  // 分岐元の先端。ここで 404 なら分岐元の指定が間違っている
+  const baseRef = await gh(token, `/repos/${ctx.repo}/git/ref/heads/${encodeURIComponent(base)}`)
+    .catch(() => null);
+  const sha = baseRef?.object?.sha as string | undefined;
+  if (!sha) throw new HttpError(400, `分岐元のブランチ「${base}」が見つかりません。`);
+
+  try {
+    await gh(token, `/repos/${ctx.repo}/git/refs`, {
+      method: "POST",
+      body: { ref: `refs/heads/${name}`, sha },
+    });
+  } catch (e) {
+    let { status, message } = jaMessage(e);
+    const raw = String((e as Error)?.message ?? "").toLowerCase();
+    if (e instanceof GithubError && e.status === 422) {
+      status = 409;
+      message = raw.includes("already exists")
+        ? `ブランチ「${name}」はすでに存在します。別の名前を入力してください。`
+        : `ブランチ「${name}」を作成できませんでした。名前をご確認ください。`;
+    }
+    const block = await explainForbidden(ctx.installationId, "create-branch", e);
+    console.error("[github create-branch]", (e as Error)?.message);
+    await writeLog(sb, ctx, caller, "create_branch", 0, "error", (e as Error)?.message ?? "");
+    if (block) return res.status(403).json({ error: block.message, permission: block });
+    return res.status(status).json({ error: message });
+  }
+
+  await writeLog(sb, ctx, caller, "create_branch", 0, "ok", `${base} → ${name}`);
+
+  // チケットとの紐付け。ここが「名前を自由にしても紐付きが切れない」ことの本体。
+  // 記録に失敗してもブランチ自体は出来ているので、作成そのものは成功として返す
+  let linked = false;
+  if (ticketId) {
+    const { error } = await sb.from("ticket_github_branches").upsert({
+      project_id: ctx.id,
+      ticket_id: ticketId,
+      repo: ctx.repo,
+      branch_name: name,
+      base_branch: base,
+      created_by: caller.id,
+      created_by_name: caller.name,
+    }, { onConflict: "project_id,repo,branch_name" });
+    linked = !error;
+    if (error) console.error("[github create-branch link]", error.message);
+  }
+
+  return res.status(200).json({
+    ok: true,
+    name,
+    base,
+    linked,
+    url: `https://github.com/${ctx.repo}/tree/${name.split("/").map(encodeURIComponent).join("/")}`,
+  });
+}
+
+/**
  * プルリクエストの作成。GitHub の画面へ行かずに Dev Ticket 側で完結させるためのもの。
- * 作成は書き込み操作なので、マージと同じ「マージ可」の権限を要求する。
+ * 要求する権限は githubPullPermission = write（BRU13-054 でマージ権限から分離）。
  */
 async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, res: any) {
   if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
   const body = parseBody(req);
-  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "merge");
+  const ctx = await projectContext(sb, caller, String(body.projectId ?? ""), "create-pull");
 
   const head = String(body.head ?? "").trim();
   const base = String(body.base ?? "").trim() || ctx.defaultBranch || "main";
@@ -3463,7 +3830,7 @@ async function handleCreatePull(sb: SupabaseClient, caller: Caller, req: any, re
     await writeLog(sb, ctx, caller, "create_pull", pr?.number ?? 0, "ok", `${head} → ${base} / ${title}`);
     // 作成した時点で紐付けておく。PR一覧を開かないまま GitHub 側でマージされると、
     // 紐付けが残らずリリース反映の判定材料が無くなるため
-    if (pr?.number) await autoLink(sb, ctx.id, [mapPull(pr)]).catch(() => {});
+    if (pr?.number) await autoLink(sb, ctx.id, ctx.repo, [mapPull(pr)]).catch(() => {});
     return res.status(200).json({
       ok: true,
       number: pr?.number ?? null,

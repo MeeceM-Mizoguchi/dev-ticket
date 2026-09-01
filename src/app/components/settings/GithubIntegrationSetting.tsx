@@ -16,6 +16,7 @@ import {
 } from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
+import { githubPermsFrom, toLegacyGithubLevel } from "@/app/lib/githubPerms";
 import type {
   GithubStatus, GithubRepo, GithubAccessLevel, GithubReleaseSyncResult, GithubDeployOverview,
   GithubDeployOverviewRow,
@@ -121,7 +122,10 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
 
   /**
    * ③の付与状況。個別設定 → グループ → ロール既定 の順で解決する
-   * （サーバー側 resolveGithubLevel と同じ優先順位）。
+   * （サーバー側 resolveGithubPerms と同じ優先順位）。
+   *
+   * 操作ごとの権限（BRU13-054）は、ここでは1段階に畳んで数える。
+   * この欄は「何人に配られているか」の概観で、内訳はアサイン計画の画面で見るため。
    */
   const loadGrantCounts = useCallback(async () => {
     if (!isSupabaseEnabled) return;
@@ -138,8 +142,8 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     const { data: roles } = await supabase!.from("roles").select("name, base_permissions");
     const roleLevel = new Map<string, GithubAccessLevel>();
     for (const r of roles ?? []) {
-      const lv = (r as any).base_permissions?.githubPermission as GithubAccessLevel | undefined;
-      if (lv) roleLevel.set((r as any).name, lv);
+      const p = githubPermsFrom((r as any).base_permissions);
+      if (p) roleLevel.set((r as any).name, toLegacyGithubLevel(p));
     }
     for (const p of profiles as any[]) {
       const role = p.role as string;
@@ -154,7 +158,8 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     const { data: groups } = await gq;
     const groupLevel = new Map<number, GithubAccessLevel>();
     for (const g of groups ?? []) {
-      const lv = (g as any).permissions?.githubPermission as GithubAccessLevel | undefined;
+      const p = githubPermsFrom((g as any).permissions);
+      const lv = p ? toLegacyGithubLevel(p) : undefined;
       if (lv && lv !== "none") groupLevel.set((g as any).id, lv);
     }
     if (groupLevel.size) {
@@ -174,7 +179,8 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
         .from("project_member_permissions").select("member_id, permissions").in("project_id", projectIds);
       for (const row of pmp ?? []) {
         const id = (row as any).member_id as string;
-        const lv = (row as any).permissions?.githubPermission as GithubAccessLevel | undefined;
+        const p = githubPermsFrom((row as any).permissions);
+        const lv = p ? toLegacyGithubLevel(p) : undefined;
         if (!lv || !levels.has(id)) continue;
         levels.set(id, stronger(levels.get(id)!, lv));
       }
