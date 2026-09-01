@@ -49,21 +49,27 @@ export function BulkActionBar({
 
   if (count === 0) return null;
 
+  // whiteSpace/flexShrink はラベルの折り返し（BRU14-002）対策。
+  // 幅が足りないときに文字を折り返すのではなく、バー全体を横に伸ばして1行に保つ。
   const btnBase = {
-    display: "flex", alignItems: "center", gap: 6, padding: "9px 16px",
+    display: "flex", alignItems: "center", gap: 5, padding: "8px 12px",
     fontSize: 12.5, fontWeight: 700, borderRadius: 10, border: "none",
+    whiteSpace: "nowrap", flexShrink: 0,
     cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.6 : 1,
     transition: "all 0.15s",
   } as const;
 
+  // width:max-content が要点。left:50% で置いた fixed 要素の shrink-to-fit 幅は
+  // 「画面右半分」しか取れず、収まらないと min-content（＝各ボタンが折り返した幅）まで
+  // 縮んでしまう。max-content を明示して、中身がそのまま1行で並ぶ幅にする。
   return (
-    <div style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", zIndex: 250, display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: "#1A1714", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.16)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 4, paddingRight: 4 }}>
+    <div style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", zIndex: 250, display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", width: "max-content", background: "#1A1714", borderRadius: 14, boxShadow: "0 12px 40px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.16)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, paddingLeft: 4, paddingRight: 2 }}>
         <span style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: 22, height: 22, padding: "0 6px", borderRadius: 999, background: "#059669", color: "#fff", fontSize: 12, fontWeight: 800 }}>{count}</span>
         <span style={{ fontSize: 12.5, fontWeight: 600, color: "#F3F4F6", whiteSpace: "nowrap" }}>件選択中</span>
       </div>
 
-      <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.14)" }} />
+      <div style={{ width: 1, height: 22, flexShrink: 0, background: "rgba(255,255,255,0.14)" }} />
 
       <button type="button" disabled={disabled} onClick={onAssign}
         style={{ ...btnBase, background: "#059669", color: "#fff" }}
@@ -87,7 +93,7 @@ export function BulkActionBar({
       </button>
 
       {onExport && (
-        <div ref={exportRef} style={{ position: "relative" }}>
+        <div ref={exportRef} style={{ position: "relative", flexShrink: 0 }}>
           <button type="button" disabled={disabled || !exportEnabled}
             title={exportEnabled ? undefined : "現在のプランではご利用できません"}
             onClick={() => setExportOpen(o => !o)}
@@ -119,10 +125,10 @@ export function BulkActionBar({
         <Trash2 style={{ width: 14, height: 14 }} />削除
       </button>
 
-      <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.14)" }} />
+      <div style={{ width: 1, height: 22, flexShrink: 0, background: "rgba(255,255,255,0.14)" }} />
 
       <button type="button" onClick={onClear} title="選択を解除"
-        style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 9, border: "none", background: "transparent", color: "#B0A9A4", cursor: "pointer" }}
+        style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, flexShrink: 0, borderRadius: 9, border: "none", background: "transparent", color: "#B0A9A4", cursor: "pointer" }}
         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; (e.currentTarget as HTMLElement).style.color = "#fff"; }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
         <X style={{ width: 16, height: 16 }} />

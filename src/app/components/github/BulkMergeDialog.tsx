@@ -447,16 +447,20 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
                   </p>
                   {blocked && <p style={{ fontSize: 11, color: "#D97706", marginTop: 2 }}>{blocked}</p>}
                 </div>
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 3, flexShrink: 0 }}>
-                  <OrderButton label={`#${p.number} を1つ上へ`} disabled={merging || i === 0}
-                    onClick={() => move(i, i - 1)}>
-                    <ChevronUp style={{ width: 13, height: 13 }} />
-                  </OrderButton>
-                  <OrderButton label={`#${p.number} を1つ下へ`} disabled={merging || i === order.length - 1}
-                    onClick={() => move(i, i + 1)}>
-                    <ChevronDown style={{ width: 13, height: 13 }} />
-                  </OrderButton>
-                </div>
+                {/* 実行が始まったら順番はもう変えられないので、ボタンごと消す。
+                    押せないまま残しておくと「まだ入れ替えられる画面」に見えてしまう（BRU13-054） */}
+                {!merging && (
+                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 3, flexShrink: 0 }}>
+                    <OrderButton label={`#${p.number} を1つ上へ`} disabled={i === 0}
+                      onClick={() => move(i, i - 1)}>
+                      <ChevronUp style={{ width: 13, height: 13 }} />
+                    </OrderButton>
+                    <OrderButton label={`#${p.number} を1つ下へ`} disabled={i === order.length - 1}
+                      onClick={() => move(i, i + 1)}>
+                      <ChevronDown style={{ width: 13, height: 13 }} />
+                    </OrderButton>
+                  </div>
+                )}
               </div>
             );
           })}
