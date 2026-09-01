@@ -1,7 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import path from 'path'
 import fs from 'fs'
-import { exec } from 'child_process'
+import { exec, execSync } from 'child_process'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import type { Plugin } from 'vite'
@@ -31,6 +31,33 @@ function genAppBuild(): { version: string; buildTime: string } {
 }
 const APP_BUILD = genAppBuild();
 
+/**
+ * このビルドがどのコミットから作られたか。
+ *
+ * DevTicket の「本番反映の確認」(層B) は、確認先URLから取った値を
+ * 既定ブランチの先頭SHAと compare して未反映を判定する。
+ * 値がコミットSHAでないと api/github/[resource].ts の SHA_RE に弾かれて
+ * state=unknown になり、確認が一切効かない（＝マージしたのに本番へ出ていない、
+ * を誰も検知できない）。version は "v2026.09.01.2352" 形式でSHAではないため、
+ * commit を別に出す必要がある。
+ *
+ * Vercel は VERCEL_GIT_COMMIT_SHA を渡してくれる。手元ビルドでは git から拾う。
+ */
+function genCommitSha(): string | null {
+  const fromEnv = process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || '';
+  if (/^[0-9a-f]{7,40}$/i.test(fromEnv)) return fromEnv;
+  try {
+    // git が無い・履歴が無い環境でもビルド自体は止めない
+    const sha = execSync('git rev-parse HEAD', {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+const APP_COMMIT = genCommitSha();
+
 function buildInfoPlugin(): Plugin {
   return {
     name: 'build-info',
@@ -38,7 +65,13 @@ function buildInfoPlugin(): Plugin {
       this.emitFile({
         type: 'asset',
         fileName: 'build-info.json',
-        source: JSON.stringify({ buildTime: APP_BUILD.buildTime, version: APP_BUILD.version }),
+        // commit は DevTicket の本番反映チェックが読む。キー名は
+        // api/github/[resource].ts の DEPLOY_REF_KEYS に合わせてある
+        source: JSON.stringify({
+          buildTime: APP_BUILD.buildTime,
+          version: APP_BUILD.version,
+          commit: APP_COMMIT,
+        }),
       });
     },
   };
