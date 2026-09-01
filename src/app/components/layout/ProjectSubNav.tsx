@@ -1,4 +1,4 @@
-import type { ElementType } from "react";
+import { useState, type ElementType } from "react";
 import { useNavigate } from "react-router";
 import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone, Search } from "lucide-react";
 import type { AccessLevel, GithubAccessLevel } from "@/app/types";
@@ -42,6 +42,7 @@ interface ProjectSubNavProps {
 export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm, backlogPerm, minutesPerm, whiteboardPerm }: ProjectSubNavProps) {
   const navigate = useNavigate();
   const { plan } = usePlan();
+  const [hovered, setHovered] = useState<ProjectSubPage | null>(null);
   // GitHubの権限だけは呼び出し側から渡さず、ここで解決する。
   // 8つある呼び出し側すべてに配線すると漏れが出て、タブが画面ごとに出たり消えたりするため。
   const github = useGithubAccess(projectSlug);
@@ -73,12 +74,22 @@ export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm
   //   余白を詰めた分（左右padding 14→9 / ボタン間 4→2 / アイコン間 5→4）で約130px幅が縮む。
   return (
     <div style={{ display: "flex", gap: 2, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: 3, marginBottom, width: "fit-content", flexShrink: 0 }}>
-      {visibleItems.map(({ id, label, icon: Icon, path }) => (
-        <button key={id} onClick={() => navigate(`/${projectSlug}${path}`)} title={label}
-          style={{ display: "flex", alignItems: "center", gap: 4, padding: "7px 9px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "none", cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap", flexShrink: 0, background: active === id ? "#059669" : "transparent", color: active === id ? "#fff" : "#6B6458" }}>
-          <Icon style={{ width: 13, height: 13, flexShrink: 0 }} />{label}
-        </button>
-      ))}
+      {visibleItems.map(({ id, label, icon: Icon, path }) => {
+        // マウスを乗せたときの見た目。共通CSS（styles/interactive.css）の薄い黒の膜だと
+        // タブでは弱く、押せるかどうかが伝わらないので、ここは淡い緑ではっきり出す。
+        // 共通の膜が重なると色が濁るため data-hover="off" で外している。
+        const isActive = active === id;
+        const isHover = hovered === id;
+        return (
+          <button key={id} onClick={() => navigate(`/${projectSlug}${path}`)} title={label} data-hover="off"
+            onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(h => (h === id ? null : h))}
+            style={{ display: "flex", alignItems: "center", gap: 4, padding: "7px 9px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "none", cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap", flexShrink: 0,
+              background: isActive ? (isHover ? "#047857" : "#059669") : (isHover ? "#ECFDF5" : "transparent"),
+              color: isActive ? "#fff" : (isHover ? "#059669" : "#6B6458") }}>
+            <Icon style={{ width: 13, height: 13, flexShrink: 0 }} />{label}
+          </button>
+        );
+      })}
     </div>
   );
 }
