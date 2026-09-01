@@ -1,0 +1,190 @@
+/* ===========================================================================
+   共通ホバーUI（押せるものは、マウスを乗せると必ず反応する）
+   ---------------------------------------------------------------------------
+   この画面群のボタンは style={{ background: ... }} のインラインで色を持っている。
+   インラインスタイルはCSSより強いので、button:hover { background: #eee } と書いても
+   ほとんど効かない。かといって background-color を !important で塗り替えると、
+   緑のアクティブタブや赤い削除ボタンまでホバーで灰色になってしまう。
+
+   そこで「背景色そのものは触らず、background-image に薄い黒の膜を重ねる」。
+   background-color の上に background-image が乗る仕組みなので、
+   元の色を保ったまま「少し暗くなる」だけの反応になる。
+     ・透明なボタン … 下地（白いカード）が透けたうえに膜が乗るので薄い灰色になる
+     ・緑のボタン   … 少し濃い緑になる
+   個別に onMouseEnter でホバー色を変えているコンポーネントもあるが、
+   その上に膜が重なるだけなので壊れない（ほんの少し濃くなる）。
+
+   対象は3種類。
+     1. button / summary / role="button" など、タグや役割で押せると分かるもの
+     2. インラインで cursor: pointer を持つもの（クリックできるカード・行・チップ）
+     3. リンク。背景色を持つ「ボタン風リンク」は膜、文中の普通のリンクは下線
+   逆に、自前のUIを持つ Excalidraw（ホワイトボード）と Handsontable（表）の中は
+   触らない。フォーム部品（input/select/textarea）も見た目が壊れやすいので除外する。
+
+   膜を出したくない要素には data-hover="off"、
+   逆に上の「触らない」領域の中でも効かせたい入れ物には data-hover="on" を付ける。
+   =========================================================================== */
+
+:root {
+  /* 白〜淡色の下地に乗せる前提の膜。アプリの文字色 #1A1714 と同系の黒にして、
+     グレーが浮かないようにしている。 */
+  --dt-tint-base: rgba(26, 23, 20, 0.07);
+  --dt-tint-base-strong: rgba(26, 23, 20, 0.14);
+  --dt-hover-tint: var(--dt-tint-base);
+  --dt-press-tint: var(--dt-tint-base-strong);
+}
+
+/* 自前のUIを持つ Excalidraw（ホワイトボード）と Handsontable（表）の中では膜を消す。
+   セレクタで除外するのではなく変数を transparent にして無効化しているのは、
+   「この中の一部だけ効かせ直したい」を下の data-hover="on" で書けるようにするため。 */
+.excalidraw,
+.handsontable,
+.ht_master, .ht_clone_top, .ht_clone_left {
+  --dt-hover-tint: transparent;
+  --dt-press-tint: transparent;
+}
+
+/* ただし、ホワイトボード右上の リンク／ヘルプ／エクスポート／全画面 のように、
+   Excalidraw公式のスロット(renderTopRightUI)へ自前で載せているボタンは反応させたい。
+   DOM上は .excalidraw の中にいて上の無効化に巻き込まれるので、入れ物に
+   data-hover="on" を付けて膜を戻す（外に出すと標準UIと重なるため場所は変えられない）。 */
+[data-hover="on"] {
+  --dt-hover-tint: var(--dt-tint-base);
+  --dt-press-tint: var(--dt-tint-base-strong);
+}
+
+/* --- カーソル -------------------------------------------------------------
+   「押せるのか分からない」の半分はカーソルの問題。インラインで cursor を
+   指定していないボタンは矢印のままなので、ここで既定を pointer にする
+   （インライン指定がある要素はそちらが優先されるため上書きにはならない）。 */
+button,
+summary,
+label[for],
+[role="button"],
+[role="tab"],
+[role="menuitem"],
+[role="menuitemcheckbox"],
+[role="menuitemradio"],
+[role="option"] {
+  cursor: pointer;
+}
+
+/* 押せないものは押せないと分かるように。disabled 属性が付いているものだけを
+   対象にする（aria-disabled はメニュー等で意味が揺れるため強制しない）。 */
+button:disabled,
+[role="button"]:disabled {
+  cursor: not-allowed !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  /* --- 1. ホバーの膜 ------------------------------------------------------ */
+  :is(
+    button,
+    summary,
+    .cursor-pointer,
+    [role="button"],
+    [role="tab"],
+    [role="menuitem"],
+    [role="menuitemcheckbox"],
+    [role="menuitemradio"],
+    [role="option"],
+    a[href][style*="background"],
+    [style*="cursor: pointer"],
+    [style*="cursor:pointer"]
+  ):not(:where(
+    :disabled,
+    [aria-disabled="true"],
+    [data-disabled],
+    [data-hover="off"],
+    input, select, textarea,
+    span:not([style*="background"]),
+    [style*="gradient"],
+    [style*="url("],
+    [style*="not-allowed"],
+    /* Excalidraw の色ピッカー「透明」は市松模様を background-image で描いていて、
+       膜（＝background-image）で塗り替えると模様が消えるので触らない */
+    .color-picker__button
+  )):hover {
+    background-image: linear-gradient(var(--dt-hover-tint), var(--dt-hover-tint)) !important;
+  }
+
+  /* --- 2. 押した瞬間 ------------------------------------------------------
+     膜を濃くするだけ。transform で動かすと周りのレイアウトが跳ねるので使わない。
+     セレクタは 1. と同じもの（片方だけ直すと押し込みだけ効かなくなるので注意）。 */
+  :is(
+    button,
+    summary,
+    .cursor-pointer,
+    [role="button"],
+    [role="tab"],
+    [role="menuitem"],
+    [role="menuitemcheckbox"],
+    [role="menuitemradio"],
+    [role="option"],
+    a[href][style*="background"],
+    [style*="cursor: pointer"],
+    [style*="cursor:pointer"]
+  ):not(:where(
+    :disabled,
+    [aria-disabled="true"],
+    [data-disabled],
+    [data-hover="off"],
+    input, select, textarea,
+    span:not([style*="background"]),
+    [style*="gradient"],
+    [style*="url("],
+    [style*="not-allowed"],
+    /* Excalidraw の色ピッカー「透明」は市松模様を background-image で描いていて、
+       膜（＝background-image）で塗り替えると模様が消えるので触らない */
+    .color-picker__button
+  )):active {
+    background-image: linear-gradient(var(--dt-press-tint), var(--dt-press-tint)) !important;
+  }
+
+  /* --- 3. グラデーション／画像を背景に敷いているもの ----------------------
+     膜（background-image）で塗り潰すと元の絵が消えるので、明度を落として反応させる。
+     ログイン画面のCTAやアバターなどが該当する。 */
+  :is(button, a[href], [role="button"], [style*="cursor: pointer"], [style*="cursor:pointer"]):is([style*="gradient"], [style*="url("]):not(:where(
+    :disabled, [aria-disabled="true"], [data-hover="off"], .excalidraw *, .handsontable *
+  )):hover {
+    filter: brightness(0.94);
+  }
+
+  img[style*="cursor: pointer"]:hover,
+  img[style*="cursor:pointer"]:hover {
+    filter: brightness(0.93);
+  }
+
+  /* --- 4. 行（テーブル）---------------------------------------------------
+     tr に膜を乗せても、td 側が白で塗られていると隠れてしまうのでセルに乗せる。 */
+  :is(tr[style*="cursor: pointer"], tr[style*="cursor:pointer"], tr.cursor-pointer):not(:where(.handsontable *, .ht_master *)):hover > :is(td, th) {
+    background-image: linear-gradient(var(--dt-hover-tint), var(--dt-hover-tint)) !important;
+  }
+
+  /* --- 5. 文中のリンク ----------------------------------------------------
+     ボタン風のリンク（背景色を持つ／cursor 指定がある）は 1. の膜に任せ、
+     ここでは普通のテキストリンクに下線を出す。
+     リンク側が textDecoration: "none" をインラインで持っていることが多いので
+     !important が要る。 */
+  a[href]:not(:where(
+    [style*="background"],
+    [style*="cursor: pointer"],
+    [style*="cursor:pointer"],
+    [data-hover="off"],
+    .excalidraw *, .handsontable *
+  )):hover {
+    text-decoration: underline !important;
+    text-underline-offset: 2px;
+  }
+
+  /* パンくず（Wikiホーム > フォルダ …）のように、背景を持たない「押せる文字」も同じ扱い。
+     文字の後ろに灰色の四角が出るとリンクに見えないので、1. の膜からは外して下線にする。 */
+  :is(span[style*="cursor: pointer"], span[style*="cursor:pointer"]):not(:where(
+    [style*="background"],
+    [data-hover="off"],
+    .excalidraw *, .handsontable *
+  )):hover {
+    text-decoration: underline !important;
+    text-underline-offset: 2px;
+  }
+}

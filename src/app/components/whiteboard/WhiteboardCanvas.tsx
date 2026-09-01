@@ -1462,7 +1462,9 @@ export default function WhiteboardCanvas({
           // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: プライベート · リンク · ヘルプ · エクスポート · 全画面
           // ※左上ではなくここに置くのは、左上はボード一覧の展開ボタン(BoardListToggle)と重なるのと、
           //   このスロットはキャンバス内部なので疑似全画面(zIndex:3000)でもバッジが隠れないため。
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
+          // data-hover="on" … 共通のホバーUI(styles/interactive.css)は Excalidraw の中を
+          //   触らない決まりなので、このスロットに載せた自前ボタンだけ効かせ直す。
+          <div data-hover="on" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
             {isPrivate && <PrivateBadge variant="canvas" sharedWith={sharedWith} isOwner={isBoardOwner} />}
             <CopyObjectLinkButton api={api} projectSlug={projectSlug} boardId={boardId} onResult={showToast} />
             <HelpButton api={api} />
