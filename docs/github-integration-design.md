@@ -201,6 +201,60 @@ admin / PM を暗黙で `merge` にしていたが、GitHub権限の付与はア
 
 読み取り系で `"none"` なら 403、書き込み系で `"merge"` 以外なら 403。
 
+### 5-5. 操作ごとの権限へ分割（BRU13-054）
+
+ブランチ作成（→ 16章）を足すにあたって、1本の段階では表現できないことが分かった。
+**ブランチは消せば済むが、main へのマージは戻せない。** 1つの `merge` にまとめていると
+「ブランチは切らせたいがマージはさせたくない」人に渡せる権限が無く、結局マージ可を配ることになる。
+
+そこで **操作ごとに3段階**へ分ける。値はいずれも `none` / `view` / `write`。
+
+```ts
+export type GithubActionLevel = "none" | "view" | "write";
+
+export interface GithubPerms {
+  branch: GithubActionLevel;  // ブランチの作成
+  pull:   GithubActionLevel;  // プルリクエストの作成
+  merge:  GithubActionLevel;  // マージ・レビュー承認・コメント投稿・紐付けの編集
+}
+```
+
+jsonb 上のキーは `githubBranchPermission` / `githubPullPermission` / `githubMergePermission`。
+
+**「閲覧」は軸ごとに分けない。** 軸ごとの閲覧ゲートを作ると「PRは見えるがマージ状況は見えない」
+という破綻した組み合わせが設定できてしまう。GitHubタブを開けるかどうかは
+**3軸の論理和**（1つでも `none` 以外なら見える＝`canViewGithub`）で判定する。
+5-1 で「boolean 2つに分けない」とした理由はここでも生きていて、分けたのは
+*できること* だけで、*見えること* は1つのままにしてある。
+
+| 参照/実行 | 必要な権限 |
+|---|---|
+| GitHubタブ・参照系API全部 | 3軸のどれかが `none` 以外 |
+| `create-branch` | `branch === "write"` |
+| `create-pull` | `pull === "write"` |
+| `merge` / `merge-bulk` / `merge-precheck` / `review` / `comment` / `link` / `unlink` / `resolve-candidate` / `backfill-links` | `merge === "write"` |
+
+解決の順序（① 個別 → ② グループ → ③ ロール既定 → 全部 `none`、owner は常に全権）は
+5-4 のまま。**その階層に GitHub 権限が書かれていたら、そこで確定させる**（軸ごとに別々の
+階層から拾わない）のも従来どおり。軸ごとに拾うと、個別で明示的に外した権限が
+グループ経由で復活してしまう。
+
+**旧 `githubPermission` は消さない。** 移行SQL
+[`supabase/add_github_split_permissions.sql`](../supabase/add_github_split_permissions.sql) が
+`merge → 3軸とも write` / `view → 3軸とも view` / それ以外 → 全部 `none` で新キーを埋め、
+以後も書き込みのたびに旧キーを同じ内容へ揃える（`githubPermsToJson`）。
+SQL未適用の環境から読んでも結論が変わらないようにするため。
+応答の `level` も従来どおり返し続ける（`toLegacyLevel`：`merge === "write"` なら `"merge"`、
+見えるなら `"view"`、それ以外 `"none"`）ので、`level === "merge"` を見ていた既存の画面は
+そのまま正しく動く。
+
+判定は3か所に同じものを置く。片方だけ直すとずれるので必ず両方直すこと。
+
+| ファイル | 役割 |
+|---|---|
+| [src/app/lib/githubPerms.ts](../src/app/lib/githubPerms.ts) | クライアント側の読み取り・合成（AuthContext / useGithubAccess / PermissionsPage / GithubIntegrationSetting が共用） |
+| [api/github/\[resource\].ts](../api/github/[resource].ts) の `resolveGithubPerms` | サーバー側。単体で動く決まりなので同じ判定を持つ |
+
 ## 6. データモデル
 
 `supabase/add_github_integration.sql`（新規）
@@ -703,26 +757,33 @@ GitHub 側で App がアンインストールされた場合、API が 401/404 �
 [PermissionsPage](../src/app/pages/PermissionsPage.tsx) のグループ編集モーダルと
 個人モーダルの両方、「ページ別アクセス権限」ブロックの下に独立したブロックを置く。
 
+**BRU13-054 で操作ごとの3行になった**（5-5）。並びは取り返しのつく順。
+
 ```
 ┌─ GitHub連携 ─────────────────────────────────────────────────────────┐
 │                                                                       │
-│   GitHub                    [ 閲覧のみ（PR・Issue・コミット）    ▾ ]  │
+│   ブランチ作成                              [ 作成可          ▾ ]     │
+│   チケットやGitHub画面からブランチを作成できます。作成したブランチは、  │
+│   名前に関係なくチケットへ紐付きます。                                 │
 │                                                                       │
-│   PR・Issue・コミットを Dev Ticket の画面内で閲覧できます。           │
-│   マージやレビュー承認はできません。                                   │
+│   プルリクエスト作成                        [ 作成可          ▾ ]     │
+│   Dev Ticketからプルリクエストを作成できます。マージはできません。      │
+│                                                                       │
+│   マージ                                    [ 閲覧のみ        ▾ ]     │
+│   マージ可否やCIの状況を閲覧できます。マージはできません。             │
+│                                                                       │
+│   GitHubタブが表示されます（3つのうち1つでも「権限なし」以外なら表示）。│
 │                                                                       │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-セレクトの選択肢と、選択中だけ直下に出す説明文:
+各行の選択肢は `権限なし` / `閲覧のみ` / `作成可`（マージ行だけ `マージ可`）。
+選択中の値の説明だけを直下に1行出す（3行×3説明を常時出すと他の権限ブロックより騒がしくなる）。
 
-| 選択肢 | 直下の説明 |
-|---|---|
-| 権限なし（GitHubタブを表示しない） | このメンバーには GitHub タブが表示されません。 |
-| 閲覧のみ（PR・Issue・コミット） | PR・Issue・コミットを Dev Ticket の画面内で閲覧できます。マージやレビュー承認はできません。 |
-| マージ可（承認・マージ・コメント） | 上記に加えて、**PRのマージ・レビュー承認・コメント投稿**ができます。 |
+ブロックの最後に**GitHubタブが出るかどうか**を必ず1行で出す。
+閲覧が3軸の論理和で決まる（5-5）ことは設定画面から読み取れないと分からないため。
 
-「マージ可」を選んだときだけ、下に警告を出す。
+マージ行に「マージ可」を選んだときだけ、下に警告を出す。
 
 ```
    ⚠ 「マージ可」は main ブランチへの反映を実行できる権限です。
@@ -730,8 +791,9 @@ GitHub 側で App がアンインストールされた場合、API が 401/404 �
      Dev Ticket 上の操作で本番ブランチが更新されます。
 ```
 
-グループ一覧のカードには、他の権限バッジと並べて `GitHub: マージ可` のチップを出す
-（[PermissionsPage.tsx:856](../src/app/pages/PermissionsPage.tsx#L856) の `activePerms` に合流させる）。
+グループ一覧のカードには、他の権限バッジと並べて `GitHub: ブランチ作成・プルリクエスト作成`
+のように**「作成できる操作」を並べたチップ**を出す。1つも無ければ `GitHub: 閲覧のみ`、
+3軸とも `none` ならチップ自体を出さない（`githubBadgeLabel`）。
 
 ## 8-3. プロジェクト内 GitHub タブ
 
@@ -741,7 +803,7 @@ GitHub 側で App がアンインストールされた場合、API が 401/404 �
 
 | 条件 | 表示 |
 |---|---|
-| `githubPermission === "none"` | タブ自体を出さない。URL直打ちは `NotFoundView kind="no-permission" label="GitHub"` |
+| GitHub権限が3軸とも `none`（＝`level === "none"`） | タブ自体を出さない。URL直打ちは `NotFoundView kind="no-permission" label="GitHub"` |
 | リポジトリ未紐付け＋管理者 | 8-3-A |
 | リポジトリ未紐付け＋一般 | 8-3-B |
 | 紐付け済み | 8-3-C |
@@ -1003,6 +1065,15 @@ GitHub App は user access token も発行できるため、「自分の GitHub 
 | `src/app/components/github/GithubSetupSteps.tsx` | ①②③ ステップインジケータ |
 | `src/app/components/settings/GithubIntegrationSetting.tsx` | 接続設定（8-1 の全状態） |
 
+BRU13-054 で追加したもの（5-5・16章）:
+
+| ファイル | 内容 |
+|---|---|
+| `supabase/add_github_split_permissions.sql` | GitHub権限を操作ごとの3キーへ展開する移行 |
+| `supabase/add_ticket_github_branches.sql` | ブランチ↔チケットの紐付けテーブル＋RLS |
+| `src/app/lib/githubPerms.ts` | 操作ごと権限の読み取り・合成（クライアント側の唯一の実装） |
+| `src/app/components/github/CreateBranchDialog.tsx` | ブランチ作成ダイアログ・名前の初期値と妥当性判定 |
+
 ### 変更
 
 | ファイル | 変更 |
@@ -1202,3 +1273,111 @@ App 側の設定:
 - 記録用の表がまだ適用されていない環境では、`insert` が失敗した時点で
   記録なしのまま実行を続ける。**記録の有無で実行の可否は変えない**。
 - 記録は復帰にしか使わないので、実行者本人の24時間より古い行は都度消す。
+
+## 16. ブランチの作成（BRU13-054）
+
+### 16-1. 何が問題だったか
+
+チケットとPRの紐付けは、**ブランチ名／PRタイトルに書かれた WBS 番号を正規表現で拾う**ことだけで
+成り立っていた（`detectWbs`）。つまり紐付きの根拠が「人が付けた名前」しかない。
+
+そのため、命名を外したブランチ（`fix-bug`、`tmp2` など）は
+**紐付き候補にすら出てこない**。しかも後から直す手段が無く、
+PRを手で紐付けるまで「リリース待ちなのにPRが無い」の赤アラートが消えない。
+
+「ブランチ名を厳密に守らせる」で解くこともできるが、それは運用の負担を増やすだけで、
+守り忘れた1本は結局そのまま取り残される。
+
+### 16-2. 方針：紐付きの根拠を名前から切り離す
+
+**Dev Ticket からブランチを作った時点で「このブランチはこのチケットのもの」をDBに残す。**
+名前は完全に自由でよくなる。名前は人が読むためのもので、機械の紐付けには使わない。
+
+```
+supabase/add_ticket_github_branches.sql
+  ticket_github_branches(project_id, ticket_id, repo, branch_name, base_branch, created_by, ...)
+  unique (project_id, repo, branch_name)
+```
+
+`ticket_github_links` とは別テーブルにする。あちらは `kind in ('pull','issue')` と
+`number`（整数）が前提で、番号を持たないブランチは構造的に入らない。
+
+`repo` を持つのは、プロジェクトのリポジトリを別のものへ張り替えたときに
+旧リポジトリの同名ブランチへ誤って紐付けないため。
+
+### 16-3. PRへの伝わり方
+
+```
+ブランチ作成（create-branch）
+  └─ ticket_github_branches に1行
+        │
+        ▼
+そのブランチから出たPR（画面から作成 / GitHub側で作成 → webhook / 一覧取得 / 穴埋め）
+  └─ autoLink()
+       ├─ linkByBranch()  ← head ブランチ名でDBを引き、当たればそのチケットへ紐付ける
+       └─ 従来のWBS判定    ← 名前から拾えたときだけ
+```
+
+`linkByBranch` は `autoLink` の**先頭**に置く。WBS が1件も拾えないPR
+（＝まさに命名を外したブランチ）でもここまでは必ず通す必要があるため、
+`wbsList` が空のときの早期 return より前に呼ぶ。
+
+DBに残した事実なので綴り違いの候補出し（`ticket_github_link_candidates`）には回さず、
+そのまま紐付ける。手で外した紐付け（`auto_linked = false`）を上書きしないのはWBS側と同じ。
+
+`pending-branches` も同じ経路で恩恵を受ける。
+- 一覧の注記は、名前から拾ったWBSより**DBの紐付けを優先**する
+- チケット詳細からの呼び出しは `wbs` で名前を絞っていたので、
+  そのままだと名前に番号が無いブランチが落ちる。`ticketId` も渡し、
+  **名前一致 または DB紐付け**で残すようにした
+
+### 16-4. ブランチ名
+
+**自由。** ただし空欄から書かせると毎回タイプすることになるので、
+チケット詳細から開いたときだけ初期値を入れる。
+
+```
+{project.slug}/{ticket.wbs}     例: DEVTICKET/BRU13-054
+```
+
+これまで運用してきた形そのままで、`slug` は URL の第1セグメント（＝プロジェクト識別子）。
+入力欄は開いた時点で全選択状態にしてあり、そのまま打てば置き換わる。
+
+名前の妥当性は `git check-ref-format` 相当の規則で判定する
+（空白・`~ ^ : ? * [ \`・制御文字・`..`・`@{`・先頭末尾の `/`・末尾の `.` / `.lock` など）。
+GitHub に投げれば 422 は返るが理由が英語1行で分からないので、
+**サーバー・画面の両方に同じ判定を置き、日本語の理由まで出す**。画面側は入力中に出す。
+
+### 16-5. サーバー
+
+```
+POST /api/github/create-branch  { projectId, name, base?, ticketId? }
+  1. projectContext(..., "branch")            … githubBranchPermission = write
+  2. assertPermitted(..., "create-branch")    … App権限 Contents: Read & write
+  3. GET  /repos/{repo}/git/ref/heads/{base}  … 分岐元の先端 sha
+  4. POST /repos/{repo}/git/refs              … refs/heads/{name} を作る
+  5. github_action_logs に create_branch を残す
+  6. ticketId があれば ticket_github_branches に upsert
+```
+
+- `base` 未指定なら GitHub 側の現在の既定ブランチ。プロジェクト設定の値より現在値を優先する。
+- 422 は 409 に訳す（`already exists` → 「すでに存在します」）。
+- **実行の記録（`github_action_runs`）は付けない。** 15章の対象は「取り消しの効かない操作」で、
+  ブランチ作成は数百ミリ秒で終わり、失敗しても作り直せる。
+- 紐付けの `upsert` に失敗してもブランチ自体は出来ているので、
+  **作成は成功として返す**（応答の `linked` で伝える）。
+
+`GET /api/github/ticket-branches?projectId=&ticketId=` は紐付けを読むだけ（GitHubを叩かない）。
+`ticketId` 無しならプロジェクト全体を返し、チケットのWBS・タイトルを添える。
+
+### 16-6. 画面
+
+| 場所 | 出るもの |
+|---|---|
+| GitHubタブ → ブランチ | ヘッダに「ブランチを作成」（`branch === "write"`）。一覧の各行に、紐付いたチケットのWBSとタイトル |
+| チケット詳細 → 関連PR | ヘッダに「ブランチを作成」（同上）。本文の上に「このチケットのブランチ」（名前・分岐元・名前のコピー） |
+
+ブランチ一覧に紐付いたチケットを出すのは、**名前を自由にした以上、名前だけでは
+何のブランチか分からなくなるから**。自由にした代償はここで払う。
+
+「PRを作成」ボタンの条件は `merge === "write"` から `pull === "write"` へ変わった（5-5）。

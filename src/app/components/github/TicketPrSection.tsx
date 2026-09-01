@@ -20,23 +20,25 @@
 //  ブランチ探しは「PRを作成」を押してから走らせ、進捗を出す（CreatePullPrepDialog）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
+import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
 import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
-  fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches,
+  fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches, fetchTicketBranches,
   linkTicket, unlinkTicket, mergePull, precheckMerge, resolveLinkCandidate, GithubApiError,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
+import { NO_GITHUB_PERMS } from "@/app/lib/githubPerms";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
+import { CreateBranchDialog, suggestBranchName } from "@/app/components/github/CreateBranchDialog";
 import { CreatePullPrepDialog, type PrepState } from "@/app/components/github/CreatePullPrepDialog";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import type {
-  TicketGithubLink, TicketGithubLinkCandidate, GithubPull, GithubBranch,
-  GithubAccessLevel, GithubMergeMethod, TicketStatus,
+  TicketGithubLink, TicketGithubLinkCandidate, TicketGithubBranch, GithubPull, GithubBranch,
+  GithubAccessLevel, GithubMergeMethod, GithubPerms, TicketStatus,
 } from "@/app/types";
 
 const BLACK = "#1F2328";
@@ -96,7 +98,14 @@ export function TicketPrSection({
   /** 大文字小文字違いで割れていて、自動紐付けを見送ったPR */
   const [linkCandidates, setLinkCandidates] = useState<TicketGithubLinkCandidate[]>([]);
   const [level, setLevel] = useState<GithubAccessLevel>("none");
+  /** サーバーが返した操作ごとの権限（BRU13-054）。受け取るまでは hook の解決結果を使う */
+  const [apiPerms, setApiPerms] = useState<GithubPerms | null>(null);
   const [repo, setRepo] = useState("");
+  const [defaultBranch, setDefaultBranch] = useState("");
+  /** Dev Ticket から作った、このチケットのブランチ */
+  const [ticketBranches, setTicketBranches] = useState<TicketGithubBranch[]>([]);
+  const [branchTarget, setBranchTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string } | null>(null);
+  const [preparingBranch, setPreparingBranch] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [available, setAvailable] = useState<GithubPull[] | null>(null);
   const [picking, setPicking] = useState(false);
@@ -116,7 +125,8 @@ export function TicketPrSection({
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
 
   const pullLinks = useMemo(() => links.filter(l => l.kind === "pull"), [links]);
-  const canMergeHere = level === "merge" && !!ticketStatus && isPrLinkAlertStatus(ticketStatus);
+  const canMergeHere = (apiPerms ?? access.perms)?.merge === "write"
+    && !!ticketStatus && isPrLinkAlertStatus(ticketStatus);
 
   // サーバー側の検出は大文字に正規化されている。チケットの WBS 番号は
   // プロジェクトが決めた綴りのままなので、突き合わせる前に揃える
@@ -131,11 +141,19 @@ export function TicketPrSection({
 
   const load = useCallback(async () => {
     try {
-      const r = await fetchTicketLinks(projectId, ticketId);
+      // ブランチの紐付けも links と同じくDBだけで返るので、並べても待ち時間はほぼ増えない。
+      // 紐付けが取れなくても関連PRの表示は成立するので、失敗しても空で続ける（BRU13-054）
+      const [r, branchRes] = await Promise.all([
+        fetchTicketLinks(projectId, ticketId),
+        fetchTicketBranches(projectId, ticketId).catch(() => null),
+      ]);
       setLinks(r.links);
       setLinkCandidates(r.candidates ?? []);
       setLevel(r.level);
+      if (r.perms) setApiPerms(r.perms);
       setRepo(r.repo);
+      setTicketBranches(branchRes?.branches ?? []);
+      if (branchRes?.defaultBranch) setDefaultBranch(branchRes.defaultBranch);
     } catch {
       // リポジトリ未紐付け・権限なしはセクションごと出さない。エラー表示はしない
       setLevel("none");
@@ -160,6 +178,7 @@ export function TicketPrSection({
     setLinks([]);
     setLinkCandidates([]);
     setLevel("none");
+    setTicketBranches([]);
     setAvailable(null);
     setPicking(false);
     // 準備中に別のチケットへ移ったら、その進捗は前のチケットのもの。閉じて結果も捨てる
@@ -283,11 +302,15 @@ export function TicketPrSection({
       e => { if (alive()) setPrep(p => p && { ...p, branches: "failed" }); throw e; },
     );
 
+    // ticketId も渡す。Dev Ticket から作ったブランチは名前が自由なので、
+    // WBS 番号を含まないものは wbs だけでは見つからない（BRU13-054）
     const headP: Promise<string | undefined> = wbs
-      ? fetchPendingBranches(projectId, wbs).then(
+      ? fetchPendingBranches(projectId, wbs, ticketId).then(
         r => {
           const upper = wbs.toUpperCase();
-          const hit = r.branches.find(b => b.name.toUpperCase().includes(upper))?.name;
+          // 紐付けで判明したブランチを優先する。名前に番号が入っていなくても選べるように
+          const hit = (r.branches.find(b => b.ticketId === ticketId)
+            ?? r.branches.find(b => b.name.toUpperCase().includes(upper)))?.name;
           if (alive()) setPrep(p => p && { ...p, candidates: hit ? "done" : "none" });
           return hit;
         },
@@ -309,6 +332,26 @@ export function TicketPrSection({
   };
 
   const cancelPrep = () => { prepRunRef.current++; setPrep(null); };
+
+  /**
+   * ブランチ作成（BRU13-054）。分岐元の選択肢が要るのでブランチ一覧だけ先に取る。
+   * PR作成の準備と違い「このチケットのブランチ探し」は不要なので、待ち時間は1往復で済む。
+   */
+  const openCreateBranch = async () => {
+    if (preparingBranch) return;
+    const key = currentKeyRef.current;
+    setPreparingBranch(true);
+    try {
+      const r = await fetchBranches(projectId);
+      if (currentKeyRef.current !== key) return;
+      setBranchTarget({ branches: r.branches, defaultBranch: r.defaultBranch || defaultBranch || "main" });
+    } catch (e) {
+      if (currentKeyRef.current !== key) return;
+      toast(e instanceof GithubApiError ? e.message : "ブランチを取得できませんでした", "error");
+    } finally {
+      if (currentKeyRef.current === key) setPreparingBranch(false);
+    }
+  };
 
   // 作成したPRはこのチケットのものと分かっているので、その場で紐付ける。
   // 一覧の取り直し（PR一覧経由の自動検出）を待たせない
@@ -379,8 +422,11 @@ export function TicketPrSection({
 
   // ヘッダーのボタンの出し分け。取得前は事前に分かっている権限で決める。
   // ここが後から変わるとボタンが増減してヘッダーの見た目が動くため、
-  // 取得後もサーバーの答え（level）に静かに引き継がれるようにしてある
-  const shownLevel = loaded ? level : access.level;
+  // 取得後もサーバーの答え（perms）に静かに引き継がれるようにしてある
+  const shownPerms = apiPerms ?? access.perms ?? NO_GITHUB_PERMS;
+  const canCreateBranch = shownPerms.branch === "write";
+  const canCreatePull = shownPerms.pull === "write";
+  const canEditLinks = shownPerms.merge === "write";
 
   return (
     <div style={{
@@ -398,17 +444,28 @@ export function TicketPrSection({
           <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714" }}>関連PR</p>
         </div>
         {/* 取得が終わるまでは押させない。repo が未取得のままダイアログを開かせないため */}
-        {shownLevel === "merge" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, opacity: loaded ? 1 : 0.5 }}>
-            <button onClick={() => void openCreate()} disabled={!loaded || busy || !!prep}
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: prep ? "#9CA3AF" : BLACK, color: "#FFF", cursor: !loaded || busy || prep ? "default" : "pointer" }}>
-              <GitPullRequest style={{ width: 11, height: 11 }} />
-              {prep ? "準備中..." : "PRを作成"}
-            </button>
-            <button onClick={() => void openPicker()} disabled={!loaded || busy}
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: !loaded || busy ? "default" : "pointer" }}>
-              <Plus style={{ width: 11, height: 11 }} />PRを紐付ける
-            </button>
+        {(canCreateBranch || canCreatePull || canEditLinks) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" as const, justifyContent: "flex-end", opacity: loaded ? 1 : 0.5 }}>
+            {canCreateBranch && (
+              <button onClick={() => void openCreateBranch()} disabled={!loaded || busy || preparingBranch}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: !loaded || busy || preparingBranch ? "default" : "pointer" }}>
+                <GitBranch style={{ width: 11, height: 11 }} />
+                {preparingBranch ? "準備中..." : "ブランチを作成"}
+              </button>
+            )}
+            {canCreatePull && (
+              <button onClick={() => void openCreate()} disabled={!loaded || busy || !!prep}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: prep ? "#9CA3AF" : BLACK, color: "#FFF", cursor: !loaded || busy || prep ? "default" : "pointer" }}>
+                <GitPullRequest style={{ width: 11, height: 11 }} />
+                {prep ? "準備中..." : "PRを作成"}
+              </button>
+            )}
+            {canEditLinks && (
+              <button onClick={() => void openPicker()} disabled={!loaded || busy}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: BLACK, cursor: !loaded || busy ? "default" : "pointer" }}>
+                <Plus style={{ width: 11, height: 11 }} />PRを紐付ける
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -472,7 +529,7 @@ export function TicketPrSection({
                     {c.state === "merged" ? "マージ済み" : c.state === "closed" ? "クローズ" : "オープン"}
                   </span>
                   {already && <span style={{ fontSize: 10, color: "#A09790", flexShrink: 0 }}>紐付け済み</span>}
-                  {level === "merge" && (
+                  {canEditLinks && (
                     <button onClick={() => handleChooseCandidate(c.number)} disabled={busy}
                       style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
                       {linking === c.number && <Loader2 style={{ width: 11, height: 11, animation: "tpr-spin 1s linear infinite" }} />}
@@ -485,6 +542,44 @@ export function TicketPrSection({
           </div>
         </div>
       ))}
+
+      {/*
+        このチケットのブランチ（BRU13-054）。
+        ブランチ名は自由に決められるので、名前を見ても何のブランチか分からないことがある。
+        「Dev Ticket から作った＝このチケットのもの」という事実をここに出しておくと、
+        PRを作るときにどれを選べばよいかが一目で分かる
+      */}
+      {loaded && ticketBranches.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: "#8A837B", marginBottom: 5, letterSpacing: "0.04em" }}>
+            このチケットのブランチ
+          </p>
+          <div style={{ display: "flex", flexDirection: "column" as const, gap: 5 }}>
+            {ticketBranches.map(b => (
+              <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.06)", borderRadius: 8, flexWrap: "wrap" as const }}>
+                <GitBranch style={{ width: 11, height: 11, color: "#6B6458", flexShrink: 0 }} />
+                <a href={repo ? `https://github.com/${repo}/tree/${b.branchName.split("/").map(encodeURIComponent).join("/")}` : undefined}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ flex: 1, minWidth: 120, fontSize: 12, fontWeight: 600, color: "#1A1714", fontFamily: "var(--font-mono)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                  {b.branchName}
+                </a>
+                {b.baseBranch && (
+                  <span style={{ fontSize: 10, color: "#A09790", flexShrink: 0, fontFamily: "var(--font-mono)" }}>
+                    {b.baseBranch} から
+                  </span>
+                )}
+                {/* copiedId はPRの紐付けIDと共用なので、ブランチ側は符号を反転させて衝突を避ける */}
+                <button onClick={() => void handleCopyUrl(-b.id, b.branchName)} title="ブランチ名をコピー"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", fontSize: 10, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: copiedId === -b.id ? "#059669" : BLACK, cursor: "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
+                  {copiedId === -b.id
+                    ? <><Check style={{ width: 10, height: 10 }} />コピーしました</>
+                    : <><Copy style={{ width: 10, height: 10 }} />ブランチ名</>}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {!loaded ? null : pullLinks.length === 0 && links.length === 0 ? (
         <p style={{ fontSize: 11, color: "#B0A9A4" }}>紐付いたPRはありません。</p>
@@ -526,7 +621,7 @@ export function TicketPrSection({
                     {preparingMerge === l.number ? "確認中..." : "マージする"}
                   </button>
                 )}
-                {level === "merge" && (
+                {canEditLinks && (
                   <button onClick={() => handleUnlink(l.id)} disabled={busy} title="紐付けを解除"
                     style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", cursor: busy ? "default" : "pointer", color: "#B0A9A4", flexShrink: 0 }}>
                     <X style={{ width: 11, height: 11 }} />
@@ -539,7 +634,7 @@ export function TicketPrSection({
       )}
 
       {/* PRが発生しないチケットの逃げ道。未紐付けアラートだけを畳む */}
-      {level === "merge" && pullLinks.length === 0 && !!ticketStatus && isPrLinkAlertStatus(ticketStatus) && (
+      {canEditLinks && pullLinks.length === 0 && !!ticketStatus && isPrLinkAlertStatus(ticketStatus) && (
         <label style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 10, cursor: busy ? "default" : "pointer" }}>
           <input type="checkbox" checked={!!prLinkWaived} disabled={busy}
             onChange={e => void setWaived(e.target.checked)} />
@@ -612,6 +707,25 @@ export function TicketPrSection({
       {prep && createPortal(
         <div style={{ position: "relative", zIndex: 340 }}>
           <CreatePullPrepDialog state={prep} onCancel={cancelPrep} />
+        </div>, document.body)}
+
+      {branchTarget && createPortal(
+        <div style={{ position: "relative", zIndex: 340 }}>
+          <CreateBranchDialog
+            projectId={projectId}
+            repo={repo}
+            branches={branchTarget.branches}
+            defaultBranch={branchTarget.defaultBranch}
+            // 初期値はこれまでの運用どおり「プロジェクト識別子/WBS番号」。書き換え自由
+            initialName={suggestBranchName(projectSlug, wbs)}
+            ticketId={ticketId}
+            ticketWbs={wbs}
+            onClose={() => setBranchTarget(null)}
+            onCreated={async created => {
+              toast(`ブランチ「${created.name}」を作成しました`, "success");
+              await load();
+            }}
+          />
         </div>, document.body)}
 
       {createTarget && createPortal(

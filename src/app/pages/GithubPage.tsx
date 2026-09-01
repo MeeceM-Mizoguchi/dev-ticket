@@ -4,7 +4,7 @@
 // （黙ってリダイレクトしない＝docs/not-found-page-design.md の方針）。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ExternalLink, RefreshCw, GitPullRequest, FolderKanban, ChevronRight } from "lucide-react";
+import { ExternalLink, RefreshCw, GitPullRequest, GitBranch, FolderKanban, ChevronRight } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -16,6 +16,7 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 import { PullRequestList, Empty } from "@/app/components/github/PullRequestList";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
+import { CreateBranchDialog } from "@/app/components/github/CreateBranchDialog";
 import { PendingBranches } from "@/app/components/github/PendingBranches";
 import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
@@ -24,12 +25,15 @@ import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 import {
-  fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, mergePull, mergePullsBulk,
-  precheckMerge, mergeBlockReason, relativeTime, fetchDeployStatus, runDeployCheck, GithubApiError,
+  fetchPulls, fetchIssues, fetchCommits, fetchBranches, fetchPendingBranches, fetchTicketBranches,
+  mergePull, mergePullsBulk, precheckMerge, mergeBlockReason, relativeTime, fetchDeployStatus,
+  runDeployCheck, GithubApiError,
 } from "@/app/lib/github";
+import { NO_GITHUB_PERMS } from "@/app/lib/githubPerms";
 import type {
   Project, GithubPull, GithubIssue, GithubCommit, GithubBranch, GithubPendingBranch, TicketGithubLink,
-  GithubAccessLevel, GithubMergeMethod, GithubPermissionBlock, GithubDeployStatus,
+  GithubAccessLevel, GithubMergeMethod, GithubPermissionBlock, GithubDeployStatus, GithubPerms,
+  TicketGithubBranch,
 } from "@/app/types";
 
 const BLACK = "#1F2328";
@@ -59,6 +63,12 @@ export function GithubPage() {
 
   const [tab, setTab] = useState<SubTab>("pulls");
   const [level, setLevel] = useState<GithubAccessLevel>("none");
+  /**
+   * サーバーが返した操作ごとの権限（BRU13-054）。
+   * 判定はサーバーが正なので、応答を受け取ったらそちらを使う。
+   * 受け取るまでの間は hook の解決結果（同じ判定をクライアントでやり直したもの）で出し分ける
+   */
+  const [apiPerms, setApiPerms] = useState<GithubPerms | null>(null);
   const [repo, setRepo] = useState("");
   const [pulls, setPulls] = useState<GithubPull[]>([]);
   const [links, setLinks] = useState<TicketGithubLink[]>([]);
@@ -97,6 +107,17 @@ export function GithubPage() {
    */
   const [deploy, setDeploy] = useState<GithubDeployStatus | null>(null);
   const [deployChecking, setDeployChecking] = useState(false);
+  /** ブランチ作成ダイアログ。開くときに分岐元の選択肢を持たせる */
+  const [branchTarget, setBranchTarget] = useState<{ branches: GithubBranch[]; defaultBranch: string } | null>(null);
+  const [preparingBranch, setPreparingBranch] = useState(false);
+  /** Dev Ticket から作ったブランチとチケットの紐付け。ブランチタブの表示に使う */
+  const [ticketBranches, setTicketBranches] = useState<TicketGithubBranch[]>([]);
+
+  const perms = apiPerms ?? access.perms ?? NO_GITHUB_PERMS;
+  const ticketByBranch = useMemo(
+    () => new Map(ticketBranches.map(b => [b.branchName, b])),
+    [ticketBranches],
+  );
 
   // ── プロジェクトの解決 ────────────────────────────────────
   useEffect(() => {
@@ -136,6 +157,7 @@ export function GithubPage() {
           fetchPendingBranches(project.id).then(p => p.branches).catch(() => [] as GithubPendingBranch[]),
         ]);
         setPulls(r.pulls); setLinks(r.links); setLevel(r.level); setRepo(r.repo);
+        if (r.perms) setApiPerms(r.perms);
         setWriteBlock(r.writeBlock ?? null);
         setPending(pendingBranches);
         setSelected(new Set());
@@ -148,8 +170,16 @@ export function GithubPage() {
         // 未指定ならサーバーが既定ブランチに寄せるので、その名前を受け取って選択欄に反映する
         setCommitBranch(r.branch);
       } else {
-        const r = await fetchBranches(project.id);
+        // ブランチとチケットの紐付けも一緒に取る。名前が自由になった以上、
+        // 一覧に「何のブランチか」が出ていないと読めない（BRU13-054）。
+        // 紐付けは付随情報なので、取れなくても一覧そのものは出す
+        const [r, linked] = await Promise.all([
+          fetchBranches(project.id),
+          fetchTicketBranches(project.id).then(t => t.branches).catch(() => [] as TicketGithubBranch[]),
+        ]);
         setBranches(r.branches); setDefaultBranch(r.defaultBranch); setRepo(r.repo);
+        setTicketBranches(linked);
+        if (r.perms) setApiPerms(r.perms);
       }
       setLoadedTabs(prev => ({ ...prev, [which]: true }));
       setFetchedAt(new Date().toISOString());
@@ -200,12 +230,21 @@ export function GithubPage() {
     }
   };
 
-  /** ブランチ一覧を一度だけ取る。PR作成ダイアログとコミットタブの切り替え欄で共用する */
+  /**
+   * ブランチ一覧を一度だけ取る。PR作成ダイアログとコミットタブの切り替え欄で共用する。
+   *
+   * ここで loadedTabs.branches を立てるので、チケットとの紐付けも一緒に取っておく。
+   * 取らないと「PR作成を開いてからブランチタブへ移る」経路で loadTab が
+   * 「取得済み」と判断して素通りし、一覧に紐付いたチケットが出ないままになる
+   */
   const ensureBranches = useCallback(async () => {
     if (!project?.id) return { list: branches, def: defaultBranch };
     if (loadedTabs.branches && branches.length) return { list: branches, def: defaultBranch };
-    const r = await fetchBranches(project.id);
-    setBranches(r.branches); setDefaultBranch(r.defaultBranch);
+    const [r, linked] = await Promise.all([
+      fetchBranches(project.id),
+      fetchTicketBranches(project.id).then(t => t.branches).catch(() => [] as TicketGithubBranch[]),
+    ]);
+    setBranches(r.branches); setDefaultBranch(r.defaultBranch); setTicketBranches(linked);
     setLoadedTabs(prev => ({ ...prev, branches: true }));
     return { list: r.branches, def: r.defaultBranch };
   }, [project?.id, branches, defaultBranch, loadedTabs.branches]);
@@ -248,6 +287,20 @@ export function GithubPage() {
       toast(e instanceof GithubApiError ? e.message : "ブランチを取得できませんでした", "error");
     } finally {
       setPreparingCreate(false);
+    }
+  };
+
+  // ブランチ作成ダイアログも分岐元の選択肢が要る。PR作成と同じくここで揃えてから開く
+  const openCreateBranch = async () => {
+    if (!project?.id) return;
+    setPreparingBranch(true);
+    try {
+      const { list, def } = await ensureBranches();
+      setBranchTarget({ branches: list, defaultBranch: def || project.githubDefaultBranch || "main" });
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "ブランチを取得できませんでした", "error");
+    } finally {
+      setPreparingBranch(false);
     }
   };
 
@@ -405,14 +458,22 @@ export function GithubPage() {
                 ))}
               </div>
 
-              {/* PRの作成は書き込み操作なので「マージ可」の人にだけ出す。
+              {/* 作成の入口は操作ごとの権限で出し分ける（BRU13-054）。
                   権限で必ず失敗する状態では押させない（理由はすぐ下の帯に出ている） */}
-              {tab === "pulls" && level === "merge" && (
+              {tab === "pulls" && perms.pull === "write" && (
                 <button onClick={() => openCreatePull()} disabled={preparingCreate || !!writeBlock}
                   title={writeBlock ? writeBlock.message : undefined}
                   style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 16px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: preparingCreate || writeBlock ? "#9CA3AF" : BLACK, color: "#FFF", cursor: preparingCreate || writeBlock ? "not-allowed" : "pointer", whiteSpace: "nowrap" as const }}>
                   <GitPullRequest style={{ width: 13, height: 13 }} />
                   {preparingCreate ? "準備中..." : "プルリクエストを作成"}
+                </button>
+              )}
+
+              {tab === "branches" && perms.branch === "write" && (
+                <button onClick={openCreateBranch} disabled={preparingBranch}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 16px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: preparingBranch ? "#9CA3AF" : BLACK, color: "#FFF", cursor: preparingBranch ? "not-allowed" : "pointer", whiteSpace: "nowrap" as const }}>
+                  <GitBranch style={{ width: 13, height: 13 }} />
+                  {preparingBranch ? "準備中..." : "ブランチを作成"}
                 </button>
               )}
             </div>
@@ -433,11 +494,11 @@ export function GithubPage() {
               {writeBlock && <PermissionBlockNotice block={writeBlock} />}
               <PendingBranches
                 branches={pending}
-                canCreate={level === "merge"}
+                canCreate={perms.pull === "write"}
                 onCreate={name => openCreatePull(name)}
               />
               {/* まとめてマージの操作バー。マージできるPRが2件以上あるときだけ出す */}
-              {level === "merge" && !writeBlock && mergeablePulls.length > 1 && (
+              {perms.merge === "write" && !writeBlock && mergeablePulls.length > 1 && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: selected.size ? "#F0F9FF" : "#FFF", border: `1px solid ${selected.size ? "rgba(2,132,199,0.28)" : "rgba(26,23,20,0.09)"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: "#4B4540" }}>
@@ -501,7 +562,7 @@ export function GithubPage() {
               <CommitList commits={commits} />
             </>
           ) : (
-            <BranchList branches={branches} />
+            <BranchList branches={branches} ticketByBranch={ticketByBranch} />
           )}
         </>
       )}
@@ -514,6 +575,20 @@ export function GithubPage() {
           onClose={() => setMergeTarget(null)}
           onPrecheck={n => precheckMerge(project.id, [n])}
           onMerge={handleMerge}
+        />
+      )}
+
+      {branchTarget && (
+        <CreateBranchDialog
+          projectId={project.id}
+          repo={repo || project.githubRepoFullName || ""}
+          branches={branchTarget.branches}
+          defaultBranch={branchTarget.defaultBranch}
+          onClose={() => setBranchTarget(null)}
+          onCreated={async created => {
+            toast(`ブランチ「${created.name}」を作成しました`, "success");
+            await loadTab("branches", true);
+          }}
         />
       )}
 
@@ -665,18 +740,35 @@ function CommitList({ commits }: { commits: GithubCommit[] }) {
   );
 }
 
-function BranchList({ branches }: { branches: GithubBranch[] }) {
+/**
+ * ブランチ一覧。Dev Ticket から作ったブランチには紐付いたチケットを添える（BRU13-054）。
+ * ブランチ名を自由に決められるようにした以上、名前だけでは何のブランチか分からない。
+ */
+function BranchList({ branches, ticketByBranch }: {
+  branches: GithubBranch[];
+  ticketByBranch: Map<string, TicketGithubBranch>;
+}) {
   if (branches.length <= 1) return <Empty>既定ブランチ以外のブランチはありません。</Empty>;
   return (
     <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.09)", borderRadius: 12, overflow: "hidden" }}>
-      {branches.map((b, i) => (
-        <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderBottom: i < branches.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", fontFamily: "var(--font-mono)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{b.name}</span>
-          {b.isDefault && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: "#ECFDF5", color: "#059669" }}>既定</span>}
-          {b.protected && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: "#FFFBEB", color: "#D97706" }}>保護</span>}
-          <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)", flexShrink: 0 }}>{b.lastCommitSha.slice(0, 7)}</span>
-        </div>
-      ))}
+      {branches.map((b, i) => {
+        const linked = ticketByBranch.get(b.name);
+        return (
+          <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderBottom: i < branches.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", fontFamily: "var(--font-mono)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{b.name}</span>
+              {linked && (
+                <p style={{ fontSize: 11, color: "#0284C7", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                  {linked.ticketWbs ?? "チケット"}{linked.ticketTitle ? ` ${linked.ticketTitle}` : ""}
+                </p>
+              )}
+            </div>
+            {b.isDefault && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: "#ECFDF5", color: "#059669" }}>既定</span>}
+            {b.protected && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: "#FFFBEB", color: "#D97706" }}>保護</span>}
+            <span style={{ fontSize: 11, color: "#B0A9A4", fontFamily: "var(--font-mono)", flexShrink: 0 }}>{b.lastCommitSha.slice(0, 7)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
