@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ChevronDown, ChevronUp, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
@@ -1324,12 +1324,10 @@ function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onC
 
 // ── GitHub連携の権限（docs/github-integration-design.md 8-2） ──────────────────
 // 選択中の値の説明を直下に1行だけ出す。3行常時出すと他の権限ブロックより騒がしくなるため。
-function GithubActionRow({ block, value, onChange, boxed }: {
+function GithubActionRow({ block, value, onChange }: {
   block: typeof GITHUB_ACTION_BLOCKS[number];
   value: GithubActionLevel;
   onChange: (v: GithubActionLevel) => void;
-  /** 同じモーダル内の「ページアクセス権限」に合わせる。個人モーダルは枠なし、グループは枠つき */
-  boxed: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1347,19 +1345,17 @@ function GithubActionRow({ block, value, onChange, boxed }: {
   const labelOf = (v: GithubActionLevel) => (v === "write" ? block.writeLabel : GITHUB_LEVEL_LABELS[v]);
   const isActive = value !== "none";
 
-  // 枠つきのときだけ、選択中の色を行の背景にも乗せる（ページアクセス権限と同じ見え方）
-  const rowStyle = boxed
-    ? {
-      display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9,
-      background: isActive ? GITHUB_COLOR + "0D" : "#F9F8F6",
-      border: `1.5px solid ${isActive ? GITHUB_COLOR + "30" : "transparent"}`,
-    }
-    : { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 };
+  // 選択中の色は行の背景にも乗せる（ページアクセス権限と同じ見え方）
+  const rowStyle = {
+    display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10,
+    background: isActive ? GITHUB_COLOR + "0D" : "#F9F8F6",
+    border: `1.5px solid ${isActive ? GITHUB_COLOR + "30" : "transparent"}`,
+  };
 
   return (
-    <div style={{ marginBottom: boxed ? 8 : 10 }}>
+    <div style={{ marginBottom: 8 }}>
       <div style={rowStyle}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: boxed && isActive ? GITHUB_COLOR : "#1A1714", flex: 1 }}>{block.label}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: isActive ? GITHUB_COLOR : "#1A1714", flex: 1, minWidth: 0 }}>{block.label}</span>
         <div ref={ref} style={{ position: "relative" }}>
           <button type="button" onClick={() => setOpen(v => !v)}
             style={{
@@ -1392,8 +1388,8 @@ function GithubActionRow({ block, value, onChange, boxed }: {
           )}
         </div>
       </div>
-      {/* 説明は行の内側の余白に合わせて字下げする。枠なしのときは行頭に揃える */}
-      <p style={{ fontSize: 11, color: "#A09790", marginTop: 4, lineHeight: 1.6, paddingLeft: boxed ? 12 : 0 }}>
+      {/* 説明は行の内側の余白に合わせて字下げする */}
+      <p style={{ fontSize: 11, color: "#A09790", marginTop: 4, lineHeight: 1.6, paddingLeft: 12 }}>
         {block.descs[value]}
       </p>
     </div>
@@ -1407,19 +1403,19 @@ function GithubActionRow({ block, value, onChange, boxed }: {
  * 「PRは見えるがマージ状況は見えない」といった破綻した組み合わせが設定できてしまうため、
  * GitHubタブが出るかどうかは3つの論理和で決まる。それを下の注記で明示している。
  */
-function GithubPermissionBlock({ value, onChange, boxed = true }: {
+function GithubPermissionBlock({ value, onChange, divider = true }: {
   value: GithubPerms; onChange: (v: GithubPerms) => void;
-  /** 行の見た目を、同じモーダルの「ページアクセス権限」に合わせるための指定 */
-  boxed?: boolean;
+  /** 縦積みのときは上に区切り線を引く。3列レイアウトでは列の先頭なので不要 */
+  divider?: boolean;
 }) {
   const visible = canViewGithub(value);
 
   return (
-    <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 14, paddingTop: 14 }}>
+    <div style={divider ? { borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 14, paddingTop: 14 } : undefined}>
       <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>GitHub連携</label>
 
       {GITHUB_ACTION_BLOCKS.map(b => (
-        <GithubActionRow key={b.key} block={b} value={value[b.key]} boxed={boxed}
+        <GithubActionRow key={b.key} block={b} value={value[b.key]}
           onChange={v => onChange({ ...value, [b.key]: v })} />
       ))}
 
@@ -1443,6 +1439,107 @@ function GithubPermissionBlock({ value, onChange, boxed = true }: {
   );
 }
 
+// ── 権限モーダル共通のレイアウト ──────────────────────────────────────────────
+/**
+ * 権限は「プロジェクト操作」「ページアクセス」「GitHub連携」の3系統ある。
+ * 幅440pxのモーダルに縦積みすると、PCの画面高さを超えて上下が切れ、
+ * 保存ボタンにも届かない状態だった。PC前提の画面なので横に3列並べて1画面に収める。
+ *
+ * 高さは念のため maxHeight + スクロールで受ける。列の中身が伸びても
+ * ボタンだけは常に見えるよう、ヘッダー／フッターは flex で固定する。
+ */
+const PERM_MODAL_SHELL = {
+  position: "fixed" as const, top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+  zIndex: 401, background: "#FFF", borderRadius: 18, boxShadow: "0 24px 64px rgba(0,0,0,0.22)",
+  // ドロップダウン（最大幅200px前後）とラベルが1行に収まる列幅になるよう逆算した値
+  width: "min(1180px, calc(100vw - 48px))", maxHeight: "calc(100vh - 48px)",
+  display: "flex" as const, flexDirection: "column" as const,
+};
+
+const PERM_MODAL_BODY = {
+  flex: 1, minHeight: 0, overflowY: "auto" as const, padding: "18px 26px 20px",
+  // ドロップダウンを開くと一時的にスクロールが出る。桁を確保しておかないと
+  // スクロールバーの分だけ列幅が縮んで、選択のたびに中身が揺れる
+  scrollbarGutter: "stable" as const,
+};
+
+const PERM_MODAL_COLUMNS = {
+  display: "grid" as const, gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 20, alignItems: "start" as const,
+};
+
+function PermSectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 8, letterSpacing: "0.04em" }}>
+      {children}
+    </p>
+  );
+}
+
+function ProjectPermRow({ flag, active, onToggle }: {
+  flag: typeof PROJECT_PERM_FLAGS[number]; active: boolean; onToggle: () => void;
+}) {
+  return (
+    <label onClick={onToggle}
+      style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? flag.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? flag.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
+      <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${active ? flag.color : "rgba(26,23,20,0.15)"}`, background: active ? flag.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+        {active && <Check style={{ width: 11, height: 11, color: "#FFF" }} />}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontSize: 13, fontWeight: 700, color: active ? flag.color : "#1A1714", marginBottom: 1 }}>{flag.label}</p>
+        <p style={{ fontSize: 11, color: "#A09790", lineHeight: 1.5 }}>{flag.desc}</p>
+      </div>
+      <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? flag.color : "rgba(26,23,20,0.12)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+        <div style={{ position: "absolute", top: 2, left: active ? 16 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.20)" }} />
+      </div>
+    </label>
+  );
+}
+
+function PageAccessRow({ flag, value, onChange }: {
+  flag: typeof PAGE_ACCESS_FLAGS[number]; value: AccessLevel; onChange: (v: AccessLevel) => void;
+}) {
+  const active = value !== "none";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, marginBottom: 6, background: active ? flag.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? flag.color + "30" : "transparent"}` }}>
+      <span style={{ fontSize: 13, fontWeight: 700, color: active ? flag.color : "#1A1714", flex: 1, minWidth: 0 }}>{flag.label}</span>
+      <AccessLevelSelect value={value} onChange={onChange} color={flag.color} />
+    </div>
+  );
+}
+
+/** 3列に並べた権限本体。新規グループ／グループ設定／個別メンバーで共通 */
+function PermissionColumns({ perms, setPerms }: {
+  perms: UserPermissions;
+  setPerms: (updater: (prev: UserPermissions) => UserPermissions) => void;
+}) {
+  return (
+    <div style={PERM_MODAL_COLUMNS}>
+      <div>
+        <PermSectionLabel>プロジェクト操作権限</PermSectionLabel>
+        {PROJECT_PERM_FLAGS.map(f => (
+          <ProjectPermRow key={f.key} flag={f} active={!!perms[f.key]}
+            onToggle={() => setPerms(prev => ({ ...prev, [f.key]: !prev[f.key] }))} />
+        ))}
+      </div>
+      <div>
+        <PermSectionLabel>ページアクセス権限</PermSectionLabel>
+        {PAGE_ACCESS_FLAGS.map(f => (
+          <PageAccessRow key={f.key} flag={f} value={(perms[f.key] as AccessLevel) ?? "none"}
+            onChange={v => setPerms(prev => ({ ...prev, [f.key]: v }))} />
+        ))}
+      </div>
+      <div>
+        <GithubPermissionBlock
+          divider={false}
+          value={githubPermsFrom(perms) ?? NO_GITHUB_PERMS}
+          onChange={v => setPerms(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── New group modal ────────────────────────────────────────────────────────────
 function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, perms: UserPermissions) => void }) {
   const [name, setName] = useState("");
@@ -1453,8 +1550,6 @@ function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (
     return () => escStack.pop(onClose);
   }, [onClose]);
 
-  const toggle = (key: keyof UserPermissions) => setPerms(prev => ({ ...prev, [key]: !prev[key] }));
-
   const handleCreate = () => {
     if (!name.trim()) return;
     onCreate(name.trim(), perms);
@@ -1464,70 +1559,33 @@ function NewGroupModal({ onClose, onCreate }: { onClose: () => void; onCreate: (
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} />
-      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 18, boxShadow: "0 24px 64px rgba(0,0,0,0.22)", width: 440 }}>
-        <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 30, height: 30, borderRadius: 9, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={PERM_MODAL_SHELL}>
+        <div style={{ padding: "20px 26px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 9, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <Users style={{ width: 15, height: 15, color: "#059669" }} />
           </div>
-          <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", flex: 1 }}>新規グループ作成</h3>
-          <button onClick={onClose} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
+          <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", flexShrink: 0 }}>新規グループ作成</h3>
+          {/* 名前は1行なので、権限3列の上を占めないようヘッダーに入れる */}
+          <input autoFocus value={name} onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleCreate(); if (e.key === "Escape") onClose(); }}
+            placeholder="グループ名（例: フロントエンドチーム）"
+            style={{ flex: 1, maxWidth: 360, marginLeft: 8, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px", fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const, transition: "border 0.15s" }}
+            onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; e.currentTarget.style.background = "#FFF"; }}
+            onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
+          <button onClick={onClose} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", marginLeft: "auto" }}>
             <X style={{ width: 15, height: 15 }} />
           </button>
         </div>
-        <div style={{ padding: "18px 24px", display: "flex", flexDirection: "column" as const, gap: 14 }}>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6, letterSpacing: "0.04em" }}>グループ名 <span style={{ color: "#DC2626" }}>*</span></label>
-            <input autoFocus value={name} onChange={e => setName(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing) handleCreate(); if (e.key === "Escape") onClose(); }}
-              placeholder="例: フロントエンドチーム"
-              style={{ width: "100%", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "10px 12px", fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const, transition: "border 0.15s" }}
-              onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; e.currentTarget.style.background = "#FFF"; }}
-              onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>プロジェクト操作権限</label>
-            {PROJECT_PERM_FLAGS.map(f => {
-              const active = perms[f.key];
-              return (
-                <label key={f.key}
-                  onClick={() => toggle(f.key)}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, cursor: "pointer", marginBottom: 5, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
-                  <div style={{ width: 18, height: 18, borderRadius: 5, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
-                    {active && <Check style={{ width: 10, height: 10, color: "#FFF" }} />}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ fontSize: 12, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 1 }}>{f.label}</p>
-                    <p style={{ fontSize: 10, color: "#A09790" }}>{f.desc}</p>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-          <div style={{ marginTop: 16 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>ページアクセス権限</label>
-            {PAGE_ACCESS_FLAGS.map(f => (
-              <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, marginBottom: 5, background: perms[f.key] !== "none" ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${perms[f.key] !== "none" ? f.color + "30" : "transparent"}` }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: perms[f.key] !== "none" ? f.color : "#1A1714", flex: 1 }}>{f.label}</span>
-                <AccessLevelSelect
-                  value={(perms[f.key] as AccessLevel) ?? "none"}
-                  onChange={v => setPerms(prev => ({ ...prev, [f.key]: v }))}
-                  color={f.color}
-                />
-              </div>
-            ))}
-          </div>
-          <GithubPermissionBlock
-            value={githubPermsFrom(perms) ?? NO_GITHUB_PERMS}
-            onChange={v => setPerms(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
-          />
+        <div style={PERM_MODAL_BODY}>
+          <PermissionColumns perms={perms} setPerms={setPerms} />
         </div>
-        <div style={{ padding: "0 24px 22px", display: "flex", gap: 8 }}>
-          <button onClick={handleCreate} disabled={!name.trim()}
-            style={{ flex: 1, padding: "10px 0", background: !name.trim() ? "#F4F5F6" : "#059669", color: !name.trim() ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: !name.trim() ? "not-allowed" : "pointer" }}>
-            作成する
-          </button>
-          <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+        <div style={{ padding: "12px 26px 18px", borderTop: "1px solid rgba(26,23,20,0.07)", display: "flex", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
+          <button onClick={onClose} style={{ padding: "10px 20px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
             キャンセル
+          </button>
+          <button onClick={handleCreate} disabled={!name.trim()}
+            style={{ padding: "10px 40px", background: !name.trim() ? "#F4F5F6" : "#059669", color: !name.trim() ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: !name.trim() ? "not-allowed" : "pointer" }}>
+            作成する
           </button>
         </div>
       </div>
@@ -1552,74 +1610,35 @@ function GroupSettingsModal({ group, onClose, onSave }: {
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} />
-      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 18, boxShadow: "0 24px 64px rgba(0,0,0,0.22)", width: 440 }}>
-        <div style={{ padding: "22px 24px 16px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 30, height: 30, borderRadius: 9, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={PERM_MODAL_SHELL}>
+        <div style={{ padding: "20px 26px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 9, background: "rgba(5,150,105,0.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <Users style={{ width: 15, height: 15, color: "#059669" }} />
           </div>
-          <div style={{ flex: 1 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>グループ設定</h3>
-            <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>{group.name}</p>
-          </div>
-          <button onClick={onClose} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}>
+          <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", flexShrink: 0 }}>グループ設定</h3>
+          {/* 名前は1行なので、権限3列の上を占めないようヘッダーに入れる */}
+          <input value={groupName} onChange={e => setGroupName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Escape") onClose(); }}
+            style={{ flex: 1, maxWidth: 360, marginLeft: 8, background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "8px 12px", fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const, transition: "border 0.15s" }}
+            onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; e.currentTarget.style.background = "#FFF"; }}
+            onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
+          <button onClick={onClose} style={{ padding: 6, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", marginLeft: "auto" }}>
             <X style={{ width: 15, height: 15 }} />
           </button>
         </div>
-        <div style={{ padding: "16px 24px" }}>
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 6, letterSpacing: "0.04em" }}>グループ名</label>
-            <input value={groupName} onChange={e => setGroupName(e.target.value)}
-              style={{ width: "100%", background: "#F9F8F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, padding: "10px 12px", fontSize: 13, color: "#1A1714", outline: "none", boxSizing: "border-box" as const, transition: "border 0.15s" }}
-              onFocus={e => { e.currentTarget.style.borderColor = "rgba(5,150,105,0.40)"; e.currentTarget.style.background = "#FFF"; }}
-              onBlur={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.10)"; e.currentTarget.style.background = "#F9F8F6"; }} />
-          </div>
+        <div style={PERM_MODAL_BODY}>
           <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14, background: "rgba(5,150,105,0.05)", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(5,150,105,0.12)" }}>
             このグループのメンバーがプロジェクトで持つ操作権限を設定します。
           </p>
-          {PROJECT_PERM_FLAGS.map(f => {
-            const active = local[f.key];
-            return (
-              <label key={f.key}
-                onClick={() => setLocal(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
-                <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
-                  {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 1 }}>{f.label}</p>
-                  <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
-                </div>
-                <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? f.color : "rgba(26,23,20,0.12)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
-                  <div style={{ position: "absolute", top: 2, left: active ? 14 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.20)" }} />
-                </div>
-              </label>
-            );
-          })}
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(26,23,20,0.06)" }}>
-            <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 8, letterSpacing: "0.04em" }}>ページアクセス権限</p>
-            {PAGE_ACCESS_FLAGS.map(f => (
-              <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 9, marginBottom: 5, background: local[f.key] !== "none" ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${local[f.key] !== "none" ? f.color + "30" : "transparent"}` }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: local[f.key] !== "none" ? f.color : "#1A1714", flex: 1 }}>{f.label}</span>
-                <AccessLevelSelect
-                  value={(local[f.key] as AccessLevel) ?? "none"}
-                  onChange={v => setLocal(prev => ({ ...prev, [f.key]: v }))}
-                  color={f.color}
-                />
-              </div>
-            ))}
-          </div>
-          <GithubPermissionBlock
-            value={githubPermsFrom(local) ?? NO_GITHUB_PERMS}
-            onChange={v => setLocal(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
-          />
+          <PermissionColumns perms={local} setPerms={setLocal} />
         </div>
-        <div style={{ padding: "14px 24px 22px", display: "flex", gap: 8 }}>
-          <button onClick={handleSave} disabled={saving}
-            style={{ flex: 1, padding: "10px 0", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
-            {saving ? "保存中..." : "保存する"}
-          </button>
-          <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+        <div style={{ padding: "12px 26px 18px", borderTop: "1px solid rgba(26,23,20,0.07)", display: "flex", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
+          <button onClick={onClose} style={{ padding: "10px 20px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
             キャンセル
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            style={{ padding: "10px 40px", background: saving ? "#F4F5F6" : "#059669", color: saving ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: saving ? "not-allowed" : "pointer" }}>
+            {saving ? "保存中..." : "保存する"}
           </button>
         </div>
       </div>
@@ -1669,9 +1688,6 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
       });
   }, [member.id, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggle = (key: keyof UserPermissions) =>
-    setLocal(prev => ({ ...prev, [key]: !prev[key] }));
-
   const handleSave = async () => {
     setSaving(true);
     if (isSupabaseEnabled) {
@@ -1697,10 +1713,10 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,14,12,0.45)", backdropFilter: "blur(4px)" }} />
-      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 18, boxShadow: "0 24px 64px rgba(0,0,0,0.22)", width: 440 }}>
+      <div style={PERM_MODAL_SHELL}>
 
         {/* Header */}
-        <div style={{ padding: "20px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ padding: "20px 26px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <Avatar name={member.name} size="sm" />
           <div style={{ flex: 1 }}>
             <h3 style={{ fontSize: 15, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)" }}>{member.name}</h3>
@@ -1718,67 +1734,25 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
         </div>
 
         {/* Body */}
-        <div style={{ padding: "14px 24px" }}>
+        <div style={PERM_MODAL_BODY}>
           <p style={{ fontSize: 11, color: "#A09790", marginBottom: 14, background: "rgba(124,58,237,0.05)", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.12)" }}>
             このメンバーがこのプロジェクト内で持つ操作権限を設定します。チケット閲覧・コメントは常に可能です。
           </p>
           {!loaded ? (
-            <p style={{ textAlign: "center" as const, color: "#B0A9A4", fontSize: 13, padding: "24px 0" }}>読み込み中...</p>
+            <p style={{ textAlign: "center" as const, color: "#B0A9A4", fontSize: 13, padding: "48px 0" }}>読み込み中...</p>
           ) : (
-            <>
-              {PROJECT_PERM_FLAGS.map(f => {
-                const active = local[f.key];
-                return (
-                  <label key={f.key}
-                    onClick={() => toggle(f.key)}
-                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 10, cursor: "pointer", marginBottom: 6, background: active ? f.color + "0D" : "#F9F8F6", border: `1.5px solid ${active ? f.color + "30" : "transparent"}`, transition: "all 0.15s" }}>
-                    <div style={{ width: 22, height: 22, borderRadius: 7, border: `2px solid ${active ? f.color : "rgba(26,23,20,0.15)"}`, background: active ? f.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
-                      {active && <Check style={{ width: 12, height: 12, color: "#FFF" }} />}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ fontSize: 13, fontWeight: 700, color: active ? f.color : "#1A1714", marginBottom: 1 }}>{f.label}</p>
-                      <p style={{ fontSize: 11, color: "#A09790" }}>{f.desc}</p>
-                    </div>
-                    <div style={{ width: 32, height: 18, borderRadius: 9, background: active ? f.color : "rgba(26,23,20,0.12)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
-                      <div style={{ position: "absolute", top: 2, left: active ? 14 : 2, width: 14, height: 14, borderRadius: "50%", background: "#FFF", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.20)" }} />
-                    </div>
-                  </label>
-                );
-              })}
-
-              {/* ページアクセス権限 */}
-              <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", marginTop: 10, paddingTop: 12 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", display: "block", marginBottom: 8, letterSpacing: "0.04em" }}>ページアクセス権限</label>
-                {PAGE_ACCESS_FLAGS.map(f => (
-                  <div key={f.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "#1A1714" }}>{f.label}</span>
-                    <AccessLevelSelect
-                      value={(local[f.key] as AccessLevel) ?? "none"}
-                      onChange={v => setLocal(prev => ({ ...prev, [f.key]: v }))}
-                      color={f.color}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              {/* この画面のページアクセス権限は枠なしの行なので、GitHubも揃える */}
-              <GithubPermissionBlock
-                boxed={false}
-                value={githubPermsFrom(local) ?? NO_GITHUB_PERMS}
-                onChange={v => setLocal(prev => ({ ...prev, ...githubPermsToJson(v) } as UserPermissions))}
-              />
-            </>
+            <PermissionColumns perms={local} setPerms={setLocal} />
           )}
         </div>
 
         {/* Footer */}
-        <div style={{ padding: "12px 24px 20px", display: "flex", gap: 8 }}>
-          <button onClick={handleSave} disabled={saving || !loaded}
-            style={{ flex: 1, padding: "10px 0", background: (saving || !loaded) ? "#F4F5F6" : "#7C3AED", color: (saving || !loaded) ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: (saving || !loaded) ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
-            {saving ? "保存中..." : "保存する"}
-          </button>
-          <button onClick={onClose} style={{ padding: "10px 18px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
+        <div style={{ padding: "12px 26px 18px", borderTop: "1px solid rgba(26,23,20,0.07)", display: "flex", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
+          <button onClick={onClose} style={{ padding: "10px 20px", background: "#F4F5F6", color: "#6B6458", fontSize: 13, fontWeight: 600, borderRadius: 9, border: "none", cursor: "pointer" }}>
             キャンセル
+          </button>
+          <button onClick={handleSave} disabled={saving || !loaded}
+            style={{ padding: "10px 40px", background: (saving || !loaded) ? "#F4F5F6" : "#7C3AED", color: (saving || !loaded) ? "#B0A9A4" : "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 9, border: "none", cursor: (saving || !loaded) ? "not-allowed" : "pointer", transition: "background 0.15s" }}>
+            {saving ? "保存中..." : "保存する"}
           </button>
         </div>
       </div>
