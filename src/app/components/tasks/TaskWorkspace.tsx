@@ -10,7 +10,7 @@
 // 編集は詳細パネルを開かず、リストの行の中で完結する（TaskListView）。
 // かんばん／ガントで押されたタスクは、編集できるリストへ送って行に目印を付ける。
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, RefreshCw, Layers, User, UserCheck, Users } from "lucide-react";
+import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, Layers, User, UserCheck, Users } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { PageLoader } from "@/app/components/shared/PageLoader";
@@ -59,6 +59,7 @@ const OWNER_TABS: { value: OwnerFilter; label: string; icon: React.ElementType }
 
 export function TaskWorkspace({
   scopeKey, projectId = null, projectSlug, title, subtitle, initialTaskId, onConsumeInitialTask,
+  stickyTop = 0, stickyPadTop = 0,
 }: {
   /** ビュー選択の保存キー。横断は "all"、プロジェクト配下は projectId */
   scopeKey: string;
@@ -70,6 +71,17 @@ export function TaskWorkspace({
   /** お知らせから飛んできたときに開くタスク */
   initialTaskId?: string | null;
   onConsumeInitialTask?: () => void;
+  /**
+   * 見出し〜フィルタを固定する位置（スクロール領域の上端からの px）。
+   * 上に別の固定物（プロジェクト内タブ）がある画面は、その高さを渡して下にずらす。
+   */
+  stickyTop?: number;
+  /**
+   * 固定ブロックが内側に持つ上余白。
+   * 固定ブロックの上にスクロールできる余白が1pxでも残っていると、その分だけ
+   * 上部が動いてから吸着する。呼び出し側は自分の上 padding を削ってここへ渡すこと。
+   */
+  stickyPadTop?: number;
 }) {
   const { userId, userName, userRole, userOrgId } = useAuth();
   const { toast } = useToast();
@@ -82,7 +94,6 @@ export function TaskWorkspace({
   // taskId → 共有相手。自分が持っているタスクは全件、他人のタスクは自分の行だけ入る（RLS）
   const [shareMap, setShareMap] = useState<Record<string, TaskShare[]>>({});
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   const [view, setView] = useState<TaskView>(() => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem(viewStorageKey(scopeKey)) : null;
@@ -113,12 +124,14 @@ export function TaskWorkspace({
   useEffect(() => { localStorage.setItem(viewStorageKey(scopeKey), view); }, [view, scopeKey]);
 
   // ── 読み込み ────────────────────────────────────────────────
+  // spinner=false は「画面を差し替えずに裏で引き直す」経路（更新失敗時のやり直しなど）。
+  // BUG-02/03 のとおり、一度出したコンテンツをスピナーで隠さないためにこの区別が要る。
   const reload = useCallback(async (spinner = true) => {
-    if (spinner) setLoading(true); else setRefreshing(true);
+    if (spinner) setLoading(true);
     const [t, shares] = await Promise.all([loadTasks(projectId), loadTaskShareMap()]);
     setTasks(t);
     setShareMap(shares);
-    if (spinner) setLoading(false); else setRefreshing(false);
+    if (spinner) setLoading(false);
   }, [projectId]);
 
   useEffect(() => { reload(); }, [reload]);
@@ -514,134 +527,146 @@ export function TaskWorkspace({
 
   return (
     <div style={{ padding: "0 4px 40px" }}>
-      {/* ── ヘッダー ── */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <CheckSquare style={{ width: 18, height: 18, color: "#059669" }} />
-            {title}
-          </h1>
-          <p style={{ fontSize: 12, color: "#A09790", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
-            <span>{subtitle ?? "チケットとは別に、未着手・進行中・完了だけを管理する軽いタスク"}</span>
-            {tasks.length > 0 && (
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 99, padding: "1px 8px", fontFamily: "var(--font-mono)" }}>
-                完了 {doneCount}/{tasks.length}
-              </span>
-            )}
-          </p>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <button type="button" onClick={() => reload(false)} disabled={refreshing} title="再読み込み"
-            style={{ width: 34, height: 34, borderRadius: 9, border: "1px solid rgba(26,23,20,0.1)", background: "#FFF", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#6B6458" }}>
-            <RefreshCw style={{ width: 14, height: 14, animation: refreshing ? "pageloader-spin 0.75s linear infinite" : undefined }} />
-          </button>
-          <button type="button" onClick={() => setShowMdImport(true)} title="MDファイルからタスクをまとめて作る"
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 10, cursor: "pointer" }}>
-            <FileText style={{ width: 14, height: 14 }} />MDから作成
-          </button>
-          <button type="button" onClick={focusQuickAdd}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#FFF", background: "#059669", border: "none", borderRadius: 10, cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)" }}>
-            <Plus style={{ width: 14, height: 14 }} />タスクを追加
-          </button>
-        </div>
-      </div>
-
-      {/* ── タブ（横断ビューのみ） ──
-          自分のタスクと、人から共有されたタスクを分けて見るためのもの。
-          プロジェクト配下は「そのPJのタスク」しか無いので出さない。 */}
-      {!isProjectScope && (
-        <div style={{ display: "flex", gap: 2, borderBottom: "1px solid rgba(26,23,20,0.09)", marginBottom: 14 }}>
-          {OWNER_TABS.map(({ value, label, icon: Icon }) => {
-            const on = ownerFilter === value;
-            return (
-              <button key={value} type="button" onClick={() => setOwnerFilter(value)}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6, padding: "9px 14px",
-                  fontSize: 12.5, fontWeight: on ? 800 : 600, fontFamily: "inherit",
-                  border: "none", background: "transparent", cursor: "pointer",
-                  color: on ? "#059669" : "#6B6458",
-                  borderBottom: on ? "2px solid #059669" : "2px solid transparent",
-                  marginBottom: -1,
-                }}>
-                <Icon style={{ width: 13, height: 13 }} />
-                {label}
-                <span style={{
-                  fontSize: 10, fontWeight: 700, fontFamily: "var(--font-mono)",
-                  borderRadius: 99, padding: "1px 7px",
-                  color: on ? "#059669" : "#A09790",
-                  background: on ? "#ECFDF5" : "#F4F5F6",
-                  border: `1px solid ${on ? "#A7F3D0" : "rgba(26,23,20,0.06)"}`,
-                }}>
-                  {tabCounts[value]}
+      {/* ── 上部（見出し／タブ／フィルタ）を画面上部に固定 ──
+          タスクが増えると下スクロールで検索・フィルタ・タブが見切れ、
+          絞り込み直すたびに一番上まで戻る必要があった。
+          margin の -4px は外側の padding を打ち消して背景を左右いっぱいに敷くため。
+          上の余白は margin ではなく padding（stickyPadTop）で持つ。margin にすると
+          その分だけスクロールできる余白が上に残り、少し動いてから吸着してしまう。 */}
+      <div style={{
+        position: "sticky", top: stickyTop, zIndex: 100,
+        background: "#F5F6F8",
+        margin: "0 -4px", padding: `${stickyPadTop}px 4px 14px`,
+      }}>
+        {/* ── ヘッダー ── */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <CheckSquare style={{ width: 18, height: 18, color: "#059669" }} />
+              {title}
+            </h1>
+            <p style={{ fontSize: 12, color: "#A09790", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+              <span>{subtitle ?? "チケットとは別に、未着手・進行中・完了だけを管理する軽いタスク"}</span>
+              {tasks.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 99, padding: "1px 8px", fontFamily: "var(--font-mono)" }}>
+                  完了 {doneCount}/{tasks.length}
                 </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── ビュー切替＋フィルタ ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-        <div style={{ display: "flex", gap: 3, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: 3 }}>
-          {VIEWS.map(({ value, label, icon: Icon }) => (
-            <button key={value} type="button" onClick={() => setView(value)}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", fontSize: 11.5, fontWeight: 600, borderRadius: 6, border: "none", cursor: "pointer", background: view === value ? "#059669" : "transparent", color: view === value ? "#FFF" : "#6B6458" }}>
-              <Icon style={{ width: 12, height: 12 }} />{label}
+              )}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            {/* 再読み込みボタンは置かない。ヘッダーの共通の更新ボタン（RefreshContext）が
+                ページごと再マウントして初期fetchを走らせるので、ここに並べると二重になる */}
+            <button type="button" onClick={() => setShowMdImport(true)} title="MDファイルからタスクをまとめて作る"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 10, cursor: "pointer" }}>
+              <FileText style={{ width: 14, height: 14 }} />MDから作成
             </button>
-          ))}
+            <button type="button" onClick={focusQuickAdd}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#FFF", background: "#059669", border: "none", borderRadius: 10, cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)" }}>
+              <Plus style={{ width: 14, height: 14 }} />タスクを追加
+            </button>
+          </div>
         </div>
 
+        {/* ── タブ（横断ビューのみ） ──
+            自分のタスクと、人から共有されたタスクを分けて見るためのもの。
+            プロジェクト配下は「そのPJのタスク」しか無いので出さない。 */}
         {!isProjectScope && (
-          <PickerCell variant="chip" width={168} value={projectFilter} title="プロジェクト"
-            options={[
-              { value: "", label: "すべてのPJ" },
-              { value: "none", label: "個人タスク" },
-              ...projects.map(p => ({ value: p.id, label: p.name })),
-            ]}
-            onChange={setProjectFilter} />
+          <div style={{ display: "flex", gap: 2, borderBottom: "1px solid rgba(26,23,20,0.09)", marginBottom: 14 }}>
+            {OWNER_TABS.map(({ value, label, icon: Icon }) => {
+              const on = ownerFilter === value;
+              return (
+                <button key={value} type="button" onClick={() => setOwnerFilter(value)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "9px 14px",
+                    fontSize: 12.5, fontWeight: on ? 800 : 600, fontFamily: "inherit",
+                    border: "none", background: "transparent", cursor: "pointer",
+                    color: on ? "#059669" : "#6B6458",
+                    borderBottom: on ? "2px solid #059669" : "2px solid transparent",
+                    marginBottom: -1,
+                  }}>
+                  <Icon style={{ width: 13, height: 13 }} />
+                  {label}
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, fontFamily: "var(--font-mono)",
+                    borderRadius: 99, padding: "1px 7px",
+                    color: on ? "#059669" : "#A09790",
+                    background: on ? "#ECFDF5" : "#F4F5F6",
+                    border: `1px solid ${on ? "#A7F3D0" : "rgba(26,23,20,0.06)"}`,
+                  }}>
+                    {tabCounts[value]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         )}
 
-        <MultiPickerCell width={160} values={assigneeFilters} title="担当者（複数選べます）"
-          emptyLabel="担当: すべて" showSelectAll={false}
-          options={[
-            { value: "@me", label: "自分の担当" },
-            { value: "@none", label: "未割当" },
-            ...assigneeNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
-          ]}
-          onChange={setAssigneeFilters} />
+        {/* ── ビュー切替＋フィルタ ──
+            固定ブロックの最後の要素。下の余白は親の paddingBottom が持つ
+            （marginBottom を残すと親から抜け出して背景が途切れる＝margin collapsing） */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 3, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: 3 }}>
+            {VIEWS.map(({ value, label, icon: Icon }) => (
+              <button key={value} type="button" onClick={() => setView(value)}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", fontSize: 11.5, fontWeight: 600, borderRadius: 6, border: "none", cursor: "pointer", background: view === value ? "#059669" : "transparent", color: view === value ? "#FFF" : "#6B6458" }}>
+                <Icon style={{ width: 12, height: 12 }} />{label}
+              </button>
+            ))}
+          </div>
 
-        <MultiPickerCell width={160} values={creatorFilters} title="起票者（複数選べます）"
-          emptyLabel="起票者: すべて" showSelectAll={false}
-          options={[
-            { value: "@me", label: "自分が起票" },
-            ...creatorNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
-          ]}
-          onChange={setCreatorFilters} />
-
-        {/* 標準のチェックボックスはOSごとに見た目が違うので自前で描く */}
-        <button type="button" onClick={() => setHideDone(v => !v)}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600, color: "#6B6458", cursor: "pointer", padding: "7px 10px", background: "#FFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8, fontFamily: "inherit" }}>
-          <span style={{
-            width: 14, height: 14, borderRadius: 4, flexShrink: 0,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            background: hideDone ? "#059669" : "#FFF",
-            border: hideDone ? "none" : "1.5px solid rgba(26,23,20,0.18)",
-          }}>
-            {hideDone && <Check style={{ width: 10, height: 10, color: "#FFF" }} />}
-          </span>
-          完了を隠す
-        </button>
-
-        <div style={{ position: "relative", marginLeft: "auto" }}>
-          <Search style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: "#B0A9A4" }} />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="タスクを検索"
-            style={{ padding: "7px 26px 7px 26px", fontSize: 11.5, color: "#1A1714", background: "#FFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8, outline: "none", width: 190 }} />
-          {search && (
-            <button type="button" onClick={() => setSearch("")}
-              style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", padding: 2, color: "#B0A9A4", display: "flex" }}>
-              <X style={{ width: 11, height: 11 }} />
-            </button>
+          {!isProjectScope && (
+            <PickerCell variant="chip" width={168} value={projectFilter} title="プロジェクト"
+              options={[
+                { value: "", label: "すべてのPJ" },
+                { value: "none", label: "個人タスク" },
+                ...projects.map(p => ({ value: p.id, label: p.name })),
+              ]}
+              onChange={setProjectFilter} />
           )}
+
+          <MultiPickerCell width={160} values={assigneeFilters} title="担当者（複数選べます）"
+            emptyLabel="担当: すべて" showSelectAll={false}
+            options={[
+              { value: "@me", label: "自分の担当" },
+              { value: "@none", label: "未割当" },
+              ...assigneeNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
+            ]}
+            onChange={setAssigneeFilters} />
+
+          <MultiPickerCell width={160} values={creatorFilters} title="起票者（複数選べます）"
+            emptyLabel="起票者: すべて" showSelectAll={false}
+            options={[
+              { value: "@me", label: "自分が起票" },
+              ...creatorNames.filter(n => n !== userName).map(n => ({ value: n, label: n })),
+            ]}
+            onChange={setCreatorFilters} />
+
+          {/* 標準のチェックボックスはOSごとに見た目が違うので自前で描く */}
+          <button type="button" onClick={() => setHideDone(v => !v)}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600, color: "#6B6458", cursor: "pointer", padding: "7px 10px", background: "#FFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8, fontFamily: "inherit" }}>
+            <span style={{
+              width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: hideDone ? "#059669" : "#FFF",
+              border: hideDone ? "none" : "1.5px solid rgba(26,23,20,0.18)",
+            }}>
+              {hideDone && <Check style={{ width: 10, height: 10, color: "#FFF" }} />}
+            </span>
+            完了を隠す
+          </button>
+
+          <div style={{ position: "relative", marginLeft: "auto" }}>
+            <Search style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: "#B0A9A4" }} />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="タスクを検索"
+              style={{ padding: "7px 26px 7px 26px", fontSize: 11.5, color: "#1A1714", background: "#FFF", border: "1px solid rgba(26,23,20,0.1)", borderRadius: 8, outline: "none", width: 190 }} />
+            {search && (
+              <button type="button" onClick={() => setSearch("")}
+                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "transparent", cursor: "pointer", padding: 2, color: "#B0A9A4", display: "flex" }}>
+                <X style={{ width: 11, height: 11 }} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
