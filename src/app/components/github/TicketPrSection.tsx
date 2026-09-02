@@ -20,6 +20,7 @@
 //  ブランチ探しは「PRを作成」を押してから走らせ、進捗を出す（CreatePullPrepDialog）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useNavigate } from "react-router";
 import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
 import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -27,7 +28,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import {
   fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches, fetchTicketBranches,
-  linkTicket, unlinkTicket, mergePull, precheckMerge, resolveLinkCandidate, GithubApiError,
+  linkTicket, unlinkTicket, mergePull, mergePullsBulk, precheckMerge, resolveLinkCandidate, GithubApiError,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
@@ -36,6 +37,8 @@ import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { CreateBranchDialog, suggestBranchName } from "@/app/components/github/CreateBranchDialog";
 import { CreatePullPrepDialog, type PrepState } from "@/app/components/github/CreatePullPrepDialog";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
+import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
+import { BulkMergePromptDialog } from "@/app/components/github/BulkMergePromptDialog";
 import type {
   TicketGithubLink, TicketGithubLinkCandidate, TicketGithubBranch, GithubPull, GithubBranch,
   GithubAccessLevel, GithubMergeMethod, GithubPerms, TicketStatus,
@@ -80,6 +83,8 @@ export function TicketPrSection({
 }) {
   const { userName } = useAuth();
   const { toast } = useToast();
+  /** 「PRを見直す」でこのプロジェクトのGitHub画面へ移るために使う（BRU14-007） */
+  const navigate = useNavigate();
   /**
    * 「このセクションを出す見込みがあるか」を、取得を待たずに決めるための事前判定（BRU13-023）。
    *
@@ -122,7 +127,19 @@ export function TicketPrSection({
   const prepRunRef = useRef(0);
   /** マージ確認を開くために詳細を引いている最中のPR番号 */
   const [preparingMerge, setPreparingMerge] = useState<number | null>(null);
+  /**
+   * 準備中の二重実行よけ（BUG-05）。
+   * state だけだと、同じレンダーのハンドラが2回走ったときに両方すり抜ける
+   */
+  const preparingMergeRef = useRef(false);
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
+  /**
+   * 「他のPRとまとめてマージするか」の確認（BRU14-007）。
+   * オープンなPRが他にもあるときだけ入る。target は押されたPR
+   */
+  const [mergePrompt, setMergePrompt] = useState<{ target: GithubPull; pulls: GithubPull[] } | null>(null);
+  /** まとめてマージの対象。上のダイアログで「はい」を選んだときだけ入る */
+  const [bulkTargets, setBulkTargets] = useState<GithubPull[] | null>(null);
 
   const pullLinks = useMemo(() => links.filter(l => l.kind === "pull"), [links]);
   const canMergeHere = (apiPerms ?? access.perms)?.merge === "write"
@@ -181,6 +198,11 @@ export function TicketPrSection({
     setTicketBranches([]);
     setAvailable(null);
     setPicking(false);
+    // マージの確認も前のチケットのPRを指しているので閉じる。
+    // 残すと、別のチケットを開いた画面の上に前のPRのマージボタンが乗ったままになる
+    setMergeTarget(null);
+    setMergePrompt(null);
+    setBulkTargets(null);
     // 準備中に別のチケットへ移ったら、その進捗は前のチケットのもの。閉じて結果も捨てる
     prepRunRef.current++;
     setPrep(null);
@@ -368,16 +390,42 @@ export function TicketPrSection({
     toast(created.number ? `#${created.number} を作成して紐付けました` : "プルリクエストを作成しました", "success");
   };
 
-  // マージ確認にはCI・レビュー・マージ可否が要る。紐付け行には無いので詳細を引いてから開く
+  /**
+   * マージ確認を開く。
+   *
+   * マージ確認にはCI・レビュー・マージ可否が要る。紐付け行には無いので詳細を引く。
+   * あわせてリポジトリのオープンなPR全件も引く（BRU14-007）。
+   *
+   * チケットから1件だけマージすると、他に溜まっているPRが見えないままマージ先が進み、
+   * 次にマージする人がその分のコンフリクトを踏む。他にもPRがあるなら、
+   * 何が溜まっているかを出して「まとめて入れるか／単体で入れるか」を先に選ばせる。
+   *
+   * 一覧は詳細と並行して引くので、待ち時間は重い方（一覧）だけで済む。
+   * 一覧が取れなかった場合は、これまでどおり単体のマージ確認へそのまま進む
+   * （溜まっているPRの案内が出ないだけで、マージそのものは行える）。
+   */
   const openMerge = async (number: number) => {
+    if (preparingMergeRef.current) return;
+    preparingMergeRef.current = true;
+    const key = currentKeyRef.current;
     setPreparingMerge(number);
     try {
-      const r = await fetchPull(projectId, number);
-      setMergeTarget(r.pull);
+      const [detail, list] = await Promise.all([
+        fetchPull(projectId, number),
+        fetchPulls(projectId).catch(() => null),
+      ]);
+      if (currentKeyRef.current !== key) return; // 別チケットに切り替わっていたら捨てる
+      const others = (list?.pulls ?? []).filter(p => p.number !== number);
+      if (!others.length) { setMergeTarget(detail.pull); return; }
+      // 押したPRは一覧側にも入っているが、そちらは可否やCIが省かれていることがある
+      //（一覧が実データを引くのは上位15件だけ）。確実に揃っている詳細の方を使う
+      setMergePrompt({ target: detail.pull, pulls: [detail.pull, ...others] });
     } catch (e) {
+      if (currentKeyRef.current !== key) return;
       toast(e instanceof GithubApiError ? e.message : "PRの詳細を取得できませんでした", "error");
     } finally {
-      setPreparingMerge(null);
+      preparingMergeRef.current = false;
+      if (currentKeyRef.current === key) setPreparingMerge(null);
     }
   };
 
@@ -618,7 +666,9 @@ export function TicketPrSection({
                 {mergeable && (
                   <button onClick={() => openMerge(l.number)} disabled={busy || preparingMerge !== null}
                     style={{ padding: "4px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy || preparingMerge !== null ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy || preparingMerge !== null ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
-                    {preparingMerge === l.number ? "確認中..." : "マージする"}
+                    {/* 詳細に加えてオープンなPR全件も引くので数秒かかる。
+                        「確認中」だけだと何を待っているのか分からない（BRU14-007） */}
+                    {preparingMerge === l.number ? "他のPRを確認中..." : "マージする"}
                   </button>
                 )}
                 {canEditLinks && (
@@ -740,6 +790,51 @@ export function TicketPrSection({
             ticketWbs={wbs}
             onClose={() => setCreateTarget(null)}
             onCreated={handleCreated}
+          />
+        </div>, document.body)}
+
+      {/* 他にもオープンなPRがあったときだけ挟まる確認（BRU14-007）。
+          ここで「まとめて／単体」を選び終えてから、実際のマージ確認へ進む */}
+      {mergePrompt && createPortal(
+        <div style={{ position: "relative", zIndex: 340 }}>
+          <BulkMergePromptDialog
+            target={mergePrompt.target}
+            pulls={mergePrompt.pulls}
+            repo={repo}
+            onClose={() => setMergePrompt(null)}
+            onSingle={() => { setMergeTarget(mergePrompt.target); setMergePrompt(null); }}
+            onProceed={targets => {
+              // 1件しか残らず、それが押したPRそのものなら、まとめてマージを名乗る意味がない。
+              // 詳細まで揃っている単体のマージ確認へ回す
+              if (targets.length === 1 && targets[0].number === mergePrompt.target.number) {
+                setMergeTarget(mergePrompt.target);
+              } else {
+                setBulkTargets(targets);
+              }
+              setMergePrompt(null);
+            }}
+            onReview={() => {
+              setMergePrompt(null);
+              // 経路はスラッグでもIDでも引き当てられる（findProjectBySlug）
+              navigate(`/${projectSlug || projectId}/github`);
+            }}
+          />
+        </div>, document.body)}
+
+      {bulkTargets && bulkTargets.length > 0 && createPortal(
+        <div style={{ position: "relative", zIndex: 340 }}>
+          <BulkMergeDialog
+            pulls={bulkTargets}
+            repo={repo}
+            actorName={userName}
+            onClose={() => setBulkTargets(null)}
+            onPrecheck={numbers => precheckMerge(projectId, numbers)}
+            onMerge={(numbers, method, reason, runId) =>
+              mergePullsBulk(projectId, numbers, method, reason, projectSlug, runId)}
+            onDone={async () => {
+              await load();
+              onLinked?.();
+            }}
           />
         </div>, document.body)}
 
