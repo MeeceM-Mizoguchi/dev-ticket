@@ -2,7 +2,7 @@
 //
 // 権限が無い人にはタブ自体が出ないが、URL直打ちには理由を出す
 // （黙ってリダイレクトしない＝docs/not-found-page-design.md の方針）。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { ExternalLink, RefreshCw, GitPullRequest, GitBranch, FolderKanban, ChevronRight } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
@@ -20,6 +20,9 @@ import { CreateBranchDialog } from "@/app/components/github/CreateBranchDialog";
 import { PendingBranches } from "@/app/components/github/PendingBranches";
 import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
+import {
+  RefreshProgressDialog, type RefreshStepKey, type RefreshProgressState,
+} from "@/app/components/github/RefreshProgressDialog";
 import { DeployStatusBanner } from "@/app/components/github/DeployStatusBanner";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
@@ -45,6 +48,24 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
   { id: "commits", label: "コミット" },
   { id: "branches", label: "ブランチ" },
 ];
+
+/** 「更新」の進捗画面に出す実行中の状態 */
+interface RefreshRun {
+  /** 押した時点のタブ。途中でタブを変えても工程の並びが入れ替わらないよう持っておく */
+  tab: SubTab;
+  done: RefreshStepKey[];
+  state: RefreshProgressState;
+}
+
+/** 完了を見せてから閉じるまでの間。すぐ消すと更新できたのかが読み取れない */
+const REFRESH_CLOSE_MS = 900;
+
+/**
+ * 並行して走る取得の「終わった」を、値をそのまま通しながら進捗へ伝える。
+ * Promise.all の外で待つと全部揃うまで報告できず、1件ずつ緑になっていかない
+ */
+const reportStep = <T,>(onStep: ((key: RefreshStepKey) => void) | undefined, key: RefreshStepKey) =>
+  (value: T) => { onStep?.(key); return value; };
 
 export function GithubPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
@@ -79,6 +100,10 @@ export function GithubPage() {
   const [fetching, setFetching] = useState(false);
   const [apiError, setApiError] = useState("");
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  /** 「更新」の進捗画面。押していないあいだは null（初回の読み込みでは出さない） */
+  const [refresh, setRefresh] = useState<RefreshRun | null>(null);
+  /** 完了を見せてから閉じるまでのタイマー */
+  const refreshCloseRef = useRef<number | null>(null);
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
   const [defaultBranch, setDefaultBranch] = useState("");
   const [preparingCreate, setPreparingCreate] = useState(false);
@@ -141,9 +166,16 @@ export function GithubPage() {
   useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
   // ── データ取得（自動ポーリングはしない） ────────────────
-  const loadTab = useCallback(async (which: SubTab, force = false) => {
-    if (!project?.id) return;
-    if (!force && loadedTabs[which]) return;
+  /**
+   * タブの中身を取る。取得できたら true を返す
+   * （「更新」の進捗画面が、成功で閉じるか理由を出して留まるかを決めるのに使う）。
+   *
+   * onStep は工程が1つ終わるたびに呼ぶ。渡さなければ何も起きないので、
+   * 進捗画面を出さない経路（タブを開いたときの取得など）はこれまでどおり動く。
+   */
+  const loadTab = useCallback(async (which: SubTab, force = false, onStep?: (key: RefreshStepKey) => void) => {
+    if (!project?.id) return false;
+    if (!force && loadedTabs[which]) return true;
     setFetching(true);
     setApiError("");
     try {
@@ -153,8 +185,9 @@ export function GithubPage() {
         // 一瞬だけ残り、そのあとマージの表示に切り替わって見えてしまう。
         // 未作成ブランチは付随情報なので、取れなくても一覧は表示する
         const [r, pendingBranches] = await Promise.all([
-          fetchPulls(project.id),
-          fetchPendingBranches(project.id).then(p => p.branches).catch(() => [] as GithubPendingBranch[]),
+          fetchPulls(project.id).then(reportStep(onStep, "list")),
+          fetchPendingBranches(project.id).then(p => p.branches).catch(() => [] as GithubPendingBranch[])
+            .then(reportStep(onStep, "extra")),
         ]);
         setPulls(r.pulls); setLinks(r.links); setLevel(r.level); setRepo(r.repo);
         if (r.perms) setApiPerms(r.perms);
@@ -163,9 +196,11 @@ export function GithubPage() {
         setSelected(new Set());
       } else if (which === "issues") {
         const r = await fetchIssues(project.id);
+        onStep?.("list");
         setIssues(r.issues); setLevel(r.level); setRepo(r.repo);
       } else if (which === "commits") {
         const r = await fetchCommits(project.id, commitBranch || undefined);
+        onStep?.("list");
         setCommits(r.commits); setRepo(r.repo);
         // 未指定ならサーバーが既定ブランチに寄せるので、その名前を受け取って選択欄に反映する
         setCommitBranch(r.branch);
@@ -174,8 +209,9 @@ export function GithubPage() {
         // 一覧に「何のブランチか」が出ていないと読めない（BRU13-054）。
         // 紐付けは付随情報なので、取れなくても一覧そのものは出す
         const [r, linked] = await Promise.all([
-          fetchBranches(project.id),
-          fetchTicketBranches(project.id).then(t => t.branches).catch(() => [] as TicketGithubBranch[]),
+          fetchBranches(project.id).then(reportStep(onStep, "list")),
+          fetchTicketBranches(project.id).then(t => t.branches).catch(() => [] as TicketGithubBranch[])
+            .then(reportStep(onStep, "extra")),
         ]);
         setBranches(r.branches); setDefaultBranch(r.defaultBranch); setRepo(r.repo);
         setTicketBranches(linked);
@@ -183,8 +219,10 @@ export function GithubPage() {
       }
       setLoadedTabs(prev => ({ ...prev, [which]: true }));
       setFetchedAt(new Date().toISOString());
+      return true;
     } catch (e) {
       setApiError(e instanceof GithubApiError ? e.message : "GitHubの情報を取得できませんでした。");
+      return false;
     } finally {
       setFetching(false);
     }
@@ -214,6 +252,51 @@ export function GithubPage() {
     if (!project?.id || !access.linked || access.level === "none" || !access.level) return;
     void loadDeploy();
   }, [project?.id, access.linked, access.level, loadDeploy]);
+
+  /**
+   * リポジトリ帯の「更新」。押した直後に進捗画面を出す。
+   *
+   * これまではボタンの文字が「更新中...」に変わるだけで、GitHub の応答が返るまでの
+   * 数秒は画面が止まって見えていた。取りに行くものはタブごとに複数あり、しかも
+   * 本番反映の確認は一覧とは別口なので、どこまで済んだかを工程で出す。
+   *
+   * 一覧と本番反映は並行して取る（順に待たせるとその分だけ完了が遅れる）。
+   * 一覧の取得は中身を差し替えるだけでコンテンツを隠さないので、
+   * 進捗画面を閉じてもそのまま最新に切り替わる（BUG-02／BUG-03 と同じ方針）。
+   */
+  const handleRefresh = useCallback(() => {
+    if (fetching || !project?.id) return;
+    if (refreshCloseRef.current) {
+      window.clearTimeout(refreshCloseRef.current);
+      refreshCloseRef.current = null;
+    }
+    setRefresh({ tab, done: [], state: "running" });
+    // 閉じたあとに遅れて届いた報告で開き直さないよう、実行中のときだけ書き込む
+    const mark = (key: RefreshStepKey) => setRefresh(prev => (
+      prev && prev.state === "running" && !prev.done.includes(key)
+        ? { ...prev, done: [...prev.done, key] }
+        : prev
+    ));
+    void (async () => {
+      const [ok] = await Promise.all([
+        loadTab(tab, true, mark),
+        // 失敗は loadDeploy が握って帯を残すので、ここでは終わったことだけ伝える
+        loadDeploy().then(() => mark("deploy")),
+      ]);
+      setRefresh(prev => (prev ? { ...prev, state: ok ? "done" : "error" } : prev));
+      // 失敗したときは閉じない。理由を読ませるため（マージの確認と同じ扱い）
+      if (!ok) return;
+      refreshCloseRef.current = window.setTimeout(() => {
+        refreshCloseRef.current = null;
+        setRefresh(null);
+      }, REFRESH_CLOSE_MS);
+    })();
+  }, [fetching, project?.id, tab, loadTab, loadDeploy]);
+
+  // 閉じる前に画面を離れたときのタイマー始末
+  useEffect(() => () => {
+    if (refreshCloseRef.current) window.clearTimeout(refreshCloseRef.current);
+  }, []);
 
   /** 帯の「今すぐ確認」。本番へ問い合わせ直す */
   const handleDeployRecheck = async () => {
@@ -439,7 +522,7 @@ export function GithubPage() {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {fetchedAt && <span style={{ fontSize: 11, color: "#B0A9A4" }}>{relativeTime(fetchedAt)}に取得</span>}
-                <button onClick={() => { void loadTab(tab, true); void loadDeploy(); }} disabled={fetching}
+                <button onClick={handleRefresh} disabled={fetching}
                   style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#4B4540", cursor: fetching ? "default" : "pointer", opacity: fetching ? 0.6 : 1 }}>
                   <RefreshCw style={{ width: 11, height: 11 }} />{fetching ? "更新中..." : "更新"}
                 </button>
@@ -565,6 +648,16 @@ export function GithubPage() {
             <BranchList branches={branches} ticketByBranch={ticketByBranch} />
           )}
         </>
+      )}
+
+      {refresh && (
+        <RefreshProgressDialog
+          tab={refresh.tab}
+          done={refresh.done}
+          state={refresh.state}
+          message={apiError}
+          onClose={() => setRefresh(null)}
+        />
       )}
 
       {mergeTarget && (
