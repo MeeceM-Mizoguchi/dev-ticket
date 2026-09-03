@@ -31,7 +31,7 @@ const PRIORITY_OPTIONS: PickerOption[] = TASK_PRIORITIES.map(p => ({ value: p.va
 const STATUS_OPTIONS: PickerOption[] = TASK_STATUSES.map(s => ({ value: s.value, label: s.label, color: s.color }));
 
 export function TaskQuickAddRow({
-  projects, members, categoryOptions, showProject, fixedProjectId, lockProject, defaultStatus = "todo",
+  projects, members, categoryOptions, showProject, fixedProjectId, lockProject, defaultStatus,
   indent = 0, placeholder = "タスクを入力して Enter で追加", focusSignal, creatorName = "",
   atTop = false, onCreate,
 }: {
@@ -44,6 +44,7 @@ export function TaskQuickAddRow({
   fixedProjectId?: string | null;
   /** プロジェクトを変えさせない（サブタスクは親と同じPJでないと見える人が食い違う） */
   lockProject?: boolean;
+  /** 最初から選んだ状態にしておくステータス。省略すると「未選択」（登録時は未着手になる） */
   defaultStatus?: TaskStatus;
   /** タイトル欄の字下げ。サブタスクの追加行で親の下にぶら下げるのに使う */
   indent?: number;
@@ -61,7 +62,12 @@ export function TaskQuickAddRow({
   const [description, setDescription] = useState("");
   const [projectId, setProjectId] = useState(fixedProjectId ?? "");
   const [categories, setCategories] = useState<string[]>([]);
-  const [status, setStatus] = useState<TaskStatus>(defaultStatus);
+  /**
+   * BRU14-013 ステータスは初期値を持たせない（"" = 未選択）。
+   * 「未着手」を出しておくと自分で選んだように見えてしまうため、選ぶまでは「未選択」と出す。
+   * 登録するときは未着手として扱う（DB 側も status は必須）。
+   */
+  const [status, setStatus] = useState<TaskStatus | "">(defaultStatus ?? "");
   const [priority, setPriority] = useState<Priority>("medium");
   const [progress, setProgress] = useState(0);
   const [assignee, setAssignee] = useState("");
@@ -91,7 +97,7 @@ export function TaskQuickAddRow({
     setSaving(true);
     const ok = await onCreate({
       title: v, description: textToDescription(description),
-      projectId: projectId || null, categories, status, priority,
+      projectId: projectId || null, categories, status: status || "todo", priority,
       progress: override?.progress ?? progress,
       assignee, startDate, dueDate,
     });
@@ -107,7 +113,8 @@ export function TaskQuickAddRow({
     inputRef.current?.focus();
   };
 
-  const statusMeta = TASK_STATUSES.find(s => s.value === status)!;
+  // 未選択のときは色を付けない（PickerCell の「値なし」の薄い文字のまま出す）
+  const statusMeta = TASK_STATUSES.find(s => s.value === status);
   const projectOptions: PickerOption[] = [
     { value: "", label: "個人タスク" },
     ...projects.map(p => ({ value: p.id, label: p.name })),
@@ -206,7 +213,8 @@ export function TaskQuickAddRow({
 
       <PickerCell width={TASK_COLS.status} value={status} title="ステータス" align="center"
         options={STATUS_OPTIONS} onChange={v => setStatus(v as TaskStatus)}
-        textStyle={{ color: statusMeta.color, fontWeight: 700 }} />
+        placeholder="未選択"
+        textStyle={statusMeta ? { color: statusMeta.color, fontWeight: 700 } : undefined} />
 
       {/* 共有・削除のぶんは空けておく（まだ存在しないタスクなので押せる操作が無い） */}
       <span style={{ width: TASK_COLS.share, flexShrink: 0 }} />

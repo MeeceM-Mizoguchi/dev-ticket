@@ -506,7 +506,7 @@ function TaskRow({
 export function TaskListView({
   tasks, allTasks, showProject, canEdit, canDelete, canShare, shareCountOf, highlightId,
   projects, members, categoryOptions,
-  onPatch, onDelete, onShare, renderSubtaskAdd, quickAdd,
+  onPatch, onDelete, onShare, renderSubtaskAdd, quickAdd, stickyTop = 0,
 }: {
   /** 絞り込み後（画面に出す分） */
   tasks: Task[];
@@ -533,6 +533,11 @@ export function TaskListView({
   renderSubtaskAdd: (parent: Task) => React.ReactNode;
   /** 見出しの下に生やす追加行（TaskQuickAddRow）。渡さなければ出ない */
   quickAdd?: React.ReactNode;
+  /**
+   * 列見出し＋追加行を固定する位置（スクロール領域の上端からの px）。
+   * 上に固定されている見出し・フィルタ（TaskWorkspace）の高さを渡すと、その真下に続く。
+   */
+  stickyTop?: number;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const boxRef = useRef<HTMLDivElement>(null);
@@ -593,33 +598,45 @@ export function TaskListView({
   };
 
   return (
-    <div ref={boxRef} style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, overflow: "hidden" }}>
-      {/* ── 列見出し ── */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: TASK_COLS.gap,
-        padding: `8px ${TASK_COLS.padX}px`, background: "#FAFAF9",
-        borderBottom: "1px solid rgba(26,23,20,0.07)",
-      }}>
-        <span style={{ width: TASK_COLS.toggle, flexShrink: 0 }} />
-        <span style={{ width: TASK_COLS.expand, flexShrink: 0 }} />
-        <span style={{ ...headCell, ...TITLE_CELL }}>タイトル</span>
-        <span style={{ ...headCell, ...DESC_CELL }}>詳細</span>
-        <span style={{ ...headCell, width: TASK_COLS.category }}>分類</span>
-        {showProject && <span style={{ ...headCell, width: TASK_COLS.project }}>プロジェクト</span>}
-        <span style={{ ...headCell, width: TASK_COLS.priority }}>優先度</span>
-        <span style={{ ...headCell, width: TASK_COLS.assignee }}>担当者</span>
-        <span style={{ ...headCell, width: TASK_COLS.creator }}>起票者</span>
-        <span style={{ ...headCell, width: TASK_COLS.start }}>開始日</span>
-        <span style={{ ...headCell, width: TASK_COLS.due }}>期限</span>
-        <span style={{ ...headCell, width: TASK_COLS.progress, textAlign: "right" as const }}>進捗率</span>
-        <span style={{ ...headCell, width: TASK_COLS.status, textAlign: "center" as const }}>ステータス</span>
-        <span style={{ width: TASK_COLS.share, flexShrink: 0 }} />
-        <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
-      </div>
+    <div ref={boxRef} style={{
+      background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12,
+      // BRU14-013 中の見出し・追加行を画面に固定するため hidden ではなく clip で切る。
+      // overflow:hidden はスクロール領域そのものになるので、内側の position:sticky が
+      // 「動かない箱」に対して吸着してしまい効かなくなる（clip は領域を作らずに切るだけ）。
+      overflow: "clip",
+    }}>
+      {/* ── 列見出し＋追加行（BRU14-013 で画面上部に固定） ──
+          下スクロールすると見出しと追加行が上へ消え、どの列を見ているのか分からず
+          追加もページ先頭へ戻らないとできなかった。上の見出し・フィルタ（TaskWorkspace）の
+          高さぶんだけ下げた位置に、続けて貼り付ける。
+          z-index は上のブロック（100）より小さくして、その下へ潜り込ませる。 */}
+      <div style={{ position: "sticky", top: stickyTop, zIndex: 20 }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: TASK_COLS.gap,
+          padding: `8px ${TASK_COLS.padX}px`, background: "#FAFAF9",
+          borderBottom: "1px solid rgba(26,23,20,0.07)",
+        }}>
+          <span style={{ width: TASK_COLS.toggle, flexShrink: 0 }} />
+          <span style={{ width: TASK_COLS.expand, flexShrink: 0 }} />
+          <span style={{ ...headCell, ...TITLE_CELL }}>タイトル</span>
+          <span style={{ ...headCell, ...DESC_CELL }}>詳細</span>
+          <span style={{ ...headCell, width: TASK_COLS.category }}>分類</span>
+          {showProject && <span style={{ ...headCell, width: TASK_COLS.project }}>プロジェクト</span>}
+          <span style={{ ...headCell, width: TASK_COLS.priority }}>優先度</span>
+          <span style={{ ...headCell, width: TASK_COLS.assignee }}>担当者</span>
+          <span style={{ ...headCell, width: TASK_COLS.creator }}>起票者</span>
+          <span style={{ ...headCell, width: TASK_COLS.start }}>開始日</span>
+          <span style={{ ...headCell, width: TASK_COLS.due }}>期限</span>
+          <span style={{ ...headCell, width: TASK_COLS.progress, textAlign: "right" as const }}>進捗率</span>
+          <span style={{ ...headCell, width: TASK_COLS.status, textAlign: "center" as const }}>ステータス</span>
+          <span style={{ width: TASK_COLS.share, flexShrink: 0 }} />
+          <span style={{ width: TASK_COLS.menu, flexShrink: 0 }} />
+        </div>
 
-      {/* 追加行は見出しのすぐ下（BRU13-044）。
-          件数が増えるほど最終行は遠くなり、足すたびに一番下まで送られてしまうため */}
-      {quickAdd}
+        {/* 追加行は見出しのすぐ下（BRU13-044）。
+            件数が増えるほど最終行は遠くなり、足すたびに一番下まで送られてしまうため */}
+        {quickAdd}
+      </div>
 
       {roots.map(t => {
         const c = counts.get(t.id) ?? { total: 0, done: 0 };
