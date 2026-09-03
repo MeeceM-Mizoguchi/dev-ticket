@@ -23,6 +23,7 @@ import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
@@ -199,7 +200,8 @@ function BacklogRowContent({
     <div style={{ flex: 1, minWidth: 0, opacity: isDone ? 0.65 : 1 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
         <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", background: isSelected ? "#A7F3D0" : "#EDE9FE", color: isSelected ? "#065F46" : "#6D28D9", padding: "1px 5px", borderRadius: 4, flexShrink: 0 }}>{item.id}</span>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title || "無題"}</span>
+        <TruncatedText text={item.title || "無題"}
+          style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
       </div>
       <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pMeta.bg, color: pMeta.color }}>{pMeta.label}</span>

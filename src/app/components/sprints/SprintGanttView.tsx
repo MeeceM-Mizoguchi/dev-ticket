@@ -4,6 +4,7 @@ import type { Sprint, SprintTicket } from "@/app/types";
 import { daysBetween, formatDate, getSprintStatusMeta, sprintProgress, getTicketStatusMeta, computeSprintStatus } from "@/app/lib/helpers";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
 
@@ -256,7 +257,7 @@ export function SprintGanttView({ sprints, onSelectTicket, onCreateTicket, onBul
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   <ChevronDown style={{ width: 11, height: 11, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{sprint.name}</p>
+                    <TruncatedText as="p" text={sprint.name} style={{ fontSize: 11, fontWeight: 700, color: "#1A1714" }} />
                     <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
                       <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: sm.bg, color: sm.color }}>{sm.label}</span>
                       <span style={{ fontSize: 9, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{sprintProgress(sprint)}%</span>
@@ -300,7 +301,7 @@ export function SprintGanttView({ sprints, onSelectTicket, onCreateTicket, onBul
                           </button>
                         ) : <span style={{ width: 11 }} />}
                         <div style={{ width: 5, height: 5, borderRadius: "50%", background: tsm.color, flexShrink: 0 }} />
-                        <span style={{ fontSize: 10, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1 }}>{t.title}</span>
+                        <TruncatedText text={t.title} style={{ fontSize: 10, color: "#6B6458", flex: 1 }} />
                         {hasChildren && <GitBranch style={{ width: 8, height: 8, color: "#B0A9A4", flexShrink: 0 }} />}
                         <span style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 10, background: tsm.bg, color: tsm.color, flexShrink: 0 }}>{tsm.label}</span>
                       </div>
@@ -315,7 +316,7 @@ export function SprintGanttView({ sprints, onSelectTicket, onCreateTicket, onBul
                             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = childRowBg; }}>
                             <div style={{ width: 1, height: 10, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
                             <div style={{ width: 4, height: 4, borderRadius: "50%", background: ctsm.color, flexShrink: 0 }} />
-                            <span style={{ fontSize: 9, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1 }}>{child.title}</span>
+                            <TruncatedText text={child.title} style={{ fontSize: 9, color: "#6B6458", flex: 1 }} />
                             <span style={{ fontSize: 7, fontWeight: 700, padding: "1px 4px", borderRadius: 8, background: ctsm.bg, color: ctsm.color, flexShrink: 0 }}>{ctsm.label}</span>
                           </div>
                         );

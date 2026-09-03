@@ -3,6 +3,7 @@ import { GitBranch, Search, X } from "lucide-react";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { SelBox } from "@/app/components/sprints/SelBox";
 import { ColumnFilter } from "@/app/components/shared/ColumnFilter";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { formatDate, getTicketStatusMeta, formatPersonDays } from "@/app/lib/helpers";
 import type { ColumnFilters, SearchSortCol, SortDir, TicketSearchRow } from "@/app/lib/ticketSearch";
 import { hasColumnFilters } from "@/app/lib/ticketSearch";
@@ -194,7 +195,7 @@ export function TicketSearchResults({
               <span style={{ fontSize: 10, color: "#059669", fontFamily: "var(--font-mono)", fontWeight: 700, whiteSpace: "nowrap" }}>{t.wbs}</span>
             </div>
 
-            <span title={row.sprint.name} style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.sprint.name}</span>
+            <TruncatedText text={row.sprint.name} style={{ fontSize: 11, color: "#6B6458" }} />
 
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
               {row.isChild && (
@@ -203,8 +204,9 @@ export function TicketSearchResults({
                 </span>
               )}
               <span style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
-              <span title={row.descriptionText || undefined}
-                style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+              {/* 説明文は今まで通りブラウザ標準の title で。ツールチップはタイトルの全文 */}
+              <TruncatedText text={t.title} title={row.descriptionText || undefined}
+                style={{ fontSize: 12, fontWeight: 500, color: "#1A1714" }} />
             </div>
 
             <span style={{ fontSize: 11, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.categoryLabel}</span>

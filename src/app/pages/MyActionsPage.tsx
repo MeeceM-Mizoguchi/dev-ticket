@@ -8,6 +8,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { usePreviewPanel } from "@/app/contexts/PreviewPanelContext";
 import { TICKET_STATUSES } from "@/app/lib/helpers";
@@ -268,7 +269,7 @@ function ClosedPanel({ tickets, onSelect }: { tickets: ActionTicket[]; onSelect:
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >
             <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", background: "#F3F4F6", color: "#6B7280", padding: "1px 5px", borderRadius: 3, letterSpacing: "0.02em", display: "inline-block", marginBottom: 3 }}>{t.wbs}</span>
-            <p style={{ fontSize: 11, color: "#6B6458", margin: 0, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</p>
+            <TruncatedText as="p" text={t.title} style={{ fontSize: 11, color: "#6B6458", margin: 0, lineHeight: 1.3 }} />
           </button>
         ))}
       </div>
@@ -402,12 +403,11 @@ function ActionMemoRow({
             </span>
           )}
           {ticketStatus && <StatusBadge status={ticketStatus} />}
-          <span style={{
+          <TruncatedText text={memo.title} style={{
             fontSize: 12, fontWeight: 600, color: memo.isDone ? "#B0A9A4" : "#1A1714",
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
             textDecoration: memo.isDone ? "line-through" : "none",
             flex: 1, minWidth: 0,
-          }}>{memo.title}</span>
+          }} />
         </div>
         {memo.content && (
           <p style={{
@@ -600,9 +600,8 @@ function MemoDetailModal({
             {meta.label}
           </span>
           {ticketStatus && <StatusBadge status={ticketStatus} />}
-          <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-            {memo.ticketWbs ? `[${memo.ticketWbs}] ` : ""}{memo.title}
-          </span>
+          <TruncatedText text={`${memo.ticketWbs ? `[${memo.ticketWbs}] ` : ""}${memo.title}`}
+            style={{ flex: 1, fontSize: 12, fontWeight: 700, color: "#1A1714" }} />
           {/* 完了チェック */}
           <button
             onClick={() => onToggleDone(memo)}
@@ -955,10 +954,7 @@ function MentionTextarea({
                   background: "#DBEAFE", fontSize: 10, fontWeight: 700,
                   color: "#2563EB", flexShrink: 0, whiteSpace: "nowrap",
                 }}>#{t.wbs}</span>
-                <span style={{
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  flex: 1, color: "#6B6458", fontSize: 11,
-                }}>{t.title}</span>
+                <TruncatedText text={t.title} style={{ flex: 1, color: "#6B6458", fontSize: 11 }} />
               </button>
             ))
           )}

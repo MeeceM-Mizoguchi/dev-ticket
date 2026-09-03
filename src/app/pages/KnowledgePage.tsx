@@ -29,6 +29,7 @@ import type {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { FolderNameDialog } from "@/app/components/knowledge/FolderNameDialog";
 import { WikiImportDialog } from "@/app/components/knowledge/WikiImportDialog";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
@@ -909,9 +910,8 @@ export function KnowledgePage() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <FileText style={{ width: 11, height: 11, color: isOpen ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
-            <span style={{ fontSize: 12, fontWeight: isOpen ? 700 : 500, color: isOpen ? "#047857" : "#3A342E", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {doc.title}
-            </span>
+            <TruncatedText text={doc.title}
+              style={{ fontSize: 12, fontWeight: isOpen ? 700 : 500, color: isOpen ? "#047857" : "#3A342E" }} />
           </div>
           <div style={{ fontSize: 10, color: "#B0A9A4", marginLeft: 16 }}>
             {formatSize(doc.byteSize)}{doc.indexedAt ? "" : " · 索引なし"}
@@ -1108,7 +1108,7 @@ export function KnowledgePage() {
                           {collapsed
                             ? <Folder style={{ width: 12, height: 12, color: "#D97706", flexShrink: 0 }} />
                             : <FolderOpen style={{ width: 12, height: 12, color: "#D97706", flexShrink: 0 }} />}
-                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                          <TruncatedText text={f.name} style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }} />
                           <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0 }}>{fdocs.length}</span>
                         </button>
                         {canManage && (
@@ -1182,9 +1182,8 @@ export function KnowledgePage() {
 
         {/* ── ② 目次 ── */}
         <nav style={{ width: 264, flexShrink: 0, background: "#fff", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          <div style={{ padding: "11px 12px", borderBottom: "1px solid rgba(26,23,20,0.06)", fontSize: 12.5, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {openDoc ? openDoc.title : "目次"}
-          </div>
+          <TruncatedText as="div" text={openDoc ? openDoc.title : "目次"}
+            style={{ padding: "11px 12px", borderBottom: "1px solid rgba(26,23,20,0.06)", fontSize: 12.5, fontWeight: 700, color: "#1A1714" }} />
           <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
             {loading ? null : !openDoc ? (
               <div style={{ fontSize: 12, color: "#A09790", padding: 14, lineHeight: 1.8 }}>
@@ -1313,9 +1312,8 @@ export function KnowledgePage() {
                     onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(26,23,20,0.08)"; }}
                   >
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                      <div style={{ fontSize: 11, color: "#059669", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-                        {hit.title}{hit.headingPath ? ` › ${hit.headingPath}` : ""}
-                      </div>
+                      <TruncatedText as="div" text={`${hit.title}${hit.headingPath ? ` › ${hit.headingPath}` : ""}`}
+                        style={{ fontSize: 11, color: "#059669", fontWeight: 700, flex: 1, minWidth: 0 }} />
                       <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0 }}>
                         {resultTab === "semantic"
                           ? `関連度 ${Math.round(hit.vecScore * 100)}`

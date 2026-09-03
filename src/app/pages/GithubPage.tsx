@@ -13,6 +13,7 @@ import { mapProject } from "@/app/lib/mappers";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { PageLoader } from "@/app/components/shared/PageLoader";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { PullRequestList, Empty } from "@/app/components/github/PullRequestList";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
@@ -818,9 +819,9 @@ function CommitList({ commits }: { commits: GithubCommit[] }) {
       {commits.map((c, i) => (
         <div key={c.sha} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderBottom: i < commits.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <a href={c.url} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", textDecoration: "none", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-              {c.message}
+            <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ display: "block", minWidth: 0, textDecoration: "none" }}>
+              <TruncatedText text={c.message}
+                style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#1A1714" }} />
             </a>
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 2 }}>
               {c.authorLogin ?? c.authorName} ・ {relativeTime(c.date)}
@@ -849,7 +850,8 @@ function BranchList({ branches, ticketByBranch }: {
         return (
           <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderBottom: i < branches.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", fontFamily: "var(--font-mono)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{b.name}</span>
+              <TruncatedText text={b.name}
+                style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", fontFamily: "var(--font-mono)", display: "block" }} />
               {linked && (
                 <p style={{ fontSize: 11, color: "#0284C7", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
                   {linked.ticketWbs ?? "チケット"}{linked.ticketTitle ? ` ${linked.ticketTitle}` : ""}
