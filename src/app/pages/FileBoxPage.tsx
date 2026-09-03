@@ -21,6 +21,7 @@ import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { DialogShell } from "@/app/components/shared/DialogShell";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
@@ -609,12 +610,13 @@ export function FileBoxPage() {
                       <Folder style={{ width: 15, height: 15, color: "#D97706" }} />
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <TruncatedText as="p" text={f.fileName}
+                        style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1A1714" }}>
                         {f.fileName}
                         {isFolderHover && (
                           <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#D97706" }}>ここへ追加・移動</span>
                         )}
-                      </p>
+                      </TruncatedText>
                       <p style={{ margin: "2px 0 0", fontSize: 11, color: "#A09790" }}>
                         フォルダ · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
                       </p>
@@ -653,12 +655,13 @@ export function FileBoxPage() {
                     <Icon style={{ width: 14, height: 14, color: KIND_COLOR[kind] }} />
                   </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <TruncatedText as="p" text={f.fileName}
+                      style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#1A1714" }}>
                       {f.fileName}
                       {f.version > 1 && (
                         <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#EEF2FF", color: "#4F46E5" }}>v{f.version}</span>
                       )}
-                    </p>
+                    </TruncatedText>
                     <p style={{ margin: "2px 0 0", fontSize: 11, color: "#A09790" }}>
                       {formatFileSize(f.fileSize)} · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
                     </p>

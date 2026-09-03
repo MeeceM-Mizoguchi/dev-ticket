@@ -1,5 +1,6 @@
 import { X, Plus } from "lucide-react";
 import { useTabs, MAX_TABS } from "@/app/contexts/TabContext";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 
 // Mac/iPad 版のアプリ内タブバー。ブラウザのタブを模した見た目。
 export function TabBar() {
@@ -62,19 +63,15 @@ export function TabBar() {
               if (!active) (e.currentTarget as HTMLElement).style.background = "transparent";
             }}
           >
-            <span
+            <TruncatedText
+              text={t.title}
               style={{
                 flex: 1,
                 fontSize: 12.5,
                 fontWeight: active ? 700 : 500,
                 color: active ? "#1A1714" : "#6B6458",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
               }}
-            >
-              {t.title}
-            </span>
+            />
             {canClose && (
               <button
                 onClick={(e) => {

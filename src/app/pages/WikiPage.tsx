@@ -26,6 +26,7 @@ function titleToPathSegment(title: string): string {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
@@ -279,14 +280,14 @@ function TreeItem({
                 }}
               />
             ) : (
-              <span style={{
-                flex: 1, minWidth: 0, fontSize: 12,
-                fontWeight: isSelected ? 700 : 500,
-                color: isSelected ? "#059669" : "#1A1714",
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              }}>
-                {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
-              </span>
+              <TruncatedText
+                text={node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
+                style={{
+                  flex: 1, minWidth: 0, fontSize: 12,
+                  fontWeight: isSelected ? 700 : 500,
+                  color: isSelected ? "#059669" : "#1A1714",
+                }}
+              />
             )}
 
             {!isEditing && (
@@ -914,7 +915,8 @@ export function WikiPage() {
                         onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                         <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 1 }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{page.title || "無題のページ"}</div>
+                          <TruncatedText as="div" text={page.title || "無題のページ"}
+                            style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
                           {parent && <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>{parent.title || "無題のフォルダ"}</div>}
                         </div>
                       </div>

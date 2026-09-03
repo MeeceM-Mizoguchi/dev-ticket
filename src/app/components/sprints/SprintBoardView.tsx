@@ -7,6 +7,7 @@ import { TICKET_STATUSES, formatDate, truncateName } from "@/app/lib/helpers";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
 
 // ステータスごとの進捗率（progress）を定義
@@ -137,7 +138,9 @@ function TicketCard({ ticket, sprintId, onSelect, parentTicket, highlighted, can
             {ticket.wbs}
           </div>
         )}
-        <p style={{ fontSize: 11, fontWeight: 600, color: "#1A1714", marginBottom: 6, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }}>{ticket.title}</p>
+        {/* 2行で切っているので、それより長いものはマウスオーバーで全文を出す */}
+        <TruncatedText as="p" text={ticket.title}
+          style={{ fontSize: 11, fontWeight: 600, color: "#1A1714", marginBottom: 6, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, whiteSpace: "normal" }} />
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <Avatar name={ticket.assignee} size="xs" />
