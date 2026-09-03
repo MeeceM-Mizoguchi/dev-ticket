@@ -123,6 +123,22 @@ export function TaskWorkspace({
 
   useEffect(() => { localStorage.setItem(viewStorageKey(scopeKey), view); }, [view, scopeKey]);
 
+  /**
+   * BRU14-013 リストの列見出しと追加行は、この固定ブロックのすぐ下に続けて固定する。
+   * そのために固定ブロックの高さを実測して TaskListView へ渡す
+   * （タブの有無・フィルタの折り返し・見出しの文字数で高さが変わるので決め打ちにしない）。
+   */
+  const [stickyEl, setStickyEl] = useState<HTMLDivElement | null>(null);
+  const [stickyHeight, setStickyHeight] = useState(0);
+  useEffect(() => {
+    if (!stickyEl) return;
+    const measure = () => setStickyHeight(stickyEl.getBoundingClientRect().height);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(stickyEl);
+    return () => ro.disconnect();
+  }, [stickyEl]);
+
   // ── 読み込み ────────────────────────────────────────────────
   // spinner=false は「画面を差し替えずに裏で引き直す」経路（更新失敗時のやり直しなど）。
   // BUG-02/03 のとおり、一度出したコンテンツをスピナーで隠さないためにこの区別が要る。
@@ -533,7 +549,7 @@ export function TaskWorkspace({
           margin の -4px は外側の padding を打ち消して背景を左右いっぱいに敷くため。
           上の余白は margin ではなく padding（stickyPadTop）で持つ。margin にすると
           その分だけスクロールできる余白が上に残り、少し動いてから吸着してしまう。 */}
-      <div style={{
+      <div ref={setStickyEl} style={{
         position: "sticky", top: stickyTop, zIndex: 100,
         background: "#F5F6F8",
         margin: "0 -4px", padding: `${stickyPadTop}px 4px 14px`,
@@ -682,6 +698,7 @@ export function TaskWorkspace({
       )}
       {view === "list" ? (
         <TaskListView tasks={visible} allTasks={tasks} showProject={!isProjectScope}
+          stickyTop={stickyTop + stickyHeight}
           canEdit={canEdit} canDelete={canDelete}
           canShare={canShare} shareCountOf={shareCountOf} highlightId={highlightId}
           projects={projects} members={members} categoryOptions={categoryOptions}
