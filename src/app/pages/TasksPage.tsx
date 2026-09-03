@@ -17,13 +17,16 @@ export function TasksPage() {
     setSearchParams(searchParams, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  // 上の余白は TaskWorkspace の固定ブロックへ預ける（stickyPadTop）。
+  // ここに padding-top を残すと、その分だけ上部が動いてから固定される。
   return (
-    <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
+    <div style={{ padding: "0 24px", minWidth: 900 }}>
       <TaskWorkspace
         scopeKey="all"
         title="タスク"
         initialTaskId={initialTaskId}
         onConsumeInitialTask={consume}
+        stickyPadTop={24}
       />
     </div>
   );

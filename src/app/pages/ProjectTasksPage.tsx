@@ -25,6 +25,19 @@ export function ProjectTasksPage() {
   // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
   const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
 
+  // タスクの見出し〜フィルタもこの下に固定する（TaskWorkspace の stickyTop）。
+  // 決め打ちにせず実測するのは、サブナビのタブがプラン・権限で増減するため。
+  const [subNavEl, setSubNavEl] = useState<HTMLDivElement | null>(null);
+  const [subNavHeight, setSubNavHeight] = useState(0);
+  useEffect(() => {
+    if (!subNavEl) return;
+    const measure = () => setSubNavHeight(subNavEl.getBoundingClientRect().height);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(subNavEl);
+    return () => ro.disconnect();
+  }, [subNavEl]);
+
   // サブナビに出す他ページの権限（タスク自体はPJメンバーなら誰でも使える）
   const [wikiPerm, setWikiPerm] = useState<AccessLevel>("edit");
   const [backlogPerm, setBacklogPerm] = useState<AccessLevel>("edit");
@@ -77,7 +90,8 @@ export function ProjectTasksPage() {
       {/* 🌟 プロジェクト内タブを画面上部に固定（スプリント管理と同じ扱い）。
           タスクが増えると下スクロールでタブが見切れ、他画面へ移動できなくなっていた。
           margin の -24px は外側の padding を打ち消すため（背景を左右いっぱいに敷く） */}
-      <div style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 16px" }}>
+      <div ref={setSubNavEl}
+        style={{ position: "sticky", top: 0, zIndex: 200, background: "#F5F6F8", margin: "-24px -24px 0", padding: "24px 24px 16px" }}>
         <ProjectSubNav
           projectSlug={projectSlug ?? project.slug} active="tasks" marginBottom={0}
           wikiPerm={wikiPerm} backlogPerm={backlogPerm}
@@ -90,6 +104,7 @@ export function ProjectTasksPage() {
         projectSlug={project.slug}
         title="タスク"
         subtitle={`${project.name} · チケットとは別に管理する軽いタスク`}
+        stickyTop={subNavHeight}
       />
     </div>
   );
