@@ -133,6 +133,8 @@ export function SprintPage() {
   const [showSprintOrder, setShowSprintOrder] = useState(false);
   // 保存済みの表示順（sprints.id の配列）。個人設定 > 全体設定 の優先度で解決済みのもの
   const [sprintOrder, setSprintOrder] = useState<string[]>([]);
+  // 並び順の保存中フラグ。連打で「消す→書く」が交錯しないようにする
+  const savingOrderRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
   const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
@@ -336,15 +338,23 @@ export function SprintPage() {
   const orderedSprints = useMemo(() => applySprintOrder(sprints, sprintOrder), [sprints, sprintOrder]);
 
   const handleSaveSprintOrder = async (sprintIds: string[], scope: SprintOrderScope) => {
+    // await を挟むので二重実行よけは ref で行う（BUG-05）。
+    // 「全員に適用」は消してから書き直す手順なので、2本走ると並び順が消えかねない。
+    if (savingOrderRef.current) return;
+    savingOrderRef.current = true;
     try {
       if (projectId) await saveSprintOrder(projectId, userId, sprintIds, scope, userName);
       setSprintOrder(sprintIds);
       setShowSprintOrder(false);
-      // 保存後はデータを取り直して、新しい並び順の状態で画面を作り直す
+      // 保存後はデータを取り直して、新しい並び順の状態で画面を作り直す。
+      // 実際にDBへ入った並び順で描き直すので、保存できていなければここで元に戻る
+      // （保存できたように見えたまま、自分の画面だけ新しい並び、を防ぐ）。
       await refreshSprints();
       toast(scope === "all" ? "並び順をプロジェクトの全員に適用しました" : "並び順を保存しました（自分の画面のみ）");
     } catch {
       toast("並び順の保存に失敗しました", "error");
+    } finally {
+      savingOrderRef.current = false;
     }
   };
 
