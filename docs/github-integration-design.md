@@ -103,7 +103,8 @@ Webhook によるリアルタイム同期（→ 13章）。
  /api/github/[resource]                        ← Vercel serverless
    │  ① Supabase JWT を検証 → userId
    │  ② projects → organization_id / github_repo_full_name
-   │  ③ github_installations（組織単位）→ installation_id
+   │  ③ github_installations（組織×GitHubアカウント）
+   │      → リポジトリの owner と一致するアカウントの installation_id
    │  ④ そのユーザーが当該プロジェクトのメンバーか確認
    │  ⑤ githubPermission を解決（個別 → グループ → ロール既定）
    │      read 系  … "view" 以上を要求
@@ -130,6 +131,43 @@ Webhook によるリアルタイム同期（→ 13章）。
    ▼
  /admin-settings?tab=github&github=success
 ```
+
+### 4-1. 接続するGitHubアカウントは複数持てる（BRU14-014）
+
+当初は `github_installations` の主キーが `organization_id` で、1組織につき
+GitHubアカウントを**1つ**しか接続できなかった。これが2つの問題を生んでいた。
+
+1. **他のメンバーが「リポジトリを追加・変更」を押すと GitHub が 404 を返す。**
+   リンク先の `https://github.com/settings/installations/<id>` は、そのインストールを
+   持っている**本人の**設定画面（Organization なら `.../organizations/<login>/settings/...`
+   でそのオーナーだけ）で、他のユーザーが開けば当然 404 になる。
+2. 別のアカウントや別の Organization にあるリポジトリを紐付ける手段が無かった。
+
+そこで主キーを `(organization_id, installation_id)` に広げ、1組織に
+複数のアカウントを接続できるようにした（`supabase/add_github_multi_accounts_BRU14-014.sql`）。
+
+**どのインストールを使うかは、リポジトリの owner で決まる。**
+GitHub App のインストールはアカウント単位で、アクセスできるのはそのアカウントが
+所有するリポジトリだけなので、`owner/name` の owner と `account_login` を突き合わせれば
+一意に決まる（`getInstallationId(sb, orgId, repo)`）。プロジェクト側に
+インストールIDを持たせる必要はない。
+
+画面側の導線も変えている。
+
+| 操作 | 遷移先 | 誰が開けるか |
+|---|---|---|
+| GitHubアカウントを追加 / リポジトリを追加・変更 | `/apps/{slug}/installations/new`（`install-start` 経由） | **誰でも**。その人が管理できるアカウントだけが並ぶ |
+| GitHub の設定画面を直接ひらく（副次リンク） | `/settings/installations/<id>` | そのアカウントを管理できる人だけ |
+
+前者を既定の導線にしたことで 404 が起きなくなり、同時に
+「自分のアカウントを新しく足す」も同じボタンから行えるようになっている。
+後者は残しているが、**開ける人を明記した注意書きを必ず添える**こと。
+
+切断（`/api/github/disconnect`）はアカウント単位で行う。解除したアカウントの
+リポジトリを見ていたプロジェクトだけ `github_enabled` を落とし、他のアカウントの
+プロジェクトはそのまま使える状態を保つ。
+なお `github_installations` には service_role 以外の書き込みポリシーが無いため、
+**ブラウザから直接 delete しても1行も消えない**（必ずAPI経由で行うこと）。
 
 ## 5. 権限設計
 
@@ -269,10 +307,11 @@ SQL未適用の環境から読んでも結論が変わらないようにする�
 `supabase/add_github_integration.sql`（新規）
 
 ```sql
--- Ⅱ. インストール（GitHub組織ごとに1つ）
+-- Ⅱ. インストール（GitHubアカウントごとに1行。1組織が複数持てる → 4-1）
 create table if not exists github_installations (
-  organization_id   text primary key,              -- Dev Ticket の組織
+  organization_id   text not null,                 -- Dev Ticket の組織
   installation_id   text not null,
+  primary key (organization_id, installation_id),  -- BRU14-014 で organization_id 単独から拡張
   account_login     text not null,                 -- 接続先の GitHub 組織名（表示用）
   account_type      text,                          -- Organization / User
   repo_selection    text,                          -- all / selected

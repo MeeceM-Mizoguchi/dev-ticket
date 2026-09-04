@@ -673,6 +673,28 @@ export interface GithubUnclaimedInstallation {
   repoSelection: string;
 }
 
+/**
+ * 組織に接続されている GitHub アカウント1件（BRU14-014）。
+ * 1つの組織に複数のアカウント（個人・Organization）を接続できる。
+ */
+export interface GithubInstallation {
+  installationId: string;
+  accountLogin: string;
+  accountType: string | null;
+  repoSelection: string | null;
+  connectedAt: string | null;
+  connectedByName: string | null;
+  repoCount: number | null;
+  /** GitHub 側でアンインストールされている等、このアカウントだけ使えない状態 */
+  revoked: boolean;
+  /**
+   * GitHub のインストール設定画面。
+   * **そのアカウントを管理できる人しか開けない**（他の人が開くと GitHub が404を返す）ので、
+   * 既定の導線にはせず、注意書きを添えた副次リンクとして出すこと。
+   */
+  manageUrl: string | null;
+}
+
 /** インストールに足りていない GitHub App の権限（1件） */
 export interface GithubMissingPermission {
   /** GitHub API 上のキー（contents / pull_requests など） */
@@ -737,17 +759,22 @@ export interface GithubStatus {
   optionalMissingPermissions?: GithubMissingPermission[];
   /** App の権限設定ページ（App の所有者だけが開ける） */
   appPermissionsUrl: string | null;
-  /** 組織にインストール済みか */
+  /** 組織にインストール済みか（1つでも接続があれば true） */
   installed: boolean;
-  /** GitHub側でアンインストールされている等、トークンが使えない状態 */
+  /** 接続しているアカウントが全部使えない状態か */
   revoked: boolean;
+  /** 接続しているGitHubアカウントの一覧。接続が無ければ空 */
+  installations?: GithubInstallation[];
+  // ── ここから下は複数アカウント対応より前からの互換用。
+  //    代表として「最初に接続した生きているアカウント」の値が入る。
   accountLogin: string | null;
   accountType: string | null;
   repoSelection: string | null;
   connectedAt: string | null;
   connectedByName: string | null;
+  /** 全アカウントの合計 */
   repoCount: number | null;
-  /** GitHub の設定画面（リポジトリの追加・変更用） */
+  /** GitHub の設定画面（代表アカウントのもの。管理できる人しか開けない） */
   manageUrl: string | null;
 }
 
@@ -755,6 +782,8 @@ export interface GithubRepo {
   fullName: string;
   defaultBranch: string;
   private: boolean;
+  /** このリポジトリを見せている接続アカウント（複数アカウント接続時の出し分け用） */
+  accountLogin?: string;
 }
 
 export interface GithubUserRef {
