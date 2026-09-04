@@ -4,22 +4,23 @@
 // 離れる前に「何が起きるか」を必ず出す。そして今どこまで終わっているかを常に見せる。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { AlertTriangle, ExternalLink, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, ExternalLink, Plus, RefreshCw, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/app/contexts/ToastContext";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import {
-  fetchGithubStatus, fetchGithubRepos, startGithubInstall, adoptGithubInstallation, syncReleasedTickets,
-  backfillGithubLinks, fetchDeployOverview, runDeployCheck, elapsedSince, relativeTime, GithubApiError,
+  fetchGithubStatus, fetchGithubReposDetail, startGithubInstall, adoptGithubInstallation, syncReleasedTickets,
+  disconnectGithubInstallation, backfillGithubLinks, fetchDeployOverview, runDeployCheck, elapsedSince,
+  relativeTime, GithubApiError,
 } from "@/app/lib/github";
 import { GithubSetupSteps, GithubSetupDone, type SetupStepState } from "@/app/components/github/GithubSetupSteps";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 import { githubPermsFrom, toLegacyGithubLevel } from "@/app/lib/githubPerms";
 import type {
   GithubStatus, GithubRepo, GithubAccessLevel, GithubReleaseSyncResult, GithubDeployOverview,
-  GithubDeployOverviewRow,
+  GithubDeployOverviewRow, GithubInstallation,
 } from "@/app/types";
 
 const GITHUB_BLACK = "#1F2328";
@@ -56,11 +57,14 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [repos, setRepos] = useState<GithubRepo[]>([]);
+  /** リポジトリ一覧を取れなかった接続アカウント（他のアカウントの一覧は出している） */
+  const [unavailableAccounts, setUnavailableAccounts] = useState<string[]>([]);
   const [rows, setRows] = useState<ProjectRow[]>([]);
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
+  /** 解除中のインストールID（""=全部）。null なら解除していない */
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
   const [adopting, setAdopting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<GithubReleaseSyncResult | null>(null);
@@ -95,9 +99,12 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
 
   const loadRepos = useCallback(async () => {
     try {
-      setRepos(await fetchGithubRepos(orgId));
+      const r = await fetchGithubReposDetail(orgId);
+      setRepos(r.repos);
+      setUnavailableAccounts(r.unavailableAccounts ?? []);
     } catch {
       setRepos([]);
+      setUnavailableAccounts([]);
     }
   }, [orgId]);
 
@@ -235,6 +242,27 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
   }, [justConnected, loading, status?.installed]);
 
   // ── 派生 ──────────────────────────────────────────────────
+  /**
+   * 接続しているGitHubアカウント。
+   * サーバーが installations を返さない場合（デプロイの入れ替わり中）は、
+   * 従来の単数フィールドから1件だけ組み立てて同じ形で扱う。
+   */
+  const installations: GithubInstallation[] = useMemo(() => {
+    if (status?.installations) return status.installations;
+    if (!status?.installed) return [];
+    return [{
+      installationId: "",
+      accountLogin: status.accountLogin ?? "",
+      accountType: status.accountType,
+      repoSelection: status.repoSelection,
+      connectedAt: status.connectedAt,
+      connectedByName: status.connectedByName,
+      repoCount: status.repoCount,
+      revoked: status.revoked,
+      manageUrl: status.manageUrl,
+    }];
+  }, [status]);
+
   const linkedCount = rows.filter(r => r.savedRepo).length;
   const grantedCount = (grantCounts?.merge ?? 0) + (grantCounts?.view ?? 0);
   const steps: SetupStepState = {
@@ -342,17 +370,38 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
     }
   };
 
-  const handleDisconnect = async () => {
-    if (!isSupabaseEnabled || !orgId) return;
-    setDisconnecting(true);
-    // Dev Ticket 側の接続情報だけを消す。GitHub 上の App インストールは残る
-    await supabase!.from("github_installations").delete().eq("organization_id", orgId);
-    await supabase!.from("projects").update({ github_enabled: false }).eq("organization_id", orgId);
-    setDisconnecting(false);
-    setRows(prev => prev.map(r => ({ ...r, enabled: false })));
-    invalidateGithubAccessCache();
-    await loadStatus();
-    toast("GitHubとの接続を解除しました", "success");
+  /**
+   * 接続を1つだけ解除する。
+   *
+   * このテーブルはサーバー(service_role)しか書けないので、必ずAPI経由で行う
+   * （ブラウザから直接 delete しても RLS で1行も消えない）。
+   * 残ったアカウントで扱えるプロジェクトは、そのまま使える状態を保つ。
+   */
+  const handleDisconnect = async (inst: GithubInstallation) => {
+    if (disconnectingId !== null) return;
+    setDisconnectingId(inst.installationId);
+    try {
+      const r = await disconnectGithubInstallation(inst.installationId, orgId);
+      invalidateGithubAccessCache();
+      const s = await loadStatus();
+      await loadProjects();
+      if (s?.installed && !s.revoked) {
+        await loadRepos();
+      } else {
+        setRepos([]);
+        setUnavailableAccounts([]);
+      }
+      toast(
+        r.disabledProjects > 0
+          ? `${inst.accountLogin} の接続を解除しました（${r.disabledProjects}件のプロジェクトのGitHubタブを閉じました）`
+          : `${inst.accountLogin} の接続を解除しました`,
+        "success",
+      );
+    } catch (e) {
+      toast(e instanceof GithubApiError ? e.message : "接続を解除できませんでした", "error");
+    } finally {
+      setDisconnectingId(null);
+    }
   };
 
   // 定期実行と同じ処理を、この組織だけを対象に手動で走らせる
@@ -526,6 +575,11 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
                     style={{ color: "#92400E", fontWeight: 700, textDecoration: "underline" }}>
                     インストール設定をひらく
                   </a>
+                  {/* このURLはインストールを持つ本人しか開けない。押して404になったときに
+                      「壊れている」と読まれないよう、開ける人を先に書いておく（BRU14-014） */}
+                  <span style={{ fontSize: 11 }}>
+                    （承認できるのは、そのアカウントを管理できる人だけです）
+                  </span>
                 </>
               )}
             </>
@@ -606,48 +660,72 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
       ) : (
         <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
 
-          {/* ① 接続状態 */}
+          {/* ① 接続状態（複数アカウントを接続できる。BRU14-014） */}
           <section ref={connectRef} style={cardStyle}>
-            <SectionTitle no="①" title="接続状態" />
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, padding: "11px 14px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#059669", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5"><polyline points="20 6 9 17 4 12" /></svg>
-                </div>
-                <div>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "#15803D" }}>接続済み</span>
-                  <span style={{ fontSize: 13, color: "#166534", marginLeft: 8, fontWeight: 700 }}>{status?.accountLogin}</span>
-                  <span style={{ fontSize: 11, color: "#166534", marginLeft: 6 }}>（{status?.accountType === "Organization" ? "Organization" : "アカウント"}）</span>
-                  <p style={{ fontSize: 11, color: "#166534", marginTop: 2 }}>
-                    許可リポジトリ {status?.repoCount ?? repos.length}件
-                    {status?.connectedAt && ` ・ ${new Date(status.connectedAt).toLocaleDateString("ja-JP")} に ${status.connectedByName ?? "―"} が接続`}
-                  </p>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {status?.manageUrl && (
-                  <a href={status.manageUrl} target="_blank" rel="noopener noreferrer"
-                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: GITHUB_BLACK, textDecoration: "none", whiteSpace: "nowrap" as const }}>
-                    リポジトリを追加・変更 <ExternalLink style={{ width: 11, height: 11 }} />
-                  </a>
-                )}
-                <button onClick={handleDisconnect} disabled={disconnecting}
-                  style={{ padding: "5px 12px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: disconnecting ? "default" : "pointer", opacity: disconnecting ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
-                  {disconnecting ? "解除中..." : "切断する"}
-                </button>
-              </div>
+            <SectionTitle no="①" title="接続しているGitHubアカウント" />
+
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              {installations.map(inst => (
+                <AccountCard
+                  key={inst.installationId || inst.accountLogin}
+                  inst={inst}
+                  fallbackRepoCount={installations.length === 1 ? repos.length : null}
+                  busy={disconnectingId === inst.installationId}
+                  disabled={disconnectingId !== null || connecting}
+                  onManage={handleConnect}
+                  onDisconnect={() => handleDisconnect(inst)}
+                />
+              ))}
             </div>
-            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7 }}>
-              「リポジトリを追加・変更」を押すと GitHub の設定画面に移動します。新しいリポジトリを Dev Ticket から見えるようにする場合はこちらです。
-              <br />
-              GitHub側で変更したあとは
-              <button onClick={() => { void loadRepos(); void loadStatus(); }}
-                style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: "0 4px", padding: "1px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#4B4540", cursor: "pointer" }}>
-                <RefreshCw style={{ width: 10, height: 10 }} />一覧を再取得
+
+            {/* GitHub側にはインストール済みなのに、こちらに記録が無いものを足す経路。
+                2つ目以降のアカウントでもコールバックが失敗し得るので、接続済みでも出す */}
+            {(status?.unclaimedInstallations?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 10, background: "#F0F9FF", border: "1px solid rgba(2,132,199,0.28)", borderRadius: 10, padding: "12px 14px" }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: "#075985", marginBottom: 8 }}>
+                  GitHub 側にインストール済みで、まだ取り込んでいないアカウントがあります
+                </p>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  {status!.unclaimedInstallations.map(u => (
+                    <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: "#FFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9, padding: "8px 12px" }}>
+                      <div>
+                        <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>{u.accountLogin}</p>
+                        <p style={{ fontSize: 11, color: "#A09790", marginTop: 1 }}>
+                          {u.accountType === "Organization" ? "Organization" : "アカウント"}
+                          {u.repoSelection === "all" ? " ・ 全リポジトリ" : " ・ 選択したリポジトリのみ"}
+                        </p>
+                      </div>
+                      <button onClick={() => handleAdopt(u.id)} disabled={adopting}
+                        style={{ padding: "6px 14px", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", background: adopting ? "#9CA3AF" : GITHUB_BLACK, color: "#FFF", cursor: adopting ? "default" : "pointer", whiteSpace: "nowrap" as const }}>
+                        {adopting ? "取り込み中..." : "この接続を取り込む"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" as const, marginTop: 12 }}>
+              <button onClick={handleConnect} disabled={connecting}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "8px 16px", fontSize: 12, fontWeight: 700, borderRadius: 9, border: "none", background: connecting ? "#9CA3AF" : GITHUB_BLACK, color: "#FFF", cursor: connecting ? "default" : "pointer", whiteSpace: "nowrap" as const }}>
+                <Plus style={{ width: 13, height: 13 }} />
+                {connecting ? "GitHubへ移動中..." : "GitHubアカウントを追加"}
               </button>
-              を押してください。
+              <button onClick={() => { void loadRepos(); void loadStatus(); }}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "8px 14px", fontSize: 12, fontWeight: 600, borderRadius: 9, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: "#4B4540", cursor: "pointer" }}>
+                <RefreshCw style={{ width: 11, height: 11 }} />一覧を再取得
+              </button>
+            </div>
+
+            <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7 }}>
+              個人アカウントと Organization を、いくつでも接続できます。
+              自分のアカウントのリポジトリを使いたい場合も、上の「GitHubアカウントを追加」から進めてください。
               <br />
-              切断しても GitHub 上の App インストールは残ります（Dev Ticket 側の接続情報だけを消します）。
+              各アカウントの「リポジトリを追加・変更」も同じ GitHub のインストール画面へ移動します。
+              GitHub 側で許可するリポジトリを選び直したあとは「一覧を再取得」を押してください。
+              <br />
+              「切断する」を押しても GitHub 上の App インストールは残ります（Dev Ticket 側の接続情報だけを消します）。
+              そのアカウントのリポジトリを見ていたプロジェクトだけ GitHub タブが閉じ、他のアカウントのプロジェクトはそのまま使えます。
             </p>
           </section>
 
@@ -656,7 +734,17 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
             <SectionTitle no="②" title="プロジェクトとリポジトリの紐付け" />
             <p style={{ fontSize: 12, color: "#6B6458", marginBottom: 12 }}>
               どのプロジェクトでどのリポジトリを表示するかを設定します。
+              {installations.length > 1 && "接続しているアカウントすべてのリポジトリが並びます。"}
             </p>
+
+            {/* 一部のアカウントだけ取れなかったことを黙って隠さない。
+                隠すと「そのリポジトリはもう無い」と読まれてしまう */}
+            {unavailableAccounts.length > 0 && (
+              <p style={{ fontSize: 11, color: "#B45309", marginBottom: 10, lineHeight: 1.7 }}>
+                {unavailableAccounts.join(" / ")} のリポジトリを取得できませんでした。
+                このアカウントのリポジトリは下のプルダウンに出ていません（①で接続し直してください）。
+              </p>
+            )}
 
             {rows.length > 6 && (
               <div style={{ position: "relative", marginBottom: 10 }}>
@@ -703,7 +791,9 @@ export function GithubIntegrationSetting({ isAdmin, orgId, justConnected }: Prop
 
             <p style={{ fontSize: 11, color: "#A09790", marginTop: 10, lineHeight: 1.7, borderTop: "1px solid rgba(26,23,20,0.06)", paddingTop: 10 }}>
               プルダウンには、GitHub で許可したリポジトリだけが表示されます。
-              目的のリポジトリが無い場合は、上の「リポジトリを追加・変更」から GitHub 側で許可を追加してください。
+              目的のリポジトリが無い場合は、①の「リポジトリを追加・変更」から GitHub 側で許可を追加してください。
+              そのリポジトリが別のGitHubアカウント（自分のアカウントや他の Organization）にある場合は、
+              ①の「GitHubアカウントを追加」でそのアカウントを接続してください。
               <br />
               紐付けを「未設定」に戻すと GitHub タブは消えますが、チケットとPRの紐付けデータは保持されます。
             </p>
@@ -950,6 +1040,77 @@ function DeployOverviewRow({ row, last, rechecking, onRecheck }: {
       ) : (
         <span style={{ fontSize: 10, color: "#B0A9A4", lineHeight: 1.4 }}>プロジェクト設定で指定</span>
       )}
+    </div>
+  );
+}
+
+/**
+ * 接続しているGitHubアカウント1件（BRU14-014）。
+ *
+ * 「リポジトリを追加・変更」は、GitHub App のインストール画面
+ * （/apps/&lt;app&gt;/installations/new）へ送る。
+ * 以前はアカウント個別の設定画面（/settings/installations/&lt;id&gt;）へ直接リンクしていたが、
+ * そのURLはインストールを持つ本人（Organization ならそのオーナー）しか開けず、
+ * 他のメンバーが押すと GitHub が 404 を返していた。
+ * App のインストール画面なら誰が開いても 404 にならず、その人が管理できるアカウントが並ぶ
+ * ＝ 自分のアカウントを新しく足すこともできる。
+ * 直リンクは「そのアカウントを管理できる人だけ」と断ったうえで、下に小さく置く。
+ */
+function AccountCard({ inst, fallbackRepoCount, busy, disabled, onManage, onDisconnect }: {
+  inst: GithubInstallation;
+  /** サーバーが件数を返せなかったときの代わり（接続が1つのときだけ意味がある） */
+  fallbackRepoCount: number | null;
+  busy: boolean;
+  disabled: boolean;
+  onManage: () => void;
+  onDisconnect: () => void;
+}) {
+  const ok = !inst.revoked;
+  const count = inst.repoCount ?? fallbackRepoCount;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, padding: "11px 14px", background: ok ? "#F0FDF4" : "#FFFBEB", border: `1px solid ${ok ? "#BBF7D0" : "rgba(217,119,6,0.28)"}`, borderRadius: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
+        <div style={{ width: 22, height: 22, borderRadius: "50%", background: ok ? "#059669" : "#D97706", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+          {ok
+            ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5"><polyline points="20 6 9 17 4 12" /></svg>
+            : <AlertTriangle style={{ width: 12, height: 12, color: "#FFF" }} />}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: ok ? "#15803D" : "#92400E" }}>
+            {ok ? "接続済み" : "接続が切れています"}
+          </span>
+          <span style={{ fontSize: 13, color: ok ? "#166534" : "#92400E", marginLeft: 8, fontWeight: 700 }}>{inst.accountLogin}</span>
+          <span style={{ fontSize: 11, color: ok ? "#166534" : "#92400E", marginLeft: 6 }}>
+            （{inst.accountType === "Organization" ? "Organization" : "アカウント"}）
+          </span>
+          <p style={{ fontSize: 11, color: ok ? "#166534" : "#92400E", marginTop: 2, lineHeight: 1.6 }}>
+            {ok
+              ? <>許可リポジトリ {count ?? "―"}件</>
+              : <>GitHub 側でアンインストールされたか、権限が失効しています。</>}
+            {inst.connectedAt && ` ・ ${new Date(inst.connectedAt).toLocaleDateString("ja-JP")} に ${inst.connectedByName ?? "―"} が接続`}
+          </p>
+          {inst.manageUrl && (
+            <p style={{ fontSize: 10, color: "#A09790", marginTop: 3, lineHeight: 1.6 }}>
+              <a href={inst.manageUrl} target="_blank" rel="noopener noreferrer"
+                style={{ color: "#4B4540", textDecoration: "underline" }}>
+                GitHub の設定画面を直接ひらく
+              </a>
+              {" "}（{inst.accountLogin} を管理できる人のみ。他の人が開くと GitHub が404を返します）
+            </p>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onManage} disabled={disabled}
+          style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 7, border: "1px solid rgba(26,23,20,0.15)", background: "#FFF", color: GITHUB_BLACK, cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
+          {ok ? "リポジトリを追加・変更" : "接続し直す"} <ExternalLink style={{ width: 11, height: 11 }} />
+        </button>
+        <button onClick={onDisconnect} disabled={disabled}
+          style={{ padding: "5px 12px", fontSize: 12, fontWeight: 500, borderRadius: 7, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", color: "#DC2626", cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1, whiteSpace: "nowrap" as const }}>
+          {busy ? "解除中..." : "切断する"}
+        </button>
+      </div>
     </div>
   );
 }

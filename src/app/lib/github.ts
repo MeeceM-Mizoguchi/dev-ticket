@@ -55,14 +55,41 @@ export function fetchGithubStatus(orgId?: string | null) {
   return call<GithubStatus>("status", { query: { orgId: orgId ?? undefined } });
 }
 
-/** インストール画面のURLを受け取って遷移する（サーバーが署名付き state を組み立てる） */
+/**
+ * インストール画面のURLを受け取って遷移する（サーバーが署名付き state を組み立てる）。
+ *
+ * 新規接続にも、2つ目以降のアカウントの追加にも、既に接続済みのアカウントの
+ * 「リポジトリを追加・変更」にも、この1本を使う。GitHub の App インストール画面は
+ * 誰が開いても 404 にならず、その人が管理できるアカウントだけを出してくれるため
+ * （個別の /settings/installations/<id> は本人以外だと404になる。BRU14-014）。
+ */
 export async function startGithubInstall(orgId?: string | null): Promise<void> {
   const { url } = await call<{ url: string }>("install-start", { query: { orgId: orgId ?? undefined } });
   window.location.href = url;
 }
 
+/**
+ * 接続しているアカウント全部のリポジトリ。
+ * 一部のアカウントが切れていたら unavailableAccounts に入る（一覧は残りだけで返る）。
+ */
+export function fetchGithubReposDetail(orgId?: string | null) {
+  return call<{ repos: GithubRepo[]; unavailableAccounts?: string[] }>(
+    "repos", { query: { orgId: orgId ?? undefined } });
+}
+
 export function fetchGithubRepos(orgId?: string | null) {
-  return call<{ repos: GithubRepo[] }>("repos", { query: { orgId: orgId ?? undefined } }).then(r => r.repos);
+  return fetchGithubReposDetail(orgId).then(r => r.repos);
+}
+
+/**
+ * 接続を1つ解除する（installationId 省略で全部）。
+ * GitHub 上の App インストールは残り、Dev Ticket 側の記録だけが消える。
+ */
+export function disconnectGithubInstallation(installationId?: string, orgId?: string | null) {
+  return call<{ ok: true; removed: string[]; disabledProjects: number }>("disconnect", {
+    query: { orgId: orgId ?? undefined },
+    body: { installationId: installationId ?? "" },
+  });
 }
 
 /**
