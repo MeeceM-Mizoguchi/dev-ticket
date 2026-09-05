@@ -15,6 +15,14 @@ import WhiteboardFollow from './articles/20260713-whiteboard-follow';
 import WhiteboardTable from './articles/20260713-whiteboard-table';
 import AssigneeRecommend from './articles/20260718-assignee-recommend';
 import FileBox from './articles/20260722-file-box';
+import FileBoxEdit from './articles/20260726-file-box-edit';
+import KnowledgeNote from './articles/20260803-knowledge-note';
+import TaskManagement from './articles/20260809-task-management';
+import WhiteboardPrivate from './articles/20260809-whiteboard-private';
+import MdBulkCreate from './articles/20260811-md-bulk-create';
+import ApiIntegration from './articles/20260811-api-integration';
+import TicketSearch from './articles/20260829-ticket-search';
+import GithubIntegration from './articles/20260901-github-integration';
 
 /**
  * ============================================================
@@ -65,6 +73,70 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260901-github-integration',
+    date: '2026.09.01',
+    category: 'リリース',
+    title: 'GitHub連携を追加しました（ブランチ作成・PR作成・マージまで画面内で完結）',
+    excerpt: 'プルリクエストやIssueをDev Ticketの画面内で確認でき、チケットからブランチを切り、PRを作り、マージするまで完結。閲覧するメンバーにGitHubアカウントは不要で、「誰に何を許すか」はブランチ作成／PR作成／マージの3つに分けて設定できます。',
+    Component: GithubIntegration,
+  },
+  {
+    slug: '20260829-ticket-search',
+    date: '2026.08.29',
+    category: 'リリース',
+    title: 'スプリントをまたいでチケットを探せる「一覧検索」を追加しました',
+    excerpt: 'キーワード・期間・ステータス・担当者など7つの条件で、プロジェクト内のチケットを横断検索。結果は1つの表に並び、下へスクロールしても見出し行が画面上端で固定されるので、どの列かを見失いません。',
+    Component: TicketSearch,
+  },
+  {
+    slug: '20260811-api-integration',
+    date: '2026.08.11',
+    category: 'リリース',
+    title: 'AIや外部システムからチケットを登録できる「API連携」を追加しました',
+    excerpt: 'プロジェクト単位でAPIキーを発行し、外部のAIやCIから直接チケットを登録できるようになりました。親子1階層までまとめて登録でき、読めなかった値は空欄＋警告で返して登録自体は止めません。',
+    Component: ApiIntegration,
+  },
+  {
+    slug: '20260811-md-bulk-create',
+    date: '2026.08.11',
+    category: 'リリース',
+    title: 'MDファイルからチケット・タスクを一括作成できるようになりました',
+    excerpt: 'AIに書かせたMarkdownを取り込むだけで、タイトル・ステータス・優先度・分類・担当者・日程まで入った状態でまとめて起票。メンバー名と分類名を埋め込んだAI用プロンプトもワンクリックでコピーできます。',
+    Component: MdBulkCreate,
+  },
+  {
+    slug: '20260809-whiteboard-private',
+    date: '2026.08.09',
+    category: 'リリース',
+    title: 'ホワイトボードにボード単位のプライベートモードを追加しました',
+    excerpt: '「作成者だけが見られるボード」を3点リーダーから切り替え。まとまる前の下書きや自分用のメモを置けます。遮断はデータベース側の権限で行っており、管理者であっても中身は見られません。',
+    Component: WhiteboardPrivate,
+  },
+  {
+    slug: '20260809-task-management',
+    date: '2026.08.09',
+    category: 'リリース',
+    title: '未着手・進行中・完了だけを扱う軽量な「タスク」機能を追加しました',
+    excerpt: 'モーダルは出さず、表の最終行に打って Enter するだけで登録。完了しても一覧から消えずグレーアウトして残ります。リスト／かんばん／ガントで見方を切り替えられ、個人・指名共有・プロジェクトの3つの公開範囲を選べます。',
+    Component: TaskManagement,
+  },
+  {
+    slug: '20260803-knowledge-note',
+    date: '2026.08.03',
+    category: 'リリース',
+    title: '資料を目次で辿り、意味で探せる「ナレッジノート」を追加しました',
+    excerpt: '設計書や調査資料をプロジェクトごとに保管。目次から該当の節へまっすぐ飛べるうえ、入力した語が本文に出てこなくても内容が近い箇所を見つけられます。解析はブラウザ内で完結し、外部のAIサービスへは送信しません。',
+    Component: KnowledgeNote,
+  },
+  {
+    slug: '20260726-file-box-edit',
+    date: '2026.07.26',
+    category: 'リリース',
+    title: 'ファイルボックスの Excel・Word をブラウザ上でそのまま編集できるようになりました',
+    excerpt: 'ダウンロードせず、開いている画面からそのまま修正。行や列の操作、セルの結合、書式の指定にも対応し、保存すると新しいバージョンとしてチームに共有されます。編集も外部サービスを経由しません。',
+    Component: FileBoxEdit,
+  },
   {
     slug: '20260722-file-box',
     date: '2026.07.22',
