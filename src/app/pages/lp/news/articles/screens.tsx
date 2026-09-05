@@ -26,6 +26,13 @@ import {
   Eye, Table as TableIcon, Sparkles, UserRound, RotateCcw,
   FolderOpen, FileSpreadsheet, FileImage, Upload, Link2, MonitorCog, Save, ShieldCheck,
   Layers, ClipboardList, BookOpen,
+  Bold, Italic, Undo2, Redo2, PaintBucket, AlignLeft,
+  Folder, ChevronRight, ChevronDown, TextSearch, Brain,
+  ListChecks, Kanban, ChartGantt, MoreVertical, CornerDownRight,
+  GitBranch, GitPullRequest, GitMerge, Github, GitCommitHorizontal,
+  KeyRound, Server, Bot, Workflow, FileInput,
+  Filter, ArrowUpDown, CalendarRange, Copy, LockKeyhole,
+  ScanSearch, ArrowDownToLine, CircleAlert,
 } from 'lucide-react';
 
 /** ブラウザ／アプリのウィンドウ枠。中身を実画面らしく見せる共通シェル。 */
@@ -1665,6 +1672,1053 @@ export function FileRoundTripDiagram() {
 
       <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
         ダウンロードして編集し、また上げ直す ―― その手間なく、いつもの保存操作だけで最新版が全員に共有されます。
+      </p>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑲ ブラウザ上での Excel 編集（ExcelEditor.tsx / ExcelViewer.tsx をトレース）
+ *    リボン風ツールバー＋グリッド。選択セルの枠と入力中のセルを再現。
+ * ========================================================== */
+export function ExcelEditScreen() {
+  const cols = ['A', 'B', 'C', 'D', 'E'];
+  const rows: string[][] = [
+    ['機能', '担当', '規模', '状態', '備考'],
+    ['ファイル一覧', '田中 太郎', 'M', '完了', ''],
+    ['ブラウザ閲覧', '佐藤 花子', 'L', '完了', ''],
+    ['ブラウザ編集', '鈴木 一郎', 'L', '進行中', ''],
+    ['バージョン管理', '田中 太郎', 'M', '完了', ''],
+  ];
+  return (
+    <div className="text-left bg-white">
+      {/* ヘッダー */}
+      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-slate-100">
+        <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-bold text-slate-900 truncate">要件定義書.xlsx</div>
+          <div className="text-[10px] text-slate-400">412.8 KB · 田中 太郎</div>
+        </div>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-amber-50 text-amber-700 border-[1.5px] border-amber-200 shrink-0">
+          <Pencil className="w-3 h-3" />編集中
+        </span>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white shrink-0">
+          <Save className="w-3 h-3" />保存
+        </span>
+        <X className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+      </div>
+
+      {/* ツールバー */}
+      <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b border-slate-100 bg-slate-50">
+        {[Undo2, Redo2].map((Icon, i) => (
+          <span key={i} className="w-6 h-6 rounded-md bg-white border border-slate-200 flex items-center justify-center">
+            <Icon className="w-3 h-3 text-slate-500" />
+          </span>
+        ))}
+        <span className="w-px h-4 bg-slate-200 mx-1" />
+        <span className="w-6 h-6 rounded-md bg-emerald-50 border border-emerald-200 flex items-center justify-center">
+          <Bold className="w-3 h-3 text-emerald-700" />
+        </span>
+        {[Italic, Type, PaintBucket, AlignLeft, TableIcon].map((Icon, i) => (
+          <span key={i} className="w-6 h-6 rounded-md bg-white border border-slate-200 flex items-center justify-center">
+            <Icon className="w-3 h-3 text-slate-500" />
+          </span>
+        ))}
+        <span className="w-px h-4 bg-slate-200 mx-1" />
+        <span className="text-[9.5px] font-semibold text-slate-500 px-2 py-1 rounded-md bg-white border border-slate-200">セルを結合</span>
+        <span className="text-[9.5px] font-semibold text-slate-500 px-2 py-1 rounded-md bg-white border border-slate-200">列幅を内容に合わせる</span>
+      </div>
+
+      {/* グリッド */}
+      <div className="p-3">
+        <div className="overflow-hidden rounded-md border border-slate-200">
+          <div className="flex bg-slate-50 border-b border-slate-200">
+            <span className="w-7 shrink-0 border-r border-slate-200" />
+            {cols.map((c) => (
+              <span key={c} className="flex-1 text-center text-[9px] font-semibold text-slate-400 py-1 border-r border-slate-200 last:border-r-0">{c}</span>
+            ))}
+          </div>
+          {rows.map((r, ri) => (
+            <div key={ri} className="flex border-b border-slate-100 last:border-b-0">
+              <span className="w-7 shrink-0 text-center text-[9px] text-slate-400 py-1.5 bg-slate-50 border-r border-slate-200">{ri + 1}</span>
+              {r.map((cell, ci) => {
+                const editing = ri === 3 && ci === 3;
+                return (
+                  <span key={ci}
+                    className={`relative flex-1 min-w-0 truncate px-1.5 py-1.5 text-[10px] border-r border-slate-100 last:border-r-0 ${
+                      ri === 0 ? 'font-bold text-slate-700 bg-slate-50/70' : 'text-slate-600'}`}>
+                    {editing ? (
+                      <span className="absolute inset-0 flex items-center gap-px bg-white px-1.5 rounded-[3px]" style={{ outline: '2px solid #059669' }}>
+                        <span className="text-[10px] text-slate-900">進行中</span>
+                        <span className="inline-block w-px h-3 bg-slate-900" />
+                      </span>
+                    ) : cell}
+                  </span>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+
+        {/* シートタブ */}
+        <div className="flex items-center gap-1 mt-2">
+          <span className="text-[9.5px] font-bold px-2 py-1 rounded-t-md bg-white border border-b-0 border-slate-200 text-emerald-700">要件一覧</span>
+          <span className="text-[9.5px] px-2 py-1 rounded-t-md text-slate-400">スケジュール</span>
+          <span className="text-[9.5px] px-2 py-1 rounded-t-md text-slate-400">課題管理</span>
+          <span className="w-4 h-4 rounded-md bg-slate-100 flex items-center justify-center ml-1">
+            <Plus className="w-2.5 h-2.5 text-slate-400" />
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ⑳ ブラウザ上での Word 編集（WordEditor.tsx / WordToolbar.tsx をトレース）
+ * ========================================================== */
+export function WordEditScreen() {
+  return (
+    <div className="text-left bg-white">
+      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-slate-100">
+        <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-[12px] font-bold text-slate-900 truncate">画面設計書.docx</div>
+          <div className="text-[10px] text-slate-400">1.2 MB · 佐藤 花子</div>
+        </div>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-emerald-600 text-white shrink-0">
+          <Save className="w-3 h-3" />保存
+        </span>
+      </div>
+
+      {/* ツールバー */}
+      <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b border-slate-100 bg-slate-50">
+        <span className="text-[9.5px] font-semibold text-slate-600 px-2 py-1 rounded-md bg-white border border-slate-200">見出し2</span>
+        <span className="text-[9.5px] font-semibold text-slate-600 px-2 py-1 rounded-md bg-white border border-slate-200">游ゴシック</span>
+        <span className="text-[9.5px] font-semibold text-slate-600 px-2 py-1 rounded-md bg-white border border-slate-200">10.5</span>
+        <span className="w-px h-4 bg-slate-200 mx-1" />
+        {[Bold, Italic, Type, PaintBucket, AlignLeft, ClipboardList, TableIcon, Link2].map((Icon, i) => (
+          <span key={i} className={`w-6 h-6 rounded-md flex items-center justify-center border ${
+            i === 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
+            <Icon className={`w-3 h-3 ${i === 0 ? 'text-emerald-700' : 'text-slate-500'}`} />
+          </span>
+        ))}
+      </div>
+
+      {/* 紙面 */}
+      <div className="bg-slate-100 p-4">
+        <div className="mx-auto max-w-[440px] rounded-sm bg-white px-6 py-5 shadow-sm">
+          <div className="text-[13px] font-extrabold text-slate-900">3. 画面一覧</div>
+          <div className="mt-2 text-[10.5px] leading-relaxed text-slate-600">
+            本章では、対象となる画面の一覧と、それぞれの遷移条件を示す。
+            <span className="bg-amber-100 px-0.5">利用者の権限によって表示される項目が変わる</span>点に注意すること。
+          </div>
+          <div className="mt-3 overflow-hidden rounded border border-slate-200">
+            {[['画面ID', '画面名', '権限'], ['SC-001', 'ファイル一覧', '閲覧'], ['SC-002', 'ファイル編集', '編集']].map((r, ri) => (
+              <div key={ri} className="flex border-b border-slate-100 last:border-b-0">
+                {r.map((c, ci) => (
+                  <span key={ci} className={`flex-1 px-2 py-1.5 text-[9.5px] border-r border-slate-100 last:border-r-0 ${
+                    ri === 0 ? 'bg-slate-50 font-bold text-slate-600' : 'text-slate-600'}`}>{c}</span>
+                ))}
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 text-[10.5px] leading-relaxed text-slate-600">
+            なお、編集内容は
+            <span className="inline-block w-px h-3 align-middle bg-slate-900 mx-px" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉑ ナレッジノート（KnowledgePage.tsx をトレース）
+ *    3ペイン: ① 資料（フォルダ／チェック） ② 目次 ③ 本文
+ * ========================================================== */
+export function KnowledgeScreen() {
+  const outline = [
+    { text: '1. システム構成', lv: 0, on: false },
+    { text: '1.1 全体構成図', lv: 1, on: false },
+    { text: '2. データ設計', lv: 0, on: true },
+    { text: '2.1 テーブル定義', lv: 1, on: true },
+    { text: '2.2 索引の方針', lv: 1, on: false },
+    { text: '3. 画面設計', lv: 0, on: false },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-8 h-8 rounded-[10px] bg-emerald-600 flex items-center justify-center shrink-0">
+          <BookOpen className="w-4 h-4 text-white" />
+        </div>
+        <div>
+          <div className="text-[13px] font-bold text-slate-900 leading-tight">ナレッジノート</div>
+          <div className="text-[10px] text-slate-400">DevTicket 開発 · 資料 8 件</div>
+        </div>
+      </div>
+
+      <div className="flex gap-2 items-stretch">
+        {/* ① 資料 */}
+        <div className="w-[150px] shrink-0 rounded-[11px] border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-2.5 py-2 border-b border-slate-100">
+            <span className="text-[11px] font-bold text-slate-800">資料</span>
+            <span className="flex items-center gap-1 text-slate-300">
+              <Plus className="w-3 h-3" /><Upload className="w-3 h-3" />
+            </span>
+          </div>
+          <div className="p-1.5">
+            <div className="flex items-center gap-1.5 px-1.5 py-1">
+              <span className="w-2.5 h-2.5 rounded-[3px] bg-emerald-600 flex items-center justify-center shrink-0">
+                <Check className="w-2 h-2 text-white" />
+              </span>
+              <FolderOpen className="w-3 h-3 text-amber-500 shrink-0" />
+              <span className="text-[10.5px] font-bold text-slate-800 truncate">設計書</span>
+              <span className="text-[9px] text-slate-300">3</span>
+            </div>
+            {['DB設計書.md', 'API設計書.md', '画面設計.md'].map((n, i) => (
+              <div key={n} className={`flex items-center gap-1.5 pl-4 pr-1.5 py-1 rounded-md ${i === 0 ? 'bg-emerald-50' : ''}`}>
+                <span className="w-2.5 h-2.5 rounded-[3px] bg-emerald-600 flex items-center justify-center shrink-0">
+                  <Check className="w-2 h-2 text-white" />
+                </span>
+                <FileText className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                <span className={`text-[10px] truncate ${i === 0 ? 'font-bold text-emerald-700' : 'text-slate-500'}`}>{n}</span>
+              </div>
+            ))}
+            <div className="flex items-center gap-1.5 px-1.5 py-1 mt-1">
+              <span className="w-2.5 h-2.5 rounded-[3px] border border-slate-300 shrink-0" />
+              <Folder className="w-3 h-3 text-amber-500 shrink-0" />
+              <span className="text-[10.5px] font-bold text-slate-800 truncate">調査メモ</span>
+              <span className="text-[9px] text-slate-300">5</span>
+            </div>
+            <div className="mt-1.5 rounded-[8px] border-[1.5px] border-dashed border-emerald-500/40 bg-emerald-50/30 py-2 text-center">
+              <span className="text-[9px] text-emerald-700">.md をドラッグ&amp;ドロップ</span>
+            </div>
+          </div>
+          <div className="px-2.5 py-1.5 border-t border-slate-100 text-[9px] text-slate-400">チェック = 検索の対象（3 件）</div>
+        </div>
+
+        {/* ② 目次 */}
+        <div className="w-[132px] shrink-0 rounded-[11px] border border-slate-200 overflow-hidden">
+          <div className="px-2.5 py-2 border-b border-slate-100 text-[11px] font-bold text-slate-800 truncate">DB設計書.md</div>
+          <div className="p-1.5">
+            {outline.map((o) => (
+              <div key={o.text} className="flex items-center gap-1 py-[3px] rounded-md" style={{ paddingLeft: 6 + o.lv * 10, paddingRight: 4 }}>
+                {o.on && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
+                <span className={`text-[9.5px] truncate ${o.lv === 0 ? 'font-bold text-slate-700' : 'text-slate-500'}`}>{o.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ③ 本文 */}
+        <div className="flex-1 min-w-0 rounded-[11px] border border-slate-200 overflow-hidden">
+          <div className="flex items-center gap-1.5 px-2.5 py-2 border-b border-slate-100">
+            <div className="relative flex-1">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-2.5 h-2.5 text-slate-300" />
+              <div className="rounded-md bg-slate-50 border border-slate-200 py-1 pl-6 pr-2 text-[9.5px] text-slate-700">データベース</div>
+            </div>
+            <span className="text-[9.5px] font-semibold text-white bg-emerald-600 px-2.5 py-1 rounded-md shrink-0">検索</span>
+          </div>
+          <div className="p-2.5">
+            <div className="text-[11px] font-extrabold text-slate-900">2. データ設計</div>
+            <div className="mt-1.5 rounded-md bg-amber-50 border-l-[3px] border-amber-300 px-2 py-1.5">
+              <div className="text-[10px] font-bold text-slate-800">2.1 テーブル定義</div>
+              <div className="mt-1 text-[9.5px] leading-relaxed text-slate-500">
+                資料の保管には documents テーブルを用いる。1レコードが1ファイルに対応し、本文は…
+              </div>
+            </div>
+            <div className="mt-2 overflow-hidden rounded border border-slate-200">
+              {[['列名', '型', '説明'], ['id', 'uuid', '主キー'], ['title', 'text', '資料名']].map((r, ri) => (
+                <div key={ri} className="flex border-b border-slate-100 last:border-b-0">
+                  {r.map((c, ci) => (
+                    <span key={ci} className={`flex-1 px-1.5 py-1 text-[9px] border-r border-slate-100 last:border-r-0 ${
+                      ri === 0 ? 'bg-slate-50 font-bold text-slate-600' : 'text-slate-500'}`}>{c}</span>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 flex items-center gap-1 text-[9px] text-amber-600">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              「データベース」と書かれていなくても、内容が近い節に帯が付きます
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉒ ナレッジノートの検索結果（意味で探す／語句で探す のタブ）
+ * ========================================================== */
+export function KnowledgeSearchScreen() {
+  const hits = [
+    { doc: 'DB設計書.md', head: '2.1 テーブル定義', score: 82, text: '資料の保管には documents テーブルを用いる。1レコードが1ファイルに対応し…' },
+    { doc: 'API設計書.md', head: '4.3 永続化の方針', score: 74, text: '書き込みは Supabase 経由で行い、RLS によって所属プロジェクトの行だけに限定する…' },
+    { doc: '画面設計.md', head: '6. 一覧の取得', score: 68, text: '一覧は作成日時の昇順で取得する。並びが毎回変わらないよう、第二キーに id を置く…' },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex items-center gap-1.5 mb-3">
+        <div className="relative flex-1 max-w-[360px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-300" />
+          <div className="rounded-lg bg-slate-50 border border-slate-200 py-1.5 pl-7 pr-2 text-[11px] text-slate-700">データベース</div>
+        </div>
+        <span className="text-[10px] font-semibold text-white bg-emerald-600 px-3 py-1.5 rounded-lg shrink-0">検索</span>
+      </div>
+
+      {/* タブ */}
+      <div className="inline-flex gap-1 bg-slate-100 rounded-[9px] p-[3px] mb-2.5">
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[7px] bg-white text-[10.5px] font-bold text-emerald-700 shadow-sm">
+          <Brain className="w-3 h-3" />意味で探す<span className="text-[9px] text-emerald-600">3</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[7px] text-[10.5px] font-semibold text-slate-400">
+          <TextSearch className="w-3 h-3" />語句で探す<span className="text-[9px] text-slate-300">1</span>
+        </span>
+      </div>
+
+      <div className="text-[9.5px] text-slate-400 mb-2">
+        <span className="font-bold text-slate-500">入力した語が出てこなくても、内容が近い箇所</span>を関連度の高い順に出しています。関連度 82〜68。
+      </div>
+
+      {hits.map((h) => (
+        <div key={h.head} className="rounded-[10px] border border-slate-200 px-2.5 py-2 mb-1.5">
+          <div className="flex items-center gap-1.5">
+            <FileText className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+            <span className="text-[9.5px] text-slate-400 truncate">{h.doc}</span>
+            <ChevronRight className="w-2.5 h-2.5 text-slate-300 shrink-0" />
+            <span className="text-[10.5px] font-bold text-slate-800 truncate">{h.head}</span>
+            <span className="ml-auto text-[9px] font-bold px-1.5 py-px rounded-full bg-emerald-50 text-emerald-700 shrink-0">関連度 {h.score}</span>
+          </div>
+          <div className="mt-1 text-[9.5px] leading-relaxed text-slate-500">{h.text}</div>
+        </div>
+      ))}
+
+      <div className="mt-2.5 flex items-center gap-1.5 text-[10px] text-slate-400">
+        <ShieldCheck className="w-3 h-3 text-emerald-500" />
+        資料も検索用の索引もすべて自社の保管領域の中だけで扱い、外部のAIサービスへは一切送信しません
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉓ タスク管理・リストビュー（TaskListView.tsx / TaskQuickAddRow.tsx をトレース）
+ *    見出し・データ行・最終行の追加欄が同じ列幅で縦に揃う。完了行はグレーアウトして残る。
+ * ========================================================== */
+export function TaskListScreen() {
+  const tasks = [
+    { title: '請求書のフォーマットを確認する', cat: '事務', pj: '個人タスク', pri: '中', who: '自分', due: '08/12', st: '進行中', done: false, sub: false },
+    { title: 'ログイン画面の文言を直す', cat: 'UI', pj: 'DevTicket 開発', pri: '高', who: '佐藤 花子', due: '08/13', st: '未着手', done: false, sub: false },
+    { title: 'エラー文言の一覧を作る', cat: 'UI', pj: 'DevTicket 開発', pri: '中', who: '佐藤 花子', due: '08/13', st: '未着手', done: false, sub: true },
+    { title: '定例の議事メモを共有する', cat: '事務', pj: '個人タスク', pri: '低', who: '自分', due: '08/09', st: '完了', done: true, sub: false },
+  ];
+  const priColor: Record<string, string> = { 高: '#DC2626', 中: '#D97706', 低: '#0284C7' };
+  const stMeta: Record<string, { c: string; bg: string }> = {
+    未着手: { c: '#6B7280', bg: '#F3F4F6' },
+    進行中: { c: '#D97706', bg: '#FFF7ED' },
+    完了: { c: '#059669', bg: '#ECFDF5' },
+  };
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      {/* ヘッダー */}
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-8 h-8 rounded-[10px] bg-emerald-600 flex items-center justify-center shrink-0">
+            <ListChecks className="w-4 h-4 text-white" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[13px] font-bold text-slate-900 leading-tight">タスク</div>
+            <div className="text-[10px] text-slate-400 truncate">未着手・進行中・完了だけを管理する軽いタスク</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0 rounded-[9px] border border-slate-900/[0.08] bg-white p-[3px]">
+          {[
+            { l: 'リスト', I: ListChecks, on: true },
+            { l: 'かんばん', I: Kanban, on: false },
+            { l: 'ガント', I: ChartGantt, on: false },
+          ].map((v) => (
+            <span key={v.l} className={`flex items-center gap-1 rounded-md px-2 py-1 text-[9.5px] font-medium whitespace-nowrap ${
+              v.on ? 'bg-emerald-600 text-white' : 'text-stone-500'}`}>
+              <v.I className="w-[11px] h-[11px]" />{v.l}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-[13px] border border-slate-100 p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-bold text-slate-500">完了 1/4</span>
+          <span className="text-[9.5px] text-slate-400 px-2 py-1 rounded-md bg-slate-50">すべてのPJ</span>
+          <span className="text-[9.5px] text-slate-400 px-2 py-1 rounded-md bg-slate-50">担当: すべて</span>
+        </div>
+
+        {/* 見出し行 */}
+        <div className="flex items-center gap-2 px-1.5 pb-1.5 border-b border-slate-200 text-[9px] font-bold text-slate-400">
+          <span className="w-3 shrink-0" />
+          <span className="flex-1 min-w-0">タイトル</span>
+          <span className="w-[54px] shrink-0">分類</span>
+          <span className="w-[74px] shrink-0">プロジェクト</span>
+          <span className="w-[22px] shrink-0 text-center">優先</span>
+          <span className="w-[58px] shrink-0">担当者</span>
+          <span className="w-[36px] shrink-0">期限</span>
+          <span className="w-[46px] shrink-0 text-center">ステータス</span>
+        </div>
+
+        {/* データ行 */}
+        {tasks.map((t) => (
+          <div key={t.title}
+            className={`flex items-center gap-2 px-1.5 py-[7px] border-b border-slate-100 ${t.done ? 'opacity-45 grayscale' : ''}`}>
+            <span className={`w-3 h-3 rounded-[3px] shrink-0 flex items-center justify-center ${
+              t.done ? 'bg-emerald-600' : 'border border-slate-300'}`}>
+              {t.done && <Check className="w-2 h-2 text-white" />}
+            </span>
+            <span className="flex-1 min-w-0 flex items-center gap-1">
+              {t.sub && <CornerDownRight className="w-2.5 h-2.5 text-slate-300 shrink-0" />}
+              <span className={`text-[10.5px] truncate ${t.done ? 'line-through text-slate-500' : 'text-slate-800'}`}>{t.title}</span>
+            </span>
+            <span className="w-[54px] shrink-0 text-[9.5px] text-slate-500 truncate">{t.cat}</span>
+            <span className="w-[74px] shrink-0 text-[9.5px] text-slate-500 truncate">{t.pj}</span>
+            <span className="w-[22px] shrink-0 text-center text-[9.5px] font-bold" style={{ color: priColor[t.pri] }}>{t.pri}</span>
+            <span className="w-[58px] shrink-0 text-[9.5px] text-slate-500 truncate">{t.who}</span>
+            <span className="w-[36px] shrink-0 text-[9.5px] text-slate-400">{t.due}</span>
+            <span className="w-[46px] shrink-0 flex justify-center">
+              <span className="text-[8.5px] font-bold px-1.5 py-px rounded-full whitespace-nowrap"
+                style={{ color: stMeta[t.st].c, background: stMeta[t.st].bg }}>{t.st}</span>
+            </span>
+          </div>
+        ))}
+
+        {/* 追加行 */}
+        <div className="flex items-center gap-2 px-1.5 py-[7px] rounded-b-lg bg-emerald-50/40">
+          <span className="w-3 h-3 rounded-[3px] border border-emerald-300 shrink-0" />
+          <span className="flex-1 min-w-0 flex items-center">
+            <span className="text-[10.5px] text-slate-800">通知メールの文面を確認</span>
+            <span className="inline-block w-px h-3 bg-slate-900 ml-px" />
+          </span>
+          <span className="w-[54px] shrink-0 text-[9.5px] text-slate-300">分類</span>
+          <span className="w-[74px] shrink-0 text-[9.5px] text-slate-300">プロジェクト</span>
+          <span className="w-[22px] shrink-0 text-center text-[9.5px] text-amber-600 font-bold">中</span>
+          <span className="w-[58px] shrink-0 text-[9.5px] text-slate-300">担当者</span>
+          <span className="w-[36px] shrink-0 text-[9.5px] text-slate-300">期限</span>
+          <span className="w-[46px] shrink-0 flex justify-center">
+            <span className="text-[8.5px] font-bold px-1.5 py-px rounded-full bg-slate-100 text-slate-500">未着手</span>
+          </span>
+        </div>
+        <div className="mt-1.5 text-[9.5px] text-slate-400">
+          最終行にそのまま入力して Enter。確定してもフォーカスは残るので、続けて何行でも足せます
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉔ タスクのかんばん（TaskBoardView.tsx をトレース）
+ *    未着手 / 進行中 / 完了 の3列。カードのドラッグで状態が変わる。
+ * ========================================================== */
+export function TaskBoardScreen() {
+  const cols = [
+    {
+      name: '未着手', c: '#6B7280', bg: '#F3F4F6', cards: [
+        { t: 'ログイン画面の文言を直す', pj: 'DevTicket 開発', pri: '高' },
+        { t: 'エラー文言の一覧を作る', pj: 'DevTicket 開発', pri: '中', sub: 'ログイン画面の文言を直す' },
+      ],
+    },
+    {
+      name: '進行中', c: '#D97706', bg: '#FFF7ED', cards: [
+        { t: '請求書のフォーマットを確認する', pj: '個人タスク', pri: '中' },
+      ],
+    },
+    {
+      name: '完了', c: '#059669', bg: '#ECFDF5', cards: [
+        { t: '定例の議事メモを共有する', pj: '個人タスク', pri: '低' },
+      ],
+    },
+  ];
+  const priColor: Record<string, string> = { 高: '#DC2626', 中: '#D97706', 低: '#0284C7' };
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex gap-2">
+        {cols.map((col, ci) => (
+          <div key={col.name} className="flex-1 min-w-0 rounded-[11px] border border-slate-200 bg-slate-50/60 p-2">
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-[9.5px] font-bold px-2 py-px rounded-full" style={{ color: col.c, background: col.bg }}>{col.name}</span>
+              <span className="text-[9px] text-slate-400">{col.cards.length}</span>
+            </div>
+            {col.cards.map((c) => (
+              <div key={c.t} className="rounded-[9px] border border-slate-200 bg-white px-2 py-1.5 mb-1.5 shadow-sm">
+                {c.sub && (
+                  <div className="flex items-center gap-1 text-[8.5px] text-slate-400 mb-0.5">
+                    <CornerDownRight className="w-2 h-2 shrink-0" />{c.sub}
+                  </div>
+                )}
+                <div className="text-[10px] font-semibold text-slate-800 leading-snug">{c.t}</div>
+                <div className="mt-1 flex items-center gap-1.5">
+                  <span className="w-1 h-1 rounded-full shrink-0" style={{ background: priColor[c.pri] }} />
+                  <span className="text-[8.5px] text-slate-400 truncate">{c.pj}</span>
+                </div>
+              </div>
+            ))}
+            {ci === 1 && (
+              <div className="rounded-[9px] border-[1.5px] border-dashed border-emerald-400 bg-emerald-50/50 py-3 text-center">
+                <span className="text-[9px] font-semibold text-emerald-700">ここに落とすと進行中へ</span>
+              </div>
+            )}
+            <div className="flex items-center gap-1 px-1 pt-1 text-[9px] text-slate-300">
+              <Plus className="w-2.5 h-2.5" />この列に追加
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2.5 flex items-center gap-1.5 text-[10px] text-slate-400">
+        <MousePointer2 className="w-3 h-3 text-emerald-500" />
+        カードを別の列へドラッグするだけで状態が変わります。落とした位置の並び順もそのまま保存されます
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉕ ホワイトボードのプライベートモード
+ *    BoardListSidebar.tsx（3点リーダーのメニュー・錠前アイコン）と
+ *    PrivateBadge.tsx（キャンバス右上のバッジ・#6D28D9）をトレース。
+ * ========================================================== */
+export function WhiteboardPrivateScreen() {
+  const boards = [
+    { name: 'スプリント計画', priv: false },
+    { name: '個人メモ（検討中）', priv: true, menu: true },
+    { name: 'アーキ検討', priv: false },
+  ];
+  return (
+    <div className="flex text-left bg-white" style={{ minHeight: 260 }}>
+      {/* ボード一覧 */}
+      <div className="w-[176px] shrink-0 border-r border-slate-100 p-2">
+        <div className="flex items-center justify-between px-1 mb-2">
+          <span className="text-[11px] font-bold text-slate-800">ボード</span>
+          <Plus className="w-3 h-3 text-slate-300" />
+        </div>
+        {boards.map((b) => (
+          <div key={b.name} className="relative">
+            <div className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded-lg ${b.priv ? 'bg-violet-50' : ''}`}>
+              {b.priv
+                ? <Lock className="w-3 h-3 shrink-0" style={{ color: '#6D28D9' }} />
+                : <Frame className="w-3 h-3 text-slate-400 shrink-0" />}
+              <span className={`text-[10px] truncate ${b.priv ? 'font-bold text-violet-800' : 'text-slate-600'}`}>{b.name}</span>
+              {b.priv && (
+                <span className="text-[8px] font-bold px-1 py-px rounded shrink-0"
+                  style={{ color: '#6D28D9', background: '#F5F3FF', border: '1px solid rgba(124,58,237,0.28)' }}>自分のみ</span>
+              )}
+              <MoreVertical className="w-3 h-3 text-slate-300 shrink-0 ml-auto" />
+            </div>
+            {b.menu && (
+              <div className="absolute right-0 top-7 z-10 w-[146px] rounded-[10px] border border-slate-200 bg-white shadow-lg overflow-hidden">
+                {[
+                  { l: '名前変更', I: Pencil },
+                  { l: 'ボード削除', I: Trash2 },
+                  { l: 'プライベートモード解除', I: Lock, on: true },
+                ].map((m) => (
+                  <div key={m.l} className={`flex items-center gap-1.5 px-2.5 py-[7px] ${m.on ? 'bg-violet-50' : ''}`}>
+                    <m.I className="w-2.5 h-2.5 shrink-0" style={{ color: m.on ? '#6D28D9' : '#94A3B8' }} />
+                    <span className="text-[9.5px] font-semibold" style={{ color: m.on ? '#6D28D9' : '#475569' }}>{m.l}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        <div className="mt-2 px-1 text-[9px] text-slate-400 leading-relaxed">
+          プライベート中のボードは、ほかのメンバーの一覧には並びません
+        </div>
+      </div>
+
+      {/* キャンバス */}
+      <div className="relative flex-1 min-w-0" style={{ backgroundImage: 'radial-gradient(#E2E8F0 1px, transparent 1px)', backgroundSize: '14px 14px' }}>
+        <div className="absolute right-2.5 top-2.5">
+          <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-2 py-1 rounded-lg"
+            style={{ color: '#6D28D9', background: '#F5F3FF', border: '1px solid rgba(124,58,237,0.28)' }}>
+            <Lock className="w-2.5 h-2.5" />プライベート
+          </span>
+        </div>
+        <div className="absolute left-6 top-10 -rotate-2 rounded-[3px] bg-amber-200/80 px-3 py-2.5 shadow-sm">
+          <span className="text-[9.5px] font-semibold text-amber-900">通知の設計案<br />（まだ相談前）</span>
+        </div>
+        <div className="absolute left-[128px] top-[92px] rotate-1 rounded-[3px] bg-sky-200/70 px-3 py-2.5 shadow-sm">
+          <span className="text-[9.5px] font-semibold text-sky-900">要検討：<br />既存への影響</span>
+        </div>
+        <div className="absolute left-8 bottom-6 rounded-lg border-2 border-violet-300 border-dashed px-3 py-2">
+          <span className="text-[9px] text-violet-700 font-semibold">下書きは自分だけの場所で</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉖ MDファイルからの一括作成（MdBulkCreateDialog.tsx / MdTaskImportDialog.tsx をトレース）
+ *    取り込み → 確認画面の2段構成。拾えた項目をバッジで見せる。
+ * ========================================================== */
+export function MdImportScreen() {
+  const items = [
+    { t: '一覧画面の実装', child: false, badges: ['未着手', '高', 'フロント', '田中 太郎', '3h'] },
+    { t: '一覧APIの実装', child: true, badges: ['未着手', '中', 'バック', '鈴木 一郎', '5h'] },
+    { t: '検索条件の保存', child: true, badges: ['未着手', '中', 'フロント', '佐藤 花子', '2h'] },
+    { t: 'CSV出力の追加', child: false, badges: ['未着手', '低', 'フロント', '未割当', '2h'] },
+  ];
+  return (
+    <div className="p-3.5 sm:p-4 text-left bg-white">
+      <div className="flex items-center gap-2 mb-3">
+        <FileInput className="w-4 h-4 text-emerald-600 shrink-0" />
+        <span className="text-[12.5px] font-bold text-slate-900">MDファイルから一括作成</span>
+        <span className="ml-auto flex items-center gap-1">
+          <span className="text-[9px] font-semibold px-2 py-1 rounded-md bg-slate-50 border border-slate-200 text-slate-500">テンプレート</span>
+          <span className="text-[9px] font-semibold px-2 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700">AI用プロンプト</span>
+        </span>
+      </div>
+
+      {/* 取り込み枠 */}
+      <div className="flex items-center justify-center gap-2 rounded-[10px] border-[1.5px] border-dashed border-emerald-500/50 bg-emerald-50/40 py-3 mb-2.5">
+        <Upload className="w-3.5 h-3.5 text-emerald-600" />
+        <span className="text-[10.5px] font-medium text-emerald-700">クリック、またはドラッグ&amp;ドロップ（複数まとめて可）</span>
+      </div>
+
+      {/* 読み込んだファイル */}
+      <div className="flex items-center gap-1.5 mb-2">
+        {['設計_一覧画面.md', '設計_出力機能.md'].map((f) => (
+          <span key={f} className="inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-1 rounded-md bg-slate-100 text-slate-600">
+            <FileText className="w-2.5 h-2.5" />{f}<X className="w-2 h-2 text-slate-400" />
+          </span>
+        ))}
+        <span className="ml-auto text-[9px] font-semibold px-2 py-1 rounded-md bg-white border border-slate-200 text-slate-500">階層: 親子で作成</span>
+      </div>
+
+      {/* 確認一覧 */}
+      <div className="rounded-[11px] border border-slate-200 overflow-hidden">
+        {items.map((it) => (
+          <div key={it.t} className="flex items-start gap-2 px-2.5 py-2 border-b border-slate-100 last:border-b-0">
+            <span className="w-3 h-3 rounded-[3px] bg-emerald-600 flex items-center justify-center shrink-0 mt-px">
+              <Check className="w-2 h-2 text-white" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1">
+                {it.child && <CornerDownRight className="w-2.5 h-2.5 text-slate-300 shrink-0" />}
+                <span className="text-[10.5px] font-semibold text-slate-800 truncate">{it.t}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1 mt-1">
+                {it.badges.map((b) => (
+                  <span key={b} className={`text-[8.5px] font-semibold px-1.5 py-px rounded ${
+                    b === '未割当' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{b}</span>
+                ))}
+                <span className="text-[8.5px] font-semibold px-1.5 py-px rounded bg-emerald-50 text-emerald-700">詳細あり</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-1.5 mt-2 text-[9.5px] text-amber-700 bg-amber-50 rounded-md px-2 py-1.5">
+        <AlertTriangle className="w-3 h-3 shrink-0" />
+        「CSV出力の追加」の担当者が見つかりませんでした（未割当で登録します）
+      </div>
+
+      <div className="flex items-center justify-end gap-1.5 mt-3">
+        <span className="text-[10px] font-semibold px-3 py-1.5 rounded-lg border border-slate-200 text-slate-500">閉じる</span>
+        <span className="text-[10px] font-bold px-3 py-1.5 rounded-lg bg-emerald-600 text-white">4件を登録する</span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉗ AI → MD → チケット／タスク の流れ（構図図版）
+ * ========================================================== */
+export function MdBulkFlowDiagram() {
+  return (
+    <div className="text-left">
+      <div className="flex justify-center mb-5">
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <Sparkles className="w-3 h-3" />
+          お使いのAIに書かせた Markdown を、そのまま取り込むだけ
+        </span>
+      </div>
+
+      <div className="flex items-start justify-center gap-1 sm:gap-2">
+        <CycleNode Icon={ClipboardList} ring="#A5B4FC" iconColor="#4F46E5" title="プロンプトをコピー" sub="メンバー名・分類つき" />
+        <MiniArrow />
+        <CycleNode Icon={Bot} ring="#93C5FD" iconColor="#2563EB" title="AIがMDを作成" sub="お使いのAIで" />
+        <MiniArrow />
+        <CycleNode Icon={Upload} ring="#6EE7B7" iconColor="#059669" title="取り込む" sub="D&amp;D・複数可" />
+        <MiniArrow />
+        <CycleNode Icon={CheckCircle2} ring="#6EE7B7" iconColor="#059669" title="まとめて登録" sub="チケット／タスク" />
+      </div>
+
+      <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
+        1件ずつ手で打ち込む時間がなくなり、フェーズの立ち上げが「貼って取り込むだけ」で終わります。
+      </p>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉘ API連携（ApiIntegrationDialog.tsx / CreateTicketMenu.tsx をトレース）
+ * ========================================================== */
+export function ApiIntegrationScreen() {
+  return (
+    <div className="p-3.5 sm:p-4 text-left bg-white">
+      <div className="flex items-center gap-2 mb-3">
+        <KeyRound className="w-4 h-4 text-emerald-600 shrink-0" />
+        <span className="text-[12.5px] font-bold text-slate-900">API連携</span>
+        <span className="ml-auto inline-flex gap-1 bg-slate-100 rounded-lg p-[3px]">
+          <span className="text-[9.5px] font-bold px-2.5 py-1 rounded-md bg-white text-emerald-700 shadow-sm">使い方</span>
+          <span className="text-[9.5px] font-semibold px-2.5 py-1 rounded-md text-slate-400">APIキー</span>
+        </span>
+      </div>
+
+      {/* 発行されたキー */}
+      <div className="rounded-[11px] border border-emerald-200 bg-emerald-50/50 px-2.5 py-2 mb-2.5">
+        <div className="flex items-center gap-1.5">
+          <ShieldCheck className="w-3 h-3 text-emerald-600 shrink-0" />
+          <span className="text-[9.5px] font-bold text-emerald-800">キーはパスワードと同じものです</span>
+          <span className="ml-auto inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-1 rounded-md bg-white border border-emerald-200 text-emerald-700">
+            <Copy className="w-2.5 h-2.5" />コピー
+          </span>
+        </div>
+        <div className="mt-1.5 rounded-md bg-slate-900 px-2 py-1.5 font-mono text-[9.5px] text-emerald-300 truncate">
+          dvt_live_8f2b··················································
+        </div>
+      </div>
+
+      {/* 組み込みの流れ */}
+      <div className="text-[10px] font-bold text-slate-700 mb-1.5">組み込みの流れ</div>
+      {[
+        { n: '1', t: 'APIキーを発行する', d: '発行は最初の1回だけです' },
+        { n: '2', t: 'キーを自分のシステムに設定する', d: '環境変数に入れます' },
+        { n: '3', t: '自分のデータを tickets の形に変換する', d: '送れる項目を見て対応づけます' },
+        { n: '4', t: 'POST する', d: '登録されると wbs（チケット番号）が返ります' },
+      ].map((s) => (
+        <div key={s.n} className="flex items-start gap-2 py-1">
+          <span className="w-4 h-4 rounded-full bg-emerald-600 text-white text-[8.5px] font-bold flex items-center justify-center shrink-0 mt-px">{s.n}</span>
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold text-slate-800">{s.t}</div>
+            <div className="text-[9px] text-slate-400">{s.d}</div>
+          </div>
+        </div>
+      ))}
+
+      {/* エンドポイント */}
+      <div className="mt-2 rounded-[10px] bg-slate-900 px-2.5 py-2 font-mono text-[9px] leading-relaxed">
+        <div><span className="text-emerald-400 font-bold">POST</span> <span className="text-slate-300">/api/v1/tickets</span> <span className="text-slate-500">— チケットを登録する</span></div>
+        <div className="mt-0.5"><span className="text-sky-400 font-bold">GET</span> <span className="text-slate-300">/api/v1/context</span> <span className="text-slate-500">— スプリント・担当者・分類の候補</span></div>
+        <div className="mt-1.5 text-slate-500">Authorization: Bearer <span className="text-amber-300">dvt_live_ここにAPIキー</span></div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉙ 外部AI／CI → API → Dev Ticket の流れ（構図図版）
+ * ========================================================== */
+export function ApiFlowDiagram() {
+  return (
+    <div className="text-left">
+      <div className="flex justify-center mb-5">
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <Lock className="w-3 h-3" />
+          キーはプロジェクト単位。届く先はそのプロジェクトの中だけです
+        </span>
+      </div>
+
+      <div className="flex items-start justify-center gap-1 sm:gap-2">
+        <CycleNode Icon={Bot} ring="#93C5FD" iconColor="#2563EB" title="外部のAI・CI" sub="お使いの仕組み" />
+        <MiniArrow />
+        <CycleNode Icon={KeyRound} ring="#FCD34D" iconColor="#D97706" title="APIキーで認証" sub="失効はその場で反映" />
+        <MiniArrow />
+        <CycleNode Icon={Server} ring="#6EE7B7" iconColor="#059669" title="POST /v1/tickets" sub="親子まとめて" />
+        <MiniArrow />
+        <CycleNode Icon={Ticket} ring="#6EE7B7" iconColor="#059669" title="チケットになる" sub="番号が返ります" />
+      </div>
+
+      <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
+        人が画面を開いて取り込む工程そのものが不要になり、設計が固まった時点でチケットが並びます。
+      </p>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉚ チケット一覧検索（TicketSearchPage.tsx / TicketSearchFilters.tsx /
+ *    TicketSearchResults.tsx をトレース）。上部が条件エリア、下が結果の表。
+ * ========================================================== */
+export function TicketSearchScreen() {
+  const rows = [
+    { no: 'BRU14-003', sp: '品質改善(8/30〜9/5)', t: 'ブランチ作成機能の追加', cat: '新機能開発', st: 'クローズ', pri: '中', who: '田中 太郎', due: '09/01' },
+    { no: 'BRU14-006', sp: '品質改善(8/30〜9/5)', t: '既存の付与済み権限が消える', cat: 'バグ修正', st: 'リリース待ち', pri: '高', who: '佐藤 花子', due: '09/02' },
+    { no: 'ENHA2-048', sp: 'エンハンス開発（第二弾）', t: 'チケット一覧検索画面を追加', cat: '新機能開発', st: 'クローズ', pri: '中', who: '田中 太郎', due: '08/29' },
+    { no: 'ENHA2-051', sp: 'エンハンス開発（第二弾）', t: '通知テンプレートの整理', cat: '改善', st: '進行中', pri: '低', who: '鈴木 一郎', due: '09/05' },
+  ];
+  const priColor: Record<string, string> = { 高: '#DC2626', 中: '#D97706', 低: '#0284C7' };
+  const stMeta: Record<string, { c: string; bg: string }> = {
+    クローズ: { c: '#6B7280', bg: '#F3F4F6' },
+    'リリース待ち': { c: '#7C3AED', bg: '#F5F3FF' },
+    進行中: { c: '#D97706', bg: '#FFF7ED' },
+  };
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-8 h-8 rounded-[10px] bg-emerald-600 flex items-center justify-center shrink-0">
+          <ScanSearch className="w-4 h-4 text-white" />
+        </div>
+        <div>
+          <div className="text-[13px] font-bold text-slate-900 leading-tight">一覧検索</div>
+          <div className="text-[10px] text-slate-400">DevTicket 開発 · 12 スプリント / 318 チケット</div>
+        </div>
+      </div>
+
+      {/* 条件エリア */}
+      <div className="rounded-[12px] border border-slate-200 bg-slate-50/60 p-2.5 mb-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 text-[9.5px] font-semibold text-slate-500 px-2 py-1.5 rounded-lg bg-white border border-slate-200">
+            <Search className="w-2.5 h-2.5 text-slate-300" />チケットNo・チケット名・詳細・担当者
+          </span>
+          <span className="inline-flex items-center gap-1 text-[9.5px] font-semibold text-slate-600 px-2 py-1.5 rounded-lg bg-white border border-slate-200">
+            <CalendarRange className="w-2.5 h-2.5 text-slate-400" />2026/08/01 〜 2026/09/05
+          </span>
+          {[
+            { l: 'ステータス', v: '3件選択' },
+            { l: '優先度', v: 'すべて' },
+            { l: '担当者', v: '2件選択' },
+            { l: '分類', v: 'すべて' },
+            { l: 'スプリント', v: '2件選択' },
+          ].map((f) => (
+            <span key={f.l} className={`inline-flex items-center gap-1 text-[9.5px] font-semibold px-2 py-1.5 rounded-lg border ${
+              f.v === 'すべて' ? 'bg-white border-slate-200 text-slate-400' : 'bg-emerald-50 border-emerald-200 text-emerald-700'}`}>
+              {f.l}<ChevronDown className="w-2.5 h-2.5" />
+            </span>
+          ))}
+          <span className="ml-auto text-[9.5px] font-bold text-slate-500">4 / 318 件</span>
+        </div>
+      </div>
+
+      {/* 結果の表 */}
+      <div className="rounded-[12px] border border-slate-200 overflow-hidden">
+        <div className="flex items-center gap-2 px-2.5 py-2 bg-slate-50 border-b border-slate-200 text-[9px] font-bold text-slate-500">
+          <span className="w-[58px] shrink-0 flex items-center gap-0.5">No<ArrowUpDown className="w-2 h-2 text-slate-300" /></span>
+          <span className="w-[86px] shrink-0 flex items-center gap-0.5">スプリント<Filter className="w-2 h-2 text-emerald-500" /></span>
+          <span className="flex-1 min-w-0">チケット名</span>
+          <span className="w-[52px] shrink-0">分類</span>
+          <span className="w-[56px] shrink-0 text-center">ステータス</span>
+          <span className="w-[22px] shrink-0 text-center">優先</span>
+          <span className="w-[56px] shrink-0">担当者</span>
+          <span className="w-[34px] shrink-0">期限</span>
+        </div>
+        <div className="px-2.5 py-1 bg-emerald-50/70 border-b border-emerald-100 text-[8.5px] font-semibold text-emerald-700 flex items-center gap-1">
+          <ArrowDownToLine className="w-2.5 h-2.5 shrink-0" />見出し行は画面の上端で止まり、スクロールしても項目名が見えたままになります
+        </div>
+        {rows.map((r) => (
+          <div key={r.no} className="flex items-center gap-2 px-2.5 py-[7px] border-b border-slate-100 last:border-b-0">
+            <span className="w-[58px] shrink-0 text-[9.5px] font-bold text-emerald-700 truncate">{r.no}</span>
+            <span className="w-[86px] shrink-0 text-[9px] text-slate-400 truncate">{r.sp}</span>
+            <span className="flex-1 min-w-0 text-[10.5px] text-slate-800 truncate">{r.t}</span>
+            <span className="w-[52px] shrink-0 text-[9px] text-slate-500 truncate">{r.cat}</span>
+            <span className="w-[56px] shrink-0 flex justify-center">
+              <span className="text-[8.5px] font-bold px-1.5 py-px rounded-full whitespace-nowrap"
+                style={{ color: stMeta[r.st].c, background: stMeta[r.st].bg }}>{r.st}</span>
+            </span>
+            <span className="w-[22px] shrink-0 text-center text-[9.5px] font-bold" style={{ color: priColor[r.pri] }}>{r.pri}</span>
+            <span className="w-[56px] shrink-0 text-[9px] text-slate-500 truncate">{r.who}</span>
+            <span className="w-[34px] shrink-0 text-[9px] text-slate-400">{r.due}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉛ GitHub連携タブ（GithubPage.tsx / PullRequestList.tsx をトレース）
+ *    PR / Issue / コミット / ブランチ の4タブ。CI・レビュー・マージが1画面に。
+ * ========================================================== */
+export function GithubPrScreen() {
+  const prs = [
+    { n: 421, t: 'BRU14-006 GitHub権限の3分割で既存の権限が消える', wbs: 'BRU14-006', ci: 'ok', rev: 'ok', mergeable: true },
+    { n: 419, t: 'BRU14-003 ブランチ作成機能の追加と権限の操作別分割', wbs: 'BRU14-003', ci: 'ok', rev: 'wait', mergeable: true },
+    { n: 411, t: 'ENHA2-048 チケット一覧検索画面を追加', wbs: 'ENHA2-048', ci: 'ng', rev: 'ok', mergeable: false },
+  ];
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-8 h-8 rounded-[10px] bg-slate-900 flex items-center justify-center shrink-0">
+            <Github className="w-4 h-4 text-white" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[13px] font-bold text-slate-900 leading-tight">GitHub</div>
+            <div className="text-[10px] text-slate-400 truncate">MeeceM-Mizoguchi / dev-ticket</div>
+          </div>
+        </div>
+        <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white shrink-0">
+          <Plus className="w-2.5 h-2.5" />プルリクエストを作成
+        </span>
+      </div>
+
+      {/* タブ */}
+      <div className="flex items-center gap-1 mb-2.5 border-b border-slate-100">
+        {[
+          { l: 'プルリクエスト', I: GitPullRequest, on: true },
+          { l: 'Issue', I: CircleAlert, on: false },
+          { l: 'コミット', I: GitCommitHorizontal, on: false },
+          { l: 'ブランチ', I: GitBranch, on: false },
+        ].map((t) => (
+          <span key={t.l} className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-semibold border-b-2 ${
+            t.on ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-400'}`}>
+            <t.I className="w-3 h-3" />{t.l}
+          </span>
+        ))}
+      </div>
+
+      {/* 一覧 */}
+      <div className="rounded-[12px] border border-slate-200 overflow-hidden">
+        {prs.map((p) => (
+          <div key={p.n} className="flex items-center gap-2 px-2.5 py-2 border-b border-slate-100 last:border-b-0">
+            <GitPullRequest className="w-3 h-3 text-emerald-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold text-slate-400 shrink-0">#{p.n}</span>
+                <span className="text-[10.5px] text-slate-800 truncate">{p.t}</span>
+              </div>
+              <div className="flex items-center gap-1 mt-0.5">
+                <span className="inline-flex items-center gap-0.5 text-[8.5px] font-bold px-1.5 py-px rounded bg-emerald-50 text-emerald-700">
+                  <Ticket className="w-2 h-2" />{p.wbs}
+                </span>
+                <span className={`inline-flex items-center gap-0.5 text-[8.5px] font-semibold px-1.5 py-px rounded ${
+                  p.ci === 'ok' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+                  チェック {p.ci === 'ok' ? '✔' : '✕'}
+                </span>
+                <span className={`inline-flex items-center gap-0.5 text-[8.5px] font-semibold px-1.5 py-px rounded ${
+                  p.rev === 'ok' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                  レビュー {p.rev === 'ok' ? '✔' : '…'}
+                </span>
+              </div>
+            </div>
+            <span className={`inline-flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-lg shrink-0 ${
+              p.mergeable ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+              <GitMerge className="w-2.5 h-2.5" />{p.mergeable ? 'マージ' : 'マージ不可'}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-2.5 flex items-center gap-1.5 text-[10px] text-slate-400">
+        <LockKeyhole className="w-3 h-3 text-emerald-500" />
+        閲覧するメンバーに GitHub のアカウントは不要。誰に何を許すかは Dev Ticket 側の権限で決まります
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉜ チケット詳細の「関連PR」（TicketPrSection.tsx をトレース）
+ *    ブランチ作成 → PR作成 → マージ までをチケットの中で完結させる。
+ * ========================================================== */
+export function TicketPrScreen() {
+  return (
+    <div className="p-4 sm:p-5 text-left bg-white">
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className="w-8 h-8 rounded-[10px] bg-emerald-600 flex items-center justify-center shrink-0">
+          <Ticket className="w-4 h-4 text-white" />
+        </div>
+        <div className="min-w-0">
+          <div className="text-[13px] font-bold text-slate-900 leading-tight truncate">BRU14-003 ブランチ作成機能の追加</div>
+          <div className="text-[10px] text-slate-400">リリース待ち · 田中 太郎</div>
+        </div>
+      </div>
+
+      <div className="rounded-[12px] border border-slate-200 overflow-hidden">
+        <div className="flex items-center gap-1.5 px-2.5 py-2 border-b border-slate-100">
+          <GitPullRequest className="w-3 h-3 text-slate-500 shrink-0" />
+          <span className="text-[11px] font-bold text-slate-800">関連PR</span>
+          <span className="ml-auto flex items-center gap-1">
+            <span className="inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-1 rounded-md bg-white border border-slate-200 text-slate-600">
+              <GitBranch className="w-2.5 h-2.5" />ブランチを作成
+            </span>
+            <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-md bg-emerald-600 text-white">
+              <Plus className="w-2.5 h-2.5" />PRを作成
+            </span>
+          </span>
+        </div>
+
+        {/* このチケットのブランチ */}
+        <div className="px-2.5 py-2 border-b border-slate-100 bg-slate-50/60">
+          <div className="text-[9px] font-bold text-slate-400 mb-1">このチケットのブランチ</div>
+          <div className="flex items-center gap-1.5">
+            <GitBranch className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+            <span className="font-mono text-[9.5px] text-slate-700 truncate">feature/branch-create</span>
+            <span className="text-[8.5px] text-slate-400 shrink-0">← main</span>
+            <span className="inline-flex items-center gap-0.5 text-[8.5px] font-semibold px-1.5 py-px rounded bg-white border border-slate-200 text-slate-500 shrink-0">
+              <Copy className="w-2 h-2" />コピー
+            </span>
+          </div>
+          <div className="mt-1 text-[8.5px] text-emerald-700">
+            名前にチケット番号が無くても、このチケットへの紐付けは Dev Ticket 側に記録されています
+          </div>
+        </div>
+
+        {/* 紐付いたPR */}
+        <div className="flex items-center gap-2 px-2.5 py-2">
+          <GitPullRequest className="w-3 h-3 text-emerald-600 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[10.5px] text-slate-800 truncate">#419 ブランチ作成機能の追加と権限の操作別分割</div>
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className="text-[8.5px] font-semibold px-1.5 py-px rounded bg-emerald-50 text-emerald-700">オープン</span>
+              <span className="text-[8.5px] font-semibold px-1.5 py-px rounded bg-emerald-50 text-emerald-700">チェック ✔</span>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-lg bg-violet-600 text-white shrink-0">
+            <GitMerge className="w-2.5 h-2.5" />マージする
+          </span>
+        </div>
+      </div>
+
+      {/* 未紐付けアラート */}
+      <div className="mt-2.5 rounded-[10px] border border-red-200 bg-red-50/70 px-2.5 py-2">
+        <div className="flex items-center gap-1.5">
+          <AlertTriangle className="w-3 h-3 text-red-500 shrink-0" />
+          <span className="text-[9.5px] font-bold text-red-700">PR未紐付け</span>
+          <span className="text-[9px] text-red-600">リリース待ち以降なのにPRが紐付いていないチケットは、一覧でも赤く表示されます</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * ㉝ ブランチ作成 → PR作成 → マージ → 本番反映（構図図版）
+ * ========================================================== */
+export function GithubFlowDiagram() {
+  return (
+    <div className="text-left">
+      <div className="flex justify-center mb-5">
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+          <Github className="w-3 h-3" />
+          GitHub の画面を開かずに、Dev Ticket の中だけで完結します
+        </span>
+      </div>
+
+      <div className="flex items-start justify-center gap-1 sm:gap-2">
+        <CycleNode Icon={Ticket} ring="#6EE7B7" iconColor="#059669" title="チケット" sub="着手する" />
+        <MiniArrow />
+        <CycleNode Icon={GitBranch} ring="#93C5FD" iconColor="#2563EB" title="ブランチ作成" sub="名前は自由" />
+        <MiniArrow />
+        <CycleNode Icon={GitPullRequest} ring="#93C5FD" iconColor="#2563EB" title="PR作成" sub="自動で紐付く" />
+        <MiniArrow />
+        <CycleNode Icon={GitMerge} ring="#C4B5FD" iconColor="#7C3AED" title="マージ" sub="CI・レビュー確認" />
+        <MiniArrow />
+        <CycleNode Icon={Workflow} ring="#6EE7B7" iconColor="#059669" title="本番反映を確認" sub="届いたかを観測" />
+      </div>
+
+      <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
+        操作ごとに権限を分けられるので、「ブランチは切らせたいが main へのマージはさせない」も表現できます。
       </p>
     </div>
   );
