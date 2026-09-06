@@ -294,6 +294,18 @@ export interface TicketSourceFile {
   fileUrl?: string; createdAt: string;
 }
 
+/**
+ * チケット本体の添付ファイル（画像添付＝sprint_tickets.images のファイル版）。
+ * レビュー回に紐づく TicketSourceFile とは別物で、チケットに直接ぶら下がる。
+ * 実体は public バケット `ticket-files`。fileName は表示名で、
+ * ストレージのキーは filePath（ASCII のみ）。
+ */
+export interface TicketAttachment {
+  id: string; ticketId: string; fileName: string; fileSize: number;
+  fileType: string; filePath: string; fileUrl: string;
+  uploadedBy: string; createdAt: string;
+}
+
 // ── ENHA2-035 ファイルボックス ──
 // 非公開バケット(project-files)に置くため公開URLは持たない。
 // 表示・DLのたびに api/project-files/signed-url で短命の署名付きURLを発行する。

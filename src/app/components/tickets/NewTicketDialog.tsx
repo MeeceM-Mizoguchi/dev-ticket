@@ -23,6 +23,8 @@ import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
 import { useToast } from "@/app/contexts/ToastContext";
+import { FileAttachments } from "@/app/components/shared/FileAttachments";
+import { uploadTicketAttachment, MAX_ATTACHMENT_BYTES } from "@/app/lib/ticketAttachments";
 import { fetchSkills } from "@/app/lib/skillsApi";
 import { Sparkles } from "lucide-react";
 
@@ -77,6 +79,10 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
   const ticketId = useRef<string>(`T-${Date.now()}`);
   const [images, setImages] = useState<string[]>([]);
   const [imageDragOver, setImageDragOver] = useState(false);
+  // 添付ファイル（画像以外）。この時点ではチケット行がまだ無いので、
+  // アップロードは作成が成功したあとまで遅らせて手元に持っておく。
+  // （下書きキャッシュには載せない＝File は JSON にできないため）
+  const [pendingFiles, setPendingFiles] = useState<{ id: string; file: File }[]>([]);
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
   // BRU10-062: 作成に失敗したときのエラー（下書きは保持され、そのまま再実行できる）
@@ -354,6 +360,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
     setEstimatedHours(0);
     setDescription("");
     setImages([]);
+    setPendingFiles([]);
     setCategoryId("");
     if (needsSelection) {
       setSelectedProjectId("");
@@ -387,6 +394,36 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
       }
     }
   }, []);
+
+  /** 画像以外の添付ファイルを手元に積む（アップロードはチケット作成後） */
+  const addPendingFiles = useCallback((files: File[]) => {
+    const tooBig = files.filter(f => f.size > MAX_ATTACHMENT_BYTES);
+    if (tooBig.length > 0) toast(`${tooBig.map(f => f.name).join("、")} は50MBを超えているため添付できません`);
+    const accepted = files.filter(f => f.size <= MAX_ATTACHMENT_BYTES);
+    if (accepted.length === 0) return;
+    setPendingFiles(prev => [
+      ...prev,
+      ...accepted.map(f => ({ id: `pf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, file: f })),
+    ]);
+  }, [toast]);
+
+  /**
+   * チケット作成が成功したあとに添付ファイルを流し込む。
+   * チケット自体は既に出来ているので、ここで失敗しても作成は巻き戻さない。
+   */
+  const uploadPendingFiles = useCallback(async (createdTicketId: string) => {
+    if (pendingFiles.length === 0 || !isSupabaseEnabled) return;
+    const failed: string[] = [];
+    for (const p of pendingFiles) {
+      try {
+        await uploadTicketAttachment(createdTicketId, p.file, userName);
+      } catch (e) {
+        console.error("[NewTicketDialog] 添付ファイルのアップロードに失敗:", e);
+        failed.push(p.file.name);
+      }
+    }
+    if (failed.length > 0) toast(`${failed.join("、")} の添付に失敗しました。チケット詳細から添付し直してください`);
+  }, [pendingFiles, userName, toast]);
 
   // RichEditor(contenteditable)にフォーカスがあると React onPaste が届かないため
   // document レベルでキャプチャして画像だけ処理する
@@ -526,6 +563,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
               dev_scale: devScale,
             });
             if (insErr) throw insErr;
+            await uploadPendingFiles(ticketId.current);
             // 通知まわりは失敗してもチケット自体は作成済みなので、作成を巻き戻さない
             try {
               await saveRequiredSkills(ticketId.current);
@@ -587,6 +625,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
         dev_scale: devScale,
       });
       if (insErr2) throw insErr2;
+      await uploadPendingFiles(ticketId.current);
       // 通知まわりは失敗してもチケット自体は作成済みなので、作成を巻き戻さない
       try {
         await saveRequiredSkills(ticketId.current);
@@ -1024,6 +1063,20 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                 </div>
               )}
             </div>
+          </div>
+
+          <div>
+            <label className={labelCls}>添付ファイル</label>
+            <FileAttachments
+              items={pendingFiles.map(p => ({ id: p.id, fileName: p.file.name, fileSize: p.file.size }))}
+              onAdd={addPendingFiles}
+              onRemove={id => setPendingFiles(prev => prev.filter(p => p.id !== id))}
+            />
+            {pendingFiles.length > 0 && (
+              <p style={{ fontSize: 10, color: "#C9C4BB", marginTop: 6 }}>
+                チケットの作成と同時にアップロードされます
+              </p>
+            )}
           </div>
         </div>
 

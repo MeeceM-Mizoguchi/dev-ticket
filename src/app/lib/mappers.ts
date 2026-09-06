@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
 import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
@@ -101,6 +101,12 @@ export function mapComment(r: any): TicketComment {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapSourceFile(r: any): TicketSourceFile {
   return { id: r.id, ticketId: r.ticket_id, fileName: r.file_name, fileSize: r.file_size || 0, fileType: r.file_type || "", uploadedBy: r.uploaded_by, reviewRound: r.review_round || 1, fileUrl: r.file_url || "", createdAt: r.created_at || "" };
+}
+
+// チケット本体の添付ファイル（ticket_attachments）
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapTicketAttachment(r: any): TicketAttachment {
+  return { id: String(r.id), ticketId: r.ticket_id, fileName: r.file_name || "", fileSize: Number(r.file_size) || 0, fileType: r.file_type || "", filePath: r.file_path || "", fileUrl: r.file_url || "", uploadedBy: r.uploaded_by || "", createdAt: r.created_at || "" };
 }
 
 // ── ENHA2-035 ファイルボックス ──
