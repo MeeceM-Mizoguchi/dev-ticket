@@ -1,9 +1,14 @@
-// エクスポート: PNG / SVG ダウンロードと、画像としてクリップボードへコピー。
+// エクスポート: PNG / SVG / draw.io(.drawio) ダウンロードと、画像としてクリップボードへコピー。
+//
+// .drawio は「コピー＆ペーストで draw.io へ図形として渡す」（whiteboardDrawioExport / 選択コピー）の
+// 保険。クリップボードが使えない環境（社内ポリシー・ネイティブアプリ）でも、
+// draw.io の「ファイル > 開く」から読み込めば同じ図形が得られる。
 import { useState, useRef, useLayoutEffect, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { exportToBlob, exportToSvg } from "@excalidraw/excalidraw";
 import { Download, Copy, Check } from "lucide-react";
 import { copyImage } from "@/lib/clipboard";
+import { buildDrawioFile } from "@/app/lib/whiteboardDrawioExport";
 
 interface Props { api: any; title: string; containerRef: RefObject<HTMLDivElement> }
 
@@ -17,6 +22,7 @@ function download(blob: Blob, filename: string) {
 export function WhiteboardExportMenu({ api, title, containerRef }: Props) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);  // draw.io 変換に失敗したときだけ出す
   const btnRef = useRef<HTMLButtonElement>(null);
   // メニューはフレーム枠線canvas(zIndex:4)より前面へ出すため、ボタン直下ではなく
   // ボード コンテナへ portal して高いzIndexで描く。位置はボタンの矩形から算出。
@@ -52,6 +58,12 @@ export function WhiteboardExportMenu({ api, title, containerRef }: Props) {
     download(blob, `${safe}.svg`);
     setOpen(false);
   };
+  const exportDrawio = () => {
+    const xml = buildDrawioFile(api.getSceneElements(), api.getFiles?.() ?? {}, safe);
+    setOpen(false);
+    if (!xml) { setFailed(true); setTimeout(() => setFailed(false), 2400); return; }
+    download(new Blob([xml], { type: "application/xml" }), `${safe}.drawio`);
+  };
   const copyToClipboard = async () => {
     const blob = await exportToBlob({ ...scene(), mimeType: "image/png", quality: 1 });
     const ok = await copyImage(blob);
@@ -71,7 +83,7 @@ export function WhiteboardExportMenu({ api, title, containerRef }: Props) {
           color: "#059669", background: "#fff", border: "1px solid rgba(5,150,105,0.25)", borderRadius: 8,
           cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.08)", whiteSpace: "nowrap", flexShrink: 0 }}>
         {copied ? <Check style={{ width: 13, height: 13 }} /> : <Download style={{ width: 13, height: 13 }} />}
-        {copied ? "コピーしました" : "エクスポート"}
+        {copied ? "コピーしました" : failed ? "変換できませんでした" : "エクスポート"}
       </button>
       {open && menuPos && containerRef.current && createPortal(
         <>
@@ -82,6 +94,9 @@ export function WhiteboardExportMenu({ api, title, containerRef }: Props) {
             boxShadow: "0 8px 24px rgba(0,0,0,0.14)", overflow: "hidden", minWidth: 180, zIndex: 101 }}>
             <button style={item} onClick={exportPng}><Download style={{ width: 13, height: 13 }} />PNG形式で保存</button>
             <button style={item} onClick={exportSvg}><Download style={{ width: 13, height: 13 }} />SVG形式で保存</button>
+            <button style={item} onClick={exportDrawio} title="draw.io の「ファイル &gt; 開く」で読み込めます">
+              <Download style={{ width: 13, height: 13 }} />draw.io形式で保存
+            </button>
             <button style={item} onClick={() => { copyToClipboard(); setOpen(false); }}>
               <Copy style={{ width: 13, height: 13 }} />画像をクリップボードにコピー
             </button>

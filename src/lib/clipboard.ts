@@ -32,6 +32,37 @@ export async function copyImage(blob: Blob): Promise<boolean> {
   return false;
 }
 
+/**
+ * テキストと HTML を **同じクリップボードへ同時に**書き込む。成功なら true。
+ *
+ * ホワイトボードのコピーが text/plain（Excalidraw JSON）と text/html（draw.io の mxGraphModel）を
+ * 両方載せるために使う。navigator.clipboard.writeText は**クリップボード全体を置き換える**ので、
+ * 2 種類を残すには ClipboardItem で 1 回に書く必要がある。
+ * ネイティブ(Capacitor)は複数 MIME を扱えないため、テキストだけ書いて false を返す
+ * （＝draw.io 形式は載らない。呼び出し側は「従来どおり」として続行してよい）。
+ */
+export async function copyTextAndHtml(text: string, html: string): Promise<boolean> {
+  if (Capacitor.isNativePlatform()) {
+    await copyText(text);
+    return false;
+  }
+  try {
+    if (navigator.clipboard && "write" in navigator.clipboard && typeof ClipboardItem !== "undefined") {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": new Blob([text], { type: "text/plain" }),
+          "text/html": new Blob([html], { type: "text/html" }),
+        }),
+      ]);
+      return true;
+    }
+  } catch {
+    /* text/html 非対応ブラウザ等。テキストだけでも確実に載せる */
+  }
+  await copyText(text);
+  return false;
+}
+
 // テキストをコピー。成功なら true。
 export async function copyText(text: string): Promise<boolean> {
   // ネイティブ: Capacitor プラグイン経由（OSのクリップボードへ確実に書き込む）
