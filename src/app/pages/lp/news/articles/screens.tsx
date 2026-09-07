@@ -2723,3 +2723,170 @@ export function GithubFlowDiagram() {
     </div>
   );
 }
+
+/* ============================================================
+ * ㉚ ホワイトボード → draw.io（BRU15-002）
+ *    実機能をトレース:
+ *      ・whiteboardDrawioExport.ts（Excalidraw 要素 → mxGraphModel）
+ *      ・whiteboardFrameCopy.ts（text/plain と text/html を同時にコピー）
+ *      ・WhiteboardExportMenu.tsx（PNG / SVG / draw.io / 画像コピー の4項目）
+ *    「1回のコピーが2つの貼り先で通じる」ことが要点なので、
+ *    分岐する図＋貼り付け結果のビフォーアフターの2枚で見せる。
+ * ========================================================== */
+
+/** 図版内の横長ノード（アイコン＋2行ラベル）。分岐を縦に積むため CycleNode とは別に持つ。 */
+function DrawioNode({
+  Icon, ring, iconColor, title, sub,
+}: { Icon: typeof Ticket; ring: string; iconColor: string; title: string; sub: string }) {
+  return (
+    <div className="flex items-center gap-2.5 w-[168px] sm:w-[184px] shrink-0 rounded-xl bg-white px-3 py-2.5 shadow-sm"
+      style={{ border: `1.5px solid ${ring}` }}>
+      <Icon className="w-4 h-4 shrink-0" style={{ color: iconColor }} />
+      <div className="leading-tight min-w-0">
+        <div className="text-[11px] font-bold text-slate-800 truncate">{title}</div>
+        <div className="text-[9px] text-slate-400 mt-0.5 truncate">{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+export function DrawioCopyDiagram() {
+  return (
+    <div className="text-left">
+      <div className="flex justify-center mb-5">
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-bold px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+          <Copy className="w-3 h-3" />
+          コピーは1回。貼る先に合わせて自動で使い分けられます
+        </span>
+      </div>
+
+      <div className="flex items-center justify-center gap-2 sm:gap-3">
+        <DrawioNode Icon={PenTool} ring="#6EE7B7" iconColor="#059669"
+          title="ホワイトボード" sub="図形を選んで Ctrl+C" />
+        <ArrowRight className="w-4 h-4 text-slate-300 shrink-0" />
+        <div className="flex flex-col gap-2">
+          <DrawioNode Icon={Frame} ring="#6EE7B7" iconColor="#059669"
+            title="ホワイトボードへ貼る" sub="これまでどおり図形のまま" />
+          <DrawioNode Icon={Workflow} ring="#93C5FD" iconColor="#2563EB"
+            title="draw.io へ貼る" sub="draw.io の図形になる" />
+        </div>
+      </div>
+
+      <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
+        貼り付ける側が読める形を選び取るので、コピーのしかたを覚え分ける必要はありません。
+      </p>
+    </div>
+  );
+}
+
+export function DrawioPasteScreen() {
+  const jsonLines = [
+    '{"type":"excalidraw/clip',
+    'board","elements":[{"id"',
+    ':"WlAqYVgC","type":"fra',
+    'me","x":4081.88,"y":-27',
+    '1.2,"width":1239.29,"he',
+    'ight":778.56,"angle":0,',
+    '"strokeColor":"#bbb","b',
+  ];
+  return (
+    <div className="bg-slate-50 p-4 sm:p-5 text-left">
+      <div className="flex gap-3">
+        {/* これまで：文字の塊として貼られていた */}
+        <div className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white p-3">
+          <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+            <X className="w-2.5 h-2.5" />これまで
+          </span>
+          <div className="mt-2.5 rounded border border-slate-100 bg-slate-50/70 px-2 py-2 overflow-hidden" style={{ height: 118 }}>
+            {jsonLines.map((t) => (
+              <span key={t} className="block text-[8px] leading-[15px] text-slate-400" style={{ fontFamily: 'ui-monospace, monospace' }}>{t}</span>
+            ))}
+          </div>
+          <div className="mt-2 text-[9px] text-slate-400 leading-relaxed">
+            図形ではなく、文字の塊として貼られていました
+          </div>
+        </div>
+
+        {/* これから：draw.io の図形として貼られる */}
+        <div className="flex-1 min-w-0 rounded-lg border border-emerald-200 bg-white p-3">
+          <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">
+            <Check className="w-2.5 h-2.5" />これから
+          </span>
+          <div className="relative mt-2.5 rounded border border-slate-100 overflow-hidden"
+            style={{ height: 118, backgroundImage: 'radial-gradient(#E2E8F0 1px, transparent 1px)', backgroundSize: '12px 12px' }}>
+            {/* 図形1。選択ハンドル付きで「draw.io 側で編集できる」ことを示す */}
+            <div className="absolute left-3 top-4 rounded border-[1.5px] border-slate-500 bg-white px-2.5 py-1.5">
+              <span className="text-[8.5px] font-semibold text-slate-700">受注</span>
+              <span className="absolute w-1.5 h-1.5 rounded-full bg-white border border-sky-500" style={{ left: -3, top: -3 }} />
+              <span className="absolute w-1.5 h-1.5 rounded-full bg-white border border-sky-500" style={{ right: -3, top: -3 }} />
+              <span className="absolute w-1.5 h-1.5 rounded-full bg-white border border-sky-500" style={{ left: -3, bottom: -3 }} />
+              <span className="absolute w-1.5 h-1.5 rounded-full bg-white border border-sky-500" style={{ right: -3, bottom: -3 }} />
+            </div>
+            {/* 接続された矢印 */}
+            <svg className="absolute" style={{ left: 62, top: 26, width: 46, height: 12 }} viewBox="0 0 46 12" fill="none">
+              <path d="M0 6 H38" stroke="#64748B" strokeWidth="1.2" />
+              <path d="M38 2.5 L45 6 L38 9.5" stroke="#64748B" strokeWidth="1.2" />
+            </svg>
+            <div className="absolute right-3 top-4 rounded border-[1.5px] border-slate-500 bg-white px-2.5 py-1.5">
+              <span className="text-[8.5px] font-semibold text-slate-700">出荷</span>
+            </div>
+            <div className="absolute left-8 bottom-3 rounded-full border-[1.5px] border-emerald-600 bg-emerald-50 px-3 py-1">
+              <span className="text-[8.5px] font-semibold text-emerald-800">検品</span>
+            </div>
+          </div>
+          <div className="mt-2 text-[9px] text-slate-500 leading-relaxed">
+            draw.io の図形として貼られ、そのまま色もサイズも変えられます
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function WhiteboardDrawioExportScreen() {
+  const items = [
+    { l: 'PNG形式で保存', I: Download },
+    { l: 'SVG形式で保存', I: Download },
+    { l: 'draw.io形式で保存', I: Download, on: true },
+    { l: '画像をクリップボードにコピー', I: Copy },
+  ];
+  return (
+    <div className="relative text-left bg-white"
+      style={{ minHeight: 232, backgroundImage: 'radial-gradient(#E2E8F0 1px, transparent 1px)', backgroundSize: '14px 14px' }}>
+      {/* キャンバス上の図形（雰囲気） */}
+      <div className="absolute left-7 top-12 rounded border-[1.5px] border-slate-400 bg-white px-3 py-2">
+        <span className="text-[9px] font-semibold text-slate-600">現行システム</span>
+      </div>
+      <div className="absolute left-7 top-[104px] rounded-full border-[1.5px] border-emerald-500 bg-emerald-50 px-3.5 py-2">
+        <span className="text-[9px] font-semibold text-emerald-800">移行方針</span>
+      </div>
+      <div className="absolute left-[150px] top-14 -rotate-2 rounded-[3px] bg-amber-200/80 px-2.5 py-2 shadow-sm">
+        <span className="text-[8.5px] font-semibold text-amber-900">要相談</span>
+      </div>
+
+      {/* エクスポートボタン＋メニュー */}
+      <div className="absolute right-3 top-3">
+        <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white shadow-sm"
+          style={{ border: '1px solid rgba(5,150,105,0.25)' }}>
+          <Download className="w-2.5 h-2.5" style={{ color: '#059669' }} />
+          <span className="text-[9.5px] font-bold" style={{ color: '#059669' }}>エクスポート</span>
+        </div>
+        <div className="mt-1 w-[186px] rounded-[10px] border border-slate-200 bg-white shadow-lg overflow-hidden">
+          {items.map((m) => (
+            <div key={m.l} className={`flex items-center gap-1.5 px-2.5 py-[7px] ${m.on ? 'bg-emerald-50' : ''}`}>
+              <m.I className="w-2.5 h-2.5 shrink-0" style={{ color: m.on ? '#059669' : '#94A3B8' }} />
+              <span className="text-[9.5px] font-semibold" style={{ color: m.on ? '#047857' : '#475569' }}>{m.l}</span>
+              {m.on && (
+                <span className="ml-auto text-[7.5px] font-bold px-1 py-px rounded shrink-0"
+                  style={{ color: '#047857', background: '#ECFDF5', border: '1px solid rgba(5,150,105,0.28)' }}>NEW</span>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="mt-1.5 w-[186px] text-[8.5px] text-slate-400 leading-relaxed">
+          クリップボードが使えない環境では、こちらから .drawio を保存できます
+        </div>
+      </div>
+    </div>
+  );
+}
