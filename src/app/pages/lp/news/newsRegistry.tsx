@@ -23,6 +23,7 @@ import MdBulkCreate from './articles/20260811-md-bulk-create';
 import ApiIntegration from './articles/20260811-api-integration';
 import TicketSearch from './articles/20260829-ticket-search';
 import GithubIntegration from './articles/20260901-github-integration';
+import WhiteboardDrawio from './articles/20260907-whiteboard-drawio';
 
 /**
  * ============================================================
@@ -73,6 +74,14 @@ export function NewsCategoryBadge({ category }: { category: NewsCategory }) {
 
 // ★ 新しい記事は「この配列の先頭」に追加してください ★
 export const NEWS: NewsEntry[] = [
+  {
+    slug: '20260907-whiteboard-drawio',
+    date: '2026.09.07',
+    category: 'リリース',
+    title: 'ホワイトボードの内容を draw.io へ図形のまま貼り付けられるようになりました',
+    excerpt: 'コピーして draw.io に貼るだけで、画像ではなく draw.io の図形として置き直されます。色や線種はもちろん、矢印のつながりは接続位置まで、フレームはグループとして持ち込み。自分のボードへの貼り戻しはこれまでどおりです。',
+    Component: WhiteboardDrawio,
+  },
   {
     slug: '20260901-github-integration',
     date: '2026.09.01',
