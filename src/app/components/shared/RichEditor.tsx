@@ -1121,7 +1121,11 @@ export function RichEditor({
     if (!editor) return;
     const current = editor.getHTML();
     const incoming = value || "";
-    if (current !== incoming) editor.commands.setContent(incoming, false);
+    // 第2引数はオプションのオブジェクト。tiptap v2 の `setContent(html, false)` は v3 で
+    // 効かなくなっており（`{ emitUpdate = true } = {}` に落ちる）、boolean を渡すと
+    // 「表示のために流し込んだだけ」の setContent が update を発火させてしまう。
+    // その update は onChange → 各画面の自動保存へ流れるので、開いただけで保存が走る。
+    if (current !== incoming) editor.commands.setContent(incoming, { emitUpdate: false });
   }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
