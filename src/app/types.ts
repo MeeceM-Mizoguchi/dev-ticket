@@ -519,6 +519,11 @@ export interface Whiteboard {
   sharedWith: WhiteboardShareMember[];
   /** 作成者の表示名。プライベートボードだけ解決する（共有相手がメンション通知の可否を判断するのに使う） */
   createdByName: string;
+  /**
+   * アーカイブ（片付け）した日時。null = 現役。
+   * 削除ではないので中身は残り、URLからは開ける。一覧の既定の並びから外れるだけ。
+   */
+  archivedAt: string | null;
 }
 // ── ナレッジノート（プロジェクト単位の資料の保管・閲覧・検索） ──
 // 表示名は「ナレッジノート」。内部識別子は knowledge_ に統一する。
