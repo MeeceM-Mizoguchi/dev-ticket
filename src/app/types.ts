@@ -483,6 +483,20 @@ export interface MeetingMinute {
   images: string[];
   createdBy: string; createdAt: string; updatedAt: string;
 }
+/**
+ * クライアント（取引先企業）単位の打ち合わせメモ。
+ * 議事録(MeetingMinute)はプロジェクト単位なので、どのプロジェクトにも属さない
+ * 「その会社との打ち合わせ」はこちらに書く。フォルダ階層は持たない。
+ */
+export interface ClientNote {
+  id: string; clientId: string; title: string;
+  /** 打ち合わせ日 (yyyy-mm-dd) */
+  noteDate: string;
+  attendees: string[]; content: string;
+  images: string[];
+  organizationId?: string | null;
+  createdBy: string; createdAt: string; updatedAt: string;
+}
 /** プライベートボードの共有相手（whiteboard_shares の1行） */
 export interface WhiteboardShareMember {
   /** profiles.id（= auth.uid()）。userId と同じ空間 */

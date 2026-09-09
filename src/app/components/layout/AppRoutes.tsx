@@ -6,6 +6,7 @@ import { Dashboard } from "@/app/pages/Dashboard";
 import { ProjectsPage } from "@/app/pages/ProjectsPage";
 import { SprintPage } from "@/app/pages/SprintPage";
 import { ClientsPage } from "@/app/pages/ClientsPage";
+import { ClientNotesPage } from "@/app/pages/ClientNotesPage";
 import { MembersPage } from "@/app/pages/MembersPage";
 import { PermissionsPage } from "@/app/pages/PermissionsPage";
 import { RolesPage } from "@/app/pages/RolesPage";
@@ -32,6 +33,9 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/dashboard", element: <Dashboard /> },
   { path: "/projects", element: <ProjectsPage /> },
   { path: "/clients", element: <ClientsPage /> },
+  // クライアント単位の打ち合わせメモ（プロジェクト配下の議事録とは別物）
+  { path: "/clients/:clientId/notes", element: <ClientNotesPage /> },
+  { path: "/clients/:clientId/notes/:noteId", element: <ClientNotesPage /> },
   { path: "/members", element: <MembersPage /> },
   { path: "/permissions", element: <PermissionsPage /> },
   { path: "/roles", element: <RolesPage /> },

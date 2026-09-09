@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
 import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
@@ -218,4 +218,9 @@ export function mapWikiPage(r: any): WikiPage {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapMeetingMinute(r: any): MeetingMinute {
   return { id: r.id, projectId: r.project_id, title: r.title || "", meetingDate: r.meeting_date || "", parentId: r.parent_id ?? null, isFolder: r.is_folder ?? false, sortOrder: r.sort_order ?? 0, attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapClientNote(r: any): ClientNote {
+  return { id: r.id, clientId: r.client_id, title: r.title || "", noteDate: r.note_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], organizationId: r.organization_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
