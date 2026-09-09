@@ -29,6 +29,7 @@ import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { readMinutesMarkdownFiles, MINUTES_MD_ACCEPT } from "@/app/lib/minutesMdImport";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
@@ -560,11 +561,12 @@ export function MinutesPage() {
       </div>
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>議事録</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${minuteCount} 件` : "..."}</p>
+        {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>議事録</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${minuteCount} 件` : "..."}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {permsLoaded && effectiveMinutesPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
@@ -667,7 +669,8 @@ export function MinutesPage() {
                     style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "7px 8px", borderRadius: 7, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 1 }}>
                     <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 1 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title || "新規議事録"}</div>
+                      <TruncatedText as="div" text={m.title || "新規議事録"}
+                        style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
                       <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>
                         {formatDate(m.meetingDate)}{parent ? ` · ${parent.title || "無題のフォルダ"}` : ""}
                       </div>
@@ -710,7 +713,8 @@ export function MinutesPage() {
                   <>
                     <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.title || "新規議事録"}</p>
+                      <TruncatedText as="p" text={node.title || "新規議事録"}
+                        style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", margin: 0 }} />
                       <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>{formatDate(m?.meetingDate ?? "")}</p>
                     </div>
                     {pending > 0 && (

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 // 🌟 修正: 取下ボタン用のアイコン (Ban) を追加
 import { X, Paperclip, ChevronDown, Trash2, FileCode2, ImageIcon, Pencil, Check, ChevronDown as CaretDown, Copy, CheckCheck, ArrowRightLeft, GitBranch, Plus, Activity, CornerDownRight, Link, Link2, MoreHorizontal, ChevronLeft, PauseCircle, PlayCircle, Ban, ClipboardCheck } from "lucide-react";
-import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
+import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, TicketAttachment, Priority, TicketStatus, CommentType, Skill } from "@/app/types";
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
 import { fetchSkills } from "@/app/lib/skillsApi";
@@ -27,6 +27,11 @@ import { Avatar } from "@/app/components/shared/Avatar";
 import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { ImageLightbox, useImageLightbox } from "@/app/components/shared/ImageLightbox";
 import { mapComment, mapSourceFile, mapSprintTicket, mapTicketCategory, mapSprint } from "@/app/lib/mappers";
+import { FileAttachments } from "@/app/components/shared/FileAttachments";
+import {
+  fetchTicketAttachments, uploadTicketAttachment, deleteTicketAttachment,
+  downloadTicketAttachment, purgeTicketAttachments,
+} from "@/app/lib/ticketAttachments";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { DialogShell } from "@/app/components/shared/DialogShell";
@@ -392,6 +397,14 @@ export function TicketDetailPanel({
   const [ticketImages, setTicketImages] = useState<string[]>(ticket?.images ?? []);
   const ticketImagesRef = useRef<string[]>(ticket?.images ?? []);
 
+  // ticket-level files（画像以外の添付。ticket_attachments テーブル）
+  const [attachments, setAttachments] = useState<TicketAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  // BUG-05: await を挟む追加処理は ref でガードしないと連打で二重登録される
+  const uploadingAttachmentRef = useRef(false);
+  // 追加／削除の最中は10秒ポーリングの取得結果で一覧を上書きしない（消したものが復活して見える）
+  const attachmentsBusyRef = useRef(false);
+
   // image preview
   const { lightbox, openLightbox, closeLightbox, setLightboxIndex } = useImageLightbox();
 
@@ -544,12 +557,15 @@ export function TicketDetailPanel({
 
   const loadCommentFiles = useCallback(async (ticketId: string) => {
     if (!isSupabaseEnabled) return;
-    const [{ data: cData }, { data: fData }] = await Promise.all([
+    const [{ data: cData }, { data: fData }, aData] = await Promise.all([
       supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at"),
       supabase!.from("ticket_source_files").select("*").eq("ticket_id", ticketId).order("created_at"),
+      fetchTicketAttachments(ticketId),
     ]);
     if (cData) setComments(cData.map(mapComment));
     if (fData) setSourceFiles(fData.map(mapSourceFile));
+    // 追加／削除の最中は取得結果が古い可能性があるので上書きしない
+    if (!attachmentsBusyRef.current) setAttachments(aData);
   }, []);
 
   // パンくず（プロジェクト名 / スプリント名 / 親チケット）。
@@ -869,6 +885,7 @@ export function TicketDetailPanel({
     setChildTicketsLoaded(false);
     setComments([]);
     setSourceFiles([]);
+    setAttachments([]);
     setCommentText("");
     setCommentImages([]);
     setReviewContent("");
@@ -1196,6 +1213,58 @@ export function TicketDetailPanel({
       setTicketImages(next);
     }
   }, [ticket?.id, fetchServerImages, emitMine]);
+
+  // ── チケット本体のファイル添付 ──
+  // 画像は sprint_tickets.images（配列列）だが、ファイルは表示名・サイズを持たせたいので
+  // ticket_attachments テーブル側で管理する。追加も削除も即時にDBへ反映する。
+  const addTicketFiles = useCallback(async (files: File[]) => {
+    if (!ticket || files.length === 0) return;
+    if (!isSupabaseEnabled) { showAlert("ファイル添付にはログインが必要です", "添付できません"); return; }
+    // BUG-05: 連打・多重ドロップでの二重登録を ref で防ぐ
+    if (uploadingAttachmentRef.current) return;
+    uploadingAttachmentRef.current = true;
+    attachmentsBusyRef.current = true;
+    setUploadingAttachment(true);
+    try {
+      for (const f of files) {
+        try {
+          const created = await uploadTicketAttachment(ticket.id, f, userName);
+          setAttachments(prev => prev.some(a => a.id === created.id) ? prev : [...prev, created]);
+        } catch (e) {
+          console.error("[attachments] アップロードに失敗:", e);
+          showAlert(e instanceof Error ? e.message : "ファイルの添付に失敗しました", "添付できません");
+        }
+      }
+      emitMine();
+    } finally {
+      uploadingAttachmentRef.current = false;
+      attachmentsBusyRef.current = false;
+      setUploadingAttachment(false);
+    }
+  }, [ticket?.id, userName, showAlert, emitMine]);
+
+  const removeTicketFile = useCallback(async (id: string) => {
+    const target = attachments.find(a => a.id === id);
+    if (!target) return;
+    attachmentsBusyRef.current = true;
+    setAttachments(prev => prev.filter(a => a.id !== id));
+    try {
+      await deleteTicketAttachment(target);
+      emitMine();
+    } catch (e) {
+      console.error("[attachments] 削除に失敗:", e);
+      // 消せていないので一覧へ戻す（並びは created_at 昇順を保つ）
+      setAttachments(prev => [...prev, target].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+      showAlert(e instanceof Error ? e.message : "ファイルの削除に失敗しました", "削除できません");
+    } finally {
+      attachmentsBusyRef.current = false;
+    }
+  }, [attachments, showAlert, emitMine]);
+
+  const downloadTicketFile = useCallback((id: string) => {
+    const target = attachments.find(a => a.id === id);
+    if (target) void downloadTicketAttachment(target);
+  }, [attachments]);
 
   // チケットのステータス変更／保留／取下のたびに、所属スプリントの完了判定を
   // DBへ同期する（表示は computeSprintStatus のライブ計算が担保するので fire-and-forget）。
@@ -1847,6 +1916,8 @@ export function TicketDetailPanel({
     }
     await supabase!.from("ticket_comments").delete().eq("ticket_id", ticket.id);
     await supabase!.from("ticket_source_files").delete().eq("ticket_id", ticket.id);
+    // 添付ファイルはDB行がカスケードで消えても実体が残るので、先に実体ごと片付ける
+    await purgeTicketAttachments([ticket.id, ...childTickets.map(c => c.id)]);
     await supabase!.from("sprint_tickets").delete().eq("id", ticket.id);
     onDeleted?.();
     onClose();
@@ -3107,7 +3178,7 @@ export function TicketDetailPanel({
               </div>
             )}
 
-            {/* 詳細 + 画像 */}
+            {/* 詳細 + 画像 + ファイル */}
             <div
               onPaste={e => {
                 // 🌟 BRU9-044: Excel等の表コピーは表HTMLと画像が同時にクリップボードに載るため、
@@ -3121,7 +3192,17 @@ export function TicketDetailPanel({
               }}
               onDragOver={e => { e.preventDefault(); setImageDragOver(true); }}
               onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setImageDragOver(false); }}
-              onDrop={e => { e.preventDefault(); setImageDragOver(false); addTicketImages(e.dataTransfer.files); }}
+              onDrop={e => {
+                e.preventDefault();
+                setImageDragOver(false);
+                if (!canEdit) return;
+                // 画像は画像添付へ、それ以外はファイル添付へ振り分ける
+                const dropped = Array.from(e.dataTransfer.files);
+                const imgs = dropped.filter(f => f.type.startsWith("image/"));
+                const others = dropped.filter(f => !f.type.startsWith("image/"));
+                if (imgs.length > 0) addTicketImages(imgs);
+                if (others.length > 0) void addTicketFiles(others);
+              }}
             >
               <div style={{ marginBottom: 7 }}>
                 <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em" }}>詳細</p>
@@ -3158,6 +3239,21 @@ export function TicketDetailPanel({
                       )}
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* 添付ファイル（画像以外）。閲覧のみの人にも一覧とDLは見せる */}
+              {(canEdit || attachments.length > 0) && (
+                <div style={{ marginTop: 12 }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>添付ファイル</p>
+                  <FileAttachments
+                    items={attachments.map(a => ({ id: a.id, fileName: a.fileName, fileSize: a.fileSize, url: a.fileUrl }))}
+                    onAdd={files => { void addTicketFiles(files); }}
+                    onRemove={id => { void removeTicketFile(id); }}
+                    onDownload={downloadTicketFile}
+                    readOnly={!canEdit}
+                    uploading={uploadingAttachment}
+                  />
                 </div>
               )}
             </div>

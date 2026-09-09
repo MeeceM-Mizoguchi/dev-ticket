@@ -13,6 +13,7 @@ import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { useWindowSize } from "@/app/hooks/useWindowSize";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { projectAccessView } from "@/app/components/shared/NotFoundView";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { DeployStatusBanner } from "@/app/components/github/DeployStatusBanner";
 import { fetchDeployStatus } from "@/app/lib/github";
 import type { SprintTicket, Project, AccessLevel, UserPermissions, GithubDeployStatus } from "@/app/types";
@@ -638,7 +639,8 @@ export function ReleaseNotesPage() {
                         {isReleased && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: "#DCFCE7", color: "#16A34A" }}>リリース済み</span>}
                         {isReleased && item.ticket.isOperationVerified && <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 20, background: "#D1FAE5", color: "#059669", border: "1px solid rgba(5,150,105,0.25)" }}>動作確認済み</span>}
                       </div>
-                      <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.ticket.title}</p>
+                      <TruncatedText as="p" text={item.ticket.title}
+                        style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }} />
                       <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2 }}>{item.projectName} ・ {item.ticket.assignee || "未定"}</p>
                     </div>
                     <ChevronRight style={{ width: 14, height: 14, color: "#B0A9A4", flexShrink: 0, marginTop: 2 }} />
@@ -677,11 +679,12 @@ export function ReleaseNotesPage() {
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-          <div>
-            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>リリースノート</h1>
-            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{scopedProject?.name ?? "..."}</p>
+          {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>リリースノート</h1>
+            <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{scopedProject?.name ?? "..."}</p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
             <ProjectSubNav projectSlug={projectSlug ?? scopedProject?.slug ?? ""} active="release-notes" marginBottom={0}
               wikiPerm={subNavPerms.wiki} backlogPerm={subNavPerms.backlog}
               minutesPerm={subNavPerms.minutes} whiteboardPerm={subNavPerms.whiteboard} />
@@ -894,7 +897,8 @@ export function ReleaseNotesPage() {
                           transition: "background 0.1s",
                         }}>
                         <GripVertical style={{ width: 9, height: 9, color: isReleased ? "rgba(22,163,74,0.4)" : "#B0A9A4", flexShrink: 0 }} />
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{truncateText(label, 16)}</span>
+                        {/* 16文字で切っているので、全文はマウスオーバーで見せる */}
+                        <TruncatedText text={label} always style={{ flex: 1 }}>{truncateText(label, 16)}</TruncatedText>
                       </div>
                     );
                   })}

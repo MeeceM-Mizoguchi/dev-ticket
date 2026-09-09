@@ -6,6 +6,7 @@ import { useOrg } from "@/app/contexts/OrgContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS, MEMBERS } from "@/app/data/mock";
 import { htmlToText } from "@/app/lib/helpers";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 
 interface TicketResult {
   type: "ticket";
@@ -153,6 +154,9 @@ function searchMock(query: string, userName: string, userRole: string): SearchRe
 }
 
 const EMPTY: SearchResults = { tickets: [], sprints: [], projects: [], members: [], comments: [], descriptions: [], wikis: [], minutes: [] };
+
+/** 各カテゴリの1行目（チケット名・PJ名・ページ名…）。見切れたらマウスオーバーで全文を出す */
+const TITLE_STYLE: React.CSSProperties = { fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1 };
 
 export function GlobalSearch() {
   const { userName, userRole, userOrgId } = useAuth();
@@ -490,7 +494,7 @@ export function GlobalSearch() {
                     <ResultRow key={t.id} onClick={() => handleSelect(t)} hoverColor="#F0FDF8">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{t.wbs}</span>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+                        <TruncatedText text={t.title} style={TITLE_STYLE} />
                         <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{STATUS_LABELS[t.status] ?? t.status}</span>
                       </div>
                       <div style={{ marginLeft: 42, fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{t.projectName} / {t.sprintName}</div>
@@ -513,7 +517,7 @@ export function GlobalSearch() {
                     <ResultRow key={d.id} onClick={() => handleSelect(d)} hoverColor="#EEF2FF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{d.wbs}</span>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.title}</span>
+                        <TruncatedText text={d.title} style={TITLE_STYLE} />
                         <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{STATUS_LABELS[d.status] ?? d.status}</span>
                       </div>
                       <div style={{ marginLeft: 42, fontSize: 11, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.snippet}</div>
@@ -532,15 +536,22 @@ export function GlobalSearch() {
                     showBorder={results.tickets.length + results.descriptions.length > 0}
                     count={results.comments.length}
                   />
-                  {renderCategoryList(results.comments, "comments", c => (
-                    <ResultRow key={c.id} onClick={() => handleSelect(c)} hoverColor="#ECFEFF">
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{c.ticketWbs}</span>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{htmlToText(c.content).slice(0, 60) || c.ticketTitle}</span>
-                      </div>
-                      <div style={{ marginLeft: 42, fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{c.ticketTitle} · {c.projectName} / {c.sprintName}</div>
-                    </ResultRow>
-                  ))}
+                  {renderCategoryList(results.comments, "comments", c => {
+                    const body = htmlToText(c.content);
+                    return (
+                      <ResultRow key={c.id} onClick={() => handleSelect(c)} hoverColor="#ECFEFF">
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#9E9690", minWidth: 34, flexShrink: 0 }}>{c.ticketWbs}</span>
+                          {/* 60文字で切っているので、続きはマウスオーバーで（コメントは長いので300文字まで） */}
+                          <TruncatedText style={TITLE_STYLE} always={body.length > 60}
+                            text={body.slice(0, 300) || c.ticketTitle}>
+                            {body.slice(0, 60) || c.ticketTitle}
+                          </TruncatedText>
+                        </div>
+                        <div style={{ marginLeft: 42, fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{c.ticketTitle} · {c.projectName} / {c.sprintName}</div>
+                      </ResultRow>
+                    );
+                  })}
                 </div>
               )}
 
@@ -557,7 +568,7 @@ export function GlobalSearch() {
                   {renderCategoryList(results.sprints, "sprints", s => (
                     <ResultRow key={s.id} onClick={() => handleSelect(s)} hoverColor="#F5F3FF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                        <TruncatedText text={s.name} style={TITLE_STYLE} />
                         <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{STATUS_LABELS[s.status] ?? s.status}</span>
                       </div>
                       <div style={{ fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{s.projectName}</div>
@@ -579,7 +590,7 @@ export function GlobalSearch() {
                   {renderCategoryList(results.projects, "projects", p => (
                     <ResultRow key={p.id} onClick={() => handleSelect(p)} hoverColor="#FFFBEB">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+                        <TruncatedText text={p.name} style={TITLE_STYLE} />
                         <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{STATUS_LABELS[p.status] ?? p.status}</span>
                       </div>
                       <div style={{ fontSize: 11, color: "#B0A9A4", marginTop: 1 }}>{p.client}</div>
@@ -628,7 +639,7 @@ export function GlobalSearch() {
                   {renderCategoryList(results.wikis, "wikis", w => (
                     <ResultRow key={w.id} onClick={() => handleSelect(w)} hoverColor="#F5F3FF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.title}</span>
+                        <TruncatedText text={w.title} style={TITLE_STYLE} />
                       </div>
                       {w.snippet && (
                         <div style={{ fontSize: 11, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.snippet}</div>
@@ -652,7 +663,7 @@ export function GlobalSearch() {
                   {renderCategoryList(results.minutes, "minutes", m => (
                     <ResultRow key={m.id} onClick={() => handleSelect(m)} hoverColor="#ECFEFF">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 13, color: "#1A1714", fontWeight: 500, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
+                        <TruncatedText text={m.title} style={TITLE_STYLE} />
                         {m.meetingDate && (
                           <span style={{ fontSize: 10, color: "#9E9690", flexShrink: 0 }}>{m.meetingDate}</span>
                         )}

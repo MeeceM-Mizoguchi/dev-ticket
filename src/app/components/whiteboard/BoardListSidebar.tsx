@@ -7,6 +7,7 @@ import { PRIVATE_BG, PRIVATE_BORDER, PRIVATE_COLOR } from "./PrivateBadge";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/app/components/ui/dropdown-menu";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 
 interface Props {
   boards: Whiteboard[];
@@ -120,7 +121,8 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId,
                   style={{ flex: 1, fontSize: 12, border: "1px solid rgba(5,150,105,0.3)", borderRadius: 5, padding: "2px 5px", outline: "none", fontFamily: "inherit" }} />
               ) : (
                 <>
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: active ? 600 : 500, color: "#1A1714", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.title}</span>
+                  <TruncatedText text={b.title}
+                    style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: active ? 600 : 500, color: "#1A1714" }} />
                   {isPrivate && (
                     <span title={privateHint}
                       style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: "3px 5px", borderRadius: 4, color: PRIVATE_COLOR, background: PRIVATE_BG, border: `1px solid ${PRIVATE_BORDER}` }}>

@@ -5,11 +5,12 @@
 // UI から独立させて副作用（DB書き込み）だけを担う。
 
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { purgeTicketAttachments } from "@/app/lib/ticketAttachments";
 
 /**
  * チケットを一括削除する。
  * - 選択された親チケットの子チケットも自動的に対象に含める（重複排除）。
- * - 単一削除に倣い ticket_comments / ticket_source_files を先に掃除する。
+ * - 単一削除に倣い ticket_comments / ticket_source_files / ticket_attachments を先に掃除する。
  * - 単一削除では子の sprint_tickets 行がカスケード頼みで消え残る余地があったため、
  *   ここでは子の本体行も明示的に削除する。
  * 戻り値: 実際に削除したチケット行数。
@@ -26,6 +27,8 @@ export async function bulkDeleteTickets(ticketIds: string[]): Promise<number> {
   // 関連行 → 本体行 の順で削除
   await supabase!.from("ticket_comments").delete().in("ticket_id", allIds);
   await supabase!.from("ticket_source_files").delete().in("ticket_id", allIds);
+  // 添付ファイルはストレージの実体も一緒に消す
+  await purgeTicketAttachments(allIds);
   await supabase!.from("sprint_tickets").delete().in("id", allIds);
 
   return allIds.length;

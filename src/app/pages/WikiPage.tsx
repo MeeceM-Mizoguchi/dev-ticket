@@ -26,6 +26,7 @@ function titleToPathSegment(title: string): string {
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { RichEditor } from "@/app/components/shared/RichEditor";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
@@ -279,14 +280,14 @@ function TreeItem({
                 }}
               />
             ) : (
-              <span style={{
-                flex: 1, minWidth: 0, fontSize: 12,
-                fontWeight: isSelected ? 700 : 500,
-                color: isSelected ? "#059669" : "#1A1714",
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              }}>
-                {node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
-              </span>
+              <TruncatedText
+                text={node.title || (isFolder ? "無題のフォルダ" : "無題のページ")}
+                style={{
+                  flex: 1, minWidth: 0, fontSize: 12,
+                  fontWeight: isSelected ? 700 : 500,
+                  color: isSelected ? "#059669" : "#1A1714",
+                }}
+              />
             )}
 
             {!isEditing && (
@@ -800,11 +801,12 @@ export function WikiPage() {
       </div>
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>Wiki</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${pageCount} ページ` : "..."}</p>
+        {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Wiki</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${pageCount} ページ` : "..."}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {permsLoaded && effectiveWikiPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
@@ -913,7 +915,8 @@ export function WikiPage() {
                         onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                         <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 1 }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{page.title || "無題のページ"}</div>
+                          <TruncatedText as="div" text={page.title || "無題のページ"}
+                            style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
                           {parent && <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>{parent.title || "無題のフォルダ"}</div>}
                         </div>
                       </div>

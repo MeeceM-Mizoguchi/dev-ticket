@@ -4,6 +4,7 @@ import { FolderKanban, TrendingUp, Zap, Clock, Plus, ChevronRight, Maximize2, Re
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid, Legend } from "recharts";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
@@ -757,7 +758,8 @@ export function Dashboard() {
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: pr.dot, marginTop: 5, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", lineHeight: 1.3, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ticket.title}</p>
+                    <TruncatedText as="p" text={ticket.title}
+                      style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", lineHeight: 1.3, marginBottom: 4 }} />
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ fontSize: 9, background: isInProgress ? "#ECFDF5" : "#F4F5F6", color: isInProgress ? "#059669" : "#A09790", padding: "2px 7px", borderRadius: 20, fontWeight: 600 }}>
                         {isInProgress ? "進行中" : "未着手"}
@@ -798,8 +800,8 @@ export function Dashboard() {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: ss.color, flexShrink: 0 }} />
                   <div style={{ minWidth: 0 }}>
-                    <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</p>
-                    <p style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.client}</p>
+                    <TruncatedText as="p" text={p.name} style={{ fontSize: 13, fontWeight: 600, color: "#1A1714" }} />
+                    <TruncatedText as="p" text={p.client} style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }} />
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -975,6 +977,7 @@ function DashboardGantt({ projectNames, sprints, navigate }: { projectNames: str
                       onMouseLeave={e => { (e.currentTarget.querySelector('[data-projname]') as HTMLElement | null)?.style.setProperty('text-decoration', 'none'); }}
                     >
                       <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#059669", flexShrink: 0 }} />
+                      {/* 行全体の title（「〜のガントチャートを開く」）に名前が入っているのでツールチップは足さない */}
                       <span data-projname style={{ fontSize: 12, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecorationColor: "#059669" }}>{g.name}</span>
                     </div>
                     <div style={{ position: "relative", flex: 1, height: "100%" }}>

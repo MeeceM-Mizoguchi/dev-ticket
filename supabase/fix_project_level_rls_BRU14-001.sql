@@ -339,6 +339,7 @@ declare
     'sprint_orders',
     'sprints',
     'ticket_categories',
+    'ticket_github_branches',
     'ticket_github_link_candidates',
     'ticket_github_links',
     'whiteboards',

@@ -21,7 +21,7 @@ import { reflowTables, freezeSelectedTable, isPartialTableCellSelection, moveTab
 import { getEditingTextEl, setEditingTextEl } from "@/app/lib/whiteboardText";
 import { reflowBoundTextShapes, freezeSelectedShapeHeights } from "@/app/lib/whiteboardShapeFit";
 import { copySelectionAsImage } from "@/app/lib/whiteboardCopySelection";
-import { cutFrameSelection, expandSelectionToFrameChildren, isFrameSelected, writeFrameAwareClipboard, writeFrameAwareClipboardViaApi } from "@/app/lib/whiteboardFrameCopy";
+import { cutFrameSelection, expandSelectionToFrameChildren, hasSelection, writeFrameAwareClipboard, writeFrameAwareClipboardViaApi } from "@/app/lib/whiteboardFrameCopy";
 import { hasRichBlocks, htmlToBlocks, looksLikeMarkdown, parseMarkdown } from "@/app/lib/markdown";
 import { pasteBlocksToWhiteboard, pastePlainTextToWhiteboard, shouldPastePlainText } from "@/app/lib/whiteboardPasteMarkdown";
 import { viewportCenter } from "@/app/lib/whiteboardTableCreate";
@@ -895,10 +895,18 @@ export default function WhiteboardCanvas({
     return () => window.removeEventListener("paste", onPaste, true);
   }, [api, canEdit, instanceKey, showToast]);
 
-  // ── フレームのコピー/切り取りは「中身ごと」運ぶ（BRU10-063）──
-  // Excalidraw はフレームの中身を frameId でしか集めないが、このボードの所属は customData.wbParent
-  // なので、標準のままでは空のフレームだけがクリップボードに載る（貼り付けても枠しか出ない）。
-  // フレームを選んでいるときだけ copy/cut を横取りし、中身を含む Excalidraw 形式の JSON を書き込む。
+  // ── コピー/切り取りの横取り ──
+  // 目的は2つ。
+  //  ① フレームの中身ごと運ぶ（BRU10-063）… Excalidraw はフレームの中身を frameId でしか集めないが、
+  //     このボードの所属は customData.wbParent。標準のままでは空のフレームだけがクリップボードに載る。
+  //  ② draw.io へ図形として貼れるようにする … text/plain に従来の Excalidraw JSON を載せたまま、
+  //     text/html に draw.io の mxGraphModel XML を同時に載せる（whiteboardDrawioExport）。
+  //
+  // ②のため、横取りは「選択があるとき常に」行う（以前はフレーム選択時だけだった）。Excalidraw 標準の
+  // onCopy は navigator.clipboard.writeText を使い、これはクリップボード全体を置き換えてしまうので、
+  // 標準を走らせたまま text/html を足すことができない。
+  // コピー対象の収集は collectSelectionClosure（束縛テキスト・フレームの中身・影矩形まで面倒を見る）に
+  // 任せるので、フレーム以外の選択でも標準より取りこぼしが少ない。
   // 貼り付けは標準に任せる（id の再採番は標準が行い、customData の参照は貼り付け後に
   // remapDuplicatedCustomRefs / captureFrameChildren が直す）。
   useEffect(() => {
@@ -910,12 +918,16 @@ export default function WhiteboardCanvas({
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return false;
       const root = containerRef.current;
       if (!root || root.querySelector(".excalidraw-wysiwyg")) return false;
+      // 画面の文字を範囲選択しているなら、その文字のコピーを優先する（コメント本文など）。
+      // 図形の選択は canvas 上の状態で DOM の選択にはならないので、これで取り違えない。
+      const sel = window.getSelection?.();
+      if (sel && !sel.isCollapsed && String(sel).trim()) return false;
       return root.contains(document.activeElement);
     };
     const onClipboard = (cut: boolean) => (e: ClipboardEvent) => {
       if (!isActiveWbInstance(instanceKey)) return; // 2枚あるときクリップボードを奪い合わない
       if (cut && !canEdit) return;
-      if (!onCanvas(e.target) || !isFrameSelected(api)) return;
+      if (!onCanvas(e.target) || !hasSelection(api)) return;
       if (!writeFrameAwareClipboard(api, e)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -930,7 +942,7 @@ export default function WhiteboardCanvas({
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isActiveWbInstance(instanceKey) || !canEdit) return;
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.code !== "KeyX") return;
-      if (!onCanvas(e.target) || !isFrameSelected(api)) return;
+      if (!onCanvas(e.target) || !hasSelection(api)) return;
       if (!writeFrameAwareClipboardViaApi(api)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -945,7 +957,7 @@ export default function WhiteboardCanvas({
       if (!li || !containerRef.current?.contains(li)) return;
       const cut = li.getAttribute("data-testid") === "cut";
       if (cut && !canEdit) return;
-      if (!isFrameSelected(api) || !writeFrameAwareClipboardViaApi(api)) return;
+      if (!hasSelection(api) || !writeFrameAwareClipboardViaApi(api)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       if (cut) cutFrameSelection(api);
@@ -1085,12 +1097,13 @@ export default function WhiteboardCanvas({
 
       const st = api.getAppState?.() || {};
       const sel = st.selectedElementIds || {};
-      const hasSelection = Object.values(sel).some(Boolean)
+      // 選択・編集中の対象があるか（import した hasSelection と紛らわしくないよう別名にする）
+      const selecting = Object.values(sel).some(Boolean)
         || !!st.editingGroupId || !!st.editingLinearElement || !!st.selectedLinearElement;
       const toolType = st.activeTool?.type;
       const toolActive = !!toolType && toolType !== "selection" && toolType !== "hand";
 
-      if (hasSelection) {
+      if (selecting) {
         // 1回目のEsc = フォーカス(選択)を外すだけ。全画面は維持。
         // Excalidraw 本体にも Esc は流す（stopPropagationしない）が、取りこぼし対策で自前でも解除する。
         try {
@@ -1462,7 +1475,9 @@ export default function WhiteboardCanvas({
           // Excalidraw公式の右上スロットに載せる（自前ボタンが標準UIと重ならない）: プライベート · リンク · ヘルプ · エクスポート · 全画面
           // ※左上ではなくここに置くのは、左上はボード一覧の展開ボタン(BoardListToggle)と重なるのと、
           //   このスロットはキャンバス内部なので疑似全画面(zIndex:3000)でもバッジが隠れないため。
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
+          // data-hover="on" … 共通のホバーUI(styles/interactive.css)は Excalidraw の中を
+          //   触らない決まりなので、このスロットに載せた自前ボタンだけ効かせ直す。
+          <div data-hover="on" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", flexShrink: 0 }}>
             {isPrivate && <PrivateBadge variant="canvas" sharedWith={sharedWith} isOwner={isBoardOwner} />}
             <CopyObjectLinkButton api={api} projectSlug={projectSlug} boardId={boardId} onResult={showToast} />
             <HelpButton api={api} />

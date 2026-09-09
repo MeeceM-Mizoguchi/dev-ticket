@@ -14,6 +14,7 @@ import { MyFilterModal, addMyFilter, SaveFilterDialog, checkDuplicateFilter } fr
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { PlanTooltip } from "@/app/components/shared/PlanTooltip";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { downloadSprintCsv } from "@/app/lib/csvExport";
 import { useAlert } from "@/app/contexts/AlertContext";
 import { CreateTicketMenu, useCreateTicketMenu, buildCreateTicketDisabled, type BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
@@ -596,7 +597,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                   <ChevronDown style={{ width: 13, height: 13, color: "#B0A9A4", transform: isExp ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s", flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2, minWidth: 0, overflow: "hidden" }}>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sprint.name}</span>
+                      <TruncatedText text={sprint.name}
+                        style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", fontFamily: "var(--font-heading)" }} />
                       <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: sm.bg, color: sm.color }}>{sm.label}</span>
                       {sprint.isManualStatus && (
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: "#FFFBEB", color: "#D97706", border: "1px solid rgba(217,119,6,0.25)", whiteSpace: "nowrap" }}>手動</span>
@@ -789,7 +791,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                             <div style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
-                            <span style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.title}</span>
+                            <TruncatedText text={t.title} style={{ fontSize: 12, fontWeight: 500, color: "#1A1714" }} />
                             {hasChildren && <span style={{ fontSize: 9, color: "#B0A9A4", flexShrink: 0 }}><GitBranch style={{ width: 9, height: 9, display: "inline" }} /> {children.length}</span>}
                             {needsPr && <PrMissingChip />}
                           </div>
@@ -852,7 +854,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                               </div>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, paddingLeft: 4 }}>
                                 <div style={{ width: 1, height: 12, background: "rgba(26,23,20,0.15)", flexShrink: 0 }} />
-                                <span style={{ fontSize: 11, fontWeight: 400, color: "#4B4744", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{child.title}</span>
+                                <TruncatedText text={child.title} style={{ fontSize: 11, fontWeight: 400, color: "#4B4744" }} />
                                 {childNeedsPr && <PrMissingChip compact />}
                               </div>
                               <span style={{ fontSize: 11, color: "#9C9490", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{htmlToText(child.description) || "—"}</span>

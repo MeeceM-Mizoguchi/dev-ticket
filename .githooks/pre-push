@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# push する前に、落ちると本番デプロイが止まる検査だけを走らせる。
+#
+# 「気をつける」「忘れずに叩く」は層として数えない、という方針の唯一のローカル層。
+# git push を通る限り必ず実行されるので、人もAIも飛ばせない。
+#
+# 有効化（クローンごとに1回だけ必要）:
+#   git config core.hooksPath .githooks
+#
+# ここでは 0.1 秒で終わる検査だけを置く。フルビルド(約40秒)を入れると
+# --no-verify を常用する癖がついて、関門そのものが形骸化するため。
+# 型やバンドルの本当の失敗は Vercel のプレビューデプロイが受け持つ。
+
+set -e
+
+echo "[pre-push] IMEガードを検査しています..."
+
+if ! node scripts/check-ime-enter.mjs; then
+  echo ""
+  echo "[pre-push] push を中止しました。"
+  echo "  上の箇所を src/app/lib/submitKey.ts の submitOnEnter / submitOnModEnter に置き換えてください。"
+  echo "  これは npm run build の1段目でもあり、直さないと Vercel のデプロイが失敗して"
+  echo "  本番に何も反映されなくなります（2026-09-01 に発生）。"
+  echo ""
+  echo "  意図的な箇所なら、同じ行か直前行に \`ime-ok:理由\` を書けば除外されます。"
+  echo "  どうしても今すぐ push したい場合のみ: git push --no-verify"
+  echo ""
+  exit 1
+fi
+
+exit 0

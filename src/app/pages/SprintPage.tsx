@@ -133,6 +133,8 @@ export function SprintPage() {
   const [showSprintOrder, setShowSprintOrder] = useState(false);
   // 保存済みの表示順（sprints.id の配列）。個人設定 > 全体設定 の優先度で解決済みのもの
   const [sprintOrder, setSprintOrder] = useState<string[]>([]);
+  // 並び順の保存中フラグ。連打で「消す→書く」が交錯しないようにする
+  const savingOrderRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
   const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
@@ -336,15 +338,23 @@ export function SprintPage() {
   const orderedSprints = useMemo(() => applySprintOrder(sprints, sprintOrder), [sprints, sprintOrder]);
 
   const handleSaveSprintOrder = async (sprintIds: string[], scope: SprintOrderScope) => {
+    // await を挟むので二重実行よけは ref で行う（BUG-05）。
+    // 「全員に適用」は消してから書き直す手順なので、2本走ると並び順が消えかねない。
+    if (savingOrderRef.current) return;
+    savingOrderRef.current = true;
     try {
       if (projectId) await saveSprintOrder(projectId, userId, sprintIds, scope, userName);
       setSprintOrder(sprintIds);
       setShowSprintOrder(false);
-      // 保存後はデータを取り直して、新しい並び順の状態で画面を作り直す
+      // 保存後はデータを取り直して、新しい並び順の状態で画面を作り直す。
+      // 実際にDBへ入った並び順で描き直すので、保存できていなければここで元に戻る
+      // （保存できたように見えたまま、自分の画面だけ新しい並び、を防ぐ）。
       await refreshSprints();
       toast(scope === "all" ? "並び順をプロジェクトの全員に適用しました" : "並び順を保存しました（自分の画面のみ）");
     } catch {
       toast("並び順の保存に失敗しました", "error");
+    } finally {
+      savingOrderRef.current = false;
     }
   };
 
@@ -416,9 +426,10 @@ export function SprintPage() {
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-          <div>
+          {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+          <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em" }}>スプリント管理</h1>
+              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.01em", whiteSpace: "nowrap" }}>スプリント管理</h1>
               {project?.slug && <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#9CA3AF", background: "#F3F4F6", padding: "2px 7px", borderRadius: 5, fontWeight: 600 }}>{project.slug}</span>}
               {/* 🌟 BRU10-068: 設定アイコンはメニュー（プロジェクト設定 / スプリント並び替え）を開く */}
               <button onClick={e => setSettingsMenuRect(e.currentTarget.getBoundingClientRect())} title="設定"
@@ -429,7 +440,7 @@ export function SprintPage() {
               </button>
             </div>
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
-              <p style={{ fontSize: 12, color: "#A09790", margin: 0 }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
+              <p style={{ fontSize: 12, color: "#A09790", margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
               {project?.envMemos?.filter(m => m.url || m.memo).map((m, i) => (
                 <EnvMemoTag key={i} m={m} />
               ))}

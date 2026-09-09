@@ -2,3 +2,5 @@
 @import './tailwind.css';
 @import './theme.css';
 @import './globals.css';
+/* ホバーUIは各画面のインラインstyleを上書きする（!important を使う）ので最後に読む */
+@import './interactive.css';

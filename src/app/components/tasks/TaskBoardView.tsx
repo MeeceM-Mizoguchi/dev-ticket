@@ -10,6 +10,7 @@ import { DndProvider, useDrag, useDrop } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { Hash, FolderKanban, CalendarDays, Plus, CornerDownRight } from "lucide-react";
 import { Avatar } from "@/app/components/shared/Avatar";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { TASK_STATUSES, getTaskPriorityMeta } from "@/app/lib/taskService";
 import { truncateName } from "@/app/lib/helpers";
 import { isOverdue } from "@/app/components/tasks/TaskListView";
@@ -77,16 +78,15 @@ function TaskCard({ task, status, canEdit, selected, showProject, projectName, p
         {task.parentId && (
           <div style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: "#9E9690", marginBottom: 4 }}>
             <CornerDownRight style={{ width: 9, height: 9, flexShrink: 0 }} />
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-              {parentTitle || "サブタスク"}
-            </span>
+            <TruncatedText text={parentTitle || "サブタスク"} />
           </div>
         )}
-        <p style={{
+        {/* 2行で切っているので、それより長いものはマウスオーバーで全文を出す */}
+        <TruncatedText as="p" text={task.title} style={{
           fontSize: 11.5, fontWeight: 600, marginBottom: 7, lineHeight: 1.35,
           color: "#1A1714",
-          display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden",
-        }}>{task.title}</p>
+          display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, whiteSpace: "normal",
+        }} />
 
         {(task.ticketWbs || (showProject && task.projectId)) && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 7 }}>

@@ -7,6 +7,7 @@ import {
 import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from "recharts";
 import { OrgSelector } from "@/app/components/shared/OrgSelector";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -750,7 +751,7 @@ export function ReportsPage() {
                     <div key={t.id} onClick={() => setSelectedTicket(t)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "#F9FAFB", borderRadius: 8, cursor: "pointer" }}>
                       <Rocket style={{ width: 13, height: 13, color: "#0D9488", flexShrink: 0 }} />
                       <span style={{ fontSize: 12, fontWeight: 700, color: "#0D9488", flexShrink: 0, fontFamily: "monospace" }}>{t.releaseDate}</span>
-                      <span style={{ fontSize: 12, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+                      <TruncatedText text={t.title} style={{ fontSize: 12, color: "#374151" }} />
                     </div>
                   ))}
                 </div>
@@ -929,7 +930,7 @@ function IssueRow({ iss, onPick }: { iss: { level: "high" | "medium" | "low"; ti
                   <div key={it.id} onClick={pick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: it.alert ? "#FEF2F2" : "#F9FAFB", borderRadius: 8, border: it.alert ? "1px solid #FEE2E2" : "1px solid transparent", cursor: pick ? "pointer" : "default" }}>
                     {it.alert && <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0 }} />}
                     <span style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", fontFamily: "monospace", flexShrink: 0 }}>{it.wbs || "—"}</span>
-                    <span style={{ fontSize: 12, color: "#374151", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</span>
+                    <TruncatedText text={it.title} style={{ fontSize: 12, color: "#374151", flex: 1 }} />
                     {it.assignee && <span style={{ fontSize: 11, color: "#B0A9A4", flexShrink: 0, maxWidth: 90, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.assignee}</span>}
                     {it.right && <span style={{ fontSize: 11, fontWeight: 600, color: it.right === "未設定" ? "#9CA3AF" : m.color, flexShrink: 0 }}>{it.right}</span>}
                   </div>
@@ -950,7 +951,7 @@ function TicketRow({ t, right, rightColor, alert, onClick }: { t: RepTicket; rig
     <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: alert ? "#FEF2F2" : "#F9FAFB", borderRadius: 8, border: alert ? "1px solid #FEE2E2" : "1px solid transparent", cursor: onClick ? "pointer" : "default" }}>
       {alert && <AlertTriangle style={{ width: 13, height: 13, color: "#DC2626", flexShrink: 0 }} />}
       <span style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", fontFamily: "monospace", flexShrink: 0 }}>{t.wbs || "—"}</span>
-      <span style={{ fontSize: 12, color: "#374151", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+      <TruncatedText text={t.title} style={{ fontSize: 12, color: "#374151", flex: 1, minWidth: 0 }} />
       <span style={{ fontSize: 11, color: "#B0A9A4", flexShrink: 0, maxWidth: 90, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.assignee || ""}</span>
       {right && <span style={{ fontSize: 11, fontWeight: 600, color: rightColor || "#6B7280", flexShrink: 0 }}>{right}</span>}
     </div>
@@ -1110,7 +1111,7 @@ function ReportGantt({ sprints, periodStart, periodEnd, nowMs, spotlightLabel, o
                         <span style={{ flexShrink: 0, fontSize: 9, color: r.childCount > 0 ? "#9AA2AF" : "transparent", transform: r.open ? "rotate(90deg)" : "none", transition: "transform .12s ease", display: "inline-block", width: 8 }}>▶</span>
                       )}
                       <span style={{ fontSize: 9.5, fontFamily: "ui-monospace, monospace", color: "#AEB4BE", flexShrink: 0 }}>{r.wbs || "—"}</span>
-                      <span style={{ fontSize: isSprint ? 11.5 : 10.5, fontWeight: isSprint ? 600 : 400, color: isSprint ? "#384150" : "#6B7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
+                      <TruncatedText text={r.title} style={{ fontSize: isSprint ? 11.5 : 10.5, fontWeight: isSprint ? 600 : 400, color: isSprint ? "#384150" : "#6B7280" }} />
                     </div>
                     {/* タイムライン・トラック（薄いグリッド線＋連続バー） */}
                     <div style={{ position: "relative", width: trackW, height: CELL, flexShrink: 0, borderBottom: "1px solid #F1F3F5", boxSizing: "border-box", backgroundImage: gridLine }}>

@@ -23,6 +23,7 @@ import {
   ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent,
 } from "@/app/components/ui/context-menu";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 
 /** ツリーが必要とする最小の形。実データ(議事録/バックログ)はこれを満たしていればよい */
 export interface DocTreeItem {
@@ -297,14 +298,14 @@ function DocTreeRow({
             ) : isFolder ? (
               <>
                 <FolderIcon style={{ width: 12, height: 12, color: "#F59E0B", flexShrink: 0 }} />
-                <span style={{
-                  flex: 1, minWidth: 0, fontSize: 12,
-                  fontWeight: isSelected ? 700 : 500,
-                  color: isSelected ? "#059669" : "#1A1714",
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                }}>
-                  {node.title || "無題のフォルダ"}
-                </span>
+                <TruncatedText
+                  text={node.title || "無題のフォルダ"}
+                  style={{
+                    flex: 1, minWidth: 0, fontSize: 12,
+                    fontWeight: isSelected ? 700 : 500,
+                    color: isSelected ? "#059669" : "#1A1714",
+                  }}
+                />
               </>
             ) : (
               renderItemRow(node, isSelected)

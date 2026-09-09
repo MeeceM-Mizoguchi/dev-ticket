@@ -23,6 +23,7 @@ import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
 import { useLinkSuggestions } from "@/app/hooks/useLinkSuggestions";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { useCopyShareLink } from "@/app/hooks/useCopyShareLink";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
@@ -199,7 +200,8 @@ function BacklogRowContent({
     <div style={{ flex: 1, minWidth: 0, opacity: isDone ? 0.65 : 1 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
         <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)", background: isSelected ? "#A7F3D0" : "#EDE9FE", color: isSelected ? "#065F46" : "#6D28D9", padding: "1px 5px", borderRadius: 4, flexShrink: 0 }}>{item.id}</span>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title || "無題"}</span>
+        <TruncatedText text={item.title || "無題"}
+          style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
       </div>
       <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pMeta.bg, color: pMeta.color }}>{pMeta.label}</span>
@@ -668,11 +670,12 @@ export function BacklogPage() {
       </div>
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>バックログ</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3 }}>{project ? `${project.name} · ${itemCount} 件` : "..."}</p>
+        {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>バックログ</h1>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${itemCount} 件` : "..."}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {permsLoaded && effectiveBacklogPerm === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
           )}
