@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Search, Plus, Mail, Phone, Edit2, Trash2 } from "lucide-react";
+import { useNavigate } from "react-router";
+import { Search, Plus, Mail, Phone, Edit2, Trash2, NotebookPen } from "lucide-react";
 import { Building2 } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useOrg } from "@/app/contexts/OrgContext";
@@ -15,10 +16,14 @@ import { PageLoader } from "@/app/components/shared/PageLoader";
 
 type ClientSortField = "name" | "industry" | "status";
 
+// ヘッダー行と各行で同じ定義を使う（列を足すときのズレ防止）
+const GRID_COLUMNS = "1.6fr 0.5fr 1fr 100px 92px 72px";
+
 export function ClientsPage() {
   const { userRole, userOrgId } = useAuth();
   const { selectedOrgId } = useOrg();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState("");
   const [searchField, setSearchField] = useState<"name" | "industry" | "email" | "all">("all");
   const [sortField, setSortField] = useState<ClientSortField>("name");
@@ -28,6 +33,8 @@ export function ClientsPage() {
   const [clients, setClients] = useState<Client[]>(isSupabaseEnabled ? [] : CLIENTS);
   const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
+  // クライアントごとの打ち合わせメモ件数（一覧のメモ列に出す）
+  const [noteCounts, setNoteCounts] = useState<Record<string, number>>({});
   const isOwner = userRole === "owner";
   const canManage = isOwner || userRole === "admin" || userRole === "project-manager";
 
@@ -46,11 +53,24 @@ export function ClientsPage() {
     buildQuery().then(({ data }) => setClients((data ?? []).map(mapClient)));
   };
 
+  // メモ件数はRLSで見える範囲しか返らないので、クライアント側で数えるだけでよい。
+  // テーブル未作成(add_client_notes.sql 未実行)の環境でも一覧が壊れないよう、エラーは握りつぶす。
+  const refreshNoteCounts = () => {
+    if (!isSupabaseEnabled) return;
+    supabase!.from("client_notes").select("client_id").then(({ data, error }) => {
+      if (error || !data) return;
+      const counts: Record<string, number> = {};
+      for (const row of data) counts[row.client_id] = (counts[row.client_id] ?? 0) + 1;
+      setNoteCounts(counts);
+    });
+  };
+
   useEffect(() => {
     if (!isSupabaseEnabled) return;
     buildQuery()
       .then(({ data }) => { if (data) setClients(data.map(mapClient)); setLoading(false); })
       .catch(() => setLoading(false));
+    refreshNoteCounts();
   }, [isOwner, userOrgId, selectedOrgId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDeleteClient = async (client: Client) => {
@@ -133,11 +153,12 @@ export function ClientsPage() {
       </div>
 
       <div style={{ background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.5fr 1fr 100px 72px", padding: "12px 20px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", alignItems: "center" }}>
+        <div style={{ display: "grid", gridTemplateColumns: GRID_COLUMNS, padding: "12px 20px", background: "#F4F5F6", borderBottom: "1px solid rgba(26,23,20,0.06)", alignItems: "center" }}>
           <SortBtn field="name" label="企業名" />
           <SortBtn field="industry" label="業界" />
           <span style={{ fontSize: 11, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>連絡先</span>
           <SortBtn field="status" label="ステータス" />
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>メモ</span>
           <span style={{ fontSize: 11, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>操作</span>
         </div>
 
@@ -145,7 +166,7 @@ export function ClientsPage() {
           ? <div style={{ textAlign: "center", padding: "60px 0" }}><p style={{ fontSize: 14, color: "#A09790" }}>クライアントが見つかりません</p></div>
           : filtered.map((client, i) => (
             <div key={client.id} onClick={() => canManage && setEditTarget(client)}
-              style={{ display: "grid", gridTemplateColumns: "1.6fr 0.5fr 1fr 100px 72px", padding: "16px 20px", alignItems: "center", borderBottom: i < filtered.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none", cursor: canManage ? "pointer" : "default", transition: "background 0.12s" }}
+              style={{ display: "grid", gridTemplateColumns: GRID_COLUMNS, padding: "16px 20px", alignItems: "center", borderBottom: i < filtered.length - 1 ? "1px solid rgba(26,23,20,0.05)" : "none", cursor: canManage ? "pointer" : "default", transition: "background 0.12s" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FAF8F4"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
 
@@ -175,6 +196,18 @@ export function ClientsPage() {
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: client.status === "active" ? "#059669" : "#C9C4BB" }} />
                   {client.status === "active" ? "アクティブ" : "非アクティブ"}
                 </span>
+              </div>
+
+              {/* 打ち合わせメモ。プロジェクトに紐づかない「この会社との打ち合わせ」の置き場 */}
+              <div onClick={e => e.stopPropagation()}>
+                <button onClick={() => navigate(`/clients/${client.id}/notes`)}
+                  title={`${client.name} の打ち合わせメモ`}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "transparent", cursor: "pointer", color: (noteCounts[client.id] ?? 0) > 0 ? "#059669" : "#9E9690", fontSize: 12, fontWeight: 600, transition: "all 0.15s" }}
+                  onMouseEnter={e => { const el = e.currentTarget as HTMLElement; el.style.background = "#ECFDF5"; el.style.color = "#059669"; el.style.borderColor = "rgba(5,150,105,0.25)"; }}
+                  onMouseLeave={e => { const el = e.currentTarget as HTMLElement; el.style.background = "transparent"; el.style.color = (noteCounts[client.id] ?? 0) > 0 ? "#059669" : "#9E9690"; el.style.borderColor = "rgba(26,23,20,0.10)"; }}>
+                  <NotebookPen style={{ width: 13, height: 13 }} />
+                  {noteCounts[client.id] ?? 0}
+                </button>
               </div>
 
               <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }} onClick={e => e.stopPropagation()}>

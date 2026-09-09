@@ -1,7 +1,7 @@
 // 記事エクスポートのエントリポイント。
 // wiki ページ / 議事録 を ArticleDoc(IR) に組み立て、画像を取得し、指定フォーマットで生成・ダウンロードする。
 // 各レンダラーは動的 import で遅延ロードし、初期バンドルを肥大させない（ReportsPage と同方針）。
-import type { MeetingMinute, WikiPage, ActionMemoCategory } from "@/app/types";
+import type { ClientNote, MeetingMinute, WikiPage, ActionMemoCategory } from "@/app/types";
 import { supabase } from "@/lib/supabase";
 import { mapActionMemo } from "@/app/lib/mappers";
 import { htmlToBlocks } from "./htmlToDoc";
@@ -163,6 +163,20 @@ export async function exportMinuteArticle(minute: MeetingMinute, format: ExportF
       }
     }
     return { kind: "minutes", title, meta, blocks: htmlToBlocks(minute.content), actionItems };
+  });
+}
+
+// クライアント打ち合わせメモ。議事録と同じ体裁で出す（アクション項目は持たない）。
+export async function exportClientNoteArticle(note: ClientNote, clientName: string, format: ExportFormat): Promise<void> {
+  const title = note.title || "無題のメモ";
+  return exportArticleDoc(format, title, () => {
+    const meta: MetaField[] = [];
+    if (clientName) meta.push({ label: "クライアント", value: clientName });
+    if (note.noteDate) meta.push({ label: "打ち合わせ日", value: fmtDate(note.noteDate) });
+    if (note.attendees?.length) meta.push({ label: "参加者", value: note.attendees.join("、") });
+    if (note.createdBy) meta.push({ label: "作成者", value: note.createdBy });
+    if (note.updatedAt) meta.push({ label: "更新日時", value: fmtDateTime(note.updatedAt) });
+    return { kind: "minutes", title, meta, blocks: htmlToBlocks(note.content) };
   });
 }
 
