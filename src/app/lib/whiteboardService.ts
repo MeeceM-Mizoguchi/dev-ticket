@@ -18,6 +18,9 @@ interface WhiteboardRow {
   visibility?: string | null;
   private_by?: string | null;
   private_key?: string | null;
+  // アーカイブ（add_whiteboard_archive.sql）。同じく未適用のDBでも落ちないよう省略可。
+  archived_at?: string | null;
+  archived_by?: string | null;
 }
 
 export function mapWhiteboard(r: WhiteboardRow): Whiteboard {
@@ -32,6 +35,8 @@ export function mapWhiteboard(r: WhiteboardRow): Whiteboard {
     visibility: r.visibility === "private" ? "private" : "project",
     privateBy: r.private_by ?? "",
     privateKey: r.private_key ?? "",
+    // null = 現役。値が入っていれば「片付け済み」で、一覧の既定の並びから外れる
+    archivedAt: r.archived_at ?? null,
     // 共有相手と作成者名は別テーブル（whiteboard_shares / profiles）から後から載せる。
     // ここでは空で置き、listBoards / getBoardMeta が attachShareInfo で埋める。
     sharedWith: [],
@@ -215,35 +220,80 @@ export function wbUserColor(id: string): string {
   return `hsl(${h}, 70%, 45%)`;
 }
 
+// ── 取得する列 ─────────────────────────────────────────────
+//
+// ⚠️ ここで `select("*")` を使わないこと。whiteboards は「タイトル」と「中身(doc_state)」が
+// 同じ行に同居しているため、`*` と書くとボードの中身まで付いてくる。
+// 一覧は doc_state を1バイトも使わない（mapWhiteboard が拾っていない＝Whiteboard 型にも無い）のに、
+// プロジェクトを開くたびに全ボードの中身を落として捨てていた。
+// 実測 2026-09-09: 「基幹システムフルスタック開発」の一覧を開くだけで 42.5MB のダウンロード。
+// 中身が要るのはボードを開く時だけで、それは loadDocState が1件だけ取りに行く。
+const COLS_BASE = "id, project_id, title, created_by, updated_by, created_at, updated_at";
+const COLS_PRIVATE = "visibility, private_by, private_key";
+const COLS_ARCHIVE = "archived_at, archived_by";
+
+// マイグレーション未適用のDBでも一覧が全滅しないよう、上から順に試して通った段を覚える。
+// （getBoardMeta が add_whiteboard_private.sql 未適用に備えているのと同じ方針。
+//   `*` と違って列を名指しすると、無い列が1つあるだけでクエリ全体が落ちるため必要。）
+const COL_TIERS = [
+  [COLS_BASE, COLS_PRIVATE, COLS_ARCHIVE].join(", "),
+  [COLS_BASE, COLS_PRIVATE].join(", "),
+  COLS_BASE,
+];
+let colTier = 0;
+
+/** PostgREST の「その列は存在しない」（42703 = undefined_column） */
+function isMissingColumn(error: { code?: string } | null | undefined): boolean {
+  return error?.code === "42703";
+}
+
+/**
+ * 列を名指しでボード行を引く。列が足りないDBなら1段落として引き直す。
+ * それ以外のエラー（通信・権限など）は握りつぶさずそのまま返す。
+ */
+async function selectBoards<T>(
+  run: (cols: string) => PromiseLike<{ data: T | null; error: { code?: string } | null }>,
+): Promise<{ data: T | null; error: { code?: string } | null }> {
+  for (;;) {
+    const res = await run(COL_TIERS[colTier]);
+    if (!res.error || !isMissingColumn(res.error) || colTier >= COL_TIERS.length - 1) return res;
+    colTier++;
+  }
+}
+
 // ── CRUD ──
+/** そのプロジェクトの全ボード（アーカイブ済みも含む）。畳んだものを分けるのは呼び出し側 */
 export async function listBoards(projectId: string): Promise<Whiteboard[]> {
   if (!isSupabaseEnabled) return [];
-  const { data } = await supabase!
+  const { data } = await selectBoards((cols) => supabase!
     .from("whiteboards")
-    .select("*")
+    .select(cols)
     .eq("project_id", projectId)
-    .order("updated_at", { ascending: false });
-  return attachShareInfo((data ?? []).map((r) => mapWhiteboard(r as WhiteboardRow)));
+    // 同じ updated_at のボードで並びが毎回入れ替わらないよう id で決着させる（BUG-01）
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: true }));
+  return attachShareInfo(((data ?? []) as unknown as WhiteboardRow[]).map(mapWhiteboard));
 }
 
 /** ボード1件を引き直す（共有を張り替えた直後など、行だけ最新化したい時） */
 export async function reloadBoard(boardId: string): Promise<Whiteboard | null> {
   if (!isSupabaseEnabled) return null;
-  const { data } = await supabase!.from("whiteboards").select("*").eq("id", boardId).maybeSingle();
+  const { data } = await selectBoards((cols) => supabase!
+    .from("whiteboards").select(cols).eq("id", boardId).maybeSingle());
   if (!data) return null;
-  const [board] = await attachShareInfo([mapWhiteboard(data as WhiteboardRow)]);
+  const [board] = await attachShareInfo([mapWhiteboard(data as unknown as WhiteboardRow)]);
   return board ?? null;
 }
 
 export async function createBoard(projectId: string, title: string, userId: string): Promise<Whiteboard | null> {
   if (!isSupabaseEnabled) return null;
-  const { data, error } = await supabase!
+  const { data, error } = await selectBoards((cols) => supabase!
     .from("whiteboards")
     .insert({ project_id: projectId, title, created_by: userId, updated_by: userId })
-    .select("*")
-    .single();
+    .select(cols)
+    .single());
   if (error || !data) return null;
-  return mapWhiteboard(data as WhiteboardRow);
+  return mapWhiteboard(data as unknown as WhiteboardRow);
 }
 
 export async function renameBoard(id: string, title: string, userId: string): Promise<void> {
@@ -254,6 +304,29 @@ export async function renameBoard(id: string, title: string, userId: string): Pr
 export async function deleteBoard(id: string): Promise<void> {
   if (!isSupabaseEnabled) return;
   await supabase!.from("whiteboards").delete().eq("id", id);
+}
+
+/**
+ * アーカイブ（片付け）の付け外し。削除ではないので中身はそのまま残り、いつでも戻せる。
+ * 畳んだボードもURLからは開ける（過去の資料を参照できなくなると困るため）。一覧の既定の並びから外れるだけ。
+ *
+ * 可否は RLS の wb_update が決める＝公開ボードは編集権のある人、プライベートボードは作成者のみ。
+ * updated_at は触らない。片付けただけで「最終更新」が動くと、一覧の並びが実態とずれるため。
+ */
+export async function setBoardArchived(id: string, archived: boolean, userId: string): Promise<Whiteboard | null> {
+  if (!isSupabaseEnabled) return null;
+  const patch = archived
+    ? { archived_at: new Date().toISOString(), archived_by: userId }
+    : { archived_at: null, archived_by: "" };
+  const { data, error } = await selectBoards((cols) => supabase!
+    .from("whiteboards").update(patch).eq("id", id).select(cols).single());
+  if (error || !data) {
+    // add_whiteboard_archive.sql 未適用だとここに来る（列が無いので update 自体が通らない）
+    console.error("[whiteboards] archive failed:", error?.code ?? "", (error as any)?.message ?? "");
+    return null;
+  }
+  const [board] = await attachShareInfo([mapWhiteboard(data as unknown as WhiteboardRow)]);
+  return board ?? null;
 }
 
 // ── プライベートモード ──────────────────────────────────────
@@ -267,17 +340,17 @@ export async function setBoardVisibility(
   const patch = makePrivate
     ? { visibility: "private", private_by: userId, private_key: newPrivateKey() }
     : { visibility: "project", private_by: "", private_key: "" };
-  const { data, error } = await supabase!
+  const { data, error } = await selectBoards((cols) => supabase!
     .from("whiteboards")
     .update({ ...patch, updated_by: userId, updated_at: new Date().toISOString() })
     .eq("id", board.id)
-    .select("*")
-    .single();
+    .select(cols)
+    .single());
   if (error || !data) return null;
   // 公開に戻したら限定公開の設定も畳む。残しておくと、次にプライベート化した時に
   // 前の共有先が黙って復活してしまい「自分だけのつもり」が崩れる。
   if (!makePrivate) await clearBoardShares(board.id);
-  const next = mapWhiteboard(data as WhiteboardRow);
+  const next = mapWhiteboard(data as unknown as WhiteboardRow);
   return makePrivate ? { ...next, createdByName: board.createdByName } : next;
 }
 
@@ -320,14 +393,14 @@ export async function clearBoardShares(boardId: string): Promise<void> {
  */
 export async function rotatePrivateKey(boardId: string, userId: string): Promise<Whiteboard | null> {
   if (!isSupabaseEnabled) return null;
-  const { data, error } = await supabase!
+  const { data, error } = await selectBoards((cols) => supabase!
     .from("whiteboards")
     .update({ private_key: newPrivateKey(), updated_by: userId, updated_at: new Date().toISOString() })
     .eq("id", boardId)
-    .select("*")
-    .single();
+    .select(cols)
+    .single());
   if (error || !data) return null;
-  const [board] = await attachShareInfo([mapWhiteboard(data as WhiteboardRow)]);
+  const [board] = await attachShareInfo([mapWhiteboard(data as unknown as WhiteboardRow)]);
   return board ?? null;
 }
 
@@ -480,14 +553,22 @@ export async function loadDocState(id: string): Promise<string> {
  *   他メンバーの編集を受け取った側も保険として保存するようにしたため（編集者がタブを閉じても
  *   内容が失われないように）、その保存で「見ていただけの人」が更新者になるのを防ぐ。
  */
-export async function saveDocState(id: string, docStateBase64: string, userId: string | null): Promise<void> {
+export async function saveDocState(
+  id: string,
+  docStateBase64: string,
+  userId: string | null,
+  opts?: { touchUpdatedAt?: boolean },
+): Promise<void> {
   if (!isSupabaseEnabled) return;
   await supabase!
     .from("whiteboards")
     .update({
       doc_state: docStateBase64,
       ...(userId ? { updated_by: userId } : {}),
-      updated_at: new Date().toISOString(),
+      // 既定は「最終更新」を動かす。詰め直し（whiteboardCompact）だけは false を渡すこと。
+      // 中身は1つも変わっていないのに一覧の並びが動くと、誰も触っていないボードが
+      // 先頭に上がってきて実態とずれる。
+      ...(opts?.touchUpdatedAt === false ? {} : { updated_at: new Date().toISOString() }),
     })
     .eq("id", id);
 }

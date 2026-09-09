@@ -7,7 +7,8 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { SupabaseYjsProvider, REMOTE_ORIGIN } from "@/app/lib/SupabaseYjsProvider";
 import { ExcalidrawYjsBridge } from "@/app/components/whiteboard/ExcalidrawYjsBridge";
 import { loadDocState, saveDocState, base64ToBytes, bytesToBase64, wbChannelName, subscribeBoardAccess, type WbAccessEvent } from "@/app/lib/whiteboardService";
-import { registerWbControl } from "@/app/lib/whiteboardControlBus";
+import { registerWbControl, getWbControl } from "@/app/lib/whiteboardControlBus";
+import { compactUpdate } from "@/app/lib/whiteboardCompact";
 import { setRemoteEditingIds } from "@/app/lib/whiteboardRemoteEdit";
 
 export interface WbUser { id: string; name: string; color: string }
@@ -18,6 +19,10 @@ const SAVE_DEBOUNCE_MS = 1500;
 // 書いた本人の保存が先に済むよう十分長く取り、全員が同時に書きに行かないようばらつかせる。
 const REMOTE_SAVE_DEBOUNCE_MS = 8000;
 const REMOTE_SAVE_JITTER_MS = 4000;
+// ボードを離れる時に doc_state を詰め直す条件（whiteboardCompact.ts）。
+// 「他のメンバーを一度も見なかった」の判断材料が awareness なので、届くだけの時間は在室していること。
+// ボードをぱっと切り替えただけの時に走らせない狙いも兼ねる。
+const COMPACT_MIN_SESSION_MS = 15000;
 
 /**
  * @param channelKey プライベートモードのボードだけが持つ秘密トークン。
@@ -61,6 +66,13 @@ export function useWhiteboardSync(
     let disposed = false;
     let dispose: (() => void) | null = null;
 
+    // 詰め直し（doc_state の圧縮）の可否判定に使うセッション状態。
+    //   sawPeer   … このセッション中に他のメンバーを一度でも見たか
+    //   everSynced… Broadcast チャンネルに実際に繋がったか（繋がっていなければ「ひとり」と言い切れない）
+    const sessionStartedAt = Date.now();
+    let sawPeer = false;
+    let everSynced = false;
+
     const doc = new Y.Doc();
     const awareness = new Awareness(doc);
     awareness.setLocalStateField("user", userRef.current);
@@ -82,7 +94,7 @@ export function useWhiteboardSync(
       //   プライベートモードのボードはチャンネル名に秘密トークンが入る（＝所有者しか名前を作れない）。
       //   RLS はテーブルしか守らないので、これが無いと過去にURLを知っていた人が Broadcast を覗ける。
       const provider = new SupabaseYjsProvider(supabase!, wbChannelName(boardId, channelKey), doc, awareness);
-      provider.onSynced = () => { if (!disposed) setSynced(true); };
+      provider.onSynced = () => { everSynced = true; if (!disposed) setSynced(true); };
       if (apiRef.current) bridge.setApi(apiRef.current);
       bridge.applyInitial();
 
@@ -104,10 +116,18 @@ export function useWhiteboardSync(
       let saveTimer: ReturnType<typeof setTimeout> | null = null;
       let saveDueAt = 0;
       let saveAsAuthor = false; // 予約中の保存に、自分の編集が含まれているか
-      const persist = () => {
+      // 直近にDBへ書けた内容。同じものは書き直さない。
+      // doc_state は育つと数十MBあり、UPDATE のたびに Postgres が行を丸ごと書き直す（TOAST）。
+      // 特に上の「受け取った側も保険で保存する」経路では、見ている全員が同じ内容を
+      // 8〜12秒おきに書きに行くので、変化が無い時に止まる効果が大きい。
+      let lastSavedB64 = "";
+      const persist = async () => {
         const asAuthor = saveAsAuthor;
         saveAsAuthor = false;
-        return saveDocState(boardId, bytesToBase64(Y.encodeStateAsUpdate(doc)), asAuthor ? userRef.current.id : null);
+        const b64 = bytesToBase64(Y.encodeStateAsUpdate(doc));
+        if (b64 === lastSavedB64) return;   // 中身が変わっていない
+        await saveDocState(boardId, b64, asAuthor ? userRef.current.id : null);
+        lastSavedB64 = b64;
       };
       const scheduleSave = (delay: number) => {
         const due = Date.now() + delay;
@@ -163,6 +183,7 @@ export function useWhiteboardSync(
           if (clientId === doc.clientID) return; // 自分は除外（自分のアバターは出さない）
           const u = st.user;
           if (!u) return;
+          sawPeer = true;   // 詰め直しの可否判定（他の人がいたセッションでは絶対にやらない）
           if (Array.isArray(st.editing)) for (const id of st.editing) if (typeof id === "string") editing.push(id);
           const sid = String(clientId);
           // カーソル未移動でも接続中メンバーは右上アバターに出したいので pointer の有無に関わらず登録。
@@ -243,6 +264,37 @@ export function useWhiteboardSync(
       window.addEventListener("blur", onLeave);
       document.addEventListener("visibilitychange", onLeave);
 
+      /**
+       * ボードを離れる時に doc_state を詰め直す（src/app/lib/whiteboardCompact.ts）。
+       *
+       * ブリッジは onChange のたびに要素の全JSONを Y.Map へ入れ直すため、doc_state は
+       * 「そのボードの全操作履歴」になって単調に膨らむ。実測で中身の 5〜6 倍あった。
+       * 図形は1つも減らない。捨てるのは"どう動かしたか"の履歴だけ。
+       *
+       * 【必須の条件】このセッション中に他のメンバーを一度も見ていないこと。
+       * 詰め直すと Yjs の clientID が変わり、相手が持っている元の Doc とは別系統になる。
+       * 開いている人が他にいる間にやると、後から入った人の画面で編集が巻き戻り得る。
+       *
+       * 実行は teardown の外（setTimeout）へ逃がす。数十MBの Doc を組み直すのに数百ミリ秒
+       * かかることがあり、そのぶん画面遷移が固まるため。タブを閉じる経路（pagehide）からは
+       * 呼ばない ＝ そこは従来どおり素の保存だけで確実に書き切る。
+       */
+      const compactOnLeave = () => {
+        if (sawPeer || !everSynced) return;
+        if (Date.now() - sessionStartedAt < COMPACT_MIN_SESSION_MS) return;
+        const raw = Y.encodeStateAsUpdate(doc);   // doc.destroy() より前に取り出しておく
+        setTimeout(() => {
+          const res = compactUpdate(raw);
+          if (!res.update) return;   // 縮まない / 想定外の構造 → そのまま（元の保存が既に済んでいる）
+          // 組み直している数百ミリ秒の間に、同じボードを開き直していたら書かない。
+          // 開き直した側は詰め直し前の内容を読んでいるので、そこへ後から古いスナップショットを
+          // かぶせると、開き直してからの編集を巻き戻してしまう。
+          if (getWbControl(boardId)) return;
+          // 更新者も最終更新も書き換えない。片付けであって編集ではないため。
+          void saveDocState(boardId, bytesToBase64(res.update), null, { touchUpdatedAt: false });
+        }, 0);
+      };
+
       dispose = () => {
         awareness.off("change", onAwareness);
         doc.off("update", onDocUpdate);
@@ -256,6 +308,8 @@ export function useWhiteboardSync(
         // ボードを離れる時、予約中の保存は捨てずに書き切る（切り替え直前の編集を落とさない）
         flushNow();
         if (saveTimer) clearTimeout(saveTimer);
+        // 書き切った後に、ひとりだった時だけ doc_state を詰め直す
+        compactOnLeave();
         unregisterControl();
         evict.dispose();
         provider.destroy();

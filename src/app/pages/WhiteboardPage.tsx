@@ -18,6 +18,7 @@ import { checkProjectAccess } from "@/app/lib/projectAccess";
 import {
   listBoards, createBoard, renameBoard, deleteBoard, resolveProject, loadWhiteboardPerms, wbUserColor,
   setBoardVisibility, broadcastBoardAccess, addBoardShares, removeBoardShare, rotatePrivateKey, reloadBoard,
+  setBoardArchived,
   loadShareCandidates, type ShareCandidate, type WbAccessEvent,
 } from "@/app/lib/whiteboardService";
 import { getWbControl } from "@/app/lib/whiteboardControlBus";
@@ -230,6 +231,24 @@ export function WhiteboardPage() {
     void load();
   }, [toast, navigate, projectSlug, load]);
 
+  // ── アーカイブ（片付け） ───────────────────────────────
+  // 削除ではないので中身は残り、いつでも戻せる。開いているボードを畳んでも追い出さない
+  // （畳んだ直後に画面が飛ぶと「消えた」ように見えるため）。
+  const handleToggleArchive = useCallback(async (id: string) => {
+    const board = boards.find((b) => b.id === id);
+    if (!board) return;
+    const archive = !board.archivedAt;
+    const next = await setBoardArchived(id, archive, userId);
+    if (!next) {
+      toast("アーカイブを変更できませんでした", "error");
+      return;
+    }
+    setBoards((prev) => prev.map((b) => (b.id === next.id ? next : b)));
+    toast(archive
+      ? `「${next.title}」をアーカイブしました。一覧の「アーカイブ済み」からいつでも戻せます`
+      : `「${next.title}」をアーカイブから戻しました`, "success");
+  }, [boards, userId, toast]);
+
   const handleDelete = useCallback(async (id: string) => {
     await deleteBoard(id);
     setBoards((prev) => prev.filter((b) => b.id !== id));
@@ -254,6 +273,8 @@ export function WhiteboardPage() {
   const currentBoard = boardId ? boards.find((b) => b.id === boardId) ?? null : null;
   const currentIsPrivate = currentBoard?.visibility === "private";
   const currentIsOwner = !!currentBoard && !!userId && currentBoard.createdBy === userId;
+  // 見出しの件数は現役のボードだけを数える（片付けたものまで足すと減った実感が出ない）
+  const activeCount = boards.filter((b) => !b.archivedAt).length;
   const shareBoard = shareTargetId ? boards.find((b) => b.id === shareTargetId) ?? null : null;
 
   // ボード選択状態にかかわらず、collapsed が true のときはサイドバーを折りたたむ
@@ -274,11 +295,16 @@ export function WhiteboardPage() {
         {/* 🌟 BRU13-047: タブ(ProjectSubNav)は固定幅。幅が足りない時はこの見出し側が先に縮む */}
         <div style={{ minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>ホワイトボード</h1>
-          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{projectName ? `${projectName} · ${boards.length} 件` : "..."}</p>
+          <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{projectName ? `${projectName} · ${activeCount} 件` : "..."}</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {!loading && currentIsPrivate && currentBoard && (
             <PrivateBadge sharedWith={currentBoard.sharedWith} isOwner={currentIsOwner} />
+          )}
+          {/* 畳んだボードも開けるので、今どちらを見ているのかを明示する（編集は普通にできる） */}
+          {!loading && currentBoard?.archivedAt && (
+            <span title="アーカイブ済みのボードです。編集はできますが、一覧では「アーカイブ済み」に入っています"
+              style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#F4F5F6", color: "#6B6560", borderRadius: 20, border: "1px solid rgba(26,23,20,0.12)" }}>アーカイブ済み</span>
           )}
           {!loading && perms.whiteboard === "view" && (
             <span style={{ fontSize: 11, fontWeight: 600, padding: "4px 10px", background: "#FEF3C7", color: "#92400E", borderRadius: 20, border: "1px solid rgba(217,119,6,0.25)" }}>閲覧のみ</span>
@@ -298,6 +324,7 @@ export function WhiteboardPage() {
             onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
             onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
             onTogglePrivate={handleTogglePrivate}
+            onToggleArchive={handleToggleArchive}
             onOpenShare={handleOpenShare}
             onCollapse={toggleCollapsed}
           />
