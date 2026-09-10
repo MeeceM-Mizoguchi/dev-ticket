@@ -173,37 +173,15 @@ export async function uploadProjectFile(
     projectId, path, fileName, fileSize: file.size, fileType: file.type || "",
     uniqueName: !!opts?.uniqueName,
     parentId: targetParentId,
-    parent_id: targetParentId,
-    folderId: targetParentId,
     fileId: opts?.fileId,
-    file_id: opts?.fileId,
-    id: opts?.fileId,
   });
 
-  // バックエンド非同期処理による親フォルダのリセットを完全に防ぐため、
-  // 即時および遅延実行でSupabaseから強制的に元の親フォルダへ紐付け直す
-  if (isSupabaseEnabled && targetParentId) {
-    const finalFileName = res.fileName ?? fileName;
-    const forceRestore = async () => {
-      try {
-        if (opts?.fileId) {
-          await supabase!.from("project_files").update({ parent_id: targetParentId }).eq("id", opts.fileId);
-        }
-        if (res.file?.id && res.file.id !== opts?.fileId) {
-          await supabase!.from("project_files").update({ parent_id: targetParentId }).eq("id", res.file.id);
-        }
-        const { data: latest } = await supabase!.from("project_files")
-          .select("id").eq("project_id", projectId).eq("file_name", finalFileName)
-          .order("created_at", { ascending: false }).limit(1);
-        if (latest && latest.length > 0) {
-          await supabase!.from("project_files").update({ parent_id: targetParentId }).eq("id", latest[0].id);
-        }
-      } catch (e) {
-        console.warn("Restore parent_id failed:", e);
-      }
-    };
-    await forceRestore();
-    setTimeout(forceRestore, 1200);
+  // 親フォルダは register が行と一緒に入れる（以前はここで何度も更新し直していた）。
+  // 入っていないときだけ、登録された行を id 指定で1回だけ直す。
+  if (isSupabaseEnabled && targetParentId && res.file?.id && res.file.parent_id !== targetParentId) {
+    const { error: fixErr } = await supabase!.from("project_files")
+      .update({ parent_id: targetParentId }).eq("id", res.file.id);
+    if (fixErr) console.warn("[projectFiles] parent_id の設定に失敗しました", fixErr);
   }
 
   return res.fileName ?? fileName;
@@ -336,4 +314,62 @@ export async function createProjectFolder(
   });
   if (error) throw new Error(error.message);
   return finalName;
+}
+
+/**
+ * フォルダの相対パスを順に辿り、無い階層だけ作って末端フォルダのIDを返す。
+ * フォルダごとのアップロードで、元の階層をそのまま再現するために使う。
+ *
+ * createProjectFolder と違い、同名フォルダが既にあれば「(1)」を作らず**再利用する**。
+ * 同じフォルダを2回アップロードしても階層が増殖しない。
+ *
+ * @param cache 1回のアップロード内で同じ階層を何度も引き直さないための作業用マップ。
+ *   呼び出し側で1つ作り、全ファイルで使い回すこと。
+ */
+export async function ensureFolderPath(
+  projectId: string,
+  dirPath: string[],
+  rootParentId: string | null,
+  userName: string | undefined,
+  cache: Map<string, string>,
+): Promise<string | null> {
+  let parentId = rootParentId;
+  for (const rawName of dirPath) {
+    const name = rawName.trim() || "無題のフォルダ";
+    const key = `${parentId ?? ""}/${name}`;
+    const cached = cache.get(key);
+    if (cached) { parentId = cached; continue; }
+
+    let query = supabase!.from("project_files")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("file_name", name)
+      .eq("is_folder", true);
+    query = parentId === null ? query.is("parent_id", null) : query.eq("parent_id", parentId);
+    // BUG-01 同名が複数あっても毎回同じ1件を選ぶ（順序を固定する）
+    const { data: found, error: findErr } = await query
+      .order("created_at", { ascending: true }).order("id", { ascending: true }).limit(1);
+    if (findErr) throw new Error(findErr.message);
+
+    let id: string | undefined = found?.[0]?.id;
+    if (!id) {
+      const { data: created, error: insErr } = await supabase!.from("project_files").insert({
+        project_id: projectId,
+        file_name: name,
+        folder_path: "",
+        file_size: 0,
+        file_type: "folder",
+        file_path: "",
+        version: 1,
+        uploaded_by: userName || "",
+        parent_id: parentId,
+        is_folder: true,
+      }).select("id").maybeSingle();
+      if (insErr || !created) throw new Error(insErr?.message || `フォルダ「${name}」の作成に失敗しました`);
+      id = created.id as string;
+    }
+    cache.set(key, id);
+    parentId = id;
+  }
+  return parentId;
 }

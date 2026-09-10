@@ -15,7 +15,7 @@ import crypto from "crypto";
 //
 // endpoints (Vercel の [action] 動的セグメント):
 //   POST /api/project-files/upload-url  { projectId, fileName }  → { path, token }
-//   POST /api/project-files/register    { projectId, path, fileName, fileSize, fileType } → { file }
+//   POST /api/project-files/register    { projectId, path, fileName, fileSize, fileType, parentId? } → { file }
 //   POST /api/project-files/signed-url  { fileId, mode }         → { url, ... }
 //   POST /api/project-files/rename      { fileId, newName }        → { fileName }
 //   POST /api/project-files/delete      { fileId }               → { ok: true }
@@ -159,6 +159,21 @@ export default async function handler(req: any, res: any) {
       fileName = nextFreeName(fileName, new Set((rows ?? []).map(r => String(r.file_name))));
     }
 
+    // 置き場所のフォルダ。フォルダごとのアップロードで階層を再現するために受け取る。
+    // 他プロジェクトのフォルダや、フォルダでない行を親に指定させない。
+    // 不正なら storage の実体を残さず弾く（DB登録失敗と同じ扱い）。
+    const rawParentId = body.parentId ?? body.parent_id ?? body.folderId ?? null;
+    let parentId: string | null = null;
+    if (rawParentId) {
+      const { data: parent } = await sb.from("project_files")
+        .select("id, project_id, is_folder").eq("id", String(rawParentId)).maybeSingle();
+      if (!parent || parent.project_id !== projectId || !parent.is_folder) {
+        await sb.storage.from(BUCKET).remove([path]);
+        return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
+      }
+      parentId = String(parent.id);
+    }
+
     // 版番号はサーバーで採番する（クライアント側の一覧が古くても衝突しない）
     const { data: sameName } = await sb.from("project_files")
       .select("version").eq("project_id", projectId).eq("file_name", fileName)
@@ -169,6 +184,8 @@ export default async function handler(req: any, res: any) {
       project_id: projectId, folder_path: "", file_name: fileName,
       file_size: Number(body.fileSize) || 0, file_type: String(body.fileType ?? ""),
       file_path: path, version, uploaded_by: profile.name,
+      // ルート直下のときは列に触れない（旧スキーマでも動くようにするため）
+      ...(parentId ? { parent_id: parentId } : {}),
     }).select().maybeSingle();
     if (error) {
       // DB登録に失敗したらストレージ上の孤児を残さない

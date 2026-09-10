@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, Plus, Pencil,
+  Folder, FolderPlus, FolderUp, Plus, Pencil,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -26,10 +26,22 @@ import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
-  downloadProjectFile, renameProjectFile, splitFileName,
+  downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
 } from "@/app/lib/projectFiles";
+import {
+  collectDropEntries, collectInputEntries, looksLikeFolder,
+  MAX_UPLOAD_ENTRIES, type UploadEntry,
+} from "@/app/lib/folderUpload";
 
 const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
+const TOO_MANY_MSG = `一度に扱えるのは ${MAX_UPLOAD_ENTRIES} 件までです。先頭の ${MAX_UPLOAD_ENTRIES} 件だけ取り込みます`;
+
+// 何十件も並べるとトーストが画面を埋めるので、先頭数件だけ出して残りは件数で伝える
+function summarize(items: string[], head = 3): string {
+  return items.length <= head
+    ? items.join("、")
+    : `${items.slice(0, head).join("、")} ほか ${items.length - head} 件`;
+}
 
 const KIND_ICON = {
   pdf: FileText, excel: FileSpreadsheet, word: FileText,
@@ -91,13 +103,21 @@ export function FileBoxPage() {
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // BUG-05 送信ガード。state はボタンの見た目用で、二重起動を止めるのはこの ref
+  const uploadingRef = useRef(false);
+  // フォルダを丸ごと上げると時間がかかるので、何件目かを出す
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProjectFile | null>(null);
   const [previewTarget, setPreviewTarget] = useState<ProjectFile | null>(null);
   // コメントのリンクから開かれた時の着地先（BRU12-025）
   const [focusComment, setFocusComment] = useState<{ commentId: string | null; replyId: string | null } | null>(null);
 
-  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
-  const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
+  // 開いているフォルダは URL(?folder=<id>) が持つ。state に持たせると履歴に残らず、
+  // ブラウザの戻る/進むで階層を行き来できないため、URL を唯一の出どころにする。
+  // 共有リンク(shareLink の "file-folder")と同じパラメータなので、
+  // 深い階層のURLをそのまま人に渡せる。
+  // 空文字は「指定なし＝ルート」に寄せる（手書きの ?folder= で空一覧にしない）
+  const currentFolderId = searchParams.get(FILE_FOLDER_PARAM) || null;
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -193,31 +213,46 @@ export function FileBoxPage() {
     setSearchParams(searchParams, { replace: true });
   }, [files, searchParams, setSearchParams, toast]);
 
-  // 共有リンク(?folder=...)で開かれたら、そのフォルダを開いた状態にする。
-  // パンくずは parent_id を根までたどって組み立てる（手で潜ったときと同じ状態にする）。
-  useEffect(() => {
-    const wanted = searchParams.get(FILE_FOLDER_PARAM);
-    if (!wanted || files.length === 0) return;
-    const folder = files.find(f => f.id === wanted && f.isFolder);
-    if (folder) {
-      const chain: { id: string; name: string }[] = [];
-      const seen = new Set<string>();
-      let cur: ProjectFile | undefined = folder;
-      while (cur && !seen.has(cur.id)) {
-        seen.add(cur.id);
-        chain.unshift({ id: cur.id, name: cur.fileName });
-        const parentId: string | null = cur.parentId ?? null;
-        cur = parentId ? files.find(f => f.id === parentId && f.isFolder) : undefined;
-      }
-      setCurrentFolderId(folder.id);
-      setBreadcrumbs(chain);
-    } else {
-      toast("リンク先のフォルダが見つかりません", "error");
+  /**
+   * 開くフォルダを URL に反映する。既定では履歴に積むので、
+   * ブラウザの戻る/進むでそのまま階層を行き来できる。
+   * @param replace 履歴に積まずに置き換える（不正なURLの後始末など、
+   *   「戻る」で壊れた状態に戻ってほしくないとき）
+   */
+  const goToFolder = useCallback((folderId: string | null, replace = false) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (folderId) next.set(FILE_FOLDER_PARAM, folderId);
+      else next.delete(FILE_FOLDER_PARAM);
+      return next;
+    }, { replace });
+  }, [setSearchParams]);
+
+  // パンくずは parent_id を根までたどって毎回組み立てる。
+  // state に積まないので、URLでいきなり深い階層へ来ても・戻る/進むで飛んでも・
+  // 途中のフォルダ名が変わっても、表示が実体とズレない。
+  const breadcrumbs = useMemo(() => {
+    if (!currentFolderId) return [];
+    const chain: { id: string; name: string }[] = [];
+    const seen = new Set<string>();
+    let cur: ProjectFile | undefined = files.find(f => f.id === currentFolderId && f.isFolder);
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      chain.unshift({ id: cur.id, name: cur.fileName });
+      const parentId: string | null = cur.parentId ?? null;
+      cur = parentId ? files.find(f => f.id === parentId && f.isFolder) : undefined;
     }
-    // 一度開いたらクエリを落とす（フォルダを移動しても戻されないように）
-    searchParams.delete(FILE_FOLDER_PARAM);
-    setSearchParams(searchParams, { replace: true });
-  }, [files, searchParams, setSearchParams, toast]);
+    return chain;
+  }, [files, currentFolderId]);
+
+  // URL のフォルダが実在しないとき（消された・別プロジェクトのリンク）はルートへ戻す。
+  // 読み込みが終わるまでは判定しない（読み込み中は「無い」ように見えるため）。
+  useEffect(() => {
+    if (!currentFolderId || loading || notFound) return;
+    if (files.some(f => f.id === currentFolderId && f.isFolder)) return;
+    toast("リンク先のフォルダが見つかりません", "error");
+    goToFolder(null, true);
+  }, [currentFolderId, files, loading, notFound, toast, goToFolder]);
 
   // ビューアを開いたまま保存された場合、表示中の行は古い版のままになる。
   // 一覧が更新されたら、同じファイルの最新版へ差し替える。
@@ -231,48 +266,97 @@ export function FileBoxPage() {
   // ── アップロード ────────────────────────────────────────────
   // 保存キーの採番・DB登録・版番号はすべてサーバー(api/project-files)側で行う。
   // ブラウザは署名付きアップロードURLへ直接送るだけなので storage のRLS設定が不要。
-  const uploadFiles = useCallback(async (incoming: FileList | File[], targetFolderId?: string | null) => {
-    if (!project) return;
-    const list = Array.from(incoming);
-    if (list.length === 0) return;
+  //
+  // 受け取るのは File ではなく UploadEntry（＝ファイル＋元の所属フォルダ）。
+  // フォルダをドロップされたら、同じ階層をファイルボックス側にも作ってから入れる。
+  // フォルダ自身を File として送ると net::ERR_ACCESS_DENIED になるため、
+  // 展開は必ず folderUpload.ts 側で済ませておくこと。
+  const uploadEntries = useCallback(async (entries: UploadEntry[], targetFolderId?: string | null) => {
+    if (!project || entries.length === 0) return;
+    // BUG-05 連続でドロップされても2本同時に走らせない。
+    // フォルダは1回が長いので、state だけだと確実にすり抜ける。
+    if (uploadingRef.current) {
+      toast("アップロード中です。完了してからもう一度お試しください", "error");
+      return;
+    }
+    uploadingRef.current = true;
 
     const folderId = targetFolderId !== undefined ? targetFolderId : currentFolderId;
 
     setUploading(true);
+    setUploadProgress({ done: 0, total: entries.length });
+    // 同じ階層を何度も引き直さないよう、1回のアップロード内で使い回す
+    const folderCache = new Map<string, string>();
     let ok = 0;
     const renamed: string[] = [];
-    for (const f of list) {
-      if (f.size > MAX_FILE_SIZE) {
-        toast(`「${f.name}」は上限(${formatFileSize(MAX_FILE_SIZE)})を超えています`, "error");
-        continue;
-      }
-      try {
-        // 同名でも上書き（新バージョン）にせず、別ファイルとして残す
-        const stored = await uploadProjectFile(project.id, f, { uniqueName: true, parentId: folderId });
-        // API側で parent_id が登録されない場合に備えて、DBを確実に更新
-        if (folderId) {
-          await supabase!.from("project_files")
-            .update({ parent_id: folderId })
-            .eq("project_id", project.id)
-            .eq("file_name", stored);
+    const failed: string[] = [];
+    try {
+      for (let i = 0; i < entries.length; i++) {
+        const { file: f, dirPath } = entries[i];
+        setUploadProgress({ done: i, total: entries.length });
+        if (f.size > MAX_FILE_SIZE) {
+          failed.push(`「${f.name}」は上限(${formatFileSize(MAX_FILE_SIZE)})を超えています`);
+          continue;
         }
-        if (stored !== f.name) renamed.push(`「${f.name}」→「${stored}」`);
-        ok++;
-      } catch (e) {
-        console.error("[FileBox] upload error:", e);
-        toast(`「${f.name}」のアップロードに失敗しました：${e instanceof Error ? e.message : ""}`, "error");
+        try {
+          const parentId = dirPath.length > 0
+            ? await ensureFolderPath(project.id, dirPath, folderId, userName, folderCache)
+            : folderId;
+          // 同名でも上書き（新バージョン）にせず、別ファイルとして残す
+          const stored = await uploadProjectFile(project.id, f, { uniqueName: true, parentId });
+          if (stored !== f.name) renamed.push(`「${f.name}」→「${stored}」`);
+          ok++;
+        } catch (e) {
+          console.error("[FileBox] upload error:", e);
+          const reason = e instanceof Error ? e.message : "";
+          // 展開に対応していないブラウザでフォルダ自身を拾ってしまったときの説明
+          const hint = looksLikeFolder(f)
+            ? "（フォルダの中身を読み取れませんでした。中のファイルを選んでください）" : "";
+          failed.push(`「${f.name}」${reason ? `：${reason}` : ""}${hint}`);
+        }
       }
+    } finally {
+      uploadingRef.current = false;
+      setUploading(false);
+      setUploadProgress(null);
     }
-    setUploading(false);
+
+    // 件数が多いフォルダでもトーストが溢れないよう、結果はまとめて出す
     if (renamed.length > 0) {
-      toast(`同名のファイルがあるため名前を変更しました：${renamed.join("、")}`);
+      toast(`同名のファイルがあるため名前を変更しました：${summarize(renamed)}`);
+    }
+    if (failed.length > 0) {
+      toast(`${failed.length} 件のアップロードに失敗しました：${summarize(failed)}`, "error");
     }
     if (ok > 0) {
       toast(`${ok} 件のファイルをアップロードしました`);
       emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
       load();
     }
-  }, [project, toast, load, currentFolderId]);
+  }, [project, toast, load, currentFolderId, userName]);
+
+  /** <input type="file"> から。フォルダ選択(webkitdirectory)なら階層も引き継がれる */
+  const uploadFiles = useCallback((incoming: FileList | File[], targetFolderId?: string | null) => {
+    const entries = collectInputEntries(incoming);
+    if (entries.length >= MAX_UPLOAD_ENTRIES) toast(TOO_MANY_MSG, "error");
+    uploadEntries(entries, targetFolderId);
+  }, [uploadEntries, toast]);
+
+  /**
+   * ドロップされたものを取り込む。
+   * DataTransfer はイベントを抜けると空になるため、collectDropEntries は
+   * await を挟まずここで同期的に呼ぶこと（folderUpload.ts の先頭コメント参照）。
+   */
+  const handleDropUpload = useCallback((e: DragEvent<HTMLElement>, targetFolderId?: string | null) => {
+    collectDropEntries(e.dataTransfer).then(entries => {
+      if (entries.length === 0) return;
+      if (entries.length >= MAX_UPLOAD_ENTRIES) toast(TOO_MANY_MSG, "error");
+      uploadEntries(entries, targetFolderId);
+    }).catch(err => {
+      console.error("[FileBox] drop read error:", err);
+      toast("ドロップされたフォルダを読み取れませんでした", "error");
+    });
+  }, [uploadEntries, toast]);
 
   const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null) => {
     if (!project) return;
@@ -380,20 +464,13 @@ export function FileBoxPage() {
   }, [project, renameTarget, renameName, toast, load]);
 
   const handleOpenFolder = useCallback((folder: ProjectFile) => {
-    setCurrentFolderId(folder.id);
-    setBreadcrumbs(prev => [...prev, { id: folder.id, name: folder.fileName }]);
-  }, []);
+    goToFolder(folder.id);
+  }, [goToFolder]);
 
+  /** index < 0 は「ファイルボックス」＝ルート */
   const handleNavigateBreadcrumb = useCallback((index: number) => {
-    if (index < 0) {
-      setCurrentFolderId(null);
-      setBreadcrumbs([]);
-    } else {
-      const target = breadcrumbs[index];
-      setCurrentFolderId(target.id);
-      setBreadcrumbs(breadcrumbs.slice(0, index + 1));
-    }
-  }, [breadcrumbs]);
+    goToFolder(index < 0 ? null : breadcrumbs[index].id);
+  }, [breadcrumbs, goToFolder]);
 
   // ── 各アクション ────────────────────────────────────────────
   const handleDownload = useCallback(async (file: ProjectFile) => {
@@ -513,10 +590,21 @@ export function FileBoxPage() {
               </button>
             )}
           </div>
-          <button onClick={() => setShowFolderModal(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            <FolderPlus style={{ width: 14, height: 14 }} /> フォルダ作成
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* フォルダをそのまま上げる。ドラッグ&ドロップでも同じことができるが、
+                クリックからも選べるようにしておく（ドロップできない環境向け） */}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#FFFBEB", color: "#D97706", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: uploading ? "wait" : "pointer" }}>
+              <FolderUp style={{ width: 14, height: 14 }} /> フォルダをアップロード
+              <input type="file" disabled={uploading} style={{ display: "none" }}
+                // React の型に無い属性。フォルダ選択ダイアログにするために必要。
+                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
+            </label>
+            <button onClick={() => setShowFolderModal(true)}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              <FolderPlus style={{ width: 14, height: 14 }} /> フォルダ作成
+            </button>
+          </div>
         </div>
 
         {/* パンくずナビゲーション */}
@@ -550,14 +638,17 @@ export function FileBoxPage() {
         <div
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
-          onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(e.dataTransfer.files); }}
+          onDrop={e => { e.preventDefault(); setDragOver(false); handleDropUpload(e); }}
           style={{ marginBottom: 0 }}>
           <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, cursor: uploading ? "wait" : "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
             {uploading
               ? <Loader2 style={{ width: 14, height: 14, color: "#059669", animation: "spin 1s linear infinite" }} />
               : <Upload style={{ width: 14, height: 14, color: dragOver ? "#059669" : "#B0A9A4" }} />}
             <span style={{ fontSize: 12, color: dragOver || uploading ? "#059669" : "#B0A9A4" }}>
-              {uploading ? "アップロード中..." : dragOver ? "ドロップして追加" : `クリックしてファイルを追加、またはドラッグ&ドロップ（1ファイル ${formatFileSize(MAX_FILE_SIZE)} まで）`}
+              {uploading
+                ? `アップロード中...${uploadProgress && uploadProgress.total > 1 ? `（${uploadProgress.done + 1} / ${uploadProgress.total}）` : ""}`
+                : dragOver ? "ドロップして追加"
+                : `クリックしてファイルを追加、またはドラッグ&ドロップ（フォルダごと可・1ファイル ${formatFileSize(MAX_FILE_SIZE)} まで）`}
             </span>
             <input type="file" multiple disabled={uploading} style={{ display: "none" }}
               onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
@@ -592,8 +683,10 @@ export function FileBoxPage() {
                       e.preventDefault();
                       e.stopPropagation();
                       setDragOverFolderId(null);
-                      if (e.dataTransfer.files.length > 0) {
-                        uploadFiles(e.dataTransfer.files, f.id);
+                      // 外から来たファイル/フォルダか、画面内の行を掴んだ移動かを見分ける。
+                      // 行の移動は text/plain しか持たないので types に "Files" は入らない。
+                      if (e.dataTransfer.types.includes("Files")) {
+                        handleDropUpload(e, f.id);
                       } else if (draggingFile) {
                         handleMoveFile(draggingFile, f.id);
                         setDraggingFile(null);
