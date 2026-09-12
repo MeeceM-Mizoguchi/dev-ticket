@@ -9,8 +9,15 @@
 //
 // 編集は詳細パネルを開かず、リストの行の中で完結する（TaskListView）。
 // かんばん／ガントで押されたタスクは、編集できるリストへ送って行に目印を付ける。
+//
+// BRU15-005
+//   ・プロジェクトの候補は自分が参画しているものだけ（admin/PM も同じ）。全PJ・全メンバーはオーナーだけ
+//   ・担当者の候補はそのPJに参画しているメンバーだけ。個人タスクは持ち主で固定
+//   ・サブタスクを持つ親の担当者（A/B/C）と期間（最早の開始〜最遅の期限）は子から決める（taskRollup）
+//   ・ステータスを完了にしたら進捗率は 100%
+//   ・リストの「列幅を広げる」モードと、ガントのドラッグでの日程変更
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, Layers, User, UserCheck, Users } from "lucide-react";
+import { Check, CheckSquare, FileText, Plus, Search, X, List, LayoutGrid, GanttChartSquare, Layers, MoveHorizontal, User, UserCheck, Users, WrapText } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { PageLoader } from "@/app/components/shared/PageLoader";
@@ -26,10 +33,13 @@ import {
   loadTasks, loadTaskProjects, loadTaskMembers, loadTaskShareMap, loadTaskShares,
   createTask, createSubtask, updateTask, deleteTask, syncAssigneeShare,
   addTaskShare, removeTaskShare,
-  computeSortOrder, renumberColumn, SORT_GAP,
+  computeSortOrder, renumberColumn, SORT_GAP, selectableTaskProjects, withDoneProgress,
   type NewTaskInput, type ProjectOption, type MemberOption,
 } from "@/app/lib/taskService";
 import { notifyTaskAssigned, notifyTaskShared } from "@/app/lib/taskNotify";
+import { buildTaskRollups } from "@/app/lib/taskRollup";
+import { DEFAULT_COL_WIDTHS, sanitizeColWidths, type TaskColWidths } from "@/app/components/tasks/taskColumns";
+import { useDelegatedTips } from "@/app/components/shared/HoverTip";
 import type { Task, TaskShare, TaskStatus, TaskView } from "@/app/types";
 
 type OwnerFilter = "all" | "assigned" | "mine" | "shared";
@@ -41,6 +51,20 @@ const VIEWS: { value: TaskView; label: string; icon: React.ElementType }[] = [
 ];
 
 function viewStorageKey(scopeKey: string) { return `dt.taskView.${scopeKey}`; }
+
+/** BRU15-005 表示モードの保存キー（列幅を広げる／折り返し表示と、列幅を画面ごとに覚える） */
+function wideStorageKey(scopeKey: string) { return `dt.taskWide.${scopeKey}`; }
+
+function readWideSetting(scopeKey: string): { on: boolean; wrap: boolean; widths: TaskColWidths } {
+  try {
+    const raw = localStorage.getItem(wideStorageKey(scopeKey));
+    if (raw) {
+      const v = JSON.parse(raw);
+      return { on: v?.on === true, wrap: v?.wrap === true, widths: sanitizeColWidths(v?.widths) };
+    }
+  } catch { /* 読めなければ初期値で始める */ }
+  return { on: false, wrap: false, widths: { ...DEFAULT_COL_WIDTHS } };
+}
 
 /**
  * 横断ビューのタブ（BRU11-046）。
@@ -86,7 +110,8 @@ export function TaskWorkspace({
   const { userId, userName, userRole, userOrgId } = useAuth();
   const { toast } = useToast();
   const isProjectScope = !!projectId;
-  const isAdminRole = userRole === "owner" || userRole === "admin" || userRole === "project-manager";
+  // 全プロジェクト・全メンバーを候補に出すのはオーナーだけ（admin/PM も参画しているPJのみ）
+  const isOwnerRole = userRole === "owner";
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
@@ -123,6 +148,22 @@ export function TaskWorkspace({
 
   useEffect(() => { localStorage.setItem(viewStorageKey(scopeKey), view); }, [view, scopeKey]);
 
+  // BRU15-005 リストの表示モード（列幅を広げる／折り返し表示）。
+  // どちらも単独で使えて、組み合わせると「広げた幅で、それでも余る分だけ折り返す」になる。
+  // オン／オフと列幅は画面（スコープ）ごとに覚えておく
+  const [wideInit] = useState(() => readWideSetting(scopeKey));
+  const [wideMode, setWideMode] = useState(wideInit.on);
+  const [wrapMode, setWrapMode] = useState(wideInit.wrap);
+  const [colWidths, setColWidths] = useState<TaskColWidths>(wideInit.widths);
+  useEffect(() => {
+    try { localStorage.setItem(wideStorageKey(scopeKey), JSON.stringify({ on: wideMode, wrap: wrapMode, widths: colWidths })); }
+    catch { /* 保存できなくても表示は続ける */ }
+  }, [scopeKey, wideMode, wrapMode, colWidths]);
+
+  // 表の中は説明を出したい要素が多いので、入れ物に1つだけ聞き役を置いて data-tip を拾う
+  // （title 属性はブラウザ標準の見た目になり、アプリのUIと揃わない）
+  const { containerRef: tipsRef, tips } = useDelegatedTips();
+
   /**
    * BRU14-013 リストの列見出しと追加行は、この固定ブロックのすぐ下に続けて固定する。
    * そのために固定ブロックの高さを実測して TaskListView へ渡す
@@ -154,12 +195,14 @@ export function TaskWorkspace({
 
   useEffect(() => {
     let alive = true;
+    // projects は見えるもの全部（名前・PJメンバーの引き当て用）。候補の絞り込みは selectableProjects で行う。
+    // メンバーはオーナーだけ組織をまたいで全員（全PJのメンバーを担当者に選べるように）
     Promise.all([
-      loadTaskProjects(userName, isAdminRole),
-      loadTaskMembers(userOrgId),
+      loadTaskProjects(),
+      loadTaskMembers(isOwnerRole ? null : userOrgId),
     ]).then(([p, m]) => { if (alive) { setProjects(p); setMembers(m); } });
     return () => { alive = false; };
-  }, [userName, isAdminRole, userOrgId]);
+  }, [isOwnerRole, userOrgId]);
 
   // お知らせからの着地（?task=...）
   useEffect(() => {
@@ -199,6 +242,47 @@ export function TaskWorkspace({
     return projects.find(p => p.id === id)?.members ?? [];
   }, [projects]);
 
+  /** BRU15-005 プルダウンに出すプロジェクト（自分が参画しているもの。オーナーだけ全件） */
+  const selectableProjects = useMemo(
+    () => selectableTaskProjects(projects, userName, isOwnerRole),
+    [projects, userName, isOwnerRole]);
+
+  /** サブタスクから親へ集計した担当者・期間。絞り込み前の全件から出す（完了を隠しても変わらない） */
+  const rollups = useMemo(() => buildTaskRollups(tasks), [tasks]);
+
+  /** タスクの持ち主の名前。個人タスクの担当者はこの人で固定 */
+  const ownerNameOf = useCallback(
+    (t: Task) => members.find(m => m.id === t.ownerId)?.name || t.createdBy,
+    [members]);
+
+  /**
+   * BRU15-005 担当者の候補。null = 選ばせない（個人タスクは持ち主で固定）。
+   * プロジェクトのタスクは、そのPJに参画しているメンバーだけ。オーナーだけは全メンバー。
+   */
+  const assigneeCandidatesOf = useCallback((pid: string | null): MemberOption[] | null => {
+    if (!pid) return null;
+    if (isOwnerRole) return members;
+    const names = new Set(projects.find(p => p.id === pid)?.members ?? []);
+    return members.filter(m => names.has(m.name));
+  }, [isOwnerRole, members, projects]);
+
+  /**
+   * 画面に出す担当者。
+   *   サブタスクを持つ親 … 子の担当者全員（A/B/C）
+   *   個人タスクで未設定 … 持ち主
+   * 担当者の絞り込み・「自分に振られたタスク」タブもこれで判定する（表示と食い違わないように）。
+   */
+  const assigneesOf = useCallback((t: Task): string[] => {
+    const r = rollups.get(t.id);
+    if (r && r.assignees.length > 0) return r.assignees;
+    if (t.assignee) return [t.assignee];
+    if (!t.projectId) {
+      const owner = ownerNameOf(t);
+      return owner ? [owner] : [];
+    }
+    return [];
+  }, [rollups, ownerNameOf]);
+
   /**
    * タブ（自分／共有）以外の条件だけで絞ったもの。
    * タブの件数バッジはこれを数える＝「そのタブに切り替えたら何件見えるか」と一致する。
@@ -212,10 +296,13 @@ export function TaskWorkspace({
         if (projectFilter && projectFilter !== "none" && t.projectId !== projectFilter) return false;
       }
       // 複数選択のときは「どれかに当てはまれば残す」。1つも選んでいなければ絞らない
-      if (assigneeFilters.length > 0 && !assigneeFilters.some(f =>
-        f === "@me" ? t.assignee === userName
-          : f === "@none" ? !t.assignee
-            : t.assignee === f)) return false;
+      if (assigneeFilters.length > 0) {
+        const names = assigneesOf(t);
+        if (!assigneeFilters.some(f =>
+          f === "@me" ? names.includes(userName)
+            : f === "@none" ? names.length === 0
+              : names.includes(f))) return false;
+      }
       if (creatorFilters.length > 0 && !creatorFilters.some(f =>
         f === "@me" ? t.createdBy === userName : t.createdBy === f)) return false;
       if (q
@@ -224,7 +311,7 @@ export function TaskWorkspace({
         && !t.categories.some(c => c.toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, creatorFilters, search, userName]);
+  }, [tasks, hideDone, isProjectScope, projectFilter, assigneeFilters, creatorFilters, search, userName, assigneesOf]);
 
   /**
    * タブの条件。互いに排他ではない（担当も共有もされていれば両方に出る）。
@@ -233,11 +320,11 @@ export function TaskWorkspace({
    *   shared   = 他の人が作成して自分に見えている（共有された／PJで見えている）
    */
   const matchTab = useCallback((t: Task, tab: OwnerFilter) => {
-    if (tab === "assigned") return t.assignee === userName;
+    if (tab === "assigned") return assigneesOf(t).includes(userName);
     if (tab === "mine") return t.ownerId === userId;
     if (tab === "shared") return t.ownerId !== userId;
     return true;
-  }, [userId, userName]);
+  }, [userId, userName, assigneesOf]);
 
   const visible = useMemo(
     () => (isProjectScope ? filteredExceptTab : filteredExceptTab.filter(t => matchTab(t, ownerFilter))),
@@ -362,10 +449,24 @@ export function TaskWorkspace({
    */
   const patchTask = useCallback(async (task: Task, patch: Partial<Task>) => {
     if (!canEdit(task)) { toast("このタスクを編集する権限がありません", "error"); return; }
-    const full: Partial<Task> = { ...patch };
+    // 完了にしたら進捗率を 100% に上書きする（BRU15-005）
+    const full: Partial<Task> = withDoneProgress({ ...patch });
     if (patch.status !== undefined) {
       // 完了に入った時刻を残す。戻したら消す（ガント／振り返りで使う）
       full.completedAt = patch.status === "done" ? new Date().toISOString() : null;
+    }
+    // プロジェクトを付け替えたら、担当者を新しいPJで選べる人に合わせる（BRU15-005）。
+    //   個人タスクへ → 持ち主で固定
+    //   別のPJへ     → そのPJに参画していない担当者は外す（未割当）
+    // 自動で決めた担当なので、下の共有・お知らせ（本人が選んだときだけ）には乗せない
+    if (patch.projectId !== undefined && patch.assignee === undefined) {
+      const pid = patch.projectId || null;
+      if (!pid) {
+        full.assignee = ownerNameOf(task);
+      } else if (task.assignee) {
+        const candidates = assigneeCandidatesOf(pid);
+        if (candidates && !candidates.some(m => m.name === task.assignee)) full.assignee = "";
+      }
     }
     applyLocal(task.id, full);
     const ok = await updateTask(task.id, full);
@@ -386,7 +487,7 @@ export function TaskWorkspace({
         );
       }
     }
-  }, [canEdit, applyLocal, toast, reload, members, userId, userName, projectSlugOf, refreshShares]);
+  }, [canEdit, applyLocal, toast, reload, members, userId, userName, projectSlugOf, refreshShares, ownerNameOf, assigneeCandidatesOf]);
 
   // かんばんの D&D。落とした位置の前後から新しい sort_order を決める
   const handleDrop = useCallback<TaskDropHandler>(async (taskId, newStatus, beforeId) => {
@@ -412,7 +513,8 @@ export function TaskWorkspace({
       return;
     }
 
-    const patch: Partial<Task> = { status: newStatus, sortOrder: so };
+    // 完了の列へ落としたら進捗率も 100%（リストのステータス変更と同じ規則）
+    const patch: Partial<Task> = withDoneProgress({ status: newStatus, sortOrder: so });
     if (newStatus !== moving.status) patch.completedAt = newStatus === "done" ? new Date().toISOString() : null;
     applyLocal(taskId, patch);
     const ok = await updateTask(taskId, patch);
@@ -504,10 +606,13 @@ export function TaskWorkspace({
     toast(`${created.length}件のタスクを取り込みました`);
   }, [toast]);
 
-  /** かんばんの列末尾からの追加。プロジェクトは画面のスコープに従う */
+  /**
+   * かんばんの列末尾からの追加。プロジェクトは画面のスコープに従う。
+   * 横断ビューからは個人タスクになるので、担当者は自分（BRU15-005）
+   */
   const handleColumnCreate = useCallback((quickTitle: string, status: TaskStatus) =>
-    handleCreate({ title: quickTitle, status, projectId, priority: "medium", assignee: "" }),
-  [handleCreate, projectId]);
+    handleCreate({ title: quickTitle, status, projectId, priority: "medium", assignee: projectId ? "" : userName }),
+  [handleCreate, projectId, userName]);
 
   /**
    * かんばん／ガントで押されたタスクをリストで開く。
@@ -542,7 +647,7 @@ export function TaskWorkspace({
     .sort();
 
   return (
-    <div style={{ padding: "0 4px 40px" }}>
+    <div ref={tipsRef} style={{ padding: "0 4px 40px" }}>
       {/* ── 上部（見出し／タブ／フィルタ）を画面上部に固定 ──
           タスクが増えると下スクロールで検索・フィルタ・タブが見切れ、
           絞り込み直すたびに一番上まで戻る必要があった。
@@ -573,7 +678,7 @@ export function TaskWorkspace({
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             {/* 再読み込みボタンは置かない。ヘッダーの共通の更新ボタン（RefreshContext）が
                 ページごと再マウントして初期fetchを走らせるので、ここに並べると二重になる */}
-            <button type="button" onClick={() => setShowMdImport(true)} title="MDファイルからタスクをまとめて作る"
+            <button type="button" onClick={() => setShowMdImport(true)} data-tip="MDファイルからタスクをまとめて作る"
               style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 14px", fontSize: 12.5, fontWeight: 700, color: "#059669", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.20)", borderRadius: 10, cursor: "pointer" }}>
               <FileText style={{ width: 14, height: 14 }} />MDから作成
             </button>
@@ -636,7 +741,7 @@ export function TaskWorkspace({
               options={[
                 { value: "", label: "すべてのPJ" },
                 { value: "none", label: "個人タスク" },
-                ...projects.map(p => ({ value: p.id, label: p.name })),
+                ...selectableProjects.map(p => ({ value: p.id, label: p.name })),
               ]}
               onChange={setProjectFilter} />
           )}
@@ -672,6 +777,43 @@ export function TaskWorkspace({
             完了を隠す
           </button>
 
+          {/* BRU15-005 リストの表示モード（2つは組み合わせられる）。
+              列幅を広げる … 各列を中身の長さまで広げ、表の中で横スクロールする
+              折り返し表示 … 列幅に収まらない中身を折り返して、行を高くする */}
+          {view === "list" && (
+            <>
+              <button type="button" onClick={() => setWideMode(v => !v)}
+                data-tip={wideMode
+                  ? "列幅を元に戻す（画面の幅に収める）"
+                  : "各列を中身の長さまで広げる\n表の中で横スクロールします。見出しの境目をドラッグで列幅を変更、ダブルクリックで中身に合わせます"}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600,
+                  color: wideMode ? "#059669" : "#6B6458", cursor: "pointer", padding: "7px 10px",
+                  background: wideMode ? "#ECFDF5" : "#FFF",
+                  border: `1px solid ${wideMode ? "#A7F3D0" : "rgba(26,23,20,0.1)"}`,
+                  borderRadius: 8, fontFamily: "inherit",
+                }}>
+                <MoveHorizontal style={{ width: 13, height: 13 }} />
+                列幅を広げる
+              </button>
+
+              <button type="button" onClick={() => setWrapMode(v => !v)}
+                data-tip={wrapMode
+                  ? "折り返しをやめる（1行に収めて、あふれた分は「…」で切る）"
+                  : "列幅に収まらない中身を折り返して全部見せる\n行の高さが伸びます。「列幅を広げる」と一緒に使うと、広げた幅でも余る分だけ折り返します"}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600,
+                  color: wrapMode ? "#059669" : "#6B6458", cursor: "pointer", padding: "7px 10px",
+                  background: wrapMode ? "#ECFDF5" : "#FFF",
+                  border: `1px solid ${wrapMode ? "#A7F3D0" : "rgba(26,23,20,0.1)"}`,
+                  borderRadius: 8, fontFamily: "inherit",
+                }}>
+                <WrapText style={{ width: 13, height: 13 }} />
+                折り返し表示
+              </button>
+            </>
+          )}
+
           <div style={{ position: "relative", marginLeft: "auto" }}>
             <Search style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", width: 12, height: 12, color: "#B0A9A4" }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="タスクを検索"
@@ -701,28 +843,32 @@ export function TaskWorkspace({
           stickyTop={stickyTop + stickyHeight}
           canEdit={canEdit} canDelete={canDelete}
           canShare={canShare} shareCountOf={shareCountOf} highlightId={highlightId}
-          projects={projects} members={members} categoryOptions={categoryOptions}
+          projects={projects} selectableProjects={selectableProjects} categoryOptions={categoryOptions}
+          rollups={rollups} assigneesOf={assigneesOf} assigneeCandidatesOf={assigneeCandidatesOf}
+          wide={wideMode} wrap={wrapMode} colWidths={colWidths} onColWidthsChange={setColWidths}
           onPatch={patchTask} onDelete={setPendingDelete}
           onShare={t => setShareTargetId(t.id)}
           renderSubtaskAdd={parent => (
             <TaskQuickAddRow
-              projects={projects} members={members} categoryOptions={categoryOptions}
-              showProject={!isProjectScope} fixedProjectId={parent.projectId} lockProject
+              projects={selectableProjects} assigneeCandidatesOf={assigneeCandidatesOf} categoryOptions={categoryOptions}
+              showProject={!isProjectScope} fixedProjectId={parent.projectId}
+              fixedProjectName={projectNameOf(parent.projectId)} lockProject
               indent={22} placeholder="サブタスクを入力して Enter で追加" creatorName={userName}
               onCreate={input => handleCreateSubtask(parent, input)}
             />
           )}
           quickAdd={
             <TaskQuickAddRow
-              projects={projects} members={members} categoryOptions={categoryOptions}
-              showProject={!isProjectScope} fixedProjectId={projectId} atTop
+              projects={selectableProjects} assigneeCandidatesOf={assigneeCandidatesOf} categoryOptions={categoryOptions}
+              showProject={!isProjectScope} fixedProjectId={projectId}
+              fixedProjectName={projectNameOf(projectId)} atTop
               focusSignal={addFocus} creatorName={userName} onCreate={handleCreate}
             />
           } />
       ) : view === "board" ? (
         <TaskBoardView tasks={visible} canEdit={canEdit} selectedId={highlightId}
           showProject={!isProjectScope} projectNameOf={projectNameOf}
-          parentTitleOf={parentTitleOf}
+          parentTitleOf={parentTitleOf} rollups={rollups} assigneesOf={assigneesOf}
           onSelect={openInList} onDrop={handleDrop}
           onQuickCreate={handleColumnCreate} />
       ) : visible.length === 0 ? (
@@ -731,15 +877,19 @@ export function TaskWorkspace({
           <p style={{ fontSize: 13, color: "#6B6458", fontWeight: 600, margin: 0 }}>表示できるタスクがありません</p>
         </div>
       ) : (
-        <TaskGanttView tasks={visible} projectNameOf={projectNameOf}
-          selectedId={highlightId} onSelect={openInList} />
+        <TaskGanttView tasks={visible} rollups={rollups} assigneesOf={assigneesOf}
+          projectNameOf={projectNameOf} canEdit={canEdit}
+          selectedId={highlightId} onSelect={openInList} onPatch={patchTask}
+          stickyTop={stickyTop + stickyHeight} />
       )}
 
       {showMdImport && (
         <MdTaskImportDialog
           projectId={projectId}
           projectSlug={projectSlug}
-          projects={projects}
+          // 横断ビューは取り込み先を選ぶので参画PJだけ。PJ配下は固定なので、参画していない
+          // admin でもPJ名を引けるよう全件を渡す
+          projects={isProjectScope ? projects : selectableProjects}
           members={members}
           categoryOptions={categoryOptions}
           minSortOrder={minSortOrder}
@@ -778,6 +928,8 @@ export function TaskWorkspace({
         />
       )}
 
+      {/* data-tip のツールチップ（この画面のどこに置いてもよい） */}
+      {tips}
     </div>
   );
 }

@@ -122,7 +122,7 @@ export function useCellTooltip(text: string, enabled = true) {
  */
 export function ExpandingInput({
   value, onChange, onOpen, onClose, onEnter, onEscape,
-  placeholder, style, className, inputRef, tooltip = true,
+  placeholder, style, className, inputRef, tooltip = true, wrap = false,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -138,20 +138,27 @@ export function ExpandingInput({
   /** 列幅など、セルとしての見た目 */
   style?: React.CSSProperties;
   className?: string;
-  /** 追加行のフォーカス制御用。閉じているときのセルの入力欄を指す */
-  inputRef?: React.RefObject<HTMLInputElement | null>;
+  /** 追加行のフォーカス制御用。閉じているときのセル（入力欄／折り返し表示の箱）を指す */
+  inputRef?: React.MutableRefObject<HTMLElement | null>;
   /** マウスオーバーで全文を出すか */
   tooltip?: boolean;
+  /**
+   * 折り返し表示（BRU15-005）。
+   * <input> は何をしても1行にしかならないので、閉じている間は div で全文を折り返して出す。
+   * 打ち込みはこれまでどおり、触ったときに重なる入力欄（下の textarea）が受け持つ。
+   */
+  wrap?: boolean;
 }) {
-  const localRef = useRef<HTMLInputElement | null>(null);
+  const localRef = useRef<HTMLElement | null>(null);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const [box, setBox] = useState<Box | null>(null);
   /** 重ねた欄の実際の高さ（中身に合わせて伸ばしたあと） */
   const [height, setHeight] = useState(0);
   const openRef = useRef(false);
-  const tip = useCellTooltip(value, tooltip && !box);
+  // 折り返しているときは全文が見えているので、ツールチップは出さない
+  const tip = useCellTooltip(value, tooltip && !box && !wrap);
 
-  const setInput = (el: HTMLInputElement | null) => {
+  const setInput = (el: HTMLElement | null) => {
     localRef.current = el;
     tip.ref.current = el;
     if (inputRef) inputRef.current = el;
@@ -223,22 +230,39 @@ export function ExpandingInput({
     ? Math.max(EDGE, Math.min(box.top, window.innerHeight - EDGE - (height + 12)))
     : 0;
 
+  // 閉じているときのセル。折り返し表示では入力欄ではなく、全文を折り返す箱を置く
+  // （Tab で回ってくる欄のひとつとして扱えるよう tabIndex は持たせる）
+  const onFocusCell = () => {
+    // 追加行のように外からフォーカスを戻されたときは、重ねた欄へ返す
+    if (openRef.current) { areaRef.current?.focus(); return; }
+    open();
+  };
+
   return (
     <>
-      <input
-        ref={setInput}
-        className={className}
-        value={value}
-        placeholder={placeholder}
-        style={style}
-        {...tip.hoverProps}
-        // 打ち込みは重ねた欄が受け持つ。開く前に打てた1文字も取りこぼさない
-        onChange={e => onChange(e.target.value)}
-        onFocus={() => {
-          // 追加行のように外からフォーカスを戻されたときは、重ねた欄へ返す
-          if (openRef.current) { areaRef.current?.focus(); return; }
-          open();
-        }} />
+      {wrap ? (
+        <div
+          ref={setInput}
+          className={className}
+          tabIndex={0}
+          {...tip.hoverProps}
+          onFocus={onFocusCell}
+          onClick={onFocusCell}
+          style={{ ...style, whiteSpace: "pre-wrap", overflowWrap: "anywhere", overflow: "visible", cursor: "text" }}>
+          {value || <span style={{ color: "#B7B1AA" }}>{placeholder}</span>}
+        </div>
+      ) : (
+        <input
+          ref={setInput as (el: HTMLInputElement | null) => void}
+          className={className}
+          value={value}
+          placeholder={placeholder}
+          style={style}
+          {...tip.hoverProps}
+          // 打ち込みは重ねた欄が受け持つ。開く前に打てた1文字も取りこぼさない
+          onChange={e => onChange(e.target.value)}
+          onFocus={onFocusCell} />
+      )}
 
       {box && createPortal(
         <textarea
@@ -294,7 +318,7 @@ export function ExpandingInput({
  * 文字のセル。1文字ごとに保存すると更新が飛びすぎるので、
  * Enter か欄から離れたときにだけ確定する（Esc で打ちかけを捨てる）。
  */
-export function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = true, style }: {
+export function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = true, style, wrap = false }: {
   value: string;
   onCommit: (v: string) => void;
   disabled?: boolean;
@@ -302,6 +326,8 @@ export function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = 
   /** 空を許すか。タイトルは空にできないので、空のまま離れたら元に戻す */
   allowEmpty?: boolean;
   style?: React.CSSProperties;
+  /** 折り返し表示（BRU15-005）。列幅に収まらない分を「…」で切らずに折り返す */
+  wrap?: boolean;
 }) {
   const [draft, setDraft] = useState(value);
   const [editing, setEditing] = useState(false);
@@ -327,7 +353,12 @@ export function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = 
         <span
           ref={el => { readonlyTip.ref.current = el; }}
           {...readonlyTip.hoverProps}
-          style={{ ...style, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          style={{
+            ...style,
+            ...(wrap
+              ? { whiteSpace: "pre-wrap", overflowWrap: "anywhere", overflow: "visible" }
+              : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+          }}>
           {value || "—"}
         </span>
         {readonlyTip.tooltip}
@@ -340,6 +371,7 @@ export function TextCell({ value, onCommit, disabled, placeholder, allowEmpty = 
       className="task-cell"
       value={draft}
       placeholder={placeholder}
+      wrap={wrap}
       style={{ ...style, cursor: "text" }}
       onChange={v => { setEditing(true); setDraft(v); }}
       onOpen={() => setEditing(true)}

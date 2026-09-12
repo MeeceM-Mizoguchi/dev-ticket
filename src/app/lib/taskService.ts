@@ -73,6 +73,16 @@ export function clampTaskProgress(value: unknown): number {
   return Math.min(100, Math.max(0, n));
 }
 
+/**
+ * BRU15-005 ステータスを「完了」にしたら進捗率を 100% に上書きする。
+ * 完了なのに 40% のまま、という食い違いを残さないため。
+ * 完了から戻したときは触らない（どこまで進んでいたかは本人が直す）。
+ * 手元の楽観更新と DB 更新（updateTask）の両方で同じ規則を通す。
+ */
+export function withDoneProgress<T extends { status?: TaskStatus; progress?: number }>(patch: T): T {
+  return patch.status === "done" ? { ...patch, progress: 100 } : patch;
+}
+
 export interface ProjectOption { id: string; slug: string; name: string; members: string[] }
 export interface MemberOption { id: string; name: string }
 
@@ -137,23 +147,30 @@ export async function loadTaskShares(taskId: string): Promise<TaskShare[]> {
 }
 
 /**
- * タスクを紐付けられるプロジェクト。
- * RLS 越しに見えるプロジェクトのうち、自分が参加しているものだけを候補にする
- * （admin/PM は projects が全件見えるが、無関係なPJを候補に並べても邪魔なだけ）。
+ * RLS 越しに見えるプロジェクト全部。
+ * プロジェクト名の表示・担当者候補（PJメンバー）の引き当てに使うので、ここでは絞らない。
+ * プルダウンに出す候補は selectableTaskProjects で絞ること。
  */
-export async function loadTaskProjects(userName: string, isAdminRole: boolean): Promise<ProjectOption[]> {
+export async function loadTaskProjects(): Promise<ProjectOption[]> {
   if (!isSupabaseEnabled) return [];
   const { data, error } = await supabase!
-    .from("projects").select("id, slug, name, members").order("name");
+    .from("projects").select("id, slug, name, members").order("name").order("id");
   if (error) { console.error("[tasks] projects load failed:", error.message); return []; }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const all: ProjectOption[] = (data ?? []).map((p: any) => ({
+  return (data ?? []).map((p: any) => ({
     id: p.id, slug: p.slug || "", name: p.name || "", members: Array.isArray(p.members) ? p.members : [],
   }));
-  if (isAdminRole) return all;
-  const mine = all.filter(p => p.members.includes(userName));
-  // どこにも参加していない場合は、せめて見えるものは選べるようにしておく
-  return mine.length > 0 ? mine : all;
+}
+
+/**
+ * BRU15-005 プロジェクトのプルダウンに出す候補。
+ * 自分が参画しているプロジェクトだけ。admin / PM も同じ（projects は全件見えるが、
+ * 参画していないPJを候補に並べても邪魔なだけ）。全プロジェクトを出すのはオーナーだけ。
+ * どこにも参画していなければ候補は空（＝個人タスクだけ）になる。
+ */
+export function selectableTaskProjects(all: ProjectOption[], userName: string, isOwner: boolean): ProjectOption[] {
+  if (isOwner) return all;
+  return all.filter(p => p.members.includes(userName));
 }
 
 export interface TicketOption { id: string; wbs: string; title: string }
@@ -221,7 +238,8 @@ export async function createTask(input: NewTaskInput): Promise<Task | null> {
     categories: normalizeCategories(input.categories ?? []),
     status,
     priority: input.priority ?? "medium",
-    progress: clampTaskProgress(input.progress ?? 0),
+    // 完了で作ったものは 100%（withDoneProgress と同じ規則）
+    progress: status === "done" ? 100 : clampTaskProgress(input.progress ?? 0),
     assignee: input.assignee ?? "",
     start_date: input.startDate || null,
     due_date: input.dueDate || null,
@@ -236,8 +254,10 @@ export async function createTask(input: NewTaskInput): Promise<Task | null> {
 }
 
 /** 画面の Task 形（camelCase）を受け取り、変更分だけを DB 形へ移して更新する */
-export async function updateTask(id: string, patch: Partial<Task>): Promise<boolean> {
+export async function updateTask(id: string, rawPatch: Partial<Task>): Promise<boolean> {
   if (!isSupabaseEnabled) return true;
+  // 呼び出し側が付け忘れても、完了にするなら 100% で書く
+  const patch = withDoneProgress(rawPatch);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const row: Record<string, any> = { updated_at: new Date().toISOString() };
   if (patch.title !== undefined)       row.title = patch.title;

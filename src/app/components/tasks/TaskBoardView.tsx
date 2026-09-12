@@ -14,6 +14,7 @@ import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { TASK_STATUSES, getTaskPriorityMeta } from "@/app/lib/taskService";
 import { truncateName } from "@/app/lib/helpers";
 import { isOverdue } from "@/app/components/tasks/TaskListView";
+import { effectiveDates, ASSIGNEE_SEP, type TaskRollups } from "@/app/lib/taskRollup";
 import type { Task, TaskStatus } from "@/app/types";
 
 const DRAG_TYPE = "TASK";
@@ -29,11 +30,15 @@ function formatDue(d: string): string {
   return `${Number(m)}/${Number(day)}`;
 }
 
-function TaskCard({ task, status, canEdit, selected, showProject, projectName, parentTitle, onSelect, onDrop }: {
+function TaskCard({ task, status, canEdit, selected, showProject, projectName, parentTitle, assignees, dueDate, onSelect, onDrop }: {
   task: Task; status: TaskStatus; canEdit: boolean; selected: boolean;
   showProject: boolean; projectName: string;
   /** サブタスクのとき、親タスクの名前 */
   parentTitle: string;
+  /** 画面に出す担当者（BRU15-005 サブタスクを持つ親は子の担当者全員） */
+  assignees: string[];
+  /** 画面に出す期限（BRU15-005 サブタスクを持つ親は子の一番遅い期限） */
+  dueDate: string;
   onSelect: (t: Task) => void; onDrop: TaskDropHandler;
 }) {
   const [{ isDragging }, drag] = useDrag<DragItem, void, { isDragging: boolean }>(() => ({
@@ -55,8 +60,9 @@ function TaskCard({ task, status, canEdit, selected, showProject, projectName, p
   }), [task.id, status, onDrop]);
 
   const pri = getTaskPriorityMeta(task.priority);
-  const overdue = isOverdue(task);
+  const overdue = isOverdue({ ...task, dueDate });
   const done = task.status === "done";
+  const assigneeLabel = assignees.join(ASSIGNEE_SEP);
 
   return (
     <div ref={node => { drop(node); }}>
@@ -105,15 +111,16 @@ function TaskCard({ task, status, canEdit, selected, showProject, projectName, p
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-            <Avatar name={task.assignee} size="xs" />
-            <span style={{ fontSize: 10, color: "#9E9690", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-              {truncateName(task.assignee, 8) || "未割当"}
+            <Avatar name={assignees[0] ?? ""} size="xs" />
+            <span title={assigneeLabel || "未割当"}
+              style={{ fontSize: 10, color: "#9E9690", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+              {(assignees.length > 1 ? assigneeLabel : truncateName(assignees[0] ?? "", 8)) || "未割当"}
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-            {task.dueDate && (
+            {dueDate && (
               <span style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9, fontWeight: overdue ? 700 : 500, color: overdue ? "#DC2626" : "#9E9690", background: overdue ? "#FEF2F2" : "transparent", borderRadius: 4, padding: "1px 4px" }}>
-                <CalendarDays style={{ width: 8, height: 8 }} />{formatDue(task.dueDate)}
+                <CalendarDays style={{ width: 8, height: 8 }} />{formatDue(dueDate)}
               </span>
             )}
             <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: pri.bg, color: pri.color }}>{pri.label}</span>
@@ -166,7 +173,7 @@ function ColumnQuickAdd({ status, onCreate }: {
   );
 }
 
-function BoardColumn({ col, tasks, canEdit, selectedId, showProject, projectNameOf, parentTitleOf, onSelect, onDrop, onQuickCreate }: {
+function BoardColumn({ col, tasks, canEdit, selectedId, showProject, projectNameOf, parentTitleOf, rollups, assigneesOf, onSelect, onDrop, onQuickCreate }: {
   col: typeof TASK_STATUSES[number];
   tasks: Task[];
   canEdit: (t: Task) => boolean;
@@ -174,6 +181,8 @@ function BoardColumn({ col, tasks, canEdit, selectedId, showProject, projectName
   showProject: boolean;
   projectNameOf: (id: string | null) => string;
   parentTitleOf: (id: string | null) => string;
+  rollups: TaskRollups;
+  assigneesOf: (t: Task) => string[];
   onSelect: (t: Task) => void;
   onDrop: TaskDropHandler;
   onQuickCreate: (title: string, status: TaskStatus) => Promise<boolean>;
@@ -209,6 +218,8 @@ function BoardColumn({ col, tasks, canEdit, selectedId, showProject, projectName
             selected={selectedId === t.id} showProject={showProject}
             projectName={projectNameOf(t.projectId)}
             parentTitle={parentTitleOf(t.parentId)}
+            assignees={assigneesOf(t)}
+            dueDate={effectiveDates(t, rollups.get(t.id)).dueDate}
             onSelect={onSelect} onDrop={onDrop} />
         ))}
         <ColumnQuickAdd status={col.value} onCreate={onQuickCreate} />
@@ -224,6 +235,10 @@ export function TaskBoardView(props: {
   showProject: boolean;
   projectNameOf: (id: string | null) => string;
   parentTitleOf: (id: string | null) => string;
+  /** サブタスクから親へ集計した担当者・期間 */
+  rollups: TaskRollups;
+  /** 画面に出す担当者（親は子の担当者全員） */
+  assigneesOf: (t: Task) => string[];
   onSelect: (t: Task) => void;
   onDrop: TaskDropHandler;
   onQuickCreate: (title: string, status: TaskStatus) => Promise<boolean>;
@@ -237,6 +252,7 @@ export function TaskBoardView(props: {
             canEdit={props.canEdit} selectedId={props.selectedId}
             showProject={props.showProject} projectNameOf={props.projectNameOf}
             parentTitleOf={props.parentTitleOf}
+            rollups={props.rollups} assigneesOf={props.assigneesOf}
             onSelect={props.onSelect} onDrop={props.onDrop}
             onQuickCreate={props.onQuickCreate} />
         ))}

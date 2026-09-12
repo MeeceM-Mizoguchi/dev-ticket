@@ -94,3 +94,22 @@
 .task-select:focus-within .task-select-arrow {
   opacity: 1;
 }
+/* BRU15-005 横スクロールする表の見出し・本体。バーは画面下端に貼り付く1本だけを出すので、
+   枠ごとのバーは隠す（スクロール自体はホイール・トラックパッド・Shift+ホイールで効く） */
+.task-hscroll-hide {
+  scrollbar-width: none;
+}
+.task-hscroll-hide::-webkit-scrollbar {
+  display: none;
+}
+/* BRU15-005 列幅を変えるつまみ（広げるモードの見出し）。
+   境目の線そのものは表全体の縦罫線（TaskListView が1枚で敷く）が引くので、
+   つまみは触ったときだけ緑に光らせる。ここで常時線を出すと、罫線と重なって二重線になる。 */
+.task-col-resizer > span {
+  background: transparent;
+  transition: background 0.12s;
+}
+.task-col-resizer:hover > span,
+.task-col-resizer:active > span {
+  background: #059669;
+}
