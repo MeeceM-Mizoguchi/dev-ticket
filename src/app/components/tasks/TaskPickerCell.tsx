@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
+import { useTaskCols } from "@/app/components/tasks/taskColumns";
 
 export interface PickerOption {
   value: string;
@@ -136,21 +137,27 @@ export function PickerCell({
   const selected = options.find(o => o.value === value);
 
   const chip = variant === "chip";
+  // 表の中のセルだけ、折り返し表示モードに従う（表の外のフィルタは既定＝1行のまま）
+  const { wrap } = useTaskCols();
+  const wrapCell = wrap && !chip;
 
   return (
     <span className={chip ? undefined : "task-select"}
       style={{
         position: "relative", display: "inline-flex", alignItems: "center", flexShrink: 0, width,
       }}>
-      <button ref={btnRef} type="button" disabled={disabled} title={title}
+      {/* 説明は data-tip（アプリのUI）。title だとブラウザ標準の見た目になる */}
+      <button ref={btnRef} type="button" disabled={disabled} data-tip={title}
         onClick={toggle}
         onKeyDown={e => { if (e.key === "Escape") close(); }}
         style={{
           width: width ? "100%" : undefined,
           fontFamily: "inherit", cursor: disabled ? "default" : "pointer",
-          display: "inline-flex", alignItems: "center", gap: chip ? 6 : 4,
+          display: "inline-flex", alignItems: wrapCell ? "flex-start" : "center", gap: chip ? 6 : 4,
           justifyContent: align === "center" ? "center" : "flex-start",
-          overflow: "hidden", whiteSpace: "nowrap",
+          textAlign: "left" as const,
+          overflow: wrapCell ? "visible" : "hidden",
+          whiteSpace: wrapCell ? "normal" : "nowrap",
           ...(chip
             ? {
               padding: "7px 10px", fontSize: 11.5, fontWeight: 600, color: "#6B6458",
@@ -163,9 +170,13 @@ export function PickerCell({
           ...textStyle,
         }}>
         {selected?.color && (
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: selected.color, flexShrink: 0 }} />
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: selected.color, flexShrink: 0, marginTop: wrapCell ? 4 : 0 }} />
         )}
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{selected?.label ?? placeholder}</span>
+        <span style={wrapCell
+          ? { overflowWrap: "anywhere", minWidth: 0 }
+          : { overflow: "hidden", textOverflow: "ellipsis" }}>
+          {selected?.label ?? placeholder}
+        </span>
         {chip && <ChevronDown style={{ width: 11, height: 11, color: "#B0A9A4", flexShrink: 0, marginLeft: "auto" }} />}
       </button>
 
@@ -225,6 +236,7 @@ export function MultiPickerCell({
 }) {
   const { pos, menuRef, btnRef, close, toggle } = useAnchoredMenu(options.length + (showSelectAll ? 1 : 0));
   const picked = new Set(values);
+  // 説明は data-tip（アプリのUI）。title だとブラウザ標準の見た目になる
   const allOn = options.length > 0 && options.every(o => picked.has(o.value));
 
   // 選んだ順ではなく選択肢の並び順で出す（押すたびに文字が入れ替わらないように）
@@ -240,7 +252,7 @@ export function MultiPickerCell({
 
   return (
     <span style={{ position: "relative", display: "inline-flex", alignItems: "center", flexShrink: 0, width }}>
-      <button ref={btnRef} type="button" disabled={disabled} title={title}
+      <button ref={btnRef} type="button" disabled={disabled} data-tip={title}
         onClick={toggle}
         onKeyDown={e => { if (e.key === "Escape") close(); }}
         style={{

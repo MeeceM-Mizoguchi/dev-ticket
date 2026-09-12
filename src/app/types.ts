@@ -448,8 +448,8 @@ export interface Task {
   status: TaskStatus;
   priority: Priority;
   /**
-   * 進捗率（0〜100）。手入力で、ステータスとは連動しない
-   * （チケットの progress はステータスから自動で決まるが、こちらは自分で書き込む）
+   * 進捗率（0〜100）。手入力。ステータスを「完了」にしたときだけ 100 に上書きする（BRU15-005）。
+   * それ以外はステータスと連動しない（チケットの progress はステータスから自動で決まるが、こちらは自分で書き込む）
    */
   progress: number;
   assignee: string;

@@ -108,6 +108,8 @@ export async function insertBulkTasks(params: BulkTaskInsertParams): Promise<Bul
     categories: normalizeCategories(t.categories),
     status: t.status,
     priority: t.priority,
+    // 完了で取り込んだものは 100%（taskService.withDoneProgress と同じ規則）
+    progress: t.status === "done" ? 100 : 0,
     assignee: t.assignee || "",
     start_date: t.startDate,
     due_date: t.dueDate,
