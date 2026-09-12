@@ -56,7 +56,10 @@ export function ColumnFilter<C extends string>({
 
   return (
     <div style={{ position: "relative", width: "100%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onToggle}>
-      <button onClick={e => { e.stopPropagation(); onToggle(); }} style={{
+      {/* 見出しのホバー膜は外側（列セル全体＝クリック範囲）だけに出す。
+          このボタンにも interactive.css の膜が乗ると、ラベルの周りだけ二重に暗くなって
+          「グレーが2枚重なっている」ように見えるため data-hover="off" で片方を消す。 */}
+      <button data-hover="off" onClick={e => { e.stopPropagation(); onToggle(); }} style={{
         display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: "none", border: "none",
         cursor: "pointer", padding: 0, fontSize: 10, fontWeight: 700,
         color: active ? "#059669" : "#B0A9A4",

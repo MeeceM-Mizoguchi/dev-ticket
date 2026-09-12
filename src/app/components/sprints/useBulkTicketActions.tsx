@@ -70,7 +70,7 @@ export function useBulkTicketActions({
   /** 選択したチケットのエクスポート（CSV/Word/Markdown）。省略するとボタンを出さない */
   exportOptions?: BulkExportOptions;
 }) {
-  const { userOrgId } = useAuth();
+  const { userOrgId, userName } = useAuth();
   const { showAlert } = useAlert();
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -216,6 +216,7 @@ export function useBulkTicketActions({
       setAssignState({ phase: "saving", current: 0, total: targets.length });
       const assignedIds: string[] = [];
       const notifRows: Record<string, unknown>[] = [];
+      const handoverComments: Record<string, unknown>[] = [];
       let done = 0;
       for (const r of resolved) {
         const rec = byTicket.get(r.ticket.id);
@@ -237,6 +238,21 @@ export function useBulkTicketActions({
             );
           }
           if (rec) void logRecommendationAccepted({ organizationId: userOrgId, ticketId: r.ticket.id, candidates: rec.candidates, chosen, source: rec.source });
+          // すでに担当がいたチケットの付け替えは「引継ぎ」なので、コメントに履歴を残す。
+          // 実績の分割は担当区間（DBトリガが記録）からの自動按分に任せる
+          //（一括操作なので1件ずつ実績を確認させない。個別に直したいときはチケット詳細から）。
+          if (prev && chosen.name !== prev) {
+            handoverComments.push({
+              id: `CMT-${Date.now()}-${r.ticket.id}`,
+              ticket_id: r.ticket.id,
+              user_name: userName,
+              content: `<p>🔁 担当を <strong>${prev}</strong> から <strong>@${chosen.name}</strong> に引き継ぎました（一括自動アサイン）</p>`
+                + `<p>実績は担当していた期間で自動按分します。</p>`,
+              ticket_status: r.ticket.status,
+              comment_type: "handover",
+              images: [],
+            });
+          }
           if (chosen.name !== prev && projectSlug) {
             notifRows.push({
               user_name: chosen.name, type: "assign", title: "チケットが割り当てられました",
@@ -253,6 +269,11 @@ export function useBulkTicketActions({
       }
       if (notifRows.length > 0 && isSupabaseEnabled) {
         await supabase!.from("notifications").insert(notifRows);
+      }
+      if (handoverComments.length > 0 && isSupabaseEnabled) {
+        // 引継ぎの履歴が残らなくてもアサインそのものは成立しているので、失敗しても止めない
+        const { error } = await supabase!.from("ticket_comments").insert(handoverComments);
+        if (error) console.error("[handover] bulk comment insert failed:", error.message);
       }
 
       setAssignState(null);

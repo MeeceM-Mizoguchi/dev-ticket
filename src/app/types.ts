@@ -280,7 +280,9 @@ export interface AssigneeRecommendation {
   source: "model" | "baseline";  // 学習済みモデル / ルールベース（モデル未成熟時のフォールバック）
 }
 
-export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change";
+// handover = 担当の引継ぎ。誰から誰へ・元担当の実績・理由をタイムラインに残す
+// （通知は既読で消えるので、あとから追える履歴はコメント側にしか残らない）
+export type CommentType = "comment" | "review_request" | "review_withdrawn" | "revision_request" | "review_approved" | "status_change" | "handover";
 
 export interface TicketComment {
   id: string; ticketId: string; userName: string; content: string;

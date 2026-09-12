@@ -104,6 +104,16 @@ export function MemberEditDialog({ member, onClose, onSaved }: { member: Member;
           .from("ticket_comments")
           .update({ user_name: name })
           .eq("user_name", member.name);
+
+        // ticket_assignments.assignee（担当の引継ぎ区間）を更新。
+        // ★ sprint_tickets の更新より後に流すこと ★
+        //   assignee が変わると DB トリガが「担当交代」とみなして区間を締め、新しい名前で
+        //   区間を開き直す。改名で区間が2本に割れるが、集計は名前で合算するので
+        //   ここで旧名の行も新名に寄せれば実績の合計は変わらない。
+        await supabase!
+          .from("ticket_assignments")
+          .update({ assignee: name })
+          .eq("assignee", member.name);
       }
 
       toast(`「${name}」を更新しました`);

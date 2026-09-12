@@ -210,7 +210,7 @@ export function ProjectsPage() {
     ]);
     const sprints = (sprintData ?? []).map(mapSprint);
     const categories = (categoryData ?? []) as Array<{ id: string; name: string }>;
-    downloadProjectCsv(project.name, sprints, categories);
+    await downloadProjectCsv(project.name, sprints, categories);
   };
 
   const visibleProjects = isOwner

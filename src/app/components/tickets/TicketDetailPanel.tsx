@@ -9,8 +9,11 @@ import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { buildCommentAnchor, buildCommentLink, parseCommentAnchor } from "@/app/lib/commentLink";
-import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours, formatPersonDays } from "@/app/lib/helpers";
 import { calcHoldHours, HOLD_START_MARKER, HOLD_END_MARKER } from "@/app/lib/holdHours";
+import { fetchAssignmentSegments, previewCurrentShare, applyHandoverDetails, saveAssigneeHours } from "@/app/lib/handover";
+import { HandoverDialog, type HandoverResult } from "@/app/components/tickets/HandoverDialog";
+import type { AssigneeHoursState } from "@/app/components/tickets/AssigneeHoursFields";
 import { syncSprintStatusInDb } from "@/app/lib/syncSprintStatus";
 import { syncProjectStatusBySprintId } from "@/app/lib/syncProjectStatus";
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
@@ -330,6 +333,8 @@ export function TicketDetailPanel({
   const [priority, setPriority] = useState<Priority>(ticket?.priority ?? "medium");
   const [assignee, setAssignee] = useState<string>(ticket?.assignee ?? "");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
+  // 引継ぎダイアログの待ち状態。null = 出していない
+  const [pendingHandover, setPendingHandover] = useState<{ prev: string; next: string; totalHours: number; suggested: number } | null>(null);
   // ENHA2-034 担当者レコメンド（自動アサイン）
   const [skills, setSkills] = useState<Skill[]>([]);
   const [showRecommend, setShowRecommend] = useState(false);
@@ -1472,12 +1477,17 @@ export function TicketDetailPanel({
     syncSprint();
   };
 
-  const handleSaveActualWorkHours = async (hours: number, segmentHours?: string[]) => {
+  const handleSaveActualWorkHours = async (hours: number, segmentHours?: string[], assigneeHours?: AssigneeHoursState | null) => {
     if (!ticket || !isSupabaseEnabled) return;
     // 工程別の内訳を専用カラムへ保存し、実績モニタ／修正モーダルで入力値を100%再現できるようにする
     const patch: Record<string, unknown> = { actual_work_hours: hours };
     if (segmentHours) patch.actual_work_hours_breakdown = segmentHours.map(v => v === "" ? "0" : v);
     await supabase!.from("sprint_tickets").update(patch).eq("id", ticket.id);
+    // 担当者別の取り分は担当区間（ticket_assignments）側に書く。
+    // ここを書かないと、入力した実績が現担当のものとしてだけ集計されてしまう。
+    if (assigneeHours) {
+      await saveAssigneeHours(ticket.id, assigneeHours.hours, assigneeHours.segments, assigneeHours.ticket, comments);
+    }
     setActualWorkHours(hours);
     setShowHoursInputMode(false);
     setIsEditingActualHours(false); // 🌟 追加：保存が完了したら自動的に修正モードを終了してロックする
@@ -1577,10 +1587,10 @@ export function TicketDetailPanel({
     }
   };
 
-  const saveAssignee = (name: string) => {
-    const prevAssignee = assignee;
+  /** 担当を実際に書き換えて通知を飛ばす。引継ぎダイアログを通る／通らないの両方から呼ぶ */
+  const applyAssignee = async (name: string, prevAssignee: string) => {
     setAssignee(name);
-    save({ assignees: name ? [name] : [], assignee: name });
+    await save({ assignees: name ? [name] : [], assignee: name });
     if (name && name !== prevAssignee && isSupabaseEnabled && projectSlug && ticket) {
       supabase!.from("notifications").insert({
         user_name: name,
@@ -1602,6 +1612,68 @@ export function TicketDetailPanel({
         body: `${ticket.wbs}: ${ticket.title}`,
       });
     }
+  };
+
+  // 引継ぎダイアログを出すかどうかを決めてから担当を書き換える。
+  //
+  // 出すのは「すでに担当がいて、別の人に変わる」とき。未割り当てからの初アサインと
+  // 同じ人の選び直しは引き継ぐものが無いので、今までどおり即時に切り替える。
+  //
+  // ★ 着手前（started_at が無い）でも必ず出す ★
+  //   一度「実績がゼロなら出さない」条件を入れたが、それだと着手前に担当を替えたときに
+  //   履歴コメントまで丸ごと残らなくなる。引継ぎの申し送りは、むしろ着手前・作業途中でこそ要る。
+  const saveAssignee = async (name: string) => {
+    const prevAssignee = assignee;
+    if (!prevAssignee || name === prevAssignee || !ticket || !isSupabaseEnabled) {
+      await applyAssignee(name, prevAssignee);
+      return;
+    }
+    // ★ マイルストーンはDBから読み直す ★
+    //   ticket プロップは開いたときのスナップショットで、パネル内でステータスを進めても
+    //   更新されない（reloadTicketFields はフィールドの state しか直さない）。
+    //   古い日時のまま按分すると、元担当の取り分がまるごと 0 になる。
+    const [segments, milestones] = await Promise.all([
+      fetchAssignmentSegments(ticket.id),
+      fetchMilestones(ticket.id),
+    ]);
+    const fresh = { ...ticket, ...(milestones ?? {}), actualWorkHours };
+    const totalHours = calcTicketActualHours(fresh);
+    const suggested = previewCurrentShare(totalHours, segments, fresh, comments, prevAssignee);
+    setPendingHandover({ prev: prevAssignee, next: name, totalHours, suggested });
+  };
+
+  /**
+   * 引継ぎの確定。順番に意味がある:
+   *   ① チケットの assignee を更新 → DBトリガが前の区間を締めて新しい区間を開く
+   *   ② 締まった区間へ実績の確定値と理由を書き足す（①より先に書くと対象行がまだ無い）
+   *   ③ タイムラインに handover コメントを残す
+   */
+  const confirmHandover = async (result: HandoverResult) => {
+    const pending = pendingHandover;
+    if (!pending || !ticket) return;
+    await applyAssignee(pending.next, pending.prev);
+    await applyHandoverDetails(ticket.id, pending.prev, {
+      hoursOverride: result.hoursOverride,
+      note: result.note,
+      handedOverBy: userName,
+    });
+    const confirmedHours = result.hoursOverride ?? pending.suggested;
+    const toLabel = pending.next ? `<strong>@${pending.next}</strong>` : "未割り当て";
+    const noteHtml = result.note
+      ? `<p>理由・申し送り: ${result.note.replace(/[<>&]/g, ch => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]!))}</p>`
+      : "";
+    // まだ実績が付いていないチケットで「0時間」と書くと誤解を招くので、その行ごと省く
+    const hoursHtml = pending.totalHours > 0
+      ? `<p>${pending.prev} さんの実績: ${Math.round(confirmedHours * 100) / 100}時間（${formatPersonDays(confirmedHours)}）</p>`
+      : "";
+    await addComment(
+      `<p>🔁 担当を <strong>${pending.prev}</strong> から ${toLabel} に引き継ぎました</p>`
+      + hoursHtml
+      + noteHtml,
+      "handover",
+    );
+    setPendingHandover(null);
+    onUpdated?.();
   };
 
   const insertNotification = async (recipientName: string, type: string, title: string, body: string) => {
@@ -2147,6 +2219,16 @@ export function TicketDetailPanel({
           ticketId={ticket.id}
           subtitle={title}
           onClose={() => setShowMonitor(false)}
+        />
+      )}
+      {pendingHandover && (
+        <HandoverDialog
+          prevAssignee={pendingHandover.prev}
+          nextAssignee={pendingHandover.next}
+          totalHours={pendingHandover.totalHours}
+          suggestedHours={pendingHandover.suggested}
+          onConfirm={confirmHandover}
+          onClose={() => setPendingHandover(null)}
         />
       )}
       {showDeleteConfirm && (
@@ -2971,7 +3053,7 @@ export function TicketDetailPanel({
                     {projectMemberNames.length === 0
                       ? <p style={{ padding: "10px 12px", fontSize: 12, color: "#B0A9A4" }}>メンバーがいません</p>
                       : projectMemberNames.map(n => (
-                        <button key={n} onClick={() => { saveAssignee(n); setAssigneeOpen(false); }}
+                        <button key={n} onClick={() => { void saveAssignee(n); setAssigneeOpen(false); }}
                           style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", background: assignee === n ? "#ECFDF5" : "transparent", border: "none", transition: "background 0.10s", textAlign: "left" }}
                           onMouseEnter={e => { const target = e.currentTarget as HTMLElement; if (assignee !== n) target.style.background = "#F4F5F6"; }}
                           onMouseLeave={e => { const target = e.currentTarget as HTMLElement; target.style.background = assignee === n ? "#ECFDF5" : "transparent"; }}>
@@ -2981,7 +3063,7 @@ export function TicketDetailPanel({
                         </button>
                       ))}
                     <div style={{ padding: "6px 12px", borderTop: "1px solid rgba(26,23,20,0.06)" }}>
-                      <button onClick={() => { saveAssignee(""); setAssigneeOpen(false); }}
+                      <button onClick={() => { void saveAssignee(""); setAssigneeOpen(false); }}
                         style={{ fontSize: 11, color: "#B0A9A4", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                         割り当て解除
                       </button>
@@ -3008,7 +3090,7 @@ export function TicketDetailPanel({
                   ticketDueDate={dueDate}
                   onClose={() => setShowRecommend(false)}
                   onPick={(name, req, scale) => {
-                    saveAssignee(name);
+                    void saveAssignee(name);
                     void persistTicketSkills(req, scale);
                   }}
                 />
@@ -3616,12 +3698,15 @@ export function TicketDetailPanel({
                 const isApproved = c.commentType === "review_approved";
                 const isWithdrawn = c.commentType === "review_withdrawn";
                 const isStatusChange = c.commentType === "status_change";
-                const isSystem = isReviewReq || isRevisionReq || isApproved || isWithdrawn || isStatusChange;
+                // 引継ぎは status_change のような1行の区切り表示ではなく、
+                // 本文（実績・理由）まで読めるシステムコメントとして出す
+                const isHandover = c.commentType === "handover";
+                const isSystem = isReviewReq || isRevisionReq || isApproved || isWithdrawn || isStatusChange || isHandover;
 
-                const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : isWithdrawn ? "#6B7280" : "#6B7280";
-                const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : isWithdrawn ? "#F4F5F6" : "#F4F5F6";
-                const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : isWithdrawn ? "rgba(107,114,128,0.15)" : "rgba(26,23,20,0.08)";
-                const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : isWithdrawn ? "↩ 取り下げ" : "";
+                const sysColor = isReviewReq ? "#7C3AED" : isRevisionReq ? "#D97706" : isApproved ? "#059669" : isHandover ? "#0284C7" : isWithdrawn ? "#6B7280" : "#6B7280";
+                const sysBg = isReviewReq ? "#F5F3FF" : isRevisionReq ? "#FFF7ED" : isApproved ? "#ECFDF5" : isHandover ? "#F0F9FF" : isWithdrawn ? "#F4F5F6" : "#F4F5F6";
+                const sysBorder = isReviewReq ? "rgba(124,58,237,0.15)" : isRevisionReq ? "rgba(217,119,6,0.15)" : isApproved ? "rgba(5,150,105,0.15)" : isHandover ? "rgba(2,132,199,0.18)" : isWithdrawn ? "rgba(107,114,128,0.15)" : "rgba(26,23,20,0.08)";
+                const sysLabel = isReviewReq ? `レビュー依頼${reviewerName ? ` → ${reviewerName}` : ""}` : isRevisionReq ? "修正依頼（差戻し）" : isApproved ? "✅ レビュー承認" : isHandover ? "🔁 担当の引継ぎ" : isWithdrawn ? "↩ 取り下げ" : "";
 
                 if (isStatusChange) {
                   return (
@@ -4309,6 +4394,9 @@ export function TicketDetailPanel({
           <CompletionOverlay
             ticketTitle={title}
             initialSegmentHours={completionSegmentHours}
+            ticketId={ticket.id}
+            comments={comments}
+            currentAssignee={assignee}
             onSave={handleSaveActualWorkHours}
             onClose={() => { setShowCompletionOverlay(false); onUpdated?.(); }}
           />
@@ -4319,6 +4407,9 @@ export function TicketDetailPanel({
             ticketTitle={title}
             initialSegmentHours={withChildHours(computeRawSegments(ticket))}
             skipAnimation
+            ticketId={ticket.id}
+            comments={comments}
+            currentAssignee={assignee}
             onSave={handleSaveActualWorkHours}
             onClose={() => setShowHoursInputMode(false)}
           />
