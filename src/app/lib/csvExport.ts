@@ -1,5 +1,6 @@
 import type { Sprint, SprintTicket } from "@/app/types";
 import { htmlToText, calcTicketActualHours, formatPersonDays, getTicketStatusMeta } from "@/app/lib/helpers";
+import { buildSharesFor, type AssigneeShare } from "@/app/lib/handover";
 
 const PRIORITY_LABELS: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
@@ -50,14 +51,32 @@ export const TICKET_EXPORT_HEADERS = [
   "No", "スプリント名", "チケットNo", "チケット名", "チケット詳細",
   "分類", "ステータス", "レビュー状況", "優先度", "担当者",
   "開始日", "期限日", "実績工数(人日)",
+  // 引継ぎがあったチケットだけ埋まる。「担当者」列は現在の担当しか出せないので、
+  // 誰がどれだけやったのかは実績工数と並べて別列で持つ
+  "担当履歴", "担当者別実績",
 ];
+
+/** 「田中太郎 → 佐藤花子」。引継ぎが無いチケットは空 */
+function handoverPath(shares: AssigneeShare[] | undefined): string {
+  if (!shares || shares.length < 2) return "";
+  // shares は区間の登場順に並んでいる（splitActualHours が古い順に積む）
+  return shares.map(s => s.assignee).join(" → ");
+}
+
+/** 「田中太郎 1.5人日 / 佐藤花子 0.8人日」。合計はチケットの実績工数と必ず一致する */
+function handoverShares(shares: AssigneeShare[] | undefined): string {
+  if (!shares || shares.length < 2) return "";
+  return shares.map(s => `${s.assignee} ${formatPersonDays(s.hours)}`).join(" / ");
+}
 
 /** チケット1件ぶんのセル（TICKET_EXPORT_HEADERS と同じ並び）。 */
 export function buildTicketExportCells(
   no: number,
   sprintName: string,
   ticket: SprintTicket,
-  getCategoryLabel: (t: SprintTicket) => string
+  getCategoryLabel: (t: SprintTicket) => string,
+  /** 担当者別の実績。引継ぎのあったチケットぶんだけ入っている（buildSharesFor の結果） */
+  shares?: Map<string, AssigneeShare[]>,
 ): string[] {
   // progress を見ないと保留(-1)/取下(-2)が元ステータスのまま出力され、
   // 子チケットの closed も「未着手」に誤フォールバックする（getTicketStatusMeta が両方を吸収する）。
@@ -77,6 +96,8 @@ export function buildTicketExportCells(
     ticket.startDate || "",
     ticket.dueDate || "",
     actualHours > 0 ? formatPersonDays(actualHours) : "",
+    handoverPath(shares?.get(ticket.id)),
+    handoverShares(shares?.get(ticket.id)),
   ];
 }
 
@@ -89,9 +110,10 @@ function buildRow(
   no: number,
   sprintName: string,
   ticket: SprintTicket,
-  getCategoryLabel: (t: SprintTicket) => string
+  getCategoryLabel: (t: SprintTicket) => string,
+  shares?: Map<string, AssigneeShare[]>,
 ): string {
-  return toCsvLine(buildTicketExportCells(no, sprintName, ticket, getCategoryLabel));
+  return toCsvLine(buildTicketExportCells(no, sprintName, ticket, getCategoryLabel, shares));
 }
 
 export function triggerCsvDownload(csvContent: string, filename: string): void {
@@ -110,20 +132,20 @@ export function triggerCsvDownload(csvContent: string, filename: string): void {
  * displayTickets はフィルタ適用済みの親チケット一覧。
  * 各親の子チケットも後続行として含める。
  */
-export function downloadSprintCsv(
+export async function downloadSprintCsv(
   sprint: Sprint,
   displayTickets: SprintTicket[],
   getCategoryLabel: (t: SprintTicket) => string
-): void {
-  const rows: string[] = [toCsvLine(TICKET_EXPORT_HEADERS)];
-  let no = 1;
+): Promise<void> {
+  // 出力対象（親＋その子）を先に並べてから、担当者別実績をまとめて1回で引く
+  const ordered: SprintTicket[] = [];
   for (const ticket of displayTickets) {
-    rows.push(buildRow(no++, sprint.name, ticket, getCategoryLabel));
-    const children = sprint.tickets.filter(t => t.parentId === ticket.id);
-    for (const child of children) {
-      rows.push(buildRow(no++, sprint.name, child, getCategoryLabel));
-    }
+    ordered.push(ticket, ...sprint.tickets.filter(t => t.parentId === ticket.id));
   }
+  const shares = await buildSharesFor(ordered, calcTicketActualHours);
+
+  const rows: string[] = [toCsvLine(TICKET_EXPORT_HEADERS)];
+  ordered.forEach((ticket, i) => rows.push(buildRow(i + 1, sprint.name, ticket, getCategoryLabel, shares)));
   triggerCsvDownload(rows.join("\r\n"), `${sprint.name}.csv`);
 }
 
@@ -131,26 +153,28 @@ export function downloadSprintCsv(
  * プロジェクト全体の CSV ダウンロード（全スプリント・全チケット）。
  * categories は ticket_categories テーブルから取得したデータ。
  */
-export function downloadProjectCsv(
+export async function downloadProjectCsv(
   projectName: string,
   sprints: Sprint[],
   categories: Array<{ id: string; name: string }>
-): void {
+): Promise<void> {
   const map: Record<string, string> = { ...BASE_CATEGORY_MAP };
   categories.forEach(c => { if (c.id && c.name) map[c.id] = c.name; });
   const getCategoryLabel = (t: SprintTicket): string => map[t.categoryId ?? ""] || "分類なし";
 
-  const rows: string[] = [toCsvLine(TICKET_EXPORT_HEADERS)];
-  let no = 1;
+  // 出力順（スプリント → 親 → その子）を先に確定させてから、担当者別実績を1回で引く
+  const ordered: { sprintName: string; ticket: SprintTicket }[] = [];
   for (const sprint of sprints) {
-    const parents = sprint.tickets.filter(t => !t.parentId);
-    for (const ticket of parents) {
-      rows.push(buildRow(no++, sprint.name, ticket, getCategoryLabel));
-      const children = sprint.tickets.filter(t => t.parentId === ticket.id);
-      for (const child of children) {
-        rows.push(buildRow(no++, sprint.name, child, getCategoryLabel));
+    for (const ticket of sprint.tickets.filter(t => !t.parentId)) {
+      ordered.push({ sprintName: sprint.name, ticket });
+      for (const child of sprint.tickets.filter(t => t.parentId === ticket.id)) {
+        ordered.push({ sprintName: sprint.name, ticket: child });
       }
     }
   }
+  const shares = await buildSharesFor(ordered.map(o => o.ticket), calcTicketActualHours);
+
+  const rows: string[] = [toCsvLine(TICKET_EXPORT_HEADERS)];
+  ordered.forEach((o, i) => rows.push(buildRow(i + 1, o.sprintName, o.ticket, getCategoryLabel, shares)));
   triggerCsvDownload(rows.join("\r\n"), `${projectName}.csv`);
 }

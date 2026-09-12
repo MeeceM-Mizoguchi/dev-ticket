@@ -5,6 +5,9 @@ import { fetchMilestones } from "@/app/hooks/useProject";
 import type { MilestoneRow } from "@/app/hooks/useProject";
 import { calcWorkingHours } from "@/app/lib/helpers";
 import { calcHoldHours } from "@/app/lib/holdHours";
+import { fetchAssignmentSegments, splitActualHours, saveAssigneeHours, type AssignmentSegment } from "@/app/lib/handover";
+import { AssigneeHoursFields, type AssigneeHoursState } from "@/app/components/tickets/AssigneeHoursFields";
+import { Avatar } from "@/app/components/shared/Avatar";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { escStack } from "@/app/lib/escStack";
 
@@ -79,10 +82,15 @@ export function ProjectMonitor({
   const [actualWorkHours, setActualWorkHours] = useState<number | null>(null);
   const [breakdown, setBreakdown] = useState<string[] | null>(null);
   const [ticketStatus, setTicketStatus] = useState<string>("");
+  // 担当者別の実績内訳（引継ぎ機能）。区間が1件も無い既存チケットは「現担当が100%」に倒れる
+  const [assignee, setAssignee] = useState<string>("");
+  const [segments, setSegments] = useState<AssignmentSegment[]>([]);
 
   // インライン修正モード用のステート
   const [isEditFormMode, setIsEditFormMode] = useState(false);
   const [segmentValues, setSegmentValues] = useState<string[]>(["", "", "", "", ""]);
+  // 担当者別の取り分。担当が1人しかいないチケットでは null のまま
+  const [editAssigneeHours, setEditAssigneeHours] = useState<AssigneeHoursState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const firstInputRef = useRef<HTMLInputElement>(null);
@@ -92,10 +100,13 @@ export function ProjectMonitor({
   useEffect(() => {
     Promise.all([
       fetchMilestones(ticketId),
-      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours, actual_work_hours_breakdown, status").eq("id", ticketId).single() : Promise.resolve({ data: null }),
-      isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null })
-    ]).then(([data, ticketRes, commentsRes]) => {
+      isSupabaseEnabled ? supabase!.from("sprint_tickets").select("progress, actual_work_hours, actual_work_hours_breakdown, status, assignee").eq("id", ticketId).single() : Promise.resolve({ data: null }),
+      isSupabaseEnabled ? supabase!.from("ticket_comments").select("*").eq("ticket_id", ticketId).order("created_at") : Promise.resolve({ data: null }),
+      fetchAssignmentSegments(ticketId),
+    ]).then(([data, ticketRes, commentsRes, segs]) => {
       if (data) setMilestones(data);
+      setSegments(segs);
+      if (ticketRes?.data?.assignee) setAssignee(ticketRes.data.assignee);
       // 保留/取下は status カラムで管理する（旧仕様の progress = -1 / -2 は廃止・BRU10-078）
       if (ticketRes?.data?.status === "on-hold") setIsHold(true);
       if (ticketRes?.data?.status === "withdrawn") setIsWithdrawn(true);
@@ -199,6 +210,14 @@ export function ProjectMonitor({
     ? breakdown.map(v => { const n = parseFloat(v); return isNaN(n) || n < 0 ? 0 : n; })
     : null;
 
+  // ── 担当者別の実績内訳（引継ぎ機能） ──
+  // チケット合計（手入力があればその値）を担当区間で按分するので、
+  // 合計はフッターの「現時点の合計作業時間」と必ず一致する。
+  // 担当が一度も替わっていないチケットでは1人しか出ず情報量が無いので、その場合は出さない。
+  const effectiveTotal = actualWorkHours != null ? actualWorkHours : totalHours;
+  const assigneeShares = splitActualHours(effectiveTotal, segments, milestones, comments, assignee);
+  const showAssigneeShares = assigneeShares.length > 1;
+
   const handleTriggerEdit = () => {
     setIsEditFormMode(true);
   };
@@ -220,6 +239,13 @@ export function ProjectMonitor({
         actual_work_hours: Math.round(total * 100) / 100,
         actual_work_hours_breakdown: segmentValues.map(v => v === "" ? "0" : v),
       }).eq("id", ticketId);
+      // 担当者別の取り分は担当区間側へ。ここを書かないと、修正した実績が
+      // 現担当ぶんとしてだけ集計されてしまう（引継ぎ前の担当の実績が消える）
+      if (editAssigneeHours) {
+        await saveAssigneeHours(
+          ticketId, editAssigneeHours.hours, editAssigneeHours.segments, editAssigneeHours.ticket, comments,
+        );
+      }
     }
     setSaving(false);
     onClose();
@@ -301,8 +327,18 @@ export function ProjectMonitor({
               ))}
             </div>
             
+            {/* 担当者別（途中で担当が替わったチケットだけ出る） */}
+            <AssigneeHoursFields
+              ticketId={ticketId}
+              comments={comments}
+              currentAssignee={assignee}
+              total={segmentValues.reduce((sum, v) => { const n = parseFloat(v); return sum + (isNaN(n) || n < 0 ? 0 : n); }, 0)}
+              disabled={saving}
+              onChange={setEditAssigneeHours}
+            />
+
             {error && <p style={{ fontSize: 12, color: "#EF4444", margin: "8px 0 0", fontWeight: 600 }}>{error}</p>}
-            
+
             <button
               onClick={handleFormSave}
               disabled={saving}
@@ -413,6 +449,43 @@ export function ProjectMonitor({
                     </div>
                   );
                 })}
+
+                {/* 担当者別の実績（引継ぎがあったチケットだけ出す） */}
+                {showAssigneeShares && (
+                  <div style={{ margin: "18px 24px 0", padding: "12px 14px", background: "#FAFAF9", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 11 }}>
+                    <p style={{ fontSize: 9, fontWeight: 700, color: "#B0A9A4", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 9 }}>担当者別の実績</p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {assigneeShares.map(share => {
+                        const pct = effectiveTotal > 0 ? Math.round((share.hours / effectiveTotal) * 100) : 0;
+                        const isCurrent = share.assignee === assignee;
+                        return (
+                          <div key={share.assignee} style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                            <Avatar name={share.assignee} size="xs" />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                                <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{share.assignee}</span>
+                                {isCurrent && <span style={{ fontSize: 9, fontWeight: 700, color: "#059669", background: "#ECFDF5", padding: "1px 6px", borderRadius: 20, flexShrink: 0 }}>現担当</span>}
+                                {share.isOverride && <span style={{ fontSize: 9, fontWeight: 700, color: "#6B6458", background: "#F4F5F6", padding: "1px 6px", borderRadius: 20, flexShrink: 0 }}>手入力</span>}
+                              </div>
+                              <div style={{ height: 4, background: "#EDE9E0", borderRadius: 99, overflow: "hidden", marginTop: 4 }}>
+                                <div style={{ height: "100%", width: `${pct}%`, background: isCurrent ? "linear-gradient(90deg, #059669, #10B981)" : "linear-gradient(90deg, #94A3B8, #CBD5E1)", borderRadius: 99 }} />
+                              </div>
+                            </div>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "#059669", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
+                              {formatDuration(share.hours)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* 引継ぎの理由は、区間に書いてある申し送りをそのまま出す */}
+                    {segments.filter(s => s.handoverNote).map(s => (
+                      <p key={s.id} style={{ fontSize: 11, color: "#6B6458", marginTop: 9, lineHeight: 1.6, paddingLeft: 2, borderLeft: "2px solid rgba(2,132,199,0.3)", paddingInlineStart: 8 }}>
+                        <strong style={{ color: "#3D3732" }}>{s.assignee} からの引継ぎ:</strong> {s.handoverNote}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

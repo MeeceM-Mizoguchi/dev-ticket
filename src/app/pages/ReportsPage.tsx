@@ -17,6 +17,11 @@ import { TICKETS, PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapSprintTicket } from "@/app/lib/mappers";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { calcTicketActualHours, formatPersonDays } from "@/app/lib/helpers";
+import {
+  fetchAssignmentSegmentsFor, fetchHoldComments, splitActualHours, ticketsWithHandover,
+  type AssignmentSegment,
+} from "@/app/lib/handover";
+import type { HoldCommentLike } from "@/app/lib/holdHours";
 import type { SprintTicket, SprintStatus } from "@/app/types";
 
 // ── 定数 ─────────────────────────────────────────────────────────────────────
@@ -118,6 +123,11 @@ export function ReportsPage() {
   const { toast } = useToast();
 
   const [allTickets, setAllTickets] = useState<RepTicket[]>(isSupabaseEnabled ? [] : buildMockData());
+  // 担当の引継ぎ区間。メンバー別負荷を「現担当に全部」ではなく担当区間で按分するのに使う。
+  // 引継ぎが一度も無いチケットは区間が空でも splitActualHours が現担当100%に倒すので、
+  // ここが空のままでも表示は今までと変わらない。
+  const [segmentsByTicket, setSegmentsByTicket] = useState<Map<string, AssignmentSegment[]>>(new Map());
+  const [holdCommentsByTicket, setHoldCommentsByTicket] = useState<Map<string, HoldCommentLike[]>>(new Map());
   const [allSprints, setAllSprints] = useState<RepSprint[]>(
     isSupabaseEnabled ? [] : SPRINTS.map(s => ({
       id: s.id, projectId: s.projectId, name: s.name, identifier: s.identifier, status: s.status, startDate: s.startDate, endDate: s.endDate,
@@ -199,6 +209,13 @@ export function ReportsPage() {
         setAllTickets(mapped);
         setAllSprints(mappedSprints);
         setProjectOptions(projects.map(p => ({ id: p.id, name: p.name })));
+
+        // 引継ぎ区間。保留コメントは「担当が2人以上いるチケット」に絞って引く。
+        // 全チケットぶんの status_change を引くと件数が跳ねるうえ、引継ぎの無いチケットでは
+        // 按分そのものが起きないので取っても使い道が無い。
+        const segs = await fetchAssignmentSegmentsFor(mapped.map(t => t.id));
+        setSegmentsByTicket(segs);
+        setHoldCommentsByTicket(await fetchHoldComments(ticketsWithHandover(segs)));
       } catch (err) {
         console.error("Failed to load report data:", err);
         toast("レポートデータの取得に失敗しました", "error");
@@ -264,13 +281,37 @@ export function ReportsPage() {
     const estimateAccuracy = estSum > 0 ? Math.round((actSum / estSum) * 100) : 0;
 
     // メンバー別負荷（期間内に着手 or 完了したチケットの実工数）
+    //
+    // 引継ぎがあったチケットは、実工数を担当区間で按分して各担当に配る。
+    // 以前はチケットの実績を丸ごと「現在の担当者」に付けていたため、
+    // 着手〜途中まで進めた元担当の工数が交代した瞬間に引き継いだ人の実績になっていた。
+    // 件数(count)は「その人が実際に手を動かしたチケット数」として、関わった全員に1件ずつ数える。
+    // チケット1件を「誰がどれだけやったか」に割ったもの。下のメンバー個別の生産性でも使い回す
+    const completedShares = completed.map(t => {
+      const total = calcTicketActualHours(t);
+      const shares = splitActualHours(
+        total,
+        segmentsByTicket.get(t.id) ?? [],
+        t,
+        holdCommentsByTicket.get(t.id) ?? [],
+        t.assignee,
+      );
+      // 実績0のチケット（未着手のままクローズ等）は shares が空になるので、件数だけ現担当に数える
+      return {
+        ticket: t,
+        rows: shares.length > 0 ? shares : [{ assignee: t.assignee || "未割当", hours: total }],
+      };
+    });
+
     const memberMap = new Map<string, { hours: number; count: number }>();
-    completed.forEach(t => {
-      const name = t.assignee || "未割当";
-      const cur = memberMap.get(name) || { hours: 0, count: 0 };
-      cur.hours += calcTicketActualHours(t);
-      cur.count += 1;
-      memberMap.set(name, cur);
+    completedShares.forEach(({ rows }) => {
+      for (const s of rows) {
+        const name = s.assignee || "未割当";
+        const cur = memberMap.get(name) || { hours: 0, count: 0 };
+        cur.hours += s.hours;
+        cur.count += 1;
+        memberMap.set(name, cur);
+      }
     });
     const memberLoad = [...memberMap.entries()]
       .map(([name, v]) => ({ name, hours: v.hours, count: v.count, pd: Math.round((v.hours / 8) * 10) / 10 }))
@@ -431,14 +472,18 @@ export function ReportsPage() {
     const overdueByMember = new Map<string, number>();
     overdue.forEach(t => { const n = t.assignee || "未割当"; overdueByMember.set(n, (overdueByMember.get(n) || 0) + 1); });
     const msMap = new Map<string, { name: string; count: number; hours: number; cycleSum: number; cycleN: number }>();
-    completed.forEach(t => {
-      const name = t.assignee || "未割当";
-      const cur = msMap.get(name) || { name, count: 0, hours: 0, cycleSum: 0, cycleN: 0 };
-      cur.count += 1;
-      cur.hours += calcTicketActualHours(t);
-      const c = completionTs(t);
-      if (t.startedAt && c) { cur.cycleSum += daysDiff(new Date(t.startedAt).getTime(), c); cur.cycleN += 1; }
-      msMap.set(name, cur);
+    // メンバー別負荷と同じく、引継ぎがあったチケットは実績を担当区間で按分して配る。
+    // サイクルタイムはチケット単位の指標（着手→完了）なので、関わった全員に同じ日数を計上する。
+    completedShares.forEach(({ ticket: t, rows }) => {
+      for (const s of rows) {
+        const name = s.assignee || "未割当";
+        const cur = msMap.get(name) || { name, count: 0, hours: 0, cycleSum: 0, cycleN: 0 };
+        cur.count += 1;
+        cur.hours += s.hours;
+        const c = completionTs(t);
+        if (t.startedAt && c) { cur.cycleSum += daysDiff(new Date(t.startedAt).getTime(), c); cur.cycleN += 1; }
+        msMap.set(name, cur);
+      }
     });
     const memberStats = [...msMap.values()].map(m => ({
       name: m.name,
@@ -456,7 +501,7 @@ export function ReportsPage() {
       memberLoad, weekBuckets, upcoming, overdue, dueSoon, releases, signal, sentences,
       scheduleTickets, ganttRows, spotlightLabel, periodStart: tlStart, periodEnd: tlEnd, nowMs, hoursPerTicket, pdPerTicket, memberStats, issues,
     };
-  }, [periodMode, customStart, customEnd, scope, allTickets, allSprints]);
+  }, [periodMode, customStart, customEnd, scope, allTickets, allSprints, segmentsByTicket, holdCommentsByTicket]);
 
   // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
   if (!canAccess) return <NotFoundView kind="no-permission" label="レポート管理" />;

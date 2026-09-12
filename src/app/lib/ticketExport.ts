@@ -11,6 +11,8 @@ import type { SprintTicket } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import type { ArticleDoc, Block } from "@/app/lib/articleExport/types";
 import { TICKET_EXPORT_HEADERS, buildTicketExportCells, toCsvLine, triggerCsvDownload } from "@/app/lib/csvExport";
+import { buildSharesFor, type AssigneeShare } from "@/app/lib/handover";
+import { calcTicketActualHours } from "@/app/lib/helpers";
 import { safeFileName, dateStamp } from "@/app/lib/articleExport/download";
 
 export type TicketExportFormat = "csv" | "docx" | "md";
@@ -72,9 +74,13 @@ const prLabel = (pr: TicketPrLink) => `#${pr.number}${pr.title ? ` ${pr.title}` 
 /** CSV の列。既存のスプリントCSV／プロジェクトCSVには影響させたくないので、ここで足す */
 const CSV_HEADERS = [...TICKET_EXPORT_HEADERS, "関連PR"];
 
-function buildCells({ items, getCategoryLabel }: ExportArgs, prs: Map<string, TicketPrLink[]>): string[][] {
+function buildCells(
+  { items, getCategoryLabel }: ExportArgs,
+  prs: Map<string, TicketPrLink[]>,
+  shares: Map<string, AssigneeShare[]>,
+): string[][] {
   return items.map((it, i) => [
-    ...buildTicketExportCells(i + 1, it.sprintName, it.ticket, getCategoryLabel),
+    ...buildTicketExportCells(i + 1, it.sprintName, it.ticket, getCategoryLabel, shares),
     // 1チケットに複数PRが付くので、セル内改行で並べる（CSVは全セルを引用符で囲っている）
     (prs.get(it.ticket.id) ?? []).map(pr => `${prLabel(pr)}${pr.url ? ` ${pr.url}` : ""}`).join("\n"),
   ]);
@@ -85,7 +91,8 @@ function buildCells({ items, getCategoryLabel }: ExportArgs, prs: Map<string, Ti
 // 「No」「チケットNo」「チケット名」は見出しへ、「チケット詳細」は本文へ回すのでここには入れない。
 const META_LABELS = [
   "スプリント名", "分類", "ステータス", "レビュー状況", "優先度",
-  "担当者", "開始日", "期限日", "実績工数(人日)",
+  // 担当履歴・担当者別実績は引継ぎがあったチケットだけ値が入る（空のメタは出力されない）
+  "担当者", "担当履歴", "担当者別実績", "開始日", "期限日", "実績工数(人日)",
 ];
 
 const cellAt = (cells: string[], label: string) => cells[TICKET_EXPORT_HEADERS.indexOf(label)] ?? "";
@@ -171,7 +178,8 @@ async function exportDocument(args: ExportArgs, rows: string[][], prs: Map<strin
 /** 選択したチケットを指定フォーマットでダウンロードする。 */
 export async function exportTicketList(args: ExportArgs): Promise<void> {
   const prs = await fetchPrLinks(args.projectId, args.items.map(it => it.ticket.id));
-  const rows = buildCells(args, prs);
+  const shares = await buildSharesFor(args.items.map(it => it.ticket), calcTicketActualHours);
+  const rows = buildCells(args, prs, shares);
   if (args.format === "csv") {
     // BOM 付き・CRLF 区切り。Excel でそのまま開けるようにする（既存のCSV出力と同じ）
     triggerCsvDownload(

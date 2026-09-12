@@ -22,6 +22,8 @@ import { needsPrLink, prLinkAlertTitle } from "@/app/lib/prLinkAlert";
 import { PrMissingChip } from "@/app/components/github/PrMissingChip";
 // 列見出し（並び替え＋値のチェックボックス）はチケット一覧検索と共通
 import { ColumnFilter } from "@/app/components/shared/ColumnFilter";
+import { TicketAssigneeCell } from "@/app/components/tickets/TicketAssigneeCell";
+import { useAssigneeHistory } from "@/app/hooks/useAssigneeHistory";
 
 // 🌟 今日の日付（YYYY-MM-DD）を取得するヘルパー
 function getTodayString(): string {
@@ -154,6 +156,12 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
     featureBulkCreate: plan.featureBulkCreate,
     canManageApiKeys: userRole === "admin" || userRole === "owner",
   });
+
+  // 担当を引き継いだチケットは、担当者セルに関わった人を全員（A / B / C）出す。
+  // 引継ぎが無いチケットは Map に入らないので、セル側が今までどおり assignee だけを出す
+  const assigneeHistory = useAssigneeHistory(
+    useMemo(() => sprints.flatMap(sp => sp.tickets.map(t => t.id)), [sprints]),
+  );
 
   const [filterCounts, setFilterCounts] = useState<Record<string, number>>({});
   const refreshFilterCount = (sprintId: string) => {
@@ -383,6 +391,21 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
     return Math.max(80, Math.min(180, computedPx));
   }, [dbCategories, sprints]);
 
+  // 担当者列は既定 110px だが、引継ぎがあると「A / B / C」と横に伸びる。
+  // 固定のままだと常に省略表示になって誰に渡ったのか読めないので、分類列と同じく中身に合わせる。
+  // 上限を切っているのは、担当が何度も替わったチケット1件のせいで表全体が崩れるのを防ぐため
+  //（あふれたぶんはセル側の省略＋ホバーで全文が読める）。
+  const dynamicAssigneeColumnWidth = useMemo(() => {
+    let maxChars = 6;
+    for (const t of sprints.flatMap(sp => sp.tickets)) {
+      const names = assigneeHistory.get(t.id);
+      const label = names && names.length > 1 ? names.join(" / ") : (t.assignee || "");
+      if (label.length > maxChars) maxChars = label.length;
+    }
+    // 全角想定の文字幅＋アバター(24px)とすき間
+    return Math.max(110, Math.min(260, Math.ceil(maxChars * 11) + 34));
+  }, [sprints, assigneeHistory]);
+
   const getColOptions = (currentSprint: Sprint, col: string): Array<{ value: string; label: string }> => {
     const sprintTickets = currentSprint.tickets || [];
 
@@ -564,7 +587,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
 
   const COLS = ["wbs", "title", "description", "category", "status", "priority", "assignee", "startDate", "dueDate", "closedDate"] as const;
   const COL_LABELS = ["No", "チケット名", "チケット詳細", "分類", "ステータス", "優先度", "担当者", "開始日", "期限日", "クローズ日"];
-  const GRID = `32px 72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px 110px 68px 68px 68px 60px 32px`;
+  const GRID = `32px 72px 1fr 1fr ${dynamicCategoryColumnWidth}px 110px 56px ${dynamicAssigneeColumnWidth}px 68px 68px 68px 60px 32px`;
 
   return (
     <div>
@@ -628,7 +651,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
                     </button>
 
                     <PlanTooltip text="現在のプランではご利用できません" active={!plan.featureCsvExport} placement="bottom-left">
-                      <button onClick={e => { e.stopPropagation(); if (plan.featureCsvExport) downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }}
+                      <button onClick={e => { e.stopPropagation(); if (plan.featureCsvExport) void downloadSprintCsv(sprint, displayTickets, getCategoryLabel); }}
                         style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: plan.featureCsvExport ? "#059669" : "#9CA3AF", background: plan.featureCsvExport ? "#ECFDF5" : "#F3F4F6", border: `1px solid ${plan.featureCsvExport ? "rgba(5,150,105,0.20)" : "rgba(156,163,175,0.30)"}`, borderRadius: 7, cursor: plan.featureCsvExport ? "pointer" : "not-allowed" }}
                         onMouseEnter={e => { if (plan.featureCsvExport) (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
                         onMouseLeave={e => { if (plan.featureCsvExport) (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
@@ -805,10 +828,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
 
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: tsm.bg, color: tsm.color, width: "fit-content", whiteSpace: "nowrap" as const }}>{tsm.label}</span></div>
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: priBg, color: priColor, width: "fit-content" }}>{priLabel}</span></div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
-                            <Avatar name={t.assignee} size="xs" />
-                            <span style={{ fontSize: 11, color: "#6B6458", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{t.assignee || "—"}</span>
-                          </div>
+                          <TicketAssigneeCell assignee={t.assignee} history={assigneeHistory.get(t.id)} />
                           <div style={{ display: "flex", justifyContent: "center" }}><span style={{ fontSize: 10, color: "#B0A9A4", fontFamily: "var(--font-mono)" }}>{formatDate(t.startDate)}</span></div>
 
                           {/* 🌟 期限日の表示（当日以降かつ未完了なら赤文字・太字 / 未設定は『—』） */}

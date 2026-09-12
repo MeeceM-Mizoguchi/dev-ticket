@@ -220,6 +220,85 @@ function lastActivityMs(t: TicketRow): number {
   return Math.max(0, ...ts);
 }
 
+// ============================================================
+// 担当の引継ぎ（ticket_assignments）— 実績を「誰がどれだけやったか」に割る
+//
+// ★ src/app/lib/handover.ts の splitActualHours を、この API 用に簡約した複製 ★
+//   api/ 配下は src/ を同梱しないので import できない（上の skills.ts と同じ事情）。
+//   違いは重みの数え方だけ:
+//     画面側 … calcWorkingHours（夜間除外・日次8h上限）＋保留時間を差し引く
+//     ここ  … 実時間の重なり。ticketActualHours 自体が実時間の引き算なので定義を揃えてある
+//   ⚠️ 按分の考え方（hours_override は按分から外して残りを配る／合計は必ず一致）を
+//      変えるときは両方直すこと。
+// ============================================================
+interface AssignmentRow {
+  ticket_id: string;
+  assignee: string;
+  started_at: string;
+  ended_at: string | null;
+  hours_override: number | null;
+}
+
+/**
+ * 完了1件として数える最低取り分。
+ * 「引き継いだ直後に手放した」ような、実質やっていない担当まで doneCount に数えると
+ * 経験件数が水増しされてレベル判定が荒れるので足切りする。
+ */
+const MIN_SHARE_FOR_DONE = 0.2;
+
+/** 実績を計測している期間。開始〜（最後に記録されたマイルストーン or 現在） */
+function actualWindow(t: TicketRow, now: number): { start: number; end: number } | null {
+  if (!t.started_at) return null;
+  const start = new Date(t.started_at).getTime();
+  let end = start;
+  for (const e of [t.review_approved_at, t.stg_completed_at, t.uat_completed_at, t.released_at]) {
+    if (!e) continue;
+    const ms = new Date(e).getTime();
+    if (ms > end) end = ms;
+  }
+  if (end <= start) end = Math.max(start, now);
+  return { start, end };
+}
+
+/**
+ * チケットの実績を担当者別に割る。返り値の合計は必ず ticketActualHours(t) と一致する。
+ * 区間が1件も無いチケット（引継ぎ機能を入れる前のデータ）は現 assignee に全額。
+ */
+function splitTicketHours(t: TicketRow, segments: AssignmentRow[], now: number): Map<string, number> {
+  const total = ticketActualHours(t);
+  const out = new Map<string, number>();
+  if (segments.length === 0) {
+    if (t.assignee) out.set(t.assignee, total);
+    return out;
+  }
+
+  const win = actualWindow(t, now);
+  const weights = segments.map(s => {
+    if (!win) return 0;
+    const from = Math.max(new Date(s.started_at).getTime(), win.start);
+    const to = Math.min(s.ended_at ? new Date(s.ended_at).getTime() : now, win.end);
+    return to > from ? (to - from) / 36e5 : 0;
+  });
+
+  // 人が確定させた実績（引継ぎダイアログで直した値）は按分から外し、残りを他へ配る
+  const overrideTotal = segments.reduce((sum, s) => sum + (s.hours_override ?? 0), 0);
+  const free = segments.map((s, i) => (s.hours_override == null ? i : -1)).filter(i => i >= 0);
+  const remaining = Math.max(0, total - overrideTotal);
+  const freeWeight = free.reduce((sum, i) => sum + weights[i], 0);
+
+  const perSegment = segments.map(s => s.hours_override ?? 0);
+  if (free.length > 0) {
+    if (freeWeight > 0) for (const i of free) perSegment[i] = (remaining * weights[i]) / freeWeight;
+    else perSegment[free[free.length - 1]] = remaining;   // 重みが全部0なら現担当へ
+  }
+
+  segments.forEach((s, i) => {
+    if (!s.assignee) return;
+    out.set(s.assignee, (out.get(s.assignee) ?? 0) + perSegment[i]);
+  });
+  return out;
+}
+
 /** チケット1件の実績工数（h）。手入力があればそれを優先し、無ければマイルストーン差分で概算する。 */
 function ticketActualHours(t: TicketRow): number {
   if (t.actual_work_hours && t.actual_work_hours > 0) return t.actual_work_hours;
@@ -480,6 +559,29 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
   debug.ticketCount = tickets.length;
   if (tickets.length === 0) { await markChecked(); return { orgId, skipped: true, members: 0, skillsWritten: 0, reason: "対象チケットがありません", debug }; }
 
+  // ── 担当の引継ぎ区間 ──
+  // これが無いと、途中で担当を交代したチケットの実績が丸ごと後任のスキル判定に乗る。
+  // 区間が無いチケット（機能導入前のデータ）は現 assignee 100% に倒れるので、
+  // テーブルが空でも従来どおりの結果になる。
+  const assignmentsByTicket = new Map<string, AssignmentRow[]>();
+  for (const ids of chunk(tickets.map(t => t.id))) {
+    const { rows, error } = await fetchAllPages<AssignmentRow>((from, to) =>
+      sb.from("ticket_assignments")
+        .select("ticket_id, assignee, started_at, ended_at, hours_override")
+        .in("ticket_id", ids)
+        // BUG-01: .order() が無いと毎回違う順序で返る。区間は前後関係が意味を持つので必ず並べる
+        .order("started_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to));
+    if (error) debug.assignmentsError = error;
+    for (const r of rows) {
+      const list = assignmentsByTicket.get(r.ticket_id);
+      if (list) list.push(r);
+      else assignmentsByTicket.set(r.ticket_id, [r]);
+    }
+  }
+  debug.assignmentCount = [...assignmentsByTicket.values()].reduce((a, v) => a + v.length, 0);
+
   // ── 差分検知 ──
   // 前回分析以降にチケットが1件も動いていなければ、分析するだけ無駄なのでスキップする。
   const lastAnalyzed = org?.ml_last_analyzed_at ? new Date(org.ml_last_analyzed_at).getTime() : 0;
@@ -551,6 +653,10 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     ticketsByMember.get(pid)!.add(tid);
   };
 
+  // 未完了区間（ended_at が null）の終わりを「今」とみなすための基準時刻。
+  // ループ内で毎回 Date.now() を呼ぶと1件ごとに基準がズレるので1回だけ取る
+  const nowMs = Date.now();
+
   for (const t of tickets) {
     if (!DONE_STATUSES.includes(t.status)) continue;
 
@@ -560,16 +666,25 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
     );
     if (skillIds.length === 0) continue;
 
-    const hours = ticketActualHours(t);
     const onTime = isOnTime(t);
     const isLarge = t.dev_scale === "L" || t.dev_scale === "XL";
 
-    // 担当者としての実績
-    const assignee = t.assignee ? byName.get(t.assignee) : undefined;
-    if (assignee) {
-      touchTicket(assignee.id, t.id);
+    // 担当者としての実績。
+    // 途中で担当を交代したチケットは、実績を担当区間で按分して関わった全員に配る。
+    // 以前は現 assignee に全額付けていたため、着手〜途中まで進めた元担当の実績が
+    // 交代した瞬間に消え、後任のレベルが実力より高く出ていた。
+    const shares = splitTicketHours(t, assignmentsByTicket.get(t.id) ?? [], nowMs);
+    const ticketTotalHours = ticketActualHours(t);
+    for (const [name, hours] of shares) {
+      const member = byName.get(name);
+      if (!member) continue;
+      // 「やった」1件として数えるのは、チケットの実績の MIN_SHARE_FOR_DONE 以上を担った人だけ。
+      // ほんの一瞬だけ担当した人まで完了実績に数えると、判定材料が薄まってレベルが荒れる。
+      const isSubstantial = ticketTotalHours <= 0 || hours >= ticketTotalHours * MIN_SHARE_FOR_DONE;
+      if (!isSubstantial) continue;
+      touchTicket(member.id, t.id);
       for (const sid of skillIds) {
-        bump(assignee.id, sid, s => {
+        bump(member.id, sid, s => {
           s.doneCount++;
           if (hours > 0) s.hours.push(hours);
           if (onTime) s.onTimeCount++;
@@ -577,6 +692,7 @@ async function analyzeOrg(sb: SupabaseClient, orgId: string, force: boolean): Pr
         });
       }
     }
+    const assignee = t.assignee ? byName.get(t.assignee) : undefined;
 
     // レビュアーとしての実績 ← Lv4(リーダークラス)判定の決め手。
     // 「他人のチケットをレビュー・承認する側にいる」は既存DBにある強力なシグナル。

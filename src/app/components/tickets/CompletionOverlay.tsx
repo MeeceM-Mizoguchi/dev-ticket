@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { AssigneeHoursFields, type AssigneeHoursState } from "@/app/components/tickets/AssigneeHoursFields";
+import type { HoldCommentLike } from "@/app/lib/holdHours";
 
 const SEGMENT_LABELS = [
   "開始 → レビュー依頼",
@@ -12,7 +14,15 @@ interface Props {
   ticketTitle: string;
   initialSegmentHours: number[];
   skipAnimation?: boolean;
-  onSave: (totalHours: number, segmentHours: string[]) => Promise<void>;
+  /**
+   * 担当者別の実績入力を出すために必要な情報。
+   * 渡さない（または担当が1人だけの）ときは工程別の入力だけになり、従来どおりの画面になる。
+   * マイルストーンは AssigneeHoursFields 側でDBから読み直すので、ここでは渡さない。
+   */
+  ticketId?: string;
+  comments?: HoldCommentLike[];
+  currentAssignee?: string;
+  onSave: (totalHours: number, segmentHours: string[], assigneeHours?: AssigneeHoursState | null) => Promise<void>;
   onClose: () => void;
 }
 
@@ -42,7 +52,9 @@ function toPersonDays(h: number): string {
   return pd < 0.1 ? "0.1人日未満" : `${pd}人日`;
 }
 
-export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimation, onSave, onClose }: Props) {
+export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimation, ticketId, comments, currentAssignee, onSave, onClose }: Props) {
+  // 担当者別の取り分。担当が1人しかいないチケットでは null のまま
+  const [assigneeHours, setAssigneeHours] = useState<AssigneeHoursState | null>(null);
   const [phase, setPhase] = useState<"animation" | "input">(skipAnimation ? "input" : "animation");
   const [segmentValues, setSegmentValues] = useState<string[]>(
     () => initialSegmentHours.map(h => h > 0 ? String(h) : "")
@@ -87,7 +99,7 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
       return;
     }
     setSaving(true);
-    await onSave(Math.round(total * 100) / 100, segmentValues);
+    await onSave(Math.round(total * 100) / 100, segmentValues, assigneeHours);
     setSaving(false);
     onClose();
   };
@@ -237,6 +249,18 @@ export function CompletionOverlay({ ticketTitle, initialSegmentHours, skipAnimat
               </div>
             ))}
           </div>
+
+          {/* 担当者別（途中で担当が替わったチケットだけ出る） */}
+          {ticketId && (
+            <AssigneeHoursFields
+              ticketId={ticketId}
+              comments={comments ?? []}
+              currentAssignee={currentAssignee ?? ""}
+              total={total}
+              disabled={saving}
+              onChange={setAssigneeHours}
+            />
+          )}
 
           {/* 合計 */}
           <div style={{
