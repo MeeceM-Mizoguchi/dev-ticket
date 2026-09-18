@@ -414,6 +414,9 @@ export function WikiPage() {
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 編集欄(title/content)がどのページの中身で埋まっているか。
+  // 選択直後はまだ前のページの値なので、これが selectedId と一致するまで保存しない。
+  const hydratedIdRef = useRef<string | null>(null);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = effectiveWikiPerm === "edit";
@@ -480,6 +483,7 @@ export function WikiPage() {
         setTitle(currentActiveNode.title);
         setContent(currentActiveNode.content ?? "");
         setImages(currentActiveNode.images ?? []);
+        hydratedIdRef.current = currentActiveNode.id;
       }
     }
 
@@ -560,6 +564,9 @@ export function WikiPage() {
       setTitle(selected.title);
       setContent(selected.content ?? "");
       setImages(selected.images ?? []);
+      // ここまで来て初めて編集欄が選択中ページの中身になる。
+      // これ以前の保存要求は前のページ（もしくは空）の値を握っているので捨てる。
+      hydratedIdRef.current = selected.id;
     }
   }, [selectedId, selected, loading]);
 
@@ -580,6 +587,10 @@ export function WikiPage() {
 
   const scheduleSave = useCallback((nextTitle: string, nextContent: string, immediate = false) => {
     if (!selectedId || loading) return; // 🌟 修正: 読み込み完了前は自動保存をガード
+    // 編集欄がまだ選択中ページの中身になっていない間の保存要求は無視する。
+    // 書式エディタは表示のための流し込みでも onChange を出すことがあり、
+    // その時点の値は前のページ（初回は空）のものなので、書き込むと中身を壊す。
+    if (hydratedIdRef.current !== selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const titleChanged = pages.find(p => p.id === selectedId)?.title !== nextTitle;
     const pid = project?.id;
