@@ -118,6 +118,22 @@ state はボタンの `disabled` とラベル用。同じ処理のボタンが�
 ドラッグ中のプレビューは `Decoration.node` で当て、確定時に一度だけ
 `setNodeMarkup` で属性へ書く。行は DOM 参照ではなく doc 上の pos で追う。
 
+### BUG-07 開いただけ／閉じて開き直しただけで本文が空で上書きされる
+`RichEditor` の `onChange` は各画面の自動保存に直結している。
+**tiptap は本文が1文字も変わっていなくても `update` を出す経路がある。**
+
+- `editor.setEditable(x)` は**既定で `update` を emit する**（必ず第2引数に `false` を渡す）
+- `setContent` は `{ emitUpdate: false }`（boolean を渡すと効かない。BRU15-003）
+
+素通しすると「マウント直後にエディタへ入っていた値」＝**前に開いていた項目の本文や空**が
+保存されてしまう。`onUpdate` 側でも `docChanged` を見て空振りの update を捨てること。
+
+編集欄を持つ画面では、**まだ切り替え先の中身になっていない間は保存要求を捨てる**
+（`hydratedIdRef.current !== selectedId` で弾く／チケット詳細はレンダー中に同期）。
+
+> 空判定は `!html.trim()` ではなく `isBlankRichText()`（helpers）を使う。
+> tiptap は空でも `<p></p>` を返すため、空コメントが投稿できてしまう。
+
 ---
 
 ## 4. 構成

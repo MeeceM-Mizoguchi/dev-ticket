@@ -163,6 +163,9 @@ export function MinutesPage() {
   const [selectedTicket, setSelectedTicket] = useState<SprintTicket | null>(null);
   const [selectedTicketSprintId, setSelectedTicketSprintId] = useState<string | undefined>(undefined);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 編集欄(title/meetingDate/…)がどの議事録の中身で埋まっているか。
+  // 選択直後はまだ前の議事録の値なので、これが selectedId と一致するまで保存しない。
+  const hydratedIdRef = useRef<string | null>(null);
   // MD取り込みの進捗（null=非実行中）。取り込み中は「新規議事録」ボタンを進捗表示へ差し替える。
   const [mdImportProgress, setMdImportProgress] = useState<{ done: number; total: number } | null>(null);
   const singleMdInputRef = useRef<HTMLInputElement | null>(null);
@@ -355,10 +358,17 @@ export function MinutesPage() {
     setImages(selected?.images ?? []);
     setShowExternalInput(false);
     setExternalInput("");
+    // ここまで来て初めて編集欄が選択中の議事録の中身になる。
+    // これ以前の保存要求は前の議事録（もしくは空）の値を握っているので捨てる。
+    hydratedIdRef.current = selected?.id ?? null;
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleSave = useCallback((patch: Partial<{ title: string; meetingDate: string; attendees: string[]; content: string }>, immediate = false) => {
     if (!selectedId) return;
+    // 編集欄がまだ選択中の議事録の中身になっていない間の保存要求は無視する。
+    // 書式エディタは表示のための流し込みでも onChange を出すことがあり、
+    // その時点の値は前の議事録（初回は空）のものなので、書き込むと中身を壊す。
+    if (hydratedIdRef.current !== selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const titleChanged = patch.title !== undefined && minutes.find(m => m.id === selectedId)?.title !== patch.title;
     const pid = project?.id;

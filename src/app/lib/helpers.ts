@@ -1,5 +1,25 @@
 import type { ProjectStatus, TicketStatus, Priority, Role, Sprint, SprintStatus, SprintTicket } from "@/app/types";
 
+/**
+ * 書式エディタ(RichEditor / tiptap)の本文が「実質から」かどうか。
+ *
+ * tiptap は空でも `<p></p>` を返すため `!html.trim()` では空判定にならない。
+ * 打った文字を全部消したあとの本文もこの形になるので、
+ * 投稿ボタンの活性判定・送信前チェックは必ずこちらを使うこと。
+ * 画像や区切り線など「文字は無いが中身はある」ものは空として扱わない。
+ */
+export function isBlankRichText(html?: string | null): boolean {
+  if (!html) return true;
+  // 文字が無くても中身があるもの（画像・区切り線・表・埋め込み・内部リンクのチップ）は空にしない
+  if (/<(img|hr|iframe|video|audio|table)\b/i.test(html)) return false;
+  if (/data-internal-link|data-type=["']mention["']/i.test(html)) return false;
+  const text = html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/​/g, "");
+  return text.trim().length === 0;
+}
+
 // Compute sprint status dynamically from ticket states + deadline
 export function computeSprintStatus(sprint: Sprint): SprintStatus {
   if (sprint.isManualStatus) return sprint.status;

@@ -9,7 +9,7 @@ import { Sparkles } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { buildCommentAnchor, buildCommentLink, parseCommentAnchor } from "@/app/lib/commentLink";
-import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours, formatPersonDays } from "@/app/lib/helpers";
+import { TICKET_STATUSES, getTicketStatusMeta, getStatusMeta, labelCls, validateParentStatusChange, htmlToMarkdown, computeSprintStatus, getSprintStatusMeta, calcTicketActualHours, calcWorkingHours, formatPersonDays, isBlankRichText } from "@/app/lib/helpers";
 import { calcHoldHours, HOLD_START_MARKER, HOLD_END_MARKER } from "@/app/lib/holdHours";
 import { fetchAssignmentSegments, previewCurrentShare, applyHandoverDetails, saveAssigneeHours } from "@/app/lib/handover";
 import { HandoverDialog, type HandoverResult } from "@/app/components/tickets/HandoverDialog";
@@ -535,6 +535,25 @@ export function TicketDetailPanel({
   const anchorScrolledRef = useRef<string | null>(null);
   // このパネルインスタンスの識別子。ticketSync で自分発の更新を無視するのに使う。
   const instanceIdRef = useRef<string>(`tdp-${Math.random().toString(36).slice(2)}`);
+
+  // いま画面に出しているチケットのID。非同期に返ってきた取得結果が
+  // 「もう別のチケットに切り替わったあとの結果」かどうかを判定するために使う。
+  const activeTicketIdRef = useRef<string | null>(null);
+  activeTicketIdRef.current = ticket?.id ?? null;
+
+  // ───────── 詳細本文(description)はレンダー中に同期する ─────────
+  // このパネルは `if (!ticket) return null` で中身ごと消えるため、閉じて開き直すたびに
+  // RichEditor(tiptap) は作り直される。作り直しの初期値は「そのときの description state」で、
+  // effect(描画後)で合わせていると **前に開いていたチケットの本文を積んだエディタ** が
+  // 生まれてしまう。そのまま1文字でも触れば、その本文が今のチケットへ保存される。
+  // 描画前に確実に合わせることで、エディタが誤った初期値で生まれる隙間をなくす。
+  const descSyncedTicketIdRef = useRef<string | null>(null);
+  if (ticket && descSyncedTicketIdRef.current !== ticket.id) {
+    descSyncedTicketIdRef.current = ticket.id;
+    const initialDescription = ticket.description ?? "";
+    setDescription(initialDescription);
+    prevDescRef.current = initialDescription;
+  }
   // 自分が更新したことを、同じチケットを開いている他タブのパネルへ通知する。
   const emitMine = useCallback(() => {
     if (ticket?.id) emitTicketUpdate(ticket.id, instanceIdRef.current);
@@ -612,6 +631,10 @@ export function TicketDetailPanel({
     return supabase!.from("sprint_tickets").select("*").eq("id", ticketId).single()
       .then(({ data }) => {
         if (!data) return;
+        // 取得している間に別のチケットへ切り替わっていたら捨てる。
+        // 入れてしまうと「いま開いているチケットの画面に、前のチケットの本文や担当が入る」状態になり、
+        // その状態で何か操作すると前のチケットの内容で上書き保存されてしまう。
+        if (activeTicketIdRef.current !== ticketId) return;
         const t = mapSprintTicket(data);
         setTitle(t.title);
         setStatus(t.status as any);
@@ -880,7 +903,9 @@ export function TicketDetailPanel({
     setDueDate(ticket.dueDate ?? "");
     setEstimatedH(ticket.estimatedHours);
     setProgress(ticket.progress);
-    setDescription(ticket.description ?? "");
+    // description / prevDescRef はレンダー中に同期済み（上の descSyncedTicketIdRef を参照）。
+    // ここで一覧由来の値を入れ直すと、同じチケットを開き直したときに
+    // 一覧側の古い本文へ巻き戻ることがあるため、この effect では触らない。
     setReviewerName(ticket.reviewerName ?? "");
     setReviewRound(ticket.reviewRound ?? 0);
     const initImages = ticket.images ?? [];
@@ -903,7 +928,6 @@ export function TicketDetailPanel({
     setReplyingToId(null);
     setReplyText("");
     setReplyImages([]);
-    prevDescRef.current = ticket.description ?? "";
     notifiedMentionsRef.current.clear();
     anchorScrolledRef.current = null;
     setCategoryId(ticket.categoryId ?? null);
@@ -1069,14 +1093,30 @@ export function TicketDetailPanel({
     prevDescRef.current = v;
   }, [save, ticket?.id, projectSlug, userName]); // eslint-disable-line
 
+  // 待機中(1.2秒)の自動保存を今すぐ書き切るための関数。予約が無いときは null。
+  const pendingDescFlushRef = useRef<(() => void) | null>(null);
+
   const saveDescriptionDebounced = useCallback((v: string) => {
     clearTimeout(descTimerRef.current);
-    descTimerRef.current = setTimeout(() => { void saveDescriptionNow(v); }, 1200);
+    // saveDescriptionNow はこの時点のチケットに束縛されているので、
+    // あとから flush しても別チケットへ書き込まれることはない。
+    const flush = () => {
+      clearTimeout(descTimerRef.current);
+      pendingDescFlushRef.current = null;
+      void saveDescriptionNow(v);
+    };
+    pendingDescFlushRef.current = flush;
+    descTimerRef.current = setTimeout(flush, 1200);
   }, [saveDescriptionNow]);
+
+  // 打ってすぐ閉じる／別チケットへ移ると、1.2秒の待ちに入ったままの変更が
+  // 宙に浮いて失われる。切り替わる前に必ず書き切る。
+  useEffect(() => () => { pendingDescFlushRef.current?.(); }, [ticket?.id]);
 
   // ⌘/Ctrl + Enter は自動保存(1.2秒待ち)を待たずに即座に確定させる
   const saveDescriptionImmediate = useCallback((v: string) => {
     clearTimeout(descTimerRef.current);
+    pendingDescFlushRef.current = null;
     void saveDescriptionNow(v);
   }, [saveDescriptionNow]);
 
@@ -1827,7 +1867,7 @@ export function TicketDetailPanel({
     }
     for (const rf of reviewFiles) await uploadSourceFile(rf.file, round);
     setReviewFiles([]);
-    const content = reviewContent.trim()
+    const content = !isBlankRichText(reviewContent)
       ? reviewContent
       : `<p><strong>@${reviewerName}</strong> にレビュー依頼を送信しました（第${round}回）</p>`;
     await addComment(content, "review_request", reviewImages, newStatus);
@@ -2107,7 +2147,7 @@ export function TicketDetailPanel({
 
   const handleAddComment = async () => {
     if (postingCommentRef.current) return; // 連打ガード：送信が終わるまで2回目以降は捨てる
-    if (!commentText.trim() || !ticket) return;
+    if (isBlankRichText(commentText) || !ticket) return;
     postingCommentRef.current = true;
     setIsPostingComment(true);
     try {
@@ -2137,7 +2177,7 @@ export function TicketDetailPanel({
   // 返信欄は通常フロー／レビューフローの2箇所で描画されるので共通化する
   const submitReply = (parent: TicketComment) => {
     if (postingReplyRef.current) return; // 連打ガード
-    if (!replyText.trim()) return;
+    if (isBlankRichText(replyText)) return;
     postingReplyRef.current = true;
     setIsPostingReply(true);
     void (async () => {
@@ -3985,8 +4025,8 @@ export function TicketDetailPanel({
                                     }} />
                                 </label>
                                 <div style={{ display: "flex", gap: 6 }}>
-                                  <button onClick={() => submitReply(c)} disabled={!replyText.trim() || isPostingReply}
-                                    style={{ padding: "6px 12px", background: (!replyText.trim() || isPostingReply) ? "#F4F5F6" : "#0284C7", color: (!replyText.trim() || isPostingReply) ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: (!replyText.trim() || isPostingReply) ? "not-allowed" : "pointer" }}>
+                                  <button onClick={() => submitReply(c)} disabled={isBlankRichText(replyText) || isPostingReply}
+                                    style={{ padding: "6px 12px", background: (isBlankRichText(replyText) || isPostingReply) ? "#F4F5F6" : "#0284C7", color: (isBlankRichText(replyText) || isPostingReply) ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: (isBlankRichText(replyText) || isPostingReply) ? "not-allowed" : "pointer" }}>
                                     {isPostingReply ? "返信中..." : "返信"}
                                   </button>
                                   <button onClick={() => { setReplyingToId(null); setReplyText(""); setReplyImages([]); }} style={{ padding: "6px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
@@ -4330,8 +4370,8 @@ export function TicketDetailPanel({
                                   }} />
                               </label>
                               <div style={{ display: "flex", gap: 6 }}>
-                                <button onClick={() => submitReply(c)} disabled={!replyText.trim() || isPostingReply}
-                                  style={{ padding: "6px 12px", background: (!replyText.trim() || isPostingReply) ? "#F4F5F6" : "#0284C7", color: (!replyText.trim() || isPostingReply) ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: (!replyText.trim() || isPostingReply) ? "not-allowed" : "pointer" }}>
+                                <button onClick={() => submitReply(c)} disabled={isBlankRichText(replyText) || isPostingReply}
+                                  style={{ padding: "6px 12px", background: (isBlankRichText(replyText) || isPostingReply) ? "#F4F5F6" : "#0284C7", color: (isBlankRichText(replyText) || isPostingReply) ? "#B0A9A4" : "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: (isBlankRichText(replyText) || isPostingReply) ? "not-allowed" : "pointer" }}>
                                   {isPostingReply ? "返信中..." : "返信"}
                                 </button>
                                 <button onClick={() => { setReplyingToId(null); setReplyText(""); setReplyImages([]); }} style={{ padding: "6px 12px", background: "#F4F5F6", color: "#6B6458", fontSize: 11, borderRadius: 7, border: "none", cursor: "pointer" }}>キャンセル</button>
@@ -4381,8 +4421,8 @@ export function TicketDetailPanel({
                         e.target.value = "";
                       }} />
                   </label>
-                  <button onClick={handleAddComment} disabled={!commentText.trim() || isPostingComment}
-                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: (!commentText.trim() || isPostingComment) ? "#F4F5F6" : "#059669", color: (!commentText.trim() || isPostingComment) ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: (!commentText.trim() || isPostingComment) ? "not-allowed" : "pointer" }}>
+                  <button onClick={handleAddComment} disabled={isBlankRichText(commentText) || isPostingComment}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: (isBlankRichText(commentText) || isPostingComment) ? "#F4F5F6" : "#059669", color: (isBlankRichText(commentText) || isPostingComment) ? "#B0A9A4" : "#FFF", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: (isBlankRichText(commentText) || isPostingComment) ? "not-allowed" : "pointer" }}>
                     {isPostingComment ? "投稿中..." : "投稿"}
                   </button>
                 </div>

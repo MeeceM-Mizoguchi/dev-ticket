@@ -884,7 +884,19 @@ export function RichEditor({
     content: value || "",
     editable: !readOnly,
     // 🌟 BRU4-049: 読取専用では列幅補完(appendTransaction)による onChange を発火させない
-    onUpdate: ({ editor }) => { if (!editor.isEditable) return; onChange?.(editor.getHTML()); },
+    //
+    // ★本文が変わっていない update は必ず捨てる★
+    //   tiptap は「本文が変わっていないのに update を出す」経路を持っている
+    //   （例: setEditable は既定で空の transaction を添えて update を emit する）。
+    //   onChange は各画面の自動保存に直結しているので、これを素通しすると
+    //   “開いただけ／権限が確定しただけ”で保存が走り、中身を消してしまう。
+    //   判定条件は tiptap 自身が update を出すときの条件（本体 or 追加 transaction の docChanged）と同じ。
+    onUpdate: ({ editor, transaction, appendedTransactions }) => {
+      if (!editor.isEditable) return;
+      const docChanged = !!transaction?.docChanged || (appendedTransactions ?? []).some(t => t.docChanged);
+      if (!docChanged) return;
+      onChange?.(editor.getHTML());
+    },
     editorProps: {
       // ⌘/Ctrl + Enter で確定（作成する・更新する・投稿する 等）。
       // editorProps は拡張のプラグインより先に呼ばれるため、メンション候補が開いている間は
@@ -1129,7 +1141,11 @@ export function RichEditor({
   }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (editor) editor.setEditable(!readOnly);
+    // 第2引数は「update を発火するか」。既定は true で、editable を切り替えただけでも
+    // update が飛ぶ（本文は1文字も変わっていない）。その update は onChange → 各画面の
+    // 自動保存へ流れるため、マウント直後や権限が確定した瞬間に
+    // 「そのときエディタに入っていた内容」で保存が走ってしまう。必ず false を渡すこと。
+    if (editor) editor.setEditable(!readOnly, false);
   }, [readOnly, editor]);
 
   // 各種メンション（チケット / バックログ / Wiki / 議事録 / ファイル）のクリック統合ハンドラー

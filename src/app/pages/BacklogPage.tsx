@@ -311,6 +311,9 @@ export function BacklogPage() {
   const editImagesRef = useRef<string[]>([]);
   editImagesRef.current = editImages;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 編集欄(title/description/…)がどの項目の中身で埋まっているか。
+  // 選択直後はまだ前の項目の値なので、これが selectedId と一致するまで保存しない。
+  const hydratedIdRef = useRef<string | null>(null);
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
   const canEdit = effectiveBacklogPerm === "edit";
@@ -447,6 +450,9 @@ export function BacklogPage() {
     setEditHours(selectedItem?.estimatedHours ?? 0);
     setEditCategoryId(selectedItem?.categoryId ?? null);
     setEditImages(selectedItem?.images ?? []);
+    // ここまで来て初めて編集欄が選択中の項目の中身になる。
+    // これ以前の保存要求は前の項目（もしくは空）の値を握っているので捨てる。
+    hydratedIdRef.current = selectedItem?.id ?? null;
   }, [selectedItem?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const scheduleSave = useCallback((patch: {
@@ -454,6 +460,10 @@ export function BacklogPage() {
     status?: BacklogStatus; assignee?: string; estimatedHours?: number; categoryId?: string | null;
   }, immediate = false) => {
     if (!selectedId) return;
+    // 編集欄がまだ選択中の項目の中身になっていない間の保存要求は無視する。
+    // 書式エディタは表示のための流し込みでも onChange を出すことがあり、
+    // その時点の値は前の項目（初回は空）のものなので、書き込むと中身を壊す。
+    if (hydratedIdRef.current !== selectedId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const titleChanged = patch.title !== undefined && items.find(i => i.id === selectedId)?.title !== patch.title;
     const pid = project?.id;
