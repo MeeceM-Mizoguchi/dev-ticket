@@ -14,9 +14,18 @@
 -- 既定を 'off' にしているのは、ファイルボックスが元々
 -- 「外部ビューアにファイルを一切渡さない」方針（src/app/lib/projectFiles.ts 冒頭）で
 -- 作られているため。Googleへデータを出すことは組織ごとの明示的なオプトインとする。
+--
+-- 保存先の指定は「共有ドライブの中のフォルダ」を Google Picker で選んでもらう。
+-- ★ 共有ドライブそのものは Picker で選択できない（ViewId に SHARED_DRIVES は無く、
+--   共有ドライブは中に入るための入れ物としてしか扱えない）。
+--   加えて drive.file スコープでは「Picker で選ばれたもの」しか触れないため、
+--   フォルダを選んでもらうこと自体が、そのフォルダへのアクセス権を得る手段になっている。
+--   google_shared_folder_id … 選ばれたフォルダ（＝保存先の親）
+--   google_shared_drive_id  … そのフォルダが属する共有ドライブ。files.list の corpora 指定に使う
 alter table organizations add column if not exists google_drive_mode text not null default 'off';
 alter table organizations add column if not exists google_shared_drive_id text default null;
-alter table organizations add column if not exists google_shared_drive_name text default null; -- 表示用
+alter table organizations add column if not exists google_shared_folder_id text default null;
+alter table organizations add column if not exists google_shared_drive_name text default null; -- 表示用(フォルダ名)
 
 -- 想定外の値が入ると API 側の分岐が素通りするので、DB でも縛る
 do $$

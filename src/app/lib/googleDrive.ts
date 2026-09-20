@@ -21,7 +21,11 @@ export interface GoogleDriveStatus {
   /** サーバーに GOOGLE_CLIENT_ID が設定されているか（未設定なら機能ごと出さない） */
   configured: boolean;
   mode: GoogleDriveMode;
+  /** 保存先フォルダが属する共有ドライブ */
   sharedDriveId: string | null;
+  /** 管理者が Picker で選んだ保存先フォルダ */
+  sharedFolderId: string | null;
+  /** 表示用のフォルダ名 */
   sharedDriveName: string | null;
 }
 
@@ -103,9 +107,18 @@ export function fetchPickerToken(): Promise<{ accessToken: string }> {
   return postApi<{ accessToken: string }>("picker-token");
 }
 
-/** 共有ドライブに実際に作成・共有できるか試す（設定の保存前の関門） */
-export function testGoogleConnection(sharedDriveId: string): Promise<{ ok: boolean; sharedTo: string | null }> {
-  return postApi<{ ok: boolean; sharedTo: string | null }>("test-connection", { sharedDriveId });
+/**
+ * Picker で選ばれたフォルダの素性をサーバーで確かめる。
+ * Picker が返すのはIDと名前だけなので、フォルダかどうかと、
+ * どの共有ドライブに属するかはここで解決する。
+ */
+export function resolveGoogleFolder(folderId: string): Promise<{ id: string; name: string; driveId: string }> {
+  return postApi<{ id: string; name: string; driveId: string }>("resolve-folder", { folderId });
+}
+
+/** 選んだフォルダに実際に作成・共有できるか試す（設定の保存前の関門） */
+export function testGoogleConnection(folderId: string): Promise<{ ok: boolean; sharedTo: string | null }> {
+  return postApi<{ ok: boolean; sharedTo: string | null }>("test-connection", { folderId });
 }
 
 /**

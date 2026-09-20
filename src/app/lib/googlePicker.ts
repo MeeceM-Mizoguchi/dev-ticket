@@ -1,6 +1,6 @@
 import { fetchPickerToken } from "@/app/lib/googleDrive";
 
-// Google Picker（共有ドライブの選択）
+// Google Picker（保存先フォルダの選択）
 //
 // drive.file スコープでは drives.list が使えないため、共有ドライブの一覧を
 // 自前のプルダウンで出すことができない。かわりに Google 公式の Picker を開いて
@@ -8,8 +8,13 @@ import { fetchPickerToken } from "@/app/lib/googleDrive";
 //
 // ★ Picker を通すことには、選択UIを出す以上の意味がある。
 //   drive.file は「アプリが作ったもの」と「ユーザーが Picker で選んだもの」しか触れない。
-//   Picker で選んで初めて、その共有ドライブがアプリからアクセスできるようになる。
-//   URLを手で貼らせる形にすると、ここが通らず 404 になる。
+//   Picker で選んで初めて、そのフォルダがアプリからアクセスできるようになる。
+//   URLやIDを手で貼らせる形にすると、ここが通らず 404 になる。
+//
+// ★ 選ばせるのは「共有ドライブそのもの」ではなく「共有ドライブの中のフォルダ」。
+//   Picker には SHARED_DRIVES という ViewId が存在せず、共有ドライブは
+//   中に入るための入れ物としてしか扱えない。ドライブのタイルを選んでも
+//   Select ボタンは有効にならないため、必ずフォルダまで降りてもらう必要がある。
 
 const PICKER_SRC = "https://apis.google.com/js/api.js";
 
@@ -42,7 +47,7 @@ function loadPickerScript(): Promise<void> {
   return scriptPromise;
 }
 
-export interface PickedDrive {
+export interface PickedFolder {
   id: string;
   name: string;
 }
@@ -52,10 +57,10 @@ export function isPickerConfigured(): boolean {
 }
 
 /**
- * 共有ドライブを選ばせる。
- * @returns 選ばれた共有ドライブ。キャンセルされたら null
+ * 共有ドライブの中のフォルダを選ばせる。
+ * @returns 選ばれたフォルダ。キャンセルされたら null
  */
-export async function pickSharedDrive(): Promise<PickedDrive | null> {
+export async function pickSharedFolder(): Promise<PickedFolder | null> {
   const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
   if (!apiKey) throw new Error("VITE_GOOGLE_API_KEY が設定されていません");
 
@@ -63,17 +68,17 @@ export async function pickSharedDrive(): Promise<PickedDrive | null> {
   const picker = window.google?.picker;
   if (!picker) throw new Error("Google Picker を利用できません");
 
-  return new Promise<PickedDrive | null>(resolve => {
+  return new Promise<PickedFolder | null>(resolve => {
     const view = new picker.DocsView(picker.ViewId.FOLDERS)
       .setSelectFolderEnabled(true)
       .setIncludeFolders(true)
-      // 共有ドライブを出す。マイドライブ側は選ばせない（保存先は設定で決まるため）
+      // 共有ドライブを一覧に出す。ドライブ自体は選べないので、中のフォルダまで降りてもらう
       .setEnableDrives(true);
 
     const builder = new picker.PickerBuilder()
       .setOAuthToken(accessToken)
       .setDeveloperKey(apiKey)
-      .setTitle("DevTicket のファイルを保存する共有ドライブを選択")
+      .setTitle("共有ドライブを開き、保存先フォルダを選択してください")
       .addView(view)
       .setCallback((data: { action: string; docs?: { id: string; name: string }[] }) => {
         if (data.action === picker.Action.PICKED) {
