@@ -29,6 +29,24 @@ export interface GoogleDriveStatus {
   sharedDriveName: string | null;
 }
 
+/**
+ * ファイルボックスが「Googleアプリ」ボタンを出すために必要な最小限の設定。
+ *
+ * 画面側はこれを organizations の行から**直接**読む（/api/google/status を経由しない）。
+ * サーバーを挟むと、プロジェクトの解決 → 一覧取得 → 連携状態の取得、と往復が数珠つなぎになり、
+ * 一覧が描かれた後にボタンだけ遅れて生えてくる（BUG-04 と同じ見え方）。
+ * 一覧と同じ Promise.all に並べることで、必ず同時に出る。
+ *
+ * mode が 'off' 以外なら、サーバー側の環境変数は必ず設定済み。
+ * 設定画面は configured が false だとモードを選ばせず、保存にはGoogle連携の成立が要るため、
+ * 「'off' 以外が保存されている」こと自体が有効化済みの証明になっている。
+ */
+export interface GoogleDriveProjectConfig {
+  mode: Exclude<GoogleDriveMode, "off">;
+  /** 共有ドライブ運用のときの保存先フォルダ名（表示用） */
+  folderName: string | null;
+}
+
 export interface CreateResult {
   file: unknown;
   url: string;
