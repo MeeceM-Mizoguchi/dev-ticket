@@ -147,7 +147,7 @@ export function GoogleAppsButton({ projectId, parentId, status, userId, onCreate
           ))}
           <p style={{ margin: "4px 8px 4px", fontSize: 10.5, color: "#B0A9A4", lineHeight: 1.5 }}>
             {status.mode === "shared_drive"
-              ? `${status.sharedDriveName ?? "共有ドライブ"} に作成されます`
+              ? `${status.sharedDriveName ?? "共有ドライブ"} の中に作成されます`
               : "あなたのGoogleドライブに作成されます"}
           </p>
         </div>

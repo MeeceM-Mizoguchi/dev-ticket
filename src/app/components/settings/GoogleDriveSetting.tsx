@@ -3,9 +3,9 @@ import { HardDrive, AlertTriangle, Check, Loader2, FolderOpen } from "lucide-rea
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import {
   fetchGoogleDriveStatus, startGoogleOAuth, disconnectGoogle, testGoogleConnection,
-  type GoogleDriveMode,
+  resolveGoogleFolder, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
-import { pickSharedDrive, isPickerConfigured } from "@/app/lib/googlePicker";
+import { pickSharedFolder, isPickerConfigured } from "@/app/lib/googlePicker";
 
 // Googleドライブ連携の組織設定（docs/google-drive-integration-design.md 5.3）
 
@@ -36,8 +36,10 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
   const [configured, setConfigured] = useState(false);
 
   const [mode, setMode] = useState<GoogleDriveMode>("off");
+  // driveId は files.list の corpora 指定に使う。実際の保存先の親は folderId。
   const [driveId, setDriveId] = useState<string | null>(null);
-  const [driveName, setDriveName] = useState<string | null>(null);
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const [folderName, setFolderName] = useState<string | null>(null);
 
   const [picking, setPicking] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -61,11 +63,12 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
     // 組織の設定は、OrgSelector で切り替えた組織のものを直接引く
     if (orgId) {
       const { data } = await supabase!.from("organizations")
-        .select("google_drive_mode, google_shared_drive_id, google_shared_drive_name")
+        .select("google_drive_mode, google_shared_drive_id, google_shared_folder_id, google_shared_drive_name")
         .eq("id", orgId).maybeSingle();
       setMode((data?.google_drive_mode as GoogleDriveMode) ?? "off");
       setDriveId(data?.google_shared_drive_id ?? null);
-      setDriveName(data?.google_shared_drive_name ?? null);
+      setFolderId(data?.google_shared_folder_id ?? null);
+      setFolderName(data?.google_shared_drive_name ?? null);
     }
     setLoading(false);
   }, [orgId]);
@@ -76,10 +79,15 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
     setError(null);
     setPicking(true);
     try {
-      const picked = await pickSharedDrive();
-      if (picked) { setDriveId(picked.id); setDriveName(picked.name); }
+      const picked = await pickSharedFolder();
+      if (!picked) return; // キャンセル
+      // Picker が返すのはIDと名前だけ。フォルダかどうか・どの共有ドライブかはサーバーで確かめる
+      const info = await resolveGoogleFolder(picked.id);
+      setFolderId(info.id);
+      setFolderName(info.name);
+      setDriveId(info.driveId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "共有ドライブを選択できませんでした");
+      setError(e instanceof Error ? e.message : "保存先フォルダを選択できませんでした");
     } finally {
       setPicking(false);
     }
@@ -95,14 +103,15 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
       // 設定だけ保存できて誰もファイルを開けない状態を作らないための関門。
       // 実際に作成と共有を試し、通ってから保存する。
       if (mode === "shared_drive") {
-        if (!driveId) { setError("共有ドライブを選択してください"); return; }
-        await testGoogleConnection(driveId);
+        if (!folderId) { setError("保存先フォルダを選択してください"); return; }
+        await testGoogleConnection(folderId);
       }
 
       const { error: dbErr } = await supabase!.from("organizations").update({
         google_drive_mode: mode,
         google_shared_drive_id: mode === "shared_drive" ? driveId : null,
-        google_shared_drive_name: mode === "shared_drive" ? driveName : null,
+        google_shared_folder_id: mode === "shared_drive" ? folderId : null,
+        google_shared_drive_name: mode === "shared_drive" ? folderName : null,
       }).eq("id", orgId);
       if (dbErr) throw new Error(dbErr.message);
 
@@ -114,7 +123,7 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
       savingRef.current = false;
       setSaving(false);
     }
-  }, [orgId, mode, driveId, driveName]);
+  }, [orgId, mode, driveId, folderId, folderName]);
 
   const handleDisconnect = useCallback(async () => {
     setDisconnecting(true);
@@ -149,7 +158,7 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
     );
   }
 
-  const needsDrive = mode === "shared_drive" && !driveId;
+  const needsDrive = mode === "shared_drive" && !folderId;
   const canSave = !saving && !needsDrive;
 
   return (
@@ -213,16 +222,23 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
                         {picking
                           ? <Loader2 style={{ width: 13, height: 13, animation: "spin 1s linear infinite" }} />
                           : <FolderOpen style={{ width: 13, height: 13 }} />}
-                        共有ドライブを選択
+                        保存先フォルダを選択
                       </button>
-                      {driveName && (
+                      {folderName && (
                         <p style={{ margin: "8px 0 0", fontSize: 12, color: "#059669", fontWeight: 600 }}>
-                          選択中: {driveName}
+                          選択中: {folderName}
                         </p>
                       )}
+                      {/* 共有ドライブそのものは Picker で選択できない（ViewId に SHARED_DRIVES が無い）。
+                          ドライブのタイルを選んでも Select が有効にならないので、操作を明示する */}
+                      <p style={{ margin: "8px 0 0", fontSize: 11, color: "#6B6458", lineHeight: 1.7, background: "#F4F5F6", borderRadius: 8, padding: "8px 10px" }}>
+                        「Shared drives」から<strong>共有ドライブをダブルクリックで開き、中のフォルダを選んで</strong>ください。
+                        共有ドライブ自体は選択できません（Select ボタンが押せません）。
+                        フォルダが1つも無い場合は、先にGoogleドライブ側でフォルダを1つ作成してください。
+                      </p>
                       {!isPickerConfigured() && (
                         <p style={{ margin: "8px 0 0", fontSize: 11, color: "#B45309", lineHeight: 1.6 }}>
-                          <code style={{ fontFamily: "var(--font-mono)" }}>VITE_GOOGLE_API_KEY</code> が未設定のため、共有ドライブを選択できません。
+                          <code style={{ fontFamily: "var(--font-mono)" }}>VITE_GOOGLE_API_KEY</code> が未設定のため、フォルダを選択できません。
                         </p>
                       )}
                       {/* 共有ドライブは「中の特定ファイルだけ隠す」ことが原理的にできない。
@@ -253,7 +269,7 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12 }}>
             {needsDrive && (
-              <span style={{ fontSize: 11, color: "#A09790" }}>共有ドライブを選択すると保存できます</span>
+              <span style={{ fontSize: 11, color: "#A09790" }}>保存先フォルダを選択すると保存できます</span>
             )}
             <button onClick={handleSave} disabled={!canSave}
               style={{ padding: "9px 22px", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: canSave ? "pointer" : "not-allowed", background: canSave ? "linear-gradient(135deg,#059669,#047857)" : "#E5E7EB", color: canSave ? "#fff" : "#9CA3AF", letterSpacing: "-0.01em" }}>
@@ -264,7 +280,9 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
           <div style={{ display: "flex", gap: 9, padding: "12px 14px", background: "#F4F5F6", borderRadius: 10 }}>
             <HardDrive style={{ width: 14, height: 14, color: "#A09790", flexShrink: 0, marginTop: 2 }} />
             <p style={{ margin: 0, fontSize: 11, color: "#6B6458", lineHeight: 1.8 }}>
-              ファイルは <code style={{ fontFamily: "var(--font-mono)" }}>DevTicket/&lt;プロジェクト名&gt;/</code> フォルダに作成されます。<br />
+              {mode === "shared_drive"
+                ? <>ファイルは <code style={{ fontFamily: "var(--font-mono)" }}>{folderName ?? "選択したフォルダ"}/&lt;プロジェクト名&gt;/</code> に作成されます。<br /></>
+                : <>ファイルは <code style={{ fontFamily: "var(--font-mono)" }}>マイドライブ/DevTicket/&lt;プロジェクト名&gt;/</code> に作成されます。<br /></>}
               DevTicket でファイルを削除しても、Googleドライブ上のファイルは残ります。
             </p>
           </div>

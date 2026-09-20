@@ -28,7 +28,8 @@ import crypto from "crypto";
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
-//   POST /api/google/test-connection  { sharedDriveId }                   → { ok } / 400
+//   POST /api/google/resolve-folder   { folderId }                        → { id, name, driveId }
+//   POST /api/google/test-connection  { folderId }                        → { ok } / 400
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
@@ -249,16 +250,26 @@ async function ensureFolder(
   return created.id as string;
 }
 
-/** 保存先フォルダ（<ルート>/DevTicket/<プロジェクト名>/）を解決する */
+/**
+ * 保存先フォルダを解決する。
+ *
+ *   shared_drive … <管理者がPickerで選んだフォルダ>/<プロジェクト名>/
+ *   my_drive     … マイドライブ/DevTicket/<プロジェクト名>/
+ *
+ * 共有ドライブ運用で "DevTicket" 階層を作らないのは、管理者が選んだフォルダが
+ * すでに「DevTicket用の置き場所」だから。ここで足すと DevTicket/DevTicket/ になる。
+ */
 async function resolveTargetFolder(
-  accessToken: string, mode: string, sharedDriveId: string | null, projectName: string,
+  accessToken: string, cfg: OrgConfig, projectName: string,
 ): Promise<string> {
-  const driveId = mode === "shared_drive" ? sharedDriveId : null;
-  const root = mode === "shared_drive" ? String(sharedDriveId) : "root";
-  const devticket = await ensureFolder(accessToken, ROOT_FOLDER_NAME, root, driveId);
   // 空のプロジェクト名でフォルダを作らせない（ensureFolderPath の「無題のフォルダ」と同じ考え方）
   const safeName = projectName.trim() || "無題のプロジェクト";
-  return ensureFolder(accessToken, safeName, devticket, driveId);
+
+  if (cfg.mode === "shared_drive") {
+    return ensureFolder(accessToken, safeName, String(cfg.sharedFolderId), cfg.sharedDriveId);
+  }
+  const devticket = await ensureFolder(accessToken, ROOT_FOLDER_NAME, "root", null);
+  return ensureFolder(accessToken, safeName, devticket, null);
 }
 
 // ── メンバー ────────────────────────────────────────────────
@@ -339,15 +350,24 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "").trim().replace(/^\.+/, "").slice(0, 200).trim();
 }
 
+type OrgConfig = {
+  mode: string;
+  sharedDriveId: string | null;
+  sharedFolderId: string | null;
+  sharedDriveName: string | null;
+};
+
 /** 組織の連携設定を引く */
-async function orgConfig(sb: SupabaseClient, orgId: string | null) {
-  if (!orgId) return { mode: "off", sharedDriveId: null as string | null, sharedDriveName: null as string | null };
+async function orgConfig(sb: SupabaseClient, orgId: string | null): Promise<OrgConfig> {
+  const empty: OrgConfig = { mode: "off", sharedDriveId: null, sharedFolderId: null, sharedDriveName: null };
+  if (!orgId) return empty;
   const { data } = await sb.from("organizations")
-    .select("google_drive_mode, google_shared_drive_id, google_shared_drive_name")
+    .select("google_drive_mode, google_shared_drive_id, google_shared_folder_id, google_shared_drive_name")
     .eq("id", orgId).maybeSingle();
   return {
     mode: String(data?.google_drive_mode ?? "off"),
     sharedDriveId: (data?.google_shared_drive_id as string | null) ?? null,
+    sharedFolderId: (data?.google_shared_folder_id as string | null) ?? null,
     sharedDriveName: (data?.google_shared_drive_name as string | null) ?? null,
   };
 }
@@ -504,12 +524,35 @@ export default async function handler(req: any, res: any) {
       return res.json({ accessToken });
     }
 
+    // ── Picker で選ばれたフォルダの素性を確かめる ────────────
+    // Picker が返すのはIDと名前だけ。それが本当にフォルダか、どの共有ドライブに属するかは
+    // ここで files.get して確かめる（driveId は files.list の corpora 指定に要る）。
+    if (action === "resolve-folder") {
+      const folderId = String(body.folderId ?? "");
+      if (!folderId) return res.status(400).json({ error: "folderId が必要です" });
+      if (profile.role !== "owner" && profile.role !== "admin") {
+        return res.status(403).json({ error: "管理者のみ実行できます" });
+      }
+
+      const accessToken = await getAccessToken(sb, profile.id);
+      const info = await drive(accessToken,
+        `/files/${encodeURIComponent(folderId)}?supportsAllDrives=true&fields=id,name,mimeType,driveId`);
+      if (info?.mimeType !== FOLDER_MIME) {
+        return res.status(400).json({ error: "フォルダを選択してください" });
+      }
+      if (!info?.driveId) {
+        // マイドライブのフォルダを選ばれた場合。共有ドライブ運用の意味が無くなるので弾く
+        return res.status(400).json({ error: "共有ドライブの中のフォルダを選択してください（マイドライブのフォルダは使えません）" });
+      }
+      return res.json({ id: String(info.id), name: String(info.name), driveId: String(info.driveId) });
+    }
+
     // ── 接続テスト（組織設定の保存前に必ず通す） ──────────
     // 設定だけ保存できて誰もファイルを開けない、という状態を本番で作らないための関門。
     // 実際に「作る」「配る」まで試し、後片付けまでして初めて成功と見なす。
     if (action === "test-connection") {
-      const sharedDriveId = String(body.sharedDriveId ?? "");
-      if (!sharedDriveId) return res.status(400).json({ error: "共有ドライブが選択されていません" });
+      const folderId = String(body.folderId ?? "");
+      if (!folderId) return res.status(400).json({ error: "保存先フォルダが選択されていません" });
       if (profile.role !== "owner" && profile.role !== "admin") {
         return res.status(403).json({ error: "管理者のみ実行できます" });
       }
@@ -519,7 +562,7 @@ export default async function handler(req: any, res: any) {
       try {
         const created = await drive(accessToken, "/files?supportsAllDrives=true&fields=id", {
           method: "POST",
-          body: { name: "DevTicket 接続テスト", mimeType: MIME.spreadsheet, parents: [sharedDriveId] },
+          body: { name: "DevTicket 接続テスト", mimeType: MIME.spreadsheet, parents: [folderId] },
         });
         fileId = String(created?.id ?? "");
         if (!fileId) throw new HttpError(502, "テストファイルを作成できませんでした");
@@ -558,8 +601,8 @@ export default async function handler(req: any, res: any) {
 
       const cfg = await orgConfig(sb, project.organization_id ? String(project.organization_id) : null);
       if (cfg.mode === "off") return res.status(403).json({ error: "この組織ではGoogleドライブ連携が有効になっていません" });
-      if (cfg.mode === "shared_drive" && !cfg.sharedDriveId) {
-        return res.status(400).json({ error: "共有ドライブが設定されていません。外部連携の設定を確認してください" });
+      if (cfg.mode === "shared_drive" && !cfg.sharedFolderId) {
+        return res.status(400).json({ error: "保存先フォルダが設定されていません。外部連携の設定を確認してください" });
       }
 
       // 置き場所のフォルダ。register と同じく、他プロジェクトのフォルダや
@@ -576,7 +619,7 @@ export default async function handler(req: any, res: any) {
       }
 
       const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = await resolveTargetFolder(accessToken, cfg.mode, cfg.sharedDriveId, String(project.name ?? ""));
+      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
 
       // DevTicket 側で一意な名前を先に決める。file_name は改名・削除・コメントの
       // 引き当てキーなので、重複したまま登録すると別のファイルを巻き込む。
