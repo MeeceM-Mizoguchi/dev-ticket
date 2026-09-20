@@ -4,7 +4,7 @@ import { escStack } from "@/app/lib/escStack";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import {
   createGoogleFile, startGoogleOAuth, myDriveWarningKey,
-  type GoogleDriveStatus,
+  type GoogleDriveProjectConfig,
 } from "@/app/lib/googleDrive";
 import { GOOGLE_APP_LABEL, KIND_COLOR, type GoogleAppKind } from "@/app/lib/projectFiles";
 
@@ -32,14 +32,14 @@ interface Props {
   projectId: string;
   /** 現在開いているフォルダ。DevTicket側の置き場所（Drive側の階層には影響しない） */
   parentId: string | null;
-  status: GoogleDriveStatus;
+  drive: GoogleDriveProjectConfig;
   userId: string;
   /** 作成後に一覧を引き直す */
   onCreated: () => void;
   toast: (message: string, kind?: "success" | "error" | "info") => void;
 }
 
-export function GoogleAppsButton({ projectId, parentId, status, userId, onCreated, toast }: Props) {
+export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated, toast }: Props) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState<GoogleAppKind | null>(null);
   // 個人ドライブの注意モーダル。作成処理の「前」に挟む
@@ -67,11 +67,29 @@ export function GoogleAppsButton({ projectId, parentId, status, userId, onCreate
     if (creatingRef.current) return;
     creatingRef.current = true;
     setCreating(kind);
+
+    // ★ 空タブを「クリックと同じ実行の中で」先に開いておく。
+    //   window.open はユーザー操作の直後にしか許可されない。作成APIの await を挟んでから
+    //   呼ぶと操作の有効期間が切れており、必ずポップアップブロックに当たる。
+    //   ここで手元にタブを確保し、URLが返ってきてから流し込む。
+    //   noopener を付けるとハンドルが null で返って流し込めないので、代わりに
+    //   開いた直後に opener を切って、開いた先から DevTicket 側を触れないようにする。
+    const tab = window.open("", "_blank");
+    if (tab) {
+      try {
+        tab.opener = null;
+        // 真っ白なタブが数秒続くと壊れたように見えるので、一言だけ出しておく
+        tab.document.write("<!doctype html><meta charset=\"utf-8\"><title>Google で開いています…</title>"
+          + "<body style=\"font-family:sans-serif;color:#6B6458;padding:32px\">Google で開いています…</body>");
+        tab.document.close();
+      } catch { /* 表示だけの処理なので失敗しても続行する */ }
+    }
+
     try {
       const res = await createGoogleFile(projectId, kind, parentId);
-      // ポップアップブロックに当たることがあるので、開けなかったときは一覧から開いてもらう
-      const w = window.open(res.url, "_blank", "noopener,noreferrer");
-      if (!w) toast("別タブを開けませんでした。一覧のファイルをクリックして開いてください", "error");
+      if (tab) tab.location.href = res.url;
+      // ポップアップそのものが禁止されている環境向けの逃げ道
+      else toast("別タブを開けませんでした。一覧のファイルをクリックして開いてください", "error");
 
       if (res.failed.length > 0) {
         const names = res.failed.slice(0, 3).map(f => f.name).join("、");
@@ -81,6 +99,8 @@ export function GoogleAppsButton({ projectId, parentId, status, userId, onCreate
       }
       onCreated();
     } catch (e) {
+      // 作れなかったのに空タブが残ると「何が起きたのか」が分からなくなるので閉じる
+      try { tab?.close(); } catch { /* 既に閉じられている場合は無視 */ }
       const err = e as Error & { status?: number };
       // 428 = Googleアカウント未連携 / 連携切れ。エラーで終わらせず連携へ誘導する
       if (err.status === 428) {
@@ -101,13 +121,13 @@ export function GoogleAppsButton({ projectId, parentId, status, userId, onCreate
     const dismissed = (() => {
       try { return localStorage.getItem(myDriveWarningKey(userId)) === "1"; } catch { return false; }
     })();
-    if (status.mode === "my_drive" && !dismissed) {
+    if (drive.mode === "my_drive" && !dismissed) {
       setDontShowAgain(false);
       setPendingKind(kind);
       return;
     }
     void runCreate(kind);
-  }, [status.mode, userId, runCreate]);
+  }, [drive.mode, userId, runCreate]);
 
   const confirmWarning = useCallback(() => {
     const kind = pendingKind;
@@ -146,8 +166,8 @@ export function GoogleAppsButton({ projectId, parentId, status, userId, onCreate
             </button>
           ))}
           <p style={{ margin: "4px 8px 4px", fontSize: 10.5, color: "#B0A9A4", lineHeight: 1.5 }}>
-            {status.mode === "shared_drive"
-              ? `${status.sharedDriveName ?? "共有ドライブ"} の中に作成されます`
+            {drive.mode === "shared_drive"
+              ? `${drive.folderName ?? "共有ドライブ"} の中に作成されます`
               : "あなたのGoogleドライブに作成されます"}
           </p>
         </div>

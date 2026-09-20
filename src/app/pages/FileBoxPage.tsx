@@ -30,8 +30,8 @@ import {
   isGoogleFile, GOOGLE_KIND_LABEL,
 } from "@/app/lib/projectFiles";
 import {
-  fetchGoogleDriveStatus, openGoogleFile, renameGoogleFile, setGoogleLinkShare,
-  type GoogleDriveStatus,
+  openGoogleFile, renameGoogleFile, setGoogleLinkShare,
+  type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
 import {
@@ -138,9 +138,9 @@ export function FileBoxPage() {
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState<ProjectFile | null>(null);
 
-  // Googleドライブ連携の状態（このユーザーの連携有無 + 組織の設定）。
-  // 未取得(null)の間はボタンを出さない。出してから消えるとチラつくため。
-  const [googleStatus, setGoogleStatus] = useState<GoogleDriveStatus | null>(null);
+  // Googleドライブ連携の設定。null なら「Googleアプリ」ボタンを出さない。
+  // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
+  const [googleDrive, setGoogleDrive] = useState<GoogleDriveProjectConfig | null>(null);
 
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
@@ -160,12 +160,28 @@ export function FileBoxPage() {
     setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
     setProject(mapProject(p));
 
-    const [{ data }, permResult] = await Promise.all([
+    // Googleドライブ連携の設定も、一覧と同じこの束で取る。
+    // 別の useEffect で project.id を待ってから取りに行くと
+    // 「プロジェクト解決 → 一覧取得 → 連携状態」と往復が数珠つなぎになり、
+    // 一覧が描かれてから「Googleアプリ」ボタンだけ遅れて生えてくる（BUG-04 と同じ）。
+    // 組織はプロジェクトの所属で引く（owner が他組織のPJを開いたときも正しくなる）。
+    const [{ data }, permResult, orgResult] = await Promise.all([
       supabase!.from("project_files").select("*").eq("project_id", p.id).order("created_at", { ascending: false }),
       isAdminRole ? Promise.resolve({ data: null }) :
         supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
+      p.organization_id
+        ? supabase!.from("organizations")
+          .select("google_drive_mode, google_shared_drive_name").eq("id", p.organization_id).maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
     setFiles((data ?? []).map(mapProjectFile));
+
+    // 読めなかったとき(null)は連携なしに倒す。ボタンを出してから消すとチラつくため。
+    const driveMode = (orgResult.data?.google_drive_mode ?? "off") as GoogleDriveMode;
+    setGoogleDrive(driveMode === "off" ? null : {
+      mode: driveMode,
+      folderName: orgResult.data?.google_shared_drive_name ?? null,
+    });
 
     if (isAdminRole) {
       setEffectiveWikiPerm("edit"); setEffectiveBacklogPerm("edit");
@@ -183,19 +199,6 @@ export function FileBoxPage() {
   }, [projectSlug, userId, isAdminRole]);
 
   useEffect(() => { load(); }, [load]);
-
-  // Googleドライブ連携の状態。プロジェクトが変わったときだけ引く
-  // （load() はタブに戻るたびに走るので、そちらに相乗りさせると毎回叩いてしまう）。
-  useEffect(() => {
-    const pid = project?.id;
-    if (!pid) { setGoogleStatus(null); return; }
-    let alive = true;
-    fetchGoogleDriveStatus(pid)
-      .then(s => { if (alive) setGoogleStatus(s); })
-      // 連携が未設定でもファイルボックス自体は使えるので、失敗は黙って無効化に倒す
-      .catch(() => { if (alive) setGoogleStatus(null); });
-    return () => { alive = false; };
-  }, [project?.id]);
 
   // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
   useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
@@ -659,12 +662,12 @@ export function FileBoxPage() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {/* Googleアプリ（スプレッドシート/ドキュメント/スライド）を新規作成する。
-                組織設定がオフ・連携未設定・サーバー未設定のときは出さない */}
-            {project && googleStatus?.configured && googleStatus.mode !== "off" && (
+                組織設定がオフのときは出さない */}
+            {project && googleDrive && (
               <GoogleAppsButton
                 projectId={project.id}
                 parentId={currentFolderId}
-                status={googleStatus}
+                drive={googleDrive}
                 userId={userId}
                 onCreated={load}
                 toast={toast}
