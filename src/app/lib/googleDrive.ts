@@ -1,0 +1,121 @@
+import { supabase } from "@/lib/supabase";
+import type { ProjectFile } from "@/app/types";
+import type { GoogleAppKind } from "@/app/lib/projectFiles";
+
+// Googleドライブ連携のクライアント側入口（設計: docs/google-drive-integration-design.md）
+//
+// サーバー(api/google/[action].ts)が Drive API を叩き、DevTicket 側の登録まで済ませる。
+// ブラウザは Google のアクセストークンを一切持たない。
+
+/** 個人ドライブの注意モーダルを「次回以降表示しない」の保存キー */
+export function myDriveWarningKey(userId: string): string {
+  return `devticket.gdrive.myDriveWarning.dismissed.${userId}`;
+}
+
+export type GoogleDriveMode = "off" | "shared_drive" | "my_drive";
+
+export interface GoogleDriveStatus {
+  /** このユーザーがGoogleアカウントを連携済みか */
+  connected: boolean;
+  googleEmail: string | null;
+  /** サーバーに GOOGLE_CLIENT_ID が設定されているか（未設定なら機能ごと出さない） */
+  configured: boolean;
+  mode: GoogleDriveMode;
+  sharedDriveId: string | null;
+  sharedDriveName: string | null;
+}
+
+export interface CreateResult {
+  file: unknown;
+  url: string;
+  fileName: string;
+  /** 権限を配れたメンバー数 */
+  shared: number;
+  /** 配れなかったメンバー（Googleアカウント未所持・管理者設定による制限など） */
+  failed: { name: string; reason: string }[];
+}
+
+async function postApi<T>(action: string, body: unknown = {}): Promise<T> {
+  const { data: { session } } = await supabase!.auth.getSession();
+  if (!session?.access_token) throw new Error("未ログインです");
+
+  const res = await fetch(`/api/google/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const msg = await res.json().catch(() => ({}));
+    const err = new Error(msg?.error || "リクエストに失敗しました") as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  return res.json() as Promise<T>;
+}
+
+/** 連携状態と、そのプロジェクトの組織の設定をまとめて取る */
+export function fetchGoogleDriveStatus(projectId?: string | null): Promise<GoogleDriveStatus> {
+  return postApi<GoogleDriveStatus>("status", projectId ? { projectId } : {});
+}
+
+/**
+ * Googleアカウントの連携を開始する。
+ * サーバーから302させず、認可URLをJSONで受けてブラウザ側で遷移する
+ * （302だと誰の連携かを示す情報をクエリに載せる必要が出て、URLとログに残るため）。
+ */
+export async function startGoogleOAuth(): Promise<void> {
+  const { url } = await postApi<{ url: string }>("oauth-start");
+  window.location.href = url;
+}
+
+export function disconnectGoogle(): Promise<{ ok: boolean }> {
+  return postApi<{ ok: boolean }>("disconnect");
+}
+
+/** 新規作成。別タブで開くURLを返す（開くのは呼び出し側） */
+export function createGoogleFile(
+  projectId: string, kind: GoogleAppKind, parentId?: string | null, name?: string,
+): Promise<CreateResult> {
+  return postApi<CreateResult>("create", { projectId, kind, parentId: parentId ?? null, name });
+}
+
+/** Drive 側のファイル名も合わせる。DevTicket 側の改名(renameProjectFile)の後に呼ぶ */
+export function renameGoogleFile(fileId: string, newName: string): Promise<{ ok: boolean }> {
+  return postApi<{ ok: boolean }>("rename", { fileId, newName });
+}
+
+/** リンクを知っている全員が編集できる状態にする / やめる */
+export function setGoogleLinkShare(fileId: string, enabled: boolean): Promise<{ linkShared: boolean }> {
+  return postApi<{ linkShared: boolean }>("share-link", { fileId, enabled });
+}
+
+/** プロジェクトの全Googleファイルへ、現在のメンバー全員の権限を配り直す */
+export function syncGooglePermissions(projectId: string): Promise<{ granted: number; failed: { name: string; reason: string }[] }> {
+  return postApi<{ granted: number; failed: { name: string; reason: string }[] }>(
+    "sync-permissions", { projectId });
+}
+
+/**
+ * Google Picker 用の短命アクセストークンを取る。
+ * ブラウザに渡るのは drive.file スコープのアクセストークンのみ（リフレッシュトークンは渡らない）。
+ */
+export function fetchPickerToken(): Promise<{ accessToken: string }> {
+  return postApi<{ accessToken: string }>("picker-token");
+}
+
+/** 共有ドライブに実際に作成・共有できるか試す（設定の保存前の関門） */
+export function testGoogleConnection(sharedDriveId: string): Promise<{ ok: boolean; sharedTo: string | null }> {
+  return postApi<{ ok: boolean; sharedTo: string | null }>("test-connection", { sharedDriveId });
+}
+
+/**
+ * Googleファイルを別タブで開く。
+ *
+ * noopener を付けるのは、開いた先から window.opener 経由で DevTicket 側を
+ * 操作できないようにするため。
+ */
+export function openGoogleFile(file: Pick<ProjectFile, "externalUrl">): boolean {
+  if (!file.externalUrl) return false;
+  window.open(file.externalUrl, "_blank", "noopener,noreferrer");
+  return true;
+}

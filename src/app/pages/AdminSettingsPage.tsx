@@ -9,6 +9,7 @@ import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { SlackNotificationSetting } from "@/app/components/settings/SlackNotificationSetting";
 import { MemberSlackSetting } from "@/app/components/settings/MemberSlackSetting";
 import { GithubIntegrationSetting } from "@/app/components/settings/GithubIntegrationSetting";
+import { GoogleDriveSetting } from "@/app/components/settings/GoogleDriveSetting";
 
 export function AdminSettingsPage() {
   const { userPermissions, userOrgId } = useAuth();
@@ -20,11 +21,9 @@ export function AdminSettingsPage() {
   // 黙ってダッシュボードへ飛ばすと「リンクが壊れているのか権限が無いのか」が分からないため、
   // 理由を出す共通画面をその場に描画する（docs/not-found-page-design.md）。
   if (!userPermissions.canAccessAdminSettings) return <NotFoundView kind="no-permission" label="外部連携" />;
-  // 通知・GitHubの両方がプランでOFFのときだけ画面ごと閉じる。片方でも有効ならタブ単位で出し分ける。
-  if (!plan.featureNotifications && !plan.featureGithub) return (
-    <NotFoundView kind="no-permission" label="外部連携"
-      body="外部連携はご契約のプランに含まれていません。ご利用をご希望の場合は管理者へお問い合わせください。" />
-  );
+  // 以前は「通知・GitHubが両方プランでOFFなら画面ごと閉じる」としていたが、
+  // Googleドライブ連携はプランのフラグを持たない（ファイルボックス自体が全プラン共通）ため、
+  // 画面ごと閉じると設定に辿り着けなくなる。プラン判定はタブ単位の出し分けに寄せる。
 
   const urlTab = searchParams.get("tab");
   const slackResult = searchParams.get("slack");
@@ -32,10 +31,14 @@ export function AdminSettingsPage() {
   const slackConnectedProjectId = searchParams.get("projectId");
   const githubResult = searchParams.get("github");
   const githubRepos = searchParams.get("repos");
+  const googleResult = searchParams.get("google");
 
+  // Googleドライブ連携はプランのフラグを持たない（ファイルボックス自体が全プラン共通のため）。
+  // サーバー側が未設定なら、タブの中身が「まだ有効化されていません」を出す。
   const tabs = [
     ...(plan.featureNotifications ? [{ id: "slack", label: "Slack通知" }, { id: "members", label: "メンバー設定" }] : []),
     ...(plan.featureGithub ? [{ id: "github", label: "GitHub連携" }] : []),
+    { id: "google", label: "Googleドライブ" },
   ];
 
   const [tab, setTab] = useState(
@@ -54,14 +57,18 @@ export function AdminSettingsPage() {
             ? { type: "success", message: `GitHubのリポジトリ設定を更新しました${githubRepos ? `（${githubRepos}リポジトリ）` : ""}。` }
             : githubResult === "error"
               ? { type: "error", message: slackMessage ? decodeURIComponent(slackMessage) : "GitHubへの接続に失敗しました" }
-              : null
+              : googleResult === "success"
+                ? { type: "success", message: "Googleアカウントを連携しました。続けて保存先を選択して保存してください。" }
+                : googleResult === "error"
+                  ? { type: "error", message: slackMessage ? decodeURIComponent(slackMessage) : "Googleへの接続に失敗しました" }
+                  : null
   );
 
   // クエリは直後に消すため、接続直後かどうかは初期値として固定しておく
   const [justConnectedGithub] = useState(githubResult === "success" || githubResult === "updated");
 
   useEffect(() => {
-    if (slackResult || githubResult) {
+    if (slackResult || githubResult || googleResult) {
       setSearchParams({}, { replace: true });
       const timer = setTimeout(() => setBanner(null), 8000);
       return () => clearTimeout(timer);
@@ -79,7 +86,7 @@ export function AdminSettingsPage() {
           </div>
           <div>
             <h1 style={{ fontSize: 18, fontWeight: 700, color: "#111827", letterSpacing: "-0.01em" }}>外部連携</h1>
-            <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>Slack通知とGitHub連携の設定を管理します</p>
+            <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 1 }}>Slack通知・GitHub連携・Googleドライブ連携の設定を管理します</p>
           </div>
         </div>
         <OrgSelector />
@@ -105,6 +112,47 @@ export function AdminSettingsPage() {
           </button>
         ))}
       </div>
+
+      {tab === "google" && (
+        <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 0, background: "#FFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "20px 24px" }}>
+            <div style={{ marginBottom: 20 }}>
+              <p style={{ fontSize: 14, fontWeight: 600, color: "#111827" }}>Googleドライブ連携</p>
+              <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 2 }}>
+                ファイルボックスから Googleスプレッドシート／ドキュメント／スライドを作成できるようにします
+              </p>
+            </div>
+            <GoogleDriveSetting isAdmin={userPermissions.canAccessAdminSettings} orgId={effectiveOrgId} />
+          </div>
+
+          <div style={{ width: 260, flexShrink: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ background: "#FFF", border: "1px solid #E5E7EB", borderRadius: 12, padding: "16px 18px" }}>
+              <p style={{ fontSize: 12, fontWeight: 700, color: "#111827", marginBottom: 10 }}>できること</p>
+              {[
+                { icon: "📊", text: "スプレッドシートを作成" },
+                { icon: "📄", text: "ドキュメントを作成" },
+                { icon: "📽", text: "スライドを作成" },
+                { icon: "👥", text: "メンバーへ自動で共有" },
+              ].map(item => (
+                <div key={item.text} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid rgba(26,23,20,0.05)" }}>
+                  <span style={{ fontSize: 13 }}>{item.icon}</span>
+                  <span style={{ fontSize: 12, color: "#374151" }}>{item.text}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "14px 16px" }}>
+              <p style={{ fontSize: 12, fontWeight: 700, color: "#92400E", marginBottom: 6 }}>データの置き場所</p>
+              <p style={{ fontSize: 11, color: "#B45309", lineHeight: 1.7 }}>
+                作成したファイルは<br />
+                <strong>Googleドライブ側</strong>に保存されます。<br />
+                DevTicket のストレージには<br />
+                実体を持ちません
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {tab === "github" && (
         <GithubIntegrationSetting

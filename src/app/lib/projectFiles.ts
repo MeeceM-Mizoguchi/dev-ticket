@@ -4,7 +4,43 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 // 「ブラウザで閲覧」は全てクライアント内(自前ビューア)で完結させ、
 // Microsoft/Google などの外部ビューアには一切ファイルを渡さない。
 
-export type FileKind = "pdf" | "excel" | "word" | "powerpoint" | "image" | "text" | "other";
+export type FileKind =
+  | "pdf" | "excel" | "word" | "powerpoint" | "image" | "text" | "other"
+  | "gsheet" | "gdoc" | "gslide";
+
+// ── Googleドライブ上のファイル（docs/google-drive-integration-design.md）──
+// storage に実体を持たず、別タブで Google 上の編集画面を開く。
+// 種別は拡張子ではなく file_type(MIMEタイプ)で判定する。
+export const GOOGLE_MIME = {
+  spreadsheet: "application/vnd.google-apps.spreadsheet",
+  document: "application/vnd.google-apps.document",
+  presentation: "application/vnd.google-apps.presentation",
+} as const;
+
+export type GoogleAppKind = keyof typeof GOOGLE_MIME;
+
+const GOOGLE_MIME_KIND: Record<string, FileKind> = {
+  [GOOGLE_MIME.spreadsheet]: "gsheet",
+  [GOOGLE_MIME.document]: "gdoc",
+  [GOOGLE_MIME.presentation]: "gslide",
+};
+
+/** Googleドライブ上のファイルか（storage に実体が無い＝署名付きURLもWebDAVも使えない） */
+export function isGoogleFile(f: { externalProvider?: string | null }): boolean {
+  return f.externalProvider === "google";
+}
+
+export const GOOGLE_APP_LABEL: Record<GoogleAppKind, string> = {
+  spreadsheet: "スプレッドシート",
+  document: "ドキュメント",
+  presentation: "スライド",
+};
+
+export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
+  gsheet: "Googleスプレッドシート",
+  gdoc: "Googleドキュメント",
+  gslide: "Googleスライド",
+};
 
 const EXT_KIND: Record<string, FileKind> = {
   pdf: "pdf",
@@ -44,7 +80,13 @@ export function splitFileName(fileName: string): { base: string; ext: string } {
   return i > 0 ? { base: fileName.slice(0, i), ext: fileName.slice(i) } : { base: fileName, ext: "" };
 }
 
-export function getFileKind(fileName: string): FileKind {
+/**
+ * ファイルの種別。
+ * @param fileType DBの file_type（MIMEタイプ）。Googleファイルは拡張子を持たないため、
+ *   種別はここでしか判別できない。省略時は拡張子だけで判定する。
+ */
+export function getFileKind(fileName: string, fileType?: string | null): FileKind {
+  if (fileType && GOOGLE_MIME_KIND[fileType]) return GOOGLE_MIME_KIND[fileType];
   return EXT_KIND[getExt(fileName)] ?? "other";
 }
 
@@ -81,6 +123,8 @@ export function formatFileSize(bytes: number): string {
 export const KIND_COLOR: Record<FileKind, string> = {
   pdf: "#DC2626", excel: "#059669", word: "#2563EB", powerpoint: "#EA580C",
   image: "#7C3AED", text: "#6B6458", other: "#9E9690",
+  // Google 各アプリのブランド色に寄せる（一覧で一目で見分けられるように）
+  gsheet: "#0F9D58", gdoc: "#4285F4", gslide: "#F4B400",
 };
 
 // 全ての storage 操作は api/project-files/[action] (service_role) 経由で行う。
