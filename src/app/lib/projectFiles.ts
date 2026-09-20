@@ -42,6 +42,40 @@ export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
   gslide: "Googleスライド",
 };
 
+// アップロード時に Google 形式へ変換できる拡張子。
+//
+// ★ xlsm は入れない。マクロは変換で必ず失われ、しかも元ファイルが手元に残らない。
+//   「マクロを積んだブックが黙って壊れる」のは取り返しがつかないので、選ばせない。
+// レガシー形式(.xls/.doc/.ppt)は自前ビューアが描画できない（PREVIEWABLE_EXT 参照）ため、
+// 変換するとむしろ DevTicket 内で閲覧できるようになる。
+const GOOGLE_CONVERTIBLE: Record<string, GoogleAppKind> = {
+  xlsx: "spreadsheet", xls: "spreadsheet", csv: "spreadsheet",
+  docx: "document", doc: "document",
+  pptx: "presentation", ppt: "presentation",
+};
+
+/** Google 形式へ変換してアップロードできるファイルか。できないなら null */
+export function googleConvertKind(fileName: string): GoogleAppKind | null {
+  return GOOGLE_CONVERTIBLE[getExt(fileName)] ?? null;
+}
+
+// Google 形式から元の Office 形式へ書き出すURL。
+// Drive API の files.export をサーバーで中継するとファイル本体が
+// サーバーレス関数のレスポンス上限に引っかかるため、閲覧者自身の Google ログインで
+// 直接落とさせる（編集できる人は必ずログイン済み）。
+const GOOGLE_EXPORT: Partial<Record<FileKind, (id: string) => string>> = {
+  gsheet: id => `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`,
+  gdoc: id => `https://docs.google.com/document/d/${id}/export?format=docx`,
+  gslide: id => `https://docs.google.com/presentation/d/${id}/export/pptx`,
+};
+
+/** Googleファイルを Office 形式で書き出すURL。対象外なら null */
+export function googleExportUrl(file: { fileType: string; fileName: string; externalId?: string | null }): string | null {
+  if (!file.externalId) return null;
+  const build = GOOGLE_EXPORT[getFileKind(file.fileName, file.fileType)];
+  return build ? build(file.externalId) : null;
+}
+
 const EXT_KIND: Record<string, FileKind> = {
   pdf: "pdf",
   xlsx: "excel", xlsm: "excel", xls: "excel", csv: "text",

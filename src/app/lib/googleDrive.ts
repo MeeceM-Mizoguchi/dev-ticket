@@ -101,6 +101,44 @@ export function createGoogleFile(
   return postApi<CreateResult>("create", { projectId, kind, parentId: parentId ?? null, name });
 }
 
+/**
+ * Office文書をGoogle形式に変換してアップロードする。
+ *
+ * ①サーバーが Drive に再開可能アップロードのセッションを作り、送り先URLを返す
+ * ②ブラウザがそのURLへファイルを直接送る（Vercelを経由しないのでサイズ上限に縛られない）
+ * ③サーバーが権限配布とDB登録を行う
+ *
+ * project-files の「署名付きアップロードURL → register」と同じ組み立て。
+ *
+ * @returns 作成されたGoogleファイルのURL と、実際に登録された名前
+ */
+export async function uploadAsGoogleFile(
+  projectId: string, file: File, kind: GoogleAppKind, parentId?: string | null,
+): Promise<{ url: string; fileName: string; failed: { name: string; reason: string }[] }> {
+  const session = await postApi<{ uploadUrl: string; fileName: string; folderId: string }>(
+    "upload-session", {
+      projectId, kind, parentId: parentId ?? null,
+      fileName: file.name, fileType: file.type || "application/octet-stream", fileSize: file.size,
+    });
+
+  const put = await fetch(session.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!put.ok) {
+    throw new Error(`Googleドライブへのアップロードに失敗しました（HTTP ${put.status}）`);
+  }
+  // 応答が読めれば fileId が取れる。読めなくてもサーバー側が名前で引き直すので続行する。
+  const uploaded = await put.json().catch(() => ({} as { id?: string }));
+
+  const res = await postApi<CreateResult>("register-upload", {
+    projectId, kind, parentId: parentId ?? null,
+    fileName: session.fileName, folderId: session.folderId, fileId: uploaded?.id ?? "",
+  });
+  return { url: res.url, fileName: res.fileName, failed: res.failed };
+}
+
 /** Drive 側のファイル名も合わせる。DevTicket 側の改名(renameProjectFile)の後に呼ぶ */
 export function renameGoogleFile(fileId: string, newName: string): Promise<{ ok: boolean }> {
   return postApi<{ ok: boolean }>("rename", { fileId, newName });

@@ -27,10 +27,10 @@ import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
   downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
-  isGoogleFile, GOOGLE_KIND_LABEL,
+  isGoogleFile, GOOGLE_KIND_LABEL, googleConvertKind, googleExportUrl,
 } from "@/app/lib/projectFiles";
 import {
-  openGoogleFile, renameGoogleFile, setGoogleLinkShare,
+  openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile,
   type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -141,6 +141,10 @@ export function FileBoxPage() {
   // Googleドライブ連携の設定。null なら「Googleアプリ」ボタンを出さない。
   // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
   const [googleDrive, setGoogleDrive] = useState<GoogleDriveProjectConfig | null>(null);
+
+  // Office文書を入れられたときの「そのまま / Google形式に変換」の確認待ち
+  const [convertPrompt, setConvertPrompt] = useState<
+    { entries: UploadEntry[]; targetFolderId?: string | null; names: string[] } | null>(null);
 
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
@@ -302,7 +306,11 @@ export function FileBoxPage() {
   // フォルダをドロップされたら、同じ階層をファイルボックス側にも作ってから入れる。
   // フォルダ自身を File として送ると net::ERR_ACCESS_DENIED になるため、
   // 展開は必ず folderUpload.ts 側で済ませておくこと。
-  const uploadEntries = useCallback(async (entries: UploadEntry[], targetFolderId?: string | null) => {
+  // @param convert Office文書をGoogle形式へ変換して取り込む（アップロード前に選ばせる）。
+  //   変換すると元の .xlsx 等は DevTicket に残らないため、既定では false。
+  const uploadEntries = useCallback(async (
+    entries: UploadEntry[], targetFolderId?: string | null, convert = false,
+  ) => {
     if (!project || entries.length === 0) return;
     // BUG-05 連続でドロップされても2本同時に走らせない。
     // フォルダは1回が長いので、state だけだと確実にすり抜ける。
@@ -321,6 +329,8 @@ export function FileBoxPage() {
     let ok = 0;
     const renamed: string[] = [];
     const failed: string[] = [];
+    // Google形式で取り込んだときに、権限を配れなかったメンバー
+    const shareFailed: string[] = [];
     try {
       for (let i = 0; i < entries.length; i++) {
         const { file: f, dirPath } = entries[i];
@@ -333,6 +343,20 @@ export function FileBoxPage() {
           const parentId = dirPath.length > 0
             ? await ensureFolderPath(project.id, dirPath, folderId, userName, folderCache)
             : folderId;
+
+          // Google形式へ変換して取り込む。対象外の拡張子はそのまま storage へ入れる
+          // （画像やPDFを混ぜてドロップされても、そちらは従来どおり動く）。
+          const convertKind = convert ? googleConvertKind(f.name) : null;
+          if (convertKind) {
+            const g = await uploadAsGoogleFile(project.id, f, convertKind, parentId);
+            if (g.fileName !== splitFileName(f.name).base) {
+              renamed.push(`「${f.name}」→「${g.fileName}」`);
+            }
+            for (const x of g.failed) shareFailed.push(`${g.fileName} / ${x.name}`);
+            ok++;
+            continue;
+          }
+
           // 同名でも上書き（新バージョン）にせず、別ファイルとして残す
           const stored = await uploadProjectFile(project.id, f, { uniqueName: true, parentId });
           if (stored !== f.name) renamed.push(`「${f.name}」→「${stored}」`);
@@ -359,6 +383,9 @@ export function FileBoxPage() {
     if (failed.length > 0) {
       toast(`${failed.length} 件のアップロードに失敗しました：${summarize(failed)}`, "error");
     }
+    if (shareFailed.length > 0) {
+      toast(`Googleファイルを共有できなかった相手がいます：${summarize(shareFailed)}。Googleアカウントをお持ちか確認してください`, "error");
+    }
     if (ok > 0) {
       toast(`${ok} 件のファイルをアップロードしました`);
       emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
@@ -366,12 +393,28 @@ export function FileBoxPage() {
     }
   }, [project, toast, load, currentFolderId, userName]);
 
+  /**
+   * 取り込み方を選ばせてからアップロードする。
+   * Office文書が混ざっていて、かつ組織がGoogle連携を有効にしているときだけ確認を挟む。
+   * フォルダごとのアップロードは件数が多く、1件ずつ判断させる意味が薄いので対象外。
+   */
+  const startUpload = useCallback((entries: UploadEntry[], targetFolderId?: string | null) => {
+    if (entries.length === 0) return;
+    const isFolderUpload = entries.some(e => e.dirPath.length > 0);
+    const convertible = entries.filter(e => googleConvertKind(e.file.name));
+    if (googleDrive && !isFolderUpload && convertible.length > 0) {
+      setConvertPrompt({ entries, targetFolderId, names: convertible.map(e => e.file.name) });
+      return;
+    }
+    uploadEntries(entries, targetFolderId);
+  }, [googleDrive, uploadEntries]);
+
   /** <input type="file"> から。フォルダ選択(webkitdirectory)なら階層も引き継がれる */
   const uploadFiles = useCallback((incoming: FileList | File[], targetFolderId?: string | null) => {
     const entries = collectInputEntries(incoming);
     if (entries.length >= MAX_UPLOAD_ENTRIES) toast(TOO_MANY_MSG, "error");
-    uploadEntries(entries, targetFolderId);
-  }, [uploadEntries, toast]);
+    startUpload(entries, targetFolderId);
+  }, [startUpload, toast]);
 
   /**
    * ドロップされたものを取り込む。
@@ -382,12 +425,12 @@ export function FileBoxPage() {
     collectDropEntries(e.dataTransfer).then(entries => {
       if (entries.length === 0) return;
       if (entries.length >= MAX_UPLOAD_ENTRIES) toast(TOO_MANY_MSG, "error");
-      uploadEntries(entries, targetFolderId);
+      startUpload(entries, targetFolderId);
     }).catch(err => {
       console.error("[FileBox] drop read error:", err);
       toast("ドロップされたフォルダを読み取れませんでした", "error");
     });
-  }, [uploadEntries, toast]);
+  }, [startUpload, toast]);
 
   const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null) => {
     if (!project) return;
@@ -545,6 +588,14 @@ export function FileBoxPage() {
   // Googleファイルを開く。ビューアは持たず、Google上の編集画面へ送る
   const handleOpenGoogle = useCallback((file: ProjectFile) => {
     if (!openGoogleFile(file)) toast("このファイルのURLが見つかりません", "error");
+  }, [toast]);
+
+  // GoogleファイルをOffice形式で書き出す。
+  // 閲覧者自身のGoogleログインで直接落とすので、サーバーを経由しない。
+  const handleExportGoogle = useCallback((file: ProjectFile) => {
+    const url = googleExportUrl(file);
+    if (!url) { toast("この形式は書き出せません", "error"); return; }
+    window.open(url, "_blank", "noopener,noreferrer");
   }, [toast]);
 
   // リンクを知っている全員が編集できる状態にする / やめる。
@@ -857,18 +908,19 @@ export function FileBoxPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Link2 style={{ width: 13, height: 13 }} />
                   </button>
-                  {isGoogle ? (
+                  {isGoogle && (
                     <button onClick={e => { e.stopPropagation(); handleToggleLinkShare(f); }}
                       title={f.linkShared ? "リンク共有を解除する" : "リンクを知っている全員が編集できるようにする"}
                       style={{ background: "none", border: "none", cursor: "pointer", color: f.linkShared ? "#D97706" : "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Globe style={{ width: 13, height: 13 }} />
                     </button>
-                  ) : (
-                    <button onClick={e => { e.stopPropagation(); handleDownload(f); }} title="ダウンロード"
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                      <Download style={{ width: 13, height: 13 }} />
-                    </button>
                   )}
+                  {/* Googleファイルは storage に実体が無いので、Google側でOffice形式に書き出す */}
+                  <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
+                    title={isGoogle ? "Office形式でダウンロード" : "ダウンロード"}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                    <Download style={{ width: 13, height: 13 }} />
+                  </button>
                   <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Pencil style={{ width: 13, height: 13 }} />
@@ -908,6 +960,57 @@ export function FileBoxPage() {
           onClose={closeDelete}
         />
       )}
+      {convertPrompt && (() => {
+        // 変換すると元の .xlsx 等は DevTicket に残らない。既定は「そのまま」。
+        const many = convertPrompt.names.length > 1;
+        const close = () => setConvertPrompt(null);
+        const go = (convert: boolean) => {
+          setConvertPrompt(null);
+          uploadEntries(convertPrompt.entries, convertPrompt.targetFolderId, convert);
+        };
+        return (
+          <DialogShell title="保存形式を選択" onClose={close} size="md" minHeight={0}
+            footer={<>
+              <button type="button" onClick={close}
+                style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
+                キャンセル
+              </button>
+              <button type="button" onClick={() => go(true)}
+                style={{ padding: "8px 16px", background: "#EFF6FF", color: "#1D4ED8", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "1px solid #BFDBFE", cursor: "pointer" }}>
+                Google形式に変換して保存
+              </button>
+              <button type="button" onClick={() => go(false)}
+                style={{ padding: "8px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer" }}>
+                そのまま保存
+              </button>
+            </>}>
+            <p style={{ margin: 0, fontSize: 12.5, color: "#1A1714", lineHeight: 1.85 }}>
+              {many
+                ? `${convertPrompt.names.length} 件のOffice文書が含まれています（${summarize(convertPrompt.names)}）。どちらで保存しますか？`
+                : `「${convertPrompt.names[0]}」をどちらで保存しますか？`}
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: "#ECFDF5", border: "1px solid #A7F3D0" }}>
+                <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: "#065F46" }}>そのまま保存（推奨）</p>
+                <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#047857", lineHeight: 1.75 }}>
+                  書式もマクロもそのまま保ちます。画面内のエディタとデスクトップのOfficeで編集できます。
+                </p>
+              </div>
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
+                <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: "#1E40AF" }}>Google形式に変換して保存</p>
+                <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#1D4ED8", lineHeight: 1.75 }}>
+                  複数人で同時に編集できます。ファイルは1つだけで、元のファイルは残りません。<br />
+                  <strong>マクロ・一部の書式・ピボットテーブルなどは失われることがあります。</strong>
+                </p>
+              </div>
+            </div>
+            <p style={{ margin: "2px 0 0", fontSize: 11, color: "#B0A9A4", lineHeight: 1.7 }}>
+              変換後も、ダウンロードボタンから Excel / Word / PowerPoint 形式で書き出せます。
+              マクロ付き（.xlsm）は変換の対象外で、常にそのまま保存されます。
+            </p>
+          </DialogShell>
+        );
+      })()}
       {showFolderModal && (
         <DialogShell title="新規フォルダ作成" onClose={() => setShowFolderModal(false)} size="sm"
           footer={<>
