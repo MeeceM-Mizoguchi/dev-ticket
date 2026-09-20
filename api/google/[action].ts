@@ -25,6 +25,8 @@ import crypto from "crypto";
 //   POST /api/google/status           { projectId? }                      → { connected, mode, ... }
 //   POST /api/google/disconnect       {}                                  → { ok }
 //   POST /api/google/create           { projectId, kind, parentId? }      → { file, url }
+//   POST /api/google/upload-session   { projectId, kind, fileName, ... }  → { uploadUrl, fileName, folderId }
+//   POST /api/google/register-upload  { projectId, kind, fileName, ... }  → { file, url }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
@@ -54,6 +56,13 @@ const DEFAULT_NAME: Record<string, string> = {
   document: "無題のドキュメント",
   presentation: "無題のスライド",
 };
+
+// アップロードしたOffice文書をGoogle形式へ変換して取り込むときの受け口。
+// ★ ブラウザ → Drive へ直接送る（再開可能アップロード）。
+//   ファイル本体をこの関数の body に通すと Vercel のリクエストサイズ上限(4.5MB)に
+//   引っかかるため、project-files の署名付きアップロードURLと同じ考え方で、
+//   サーバーは「送り先」だけ発行する。
+const RESUMABLE_URL = "https://www.googleapis.com/upload/drive/v3/files";
 
 // ── state の署名 ────────────────────────────────────────────
 // oauth-start は「ログイン中のユーザーからのPOST」で受け、認可URLをJSONで返す。
@@ -357,6 +366,21 @@ type OrgConfig = {
   sharedDriveName: string | null;
 };
 
+/**
+ * DevTicket 側の置き場所（フォルダ）を検証する。
+ * 他プロジェクトのフォルダや、フォルダでない行を親に指定させない。
+ * @returns フォルダID / 指定なしは null / 不正なときは false
+ */
+async function resolveParent(
+  sb: SupabaseClient, projectId: string, raw: unknown,
+): Promise<string | null | false> {
+  if (!raw) return null;
+  const { data: parent } = await sb.from("project_files")
+    .select("id, project_id, is_folder").eq("id", String(raw)).maybeSingle();
+  if (!parent || parent.project_id !== projectId || !parent.is_folder) return false;
+  return String(parent.id);
+}
+
 /** 組織の連携設定を引く */
 async function orgConfig(sb: SupabaseClient, orgId: string | null): Promise<OrgConfig> {
   const empty: OrgConfig = { mode: "off", sharedDriveId: null, sharedFolderId: null, sharedDriveName: null };
@@ -605,18 +629,8 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: "保存先フォルダが設定されていません。外部連携の設定を確認してください" });
       }
 
-      // 置き場所のフォルダ。register と同じく、他プロジェクトのフォルダや
-      // フォルダでない行を親に指定させない。
-      const rawParentId = body.parentId ?? null;
-      let parentId: string | null = null;
-      if (rawParentId) {
-        const { data: parent } = await sb.from("project_files")
-          .select("id, project_id, is_folder").eq("id", String(rawParentId)).maybeSingle();
-        if (!parent || parent.project_id !== projectId || !parent.is_folder) {
-          return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
-        }
-        parentId = String(parent.id);
-      }
+      const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
+      if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
 
       const accessToken = await getAccessToken(sb, profile.id);
       const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
@@ -669,6 +683,154 @@ export default async function handler(req: any, res: any) {
         fileName,
         shared: share.granted,
         failed: share.failed,
+      });
+    }
+
+    // ── 変換アップロード ①送り先の発行 ────────────────────
+    // Office文書をGoogle形式に変換して取り込む。ファイル本体はこの関数を通さず、
+    // ブラウザから Drive へ直接送る（RESUMABLE_URL のコメント参照）。
+    if (action === "upload-session") {
+      const projectId = String(body.projectId ?? "");
+      const kind = String(body.kind ?? "");
+      const sourceName = String(body.fileName ?? "");
+      const sourceType = String(body.fileType ?? "application/octet-stream");
+      const size = Number(body.fileSize) || 0;
+      if (!projectId || !MIME[kind] || !sourceName) {
+        return res.status(400).json({ error: "projectId / kind / fileName が必要です" });
+      }
+      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id, members").eq("id", projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+
+      const cfg = await orgConfig(sb, project.organization_id ? String(project.organization_id) : null);
+      if (cfg.mode === "off") return res.status(403).json({ error: "この組織ではGoogleドライブ連携が有効になっていません" });
+      if (cfg.mode === "shared_drive" && !cfg.sharedFolderId) {
+        return res.status(400).json({ error: "保存先フォルダが設定されていません。外部連携の設定を確認してください" });
+      }
+
+      const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
+      if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
+
+      const accessToken = await getAccessToken(sb, profile.id);
+      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+
+      // Google形式に拡張子は無いので落とす。DevTicket 側で一意な名前を先に押さえる。
+      const base = sanitizeFileName(splitName(sourceName).base) || DEFAULT_NAME[kind];
+      const { data: existing } = await sb.from("project_files")
+        .select("file_name").eq("project_id", projectId);
+      const fileName = nextFreeName(base, new Set((existing ?? []).map(r => String(r.file_name))));
+
+      // mimeType に Google 形式を指定すると、Drive 側が送られた中身を変換して保存する
+      const params = new URLSearchParams({
+        uploadType: "resumable", supportsAllDrives: "true", fields: "id,name,webViewLink",
+      });
+      const init = await fetch(`${RESUMABLE_URL}?${params}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Upload-Content-Type": sourceType,
+          ...(size > 0 ? { "X-Upload-Content-Length": String(size) } : {}),
+        },
+        body: JSON.stringify({ name: fileName, mimeType: MIME[kind], parents: [folderId] }),
+      });
+      if (!init.ok) {
+        const j = await init.json().catch(() => ({}));
+        const reason = j?.error?.errors?.[0]?.reason || "";
+        throw new HttpError(init.status,
+          driveErrorMessage(init.status, reason, j?.error?.message || "アップロードを開始できませんでした"));
+      }
+      const uploadUrl = init.headers.get("location");
+      if (!uploadUrl) throw new HttpError(502, "アップロード先を取得できませんでした");
+
+      return res.json({ uploadUrl, fileName, parentId, folderId });
+    }
+
+    // ── 変換アップロード ②完了後の登録 ────────────────────
+    if (action === "register-upload") {
+      const projectId = String(body.projectId ?? "");
+      const kind = String(body.kind ?? "");
+      const reserved = String(body.fileName ?? "");
+      if (!projectId || !MIME[kind] || !reserved) {
+        return res.status(400).json({ error: "projectId / kind / fileName が必要です" });
+      }
+      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id, members").eq("id", projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+
+      const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
+      if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
+
+      const cfg = await orgConfig(sb, project.organization_id ? String(project.organization_id) : null);
+      const accessToken = await getAccessToken(sb, profile.id);
+      const folderId = String(body.folderId ?? "") || await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+
+      // ブラウザが Drive の応答を読めた場合は fileId が来る。
+      // CORS 等で読めなかった場合に備え、押さえておいた名前でフォルダ内を引き直す。
+      let fileId = String(body.fileId ?? "");
+      if (!fileId) {
+        const params = new URLSearchParams({
+          q: `name='${q(reserved)}' and '${q(folderId)}' in parents and trashed=false`,
+          fields: "files(id)", pageSize: "1",
+          supportsAllDrives: "true", includeItemsFromAllDrives: "true",
+        });
+        if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
+          params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+        }
+        const found = await drive(accessToken, `/files?${params}`);
+        fileId = String(found?.files?.[0]?.id ?? "");
+        if (!fileId) throw new HttpError(502, "アップロードしたファイルを特定できませんでした");
+      }
+
+      // ★ drive.file スコープなので、アプリが作っていないファイルはここで 404 になる。
+      //   それに加えて、置き場所が意図したフォルダかどうかも確かめる。
+      const info = await drive(accessToken,
+        `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=id,name,webViewLink,parents`);
+      if (!Array.isArray(info?.parents) || !info.parents.includes(folderId)) {
+        return res.status(400).json({ error: "アップロード先が正しくありません" });
+      }
+
+      // 押さえた名前が他の登録に取られていた場合に備えて採り直し、Drive 側も合わせる
+      const { data: existing } = await sb.from("project_files")
+        .select("file_name").eq("project_id", projectId);
+      const fileName = nextFreeName(reserved, new Set((existing ?? []).map(r => String(r.file_name))));
+      if (fileName !== String(info.name)) {
+        await drive(accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, {
+          method: "PATCH", body: { name: fileName },
+        }).catch(() => undefined);
+      }
+
+      const people = await projectMemberEmails(sb, project as any);
+      const share = await grantMembers(accessToken, fileId, people, String(profile.google_email ?? ""));
+
+      const { data: inserted, error } = await sb.from("project_files").insert({
+        project_id: projectId,
+        folder_path: "",
+        file_name: fileName,
+        file_size: 0,
+        file_type: MIME[kind],
+        file_path: "",
+        version: 1,
+        uploaded_by: profile.name,
+        external_provider: "google",
+        external_id: fileId,
+        external_url: String(info.webViewLink ?? ""),
+        ...(parentId ? { parent_id: parentId } : {}),
+      }).select().maybeSingle();
+
+      if (error) {
+        await drive(accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, { method: "DELETE" })
+          .catch(() => undefined);
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json({
+        file: inserted, url: String(info.webViewLink ?? ""), fileName,
+        shared: share.granted, failed: share.failed,
       });
     }
 

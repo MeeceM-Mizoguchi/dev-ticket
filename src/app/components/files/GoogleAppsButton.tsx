@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, FileSpreadsheet, FileText, Presentation, Loader2, AlertTriangle } from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
+import { openPendingTab } from "@/app/lib/pendingTab";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import {
   createGoogleFile, startGoogleOAuth, myDriveWarningKey,
@@ -68,22 +69,11 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     creatingRef.current = true;
     setCreating(kind);
 
-    // ★ 空タブを「クリックと同じ実行の中で」先に開いておく。
-    //   window.open はユーザー操作の直後にしか許可されない。作成APIの await を挟んでから
-    //   呼ぶと操作の有効期間が切れており、必ずポップアップブロックに当たる。
-    //   ここで手元にタブを確保し、URLが返ってきてから流し込む。
-    //   noopener を付けるとハンドルが null で返って流し込めないので、代わりに
-    //   開いた直後に opener を切って、開いた先から DevTicket 側を触れないようにする。
-    const tab = window.open("", "_blank");
-    if (tab) {
-      try {
-        tab.opener = null;
-        // 真っ白なタブが数秒続くと壊れたように見えるので、一言だけ出しておく
-        tab.document.write("<!doctype html><meta charset=\"utf-8\"><title>Google で開いています…</title>"
-          + "<body style=\"font-family:sans-serif;color:#6B6458;padding:32px\">Google で開いています…</body>");
-        tab.document.close();
-      } catch { /* 表示だけの処理なので失敗しても続行する */ }
-    }
+    // 空タブはクリックと同じ実行の中で確保する（理由は pendingTab.ts の冒頭コメント）
+    const tab = openPendingTab(
+      `${GOOGLE_APP_LABEL[kind]}を作成しています`,
+      "Googleドライブ上にファイルを作成し、編集画面を開きます。",
+    );
 
     try {
       const res = await createGoogleFile(projectId, kind, parentId);
