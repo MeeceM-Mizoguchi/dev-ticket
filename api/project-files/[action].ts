@@ -203,9 +203,16 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, file_type, file_path").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, file_type, file_path, external_provider, external_url").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+
+    // Googleドライブ上のファイルは storage に実体が無い。署名付きURLは発行できないので、
+    // 開く先(webViewLink)をそのまま返す（docs/google-drive-integration-design.md 9.2）
+    if (file.external_provider === "google") {
+      if (!file.external_url) return res.status(404).json({ error: "このファイルのURLが見つかりません" });
+      return res.json({ url: file.external_url, fileName: file.file_name, fileType: file.file_type, external: true });
+    }
 
     const { data: signed, error } = await sb.storage.from(BUCKET)
       .createSignedUrl(file.file_path, SIGNED_URL_TTL_SEC,
@@ -222,9 +229,13 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    // Googleドライブ上のファイルは storage に実体が無く、WebDAV で開く対象にならない
+    if (file.external_provider === "google") {
+      return res.status(400).json({ error: "Googleドライブ上のファイルはデスクトップアプリで開けません" });
+    }
 
     // 有効期限は固定の時間枠に丸める。毎回 Date.now()+TTL にすると
     // 「アプリで開く」のたびにトークン＝URLが変わり、Office のドキュメントキャッシュが

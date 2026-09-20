@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, FolderUp, Plus, Pencil,
+  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -27,7 +27,13 @@ import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
   downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
+  isGoogleFile, GOOGLE_KIND_LABEL,
 } from "@/app/lib/projectFiles";
+import {
+  fetchGoogleDriveStatus, openGoogleFile, renameGoogleFile, setGoogleLinkShare,
+  type GoogleDriveStatus,
+} from "@/app/lib/googleDrive";
+import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
 import {
   collectDropEntries, collectInputEntries, looksLikeFolder,
   MAX_UPLOAD_ENTRIES, type UploadEntry,
@@ -46,6 +52,8 @@ function summarize(items: string[], head = 3): string {
 const KIND_ICON = {
   pdf: FileText, excel: FileSpreadsheet, word: FileText,
   powerpoint: Presentation, image: FileImage, text: FileText, other: FileIcon,
+  // Googleドライブ上のファイル（別タブで開く）
+  gsheet: FileSpreadsheet, gdoc: FileText, gslide: Presentation,
 } as const;
 
 function formatDateTime(d: string) {
@@ -130,6 +138,10 @@ export function FileBoxPage() {
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState<ProjectFile | null>(null);
 
+  // Googleドライブ連携の状態（このユーザーの連携有無 + 組織の設定）。
+  // 未取得(null)の間はボタンを出さない。出してから消えるとチラつくため。
+  const [googleStatus, setGoogleStatus] = useState<GoogleDriveStatus | null>(null);
+
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("edit");
@@ -172,6 +184,19 @@ export function FileBoxPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Googleドライブ連携の状態。プロジェクトが変わったときだけ引く
+  // （load() はタブに戻るたびに走るので、そちらに相乗りさせると毎回叩いてしまう）。
+  useEffect(() => {
+    const pid = project?.id;
+    if (!pid) { setGoogleStatus(null); return; }
+    let alive = true;
+    fetchGoogleDriveStatus(pid)
+      .then(s => { if (alive) setGoogleStatus(s); })
+      // 連携が未設定でもファイルボックス自体は使えるので、失敗は黙って無効化に倒す
+      .catch(() => { if (alive) setGoogleStatus(null); });
+    return () => { alive = false; };
+  }, [project?.id]);
+
   // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
   useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
 
@@ -199,7 +224,10 @@ export function FileBoxPage() {
       ? files.reduce<ProjectFile | null>((best, f) =>
         f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
       : null;
-    if (newest) {
+    if (newest && isGoogleFile(newest)) {
+      // Googleファイルはビューアを持たない。共有リンクで来たらそのままDriveへ送る
+      if (!openGoogleFile(newest)) toast("このファイルのURLが見つかりません", "error");
+    } else if (newest) {
       setPreviewTarget(newest);
       setFocusComment({
         commentId: searchParams.get(FILE_COMMENT_PARAM),
@@ -446,6 +474,19 @@ export function FileBoxPage() {
         // ファイル名は版・コメント・WebDAV の引き当てキーなので、
         // 同名の全バージョンとコメントをまとめて付け替えるサーバー側に任せる。
         finalName = await renameProjectFile(renameTarget.id, inputName);
+
+        // Drive 側の名前も合わせる。片方だけ変わると、DevTicketとDriveで
+        // 同じファイルが別名に見えて追えなくなる。
+        // (api/ 配下のルートファイル同士は import し合わない方針のため2回に分けて呼ぶ)
+        if (isGoogleFile(renameTarget)) {
+          try {
+            await renameGoogleFile(renameTarget.id, finalName);
+          } catch (e) {
+            // DevTicket側は既に変わっている。ここで失敗しても巻き戻さず、ズレたことだけ伝える
+            console.error("[FileBox] google rename failed:", e);
+            toast("Googleドライブ側の名前は変更できませんでした", "error");
+          }
+        }
       }
 
       if (finalName !== inputName) {
@@ -497,6 +538,32 @@ export function FileBoxPage() {
       toast(e instanceof Error ? e.message : "アプリの起動に失敗しました", "error");
     }
   }, [toast]);
+
+  // Googleファイルを開く。ビューアは持たず、Google上の編集画面へ送る
+  const handleOpenGoogle = useCallback((file: ProjectFile) => {
+    if (!openGoogleFile(file)) toast("このファイルのURLが見つかりません", "error");
+  }, [toast]);
+
+  // リンクを知っている全員が編集できる状態にする / やめる。
+  // URLが実質のパスワードになるため既定はオフ。ここから明示的に入れてもらう。
+  const linkSharingRef = useRef(false);
+  const handleToggleLinkShare = useCallback(async (file: ProjectFile) => {
+    // BUG-05 連打ガード。Drive への往復があるので state だけでは抜ける
+    if (linkSharingRef.current) return;
+    linkSharingRef.current = true;
+    const next = !file.linkShared;
+    try {
+      await setGoogleLinkShare(file.id, next);
+      toast(next
+        ? `「${file.fileName}」をリンクを知っている全員が編集できる状態にしました`
+        : `「${file.fileName}」のリンク共有を解除しました`);
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "リンク共有の変更に失敗しました", "error");
+    } finally {
+      linkSharingRef.current = false;
+    }
+  }, [toast, load]);
 
   // モーダルの onClose は escStack に積まれるため、毎レンダーで作り直さないよう固定する
   const closePreview = useCallback(() => { setPreviewTarget(null); setFocusComment(null); }, []);
@@ -591,6 +658,18 @@ export function FileBoxPage() {
             )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* Googleアプリ（スプレッドシート/ドキュメント/スライド）を新規作成する。
+                組織設定がオフ・連携未設定・サーバー未設定のときは出さない */}
+            {project && googleStatus?.configured && googleStatus.mode !== "off" && (
+              <GoogleAppsButton
+                projectId={project.id}
+                parentId={currentFolderId}
+                status={googleStatus}
+                userId={userId}
+                onCreated={load}
+                toast={toast}
+              />
+            )}
             {/* フォルダをそのまま上げる。ドラッグ&ドロップでも同じことができるが、
                 クリックからも選べるようにしておく（ドロップできない環境向け） */}
             <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#FFFBEB", color: "#D97706", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: uploading ? "wait" : "pointer" }}>
@@ -730,10 +809,12 @@ export function FileBoxPage() {
                 );
               }
 
-              const kind = getFileKind(f.fileName);
+              // Googleファイルは拡張子を持たないので、種別は file_type(MIME)で見る
+              const kind = getFileKind(f.fileName, f.fileType);
               const Icon = KIND_ICON[kind];
+              const isGoogle = isGoogleFile(f);
               return (
-                <div key={f.id} onClick={() => setPreviewTarget(f)}
+                <div key={f.id} onClick={() => isGoogle ? handleOpenGoogle(f) : setPreviewTarget(f)}
                   draggable
                   onDragStart={e => {
                     setDraggingFile(f);
@@ -751,22 +832,40 @@ export function FileBoxPage() {
                     <TruncatedText as="p" text={f.fileName}
                       style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#1A1714" }}>
                       {f.fileName}
-                      {f.version > 1 && (
+                      {/* Googleファイルに版の概念は無い（常に v1）ので出さない */}
+                      {!isGoogle && f.version > 1 && (
                         <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#EEF2FF", color: "#4F46E5" }}>v{f.version}</span>
+                      )}
+                      {/* リンク共有は「URLを知っていれば誰でも編集できる」状態。
+                          気づかないまま放置されないよう、一覧で常に見えるようにする */}
+                      {f.linkShared && (
+                        <span title="リンクを知っている全員が編集できます"
+                          style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#FEF3C7", color: "#B45309", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                          <Globe style={{ width: 9, height: 9 }} />リンク公開中
+                        </span>
                       )}
                     </TruncatedText>
                     <p style={{ margin: "2px 0 0", fontSize: 11, color: "#A09790" }}>
-                      {formatFileSize(f.fileSize)} · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
+                      {/* Googleファイルはサイズを持たないので、代わりに種別を出す */}
+                      {isGoogle ? (GOOGLE_KIND_LABEL[kind] ?? "Googleドライブ") : formatFileSize(f.fileSize)} · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
                     </p>
                   </div>
                   <button onClick={e => { e.stopPropagation(); handleCopyLink(f); }} title="リンクをコピー"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Link2 style={{ width: 13, height: 13 }} />
                   </button>
-                  <button onClick={e => { e.stopPropagation(); handleDownload(f); }} title="ダウンロード"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                    <Download style={{ width: 13, height: 13 }} />
-                  </button>
+                  {isGoogle ? (
+                    <button onClick={e => { e.stopPropagation(); handleToggleLinkShare(f); }}
+                      title={f.linkShared ? "リンク共有を解除する" : "リンクを知っている全員が編集できるようにする"}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: f.linkShared ? "#D97706" : "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Globe style={{ width: 13, height: 13 }} />
+                    </button>
+                  ) : (
+                    <button onClick={e => { e.stopPropagation(); handleDownload(f); }} title="ダウンロード"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Download style={{ width: 13, height: 13 }} />
+                    </button>
+                  )}
                   <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Pencil style={{ width: 13, height: 13 }} />
@@ -794,9 +893,13 @@ export function FileBoxPage() {
           title={deleteTarget.isFolder ? "フォルダを削除" : "ファイルを削除"}
           message={deleteTarget.isFolder
             ? `フォルダ「${deleteTarget.fileName}」を削除します。フォルダ内のフォルダとファイルもすべて削除されます。`
-            : deleteTarget.version > 1
-              ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
-              : `「${deleteTarget.fileName}」を削除します。`}
+            // Googleファイルの実体はDrive側にある。DevTicketの一覧から外すだけで、
+            // Drive上のファイルは消さない（他の人が編集中でも巻き添えにしないため）。
+            : isGoogleFile(deleteTarget)
+              ? `「${deleteTarget.fileName}」をファイルボックスから削除します。Googleドライブ上のファイルは残ります。`
+              : deleteTarget.version > 1
+                ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
+                : `「${deleteTarget.fileName}」を削除します。`}
           confirmLabel="削除する"
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={closeDelete}

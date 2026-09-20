@@ -311,6 +311,10 @@ export interface TicketAttachment {
 // ── ENHA2-035 ファイルボックス ──
 // 非公開バケット(project-files)に置くため公開URLは持たない。
 // 表示・DLのたびに api/project-files/signed-url で短命の署名付きURLを発行する。
+// Googleドライブ上のファイル(docs/google-drive-integration-design.md)は
+// storage に実体を持たない。filePath は ''、fileSize は 0、version は 1 固定で、
+// 実体の在り処は externalUrl / externalId が持つ。
+// フォルダ階層(parentId)は通常のファイルと全く同じように使える。
 export interface ProjectFile {
   id: string; projectId: string; folderPath: string;
   fileName: string; fileSize: number; fileType: string;
@@ -318,6 +322,10 @@ export interface ProjectFile {
   uploadedBy: string; createdAt: string;
   parentId?: string | null;
   isFolder?: boolean;
+  externalProvider?: string | null;  // 'google' | null
+  externalId?: string | null;        // Drive の fileId
+  externalUrl?: string | null;       // 別タブで開くURL(webViewLink)
+  linkShared?: boolean;              // リンクを知っている全員が編集できる状態か
 }
 export interface Sprint {
   id: string; projectId: string; name: string; goal: string;
