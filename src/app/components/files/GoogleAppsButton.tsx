@@ -7,6 +7,7 @@ import { escStack } from "@/app/lib/escStack";
 import { openPendingTab } from "@/app/lib/pendingTab";
 import { submitOnEnter } from "@/app/lib/submitKey";
 import { DialogShell } from "@/app/components/shared/DialogShell";
+import { BlockingSpinner } from "@/app/components/shared/BlockingSpinner";
 import {
   createGoogleFile, importGoogleFiles, startGoogleOAuth, myDriveWarningKey,
   type GoogleDriveProjectConfig,
@@ -65,6 +66,10 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState<GoogleAppKind | null>(null);
   const [importing, setImporting] = useState(false);
+  // Picker を閉じた後、サーバーで追加している間だけ true。
+  // importing は Picker を開いている間も true なので、大きなぐるぐるの表示には使えない
+  // （Picker の手前に幕が来て操作を塞いでしまう）。
+  const [savingImport, setSavingImport] = useState(false);
   // 個人ドライブの注意モーダル。作成・追加の「前」に挟む
   const [pending, setPending] = useState<Action | null>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
@@ -146,6 +151,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
       const picked = await pickGoogleFiles(fileIds);
       if (picked.length === 0) return; // Picker を閉じた
 
+      setSavingImport(true);
       const res = await importGoogleFiles(projectId, picked, parentId);
 
       if (res.imported.length > 0) {
@@ -166,6 +172,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     } finally {
       busyRef.current = false;
       setImporting(false);
+      setSavingImport(false);
     }
   }, [projectId, parentId, onCreated, toast, handleError]);
 
@@ -231,6 +238,10 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
+      {/* 作成中・追加の保存中は、画面の真ん中に大きなぐるぐるを出す */}
+      {(creating !== null || savingImport) && (
+        <BlockingSpinner label={creating !== null ? `${GOOGLE_APP_LABEL[creating]}を作成しています` : "ファイルを追加しています"} />
+      )}
       <button onClick={() => setOpen(v => !v)} disabled={busy}
         style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#EFF6FF", color: "#1D4ED8", border: "1px solid #BFDBFE", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: busy ? "wait" : "pointer" }}>
         {busy
