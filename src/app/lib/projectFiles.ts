@@ -55,6 +55,7 @@ export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
 //   「マクロを積んだブックが黙って壊れる」のは取り返しがつかないので、選ばせない。
 // レガシー形式(.xls/.doc/.ppt)は自前ビューアが描画できない（PREVIEWABLE_EXT 参照）ため、
 // 変換するとむしろ DevTicket 内で閲覧できるようになる。
+// ★ api/google/[action].ts の CONVERTIBLE と揃えること（そちらはサーバー側の判定に使う）。
 const GOOGLE_CONVERTIBLE: Record<string, GoogleAppKind> = {
   xlsx: "spreadsheet", xls: "spreadsheet", csv: "spreadsheet",
   docx: "document", doc: "document",
