@@ -221,6 +221,13 @@ URL だけで読めるようにするには `drive` / `drive.readonly` が必要
 そのため URL の経路でも、Picker の `DocsView.setFileIds()` でそのファイルだけを表示し、
 Select を1回押してもらって許可を得る。
 
+**このビューに `setEnableDrives(true)` を付けてはいけない（本番で実測）。**
+Google の仕様で、`setEnableDrives` は「それ以前の `setFileIds` / `setParent` の呼び出しを上書きする」。
+付けると貼ったファイルの指定が消え、共有ドライブの一覧が表示されてしまう。
+共有ドライブ上のファイル向けの `Feature.SUPPORT_DRIVES` は非推奨なので使わない。
+代わりに `Feature.NAV_HIDDEN` で左のナビゲーションを隠し、そのファイルだけを見せる。
+共有ドライブ上のファイルの URL でも1件表示されるかは、実機での確認が必要。
+
 **保存先フォルダの外にあるファイルは、保存先へコピーして追加する（`files.copy`）。**
 元の場所のままリンクすると、次の問題がまとめて出るため。
 

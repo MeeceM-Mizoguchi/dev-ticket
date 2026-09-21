@@ -138,11 +138,19 @@ export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
     if (fileIds && fileIds.length > 0) {
       // 貼られたURLのファイルだけを出す。種別で絞ると、形式違いのときに
       // 何も表示されず理由が分からなくなるので、ここでは絞らない（種別はサーバーで確かめる）
+      //
+      // ★ setEnableDrives(true) を付けてはいけない。Google の仕様で、
+      //   setEnableDrives は「それ以前の setFileIds / setParent の呼び出しを上書きする」。
+      //   付けると貼ったファイルの指定が消え、共有ドライブの一覧が出てしまう（本番で実測）。
+      //   共有ドライブ上のファイル向けの Feature.SUPPORT_DRIVES は非推奨なので使わない。
+      //
+      // NAV_HIDDEN で左のナビゲーション（他のドライブへ移動する欄）を隠し、
+      // 「貼ったファイルを確認して Select を押すだけ」の画面にする。
       builder
         .setTitle("追加するファイルを確認して「Select」を押してください")
+        .enableFeature(picker.Feature.NAV_HIDDEN)
         .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setFileIds(fileIds.join(","))
-          .setEnableDrives(true));
+          .setFileIds(fileIds.join(",")));
     } else {
       builder
         .setTitle("ファイルボックスに追加するファイルを選択")

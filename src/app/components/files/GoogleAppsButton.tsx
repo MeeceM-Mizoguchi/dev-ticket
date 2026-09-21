@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronDown, FileSpreadsheet, FileText, Presentation, Loader2, AlertTriangle, FolderInput, Link2,
 } from "lucide-react";
@@ -278,7 +279,12 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
         </div>
       )}
 
-      {urlOpen && (
+      {/* ★ ダイアログは document.body へポータルで描く。
+          このボタンはファイルボックス上部の固定ヘッダー（position: sticky; z-index: 200）の中にあり、
+          その中に描くと、ダイアログの z-index(300) はその塊の中でしか効かない。
+          アプリ上部のバー(Topbar, z-index 250)が塊より上に来て、グレーの幕の上に乗ってしまう。
+          Topbar は「モーダルは画面の一番外側に z-index 300 以上で描かれる」前提で作られている。 */}
+      {urlOpen && createPortal(
         <DialogShell title="URLを貼って追加" size="sm" minHeight={0} onClose={closeUrlDialog}
           footer={<>
             <button type="button" onClick={closeUrlDialog}
@@ -311,10 +317,12 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             「次へ」を押すとGoogleの画面にそのファイルが表示されるので、「Select」を押してください。
             DevTicketがそのファイルを扱うための確認です。
           </p>
-        </DialogShell>
+        </DialogShell>,
+        document.body,
       )}
 
-      {pending && (
+      {/* 上の URL ダイアログと同じ理由で document.body へ描く */}
+      {pending && createPortal(
         <DialogShell title="個人のGoogleドライブに保存されます" size="sm" minHeight={0}
           onClose={() => setPending(null)}
           footer={<>
@@ -340,7 +348,8 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
               style={{ width: 14, height: 14, accentColor: "#059669", cursor: "pointer" }} />
             次回以降表示しない
           </label>
-        </DialogShell>
+        </DialogShell>,
+        document.body,
       )}
     </div>
   );
