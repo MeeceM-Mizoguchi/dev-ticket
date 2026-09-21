@@ -26,6 +26,7 @@ import crypto from "crypto";
 //   POST /api/google/disconnect       {}                                  → { ok }
 //   POST /api/google/create           { projectId, kind, parentId? }      → { file, url }
 //   POST /api/google/convert-staged   { projectId, path, kind, fileName, ... } → { file, url }
+//   POST /api/google/import-files     { projectId, fileIds, parentId? }   → { imported, failed, shareFailed }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
@@ -546,10 +547,13 @@ export default async function handler(req: any, res: any) {
     // Picker で選んだ共有ドライブ／フォルダは、その時点でアプリからアクセスできるようになる
     // （drive.file の「ユーザーが Picker で選んだもの」に該当する）。
     // この一手間を踏まないと、drive.file では共有ドライブを親にファイルを作れない。
+    //
+    // 当初は共有ドライブの保存先フォルダ選択（管理者の設定作業）にしか使わなかったため
+    // 管理者に限っていたが、既存の Googleファイルの取り込み（import-files）で一般メンバーも使う。
+    // 渡るのは本人の drive.file トークン（本人が Picker で選んだものしか触れない）で、
+    // 約1時間で失効するため、ログインしていれば誰にでも発行してよい。
+    // （保存先フォルダの選択ボタンは、管理者だけが開ける外部連携画面にしか無い）
     if (action === "picker-token") {
-      if (profile.role !== "owner" && profile.role !== "admin") {
-        return res.status(403).json({ error: "管理者のみ実行できます" });
-      }
       const accessToken = await getAccessToken(sb, profile.id);
       return res.json({ accessToken });
     }
@@ -811,6 +815,145 @@ export default async function handler(req: any, res: any) {
         file: inserted, url: webViewLink, fileName,
         shared: share.granted, failed: share.failed,
       });
+    }
+
+    // ── 既存の Googleファイルを取り込む ──────────────────
+    // もともと Drive にあるスプシ・ドキュメント・スライドを、ファイルボックスへ追加する。
+    //
+    // ★ fileIds は Picker で選ばれたものに限る（URL貼り付けも、Picker で1回 Select させてから来る）。
+    //   drive.file スコープでは、Picker で選ばれていないファイルは files.get が 404 になる。
+    //   URL の ID だけで読めるようにするには drive / drive.readonly が必要で、Google の審査が要る。
+    //
+    // ★ プロジェクトの保存先フォルダの外にあるファイルは、保存先へコピーして取り込む。
+    //   元の場所のままリンクすると、
+    //     ・持ち主が元の人のまま（退職で開けなくなる）
+    //     ・取り込んだ人に共有権限が無いと、他のメンバーに配れない
+    //     ・sync-names は保存先フォルダの中しか見ないので「Driveで削除済み」と誤表示される
+    //     ・DevTicket で改名すると他人のファイルの名前を書き換えてしまう
+    //   という問題がまとめて出る。コピーは「アプリが作ったファイル」になるので、
+    //   新規作成したファイルと全く同じに扱える。
+    //   代わりに元のファイルは残り、変更履歴とコメントはコピーに引き継がれない。
+    //   保存先フォルダの中に既にあるものだけは、そのまま追加する。
+    if (action === "import-files") {
+      const projectId = String(body.projectId ?? "");
+      const fileIds: string[] = Array.isArray(body.fileIds)
+        ? [...new Set(body.fileIds.map((x: unknown) => String(x)).filter(Boolean))] as string[]
+        : [];
+      if (!projectId || fileIds.length === 0) {
+        return res.status(400).json({ error: "projectId と fileIds が必要です" });
+      }
+      if (fileIds.length > 50) return res.status(400).json({ error: "一度に追加できるのは50件までです" });
+      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id, members").eq("id", projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+
+      const cfg = await orgConfig(sb, project.organization_id ? String(project.organization_id) : null);
+      if (cfg.mode === "off") return res.status(403).json({ error: "この組織ではGoogleドライブ連携が有効になっていません" });
+      if (cfg.mode === "shared_drive" && !cfg.sharedFolderId) {
+        return res.status(400).json({ error: "保存先フォルダが設定されていません。外部連携の設定を確認してください" });
+      }
+
+      const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
+      if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
+
+      const accessToken = await getAccessToken(sb, profile.id);
+      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+      const people = await projectMemberEmails(sb, project as any);
+
+      // 名前の重複判定と、同じファイルの二重登録の判定に使う
+      const { data: existing } = await sb.from("project_files")
+        .select("file_name, external_id").eq("project_id", projectId);
+      const taken = new Set((existing ?? []).map(r => String(r.file_name)));
+      const already = new Set((existing ?? []).map(r => String(r.external_id ?? "")).filter(Boolean));
+
+      const GOOGLE_TYPES = new Set(Object.values(MIME));
+      const imported: { fileName: string; copied: boolean }[] = [];
+      const failed: { name: string; reason: string }[] = [];
+      const shareFailed: { name: string; reason: string }[] = [];
+
+      for (const sourceId of fileIds) {
+        let label = sourceId;
+        try {
+          let src: any;
+          try {
+            src = await drive(accessToken,
+              `/files/${encodeURIComponent(sourceId)}?supportsAllDrives=true`
+              + "&fields=id,name,mimeType,parents,webViewLink,trashed,capabilities(canCopy)");
+          } catch (e) {
+            // drive() の 403/404 の文言は「管理者設定」「共有ドライブへのアクセス権」向けなので、ここ用に言い直す
+            const status = e instanceof HttpError ? e.status : 0;
+            throw new Error(status === 404 || status === 403
+              ? "このファイルを開けません（削除されたか、あなたに閲覧権限がありません）"
+              : (e instanceof Error ? e.message : "ファイルを確認できませんでした"));
+          }
+          label = String(src?.name ?? sourceId);
+
+          if (src?.trashed) throw new Error("ゴミ箱に入っているファイルです");
+          if (!GOOGLE_TYPES.has(String(src?.mimeType))) {
+            throw new Error("スプレッドシート・ドキュメント・スライド以外は追加できません");
+          }
+
+          const inFolder = Array.isArray(src?.parents) && src.parents.includes(folderId);
+          let fileId = String(src.id);
+          let webViewLink = String(src.webViewLink ?? "");
+          const kind = Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? "spreadsheet";
+          const name = nextFreeName(sanitizeFileName(label) || DEFAULT_NAME[kind], taken);
+
+          if (inFolder) {
+            // 保存先フォルダの中にあるものはそのまま使う。二重登録だけ防ぐ
+            if (already.has(fileId)) throw new Error("既にファイルボックスに追加されています");
+          } else {
+            // 持ち主が「閲覧者のコピーを禁止」にしていると、コピーできない
+            if (src?.capabilities?.canCopy === false) {
+              throw new Error("持ち主がコピーを禁止しているため追加できません");
+            }
+            const copied = await drive(accessToken,
+              `/files/${encodeURIComponent(fileId)}/copy?supportsAllDrives=true&fields=id,name,webViewLink`, {
+                method: "POST",
+                body: { name, parents: [folderId] },
+              });
+            if (!copied?.id) throw new Error("コピーを作成できませんでした");
+            fileId = String(copied.id);
+            webViewLink = String(copied.webViewLink ?? "");
+          }
+
+          const share = await grantMembers(accessToken, fileId, people, String(profile.google_email ?? ""));
+          for (const x of share.failed) shareFailed.push({ name: `${name} / ${x.name}`, reason: x.reason });
+
+          const { error } = await sb.from("project_files").insert({
+            project_id: projectId,
+            folder_path: "",
+            file_name: name,
+            file_size: 0,
+            file_type: String(src.mimeType),
+            file_path: "",
+            version: 1,
+            uploaded_by: profile.name,
+            external_provider: "google",
+            external_id: fileId,
+            external_url: webViewLink,
+            ...(parentId ? { parent_id: parentId } : {}),
+          });
+          if (error) {
+            // こちらで作ったコピーだけ片付ける。そのまま追加しようとした元ファイルには触らない
+            if (!inFolder) {
+              await drive(accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, { method: "DELETE" })
+                .catch(() => undefined);
+            }
+            throw new Error(error.message);
+          }
+
+          taken.add(name);
+          already.add(fileId);
+          imported.push({ fileName: name, copied: !inFolder });
+        } catch (e) {
+          failed.push({ name: label, reason: e instanceof Error ? e.message : "追加できませんでした" });
+        }
+      }
+
+      return res.json({ imported, failed, shareFailed });
     }
 
     // ── Drive 側の変更を取り込む ──────────────────────────

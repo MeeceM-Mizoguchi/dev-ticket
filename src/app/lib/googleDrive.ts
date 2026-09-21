@@ -138,6 +138,26 @@ export async function uploadAsGoogleFile(
   }
 }
 
+export interface ImportResult {
+  /** 追加できたもの。copied=true は保存先フォルダの外にあったためコピーして追加したもの */
+  imported: { fileName: string; copied: boolean }[];
+  /** 追加できなかったもの（コピー禁止・形式違い・閲覧権限なし・二重登録など） */
+  failed: { name: string; reason: string }[];
+  /** 追加はできたが、権限を配れなかったメンバー */
+  shareFailed: { name: string; reason: string }[];
+}
+
+/**
+ * もともと Drive にある Googleファイルをファイルボックスへ取り込む。
+ * fileIds は pickGoogleFiles()（Picker）で選ばれたものに限る。
+ * 保存先フォルダの外にあるものは、サーバー側で保存先へコピーしてから追加される。
+ */
+export function importGoogleFiles(
+  projectId: string, fileIds: string[], parentId?: string | null,
+): Promise<ImportResult> {
+  return postApi<ImportResult>("import-files", { projectId, fileIds, parentId: parentId ?? null });
+}
+
 /** Drive 側のファイル名も合わせる。DevTicket 側の改名(renameProjectFile)の後に呼ぶ */
 export function renameGoogleFile(fileId: string, newName: string): Promise<{ ok: boolean }> {
   return postApi<{ ok: boolean }>("rename", { fileId, newName });

@@ -1,18 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, FileSpreadsheet, FileText, Presentation, Loader2, AlertTriangle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  ChevronDown, FileSpreadsheet, FileText, Presentation, Loader2, AlertTriangle, FolderInput, Link2,
+} from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
 import { openPendingTab } from "@/app/lib/pendingTab";
+import { submitOnEnter } from "@/app/lib/submitKey";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import {
-  createGoogleFile, startGoogleOAuth, myDriveWarningKey,
+  createGoogleFile, importGoogleFiles, startGoogleOAuth, myDriveWarningKey,
   type GoogleDriveProjectConfig,
 } from "@/app/lib/googleDrive";
+import { pickGoogleFiles, parseGoogleFileUrl } from "@/app/lib/googlePicker";
 import { GOOGLE_APP_LABEL, KIND_COLOR, type GoogleAppKind } from "@/app/lib/projectFiles";
 
 // ファイルボックスの「Googleアプリ」ボタン（docs/google-drive-integration-design.md 5.1）
 //
-// クリックで スプレッドシート / ドキュメント / スライド を展開し、
-// 選ぶとサーバーが Google 上にファイルを作って別タブで開く。
+// クリックで展開し、次のことができる。
+//   ・スプレッドシート / ドキュメント / スライドを新規作成して別タブで開く
+//   ・もともと Drive にある Googleファイルを追加する（Picker で選ぶ / URL を貼る）
 
 const ITEMS: { kind: GoogleAppKind; icon: typeof FileSpreadsheet; color: string }[] = [
   { kind: "spreadsheet", icon: FileSpreadsheet, color: KIND_COLOR.gsheet },
@@ -29,13 +34,28 @@ const GOOGLE_ICON = (
   </svg>
 );
 
+/** 注意モーダルを挟んでから実行する操作 */
+type Action =
+  | { type: "create"; kind: GoogleAppKind }
+  /** Picker で選んで追加する */
+  | { type: "pick" }
+  /** 貼られた URL のファイルを追加する（Picker で1回 Select してもらう） */
+  | { type: "url"; fileId: string };
+
+// トーストが画面を埋めないよう、先頭数件だけ出して残りは件数で伝える
+function summarize(items: string[], head = 3): string {
+  return items.length <= head
+    ? items.join("、")
+    : `${items.slice(0, head).join("、")} ほか ${items.length - head} 件`;
+}
+
 interface Props {
   projectId: string;
   /** 現在開いているフォルダ。DevTicket側の置き場所（Drive側の階層には影響しない） */
   parentId: string | null;
   drive: GoogleDriveProjectConfig;
   userId: string;
-  /** 作成後に一覧を引き直す */
+  /** 作成・追加の後に一覧を引き直す */
   onCreated: () => void;
   toast: (message: string, kind?: "success" | "error" | "info") => void;
 }
@@ -43,13 +63,18 @@ interface Props {
 export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated, toast }: Props) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState<GoogleAppKind | null>(null);
-  // 個人ドライブの注意モーダル。作成処理の「前」に挟む
-  const [pendingKind, setPendingKind] = useState<GoogleAppKind | null>(null);
+  const [importing, setImporting] = useState(false);
+  // 個人ドライブの注意モーダル。作成・追加の「前」に挟む
+  const [pending, setPending] = useState<Action | null>(null);
   const [dontShowAgain, setDontShowAgain] = useState(false);
+  // URL を貼って追加するダイアログ
+  const [urlOpen, setUrlOpen] = useState(false);
+  const [urlText, setUrlText] = useState("");
+  const [urlError, setUrlError] = useState<string | null>(null);
 
   // BUG-05 送信ガード。state はボタンの見た目用で、二重起動を止めるのはこの ref。
-  // 3種類のボタンが同じ処理を呼ぶので、先に1つのハンドラへ寄せてからガードを付ける。
-  const creatingRef = useRef(false);
+  // 作成も追加も同じ ref で守る（どちらかが走っている間は、もう片方も始めさせない）。
+  const busyRef = useRef(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // 展開中は Esc と外側クリックで閉じる
@@ -64,9 +89,20 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     return () => { escStack.pop(close); document.removeEventListener("mousedown", onDocClick); };
   }, [open]);
 
+  /** 428 = Googleアカウント未連携 / 連携切れ。エラーで終わらせず連携へ誘導する */
+  const handleError = useCallback(async (e: unknown, fallback: string) => {
+    const err = e as Error & { status?: number };
+    if (err?.status === 428) {
+      toast("Googleアカウントの連携が必要です。連携画面へ移動します");
+      try { await startGoogleOAuth(); } catch { toast("連携を開始できませんでした", "error"); }
+      return;
+    }
+    toast(err?.message || fallback, "error");
+  }, [toast]);
+
   const runCreate = useCallback(async (kind: GoogleAppKind) => {
-    if (creatingRef.current) return;
-    creatingRef.current = true;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setCreating(kind);
 
     // 空タブはクリックと同じ実行の中で確保する（理由は pendingTab.ts の冒頭コメント）
@@ -82,8 +118,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
       else toast("別タブを開けませんでした。一覧のファイルをクリックして開いてください", "error");
 
       if (res.failed.length > 0) {
-        const names = res.failed.slice(0, 3).map(f => f.name).join("、");
-        toast(`${res.failed.length} 人に共有できませんでした（${names}${res.failed.length > 3 ? " ほか" : ""}）。Googleアカウントをお持ちか確認してください`, "error");
+        toast(`${res.failed.length} 人に共有できませんでした（${summarize(res.failed.map(f => f.name))}）。Googleアカウントをお持ちか確認してください`, "error");
       } else {
         toast(`「${res.fileName}」を作成しました`);
       }
@@ -91,44 +126,107 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     } catch (e) {
       // 作れなかったのに空タブが残ると「何が起きたのか」が分からなくなるので閉じる
       try { tab?.close(); } catch { /* 既に閉じられている場合は無視 */ }
-      const err = e as Error & { status?: number };
-      // 428 = Googleアカウント未連携 / 連携切れ。エラーで終わらせず連携へ誘導する
-      if (err.status === 428) {
-        toast("Googleアカウントの連携が必要です。連携画面へ移動します");
-        try { await startGoogleOAuth(); } catch { toast("連携を開始できませんでした", "error"); }
-        return;
-      }
-      toast(err.message || "作成に失敗しました", "error");
+      await handleError(e, "作成に失敗しました");
     } finally {
-      creatingRef.current = false;
+      busyRef.current = false;
       setCreating(null);
     }
-  }, [projectId, parentId, onCreated, toast]);
+  }, [projectId, parentId, onCreated, toast, handleError]);
 
-  const handlePick = useCallback((kind: GoogleAppKind) => {
+  /**
+   * 既存の Googleファイルを追加する。
+   * @param fileIds URL から取り出したID。指定するとそのファイルだけを Picker に出す
+   */
+  const runImport = useCallback(async (fileIds?: string[]) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setImporting(true);
+    try {
+      const picked = await pickGoogleFiles(fileIds);
+      if (picked.length === 0) return; // Picker を閉じた
+
+      const res = await importGoogleFiles(projectId, picked, parentId);
+
+      if (res.imported.length > 0) {
+        const copied = res.imported.filter(i => i.copied).length;
+        toast(copied > 0
+          ? `${res.imported.length} 件を追加しました。うち ${copied} 件は保存先の外にあったためコピーして追加しました。元のファイルは残っているので、今後は DevTicket 側のファイルを編集してください`
+          : `${res.imported.length} 件を追加しました`);
+        onCreated();
+      }
+      if (res.failed.length > 0) {
+        toast(`${res.failed.length} 件は追加できませんでした：${summarize(res.failed.map(f => `「${f.name}」（${f.reason}）`))}`, "error");
+      }
+      if (res.shareFailed.length > 0) {
+        toast(`共有できなかった相手がいます：${summarize(res.shareFailed.map(f => f.name))}。Googleアカウントをお持ちか確認してください`, "error");
+      }
+    } catch (e) {
+      await handleError(e, "追加に失敗しました");
+    } finally {
+      busyRef.current = false;
+      setImporting(false);
+    }
+  }, [projectId, parentId, onCreated, toast, handleError]);
+
+  const runAction = useCallback((a: Action) => {
+    if (a.type === "create") void runCreate(a.kind);
+    else if (a.type === "pick") void runImport();
+    else void runImport([a.fileId]);
+  }, [runCreate, runImport]);
+
+  /** 個人ドライブ運用のときは、所有者が個人になることを先に知らせてから実行する */
+  const request = useCallback((a: Action) => {
     setOpen(false);
-    // 個人ドライブ運用のときは、所有者が個人になることを作成前に知らせる
     const dismissed = (() => {
       try { return localStorage.getItem(myDriveWarningKey(userId)) === "1"; } catch { return false; }
     })();
     if (drive.mode === "my_drive" && !dismissed) {
       setDontShowAgain(false);
-      setPendingKind(kind);
+      setPending(a);
       return;
     }
-    void runCreate(kind);
-  }, [drive.mode, userId, runCreate]);
+    runAction(a);
+  }, [drive.mode, userId, runAction]);
 
   const confirmWarning = useCallback(() => {
-    const kind = pendingKind;
+    const a = pending;
     if (dontShowAgain) {
-      try { localStorage.setItem(myDriveWarningKey(userId), "1"); } catch { /* 保存できなくても作成は進める */ }
+      try { localStorage.setItem(myDriveWarningKey(userId), "1"); } catch { /* 保存できなくても続行する */ }
     }
-    setPendingKind(null);
-    if (kind) void runCreate(kind);
-  }, [pendingKind, dontShowAgain, userId, runCreate]);
+    setPending(null);
+    if (a) runAction(a);
+  }, [pending, dontShowAgain, userId, runAction]);
 
-  const busy = creating !== null;
+  const openUrlDialog = useCallback(() => {
+    setOpen(false);
+    setUrlText("");
+    setUrlError(null);
+    setUrlOpen(true);
+  }, []);
+
+  const closeUrlDialog = useCallback(() => setUrlOpen(false), []);
+
+  const submitUrl = useCallback(() => {
+    const id = parseGoogleFileUrl(urlText);
+    if (!id) {
+      setUrlError("スプレッドシート・ドキュメント・スライドのURLを貼り付けてください（例: https://docs.google.com/spreadsheets/d/…）");
+      return;
+    }
+    setUrlOpen(false);
+    request({ type: "url", fileId: id });
+  }, [urlText, request]);
+
+  const busy = creating !== null || importing;
+
+  const menuItemStyle = {
+    display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 10px",
+    background: "none", border: "none", borderRadius: 7, cursor: "pointer",
+    fontSize: 12.5, fontWeight: 600, color: "#1A1714", textAlign: "left" as const,
+  };
+  const hover = {
+    onMouseEnter: (e: ReactMouseEvent) => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; },
+    onMouseLeave: (e: ReactMouseEvent) => { (e.currentTarget as HTMLElement).style.background = "none"; },
+  };
 
   return (
     <div ref={wrapRef} style={{ position: "relative" }}>
@@ -143,44 +241,97 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
 
       {open && (
         <div role="menu"
-          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 400, minWidth: 200, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,0.12)", padding: 5, overflow: "hidden" }}>
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 400, minWidth: 230, background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,0.12)", padding: 5, overflow: "hidden" }}>
+          <p style={{ margin: "4px 8px 4px", fontSize: 10, fontWeight: 700, color: "#B0A9A4", letterSpacing: "0.06em" }}>新規作成</p>
           {ITEMS.map(({ kind, icon: Icon, color }) => (
-            <button key={kind} role="menuitem" onClick={() => handlePick(kind)}
-              style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 10px", background: "none", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: 600, color: "#1A1714", textAlign: "left" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "none"; }}>
+            <button key={kind} role="menuitem" onClick={() => request({ type: "create", kind })}
+              style={menuItemStyle} {...hover}>
               <span style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: `${color}14` }}>
                 <Icon style={{ width: 13, height: 13, color }} />
               </span>
               {GOOGLE_APP_LABEL[kind]}
             </button>
           ))}
-          <p style={{ margin: "4px 8px 4px", fontSize: 10.5, color: "#B0A9A4", lineHeight: 1.5 }}>
+
+          <div role="separator" style={{ height: 1, background: "rgba(26,23,20,0.07)", margin: "5px 4px" }} />
+
+          <p style={{ margin: "4px 8px 4px", fontSize: 10, fontWeight: 700, color: "#B0A9A4", letterSpacing: "0.06em" }}>既存のファイルを追加</p>
+          <button role="menuitem" onClick={() => request({ type: "pick" })} style={menuItemStyle} {...hover}>
+            <span style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#EFF6FF" }}>
+              <FolderInput style={{ width: 13, height: 13, color: "#2563EB" }} />
+            </span>
+            Googleドライブから選ぶ
+          </button>
+          <button role="menuitem" onClick={openUrlDialog} style={menuItemStyle} {...hover}>
+            <span style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#EFF6FF" }}>
+              <Link2 style={{ width: 13, height: 13, color: "#2563EB" }} />
+            </span>
+            URLを貼って追加
+          </button>
+
+          <p style={{ margin: "6px 8px 4px", fontSize: 10.5, color: "#B0A9A4", lineHeight: 1.6 }}>
             {drive.mode === "shared_drive"
-              ? `${drive.folderName ?? "共有ドライブ"} の中に作成されます`
-              : "あなたのGoogleドライブに作成されます"}
+              ? `${drive.folderName ?? "共有ドライブ"} の中に保存されます。`
+              : "あなたのGoogleドライブに保存されます。"}
+            <br />保存先の外にあるファイルは、保存先へコピーして追加します。
           </p>
         </div>
       )}
 
-      {pendingKind && (
-        <DialogShell title="個人のGoogleドライブに保存されます" size="sm" minHeight={0}
-          onClose={() => setPendingKind(null)}
+      {urlOpen && (
+        <DialogShell title="URLを貼って追加" size="sm" minHeight={0} onClose={closeUrlDialog}
           footer={<>
-            <button type="button" onClick={() => setPendingKind(null)}
+            <button type="button" onClick={closeUrlDialog}
+              style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
+              キャンセル
+            </button>
+            <button type="button" onClick={submitUrl} disabled={!urlText.trim()}
+              style={{ padding: "8px 16px", background: urlText.trim() ? "#059669" : "#9CA3AF", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: urlText.trim() ? "pointer" : "not-allowed" }}>
+              次へ
+            </button>
+          </>}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>
+            スプレッドシート・ドキュメント・スライドのURL
+          </label>
+          <input
+            type="url"
+            value={urlText}
+            onChange={e => { setUrlText(e.target.value); setUrlError(null); }}
+            placeholder="https://docs.google.com/spreadsheets/d/…"
+            autoFocus
+            onKeyDown={submitOnEnter(submitUrl, { enabled: !!urlText.trim(), onCancel: closeUrlDialog })}
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", fontSize: 13, border: `1px solid ${urlError ? "rgba(220,38,38,0.5)" : "rgba(26,23,20,0.15)"}`, borderRadius: 8, outline: "none", fontFamily: "inherit" }}
+          />
+          {urlError && (
+            <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "#DC2626", lineHeight: 1.6 }}>{urlError}</p>
+          )}
+          {/* URL だけではアプリがファイルを読めない（drive.file の仕様）ので、
+              次の画面で Select を押してもらう理由を先に伝えておく */}
+          <p style={{ margin: "8px 0 0", fontSize: 11, color: "#A09790", lineHeight: 1.7 }}>
+            「次へ」を押すとGoogleの画面にそのファイルが表示されるので、「Select」を押してください。
+            DevTicketがそのファイルを扱うための確認です。
+          </p>
+        </DialogShell>
+      )}
+
+      {pending && (
+        <DialogShell title="個人のGoogleドライブに保存されます" size="sm" minHeight={0}
+          onClose={() => setPending(null)}
+          footer={<>
+            <button type="button" onClick={() => setPending(null)}
               style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
               キャンセル
             </button>
             <button type="button" onClick={confirmWarning}
               style={{ padding: "8px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer" }}>
-              作成する
+              {pending.type === "create" ? "作成する" : "続ける"}
             </button>
           </>}>
           <div style={{ display: "flex", gap: 11, padding: "2px 0" }}>
             <AlertTriangle style={{ width: 18, height: 18, color: "#D97706", flexShrink: 0, marginTop: 1 }} />
             <p style={{ margin: 0, fontSize: 12.5, color: "#1A1714", lineHeight: 1.85 }}>
               このプロジェクトの組織には Google Workspace が登録されていません。<br />
-              作成したファイルは<strong>あなた個人のGoogleドライブ</strong>に保存され、所有者もあなたになります。<br />
+              作成・追加したファイルは<strong>あなた個人のGoogleドライブ</strong>に保存され、所有者もあなたになります。<br />
               そのGoogleアカウントが削除・無効化されると、<strong>ファイルボックスからも開けなくなります</strong>。ご注意ください。
             </p>
           </div>
