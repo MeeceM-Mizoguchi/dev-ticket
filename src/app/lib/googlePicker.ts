@@ -96,3 +96,91 @@ export async function pickSharedFolder(): Promise<PickedFolder | null> {
     builder.build().setVisible(true);
   });
 }
+
+// 取り込める Google 形式（スプレッドシート / ドキュメント / スライド）
+const IMPORTABLE_MIME = [
+  "application/vnd.google-apps.spreadsheet",
+  "application/vnd.google-apps.document",
+  "application/vnd.google-apps.presentation",
+].join(",");
+
+/**
+ * 既存の Googleファイルを選ばせる（ファイルボックスへの取り込み用）。
+ *
+ * ★ Picker で選ぶこと自体が、drive.file でそのファイルを扱うための許可になる。
+ *   選ばれていないファイルは、IDが分かっていてもサーバーから 404 になる。
+ *
+ * @param fileIds 指定すると、そのファイルだけを表示する（URL を貼って追加する経路）。
+ *   URL だけではアプリがファイルに触れないので、貼られたファイルを Picker に出して
+ *   1回 Select してもらい、許可を得る。
+ * @returns 選ばれたファイルのID。キャンセルされたら空配列
+ */
+export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
+  const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+  if (!apiKey) throw new Error("VITE_GOOGLE_API_KEY が設定されていません");
+
+  const [{ accessToken }] = await Promise.all([fetchPickerToken(), loadPickerScript()]);
+  const picker = window.google?.picker;
+  if (!picker) throw new Error("Google Picker を利用できません");
+
+  return new Promise<string[]>(resolve => {
+    const builder = new picker.PickerBuilder()
+      .setOAuthToken(accessToken)
+      .setDeveloperKey(apiKey)
+      .setCallback((data: { action: string; docs?: { id: string }[] }) => {
+        if (data.action === picker.Action.PICKED) {
+          resolve((data.docs ?? []).map(d => d.id).filter(Boolean));
+        } else if (data.action === picker.Action.CANCEL) {
+          resolve([]);
+        }
+      });
+
+    if (fileIds && fileIds.length > 0) {
+      // 貼られたURLのファイルだけを出す。種別で絞ると、形式違いのときに
+      // 何も表示されず理由が分からなくなるので、ここでは絞らない（種別はサーバーで確かめる）
+      builder
+        .setTitle("追加するファイルを確認して「Select」を押してください")
+        .addView(new picker.DocsView(picker.ViewId.DOCS)
+          .setFileIds(fileIds.join(","))
+          .setEnableDrives(true));
+    } else {
+      builder
+        .setTitle("ファイルボックスに追加するファイルを選択")
+        .enableFeature(picker.Feature.MULTISELECT_ENABLED)
+        // マイドライブ・共有アイテム
+        .addView(new picker.DocsView(picker.ViewId.DOCS)
+          .setMimeTypes(IMPORTABLE_MIME)
+          .setIncludeFolders(true))
+        // 共有ドライブ。setEnableDrives を付けたビューは共有ドライブを出すものなので、
+        // マイドライブ用のビューとは分けて、タブを2つ並べる
+        .addView(new picker.DocsView(picker.ViewId.DOCS)
+          .setMimeTypes(IMPORTABLE_MIME)
+          .setIncludeFolders(true)
+          .setEnableDrives(true));
+    }
+
+    const appId = import.meta.env.VITE_GOOGLE_APP_ID;
+    if (appId) builder.setAppId(appId);
+
+    builder.build().setVisible(true);
+  });
+}
+
+/**
+ * Google のスプレッドシート・ドキュメント・スライドの URL からファイルIDを取り出す。
+ * 対応していない URL なら null（呼び出し側で「このURLは追加できません」と伝える）。
+ */
+export function parseGoogleFileUrl(raw: string): string | null {
+  let url: URL;
+  try { url = new URL(raw.trim()); } catch { return null; }
+  if (!/(^|\.)google\.com$/.test(url.hostname)) return null;
+
+  // docs.google.com/spreadsheets/d/<id>/edit などの形
+  const byPath = url.pathname.match(/\/(?:spreadsheets|document|presentation|file)\/d\/([-\w]{20,})/);
+  if (byPath) return byPath[1];
+
+  // drive.google.com/open?id=<id> の形
+  const byQuery = url.searchParams.get("id");
+  if (byQuery && /^[-\w]{20,}$/.test(byQuery)) return byQuery;
+  return null;
+}
