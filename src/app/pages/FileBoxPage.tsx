@@ -284,8 +284,21 @@ export function FileBoxPage() {
         f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
       : null;
     if (newest && isGoogleFile(newest)) {
-      // Googleファイルはビューアを持たない。共有リンクで来たらそのままDriveへ送る
-      if (!openGoogleFile(newest)) toast("このファイルのURLが見つかりません", "error");
+      // Googleファイルはビューアを持たない。共有リンクで来たら、そのタブのまま Google へ送る。
+      //
+      // ★ window.open（別タブ）を使ってはいけない。ここはページ読み込み後の処理で、
+      //   クリック直後ではないため、ポップアップブロックで黙って弾かれる
+      //   （noopener 付きだと成否に関係なく null が返るので、失敗にも気づけない）。
+      //   結果、一覧だけが表示されて「リンクが壊れている」ように見えていた。
+      //   同じタブの移動はブロックされないので、そちらで送る。
+      //
+      // ★ href ではなく replace で移動する。href だと履歴に ?file= 付きの一覧が残り、
+      //   「戻る」でここへ戻る → また Google へ送られる、を繰り返して抜けられなくなる。
+      if (newest.externalUrl) {
+        window.location.replace(newest.externalUrl);
+        return;
+      }
+      toast("このファイルのURLが見つかりません", "error");
     } else if (newest) {
       setPreviewTarget(newest);
       setFocusComment({

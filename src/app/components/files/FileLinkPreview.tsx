@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, FileWarning } from "lucide-react";
+import { X, FileWarning, ExternalLink, File as FileIcon } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProjectFile } from "@/app/lib/mappers";
 import type { ProjectFile } from "@/app/types";
-import { downloadProjectFile, openProjectFileInApp } from "@/app/lib/projectFiles";
+import {
+  downloadProjectFile, openProjectFileInApp,
+  isGoogleFile, getFileKind, GOOGLE_KIND_LABEL, KIND_COLOR,
+} from "@/app/lib/projectFiles";
+import { openGoogleFile } from "@/app/lib/googleDrive";
 import { FileViewerModal } from "./FileViewerModal";
+import { FileKindIcon } from "./FileKindIcon";
 
 // ENHA2-035 %ファイルメンションのプレビュー
 // チケット/バックログ/Wiki/議事録の本文からその場で開く。
@@ -24,9 +29,15 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
       // メンションが持つのは挿入時点の行ID。保存のたびに版が増えるため、
       // 同じ(プロジェクト, ファイル名)の最新版に解決してから開く。
       const { data: base } = await supabase!.from("project_files")
-        .select("project_id, file_name").eq("id", fileId).maybeSingle();
+        .select("*").eq("id", fileId).maybeSingle();
       if (!base) {
         if (!cancelled) setError("ファイルが見つかりません。削除された可能性があります。");
+        return;
+      }
+      // Googleファイルに版は無く、名前は Google 側で自由に変わる。
+      // 名前で引き直すと別のファイルを掴みうるので、メンションの行そのものを使う。
+      if (base.external_provider === "google") {
+        if (!cancelled) setFile(mapProjectFile(base));
         return;
       }
       const { data: rows } = await supabase!.from("project_files").select("*")
@@ -76,6 +87,50 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
   }
 
   if (!file) return null;
+
+  // Googleファイルはビューアで描画できない（中身は Drive にあり、storage に実体が無い）。
+  // ビューアに渡すと空の画面になるので、Google で開くためのカードを出す。
+  //
+  // ★ ここで自動的に window.open してはいけない。ファイル情報を取りに行く await を
+  //   挟んでいるため、メンションをクリックした操作の有効期間が切れており、
+  //   ポップアップブロックで弾かれる。ボタンを押してもらい、その操作で開く。
+  // この画面は「開いても直前の画面から離れない」ためのものなので、同じタブで移動もしない。
+  if (isGoogleFile(file)) {
+    const kind = getFileKind(file.fileName, file.fileType);
+    return createPortal(
+      <div onClick={onClose}
+        style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <div onClick={e => e.stopPropagation()} role="dialog" aria-label={file.fileName}
+          style={{ background: "#fff", borderRadius: 14, padding: 24, display: "flex", flexDirection: "column", alignItems: "center", gap: 12, width: "100%", maxWidth: 380 }}>
+          <FileKindIcon kind={kind} fallback={FileIcon} fallbackColor={KIND_COLOR[kind]} />
+          <div style={{ textAlign: "center", minWidth: 0, width: "100%" }}>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={file.fileName}>
+              {file.fileName}
+            </p>
+            <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#A09790" }}>
+              {GOOGLE_KIND_LABEL[kind] ?? "Googleドライブ"}のファイルです
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            <button onClick={onClose}
+              style={{ padding: "8px 16px", background: "#F4F5F6", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#6B6458", display: "flex", alignItems: "center", gap: 5 }}>
+              <X style={{ width: 12, height: 12 }} />閉じる
+            </button>
+            <button autoFocus
+              onClick={() => {
+                if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
+                onClose();
+              }}
+              style={{ padding: "8px 16px", background: "#059669", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", gap: 6 }}>
+              <ExternalLink style={{ width: 12, height: 12 }} />Googleで開く
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    );
+  }
 
   return <FileViewerModal file={file} onClose={onClose}
     onDownload={handleDownload} onOpenInApp={handleOpenInApp} />;
