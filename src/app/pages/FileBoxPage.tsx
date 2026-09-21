@@ -28,6 +28,7 @@ import {
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
   downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
   isGoogleFile, GOOGLE_KIND_LABEL, googleConvertKind, googleExportUrl,
+  isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind,
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
@@ -154,6 +155,8 @@ export function FileBoxPage() {
   // Office文書を入れられたときの「そのまま / Google形式に変換」の確認待ち
   const [convertPrompt, setConvertPrompt] = useState<
     { entries: UploadEntry[]; targetFolderId?: string | null; names: string[] } | null>(null);
+  // 変換すると元のファイルが DevTicket に残らないため、既定は「そのまま」
+  const [convertChoice, setConvertChoice] = useState<"keep" | "convert">("keep");
 
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
@@ -448,6 +451,8 @@ export function FileBoxPage() {
     const isFolderUpload = entries.some(e => e.dirPath.length > 0);
     const convertible = entries.filter(e => googleConvertKind(e.file.name));
     if (googleDrive && !isFolderUpload && convertible.length > 0) {
+      // 前回「変換」を選んでいても、毎回「そのまま」から選び直させる
+      setConvertChoice("keep");
       setConvertPrompt({ entries, targetFolderId, names: convertible.map(e => e.file.name) });
       return;
     }
@@ -1022,10 +1027,40 @@ export function FileBoxPage() {
         // 変換すると元の .xlsx 等は DevTicket に残らない。既定は「そのまま」。
         const many = convertPrompt.names.length > 1;
         const close = () => setConvertPrompt(null);
-        const go = (convert: boolean) => {
+        const go = () => {
+          const convert = convertChoice === "convert";
           setConvertPrompt(null);
           uploadEntries(convertPrompt.entries, convertPrompt.targetFolderId, convert);
         };
+
+        // 入れられたものが1種類なら、その種別に合わせて文言を具体的にする
+        // （Excel→スプレッドシート / Word→ドキュメント / PowerPoint→スライド）。
+        // 複数種が混ざっているときだけ「Google形式」とまとめる。
+        const kinds = convertPrompt.names
+          .map(n => googleConvertKind(n)).filter((k): k is GoogleAppKind => k !== null);
+        const only: GoogleAppKind | null =
+          kinds.length > 0 && kinds.every(k => k === kinds[0]) ? kinds[0] : null;
+        const googleLabel = only ? `Google${GOOGLE_APP_LABEL[only]}` : "Google形式";
+        const officeLabel = only ? OFFICE_APP_LABEL[only] : "Excel / Word / PowerPoint";
+        // 画面内エディタで開けるのは xlsx / xlsm / docx だけ。開けないものに案内しない
+        const inAppEditable = convertPrompt.names.every(n => isEditableInBrowser(n));
+
+        const OPTIONS = [
+          {
+            value: "keep" as const,
+            label: "そのまま保存（推奨）",
+            desc: `書式もマクロもそのまま保ちます。${inAppEditable ? "画面内のエディタと" : ""}デスクトップの ${officeLabel} で編集できます。`,
+            accent: "#059669", bg: "#ECFDF5", border: "#A7F3D0", head: "#065F46", body: "#047857",
+          },
+          {
+            value: "convert" as const,
+            label: `${googleLabel}に変換して保存`,
+            desc: `複数人で同時に編集できます。ファイルは1つだけで、元の ${officeLabel} ファイルは残りません。`,
+            warn: "マクロ・一部の書式・ピボットテーブルなどは失われることがあります。",
+            accent: "#2563EB", bg: "#EFF6FF", border: "#BFDBFE", head: "#1E40AF", body: "#1D4ED8",
+          },
+        ];
+
         return (
           <DialogShell title="保存形式を選択" onClose={close} size="md" minHeight={0}
             footer={<>
@@ -1033,37 +1068,40 @@ export function FileBoxPage() {
                 style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
                 キャンセル
               </button>
-              <button type="button" onClick={() => go(true)}
-                style={{ padding: "8px 16px", background: "#EFF6FF", color: "#1D4ED8", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "1px solid #BFDBFE", cursor: "pointer" }}>
-                Google形式に変換して保存
-              </button>
-              <button type="button" onClick={() => go(false)}
+              <button type="button" onClick={go}
                 style={{ padding: "8px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer" }}>
-                そのまま保存
+                この形式で保存
               </button>
             </>}>
             <p style={{ margin: 0, fontSize: 12.5, color: "#1A1714", lineHeight: 1.85 }}>
               {many
-                ? `${convertPrompt.names.length} 件のOffice文書が含まれています（${summarize(convertPrompt.names)}）。どちらで保存しますか？`
+                ? `${convertPrompt.names.length} 件の ${officeLabel} ファイルが含まれています（${summarize(convertPrompt.names)}）。どちらで保存しますか？`
                 : `「${convertPrompt.names[0]}」をどちらで保存しますか？`}
             </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
-              <div style={{ padding: "12px 14px", borderRadius: 10, background: "#ECFDF5", border: "1px solid #A7F3D0" }}>
-                <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: "#065F46" }}>そのまま保存（推奨）</p>
-                <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#047857", lineHeight: 1.75 }}>
-                  書式もマクロもそのまま保ちます。画面内のエディタとデスクトップのOfficeで編集できます。
-                </p>
-              </div>
-              <div style={{ padding: "12px 14px", borderRadius: 10, background: "#EFF6FF", border: "1px solid #BFDBFE" }}>
-                <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: "#1E40AF" }}>Google形式に変換して保存</p>
-                <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#1D4ED8", lineHeight: 1.75 }}>
-                  複数人で同時に編集できます。ファイルは1つだけで、元のファイルは残りません。<br />
-                  <strong>マクロ・一部の書式・ピボットテーブルなどは失われることがあります。</strong>
-                </p>
-              </div>
+            <div role="radiogroup" aria-label="保存形式" style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+              {OPTIONS.map(o => {
+                const on = convertChoice === o.value;
+                return (
+                  <label key={o.value}
+                    style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", borderRadius: 10, cursor: "pointer", transition: "all 0.15s",
+                      background: on ? o.bg : "#FAFAF8",
+                      border: `1px solid ${on ? o.border : "rgba(26,23,20,0.08)"}` }}>
+                    <input type="radio" name="upload-format" value={o.value} checked={on}
+                      onChange={() => setConvertChoice(o.value)}
+                      style={{ marginTop: 2, accentColor: o.accent, cursor: "pointer", flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: on ? o.head : "#1A1714" }}>{o.label}</p>
+                      <p style={{ margin: "4px 0 0", fontSize: 11.5, color: on ? o.body : "#A09790", lineHeight: 1.75 }}>
+                        {o.desc}
+                        {o.warn && <><br /><strong>{o.warn}</strong></>}
+                      </p>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
             <p style={{ margin: "2px 0 0", fontSize: 11, color: "#B0A9A4", lineHeight: 1.7 }}>
-              変換後も、ダウンロードボタンから Excel / Word / PowerPoint 形式で書き出せます。
+              変換後も、ダウンロードボタンから {officeLabel} 形式で書き出せます。
               マクロ付き（.xlsm）は変換の対象外で、常にそのまま保存されます。
             </p>
           </DialogShell>
