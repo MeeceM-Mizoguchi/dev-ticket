@@ -149,6 +149,23 @@ export function setGoogleLinkShare(fileId: string, enabled: boolean): Promise<{ 
   return postApi<{ linkShared: boolean }>("share-link", { fileId, enabled });
 }
 
+export interface SyncNamesResult {
+  /** Drive 側の名前に合わせて変更した行 */
+  renamed: { before: string; after: string }[];
+  /** Drive 上に見つからなかった project_files の id（行は消さず、画面に「削除済み」と出す） */
+  missing: string[];
+  /** 連携が無効・Google未連携などで同期しなかった */
+  skipped: boolean;
+}
+
+/**
+ * Drive 側の変更（名前の変更・削除）を DevTicket へ取り込む。
+ * ファイルボックスを開いたとき・タブに戻ってきたときに呼ぶ。
+ */
+export function syncGoogleNames(projectId: string): Promise<SyncNamesResult> {
+  return postApi<SyncNamesResult>("sync-names", { projectId });
+}
+
 /** プロジェクトの全Googleファイルへ、現在のメンバー全員の権限を配り直す */
 export function syncGooglePermissions(projectId: string): Promise<{ granted: number; failed: { name: string; reason: string }[] }> {
   return postApi<{ granted: number; failed: { name: string; reason: string }[] }>(

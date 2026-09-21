@@ -29,6 +29,7 @@ import crypto from "crypto";
 //   POST /api/google/register-upload  { projectId, kind, fileName, ... }  → { file, url }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
+//   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
 //   POST /api/google/resolve-folder   { folderId }                        → { id, name, driveId }
 //   POST /api/google/test-connection  { folderId }                        → { ok } / 400
@@ -832,6 +833,98 @@ export default async function handler(req: any, res: any) {
         file: inserted, url: String(info.webViewLink ?? ""), fileName,
         shared: share.granted, failed: share.failed,
       });
+    }
+
+    // ── Drive 側の変更を取り込む ──────────────────────────
+    // Google の画面で名前を変えたり、ファイルを消したりしても DevTicket は気づけない。
+    // ファイルボックスを開いた・タブに戻ったタイミングでここを呼び、現在の姿に合わせる。
+    //
+    // プロジェクトのGoogleファイルは Drive 上の同じフォルダに集まるので、
+    // files.list 1回で全件の「今の名前」と「まだ在るか」がまとめて分かる。
+    // 取りに行くのは名前と存在だけ。フォルダ移動は追わない
+    // （Drive側の階層と DevTicket のフォルダは別物なので、追っても意味が薄い）。
+    if (action === "sync-names") {
+      const projectId = String(body.projectId ?? "");
+      if (!projectId) return res.status(400).json({ error: "projectId が必要です" });
+      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      // BUG-01 同じ順序で処理する（途中で止まっても結果が再現する）
+      const { data: rows } = await sb.from("project_files")
+        .select("id, file_name, external_id")
+        .eq("project_id", projectId).eq("external_provider", "google")
+        .order("created_at", { ascending: true }).order("id", { ascending: true });
+      const targets = (rows ?? []).filter(r => !!r.external_id);
+      if (targets.length === 0) return res.json({ renamed: [], missing: [], skipped: false });
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id").eq("id", projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+
+      const cfg = await orgConfig(sb, project.organization_id ? String(project.organization_id) : null);
+      if (cfg.mode === "off") return res.json({ renamed: [], missing: [], skipped: true });
+
+      // Googleを連携していない人が見ているときは何もしない。
+      // 連携済みの誰かが開いたときに揃うので、ここで止めても実害は無い。
+      const { data: token } = await sb.from("google_drive_tokens")
+        .select("user_id").eq("user_id", profile.id).maybeSingle();
+      if (!token) return res.json({ renamed: [], missing: [], skipped: true });
+
+      const accessToken = await getAccessToken(sb, profile.id);
+      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+
+      // フォルダ内を全件引く。ページングは100件ごと（1プロジェクトでこれを超えることは稀だが、
+      // 打ち切ると「消された」と誤判定するので必ず最後まで辿る）
+      const live = new Map<string, string>(); // fileId → name
+      let pageToken = "";
+      for (let page = 0; page < 20; page++) {
+        const params = new URLSearchParams({
+          q: `'${q(folderId)}' in parents and trashed=false`,
+          fields: "nextPageToken,files(id,name)",
+          pageSize: "100",
+          supportsAllDrives: "true",
+          includeItemsFromAllDrives: "true",
+        });
+        if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
+          params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+        }
+        if (pageToken) params.set("pageToken", pageToken);
+        const listed = await drive(accessToken, `/files?${params}`);
+        for (const f of listed?.files ?? []) live.set(String(f.id), String(f.name));
+        pageToken = String(listed?.nextPageToken ?? "");
+        if (!pageToken) break;
+      }
+
+      // 名前の重複を避けるため、Googleファイル以外も含めた現在の名前を押さえておく
+      const { data: allRows } = await sb.from("project_files")
+        .select("id, file_name").eq("project_id", projectId);
+      const taken = new Set((allRows ?? []).map(r => String(r.file_name)));
+
+      const renamed: { before: string; after: string }[] = [];
+      // Drive 上に見つからなかった行。★ DevTicket の行は消さない。
+      //   Drive 側の誤操作や、権限の都合で一時的に見えないだけの可能性があり、
+      //   こちらまで消すと巻き添えで復元できなくなる。画面に「削除済み」と出すだけにする。
+      const missing: string[] = [];
+
+      for (const row of targets) {
+        const current = live.get(String(row.external_id));
+        if (current === undefined) { missing.push(String(row.id)); continue; }
+        if (current === row.file_name) continue;
+
+        // 自分の今の名前は解放してから、空いている名前を探す。
+        // ★ file_name は DevTicket 内部の引き当てキー。重複したまま取り込むと、
+        //   検索や %サジェストで別のファイルと見分けがつかなくなる。
+        //   Googleと表示名がズレるのは避けられないが、安全側に倒す。
+        taken.delete(String(row.file_name));
+        const next = nextFreeName(sanitizeFileName(current) || String(row.file_name), taken);
+        taken.add(next);
+
+        const { error } = await sb.from("project_files")
+          .update({ file_name: next }).eq("id", row.id);
+        if (error) { console.error("[google] sync rename failed:", error.message); continue; }
+        renamed.push({ before: String(row.file_name), after: next });
+      }
+
+      return res.json({ renamed, missing, skipped: false });
     }
 
     // ── 改名（Drive側） ──────────────────────────────────
