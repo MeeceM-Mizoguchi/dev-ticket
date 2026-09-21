@@ -1,12 +1,43 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useLocation } from "react-router";
 import { useToast } from "@/app/contexts/ToastContext";
-import { APP_BUILD_TIME, APP_VERSION } from "@/lib/version";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { APP_BUILD_TIME, APP_DEPLOY_ENV, APP_VERSION } from "@/lib/version";
 
-const CHECK_INTERVAL = 2 * 60 * 1000;
+// ── デプロイ検知と自動更新（BRU3-070 / BRU11-045） ─────────────────────────
+//
+// 判定の基準は「今動いているバンドル自身のビルド時刻(APP_BUILD_TIME)」。
+// 以前は “マウント時にサーバーから取得した値” を基準にしていたため、
+// ログアウト→ログインなどでシェルが再マウントされると基準が最新版に付け替わり、
+// 古いバンドルのまま二度と更新されない状態になっていた。
+// 焼き込み値を基準にすれば、マウントのタイミングに一切依存しない。
+//
+// デプロイを知る手段は2つある。
+//   ① DB(app_version) … 本番ビルドの最後に記録される＝「デプロイが始まった」。
+//      この時点ではまだ本番は古い版を返すので、リロードしても更新されない。
+//      （「最新版を確認して再読み込み」を押しても変わらなかった原因）
+//   ② /build-info.json … 本番が実際に切り替わった＝「公開が終わった」。
+// ①を見つけたら②に切り替わるまでプログレスを出して待ち、②になったらリロードする。
+//
+// 流れ（すべて AppUpdateOverlay に進捗として出る）:
+//   検知 → 公開待ち(①のときだけ) → キャッシュ掃除 → キャッシュバスター付きリロード
+//   → 新しいバンドルで起動 → データ取り直しが落ち着くまで待つ → 完了表示 → 閉じる
+// リロードをまたぐ間は index.html の起動用オーバーレイが同じ見た目で穴を埋めるので、
+// 最初から最後までプログレスが途切れない。
+//
+// ※ネイティブ(Mac/iPad)アプリは build-info.json も同梱物なので常に一致し、何も起きない。
+// ※dev サーバーは build-info.json が無い(404)ためスキップされる。
 
-// 通知を出してから実際にリロードするまでの待ち時間。
-// 「気づかないうちに画面が飛んだ」を防ぐため、トーストが確実に読める長さにする。
-const NOTIFY_DELAY = 2200;
+const CHECK_INTERVAL = 60 * 1000;
+// 画面遷移のたびに確認するが、連続した遷移で叩きすぎないよう間引く。
+const NAV_THROTTLE = 10 * 1000;
+// DB(RPC)への問い合わせは自動確認では最短この間隔。手動確認では毎回問い合わせる。
+const PENDING_POLL = 30 * 1000;
+// 公開待ちの間、build-info.json を確かめる間隔。
+const LIVE_POLL = 4 * 1000;
+// DB に記録されてからこの時間が過ぎても本番が切り替わらない版は、デプロイ失敗とみなして待たない。
+// （待ち続けて画面を塞がないための上限。通常は記録から1〜2分で切り替わる）
+const MAX_PENDING_AGE_SEC = 10 * 60;
 
 // 同じ版へのリロードを何回まで試すか（＝リロードループ防止）。
 // 以前は「1回試したら二度と試さない」だったため、CDN の伝播待ちなどで
@@ -14,36 +45,133 @@ const NOTIFY_DELAY = 2200;
 // 回数制限＋クールダウンにして、失敗しても次の機会に必ずやり直す。
 const MAX_ATTEMPTS = 3;
 const RETRY_COOLDOWN = 90 * 1000;
+// リロードしても古いバンドルだったときに、もう一度読み込むまでの待ち（試行回数に比例）。
+const LANDING_RETRY_DELAY = 2500;
 
 // キャッシュ掃除が何らかの理由で終わらなくても、更新自体は必ず進める。
 const PURGE_TIMEOUT = 1500;
+// 一瞬で終わっても工程が読めるよう、キャッシュ整理は最低この時間見せる。
+const MIN_PREPARE = 1200;
 
-const ATTEMPT_KEY = "versionCheck.attempt";     // {to,count,at} 同一版へのリロード試行状況
-const UPDATED_TO_KEY = "versionCheck.updatedTo"; // 直前のリロードで目指した版
-const BUST_PARAM = "_v";                         // リロード時のキャッシュバスター
+// 新しいバンドルで起動してから「落ち着いた」と判断する条件。
+// 通信(リソース取得)が SETTLE_QUIET の間途切れたら完了。最短 SETTLE_MIN・最長 SETTLE_MAX。
+const SETTLE_MIN = 1200;
+const SETTLE_QUIET = 800;
+const SETTLE_MAX = 10 * 1000;
+// 完了表示を見せてから閉じるまで。
+const DONE_HOLD = 1100;
+// リロード直前に残した進捗を、この時間内の起動でのみ引き継ぐ。
+const OVERLAY_TTL = 3 * 60 * 1000;
+
+const ATTEMPT_KEY = "versionCheck.attempt";         // {to,count,at} 同一版へのリロード試行状況
+const OVERLAY_KEY = "versionCheck.overlay";         // {to,version,progress,at} リロードをまたぐ進捗（index.html も読む）
+const SKIP_PENDING_KEY = "versionCheck.skipPending"; // 公開を待ちきれなかった版（二度と待たない）
+const LEGACY_UPDATED_TO_KEY = "versionCheck.updatedTo"; // 旧版のバンドルがリロード前に残すキー
+const BUST_PARAM = "_v";                             // リロード時のキャッシュバスター
+
+// ── sessionStorage ───────────────────────────────────────────────────────────
 
 interface Attempt { to: string; count: number; at: number; }
+interface OverlayMemo { to: string; version: string | null; progress: number; at: number; }
 
-function readAttempt(): Attempt | null {
+function readJson<T>(key: string): T | null {
   try {
-    const raw = sessionStorage.getItem(ATTEMPT_KEY);
-    if (!raw) return null;
-    const v = JSON.parse(raw);
-    return typeof v?.to === "string" ? v as Attempt : null;
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : null;
   } catch { return null; }
 }
-
-function writeAttempt(a: Attempt): void {
-  try { sessionStorage.setItem(ATTEMPT_KEY, JSON.stringify(a)); } catch { /* ignore */ }
+function writeJson(key: string, v: unknown): void {
+  try { sessionStorage.setItem(key, JSON.stringify(v)); } catch { /* ignore */ }
+}
+function removeKey(key: string): void {
+  try { sessionStorage.removeItem(key); } catch { /* ignore */ }
 }
 
-function clearAttempt(): void {
-  try { sessionStorage.removeItem(ATTEMPT_KEY); } catch { /* ignore */ }
+function readAttempt(): Attempt | null {
+  const v = readJson<Attempt>(ATTEMPT_KEY);
+  return typeof v?.to === "string" ? v : null;
 }
+const writeAttempt = (a: Attempt) => writeJson(ATTEMPT_KEY, a);
+const clearAttempt = () => removeKey(ATTEMPT_KEY);
+
+// ── 更新オーバーレイの状態（React の外に持ち、AppUpdateOverlay が購読する） ──────
+
+export type UpdatePhase =
+  | "idle"
+  | "waiting"    // デプロイを検知し、本番への公開が終わるのを待っている
+  | "preparing"  // 古いキャッシュを片付けている
+  | "reloading"  // 新しい画面を読み込んでいる
+  | "finishing"  // 新しい画面で、データの取り直しが落ち着くのを待っている
+  | "done"       // 完了表示（少し見せてから閉じる）
+  | "failed";    // 規定回数リロードしても新しい画面に乗り換えられなかった
+
+export interface UpdateState {
+  phase: UpdatePhase;
+  progress: number;       // 0〜100。工程が進む間は減らない
+  version: string | null; // 更新先の版
+  note: string | null;    // 補足（再試行中など）
+}
+
+const IDLE: UpdateState = { phase: "idle", progress: 0, version: null, note: null };
+
+// リロード直後の起動かどうかは、React より前＝モジュール読み込み時に確定させる。
+// 最初の描画からオーバーレイを出して、index.html の起動用オーバーレイと継ぎ目なく入れ替えるため。
+const bootMemo: OverlayMemo | null = (() => {
+  if (typeof window === "undefined") return null;
+  const m = readJson<OverlayMemo>(OVERLAY_KEY);
+  removeKey(OVERLAY_KEY);
+  if (!m || typeof m.to !== "string" || !(Date.now() - m.at < OVERLAY_TTL)) return null;
+  return m;
+})();
+// 目指した版のバンドルで起動できたか
+const bootLanded = !!bootMemo && bootMemo.to === APP_BUILD_TIME;
+
+// 旧版のバンドル(オーバーレイ導入前)から自動更新で入ってきた場合
+const legacyLanded = (() => {
+  if (typeof window === "undefined") return false;
+  let to: string | null = null;
+  try { to = sessionStorage.getItem(LEGACY_UPDATED_TO_KEY); } catch { /* ignore */ }
+  if (!to) return false;
+  removeKey(LEGACY_UPDATED_TO_KEY);
+  return to === APP_BUILD_TIME;
+})();
+
+let state: UpdateState = bootMemo
+  ? { phase: "finishing", progress: Math.max(bootMemo.progress, 86), version: bootMemo.version ?? APP_VERSION, note: null }
+  : IDLE;
+const listeners = new Set<() => void>();
+
+function setState(patch: Partial<UpdateState>): void {
+  const next = { ...state, ...patch };
+  // 進捗は工程が続く間は戻さない（再試行で工程が1つ戻っても、輪は逆走させない）
+  if (next.phase !== "idle" && next.progress < state.progress) next.progress = state.progress;
+  state = next;
+  listeners.forEach(l => l());
+}
+
+function subscribe(l: () => void): () => void {
+  listeners.add(l);
+  return () => { listeners.delete(l); };
+}
+const getState = () => state;
+
+/** 更新オーバーレイの表示状態を購読する。 */
+export function useAppUpdateState(): UpdateState {
+  return useSyncExternalStore(subscribe, getState, getState);
+}
+
+/** index.html の起動用オーバーレイから引き継いで表示を始めたか（出現アニメを省くため）。 */
+export const STARTED_FROM_RELOAD = !!bootMemo;
+
+// トーストは Provider の中でしか取れないので、フックから差し込んでもらう。
+type Notify = (msg: string, kind?: "success" | "error" | "info") => void;
+let notify: Notify = () => {};
 
 // 更新後の初回描画で「APIを叩き直す」ことを RefreshProvider へ伝えるフラグ。
 // リロードでモジュールごと作り直されるので、状態が残り続けることはない。
-let postUpdateRefreshPending = false;
+// RefreshProvider の初回 effect より先に立てたいので、モジュール読み込み時に確定させる。
+let postUpdateRefreshPending = bootLanded || legacyLanded;
+if (postUpdateRefreshPending) clearAttempt();
 
 /** 直前に自動更新でリロードしてきた直後かどうか。1回だけ true を返す。 */
 export function consumePostUpdateRefresh(): boolean {
@@ -64,7 +192,12 @@ export function consumePostUpdateRefresh(): boolean {
   } catch { /* ignore */ }
 })();
 
-async function fetchBuildTime(): Promise<string | null> {
+// ── サーバー側の版 ───────────────────────────────────────────────────────────
+
+interface ServerBuild { buildTime: string; version: string | null; }
+interface PendingRelease extends ServerBuild { deadline: number; }
+
+async function fetchServerBuild(): Promise<ServerBuild | null> {
   try {
     const res = await fetch(`/build-info.json?_=${Date.now()}`, {
       cache: "no-store",
@@ -72,10 +205,55 @@ async function fetchBuildTime(): Promise<string | null> {
     });
     if (!res.ok) return null; // 404 in dev mode — skip
     const data = await res.json();
-    return data?.buildTime ?? null;
+    if (typeof data?.buildTime !== "string" || !data.buildTime) return null;
+    return { buildTime: data.buildTime, version: typeof data.version === "string" ? data.version : null };
   } catch {
     return null;
   }
+}
+
+let rpcUnavailable = false; // RPC 未作成(SQL 未実行)なら、そのタブでは二度と叩かない
+let lastPendingAt = 0;
+
+// DB に記録済みで、本番にはまだ出ていない版（＝デプロイ中）を探す。
+// 本番のバンドルでだけ見る（プレビューURLや手元ビルドの版は本番の記録と噛み合わない）。
+async function fetchPendingRelease(force: boolean): Promise<PendingRelease | null> {
+  if (APP_DEPLOY_ENV !== "production" || !isSupabaseEnabled || rpcUnavailable) return null;
+  if (!force && Date.now() - lastPendingAt < PENDING_POLL) return null;
+  lastPendingAt = Date.now();
+  try {
+    const { data, error } = await supabase!.rpc("get_latest_app_version");
+    if (error) {
+      if (error.code === "PGRST202" || error.code === "42883") rpcUnavailable = true;
+      return null;
+    }
+    const row = Array.isArray(data) ? data[0] : null;
+    if (!row) return null;
+    const theirs = Number(row.build_time);
+    const mine = Number(APP_BUILD_TIME);
+    const age = Number(row.age_seconds);
+    if (!Number.isFinite(theirs) || !Number.isFinite(mine) || theirs <= mine) return null;
+    if (!Number.isFinite(age) || age >= MAX_PENDING_AGE_SEC) return null;
+    let skipped: string | null = null;
+    try { skipped = sessionStorage.getItem(SKIP_PENDING_KEY); } catch { /* ignore */ }
+    if (skipped === String(row.build_time)) return null;
+    return {
+      buildTime: String(row.build_time),
+      version: typeof row.version === "string" ? row.version : null,
+      deadline: Date.now() + (MAX_PENDING_AGE_SEC - age) * 1000,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── 更新の各工程 ─────────────────────────────────────────────────────────────
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+// オーバーレイの裏で入力が続かないよう、フォーカスを外しておく。
+function blurActive(): void {
+  try { (document.activeElement as HTMLElement | null)?.blur?.(); } catch { /* ignore */ }
 }
 
 // 新しいUIを確実に映すため、リロード前に「古い資産を返しうる層」を落としておく。
@@ -97,100 +275,235 @@ async function purgeStaleCaches(): Promise<void> {
   if (jobs.length === 0) return;
   await Promise.race([
     Promise.all(jobs).catch(() => undefined),
-    new Promise(resolve => setTimeout(resolve, PURGE_TIMEOUT)),
+    sleep(PURGE_TIMEOUT),
   ]);
 }
 
 // index.html / 各アセットを必ずサーバーから取り直させるリロード。
 // location.reload() は環境によってキャッシュから復元されることがあるため、
 // URL自体を変える(=別リクエストにする)ことで確実に新しいバンドルを取りに行かせる。
+// 再試行でも毎回別URLになるよう時刻を足す。
 function hardReload(buildTime: string): void {
   try {
     const url = new URL(window.location.href);
-    url.searchParams.set(BUST_PARAM, buildTime);
+    url.searchParams.set(BUST_PARAM, `${buildTime}.${Date.now()}`);
     window.location.replace(url.toString());
   } catch {
     window.location.reload();
   }
 }
 
-// デプロイされた新しいバージョンを検知して自動リロードする（BRU3-070 / BRU11-045）。
-//
-// 判定の基準は「今動いているバンドル自身のビルド時刻(APP_BUILD_TIME)」。
-// 以前は “マウント時にサーバーから取得した値” を基準にしていたため、
-// ログアウト→ログインなどでシェルが再マウントされると基準が最新版に付け替わり、
-// 古いバンドルのまま二度と更新されない状態になっていた。
-// 焼き込み値を基準にすれば、マウントのタイミングに一切依存しない。
-//
-// 流れ: 検知 → トーストで通知 → キャッシュ掃除 → キャッシュバスター付きリロード
-//       → 更新後の初回描画で「更新しました」通知＋全ページのAPI再取得。
-//
-// ※ネイティブ(Mac/iPad)アプリは build-info.json も同梱物なので常に一致し、何も起きない。
-// ※dev サーバーは build-info.json が無い(404)ためスキップされる。
-export function useVersionCheck() {
-  const { toast } = useToast();
-  const reloading = useRef(false);
-  const manualNotified = useRef(false);
-  const toastRef = useRef(toast);
-  toastRef.current = toast;
+// 本番が新しい版を返すようになった → キャッシュを片付けてリロードする。
+// ここから先はページが入れ替わるまでオーバーレイを閉じない。
+async function startReload(server: ServerBuild): Promise<void> {
+  blurActive();
+  const prev = readAttempt();
+  const same = prev?.to === server.buildTime;
+  writeAttempt({ to: server.buildTime, count: same ? prev!.count + 1 : 1, at: Date.now() });
 
-  const check = useRef(async () => {
-    if (reloading.current) return;
-    if (!APP_BUILD_TIME) return; // ビルド時刻が焼き込まれていない環境ではスキップ
-    const serverBuildTime = await fetchBuildTime();
-    if (!serverBuildTime) return; // dev mode or fetch failed — skip
-    if (serverBuildTime === APP_BUILD_TIME) { clearAttempt(); return; } // 最新版で稼働中
+  const version = server.version ?? state.version;
+  setState({ phase: "preparing", progress: 62, version, note: null });
+  await Promise.all([purgeStaleCaches(), sleep(MIN_PREPARE)]);
+  setState({ phase: "reloading", progress: 80 });
 
-    const prev = readAttempt();
-    const sameTarget = prev?.to === serverBuildTime;
+  // リロード後の起動用オーバーレイ(index.html)と AppUpdateOverlay に進捗を引き継ぐ
+  writeJson(OVERLAY_KEY, { to: server.buildTime, version, progress: 85, at: Date.now() } satisfies OverlayMemo);
+  await sleep(450); // 80% の描画を見せてから遷移する
+  hardReload(server.buildTime);
+}
 
-    // 規定回数リロードしても新しいバンドルに乗り換えられない異常時。
-    // 黙って諦めず、手動更新をお願いする(同一版につき1回だけ)。
-    if (sameTarget && prev!.count >= MAX_ATTEMPTS) {
-      if (!manualNotified.current) {
-        manualNotified.current = true;
-        toastRef.current("新しいバージョンがあります。お手数ですが画面を手動で再読み込みしてください。", "error");
+// デプロイは始まっているが本番はまだ古い版 → 切り替わるまで待つ。
+async function startWaiting(pending: PendingRelease): Promise<void> {
+  blurActive();
+  const started = Date.now();
+  setState({ phase: "waiting", progress: 6, version: pending.version, note: null });
+  // 残り時間は分からないので、最初は速く・だんだんゆっくり 58% へ近づける
+  const tick = setInterval(() => {
+    setState({ progress: 8 + 50 * (1 - Math.exp(-(Date.now() - started) / 45000)) });
+  }, 500);
+  try {
+    while (Date.now() < pending.deadline) {
+      await sleep(LIVE_POLL);
+      const server = await fetchServerBuild();
+      if (server && server.buildTime !== APP_BUILD_TIME) {
+        clearInterval(tick);
+        await startReload(server);
+        return;
       }
+    }
+  } finally {
+    clearInterval(tick);
+  }
+  // 公開が終わらなかった（デプロイ失敗など）。今の版は動いているので画面を返す。
+  try { sessionStorage.setItem(SKIP_PENDING_KEY, pending.buildTime); } catch { /* ignore */ }
+  setState(IDLE);
+  notify("新しいバージョンの公開を確認できませんでした。現在のバージョンのままご利用いただけます。", "info");
+}
+
+// 新しいバンドルが起動したあと、データの取り直しなどが落ち着くまで待つ。
+// 通信(Resource Timing)が一定時間途切れたら「落ち着いた」とみなす。上限あり。
+function waitForSettled(): Promise<void> {
+  return new Promise(resolve => {
+    const start = Date.now();
+    let last = start;
+    let obs: PerformanceObserver | null = null;
+    try {
+      obs = new PerformanceObserver(() => { last = Date.now(); });
+      obs.observe({ type: "resource" });
+    } catch { /* 未対応ブラウザでは SETTLE_MIN だけ待つ */ }
+    const tick = () => {
+      const now = Date.now();
+      const settled = document.readyState === "complete" && now - start >= SETTLE_MIN && now - last >= SETTLE_QUIET;
+      if (settled || now - start >= SETTLE_MAX) {
+        obs?.disconnect();
+        resolve();
+        return;
+      }
+      setTimeout(tick, 150);
+    };
+    tick();
+  });
+}
+
+let manualNotified = false;
+
+// 自動更新でリロードしてきた直後の仕上げ。
+async function finishLanding(): Promise<void> {
+  if (!bootLanded) {
+    // 目指した版にならなかった（CDN の伝播待ちで古い index.html が返ってきた等）。
+    const server = await fetchServerBuild();
+    if (server && server.buildTime !== APP_BUILD_TIME) {
+      const prev = readAttempt();
+      const count = prev?.to === server.buildTime ? prev.count : 0;
+      if (count >= MAX_ATTEMPTS) {
+        manualNotified = true; // 失敗画面を出したので、以後の自動確認ではトーストだけにする
+        setState({ phase: "failed", note: null });
+        return;
+      }
+      setState({ note: "新しい画面の配信を待って、もう一度読み込みます" });
+      await sleep(LANDING_RETRY_DELAY * Math.max(1, count));
+      await startReload(server);
       return;
     }
-    // 直前の試行から間もない場合は待つ(デプロイ伝播中の連続リロードを防ぐ)。
-    if (sameTarget && Date.now() - prev!.at < RETRY_COOLDOWN) return;
+    // サーバーもこの版を返している（＝これが最新）。確かめられなかった場合も今の画面で続ける。
+    clearAttempt();
+  }
 
-    reloading.current = true;
-    writeAttempt({ to: serverBuildTime, count: sameTarget ? prev!.count + 1 : 1, at: Date.now() });
-    try { sessionStorage.setItem(UPDATED_TO_KEY, serverBuildTime); } catch { /* ignore */ }
+  setState({ phase: "finishing", progress: 90, version: APP_VERSION, note: null });
+  const started = Date.now();
+  const tick = setInterval(() => {
+    setState({ progress: 90 + 8 * (1 - Math.exp(-(Date.now() - started) / 2500)) });
+  }, 200);
+  await waitForSettled();
+  clearInterval(tick);
 
-    toastRef.current("新しいバージョンが公開されました。画面を更新します…", "info");
-    setTimeout(() => {
-      void purgeStaleCaches().then(() => hardReload(serverBuildTime));
-    }, NOTIFY_DELAY);
-  });
+  setState({ phase: "done", progress: 100 });
+  await sleep(DONE_HOLD);
+  setState(IDLE);
+}
+
+// ── 確認 ─────────────────────────────────────────────────────────────────────
+
+export type UpdateCheckResult =
+  | "updating" // 更新を始めた（またはすでに更新中）
+  | "latest"   // 最新版で稼働中
+  | "unknown"; // 確認できなかった（dev サーバー・オフライン等）
+
+let inFlight: Promise<UpdateCheckResult> | null = null;
+
+// 自動確認で、同じ版へのリロードを続けてよいか（リロードループ防止）。
+function mayRetry(target: string): boolean {
+  const prev = readAttempt();
+  if (prev?.to !== target) return true;
+  // 規定回数リロードしても新しいバンドルに乗り換えられない異常時。
+  // 黙って諦めず、手動更新をお願いする(同一版につき1回だけ)。
+  if (prev.count >= MAX_ATTEMPTS) {
+    if (!manualNotified) {
+      manualNotified = true;
+      notify("新しいバージョンがあります。お手数ですが画面を手動で再読み込みしてください。", "error");
+    }
+    return false;
+  }
+  // 直前の試行から間もない場合は待つ(デプロイ伝播中の連続リロードを防ぐ)。
+  return Date.now() - prev.at >= RETRY_COOLDOWN;
+}
+
+async function runCheck(manual: boolean): Promise<UpdateCheckResult> {
+  const server = await fetchServerBuild();
+  if (!server) return "unknown";
+  if (state.phase !== "idle") return "updating";
+
+  if (server.buildTime !== APP_BUILD_TIME) {
+    // 手動（「最新版を確認して再読み込み」）は利用者の明示操作なので、試行回数をリセットしてやり直す
+    if (manual) clearAttempt();
+    else if (!mayRetry(server.buildTime)) return "unknown";
+    void startReload(server);
+    return "updating";
+  }
+  clearAttempt(); // 最新版で稼働中
+
+  const pending = await fetchPendingRelease(manual);
+  if (pending && state.phase === "idle") {
+    void startWaiting(pending);
+    return "updating";
+  }
+  return "latest";
+}
+
+/**
+ * 新しいバージョンがあるか確かめ、あれば更新オーバーレイを出して更新を始める。
+ * 何度呼んでも同時に走るのは1本だけ。
+ */
+export function checkForUpdate(opts: { manual?: boolean } = {}): Promise<UpdateCheckResult> {
+  if (state.phase !== "idle") return Promise.resolve("updating");
+  if (!APP_BUILD_TIME) return Promise.resolve("unknown"); // ビルド時刻が焼き込まれていない環境
+  if (!inFlight) inFlight = runCheck(!!opts.manual).finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+/** 失敗画面の「再読み込み」。キャッシュを片付けて取り直す。 */
+export async function reloadNow(): Promise<void> {
+  await purgeStaleCaches();
+  hardReload(String(Date.now()));
+}
+
+/** 失敗画面を閉じて、今の画面で続ける。 */
+export function dismissUpdate(): void {
+  if (state.phase === "failed") setState(IDLE);
+}
+
+// ── 監視 ─────────────────────────────────────────────────────────────────────
+
+let landingStarted = false;
+
+// トリガー: 起動(リロード含む)・定期確認・画面遷移・フォーカス/タブ復帰・bfcache 復元・オンライン復帰。
+// アプリ最上位(App.tsx の VersionWatcher)で常時1つだけ動かす。
+export function useVersionCheck() {
+  const { toast } = useToast();
+  const { pathname } = useLocation();
+  const navMountedRef = useRef(false);
+  const lastNavCheckRef = useRef(0);
+
+  useEffect(() => { notify = toast; }, [toast]);
 
   useEffect(() => {
-    // 自動更新でリロードしてきた直後なら、着地できたかを判定する。
-    let updatedTo: string | null = null;
-    try { updatedTo = sessionStorage.getItem(UPDATED_TO_KEY); } catch { /* ignore */ }
-    if (updatedTo) {
-      try { sessionStorage.removeItem(UPDATED_TO_KEY); } catch { /* ignore */ }
-      if (updatedTo === APP_BUILD_TIME) {
-        // 新しいバンドルに乗り換え成功。試行状況を消して、データも取り直す。
-        clearAttempt();
-        postUpdateRefreshPending = true;
-        toastRef.current(`最新バージョン ${APP_VERSION} に更新しました`);
-      }
-      // 着地できなかった場合は試行状況を残したままにして、次回リトライさせる。
+    // StrictMode の effect 二重実行でも仕上げは1回だけ
+    if (!landingStarted) {
+      landingStarted = true;
+      if (bootMemo) void finishLanding();
+      else if (legacyLanded) notify(`最新バージョン ${APP_VERSION} に更新しました`);
     }
 
-    check.current();
-    const id = setInterval(() => check.current(), CHECK_INTERVAL);
+    void checkForUpdate();
+    const id = setInterval(() => { void checkForUpdate(); }, CHECK_INTERVAL);
 
-    const onFocus = () => check.current();
-    const onVisible = () => { if (!document.hidden) check.current(); };
+    const onFocus = () => { void checkForUpdate(); };
+    const onVisible = () => { if (!document.hidden) void checkForUpdate(); };
     // bfcache から復元された場合も検知
-    const onPageShow = (e: PageTransitionEvent) => { if (e.persisted) check.current(); };
+    const onPageShow = (e: PageTransitionEvent) => { if (e.persisted) void checkForUpdate(); };
     // スリープ復帰直後はまだ回線が復旧しておらず fetch が失敗しがち。
     // オンライン復帰時にもう一度確かめる。
-    const onOnline = () => check.current();
+    const onOnline = () => { void checkForUpdate(); };
 
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
@@ -205,4 +518,12 @@ export function useVersionCheck() {
       window.removeEventListener("online", onOnline);
     };
   }, []);
+
+  // 画面遷移したとき（初回描画は上の起動時確認に任せる）
+  useEffect(() => {
+    if (!navMountedRef.current) { navMountedRef.current = true; return; }
+    if (Date.now() - lastNavCheckRef.current < NAV_THROTTLE) return;
+    lastNavCheckRef.current = Date.now();
+    void checkForUpdate();
+  }, [pathname]);
 }

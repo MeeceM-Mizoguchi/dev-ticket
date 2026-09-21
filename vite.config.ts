@@ -217,6 +217,9 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(APP_BUILD.version),
     __APP_BUILD_TIME__: JSON.stringify(APP_BUILD.buildTime),
+    // "production" のバンドルだけが DB(app_version) の記録を「デプロイ開始」として見る。
+    // プレビューURL・手元ビルド・ネイティブアプリでは本番の記録と自分の版が噛み合わないため。
+    __APP_DEPLOY_ENV__: JSON.stringify(process.env.VERCEL_ENV ?? ''),
   },
 
   resolve: {

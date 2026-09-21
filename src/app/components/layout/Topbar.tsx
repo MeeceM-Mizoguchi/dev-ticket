@@ -14,6 +14,7 @@ import { CallButton } from "@/app/components/call/CallButton";
 import { AnnouncementModal } from "@/app/components/announcements/AnnouncementModal";
 import { APP_VERSION, APP_BUILD_DATE, APP_BUILD_AT_TEXT, formatJstDateTime, formatElapsed } from "@/lib/version";
 import { copyText } from "@/lib/clipboard";
+import { checkForUpdate } from "@/app/hooks/useVersionCheck";
 import { buildWhiteboardPath, parseWhiteboardMentionContext } from "@/app/lib/whiteboardLink";
 import { buildFileCommentPath, parseFileMentionContext } from "@/app/lib/fileCommentLink";
 import { parseTaskMentionContext } from "@/app/lib/taskNotify";
@@ -63,6 +64,9 @@ export function Topbar() {
   const [versionCopied, setVersionCopied] = useState(false);
   const [versionHistory, setVersionHistory] = useState<{ version: string; released_at: string }[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // 「最新版を確認して再読み込み」: 確認中 / 最新だった
+  const [versionChecking, setVersionChecking] = useState(false);
+  const [versionIsLatest, setVersionIsLatest] = useState(false);
 
   // お知らせ
   const [announcement, setAnnouncement] = useState<Announcement | null>(null);
@@ -76,6 +80,7 @@ export function Topbar() {
   const openVersion = useCallback(() => {
     setShowUserMenu(false);
     setVersionCopied(false);
+    setVersionIsLatest(false);
     setShowVersion(true);
     if (isSystemAdmin && isSupabaseEnabled) {
       setHistoryLoading(true);
@@ -84,6 +89,25 @@ export function Topbar() {
         .then(({ data }) => { setVersionHistory(data ?? []); setHistoryLoading(false); });
     }
   }, [isSystemAdmin]);
+
+  // 単なる location.reload() だと、デプロイ中(DBには記録済み・本番はまだ旧版)は旧版が返るだけで
+  // 何も変わらなかった。自動更新と同じ確認に乗せ、公開待ち〜リロードまで更新オーバーレイに任せる。
+  const versionCheckingRef = useRef(false);
+  const handleCheckLatest = useCallback(async () => {
+    if (versionCheckingRef.current) return;
+    versionCheckingRef.current = true;
+    setVersionChecking(true);
+    setVersionIsLatest(false);
+    try {
+      const r = await checkForUpdate({ manual: true });
+      if (r === "updating") setShowVersion(false);
+      else if (r === "latest") setVersionIsLatest(true);
+      else window.location.reload(); // 確認できない環境(dev・オフライン等)は従来どおり再読み込み
+    } finally {
+      versionCheckingRef.current = false;
+      setVersionChecking(false);
+    }
+  }, []);
 
   const handleCopyVersion = useCallback(async () => {
     const ok = await copyText(APP_VERSION);
@@ -394,13 +418,20 @@ export function Topbar() {
           {/* 更新確認 */}
           <div style={{ padding: "12px 18px 0", flexShrink: 0 }}>
             <button
-              onClick={() => { window.location.reload(); }}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 10px", borderRadius: 9, border: "1px solid rgba(26,23,20,0.10)", background: "#fff", cursor: "pointer" }}
+              onClick={() => { void handleCheckLatest(); }}
+              disabled={versionChecking}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 10px", borderRadius: 9, border: "1px solid rgba(26,23,20,0.10)", background: "#fff", cursor: versionChecking ? "default" : "pointer" }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}>
-              <RefreshCw style={{ width: 13, height: 13, color: "#6B6458" }} />
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#3D3732" }}>最新版を確認して再読み込み</span>
+              <RefreshCw style={{ width: 13, height: 13, color: "#6B6458", animation: versionChecking ? "topbarRefreshSpin 0.8s linear infinite" : undefined }} />
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#3D3732" }}>{versionChecking ? "最新版を確認しています…" : "最新版を確認して再読み込み"}</span>
             </button>
+            {versionIsLatest && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 7, fontSize: 11.5, fontWeight: 600, color: "#047857" }}>
+                <Check style={{ width: 12, height: 12 }} />
+                最新のバージョンをご利用中です
+              </div>
+            )}
           </div>
 
           {/* 更新履歴（システム管理会社のみ） */}

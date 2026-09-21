@@ -16,6 +16,13 @@ async function main() {
     console.log("[publish-version] SUPABASE_SERVICE_ROLE_KEY 未設定のためスキップします（DBへのバージョン記録なし）。");
     return;
   }
+  // 本番ビルドだけを記録する。プレビュー(ブランチ)ビルドまで記録すると、本番に一度も出ない版が
+  // 「最新版」として履歴に並び、画面側のデプロイ検知(useVersionCheck)が
+  // 来るはずのない版の公開をずっと待つことになる。
+  if (process.env.VERCEL_ENV !== "production") {
+    console.log(`[publish-version] 本番ビルドではない(VERCEL_ENV=${process.env.VERCEL_ENV ?? "未設定"})ためスキップします。`);
+    return;
+  }
 
   let info;
   try {
