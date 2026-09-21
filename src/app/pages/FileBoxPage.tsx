@@ -36,6 +36,7 @@ import {
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
 import { FileKindIcon } from "@/app/components/files/FileKindIcon";
+import { BlockingSpinner } from "@/app/components/shared/BlockingSpinner";
 import {
   collectDropEntries, collectInputEntries, looksLikeFolder,
   MAX_UPLOAD_ENTRIES, type UploadEntry,
@@ -118,6 +119,8 @@ export function FileBoxPage() {
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // Google形式に変換してアップロードしている間だけ true（画面中央のぐるぐる用）
+  const [convertingUpload, setConvertingUpload] = useState(false);
   // BUG-05 送信ガード。state はボタンの見た目用で、二重起動を止めるのはこの ref
   const uploadingRef = useRef(false);
   // フォルダを丸ごと上げると時間がかかるので、何件目かを出す
@@ -389,6 +392,8 @@ export function FileBoxPage() {
 
     setUploading(true);
     setUploadProgress({ done: 0, total: entries.length });
+    // Google形式への変換は Drive との往復があり数秒以上かかるので、大きなぐるぐるを出す
+    setConvertingUpload(convert && entries.some(e => googleConvertKind(e.file.name)));
     // 同じ階層を何度も引き直さないよう、1回のアップロード内で使い回す
     const folderCache = new Map<string, string>();
     let ok = 0;
@@ -448,6 +453,7 @@ export function FileBoxPage() {
       uploadingRef.current = false;
       setUploading(false);
       setUploadProgress(null);
+      setConvertingUpload(false);
     }
 
     // 件数が多いフォルダでもトーストが溢れないよう、結果はまとめて出す
@@ -1027,6 +1033,7 @@ export function FileBoxPage() {
         )}
       </div>
 
+      {convertingUpload && <BlockingSpinner label="Google形式に変換してアップロードしています" />}
       {previewTarget && (
         <FileViewerModal file={previewTarget} onClose={closePreview}
           onDownload={handleDownload} onOpenInApp={handleOpenInApp}
