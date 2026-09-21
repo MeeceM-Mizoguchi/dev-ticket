@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import type { ProjectFile } from "@/app/types";
-import type { GoogleAppKind } from "@/app/lib/projectFiles";
+import { stageProjectFile, registerStagedFile, type GoogleAppKind } from "@/app/lib/projectFiles";
 
 // Googleドライブ連携のクライアント側入口（設計: docs/google-drive-integration-design.md）
 //
@@ -101,42 +101,41 @@ export function createGoogleFile(
   return postApi<CreateResult>("create", { projectId, kind, parentId: parentId ?? null, name });
 }
 
+export type GoogleUploadResult =
+  | { converted: true; url: string; fileName: string; failed: { name: string; reason: string }[] }
+  /** 変換に失敗したため「そのまま保存」に切り替えた。reason はその理由 */
+  | { converted: false; fileName: string; reason: string };
+
 /**
  * Office文書をGoogle形式に変換してアップロードする。
  *
- * ①サーバーが Drive に再開可能アップロードのセッションを作り、送り先URLを返す
- * ②ブラウザがそのURLへファイルを直接送る（Vercelを経由しないのでサイズ上限に縛られない）
- * ③サーバーが権限配布とDB登録を行う
+ * ①ブラウザが既存の署名付きURLで Supabase Storage へ実体を置く（stageProjectFile）
+ * ②サーバーがそれを取り出して Drive へ中継し、権限配布とDB登録まで行う（convert-staged）
  *
- * project-files の「署名付きアップロードURL → register」と同じ組み立て。
+ * ★ ブラウザから Drive へ直接送る形にしてはいけない。
+ *   サーバーで作った再開可能アップロードのセッションURIへブラウザから PUT すると、
+ *   応答に Access-Control-Allow-Origin が付かず CORS で必ず弾かれる（本番で実測）。
  *
- * @returns 作成されたGoogleファイルのURL と、実際に登録された名前
+ * ★ ②で失敗したら、①で置いた実体を「そのまま保存」として登録し直す。
+ *   変換できなかったからといって、利用者がアップロードしたファイルを失わせない。
  */
 export async function uploadAsGoogleFile(
   projectId: string, file: File, kind: GoogleAppKind, parentId?: string | null,
-): Promise<{ url: string; fileName: string; failed: { name: string; reason: string }[] }> {
-  const session = await postApi<{ uploadUrl: string; fileName: string; folderId: string }>(
-    "upload-session", {
-      projectId, kind, parentId: parentId ?? null,
-      fileName: file.name, fileType: file.type || "application/octet-stream", fileSize: file.size,
+): Promise<GoogleUploadResult> {
+  const path = await stageProjectFile(projectId, file);
+
+  try {
+    const res = await postApi<CreateResult>("convert-staged", {
+      projectId, path, kind, parentId: parentId ?? null,
+      fileName: file.name, fileType: file.type || "",
     });
-
-  const put = await fetch(session.uploadUrl, {
-    method: "PUT",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
-    body: file,
-  });
-  if (!put.ok) {
-    throw new Error(`Googleドライブへのアップロードに失敗しました（HTTP ${put.status}）`);
+    return { converted: true, url: res.url, fileName: res.fileName, failed: res.failed };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : "Google形式への変換に失敗しました";
+    // ここで登録にも失敗したら、それは通常のアップロード失敗と同じなので呼び出し側へ投げる
+    const stored = await registerStagedFile(projectId, path, file, { uniqueName: true, parentId });
+    return { converted: false, fileName: stored, reason };
   }
-  // 応答が読めれば fileId が取れる。読めなくてもサーバー側が名前で引き直すので続行する。
-  const uploaded = await put.json().catch(() => ({} as { id?: string }));
-
-  const res = await postApi<CreateResult>("register-upload", {
-    projectId, kind, parentId: parentId ?? null,
-    fileName: session.fileName, folderId: session.folderId, fileId: uploaded?.id ?? "",
-  });
-  return { url: res.url, fileName: res.fileName, failed: res.failed };
 }
 
 /** Drive 側のファイル名も合わせる。DevTicket 側の改名(renameProjectFile)の後に呼ぶ */

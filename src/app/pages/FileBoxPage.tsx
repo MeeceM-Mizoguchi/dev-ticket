@@ -35,6 +35,7 @@ import {
   type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
+import { FileKindIcon } from "@/app/components/files/FileKindIcon";
 import {
   collectDropEntries, collectInputEntries, looksLikeFolder,
   MAX_UPLOAD_ENTRIES, type UploadEntry,
@@ -155,8 +156,11 @@ export function FileBoxPage() {
   // Office文書を入れられたときの「そのまま / Google形式に変換」の確認待ち
   const [convertPrompt, setConvertPrompt] = useState<
     { entries: UploadEntry[]; targetFolderId?: string | null; names: string[] } | null>(null);
-  // 変換すると元のファイルが DevTicket に残らないため、既定は「そのまま」
-  const [convertChoice, setConvertChoice] = useState<"keep" | "convert">("keep");
+  // どちらが適切かは利用者の用途次第なので、推奨も初期選択も置かない。
+  // 未選択(null)の間は保存ボタンを押せないようにして、必ず自分で選ばせる。
+  // （どちらかを初期選択にすると、それ自体が暗黙の推奨になる。変換は元に戻せないので、
+  //   うっかり既定のまま進めてしまう形も避けたい）
+  const [convertChoice, setConvertChoice] = useState<"keep" | "convert" | null>(null);
 
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
@@ -379,6 +383,8 @@ export function FileBoxPage() {
     const failed: string[] = [];
     // Google形式で取り込んだときに、権限を配れなかったメンバー
     const shareFailed: string[] = [];
+    // Google形式への変換に失敗し、「そのまま保存」に切り替えたファイル
+    const fellBack: string[] = [];
     try {
       for (let i = 0; i < entries.length; i++) {
         const { file: f, dirPath } = entries[i];
@@ -397,6 +403,13 @@ export function FileBoxPage() {
           const convertKind = convert ? googleConvertKind(f.name) : null;
           if (convertKind) {
             const g = await uploadAsGoogleFile(project.id, f, convertKind, parentId);
+            if (!g.converted) {
+              // 変換できなかったが、ファイル自体は「そのまま」で保存できている
+              fellBack.push(`「${f.name}」（${g.reason}）`);
+              if (g.fileName !== f.name) renamed.push(`「${f.name}」→「${g.fileName}」`);
+              ok++;
+              continue;
+            }
             if (g.fileName !== splitFileName(f.name).base) {
               renamed.push(`「${f.name}」→「${g.fileName}」`);
             }
@@ -434,6 +447,9 @@ export function FileBoxPage() {
     if (shareFailed.length > 0) {
       toast(`Googleファイルを共有できなかった相手がいます：${summarize(shareFailed)}。Googleアカウントをお持ちか確認してください`, "error");
     }
+    if (fellBack.length > 0) {
+      toast(`Google形式に変換できなかったため、そのまま保存しました：${summarize(fellBack)}`, "error");
+    }
     if (ok > 0) {
       toast(`${ok} 件のファイルをアップロードしました`);
       emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
@@ -451,8 +467,8 @@ export function FileBoxPage() {
     const isFolderUpload = entries.some(e => e.dirPath.length > 0);
     const convertible = entries.filter(e => googleConvertKind(e.file.name));
     if (googleDrive && !isFolderUpload && convertible.length > 0) {
-      // 前回「変換」を選んでいても、毎回「そのまま」から選び直させる
-      setConvertChoice("keep");
+      // 前回の選択を引きずらず、毎回まっさらな状態から選ばせる
+      setConvertChoice(null);
       setConvertPrompt({ entries, targetFolderId, names: convertible.map(e => e.file.name) });
       return;
     }
@@ -935,9 +951,8 @@ export function FileBoxPage() {
                     display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 8, cursor: "grab", borderBottom: "1px solid rgba(26,23,20,0.05)",
                     opacity: draggingFile?.id === f.id ? 0.4 : 1,
                   }}>
-                  <span style={{ width: 30, height: 30, borderRadius: 7, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: `${KIND_COLOR[kind]}14` }}>
-                    <Icon style={{ width: 14, height: 14, color: KIND_COLOR[kind] }} />
-                  </span>
+                  {/* Office と Google は色が近いので、形で見分けられるアイコンにする */}
+                  <FileKindIcon kind={kind} fallback={Icon} fallbackColor={KIND_COLOR[kind]} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <TruncatedText as="p" text={f.fileName}
                       style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#1A1714" }}>
@@ -1028,6 +1043,7 @@ export function FileBoxPage() {
         const many = convertPrompt.names.length > 1;
         const close = () => setConvertPrompt(null);
         const go = () => {
+          if (!convertChoice) return; // 未選択では進ませない
           const convert = convertChoice === "convert";
           setConvertPrompt(null);
           uploadEntries(convertPrompt.entries, convertPrompt.targetFolderId, convert);
@@ -1048,7 +1064,7 @@ export function FileBoxPage() {
         const OPTIONS = [
           {
             value: "keep" as const,
-            label: "そのまま保存（推奨）",
+            label: "そのまま保存",
             desc: `書式もマクロもそのまま保ちます。${inAppEditable ? "画面内のエディタと" : ""}デスクトップの ${officeLabel} で編集できます。`,
             accent: "#059669", bg: "#ECFDF5", border: "#A7F3D0", head: "#065F46", body: "#047857",
           },
@@ -1068,8 +1084,9 @@ export function FileBoxPage() {
                 style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
                 キャンセル
               </button>
-              <button type="button" onClick={go}
-                style={{ padding: "8px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer" }}>
+              <button type="button" onClick={go} disabled={!convertChoice}
+                title={convertChoice ? undefined : "保存形式を選択してください"}
+                style={{ padding: "8px 16px", background: convertChoice ? "#059669" : "#9CA3AF", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: convertChoice ? "pointer" : "not-allowed" }}>
                 この形式で保存
               </button>
             </>}>

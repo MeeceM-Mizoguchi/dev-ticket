@@ -25,8 +25,7 @@ import crypto from "crypto";
 //   POST /api/google/status           { projectId? }                      → { connected, mode, ... }
 //   POST /api/google/disconnect       {}                                  → { ok }
 //   POST /api/google/create           { projectId, kind, parentId? }      → { file, url }
-//   POST /api/google/upload-session   { projectId, kind, fileName, ... }  → { uploadUrl, fileName, folderId }
-//   POST /api/google/register-upload  { projectId, kind, fileName, ... }  → { file, url }
+//   POST /api/google/convert-staged   { projectId, path, kind, fileName, ... } → { file, url }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
@@ -58,12 +57,18 @@ const DEFAULT_NAME: Record<string, string> = {
   presentation: "無題のスライド",
 };
 
-// アップロードしたOffice文書をGoogle形式へ変換して取り込むときの受け口。
-// ★ ブラウザ → Drive へ直接送る（再開可能アップロード）。
-//   ファイル本体をこの関数の body に通すと Vercel のリクエストサイズ上限(4.5MB)に
-//   引っかかるため、project-files の署名付きアップロードURLと同じ考え方で、
-//   サーバーは「送り先」だけ発行する。
+// アップロードしたOffice文書をGoogle形式へ変換して取り込むときの送り先。
+//
+// ★ ブラウザから直接ここへ送ってはいけない。
+//   サーバーで作った再開可能アップロードのセッションURIにブラウザから PUT すると、
+//   応答に Access-Control-Allow-Origin が付かず CORS で必ず弾かれる（本番で実測）。
+//   かといってファイル本体をこの関数の body に通すと、Vercel のリクエストサイズ上限(4.5MB)に
+//   引っかかる。
+//   そのため、ブラウザはいったん既存の署名付きURLで Supabase Storage へ置き、
+//   サーバーがそこから取り出して Drive へ中継する（convert-staged）。
+//   サーバー間の通信なので CORS は関係なく、受け取る body も小さいまま済む。
 const RESUMABLE_URL = "https://www.googleapis.com/upload/drive/v3/files";
+const STAGING_BUCKET = "project-files";
 
 // ── state の署名 ────────────────────────────────────────────
 // oauth-start は「ログイン中のユーザーからのPOST」で受け、認可URLをJSONで返す。
@@ -687,19 +692,26 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // ── 変換アップロード ①送り先の発行 ────────────────────
-    // Office文書をGoogle形式に変換して取り込む。ファイル本体はこの関数を通さず、
-    // ブラウザから Drive へ直接送る（RESUMABLE_URL のコメント参照）。
-    if (action === "upload-session") {
+    // ── 変換アップロード（Storage に置いた実体を Drive へ中継） ──
+    // Office文書をGoogle形式に変換して取り込む。
+    // ブラウザは既存の署名付きURLで Supabase Storage へ置くだけで、Drive へは
+    // このサーバーが中継する（RESUMABLE_URL のコメント参照。ブラウザ直送は CORS で弾かれる）。
+    //
+    // ★ 失敗したときは Storage の実体を消さずに残す。
+    //   クライアントはそれを「そのまま保存」として登録し直すので、変換に失敗しても
+    //   アップロードしたファイルは失われない。消すのは Drive への登録まで成功したときだけ。
+    if (action === "convert-staged") {
       const projectId = String(body.projectId ?? "");
+      const path = String(body.path ?? "");
       const kind = String(body.kind ?? "");
       const sourceName = String(body.fileName ?? "");
-      const sourceType = String(body.fileType ?? "application/octet-stream");
-      const size = Number(body.fileSize) || 0;
-      if (!projectId || !MIME[kind] || !sourceName) {
-        return res.status(400).json({ error: "projectId / kind / fileName が必要です" });
+      const sourceType = String(body.fileType ?? "") || "application/octet-stream";
+      if (!projectId || !path || !MIME[kind] || !sourceName) {
+        return res.status(400).json({ error: "projectId / path / kind / fileName が必要です" });
       }
       if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+      // 他プロジェクトの置き場所を指定させない（project-files の register と同じ関門）
+      if (!path.startsWith(`${projectId}/`)) return res.status(400).json({ error: "Invalid path" });
 
       const { data: project } = await sb.from("projects")
         .select("id, name, organization_id, members").eq("id", projectId).maybeSingle();
@@ -714,6 +726,11 @@ export default async function handler(req: any, res: any) {
       const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
       if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
 
+      // Storage から実体を取り出す
+      const { data: blob, error: dlErr } = await sb.storage.from(STAGING_BUCKET).download(path);
+      if (dlErr || !blob) throw new HttpError(502, "アップロードしたファイルを読み出せませんでした");
+      const bytes = Buffer.from(await blob.arrayBuffer());
+
       const accessToken = await getAccessToken(sb, profile.id);
       const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
 
@@ -723,7 +740,7 @@ export default async function handler(req: any, res: any) {
         .select("file_name").eq("project_id", projectId);
       const fileName = nextFreeName(base, new Set((existing ?? []).map(r => String(r.file_name))));
 
-      // mimeType に Google 形式を指定すると、Drive 側が送られた中身を変換して保存する
+      // ① セッションを作る。mimeType に Google 形式を指定すると、Drive 側が中身を変換して保存する
       const params = new URLSearchParams({
         uploadType: "resumable", supportsAllDrives: "true", fields: "id,name,webViewLink",
       });
@@ -733,7 +750,7 @@ export default async function handler(req: any, res: any) {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json; charset=UTF-8",
           "X-Upload-Content-Type": sourceType,
-          ...(size > 0 ? { "X-Upload-Content-Length": String(size) } : {}),
+          "X-Upload-Content-Length": String(bytes.length),
         },
         body: JSON.stringify({ name: fileName, mimeType: MIME[kind], parents: [folderId] }),
       });
@@ -741,69 +758,25 @@ export default async function handler(req: any, res: any) {
         const j = await init.json().catch(() => ({}));
         const reason = j?.error?.errors?.[0]?.reason || "";
         throw new HttpError(init.status,
-          driveErrorMessage(init.status, reason, j?.error?.message || "アップロードを開始できませんでした"));
+          driveErrorMessage(init.status, reason, j?.error?.message || "Googleドライブへの送信を開始できませんでした"));
       }
       const uploadUrl = init.headers.get("location");
-      if (!uploadUrl) throw new HttpError(502, "アップロード先を取得できませんでした");
+      if (!uploadUrl) throw new HttpError(502, "Googleドライブの送り先を取得できませんでした");
 
-      return res.json({ uploadUrl, fileName, parentId, folderId });
-    }
-
-    // ── 変換アップロード ②完了後の登録 ────────────────────
-    if (action === "register-upload") {
-      const projectId = String(body.projectId ?? "");
-      const kind = String(body.kind ?? "");
-      const reserved = String(body.fileName ?? "");
-      if (!projectId || !MIME[kind] || !reserved) {
-        return res.status(400).json({ error: "projectId / kind / fileName が必要です" });
+      // ② 中身を送る（サーバー間なので CORS は関係ない）
+      const put = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": sourceType, "Content-Length": String(bytes.length) },
+        body: bytes,
+      });
+      const created = await put.json().catch(() => ({}));
+      if (!put.ok || !created?.id) {
+        const reason = created?.error?.errors?.[0]?.reason || "";
+        throw new HttpError(put.status || 502,
+          driveErrorMessage(put.status, reason, created?.error?.message || "Google形式への変換に失敗しました"));
       }
-      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
-
-      const { data: project } = await sb.from("projects")
-        .select("id, name, organization_id, members").eq("id", projectId).maybeSingle();
-      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
-
-      const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
-      if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
-
-      const cfg = await orgConfig(sb, project.organization_id ? String(project.organization_id) : null);
-      const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = String(body.folderId ?? "") || await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
-
-      // ブラウザが Drive の応答を読めた場合は fileId が来る。
-      // CORS 等で読めなかった場合に備え、押さえておいた名前でフォルダ内を引き直す。
-      let fileId = String(body.fileId ?? "");
-      if (!fileId) {
-        const params = new URLSearchParams({
-          q: `name='${q(reserved)}' and '${q(folderId)}' in parents and trashed=false`,
-          fields: "files(id)", pageSize: "1",
-          supportsAllDrives: "true", includeItemsFromAllDrives: "true",
-        });
-        if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
-          params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
-        }
-        const found = await drive(accessToken, `/files?${params}`);
-        fileId = String(found?.files?.[0]?.id ?? "");
-        if (!fileId) throw new HttpError(502, "アップロードしたファイルを特定できませんでした");
-      }
-
-      // ★ drive.file スコープなので、アプリが作っていないファイルはここで 404 になる。
-      //   それに加えて、置き場所が意図したフォルダかどうかも確かめる。
-      const info = await drive(accessToken,
-        `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=id,name,webViewLink,parents`);
-      if (!Array.isArray(info?.parents) || !info.parents.includes(folderId)) {
-        return res.status(400).json({ error: "アップロード先が正しくありません" });
-      }
-
-      // 押さえた名前が他の登録に取られていた場合に備えて採り直し、Drive 側も合わせる
-      const { data: existing } = await sb.from("project_files")
-        .select("file_name").eq("project_id", projectId);
-      const fileName = nextFreeName(reserved, new Set((existing ?? []).map(r => String(r.file_name))));
-      if (fileName !== String(info.name)) {
-        await drive(accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, {
-          method: "PATCH", body: { name: fileName },
-        }).catch(() => undefined);
-      }
+      const fileId = String(created.id);
+      const webViewLink = String(created.webViewLink ?? "");
 
       const people = await projectMemberEmails(sb, project as any);
       const share = await grantMembers(accessToken, fileId, people, String(profile.google_email ?? ""));
@@ -819,18 +792,23 @@ export default async function handler(req: any, res: any) {
         uploaded_by: profile.name,
         external_provider: "google",
         external_id: fileId,
-        external_url: String(info.webViewLink ?? ""),
+        external_url: webViewLink,
         ...(parentId ? { parent_id: parentId } : {}),
       }).select().maybeSingle();
 
       if (error) {
+        // Drive 上の孤児は消す。Storage の実体は残し、クライアントに「そのまま保存」させる
         await drive(accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, { method: "DELETE" })
           .catch(() => undefined);
         return res.status(500).json({ error: error.message });
       }
 
+      // ここまで来て初めて Storage の実体を片付ける（ファイルは Drive 側の1つだけにする）
+      const { error: rmErr } = await sb.storage.from(STAGING_BUCKET).remove([path]);
+      if (rmErr) console.error("[google] staged object cleanup failed:", rmErr.message);
+
       return res.json({
-        file: inserted, url: String(info.webViewLink ?? ""), fileName,
+        file: inserted, url: webViewLink, fileName,
         shared: share.granted, failed: share.failed,
       });
     }

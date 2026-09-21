@@ -6,6 +6,9 @@
   "functions": {
     "api/github/[resource].ts": {
       "maxDuration": 60
+    },
+    "api/google/[action].ts": {
+      "maxDuration": 300
     }
   },
   "rewrites": [
