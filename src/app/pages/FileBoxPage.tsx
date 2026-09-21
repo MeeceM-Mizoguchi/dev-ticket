@@ -30,7 +30,7 @@ import {
   isGoogleFile, GOOGLE_KIND_LABEL, googleConvertKind, googleExportUrl,
 } from "@/app/lib/projectFiles";
 import {
-  openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile,
+  openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
   type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -40,6 +40,11 @@ import {
 } from "@/app/lib/folderUpload";
 
 const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
+// タブ復帰での Drive 同期を間引く間隔。
+// タブを往復するだけの操作で毎回サーバーレス関数を起こさないため。
+// Google 側で名前を変える操作はどう急いでもこれより時間がかかるので、取りこぼさない。
+// 画面遷移・リロードのときは間引かず必ず同期する。
+const DRIVE_SYNC_MIN_INTERVAL_MS = 10_000;
 const TOO_MANY_MSG = `一度に扱えるのは ${MAX_UPLOAD_ENTRIES} 件までです。先頭の ${MAX_UPLOAD_ENTRIES} 件だけ取り込みます`;
 
 // 何十件も並べるとトーストが画面を埋めるので、先頭数件だけ出して残りは件数で伝える
@@ -142,6 +147,10 @@ export function FileBoxPage() {
   // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
   const [googleDrive, setGoogleDrive] = useState<GoogleDriveProjectConfig | null>(null);
 
+  // Drive 上に見つからなかった Googleファイル（project_files の id）。
+  // 行は消さず、一覧に「Driveで削除済み」と出して気づけるようにする。
+  const [missingGoogleIds, setMissingGoogleIds] = useState<Set<string>>(new Set());
+
   // Office文書を入れられたときの「そのまま / Google形式に変換」の確認待ち
   const [convertPrompt, setConvertPrompt] = useState<
     { entries: UploadEntry[]; targetFolderId?: string | null; names: string[] } | null>(null);
@@ -153,7 +162,36 @@ export function FileBoxPage() {
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
 
-  const load = useCallback(async () => {
+  // ── Drive 側の変更の取り込み ─────────────────────────────
+  // Google の画面で名前を変えても DevTicket は気づけないので、こちらから取りに行く。
+  // （設計書 9.1 のとおり、同期は DevTicket → Google の一方通行のままで、
+  //   名前と存在だけをこの経路で拾う。フォルダ移動は追わない）
+  const lastDriveSyncRef = useRef(0);
+  const syncFromDrive = useCallback(async (projectId: string, force: boolean) => {
+    if (!force && Date.now() - lastDriveSyncRef.current < DRIVE_SYNC_MIN_INTERVAL_MS) return;
+    lastDriveSyncRef.current = Date.now();
+    try {
+      const res = await syncGoogleNames(projectId);
+      if (res.skipped) return;
+      setMissingGoogleIds(new Set(res.missing));
+      if (res.renamed.length === 0) return;
+
+      // BUG-02/03 変わったときだけ引き直す。loading は触らない（スピナーへ戻さない）
+      const { data } = await supabase!.from("project_files")
+        .select("*").eq("project_id", projectId).order("created_at", { ascending: false });
+      if (data) setFiles(data.map(mapProjectFile));
+      toast(`Googleドライブ側の名前の変更を取り込みました：${summarize(res.renamed.map(r => `「${r.before}」→「${r.after}」`))}`);
+    } catch (e) {
+      // 取り込めなくてもファイルボックス自体は使えるので、画面は止めない
+      console.warn("[FileBox] Drive の変更を取り込めませんでした", e);
+    }
+  }, [toast]);
+
+  /**
+   * @param forceDriveSync Drive 側の変更の取り込みを間引かずに行う。
+   *   画面遷移・リロードのときは true。タブ復帰のときは false（短時間の往復で叩かない）。
+   */
+  const load = useCallback(async (forceDriveSync = false) => {
     if (!isSupabaseEnabled || !projectSlug) { setLoading(false); return; }
     // 404画面はリダイレクトせずその場に留まるので、別PJへ移ったときに前回の判定を
     // 引きずらないよう毎回クリアしてから引き直す。
@@ -200,9 +238,16 @@ export function FileBoxPage() {
       setEffectiveWhiteboardPerm((perms?.whiteboardPermission as AccessLevel | undefined) ?? "none");
     }
     setLoading(false);
-  }, [projectSlug, userId, isAdminRole]);
 
-  useEffect(() => { load(); }, [load]);
+    // Googleファイルが1件も無ければ問い合わせる意味が無いので、そこで打ち切る。
+    // await しないのは、Drive への往復で一覧の描画を待たせないため。
+    if ((data ?? []).some(r => r.external_provider === "google")) {
+      void syncFromDrive(p.id, forceDriveSync);
+    }
+  }, [projectSlug, userId, isAdminRole, syncFromDrive]);
+
+  // 画面遷移・リロードのときは間引かずに同期する（タブ復帰だけ間引く）
+  useEffect(() => { load(true); }, [load]);
 
   // 旧識別子で来たURLを現行のものへ置き換える（配布済みリンクの受け皿）
   useCanonicalSlugRedirect(projectSlug, aliasCanonicalSlug);
@@ -586,7 +631,12 @@ export function FileBoxPage() {
   }, [toast]);
 
   // Googleファイルを開く。ビューアは持たず、Google上の編集画面へ送る
-  const handleOpenGoogle = useCallback((file: ProjectFile) => {
+  const handleOpenGoogle = useCallback((file: ProjectFile, missing = false) => {
+    // Google の「ファイルが見つかりません」に飛ばすより、こちらで理由を伝える
+    if (missing) {
+      toast(`「${file.fileName}」はGoogleドライブ上で削除されているため開けません`, "error");
+      return;
+    }
     if (!openGoogleFile(file)) toast("このファイルのURLが見つかりません", "error");
   }, [toast]);
 
@@ -867,8 +917,9 @@ export function FileBoxPage() {
               const kind = getFileKind(f.fileName, f.fileType);
               const Icon = KIND_ICON[kind];
               const isGoogle = isGoogleFile(f);
+              const isMissing = isGoogle && missingGoogleIds.has(f.id);
               return (
-                <div key={f.id} onClick={() => isGoogle ? handleOpenGoogle(f) : setPreviewTarget(f)}
+                <div key={f.id} onClick={() => isGoogle ? handleOpenGoogle(f, isMissing) : setPreviewTarget(f)}
                   draggable
                   onDragStart={e => {
                     setDraggingFile(f);
@@ -896,6 +947,13 @@ export function FileBoxPage() {
                         <span title="リンクを知っている全員が編集できます"
                           style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#FEF3C7", color: "#B45309", display: "inline-flex", alignItems: "center", gap: 3 }}>
                           <Globe style={{ width: 9, height: 9 }} />リンク公開中
+                        </span>
+                      )}
+                      {/* Drive 側で消された行。DevTicket 側は消さずに、開けないことだけ伝える */}
+                      {isMissing && (
+                        <span title="Googleドライブ上で削除されているため開けません"
+                          style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#FEF2F2", color: "#DC2626" }}>
+                          Driveで削除済み
                         </span>
                       )}
                     </TruncatedText>

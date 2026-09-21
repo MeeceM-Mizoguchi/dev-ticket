@@ -261,16 +261,19 @@ export default async function handler(req: any, res: any) {
     if (!fileId || !rawName.trim()) return res.status(400).json({ error: "fileId and newName are required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, is_folder").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, is_folder, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+
+    // Googleファイルは版を持たず、拡張子も無い。フォルダと同じく1行だけを書き換える。
+    const isSingleRow = file.is_folder || file.external_provider === "google";
 
     let newName = sanitizeFileName(rawName);
     if (!newName) return res.status(400).json({ error: "使用できない名前です" });
 
     // 拡張子はファイルの種別そのもの（ビューアの判定・Officeの起動・保存キーの拡張子）。
     // 消したり書き換えたりされると開けないファイルになるため、元の拡張子を必ず保つ。
-    if (!file.is_folder) {
+    if (!isSingleRow) {
       const orgExt = splitName(String(file.file_name)).ext;
       if (orgExt && splitName(newName).ext.toLowerCase() !== orgExt.toLowerCase()) {
         newName = `${splitName(newName).base}${orgExt}`;
@@ -285,17 +288,17 @@ export default async function handler(req: any, res: any) {
       .select("file_name").eq("project_id", file.project_id).neq("file_name", file.file_name);
     newName = nextFreeName(newName, new Set((rows ?? []).map(r => String(r.file_name))));
 
-    // フォルダは版もコメントも持たず、別の階層に同名が並びうる。
+    // フォルダとGoogleファイルは版もコメントも持たず、別の階層に同名が並びうる。
     // 巻き込み更新をしていいのはファイル（＝同名が同一ファイルの版）だけ。
     const update = sb.from("project_files").update({ file_name: newName });
-    const { error } = await (file.is_folder
+    const { error } = await (isSingleRow
       ? update.eq("id", fileId)
       : update.eq("project_id", file.project_id).eq("file_name", file.file_name));
     if (error) return res.status(500).json({ error: error.message });
 
     // コメント(BRU12-025)は project_files への FK を持たず (project_id, file_name) で引くので、
     // ここで一緒に付け替えないとリネームした瞬間に全部見えなくなる。
-    if (!file.is_folder) {
+    if (!isSingleRow) {
       const { error: cErr } = await sb.from("project_file_comments")
         .update({ file_name: newName })
         .eq("project_id", file.project_id).eq("file_name", file.file_name);
@@ -311,9 +314,20 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+
+    // ★ Googleファイルは「その1行だけ」を id で消す。
+    //   通常のファイルは同名＝同じファイルの別バージョンなので file_name でまとめて消してよいが、
+    //   Googleファイルに版の概念は無く、名前は Google 側で自由に変えられる。
+    //   名前で引くと、たまたま同名になった無関係なファイルまで巻き添えで消える。
+    if (file.external_provider === "google") {
+      const { error } = await sb.from("project_files").delete().eq("id", fileId);
+      if (error) return res.status(500).json({ error: error.message });
+      // Googleドライブ上の実体は残す（設計書 2章 決定事項8）
+      return res.json({ ok: true, deleted: 0 });
+    }
 
     // 一覧は最新版だけを見せているので、削除も同名の全版をまとめて消す。
     // (最新版だけ消すと、画面上は古い版が復活したように見えてしまう)
