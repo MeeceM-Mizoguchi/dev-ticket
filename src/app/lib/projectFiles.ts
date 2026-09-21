@@ -36,6 +36,13 @@ export const GOOGLE_APP_LABEL: Record<GoogleAppKind, string> = {
   presentation: "スライド",
 };
 
+/** 変換元の Office アプリ名。アップロード時の案内文を種別に合わせるために使う */
+export const OFFICE_APP_LABEL: Record<GoogleAppKind, string> = {
+  spreadsheet: "Excel",
+  document: "Word",
+  presentation: "PowerPoint",
+};
+
 export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
   gsheet: "Googleスプレッドシート",
   gdoc: "Googleドキュメント",
