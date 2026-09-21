@@ -23,6 +23,7 @@ import { NewsArticlePage } from "@/app/pages/lp/news/NewsArticlePage";
 import { OrgProvider } from "@/app/contexts/OrgContext";
 import { PlanProvider } from "@/app/contexts/PlanContext";
 import { useVersionCheck } from "@/app/hooks/useVersionCheck";
+import { AppUpdateOverlay } from "@/app/components/shared/AppUpdateOverlay";
 
 // ネイティブアプリ(macOS/iPad)では営業用LPを表示せず、
 // ログイン済みならダッシュボード、未ログインならログイン画面へ直行する。
@@ -43,9 +44,10 @@ function WebNavBridge() {
 // 新しいバージョンがデプロイされたら自動でリロードする監視（BRU11-045）。
 // ログイン済み画面だけでなくログイン画面/LP/スプラッシュ中も含めて常時動かすため、
 // シェルではなくアプリ最上位（ToastProvider の内側）に置く。
+// 検知から新しい画面に切り替わり終わるまでは AppUpdateOverlay が全画面で進捗を出す。
 function VersionWatcher() {
   useVersionCheck();
-  return null;
+  return <AppUpdateOverlay />;
 }
 
 function RootRoute() {

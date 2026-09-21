@@ -11,6 +11,95 @@
       <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=4" />
       <title>dev-ticket</title>
       <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
+      <!-- 新バージョンへの更新オーバーレイ（src/app/components/shared/AppUpdateOverlay.tsx と共用）。
+           リロード直後、JS バンドルが届く前から同じ見た目で出すため、CSS はここに置いている。 -->
+      <style>
+        .vu-backdrop { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; background: rgba(20,26,22,0.48); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif; animation: vu-fade 0.2s ease-out; }
+        .vu-card { position: relative; width: 440px; max-width: 100%; max-height: 100%; overflow-y: auto; box-sizing: border-box; background: #fff; border-radius: 24px; padding: 32px 28px 24px; text-align: center; border: 1px solid rgba(26,23,20,0.06); box-shadow: 0 30px 80px rgba(20,26,22,0.30), 0 2px 10px rgba(20,26,22,0.08); animation: vu-pop 0.3s cubic-bezier(0.16,1,0.3,1); }
+        .vu-static, .vu-static .vu-card { animation: none; }
+        .vu-ring { position: relative; width: 156px; height: 156px; margin: 0 auto 20px; }
+        .vu-ring::before { content: ""; position: absolute; inset: 10px; border-radius: 50%; background: radial-gradient(circle, rgba(52,211,153,0.16), rgba(52,211,153,0) 70%); animation: vu-glow 2.4s ease-in-out infinite; }
+        .vu-ring svg { position: relative; width: 100%; height: 100%; transform: rotate(-90deg); }
+        .vu-ring-track { fill: none; stroke: #EEF2EF; stroke-width: 11; }
+        .vu-ring-bar { fill: none; stroke-width: 11; stroke-linecap: round; transition: stroke-dashoffset 0.6s cubic-bezier(0.4,0,0.2,1); }
+        .vu-ring-glint { transform-origin: 78px 78px; animation: vu-spin 1.8s linear infinite; }
+        .vu-ring-glint circle { fill: none; stroke: #fff; stroke-width: 11; stroke-linecap: round; opacity: 0.45; }
+        .vu-ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .vu-pct { font-size: 40px; font-weight: 800; color: #1A1714; letter-spacing: -1px; line-height: 1; font-variant-numeric: tabular-nums; }
+        .vu-pct small { font-size: 17px; font-weight: 700; color: #6B6458; margin-left: 2px; letter-spacing: 0; }
+        .vu-pct-label { font-size: 11px; font-weight: 700; color: #A09790; margin-top: 7px; letter-spacing: 0.4px; }
+        .vu-check { width: 58px; height: 58px; border-radius: 50%; background: linear-gradient(135deg, #059669, #34D399); display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(5,150,105,0.35); animation: vu-pop 0.35s cubic-bezier(0.16,1,0.3,1); }
+        .vu-check::after { content: ""; width: 12px; height: 22px; border: solid #fff; border-width: 0 4px 4px 0; transform: translateY(-3px) rotate(45deg); }
+        .vu-title { font-size: 18px; font-weight: 800; color: #1A1714; margin: 0; line-height: 1.4; }
+        .vu-sub { font-size: 12.5px; color: #6B6458; margin: 6px 0 0; line-height: 1.6; }
+        .vu-ver { display: inline-block; margin-top: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; color: #047857; background: rgba(5,150,105,0.10); border-radius: 999px; padding: 3px 11px; }
+        .vu-steps { list-style: none; margin: 20px 0 0; padding: 14px 16px; background: #F7F8F7; border: 1px solid rgba(26,23,20,0.06); border-radius: 14px; text-align: left; display: flex; flex-direction: column; gap: 11px; }
+        .vu-step { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; color: #B4ACA5; }
+        .vu-step[data-s="done"] { color: #3D3732; }
+        .vu-step[data-s="active"] { color: #1A1714; font-weight: 700; }
+        .vu-dot { width: 18px; height: 18px; flex-shrink: 0; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+        .vu-step[data-s="todo"] .vu-dot { border: 2px solid #DCDFDC; }
+        .vu-step[data-s="active"] .vu-dot { border: 2.5px solid rgba(5,150,105,0.18); border-top-color: #059669; animation: vu-spin 0.8s linear infinite; }
+        .vu-step[data-s="done"] .vu-dot { background: #059669; }
+        .vu-step[data-s="done"] .vu-dot::after { content: ""; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: translateY(-1px) rotate(45deg); }
+        .vu-step-tag { margin-left: auto; font-size: 11px; font-weight: 700; color: #059669; white-space: nowrap; }
+        .vu-note { margin: 16px 0 0; font-size: 11.5px; color: #A09790; line-height: 1.6; }
+        .vu-note strong { color: #6B6458; }
+        .vu-failed-icon { width: 58px; height: 58px; margin: 4px auto 16px; border-radius: 50%; background: #FEF3C7; color: #B45309; display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 800; }
+        .vu-actions { display: flex; gap: 10px; margin-top: 20px; }
+        .vu-btn { flex: 1; padding: 11px 12px; border-radius: 11px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; border: 1px solid rgba(26,23,20,0.12); background: #fff; color: #3D3732; }
+        .vu-btn:hover { background: #F4F5F6; }
+        .vu-btn-primary { border: none; background: linear-gradient(135deg, #059669, #10B981); color: #fff; box-shadow: 0 4px 12px rgba(5,150,105,0.28); }
+        .vu-btn-primary:hover { background: linear-gradient(135deg, #047857, #059669); }
+        @keyframes vu-spin { to { transform: rotate(360deg); } }
+        @keyframes vu-fade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes vu-pop { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: none; } }
+        @keyframes vu-glow { 0%, 100% { transform: scale(0.94); opacity: 0.7; } 50% { transform: scale(1.06); opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) { .vu-ring-glint, .vu-ring::before { animation: none; } }
+      </style>
+      <!-- 自動更新のリロード直後だけ、JS バンドルが起動するまでの空白を更新オーバーレイで埋める。
+           進捗は useVersionCheck がリロード直前に sessionStorage("versionCheck.overlay") へ残したもの。
+           body の解析より前（＝新しいページの最初の描画より前）に出すため head に置き、<html> 直下へ差し込む。
+           見た目（工程名・構造）は AppUpdateOverlay.tsx と揃えること。起動後はそちらに差し替わる。 -->
+      <script>
+        (function () {
+          try {
+            var raw = sessionStorage.getItem("versionCheck.overlay");
+            if (!raw) return;
+            var m = JSON.parse(raw);
+            if (!m || !m.at || !(Date.now() - m.at < 180000)) return;
+            var p = Math.max(0, Math.min(100, Math.floor(Number(m.progress) || 0)));
+            var C = 2 * Math.PI * 66;
+            var ver = String(m.version || "").replace(/[^\w.\-]/g, "");
+            var steps = ["新しいバージョンを検知", "サーバーへの公開を待機", "古いキャッシュを整理", "新しい画面を読み込み", "データを読み込み直して仕上げ"];
+            var list = "";
+            for (var i = 0; i < steps.length; i++) {
+              var s = i < 3 ? "done" : i === 3 ? "active" : "todo";
+              list += '<li class="vu-step" data-s="' + s + '"><span class="vu-dot"></span><span>' + steps[i] + "</span>" +
+                (s === "active" ? '<span class="vu-step-tag">処理中</span>' : "") + "</li>";
+            }
+            var el = document.createElement("div");
+            el.id = "vu-boot";
+            el.className = "vu-backdrop vu-static";
+            el.innerHTML =
+              '<div class="vu-card">' +
+                '<div class="vu-ring"><svg viewBox="0 0 156 156">' +
+                  '<defs><linearGradient id="vu-grad-boot" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#059669"/><stop offset="1" stop-color="#34D399"/></linearGradient></defs>' +
+                  '<circle class="vu-ring-track" cx="78" cy="78" r="66"/>' +
+                  '<circle class="vu-ring-bar" cx="78" cy="78" r="66" stroke="url(#vu-grad-boot)" stroke-dasharray="' + C + '" stroke-dashoffset="' + (C * (1 - p / 100)) + '"/>' +
+                  '<g class="vu-ring-glint"><circle cx="78" cy="78" r="66" stroke-dasharray="14 ' + C + '"/></g>' +
+                '</svg><div class="vu-ring-center"><div class="vu-pct">' + p + "<small>%</small></div>" +
+                '<div class="vu-pct-label">更新中</div></div></div>' +
+                '<p class="vu-title">新しいバージョンに更新しています</p>' +
+                '<p class="vu-sub">新しい画面を読み込んでいます</p>' +
+                (ver ? '<span class="vu-ver">' + ver + "</span>" : "") +
+                '<ul class="vu-steps">' + list + "</ul>" +
+                '<p class="vu-note"><strong>画面を閉じずにそのままお待ちください。</strong><br>完了すると自動で新しい画面に切り替わります。</p>' +
+              "</div>";
+            document.documentElement.appendChild(el);
+          } catch (e) { /* 表示できなくても更新自体は進む */ }
+        })();
+      </script>
     </head>
 
     <body>
@@ -18,4 +107,3 @@
       <script type="module" src="/src/main.tsx"></script>
     </body>
   </html>
-  

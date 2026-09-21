@@ -13,6 +13,12 @@ declare const __APP_BUILD_TIME__: string;
 
 export const APP_BUILD_TIME: string = typeof __APP_BUILD_TIME__ !== "undefined" ? __APP_BUILD_TIME__ : "";
 
+// このバンドルがどの環境向けにビルドされたか（Vercel の VERCEL_ENV）。
+// 本番("production")のときだけ、DB に記録された「公開準備中の版」を見てデプロイを早めに検知する。
+declare const __APP_DEPLOY_ENV__: string;
+
+export const APP_DEPLOY_ENV: string = typeof __APP_DEPLOY_ENV__ !== "undefined" ? __APP_DEPLOY_ENV__ : "";
+
 // ── 「このバージョンがいつ更新されたか」の表示用 ────────────────────────
 // 基準は APP_BUILD_TIME（epoch ms＝ビルドされた瞬間そのもの）。
 // 焼込みが無い環境（古いバンドル等）では、バージョン文字列 "v2026.08.22.1917" から
