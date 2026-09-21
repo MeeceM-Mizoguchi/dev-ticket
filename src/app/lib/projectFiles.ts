@@ -245,14 +245,37 @@ export async function fetchProjectFileFresh(fileId?: string | null, fallbackUrl?
 export async function uploadProjectFile(
   projectId: string, file: File, opts?: { uniqueName?: boolean; parentId?: string | null; fileId?: string },
 ): Promise<string> {
-  const fileName = file.name;
-  const targetParentId = opts?.parentId ?? (opts as any)?.parent_id ?? null;
+  const path = await stageProjectFile(projectId, file);
+  return registerStagedFile(projectId, path, file, opts);
+}
+
+/**
+ * ストレージへ実体だけを置く（DBにはまだ登録しない）。
+ * 通常のアップロードの①②にあたる。Google形式への変換では、
+ * ここに置いたものをサーバーが Drive へ中継する（googleDrive.ts の uploadAsGoogleFile）。
+ * @returns ストレージ上の保存キー
+ */
+export async function stageProjectFile(projectId: string, file: File): Promise<string> {
   const { path, token } = await postApi<{ path: string; token: string }>(
-    "upload-url", { projectId, fileName });
+    "upload-url", { projectId, fileName: file.name });
 
   const { error } = await supabase!.storage.from("project-files")
     .uploadToSignedUrl(path, token, file, { contentType: file.type || "application/octet-stream" });
   if (error) throw new Error(error.message);
+  return path;
+}
+
+/**
+ * ストレージに置いた実体をDBに登録する（通常のアップロードの③）。
+ * Google形式への変換に失敗したときも、置いた実体をこれで「そのまま保存」に切り替える。
+ * @returns 実際に登録されたファイル名（改名された場合はその名前）
+ */
+export async function registerStagedFile(
+  projectId: string, path: string, file: File,
+  opts?: { uniqueName?: boolean; parentId?: string | null; fileId?: string },
+): Promise<string> {
+  const fileName = file.name;
+  const targetParentId = opts?.parentId ?? (opts as any)?.parent_id ?? null;
 
   const res = await postApi<{ file: any; fileName?: string }>("register", {
     projectId, path, fileName, fileSize: file.size, fileType: file.type || "",
