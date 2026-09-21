@@ -29,6 +29,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   fetchTicketLinks, fetchPulls, fetchPull, fetchBranches, fetchPendingBranches, fetchTicketBranches,
   linkTicket, unlinkTicket, mergePull, mergePullsBulk, precheckMerge, resolveLinkCandidate, GithubApiError,
+  isAwaitingChecks,
 } from "@/app/lib/github";
 import { isPrLinkAlertStatus } from "@/app/lib/prLinkAlert";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
@@ -45,6 +46,16 @@ import type {
 } from "@/app/types";
 
 const BLACK = "#1F2328";
+
+/**
+ * マージを押したとき、CIの完了を待つ上限。
+ * これを過ぎたら待つのをやめて、その時点の状態で確認を開く（押し直せば再判定される）
+ */
+const MERGE_CI_WAIT_MS = 3 * 60 * 1000;
+/** CI待ちの間に状態を引き直す間隔 */
+const MERGE_CI_POLL_MS = 5000;
+/** CIが通ってから GitHub の判定が clean に変わるまでを待つ回数 */
+const MERGE_CI_SETTLE_POLLS = 3;
 
 /** 親（チケット詳細）へ渡す状態。リリースノート追加後の案内と離脱確認の判断に使う */
 export interface TicketPrState {
@@ -132,6 +143,8 @@ export function TicketPrSection({
    * state だけだと、同じレンダーのハンドラが2回走ったときに両方すり抜ける
    */
   const preparingMergeRef = useRef(false);
+  /** マージ前にCIの完了を待っている間の表示（BRU17-007）。null なら待っていない */
+  const [mergeWaitNote, setMergeWaitNote] = useState<string | null>(null);
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
   /**
    * 「他のPRとまとめてマージするか」の確認（BRU14-007）。
@@ -410,11 +423,38 @@ export function TicketPrSection({
     const key = currentKeyRef.current;
     setPreparingMerge(number);
     try {
-      const [detail, list] = await Promise.all([
+      let [detail, list] = await Promise.all([
         fetchPull(projectId, number),
         fetchPulls(projectId).catch(() => null),
       ]);
       if (currentKeyRef.current !== key) return; // 別チケットに切り替わっていたら捨てる
+
+      // PRを作った直後・push した直後は、必須チェック（CI）が走っている間 GitHub が
+      // blocked を返す。そのまま確認を開くと「マージできないPR」として除外され、
+      // CIが終わってから押し直すと通る、という食い違いになる（BRU17-007）。
+      // 押したPRがCI待ちで止まっているだけなら、終わるまで待ってから開く。
+      if (isAwaitingChecks(detail.pull)) {
+        const deadline = Date.now() + MERGE_CI_WAIT_MS;
+        // CIが通ってから GitHub の mergeable_state が clean に変わるまで少し遅れるので、
+        // 「CIは成功・まだ blocked」も数回までは待つ
+        let settleLeft = MERGE_CI_SETTLE_POLLS;
+        while (Date.now() < deadline) {
+          const p = detail.pull;
+          const waiting = isAwaitingChecks(p)
+            || (p.mergeableState === "blocked" && p.checkState === "success" && settleLeft-- > 0);
+          if (!waiting) break;
+          setMergeWaitNote(p.checkState === "pending" && p.checkSummary ? p.checkSummary : "CIの開始待ち");
+          await new Promise(r => setTimeout(r, MERGE_CI_POLL_MS));
+          if (currentKeyRef.current !== key) return;
+          detail = await fetchPull(projectId, number);
+          if (currentKeyRef.current !== key) return;
+        }
+        setMergeWaitNote(null);
+        // 待っている間に他のPRの状態も変わっている（先にマージされた等）ので引き直す
+        list = await fetchPulls(projectId).catch(() => list);
+        if (currentKeyRef.current !== key) return;
+      }
+
       const others = (list?.pulls ?? []).filter(p => p.number !== number);
       if (!others.length) { setMergeTarget(detail.pull); return; }
       // 押したPRは一覧側にも入っているが、そちらは可否やCIが省かれていることがある
@@ -425,7 +465,7 @@ export function TicketPrSection({
       toast(e instanceof GithubApiError ? e.message : "PRの詳細を取得できませんでした", "error");
     } finally {
       preparingMergeRef.current = false;
-      if (currentKeyRef.current === key) setPreparingMerge(null);
+      if (currentKeyRef.current === key) { setPreparingMerge(null); setMergeWaitNote(null); }
     }
   };
 
@@ -668,7 +708,9 @@ export function TicketPrSection({
                     style={{ padding: "4px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", background: busy || preparingMerge !== null ? "#9CA3AF" : BLACK, color: "#FFF", cursor: busy || preparingMerge !== null ? "default" : "pointer", whiteSpace: "nowrap" as const, flexShrink: 0 }}>
                     {/* 詳細に加えてオープンなPR全件も引くので数秒かかる。
                         「確認中」だけだと何を待っているのか分からない（BRU14-007） */}
-                    {preparingMerge === l.number ? "他のPRを確認中..." : "マージする"}
+                    {preparingMerge === l.number
+                      ? mergeWaitNote ? `CI完了待ち（${mergeWaitNote}）...` : "他のPRを確認中..."
+                      : "マージする"}
                   </button>
                 )}
                 {canEditLinks && (

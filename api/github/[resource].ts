@@ -4072,7 +4072,9 @@ function mergeBlockReasonOf(p: any): { conflict: boolean; pending: boolean; mess
     return at(true, "コンフリクトがあります。GitHub上で解消してください。");
   }
   switch (p.mergeable_state) {
-    case "blocked": return at(false, "必須チェックまたはレビュー承認が不足しています。");
+    // CIが走っている間も blocked になる（PR作成・push の直後）。その場合は待てば通るので、
+    // 「足りない」と断定せず、やり直せば通ることもあると添える（BRU17-007）
+    case "blocked": return at(false, "必須チェックまたはレビュー承認が不足しています。CIが実行中の場合は、完了してからもう一度お試しください。");
     case "behind": return at(false, "ベースブランチより古いため更新が必要です。");
     case "draft": return at(false, "Draft のためマージできません。");
     // 「まだ計算が終わっていない」だけで、マージできないと決まったわけではない。
