@@ -32,11 +32,14 @@ import {
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
+  convertExistingFile, startGoogleOAuth,
   type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
 import { FileKindIcon } from "@/app/components/files/FileKindIcon";
 import { BlockingSpinner } from "@/app/components/shared/BlockingSpinner";
+import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
+import { openPendingTab } from "@/app/lib/pendingTab";
 import {
   collectDropEntries, collectInputEntries, looksLikeFolder,
   MAX_UPLOAD_ENTRIES, type UploadEntry,
@@ -682,6 +685,52 @@ export function FileBoxPage() {
 
   // GoogleファイルをOffice形式で書き出す。
   // 閲覧者自身のGoogleログインで直接落とすので、サーバーを経由しない。
+  // Excel / Word / PowerPoint を Google形式にコピーして、別タブで開く。
+  // 元のファイルは残り、Google形式のコピーが同じフォルダに1行増える。
+  // クリックのたびに、その時点の最新版から新しくコピーを作る（古いコピーを開き直すと中身が古いため）。
+  const convertOpenRef = useRef(false); // BUG-05 連打で何個もコピーを作らせない
+  const [convertingOpen, setConvertingOpen] = useState(false);
+  const handleOpenAsGoogle = useCallback(async (file: ProjectFile) => {
+    const kind = googleConvertKind(file.fileName);
+    if (!kind || !project) return;
+    if (convertOpenRef.current) return;
+    convertOpenRef.current = true;
+
+    // 空タブはクリックと同じ実行の中で確保する（await の後だとポップアップブロックに当たる。pendingTab.ts 参照）
+    const appName = `Google${GOOGLE_APP_LABEL[kind]}`;
+    const tab = openPendingTab(
+      `${appName}で開いています`,
+      `「${file.fileName}」を${appName}にコピーして開きます。元のファイルはそのまま残ります。`,
+    );
+    setConvertingOpen(true);
+    try {
+      const res = await convertExistingFile(file.id);
+      if (tab) tab.location.href = res.url;
+      else toast("別タブを開けませんでした。一覧に追加されたファイルをクリックして開いてください", "error");
+
+      // 元のファイルとは別物であることを必ず伝える（片方を編集してももう片方には反映されない）
+      toast(`「${res.fileName}」として${appName}にコピーしました。元の「${file.fileName}」とは別のファイルです`);
+      if (res.failed.length > 0) {
+        toast(`${res.failed.length} 人に共有できませんでした（${summarize(res.failed.map(f => f.name))}）。Googleアカウントをお持ちか確認してください`, "error");
+      }
+      emitLinkItemsChanged(project.id, "file");
+      load();
+    } catch (e) {
+      try { tab?.close(); } catch { /* 既に閉じられている場合は無視 */ }
+      const err = e as Error & { status?: number };
+      // 428 = Googleアカウント未連携 / 連携切れ。エラーで終わらせず連携へ誘導する
+      if (err?.status === 428) {
+        toast("Googleアカウントの連携が必要です。連携画面へ移動します");
+        try { await startGoogleOAuth(); } catch { toast("連携を開始できませんでした", "error"); }
+        return;
+      }
+      toast(err?.message || `${appName}で開けませんでした`, "error");
+    } finally {
+      convertOpenRef.current = false;
+      setConvertingOpen(false);
+    }
+  }, [project, toast, load]);
+
   const handleExportGoogle = useCallback((file: ProjectFile) => {
     const url = googleExportUrl(file);
     if (!url) { toast("この形式は書き出せません", "error"); return; }
@@ -1012,6 +1061,19 @@ export function FileBoxPage() {
                       <Globe style={{ width: 13, height: 13 }} />
                     </button>
                   )}
+                  {/* Excel / Word / PowerPoint を Google形式にコピーして開く。
+                      連携が有効な組織で、変換できる拡張子のときだけ（.xlsm は対象外） */}
+                  {!isGoogle && googleDrive && googleConvertKind(f.fileName) && (() => {
+                    const gk = googleConvertKind(f.fileName)!;
+                    const label = `Google${GOOGLE_APP_LABEL[gk]}で開く（コピーを作成）`;
+                    return (
+                      <button onClick={e => { e.stopPropagation(); void handleOpenAsGoogle(f); }}
+                        title={label} aria-label={label} disabled={convertingOpen}
+                        style={{ background: "none", border: "none", cursor: convertingOpen ? "wait" : "pointer", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                        <GoogleGLogo size={13} />
+                      </button>
+                    );
+                  })()}
                   {/* Googleファイルは storage に実体が無いので、Google側でOffice形式に書き出す */}
                   <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
                     title={isGoogle ? "Office形式でダウンロード" : "ダウンロード"}
@@ -1034,6 +1096,7 @@ export function FileBoxPage() {
       </div>
 
       {convertingUpload && <BlockingSpinner label="Google形式に変換してアップロードしています" />}
+      {convertingOpen && <BlockingSpinner label="Google形式にコピーしています" />}
       {previewTarget && (
         <FileViewerModal file={previewTarget} onClose={closePreview}
           onDownload={handleDownload} onOpenInApp={handleOpenInApp}

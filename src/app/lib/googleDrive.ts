@@ -138,6 +138,16 @@ export async function uploadAsGoogleFile(
   }
 }
 
+/**
+ * ファイルボックスにある Office文書を Google形式にコピーする（「Googleスプレッドシートで開く」等）。
+ * 元のファイルは残り、Google形式のコピーが同じフォルダに1行増える。
+ * 呼ぶたびに、その時点の最新版から新しくコピーを作る。
+ * @returns 開く先のURLと、登録された名前
+ */
+export function convertExistingFile(fileId: string): Promise<CreateResult> {
+  return postApi<CreateResult>("convert-existing", { fileId });
+}
+
 export interface ImportResult {
   /** 追加できたもの。copied=true は保存先フォルダの外にあったためコピーして追加したもの */
   imported: { fileName: string; copied: boolean }[];
