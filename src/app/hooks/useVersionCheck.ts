@@ -504,11 +504,17 @@ export function useVersionCheck() {
     // スリープ復帰直後はまだ回線が復旧しておらず fetch が失敗しがち。
     // オンライン復帰時にもう一度確かめる。
     const onOnline = () => { void checkForUpdate(); };
+    // 遅れて読み込むチャンク(lazy import)が取れなかったとき。
+    // 起動後にデプロイが切り替わると、古いハッシュのチャンクがサーバーから消えていて
+    // 画面が真っ白になる。起動時の事故(index.html のウォッチドッグ)と同じ原因なので、
+    // ここでも版を確かめて、新しい版が出ていれば更新に乗せる。
+    const onPreloadError = () => { void checkForUpdate(); };
 
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("online", onOnline);
+    window.addEventListener("vite:preloadError", onPreloadError);
 
     return () => {
       clearInterval(id);
@@ -516,6 +522,7 @@ export function useVersionCheck() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("vite:preloadError", onPreloadError);
     };
   }, []);
 

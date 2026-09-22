@@ -100,6 +100,152 @@
           } catch (e) { /* 表示できなくても更新自体は進む */ }
         })();
       </script>
+      <!-- 起動ウォッチドッグ（BRU17-015）。
+           デプロイが切り替わる瞬間に読み込むと、index.html と /assets/*.js の世代が食い違い、
+           古いハッシュのJSが 404 → SPAフォールバックで index.html(text/html) が返る。
+           モジュールは "Expected a JavaScript-or-Wasm module script" で読み込みに失敗し、
+           バンドルが1行も動かない＝アプリ側のどの復帰処理にも到達できない。
+           結果、更新オーバーレイが「新しい画面を読み込み」85% のまま永久に止まり、
+           利用者が手動でリロードするまで直らなかった。
+           このインラインスクリプトだけは必ず動くので、ここで起動失敗を見張り、
+           キャッシュを片付けて自動で読み込み直す（無操作で完了させるための最後の砦）。 -->
+      <script>
+        (function () {
+          var KEY = "versionCheck.bootRetry";   // {at,count} 起動失敗の連続回数
+          var BUST = "_v";                      // useVersionCheck と同じキャッシュバスター
+          var DELAYS = [900, 2500, 5000, 8000]; // 再読み込みまでの待ち（回を追うごとに長く）
+          var MAX = DELAYS.length;
+          var FRESH = 5 * 60 * 1000;            // これより前の失敗は数え直す
+          var SOFT = 15000;                     // 読み込みが終わっても起動しない
+          var HARD = 40000;                     // 読み込み自体が終わらない
+          var t0 = Date.now();
+          var handled = false;
+
+          // 起動できたか（src/main.tsx がバンドル実行時に立てる）
+          function booted() { return !!window.__appBooted; }
+          // 本番ビルドのHTMLか（dev サーバーは /src/main.tsx なので見張らない）
+          function isBuilt() {
+            try { return !!document.querySelector('script[type="module"][src*="/assets/"]'); }
+            catch (e) { return false; }
+          }
+          function clearCount() { try { sessionStorage.removeItem(KEY); } catch (e) { /* ignore */ } }
+
+          // 更新オーバーレイが出ていればそれを使い、無ければ最小限のカードを出す。
+          function ensureCard() {
+            var el = document.getElementById("vu-boot");
+            if (el) return el;
+            el = document.createElement("div");
+            el.id = "vu-boot";
+            el.className = "vu-backdrop vu-static";
+            el.innerHTML =
+              '<div class="vu-card">' +
+                '<div style="width:52px;height:52px;margin:6px auto 18px;border-radius:50%;box-sizing:border-box;' +
+                  'border:5px solid rgba(5,150,105,0.18);border-top-color:#059669;animation:vu-spin 0.8s linear infinite"></div>' +
+                '<p class="vu-title">画面を読み込み直しています</p>' +
+                '<p class="vu-sub"></p>' +
+              "</div>";
+            document.documentElement.appendChild(el);
+            return el;
+          }
+
+          function showRetrying() {
+            try {
+              var sub = ensureCard().querySelector(".vu-sub");
+              if (sub) sub.textContent = "新しい画面を受け取れなかったため、もう一度読み込みます";
+            } catch (e) { /* 表示できなくても再読み込みは進む */ }
+          }
+
+          function showFailed() {
+            try {
+              var el = ensureCard();
+              el.innerHTML =
+                '<div class="vu-card">' +
+                  '<div class="vu-failed-icon">!</div>' +
+                  '<p class="vu-title">更新を完了できませんでした</p>' +
+                  '<p class="vu-sub">新しい画面を受け取れませんでした。<br>お手数ですが、もう一度お試しください。</p>' +
+                  '<div class="vu-actions"><button type="button" class="vu-btn vu-btn-primary" id="vu-boot-retry">再読み込みする</button></div>' +
+                "</div>";
+              var btn = document.getElementById("vu-boot-retry");
+              if (btn) btn.addEventListener("click", function () { clearCount(); purge(reload); });
+            } catch (e) { /* ignore */ }
+          }
+
+          // 古い資産を返しうる層を落としてから読み直す（useVersionCheck の purgeStaleCaches と同じ狙い）。
+          // 何が起きても cb は必ず1回呼ぶ。
+          function purge(cb) {
+            var pending = 0;
+            var fired = false;
+            function done() { if (!fired) { fired = true; cb(); } }
+            function step() { if (--pending <= 0) done(); }
+            setTimeout(done, 1200); // 片付けが終わらなくても先へ進む
+            try {
+              if (navigator.serviceWorker) {
+                pending++;
+                navigator.serviceWorker.getRegistrations()
+                  .then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); })
+                  ["catch"](function () {})
+                  .then(step);
+              }
+            } catch (e) { /* ignore */ }
+            try {
+              if (window.caches) {
+                pending++;
+                caches.keys()
+                  .then(function (ks) { return Promise.all(ks.map(function (k) { return caches["delete"](k); })); })
+                  ["catch"](function () {})
+                  .then(step);
+              }
+            } catch (e) { /* ignore */ }
+            if (pending === 0) done();
+          }
+
+          // URL を変えて別リクエストにする（同じURLのリロードはキャッシュから戻ることがある）。
+          function reload() {
+            try {
+              var u = new URL(window.location.href);
+              u.searchParams.set(BUST, "boot." + Date.now());
+              window.location.replace(u.toString());
+            } catch (e) { window.location.reload(); }
+          }
+
+          function fail() {
+            if (handled || booted() || !isBuilt()) return;
+            handled = true;
+            var count = 1;
+            try {
+              var s = JSON.parse(sessionStorage.getItem(KEY) || "null");
+              if (s && typeof s.count === "number" && Date.now() - s.at < FRESH) count = s.count + 1;
+              sessionStorage.setItem(KEY, JSON.stringify({ at: Date.now(), count: count }));
+            } catch (e) { /* ignore */ }
+            if (count > MAX) { showFailed(); return; }
+            showRetrying();
+            purge(function () { setTimeout(reload, DELAYS[count - 1]); });
+          }
+
+          // ① モジュール/スタイルの読み込み失敗を即座に捕まえる（本番の資産だけ見る）。
+          window.addEventListener("error", function (e) {
+            var t = e && e.target;
+            if (!t || t === window || handled) return;
+            var tag = t.tagName;
+            if (tag !== "SCRIPT" && tag !== "LINK") return;
+            try {
+              var u = new URL(t.src || t.href || "", window.location.href);
+              if (u.origin !== window.location.origin) return;
+              if (u.pathname.indexOf("/assets/") !== 0) return;
+            } catch (err) { return; }
+            fail();
+          }, true);
+
+          // ② エラーすら出ずに起動しない場合の保険。
+          (function tick() {
+            if (handled) return;
+            if (booted()) { clearCount(); return; }
+            var age = Date.now() - t0;
+            if ((age > SOFT && document.readyState === "complete") || age > HARD) { fail(); return; }
+            setTimeout(tick, 500);
+          })();
+        })();
+      </script>
     </head>
 
     <body>
