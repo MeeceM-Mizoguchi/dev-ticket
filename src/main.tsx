@@ -9,6 +9,12 @@ import "handsontable/dist/handsontable.full.min.css";
 // 同じ内容が画面に小さく詰め込まれて表示される。viewport幅を「Retina相当」に
 // 補正して、Web版と同じ見た目・文字サイズに揃える(全画面に効く)。
 // 実機iPad/iPhone(DPR≈2〜3)はそのまま。主にMacアプリ(DPR≈1.5)が対象。
+// index.html の起動ウォッチドッグへ「バンドルが動き出した」と伝える目印。
+// これが立たないまま読み込みが終わると、ウォッチドッグが自動で読み込み直す
+// （デプロイ切替の瞬間にJSが index.html(text/html) として返ってくる事故への保険）。
+// render より前に立てる: 描画中の例外でリロードを繰り返さないため。
+(window as unknown as { __appBooted?: boolean }).__appBooted = true;
+
 function normalizeNativeViewport() {
   if (!Capacitor.isNativePlatform()) return;
   // iPhone(縦長・小画面)は対象外。Mac/iPadはどちらも既定だと描画幅が広く
