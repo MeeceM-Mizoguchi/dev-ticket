@@ -9,7 +9,7 @@ import {
   downloadProjectFile, openProjectFileInApp,
   isGoogleFile, getFileKind, GOOGLE_KIND_LABEL, KIND_COLOR,
 } from "@/app/lib/projectFiles";
-import { openGoogleFile } from "@/app/lib/googleDrive";
+import { openGoogleFile, DRAWIO_OPEN_HINT } from "@/app/lib/googleDrive";
 import { FileViewerModal } from "./FileViewerModal";
 import { FileKindIcon } from "./FileKindIcon";
 
@@ -120,6 +120,8 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
             <button autoFocus
               onClick={() => {
                 if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
+                // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
+                if (kind === "drawio") toast(DRAWIO_OPEN_HINT, "info");
                 onClose();
               }}
               style={{ padding: "8px 16px", background: "#059669", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", gap: 6 }}>

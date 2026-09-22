@@ -53,6 +53,7 @@ public = false」とある。本機能は**この方針を部分的に緩める*
 | ⑬ | 既存のGoogleファイルの取り込み | **Picker で選ぶ／URLを貼る**の2経路。保存先フォルダの外にあるものは**保存先へコピー**して追加する（5.1.3） |
 
 | ⑭ | 既にあるOffice文書をGoogleで開く | 一覧の行の「G」ボタンで、**Google形式のコピーを作って別タブで開く**。元のファイルは残す（5.1.4） |
+| ⑮ | draw.io の図 | Googleアプリと同じ扱いで**新規作成／既存の取り込み**ができる。開く先は **Googleドライブのファイル画面**（5.1.5） |
 
 **非対象**: Drive にある Office 形式（.xlsx 等）の取り込み、Googleファイルの版履歴表示、
 Google形式のコピーと元の Office文書の同期。
@@ -276,6 +277,33 @@ Google形式（スプレッドシート / ドキュメント / スライド）�
 
 別タブは、アップロードと同じくクリックと同じ実行の中で先に確保してから URL を流し込む（5.2.1）。
 処理中は画面中央に大きなぐるぐるを出す。
+
+### 5.1.5 draw.io の図
+
+「Googleアプリ ▾」の新規作成に **draw.io** を並べ、既存の取り込み（Picker / URL）でも .drawio を受け付ける。
+保存先・コピーの規則・権限の配り方・削除時の扱いはスプレッドシート等と同じ。
+
+Google形式との違い:
+
+- Drive 上では Google形式ではなく**普通のファイル**（中身は XML、MIME は `application/vnd.jgraph.mxfile`）。
+  新規作成は空の図を1枚入れた中身付きで作る（0バイトだと draw.io が図と認識しない）
+- 名前は **`.drawio` の拡張子を持つ**。改名・Drive側の名前の取り込みでも拡張子を保つ
+- Drive に手でアップロードされた .drawio は MIME が octet-stream 等になるため、**拡張子でも判定**する。
+  登録時に `file_type` は `application/vnd.jgraph.mxfile` に揃える（画面側はこれで種別を判定する）
+- ダウンロードは変換せず `.drawio` のまま（`drive.google.com/uc?export=download`）
+- URL を貼って追加は `drive.google.com/file/d/…` と `app.diagrams.net/#G…` を受け付ける
+- Office文書の「Google形式に変換」の変換先には**しない**（`GoogleAppKind` と `GoogleCreateKind` を分けている）
+
+**開く先は `app.diagrams.net/#G<id>` ではなく、Googleドライブのファイル画面（webViewLink）。**
+draw.io も drive.file 相当の権限で動いており、そのファイルを一度も Googleドライブの画面から draw.io で
+開いたことがない人には、直接リンクだと「ファイルが見つかりません」になる
+（draw.io 側の既知の制約: https://github.com/jgraph/drawio/issues/3742）。
+DevTicket が作った・コピーしたファイルは必ずこれに当たる。Googleドライブの画面の「アプリで開く」から
+draw.io を選べばその操作で権限が通るので、開いたときにその手順をトーストで案内する。
+同時編集は draw.io 側の機能（Googleドライブ上のファイルなら複数人で同時に編集できる）。
+
+Workspace では、管理者が「ユーザーに Google ドライブ アプリのインストールを許可する」を
+オフにしていると「アプリで開く」に draw.io が出ない。その場合は管理者側の設定が要る。
 
 ### 5.2 一覧での見え方
 

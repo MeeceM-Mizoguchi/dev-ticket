@@ -5,9 +5,13 @@ import crypto from "crypto";
 // Googleドライブ連携（ファイルボックス）
 // 設計: docs/google-drive-integration-design.md
 //
-// ファイルボックスから Googleスプレッドシート／ドキュメント／スライドを新規作成し、
+// ファイルボックスから Googleスプレッドシート／ドキュメント／スライド／draw.io 図を新規作成し、
 // 別タブで開いて編集できるようにする。作成したファイルは project_files にも登録され、
 // DevTicket の一覧・フォルダ階層にそのまま並ぶ。
+//
+// draw.io 図（.drawio）は Google形式ではなく、Drive 上の普通のファイル（中身は XML）。
+// 編集は draw.io 側（app.diagrams.net）が Drive のファイルを直接読み書きして行い、
+// DevTicket は作成・取り込み・一覧への登録だけを受け持つ（同時編集も draw.io 側の機能）。
 //
 // ★ スコープは drive.file のみ。
 //   非センシティブスコープなので Google のアプリ審査・CASA が不要になる。
@@ -25,6 +29,7 @@ import crypto from "crypto";
 //   POST /api/google/status           { projectId? }                      → { connected, mode, ... }
 //   POST /api/google/disconnect       {}                                  → { ok }
 //   POST /api/google/create           { projectId, kind, parentId? }      → { file, url }
+//                                     kind: spreadsheet | document | presentation | drawio
 //   POST /api/google/convert-staged   { projectId, path, kind, fileName, ... } → { file, url }
 //   POST /api/google/import-files     { projectId, fileIds, parentId? }   → { imported, failed, shareFailed }
 //   POST /api/google/convert-existing { fileId }                          → { file, url, fileName }
@@ -57,7 +62,39 @@ const DEFAULT_NAME: Record<string, string> = {
   spreadsheet: "無題のスプレッドシート",
   document: "無題のドキュメント",
   presentation: "無題のスライド",
+  drawio: "無題の図.drawio",
 };
+
+// ── draw.io 図 ──────────────────────────────────────────────
+// draw.io 自身が Drive に保存するときの MIME タイプ。
+// ★ src/app/lib/projectFiles.ts と api/project-files/[action].ts の DRAWIO_MIME と揃えること。
+//
+// MIME に入れないのは、MIME が「Google形式（変換先）」の一覧として使われているため
+// （convert-staged / convert-existing が MIME[kind] を変換先に使う）。
+// 入れると、Office文書を draw.io 形式へ「変換」する経路ができてしまう。
+const DRAWIO_MIME = "application/vnd.jgraph.mxfile";
+const DRAWIO_EXT = ".drawio";
+
+// 新規作成時の中身。空のページが1枚だけある図。
+// 0 バイトのファイルにすると、draw.io が「図のファイルではない」と判断して開けないことがある。
+const EMPTY_DRAWIO =
+  '<mxfile host="DevTicket"><diagram name="ページ1" id="page-1"><mxGraphModel><root>'
+  + '<mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+
+/**
+ * draw.io 図か。
+ * Drive に手でアップロードされた .drawio は MIME が application/octet-stream 等になることがあるので、
+ * MIME だけでなく拡張子でも判定する。
+ */
+function isDrawio(file: { name?: unknown; mimeType?: unknown }): boolean {
+  if (String(file.mimeType ?? "") === DRAWIO_MIME) return true;
+  return String(file.name ?? "").toLowerCase().endsWith(DRAWIO_EXT);
+}
+
+/** 名前の末尾に .drawio を付ける（付いていればそのまま）。Drive 上で draw.io の図だと分かるようにするため */
+function withDrawioExt(name: string): string {
+  return name.toLowerCase().endsWith(DRAWIO_EXT) ? name : `${name}${DRAWIO_EXT}`;
+}
 
 // アップロードしたOffice文書をGoogle形式へ変換して取り込むときの送り先。
 //
@@ -349,6 +386,48 @@ async function uploadAsGoogleFormat(
     const reason = created?.error?.errors?.[0]?.reason || "";
     throw new HttpError(put.status || 502,
       driveErrorMessage(put.status, reason, created?.error?.message || "Google形式への変換に失敗しました"));
+  }
+  return { id: String(created.id), webViewLink: String(created.webViewLink ?? "") };
+}
+
+/**
+ * 空の draw.io 図を Drive に作る。
+ * Google形式と違って中身が要るので、メタデータと中身を1回で送る multipart で作る
+ * （中身は数百バイトなので、再開可能アップロードにする必要は無い）。
+ */
+async function createDrawioFile(
+  accessToken: string, name: string, folderId: string,
+): Promise<{ id: string; webViewLink: string }> {
+  const boundary = `devticket-${crypto.randomUUID()}`;
+  const body = [
+    `--${boundary}`,
+    "Content-Type: application/json; charset=UTF-8",
+    "",
+    JSON.stringify({ name, mimeType: DRAWIO_MIME, parents: [folderId] }),
+    `--${boundary}`,
+    `Content-Type: ${DRAWIO_MIME}`,
+    "",
+    EMPTY_DRAWIO,
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+
+  const params = new URLSearchParams({
+    uploadType: "multipart", supportsAllDrives: "true", fields: "id,name,webViewLink",
+  });
+  const res = await fetch(`${RESUMABLE_URL}?${params}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
+  const created = await res.json().catch(() => ({}));
+  if (!res.ok || !created?.id) {
+    const reason = created?.error?.errors?.[0]?.reason || "";
+    throw new HttpError(res.status || 502,
+      driveErrorMessage(res.status, reason, created?.error?.message || "Googleドライブ上に図を作成できませんでした"));
   }
   return { id: String(created.id), webViewLink: String(created.webViewLink ?? "") };
 }
@@ -691,7 +770,8 @@ export default async function handler(req: any, res: any) {
     if (action === "create") {
       const projectId = String(body.projectId ?? "");
       const kind = String(body.kind ?? "");
-      if (!projectId || !MIME[kind]) return res.status(400).json({ error: "projectId と kind が必要です" });
+      const drawio = kind === "drawio";
+      if (!projectId || (!MIME[kind] && !drawio)) return res.status(400).json({ error: "projectId と kind が必要です" });
       if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
 
       const { data: project } = await sb.from("projects")
@@ -712,15 +792,19 @@ export default async function handler(req: any, res: any) {
 
       // DevTicket 側で一意な名前を先に決める。file_name は改名・削除・コメントの
       // 引き当てキーなので、重複したまま登録すると別のファイルを巻き込む。
-      const wanted = sanitizeFileName(String(body.name ?? "")) || DEFAULT_NAME[kind];
+      // draw.io 図は拡張子 .drawio を持つ（Drive 上で draw.io の図だと分かるように）
+      const named = sanitizeFileName(String(body.name ?? "")) || DEFAULT_NAME[kind];
+      const wanted = drawio ? withDrawioExt(named) : named;
       const { data: existing } = await sb.from("project_files")
         .select("file_name").eq("project_id", projectId);
       const fileName = nextFreeName(wanted, new Set((existing ?? []).map(r => String(r.file_name))));
 
-      const created = await drive(accessToken, "/files?supportsAllDrives=true&fields=id,webViewLink,name", {
-        method: "POST",
-        body: { name: fileName, mimeType: MIME[kind], parents: [folderId] },
-      });
+      const created = drawio
+        ? await createDrawioFile(accessToken, fileName, folderId)
+        : await drive(accessToken, "/files?supportsAllDrives=true&fields=id,webViewLink,name", {
+          method: "POST",
+          body: { name: fileName, mimeType: MIME[kind], parents: [folderId] },
+        });
       if (!created?.id || !created?.webViewLink) {
         throw new HttpError(502, "Googleドライブ上にファイルを作成できませんでした");
       }
@@ -735,7 +819,7 @@ export default async function handler(req: any, res: any) {
         folder_path: "",
         file_name: fileName,
         file_size: 0,
-        file_type: MIME[kind],
+        file_type: drawio ? DRAWIO_MIME : MIME[kind],
         file_path: "",
         version: 1,
         uploaded_by: profile.name,
@@ -1008,15 +1092,19 @@ export default async function handler(req: any, res: any) {
           label = String(src?.name ?? sourceId);
 
           if (src?.trashed) throw new Error("ゴミ箱に入っているファイルです");
-          if (!GOOGLE_TYPES.has(String(src?.mimeType))) {
-            throw new Error("スプレッドシート・ドキュメント・スライド以外は追加できません");
+          const drawio = isDrawio(src ?? {});
+          if (!drawio && !GOOGLE_TYPES.has(String(src?.mimeType))) {
+            throw new Error("スプレッドシート・ドキュメント・スライド・draw.io の図以外は追加できません");
           }
 
           const inFolder = Array.isArray(src?.parents) && src.parents.includes(folderId);
           let fileId = String(src.id);
           let webViewLink = String(src.webViewLink ?? "");
-          const kind = Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? "spreadsheet";
-          const name = nextFreeName(sanitizeFileName(label) || DEFAULT_NAME[kind], taken);
+          const kind = drawio ? "drawio" : (Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? "spreadsheet");
+          const named = sanitizeFileName(label) || DEFAULT_NAME[kind];
+          // MIME だけで draw.io と判定したファイルは拡張子が無いことがあるので付ける
+          // （コピーの名前にもなるので、Drive 上でも draw.io の図だと分かるようになる）
+          const name = nextFreeName(drawio ? withDrawioExt(named) : named, taken);
 
           if (inFolder) {
             // 保存先フォルダの中にあるものはそのまま使う。二重登録だけ防ぐ
@@ -1044,7 +1132,9 @@ export default async function handler(req: any, res: any) {
             folder_path: "",
             file_name: name,
             file_size: 0,
-            file_type: String(src.mimeType),
+            // draw.io の図は MIME がまちまち（octet-stream 等）なので揃える。
+            // 画面側は file_type で種別を見分けている（projectFiles.ts の getFileKind）
+            file_type: drawio ? DRAWIO_MIME : String(src.mimeType),
             file_path: "",
             version: 1,
             uploaded_by: profile.name,
@@ -1088,7 +1178,7 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まっても結果が再現する）
       const { data: rows } = await sb.from("project_files")
-        .select("id, file_name, external_id")
+        .select("id, file_name, file_type, external_id")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
       const targets = (rows ?? []).filter(r => !!r.external_id);
@@ -1144,8 +1234,10 @@ export default async function handler(req: any, res: any) {
       const missing: string[] = [];
 
       for (const row of targets) {
-        const current = live.get(String(row.external_id));
-        if (current === undefined) { missing.push(String(row.id)); continue; }
+        const liveName = live.get(String(row.external_id));
+        if (liveName === undefined) { missing.push(String(row.id)); continue; }
+        // draw.io の図は DevTicket 側では必ず .drawio を付けて持つ（Drive 側で外されても付け直す）
+        const current = row.file_type === DRAWIO_MIME ? withDrawioExt(liveName) : liveName;
         if (current === row.file_name) continue;
 
         // 自分の今の名前は解放してから、空いている名前を探す。

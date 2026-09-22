@@ -6,7 +6,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 
 export type FileKind =
   | "pdf" | "excel" | "word" | "powerpoint" | "image" | "text" | "other"
-  | "gsheet" | "gdoc" | "gslide";
+  | "gsheet" | "gdoc" | "gslide" | "drawio";
 
 // ── Googleドライブ上のファイル（docs/google-drive-integration-design.md）──
 // storage に実体を持たず、別タブで Google 上の編集画面を開く。
@@ -19,10 +19,24 @@ export const GOOGLE_MIME = {
 
 export type GoogleAppKind = keyof typeof GOOGLE_MIME;
 
+// Drive 上の draw.io 図（.drawio）。Google形式ではない普通のファイルだが、扱いは Googleファイルと同じ
+// （storage に実体を持たず、別タブで開く）。編集は draw.io 側が Drive のファイルを直接読み書きする。
+// ★ api/google/[action].ts と api/project-files/[action].ts の DRAWIO_MIME と揃えること。
+//   サーバーが取り込み時に file_type をこの値へ揃えるので、画面側はこれだけで判定できる。
+export const DRAWIO_MIME = "application/vnd.jgraph.mxfile";
+
+/**
+ * 「Googleアプリ」メニューから新規作成できる種別。
+ * GoogleAppKind（Office文書の変換先）とは分けておく。draw.io は変換先にならないため、
+ * GoogleAppKind に混ぜると OFFICE_APP_LABEL などの「変換」用の表に穴が空く。
+ */
+export type GoogleCreateKind = GoogleAppKind | "drawio";
+
 const GOOGLE_MIME_KIND: Record<string, FileKind> = {
   [GOOGLE_MIME.spreadsheet]: "gsheet",
   [GOOGLE_MIME.document]: "gdoc",
   [GOOGLE_MIME.presentation]: "gslide",
+  [DRAWIO_MIME]: "drawio",
 };
 
 /** Googleドライブ上のファイルか（storage に実体が無い＝署名付きURLもWebDAVも使えない） */
@@ -36,6 +50,12 @@ export const GOOGLE_APP_LABEL: Record<GoogleAppKind, string> = {
   presentation: "スライド",
 };
 
+/** 「Googleアプリ」メニューの新規作成の表示名 */
+export const GOOGLE_CREATE_LABEL: Record<GoogleCreateKind, string> = {
+  ...GOOGLE_APP_LABEL,
+  drawio: "draw.io",
+};
+
 /** 変換元の Office アプリ名。アップロード時の案内文を種別に合わせるために使う */
 export const OFFICE_APP_LABEL: Record<GoogleAppKind, string> = {
   spreadsheet: "Excel",
@@ -47,6 +67,7 @@ export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
   gsheet: "Googleスプレッドシート",
   gdoc: "Googleドキュメント",
   gslide: "Googleスライド",
+  drawio: "draw.io（Googleドライブ）",
 };
 
 // アップロード時に Google 形式へ変換できる拡張子。
@@ -75,6 +96,8 @@ const GOOGLE_EXPORT: Partial<Record<FileKind, (id: string) => string>> = {
   gsheet: id => `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`,
   gdoc: id => `https://docs.google.com/document/d/${id}/export?format=docx`,
   gslide: id => `https://docs.google.com/presentation/d/${id}/export/pptx`,
+  // draw.io の図は変換せず、.drawio のまま落とす（Drive 上の普通のファイルなので）
+  drawio: id => `https://drive.google.com/uc?export=download&id=${id}`,
 };
 
 /** Googleファイルを Office 形式で書き出すURL。対象外なら null */
@@ -167,6 +190,7 @@ export const KIND_COLOR: Record<FileKind, string> = {
   image: "#7C3AED", text: "#6B6458", other: "#9E9690",
   // Google 各アプリのブランド色に寄せる（一覧で一目で見分けられるように）
   gsheet: "#0F9D58", gdoc: "#4285F4", gslide: "#F4B400",
+  drawio: "#F08705",
 };
 
 // 全ての storage 操作は api/project-files/[action] (service_role) 経由で行う。

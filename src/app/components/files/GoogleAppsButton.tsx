@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import {
-  ChevronDown, FileSpreadsheet, FileText, Presentation, Loader2, AlertTriangle, FolderInput, Link2,
+  ChevronDown, FileSpreadsheet, FileText, Presentation, Workflow, Loader2, AlertTriangle, FolderInput, Link2,
 } from "lucide-react";
 import { escStack } from "@/app/lib/escStack";
 import { openPendingTab } from "@/app/lib/pendingTab";
@@ -10,29 +10,30 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BlockingSpinner } from "@/app/components/shared/BlockingSpinner";
 import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
 import {
-  createGoogleFile, importGoogleFiles, startGoogleOAuth, myDriveWarningKey,
+  createGoogleFile, importGoogleFiles, startGoogleOAuth, myDriveWarningKey, DRAWIO_OPEN_HINT,
   type GoogleDriveProjectConfig,
 } from "@/app/lib/googleDrive";
 import { pickGoogleFiles, parseGoogleFileUrl } from "@/app/lib/googlePicker";
-import { GOOGLE_APP_LABEL, KIND_COLOR, type GoogleAppKind } from "@/app/lib/projectFiles";
+import { GOOGLE_CREATE_LABEL, KIND_COLOR, type GoogleCreateKind } from "@/app/lib/projectFiles";
 
 // ファイルボックスの「Googleアプリ」ボタン（docs/google-drive-integration-design.md 5.1）
 //
 // クリックで展開し、次のことができる。
-//   ・スプレッドシート / ドキュメント / スライドを新規作成して別タブで開く
-//   ・もともと Drive にある Googleファイルを追加する（Picker で選ぶ / URL を貼る）
+//   ・スプレッドシート / ドキュメント / スライド / draw.io の図を新規作成して別タブで開く
+//   ・もともと Drive にある Googleファイル・draw.io の図を追加する（Picker で選ぶ / URL を貼る）
 
-const ITEMS: { kind: GoogleAppKind; icon: typeof FileSpreadsheet; color: string }[] = [
+const ITEMS: { kind: GoogleCreateKind; icon: typeof FileSpreadsheet; color: string }[] = [
   { kind: "spreadsheet", icon: FileSpreadsheet, color: KIND_COLOR.gsheet },
   { kind: "document", icon: FileText, color: KIND_COLOR.gdoc },
   { kind: "presentation", icon: Presentation, color: KIND_COLOR.gslide },
+  { kind: "drawio", icon: Workflow, color: KIND_COLOR.drawio },
 ];
 
 const GOOGLE_ICON = <GoogleGLogo size={14} />;
 
 /** 注意モーダルを挟んでから実行する操作 */
 type Action =
-  | { type: "create"; kind: GoogleAppKind }
+  | { type: "create"; kind: GoogleCreateKind }
   /** Picker で選んで追加する */
   | { type: "pick" }
   /** 貼られた URL のファイルを追加する（Picker で1回 Select してもらう） */
@@ -58,7 +59,7 @@ interface Props {
 
 export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated, toast }: Props) {
   const [open, setOpen] = useState(false);
-  const [creating, setCreating] = useState<GoogleAppKind | null>(null);
+  const [creating, setCreating] = useState<GoogleCreateKind | null>(null);
   const [importing, setImporting] = useState(false);
   // Picker を閉じた後、サーバーで追加している間だけ true。
   // importing は Picker を開いている間も true なので、大きなぐるぐるの表示には使えない
@@ -100,15 +101,17 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     toast(err?.message || fallback, "error");
   }, [toast]);
 
-  const runCreate = useCallback(async (kind: GoogleAppKind) => {
+  const runCreate = useCallback(async (kind: GoogleCreateKind) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setCreating(kind);
 
     // 空タブはクリックと同じ実行の中で確保する（理由は pendingTab.ts の冒頭コメント）
     const tab = openPendingTab(
-      `${GOOGLE_APP_LABEL[kind]}を作成しています`,
-      "Googleドライブ上にファイルを作成し、編集画面を開きます。",
+      `${GOOGLE_CREATE_LABEL[kind]}を作成しています`,
+      kind === "drawio"
+        ? "Googleドライブ上に図を作成し、ファイルの画面を開きます。"
+        : "Googleドライブ上にファイルを作成し、編集画面を開きます。",
     );
 
     try {
@@ -122,6 +125,8 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
       } else {
         toast(`「${res.fileName}」を作成しました`);
       }
+      // draw.io の図は Googleドライブのファイル画面が開く（直接 draw.io を開けない理由は DRAWIO_OPEN_HINT）
+      if (kind === "drawio" && tab) toast(DRAWIO_OPEN_HINT, "info");
       onCreated();
     } catch (e) {
       // 作れなかったのに空タブが残ると「何が起きたのか」が分からなくなるので閉じる
@@ -211,7 +216,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const submitUrl = useCallback(() => {
     const id = parseGoogleFileUrl(urlText);
     if (!id) {
-      setUrlError("スプレッドシート・ドキュメント・スライドのURLを貼り付けてください（例: https://docs.google.com/spreadsheets/d/…）");
+      setUrlError("スプレッドシート・ドキュメント・スライド・draw.io の図のURLを貼り付けてください（例: https://docs.google.com/spreadsheets/d/… / https://app.diagrams.net/#G…）");
       return;
     }
     setUrlOpen(false);
@@ -234,7 +239,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     <div ref={wrapRef} style={{ position: "relative" }}>
       {/* 作成中・追加の保存中は、画面の真ん中に大きなぐるぐるを出す */}
       {(creating !== null || savingImport) && (
-        <BlockingSpinner label={creating !== null ? `${GOOGLE_APP_LABEL[creating]}を作成しています` : "ファイルを追加しています"} />
+        <BlockingSpinner label={creating !== null ? `${GOOGLE_CREATE_LABEL[creating]}を作成しています` : "ファイルを追加しています"} />
       )}
       <button onClick={() => setOpen(v => !v)} disabled={busy}
         style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#EFF6FF", color: "#1D4ED8", border: "1px solid #BFDBFE", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: busy ? "wait" : "pointer" }}>
@@ -255,7 +260,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
               <span style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: `${color}14` }}>
                 <Icon style={{ width: 13, height: 13, color }} />
               </span>
-              {GOOGLE_APP_LABEL[kind]}
+              {GOOGLE_CREATE_LABEL[kind]}
             </button>
           ))}
 
@@ -302,7 +307,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             </button>
           </>}>
           <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>
-            スプレッドシート・ドキュメント・スライドのURL
+            スプレッドシート・ドキュメント・スライド・draw.io の図のURL
           </label>
           <input
             type="url"

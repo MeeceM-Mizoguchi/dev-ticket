@@ -23,6 +23,9 @@ const GOOGLE: Partial<Record<FileKind, { color: string; label: string }>> = {
   gsheet: { color: "#0F9D58", label: "Googleスプレッドシート" },
   gdoc: { color: "#4285F4", label: "Googleドキュメント" },
   gslide: { color: "#F4B400", label: "Googleスライド" },
+  // Googleドライブ上の draw.io の図。置き場所が Drive なので Google と同じ書類の形にそろえ、
+  // 図柄（つながった箱）と色で見分ける
+  drawio: { color: "#F08705", label: "draw.io（Googleドライブ）" },
 };
 
 const BOX: CSSProperties = {
@@ -48,6 +51,17 @@ function GoogleGlyph({ kind }: { kind: FileKind }) {
         <line x1="4" y1="10" x2="12" y2="10" {...s} />
         <line x1="4" y1="12.6" x2="12" y2="12.6" {...s} />
         <line x1="4" y1="15.2" x2="9.5" y2="15.2" {...s} />
+      </>
+    );
+  }
+  if (kind === "drawio") {
+    // 上の箱から下の2つの箱へ線がつながった図（フローチャートの形）
+    return (
+      <>
+        <rect x="6" y="8" width="4" height="2.8" rx="0.4" {...s} />
+        <path d="M8 10.8v1.6M4.8 12.4h6.4M4.8 12.4v1M11.2 12.4v1" {...s} />
+        <rect x="3.2" y="13.4" width="3.2" height="2.6" rx="0.4" {...s} />
+        <rect x="9.6" y="13.4" width="3.2" height="2.6" rx="0.4" {...s} />
       </>
     );
   }
