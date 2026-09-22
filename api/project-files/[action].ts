@@ -78,6 +78,9 @@ async function isMember(sb: SupabaseClient, projectId: string, profile: { id: st
   return data === true;
 }
 
+// Drive 上の draw.io 図の file_type。api/google/[action].ts の DRAWIO_MIME と揃えること
+const DRAWIO_MIME = "application/vnd.jgraph.mxfile";
+
 function extOf(fileName: string): string {
   const i = fileName.lastIndexOf(".");
   return i < 0 ? "" : fileName.slice(i + 1).toLowerCase();
@@ -261,19 +264,22 @@ export default async function handler(req: any, res: any) {
     if (!fileId || !rawName.trim()) return res.status(400).json({ error: "fileId and newName are required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, is_folder, external_provider").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, file_type, is_folder, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
 
     // Googleファイルは版を持たず、拡張子も無い。フォルダと同じく1行だけを書き換える。
     const isSingleRow = file.is_folder || file.external_provider === "google";
+    // Drive 上の draw.io 図だけは Googleファイルでも拡張子（.drawio）を持つ。
+    // 落とすと Drive 上で draw.io のファイルだと分からなくなるので、通常のファイルと同じく保つ。
+    const keepExt = !isSingleRow || file.file_type === DRAWIO_MIME;
 
     let newName = sanitizeFileName(rawName);
     if (!newName) return res.status(400).json({ error: "使用できない名前です" });
 
     // 拡張子はファイルの種別そのもの（ビューアの判定・Officeの起動・保存キーの拡張子）。
     // 消したり書き換えたりされると開けないファイルになるため、元の拡張子を必ず保つ。
-    if (!isSingleRow) {
+    if (keepExt) {
       const orgExt = splitName(String(file.file_name)).ext;
       if (orgExt && splitName(newName).ext.toLowerCase() !== orgExt.toLowerCase()) {
         newName = `${splitName(newName).base}${orgExt}`;

@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe,
+  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -32,7 +32,7 @@ import {
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
-  convertExistingFile, startGoogleOAuth,
+  convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT,
   type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -64,7 +64,7 @@ const KIND_ICON = {
   pdf: FileText, excel: FileSpreadsheet, word: FileText,
   powerpoint: Presentation, image: FileImage, text: FileText, other: FileIcon,
   // Googleドライブ上のファイル（別タブで開く）
-  gsheet: FileSpreadsheet, gdoc: FileText, gslide: Presentation,
+  gsheet: FileSpreadsheet, gdoc: FileText, gslide: Presentation, drawio: Workflow,
 } as const;
 
 function formatDateTime(d: string) {
@@ -680,7 +680,9 @@ export function FileBoxPage() {
       toast(`「${file.fileName}」はGoogleドライブ上で削除されているため開けません`, "error");
       return;
     }
-    if (!openGoogleFile(file)) toast("このファイルのURLが見つかりません", "error");
+    if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
+    // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
+    if (getFileKind(file.fileName, file.fileType) === "drawio") toast(DRAWIO_OPEN_HINT, "info");
   }, [toast]);
 
   // GoogleファイルをOffice形式で書き出す。
@@ -1076,7 +1078,7 @@ export function FileBoxPage() {
                   })()}
                   {/* Googleファイルは storage に実体が無いので、Google側でOffice形式に書き出す */}
                   <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
-                    title={isGoogle ? "Office形式でダウンロード" : "ダウンロード"}
+                    title={!isGoogle ? "ダウンロード" : kind === "drawio" ? ".drawio 形式でダウンロード" : "Office形式でダウンロード"}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Download style={{ width: 13, height: 13 }} />
                   </button>

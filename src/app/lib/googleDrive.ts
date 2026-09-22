@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import type { ProjectFile } from "@/app/types";
-import { stageProjectFile, registerStagedFile, type GoogleAppKind } from "@/app/lib/projectFiles";
+import { stageProjectFile, registerStagedFile, type GoogleAppKind, type GoogleCreateKind } from "@/app/lib/projectFiles";
 
 // Googleドライブ連携のクライアント側入口（設計: docs/google-drive-integration-design.md）
 //
@@ -96,7 +96,7 @@ export function disconnectGoogle(): Promise<{ ok: boolean }> {
 
 /** 新規作成。別タブで開くURLを返す（開くのは呼び出し側） */
 export function createGoogleFile(
-  projectId: string, kind: GoogleAppKind, parentId?: string | null, name?: string,
+  projectId: string, kind: GoogleCreateKind, parentId?: string | null, name?: string,
 ): Promise<CreateResult> {
   return postApi<CreateResult>("create", { projectId, kind, parentId: parentId ?? null, name });
 }
@@ -222,6 +222,19 @@ export function resolveGoogleFolder(folderId: string): Promise<{ id: string; nam
 export function testGoogleConnection(folderId: string): Promise<{ ok: boolean; sharedTo: string | null }> {
   return postApi<{ ok: boolean; sharedTo: string | null }>("test-connection", { folderId });
 }
+
+/**
+ * draw.io の図を開いたときの案内。
+ *
+ * ★ draw.io の図は app.diagrams.net/#G<ID> で直接開かず、Googleドライブのファイル画面を開く。
+ *   draw.io も drive.file 相当の権限で動いており、そのファイルを一度も Googleドライブの画面から
+ *   draw.io で開いたことがない人には、直接リンクだと「ファイルが見つかりません」になる
+ *   （draw.io 側の既知の制約: https://github.com/jgraph/drawio/issues/3742）。
+ *   DevTicket が作った・コピーしたファイルは必ずこれに当たる。
+ *   Googleドライブの画面の「アプリで開く」から draw.io を選べば、その操作で権限が通る。
+ */
+export const DRAWIO_OPEN_HINT =
+  "Googleドライブの画面上部の「アプリで開く」から「draw.io」を選ぶと編集できます（初回は draw.io への許可が必要です）";
 
 /**
  * Googleファイルを別タブで開く。
