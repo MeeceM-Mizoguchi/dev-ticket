@@ -277,10 +277,11 @@ export function ApiIntegrationDialog({
         <SectionNote>
           キーだけを渡してもAIは動きません。エンドポイント・JSONの形式・このプロジェクトのメンバー名や分類名を含んだプロンプトに、
           <strong>上のAPIキーを埋め込んだ状態</strong>でコピーします。AIに貼るだけで登録できます。
+          文章の先頭に「## APIキー」の項目として入るので、<strong>キーを別にコピーする必要はありません。</strong>
         </SectionNote>
         <div style={{ marginTop: 10 }}>
           <Btn onClick={() => void copy(buildPrompt(issuedKey.plain), "プロンプト")}>
-            <Sparkles style={{ width: 13, height: 13 }} />プロンプトコピー（APIキー込み）
+            <Sparkles style={{ width: 13, height: 13 }} />プロンプトをコピー（APIキー入り）
           </Btn>
         </div>
       </div>
@@ -378,8 +379,17 @@ export function ApiIntegrationDialog({
         <div>
           <Btn onClick={() => void copy(prompt, "プロンプト")}>
             <Sparkles style={{ width: 13, height: 13 }} />
-            {keyEmbedded ? "プロンプトコピー（APIキー込み）" : "プロンプトコピー"}
+            {keyEmbedded ? "プロンプトをコピー（APIキー入り）" : "プロンプトをコピー"}
           </Btn>
+          {/* 「キーも一緒にコピーされている」ことが分からず、キーを別途コピーして貼る手間が
+              生まれていたため、何がコピーされたのかをボタンの直下で明示する。 */}
+          {keyEmbedded && (
+            <p style={{ fontSize: 11, color: "#4B4640", marginTop: 8, lineHeight: 1.8 }}>
+              コピーした文章の先頭に <strong>「## APIキー」</strong> の項目があり、
+              そこに <code style={{ fontFamily: "var(--font-mono)", color: "#6B6458" }}>{maskedKey(selected?.keyPrefix ?? "")}</code> の平文が入っています。
+              <strong style={{ color: GREEN }}>APIキーを別にコピーして貼る必要はありません。</strong>
+            </p>
+          )}
         </div>
 
         <div>
@@ -459,10 +469,11 @@ export function ApiIntegrationDialog({
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>エンドポイント</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {[
-              { m: "POST", path: "/api/v1/tickets", desc: "チケットを登録する" },
+              { m: "POST", path: "/api/v1/tickets", desc: "チケットを登録する（既存チケットへの子の追加も）" },
+              { m: "GET", path: "/api/v1/tickets", desc: "既存チケットを一覧する（子を足す親を探す）" },
               { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
             ].map(e => (
-              <div key={e.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
+              <div key={`${e.m} ${e.path}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: e.m === "POST" ? GREEN : "#0284C7", minWidth: 34 }}>{e.m}</span>
                 <code style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "#1A1714" }}>{e.path}</code>
                 <span style={{ fontSize: 10.5, color: "#9E9690", marginLeft: "auto", textAlign: "right" }}>{e.desc}</span>
@@ -558,6 +569,7 @@ export function ApiIntegrationDialog({
               { k: "estimatedHours", req: false, v: "整数（時間）", def: "0" },
               { k: "description", req: false, v: "本文（Markdown文字列）", def: "空欄" },
               { k: "children", req: false, v: "子チケットの配列（同じ形・1階層まで）", def: "なし" },
+              { k: "parentWbs", req: false, v: "既存チケットのWBS（例: T-012）。指定するとその子として登録され、枝番は既存の子の続きから自動で振られる。親は GET /api/v1/tickets で探せる", def: "新しい親として登録" },
             ].map((f, i) => (
               <div key={f.k} style={{
                 display: "flex", gap: 9, padding: "7px 11px", alignItems: "flex-start",
@@ -586,8 +598,9 @@ export function ApiIntegrationDialog({
           <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 7 }}>制限</p>
           <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.9 }}>
             <li>1分あたり {API_LIMITS.requestsPerMinute} リクエストまで（超過すると 429）</li>
-            <li>1リクエストで親チケット {API_LIMITS.parentsPerRequest} 件、親1件あたり子 {API_LIMITS.childrenPerParent} 件まで</li>
-            <li>子チケットの階層は1段まで</li>
+            <li>1リクエストで tickets {API_LIMITS.parentsPerRequest} 件、親1件あたり子 {API_LIMITS.childrenPerParent} 件まで</li>
+            <li>子チケットの階層は1段まで（子チケットに <code style={{ fontFamily: "var(--font-mono)" }}>parentWbs</code> を指定することはできません）</li>
+            <li>一覧（GET）は1回に {API_LIMITS.listMaxLimit} 件まで（既定 {API_LIMITS.listDefaultLimit} 件）</li>
           </ul>
         </div>
 

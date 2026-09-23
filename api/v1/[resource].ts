@@ -2,7 +2,8 @@
 // API連携: 外部のAI／システムから Dev Ticket を操作する公開API
 //
 //   GET  /api/v1/context   … 登録に必要な文脈（スプリント／メンバー／分類／候補値）
-//   POST /api/v1/tickets   … チケットの登録（親子1階層まで）
+//   GET  /api/v1/tickets   … 既存チケットの一覧（子チケットを足す親を探すため）
+//   POST /api/v1/tickets   … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
 //
 // 認証は Dev Ticket が発行する APIキー:
 //   Authorization: Bearer dvt_live_xxxxx
@@ -28,12 +29,15 @@ const KEY_PREFIX = "dvt_live_";
 /** 1キーあたり: RATE_WINDOW_SEC 秒間に RATE_LIMIT 回まで */
 const RATE_LIMIT = 60;
 const RATE_WINDOW_SEC = 60;
-/** 1リクエストで作れる親チケット数 */
+/** 1リクエストで送れる tickets[] の要素数 */
 const MAX_PARENTS_PER_REQUEST = 200;
-/** 親1件あたりの子チケット数 */
+/** 親1件あたりの子チケット数（1リクエストで足せる数。既存の子の数は数えない） */
 const MAX_CHILDREN_PER_PARENT = 50;
 const MAX_TITLE_LENGTH = 500;
 const MAX_DESCRIPTION_LENGTH = 100_000;
+/** GET /api/v1/tickets の既定／最大の返却件数 */
+const LIST_DEFAULT_LIMIT = 100;
+const LIST_MAX_LIMIT = 500;
 
 // ── ステータス／優先度の写像（src/app/lib/mdTickets/parse.ts と同じ内容） ──
 const STATUS_LABELS = ["未着手", "進行中", "レビュー中", "レビュー完了", "STG完了", "UAT完了", "クローズ"];
@@ -58,6 +62,16 @@ const PRIORITY_BY_LABEL: Record<string, string> = {
   high: "high", medium: "medium", low: "low", normal: "medium", mid: "medium",
   "緊急": "high", "最高": "high", "最低": "low",
 };
+
+// 一覧（GET /api/v1/tickets）で返す表示名。DB には上の7種以外の値も入る
+// （保留・取下・リリース待ちなど）ため、helpers.ts の TICKET_STATUSES と同じ日本語を持たせる。
+const STATUS_LABEL_BY_VALUE: Record<string, string> = {
+  todo: "未着手", "in-progress": "進行中", "in-review": "レビュー中", "review-done": "レビュー完了",
+  "stg-test": "STG完了", uat: "UAT完了", done: "対応完了", closed: "クローズ",
+  "waiting-release": "リリース待ち", released: "クローズ", "on-hold": "保留中", withdrawn: "取下",
+};
+
+const PRIORITY_LABEL_BY_VALUE: Record<string, string> = { high: "高", medium: "中", low: "低" };
 
 const STATUS_PROGRESS: Record<string, number> = {
   todo: 0, "in-progress": 10, "in-review": 30, "review-done": 50,
@@ -313,6 +327,8 @@ interface TicketInput {
   estimatedHours?: unknown;
   description?: unknown;
   children?: unknown;
+  parentWbs?: unknown;
+  parentId?: unknown;
 }
 
 interface NormalizedTicket {
@@ -326,6 +342,22 @@ interface NormalizedTicket {
   estimatedHours: number;
   descriptionHtml: string | null;
   children: NormalizedTicket[];
+  /**
+   * 既に登録されているチケットの配下へ子として足す場合の親の指定。
+   * tickets[] の直下の要素にだけ意味がある（children の中に書いても無視する）。
+   * 両方書かれていたら parentId を優先する。
+   */
+  parentWbs: string | null;
+  parentId: string | null;
+}
+
+/** 既存チケットの子を足すときに引いてくる親チケットの行 */
+interface ParentRow {
+  id: string;
+  wbs: string;
+  title: string;
+  sprint_id: string;
+  parent_id: string | null;
 }
 
 interface NormalizeCtx {
@@ -412,8 +444,23 @@ function normalizeTicket(input: TicketInput, ctx: NormalizeCtx, isChild: boolean
     descriptionHtml = mdToHtml(input.description) || null;
   }
 
+  // 既存チケットへの追加指定。children の中（isChild）に書かれていても親は決まっているので無視する。
+  let parentWbs: string | null = null;
+  let parentId: string | null = null;
+  if (!isChild) {
+    if (typeof input.parentWbs === "string" && input.parentWbs.trim()) parentWbs = input.parentWbs.trim();
+    if (typeof input.parentId === "string" && input.parentId.trim()) parentId = input.parentId.trim();
+  } else if (input.parentWbs !== undefined || input.parentId !== undefined) {
+    warn("子チケットの中の parentWbs / parentId は使われません（親は既に決まっています）");
+  }
+
   const children: NormalizedTicket[] = [];
-  if (!isChild && Array.isArray(input.children)) {
+  if (!isChild && (parentWbs || parentId)) {
+    // 既存チケットの子として作るものに、さらに子は付けられない（階層は1段まで）
+    if (Array.isArray(input.children) && input.children.length > 0) {
+      return { error: `「${title}」: parentWbs／parentId を指定した要素に children は書けません（階層は1段までです）` };
+    }
+  } else if (!isChild && Array.isArray(input.children)) {
     if (input.children.length > MAX_CHILDREN_PER_PARENT) {
       return { error: `子チケットが多すぎます（1件あたり${MAX_CHILDREN_PER_PARENT}件まで）` };
     }
@@ -426,7 +473,10 @@ function normalizeTicket(input: TicketInput, ctx: NormalizeCtx, isChild: boolean
     warn("子チケットの階層は1段までのため、孫チケットは無視しました");
   }
 
-  return { title, status, priority, categoryId, assignee, startDate, dueDate, estimatedHours, descriptionHtml, children };
+  return {
+    title, status, priority, categoryId, assignee, startDate, dueDate,
+    estimatedHours, descriptionHtml, children, parentWbs, parentId,
+  };
 }
 
 function newTicketId(): string {
@@ -456,13 +506,103 @@ async function handleContext(sb: SupabaseClient, key: ApiKeyRow, res: any) {
   });
 }
 
+// ── GET /api/v1/tickets ──────────────────────────────────────
+//
+// 既存チケットに子を足すには「どの親に付けるか」を呼び出し側が知っている必要がある。
+// POST が受ける parentWbs / parentId は、ここで返す wbs / id をそのまま使える。
+//
+// 返すのは入れ子ではなくフラットな配列（parentWbs で親子が分かる）。
+// 絞り込みの結果、親だけ／子だけが残ることがあり、入れ子だと表現できないため。
+async function handleListTickets(sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) {
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : Array.isArray(v) ? String(v[0] ?? "").trim() : "");
+  const sprintIdQ = str(query?.sprintId);
+  const sprintNameQ = str(query?.sprintName);
+  const wbsQ = str(query?.wbs);
+  const titleQ = str(query?.q);
+
+  const rawLimit = Number(str(query?.limit));
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(Math.floor(rawLimit), LIST_MAX_LIMIT)
+    : LIST_DEFAULT_LIMIT;
+
+  const { data: sprintRows, error: sprintError } = await sb
+    .from("sprints").select("id, name, identifier").eq("project_id", key.project_id)
+    .order("start_date", { ascending: true }).order("id", { ascending: true });
+  if (sprintError) return res.status(500).json({ error: sprintError.message });
+
+  const sprints = sprintRows ?? [];
+  if (sprints.length === 0) return res.status(200).json({ count: 0, hasMore: false, tickets: [] });
+
+  // スプリントの絞り込み。指定が無ければプロジェクト全体から探す
+  let targetSprints = sprints;
+  if (sprintIdQ) {
+    targetSprints = sprints.filter((s: any) => s.id === sprintIdQ);
+  } else if (sprintNameQ) {
+    targetSprints = sprints.filter((s: any) => s.name === sprintNameQ);
+    if (targetSprints.length === 0) {
+      targetSprints = sprints.filter((s: any) => normalizeValue(s.name) === normalizeValue(sprintNameQ));
+    }
+  }
+  if (targetSprints.length === 0) {
+    return res.status(404).json({
+      error: sprintIdQ
+        ? "指定されたスプリントが、このAPIキーのプロジェクトに見つかりません"
+        : `スプリント「${sprintNameQ}」が見つかりません`,
+      availableSprints: sprints.map((s: any) => ({ id: s.id, name: s.name })),
+    });
+  }
+
+  // BUG-01: .order() が無いとDBが毎回違う順序で返すため、wbs + id で安定ソートする
+  let q = sb
+    .from("sprint_tickets")
+    .select("id, wbs, title, status, priority, assignee, sprint_id, parent_id")
+    .in("sprint_id", targetSprints.map((s: any) => s.id))
+    .order("wbs", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limit + 1);   // +1 は hasMore の判定用
+
+  // wbs 指定は「そのチケットとその子」を返す（子を足す前に既存の子を確認できるように）。
+  // or(...) は文字列をそのまま PostgREST へ渡すため、区切り記号を含む値は先に弾く。
+  if (wbsQ) {
+    if (!/^[A-Za-z0-9_-]+$/.test(wbsQ)) {
+      return res.status(400).json({ error: `wbs の形式が正しくありません: ${wbsQ}` });
+    }
+    q = q.or(`wbs.eq.${wbsQ},wbs.like.${wbsQ}-%`);
+  }
+  if (titleQ) q = q.ilike("title", `%${titleQ}%`);
+
+  const { data: rows, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+
+  const all = rows ?? [];
+  const hasMore = all.length > limit;
+  const page = hasMore ? all.slice(0, limit) : all;
+
+  const sprintById = new Map(sprints.map((s: any) => [s.id, s]));
+  const wbsById = new Map(page.map((t: any) => [t.id, t.wbs as string]));
+
+  return res.status(200).json({
+    count: page.length,
+    hasMore,
+    tickets: page.map((t: any) => ({
+      id: t.id,
+      wbs: t.wbs,
+      title: t.title,
+      status: STATUS_LABEL_BY_VALUE[t.status] ?? t.status,
+      priority: PRIORITY_LABEL_BY_VALUE[t.priority] ?? t.priority,
+      assignee: t.assignee || null,
+      // 絞り込みで親が page に入らないこともあるので、その場合は wbs から親を切り出す
+      parentWbs: t.parent_id ? (wbsById.get(t.parent_id) ?? String(t.wbs).replace(/-\d+$/, "")) : null,
+      sprintId: t.sprint_id,
+      sprintName: (sprintById.get(t.sprint_id) as any)?.name ?? null,
+    })),
+  });
+}
+
 // ── POST /api/v1/tickets ─────────────────────────────────────
 async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
   const sprintId = typeof body?.sprintId === "string" ? body.sprintId.trim() : "";
   const sprintName = typeof body?.sprintName === "string" ? body.sprintName.trim() : "";
-  if (!sprintId && !sprintName) {
-    return res.status(400).json({ error: "sprintId（または sprintName）は必須です。GET /api/v1/context で確認できます" });
-  }
 
   const rawTickets = body?.tickets;
   if (!Array.isArray(rawTickets) || rawTickets.length === 0) {
@@ -472,31 +612,14 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     return res.status(400).json({ error: `1回のリクエストで作れるのは${MAX_PARENTS_PER_REQUEST}件までです` });
   }
 
-  // ── スプリントの特定（キーのプロジェクト内に限定する＝テナント境界） ──
-  const { data: sprintRows, error: sprintError } = await sb
-    .from("sprints").select("id, name, identifier").eq("project_id", key.project_id);
-  if (sprintError) return res.status(500).json({ error: sprintError.message });
-
-  const sprints = sprintRows ?? [];
-  const sprint = sprintId
-    ? sprints.find((s: any) => s.id === sprintId)
-    : sprints.find((s: any) => s.name === sprintName)
-      ?? sprints.find((s: any) => normalizeValue(s.name) === normalizeValue(sprintName));
-
-  if (!sprint) {
-    return res.status(404).json({
-      error: sprintId
-        ? "指定されたスプリントが、このAPIキーのプロジェクトに見つかりません"
-        : `スプリント「${sprintName}」が見つかりません`,
-      availableSprints: sprints.map((s: any) => ({ id: s.id, name: s.name })),
-    });
-  }
-
-  // ── 文脈（メンバー・分類）と入力の正規化 ──
-  const [{ data: project }, { data: categoryRows }] = await Promise.all([
+  // ── 文脈（スプリント一覧・メンバー・分類）と入力の正規化 ──
+  const [{ data: sprintRows, error: sprintError }, { data: project }, { data: categoryRows }] = await Promise.all([
+    sb.from("sprints").select("id, name, identifier").eq("project_id", key.project_id),
     sb.from("projects").select("slug, members, organization_id").eq("id", key.project_id).maybeSingle(),
     sb.from("ticket_categories").select("id, name").eq("project_id", key.project_id),
   ]);
+  if (sprintError) return res.status(500).json({ error: sprintError.message });
+  const sprints = sprintRows ?? [];
 
   const ctx: NormalizeCtx = {
     members: Array.isArray(project?.members) ? (project!.members as string[]) : [],
@@ -511,45 +634,167 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     tickets.push(normalized);
   }
 
-  const total = tickets.reduce((n, t) => n + 1 + t.children.length, 0);
+  // 「既に登録されているチケットの配下に足すもの」と「新しく親から作るもの」に分ける。
+  // 1回のリクエストに両方が混ざっていてよい。
+  const toExisting = tickets.filter(t => t.parentWbs || t.parentId);
+  const newRoots = tickets.filter(t => !t.parentWbs && !t.parentId);
+
+  // ── 新しく親を作るぶんの登録先スプリント（キーのプロジェクト内に限定する＝テナント境界） ──
+  // すべてが既存チケットの子なら、登録先は親のスプリントに従うので sprintId は要らない。
+  let sprint: { id: string; name: string; identifier?: string | null } | null = null;
+  if (newRoots.length > 0) {
+    if (!sprintId && !sprintName) {
+      return res.status(400).json({ error: "sprintId（または sprintName）は必須です。GET /api/v1/context で確認できます" });
+    }
+    sprint = (sprintId
+      ? sprints.find((s: any) => s.id === sprintId)
+      : sprints.find((s: any) => s.name === sprintName)
+        ?? sprints.find((s: any) => normalizeValue(s.name) === normalizeValue(sprintName))) ?? null;
+
+    if (!sprint) {
+      return res.status(404).json({
+        error: sprintId
+          ? "指定されたスプリントが、このAPIキーのプロジェクトに見つかりません"
+          : `スプリント「${sprintName}」が見つかりません`,
+        availableSprints: sprints.map((s: any) => ({ id: s.id, name: s.name })),
+      });
+    }
+  } else if (sprintId || sprintName) {
+    ctx.warnings.push("すべて既存チケットの子として登録するため、sprintId は使いません（親と同じスプリントに入ります）");
+  }
+
+  // ── 親チケットの解決 ──
+  // 引くのは「このAPIキーのプロジェクトに属するスプリント」の中だけ。
+  // service_role 接続で RLS が効かないため、ここを絞らないと他テナントのチケットに子を足せてしまう。
+  const parentOf = new Map<NormalizedTicket, ParentRow>();
+  if (toExisting.length > 0) {
+    const sprintIds = sprints.map((s: any) => s.id);
+    if (sprintIds.length === 0) {
+      return res.status(404).json({ error: "このプロジェクトにはスプリントがありません" });
+    }
+
+    const cols = "id, wbs, title, sprint_id, parent_id";
+    const wantWbs = [...new Set(toExisting.filter(t => !t.parentId).map(t => t.parentWbs as string))];
+    const wantIds = [...new Set(toExisting.filter(t => t.parentId).map(t => t.parentId as string))];
+    const found: ParentRow[] = [];
+
+    if (wantWbs.length > 0) {
+      const { data, error } = await sb.from("sprint_tickets").select(cols).in("sprint_id", sprintIds).in("wbs", wantWbs);
+      if (error) return res.status(500).json({ error: error.message });
+      found.push(...((data ?? []) as ParentRow[]));
+    }
+    if (wantIds.length > 0) {
+      const { data, error } = await sb.from("sprint_tickets").select(cols).in("sprint_id", sprintIds).in("id", wantIds);
+      if (error) return res.status(500).json({ error: error.message });
+      found.push(...((data ?? []) as ParentRow[]));
+    }
+
+    const byRef = new Map<string, ParentRow>();
+    for (const row of found) { byRef.set(row.wbs, row); byRef.set(row.id, row); }
+
+    for (const t of toExisting) {
+      const ref = (t.parentId ?? t.parentWbs) as string;
+      const row = byRef.get(ref);
+      if (!row) {
+        return res.status(404).json({
+          error: `親チケット「${ref}」がこのAPIキーのプロジェクトに見つかりません。GET /api/v1/tickets で探せます`,
+        });
+      }
+      if (row.parent_id) {
+        return res.status(400).json({
+          error: `「${row.wbs}」は子チケットです。その下にさらに子は作れません（階層は1段までです）`,
+        });
+      }
+      if (t.parentId && t.parentWbs && t.parentWbs !== row.wbs) {
+        ctx.warnings.push(`「${t.title}」: parentId と parentWbs が食い違うため parentId（${row.wbs}）を採用しました`);
+      }
+      parentOf.set(t, row);
+    }
+  }
+
+  // ── 既存の子の枝番を見て、その続きから振る ──
+  const nextBranch = new Map<string, number>();
+  if (parentOf.size > 0) {
+    const parentById = new Map<string, ParentRow>();
+    for (const p of parentOf.values()) { parentById.set(p.id, p); nextBranch.set(p.id, 1); }
+
+    const { data: childRows, error: childError } = await sb
+      .from("sprint_tickets").select("parent_id, wbs").in("parent_id", [...parentById.keys()]);
+    if (childError) return res.status(500).json({ error: childError.message });
+
+    for (const row of childRows ?? []) {
+      const parent = parentById.get(row.parent_id as string);
+      if (!parent) continue;
+      // 枝番はゼロ埋めしていないため、文字列ソートでは "…-9" > "…-10" になり10で頭打ちになる。
+      // 数値に直して最大値を取る（画面側 NewTicketDialog の BRU4-058 と同じ理由）。
+      const n = parseInt(String(row.wbs).slice(parent.wbs.length + 1), 10);
+      if (!Number.isNaN(n)) nextBranch.set(parent.id, Math.max(nextBranch.get(parent.id) ?? 1, n + 1));
+    }
+
+    // 1リクエストで同じ親に足せる数の上限
+    const perParent = new Map<string, number>();
+    for (const t of toExisting) {
+      const p = parentOf.get(t) as ParentRow;
+      const c = (perParent.get(p.id) ?? 0) + 1;
+      if (c > MAX_CHILDREN_PER_PARENT) {
+        return res.status(400).json({
+          error: `「${p.wbs}」に足す子チケットが多すぎます（1回のリクエストで${MAX_CHILDREN_PER_PARENT}件まで）`,
+        });
+      }
+      perParent.set(p.id, c);
+    }
+  }
 
   // ── プラン上限（画面側と同じ判定をサーバーでも行う） ──
+  // 既存チケットへの追加は親のスプリントに入るため、登録先はスプリントごとに分かれうる。
+  const totalBySprint = new Map<string, number>();
+  const addTo = (sid: string, n: number) => totalBySprint.set(sid, (totalBySprint.get(sid) ?? 0) + n);
+  for (const t of newRoots) addTo((sprint as { id: string }).id, 1 + t.children.length);
+  for (const t of toExisting) addTo((parentOf.get(t) as ParentRow).sprint_id, 1);
+
   const limits = await fetchPlanLimits(sb, key.organization_id ?? (project?.organization_id as string | null) ?? null);
   if (!limits.featureBulkCreate) {
     return res.status(403).json({ error: "現在のプランではAPIからのチケット作成をご利用いただけません" });
   }
   if (limits.maxTicketsPerSprint != null) {
-    const { count } = await sb
-      .from("sprint_tickets").select("id", { count: "exact", head: true }).eq("sprint_id", sprint.id);
-    const current = count ?? 0;
-    const remaining = Math.max(0, limits.maxTicketsPerSprint - current);
-    if (total > remaining) {
-      return res.status(403).json({
-        error: `プランの上限数（${limits.maxTicketsPerSprint}件）を超えるため作成できません。残り作成可能件数: ${remaining}件（今回: ${total}件）`,
-      });
+    for (const [sid, count] of totalBySprint) {
+      const { count: existing } = await sb
+        .from("sprint_tickets").select("id", { count: "exact", head: true }).eq("sprint_id", sid);
+      const remaining = Math.max(0, limits.maxTicketsPerSprint - (existing ?? 0));
+      if (count > remaining) {
+        return res.status(403).json({
+          error: `プランの上限数（${limits.maxTicketsPerSprint}件）を超えるため作成できません。残り作成可能件数: ${remaining}件（今回: ${count}件）`,
+        });
+      }
     }
   }
 
   // ── WBS採番（DB側で直列化。並列に叩かれても番号が重複しない） ──
-  const prefix = (sprint as any).identifier || "T";
-  const { data: startNo, error: seqError } = await sb.rpc("reserve_ticket_wbs", {
-    p_project_id: key.project_id,
-    p_prefix: prefix,
-    p_count: tickets.length,
-  });
-  if (seqError || typeof startNo !== "number") {
-    return res.status(500).json({
-      error: `WBSの採番に失敗しました: ${seqError?.message ?? "unknown"}。supabase/add_api_keys.sql が適用されているか確認してください`,
+  // 採るのは新しく作る親のぶんだけ。既存チケットの子は親の枝番を使うので消費しない。
+  let prefix = "T";
+  let n = 0;
+  if (newRoots.length > 0) {
+    prefix = (sprint as any).identifier || "T";
+    const { data: startNo, error: seqError } = await sb.rpc("reserve_ticket_wbs", {
+      p_project_id: key.project_id,
+      p_prefix: prefix,
+      p_count: newRoots.length,
     });
+    if (seqError || typeof startNo !== "number") {
+      return res.status(500).json({
+        error: `WBSの採番に失敗しました: ${seqError?.message ?? "unknown"}。supabase/add_api_keys.sql が適用されているか確認してください`,
+      });
+    }
+    n = startNo;
   }
 
   // ── 行の組み立て（親子を1回の insert にまとめる） ──
   const rows: Record<string, unknown>[] = [];
-  const created: { wbs: string; title: string; id: string }[] = [];
+  const created: { wbs: string; title: string; id: string; parentWbs: string | null }[] = [];
   const notifySource: { assignee: string; id: string; wbs: string; title: string }[] = [];
 
-  const toRow = (t: NormalizedTicket, wbs: string, id: string, parentId: string | null) => ({
-    id, sprint_id: sprint.id, wbs,
+  const toRow = (t: NormalizedTicket, wbs: string, id: string, parentId: string | null, targetSprintId: string) => ({
+    id, sprint_id: targetSprintId, wbs,
     title: t.title,
     status: t.status,
     priority: t.priority,
@@ -564,21 +809,34 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
     images: [], parent_id: parentId,
   });
 
-  let n = startNo;
-  for (const parent of tickets) {
+  // created は入力順（tickets の並び）で返す
+  for (const t of tickets) {
+    const existingParent = parentOf.get(t);
+    if (existingParent) {
+      const branch = nextBranch.get(existingParent.id) ?? 1;
+      nextBranch.set(existingParent.id, branch + 1);
+      const wbs = `${existingParent.wbs}-${branch}`;
+      const id = newTicketId();
+      rows.push(toRow(t, wbs, id, existingParent.id, existingParent.sprint_id));
+      created.push({ wbs, title: t.title, id, parentWbs: existingParent.wbs });
+      if (t.assignee) notifySource.push({ assignee: t.assignee, id, wbs, title: t.title });
+      continue;
+    }
+
+    const targetSprintId = (sprint as { id: string }).id;
     const parentWbs = `${prefix}-${String(n++).padStart(3, "0")}`;
     const parentId = newTicketId();
-    rows.push(toRow(parent, parentWbs, parentId, null));
-    created.push({ wbs: parentWbs, title: parent.title, id: parentId });
-    if (parent.assignee) notifySource.push({ assignee: parent.assignee, id: parentId, wbs: parentWbs, title: parent.title });
+    rows.push(toRow(t, parentWbs, parentId, null, targetSprintId));
+    created.push({ wbs: parentWbs, title: t.title, id: parentId, parentWbs: null });
+    if (t.assignee) notifySource.push({ assignee: t.assignee, id: parentId, wbs: parentWbs, title: t.title });
 
     // 新規作成した親なので既存の子は存在しない。枝番は1から振れる（既存仕様と同形式）
     let childNum = 1;
-    for (const child of parent.children) {
+    for (const child of t.children) {
       const childWbs = `${parentWbs}-${childNum++}`;
       const childId = newTicketId();
-      rows.push(toRow(child, childWbs, childId, parentId));
-      created.push({ wbs: childWbs, title: child.title, id: childId });
+      rows.push(toRow(child, childWbs, childId, parentId, targetSprintId));
+      created.push({ wbs: childWbs, title: child.title, id: childId, parentWbs });
       if (child.assignee) notifySource.push({ assignee: child.assignee, id: childId, wbs: childWbs, title: child.title });
     }
   }
@@ -603,8 +861,8 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
   return res.status(201).json({
     ok: true,
     count: created.length,
-    sprint: { id: sprint.id, name: (sprint as any).name },
-    created: created.map(c => ({ wbs: c.wbs, title: c.title })),
+    sprint: sprint ? { id: sprint.id, name: sprint.name } : null,
+    created: created.map(c => ({ wbs: c.wbs, title: c.title, parentWbs: c.parentWbs })),
     warnings: ctx.warnings,
   });
 }
@@ -636,7 +894,15 @@ export default async function handler(req: any, res: any) {
   }
 
   // resource === "tickets"
-  if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+  // GET は一覧（子チケットを足す親を探すため）、POST は登録。
+  if (req.method === "GET") {
+    try {
+      return await handleListTickets(sb, auth.key, req.query ?? {}, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+  if (req.method !== "POST") return res.status(405).json({ error: "一覧は GET、登録は POST を使ってください" });
 
   let body: any;
   try {

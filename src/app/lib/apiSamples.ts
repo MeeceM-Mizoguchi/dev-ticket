@@ -31,6 +31,8 @@ export const API_LIMITS = {
   parentsPerRequest: 200,
   childrenPerParent: 50,
   requestsPerMinute: 60,
+  listDefaultLimit: 100,
+  listMaxLimit: 500,
 } as const;
 
 /**
@@ -69,6 +71,23 @@ curl -X POST ${c.baseUrl}/api/v1/tickets \\
         "description": "**概要**\\nメールアドレス欄に入力チェックが無い。"
       }
     ]
+  }'
+
+# ③ 既に登録されているチケットに子チケットを足す
+#    まず親を探す（q はタイトルの部分一致。wbs / sprintId でも絞れる）
+curl "${c.baseUrl}/api/v1/tickets?q=認証&limit=20" \\
+  -H "Authorization: Bearer ${key}"
+
+#    返ってきた wbs を parentWbs に渡す。枝番（T-012-3 など）は既存の子の続きから自動で振られる。
+#    登録先スプリントは親と同じになるので sprintId は要らない
+curl -X POST ${c.baseUrl}/api/v1/tickets \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "tickets": [
+      { "title": "申請画面の作成", "priority": "高", "parentWbs": "T-012" },
+      { "title": "リセットメール送信APIの作成", "priority": "高", "parentWbs": "T-012" }
+    ]
   }'`;
 }
 
@@ -77,14 +96,14 @@ function jsSample(c: SampleContext): string {
 // キーはソースに書かず環境変数から読む（Gitに入れないため）
 const API_KEY = process.env.DEV_TICKET_API_KEY;
 
-async function createTickets(tickets) {
+async function postTickets(body) {
   const res = await fetch("${c.baseUrl}/api/v1/tickets", {
     method: "POST",
     headers: {
       "Authorization": \`Bearer \${API_KEY}\`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ sprintId: "${c.sprintId}", tickets }),
+    body: JSON.stringify(body),
   });
 
   const json = await res.json();
@@ -96,7 +115,25 @@ async function createTickets(tickets) {
   // 担当者名や分類名が解決できなかった場合はここに理由が入る（登録自体は成功）
   if (json.warnings?.length) console.warn(json.warnings);
 
-  return json.created; // [{ wbs: "T-054", title: "…" }]
+  return json.created; // [{ wbs: "T-054", title: "…", parentWbs: null }]
+}
+
+// 新しくチケットを作る
+const createTickets = tickets => postTickets({ sprintId: "${c.sprintId}", tickets });
+
+// 既に登録されているチケットに子チケットを足す。
+// 枝番（T-012-3 など）は既存の子の続きから自動で振られ、登録先スプリントは親と同じになる。
+const addChildTickets = (parentWbs, children) =>
+  postTickets({ tickets: children.map(c => ({ ...c, parentWbs })) });
+
+// 子を足す親を探す（q はタイトルの部分一致。wbs / sprintId でも絞れる）
+async function findTickets(query) {
+  const res = await fetch(\`${c.baseUrl}/api/v1/tickets?\${new URLSearchParams(query)}\`, {
+    headers: { "Authorization": \`Bearer \${API_KEY}\` },
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(\`\${res.status}: \${json.error}\`);
+  return json.tickets; // parentWbs が null のものだけが親になれる
 }
 
 // ── ここから下が「自分のシステムのデータ」を渡す部分 ──
@@ -113,7 +150,14 @@ const created = await createTickets(
   })),
 );
 
-console.log(created); // [{ wbs: "T-054", title: "…" }, …]`;
+console.log(created); // [{ wbs: "T-054", title: "…" }, …]
+
+// 例: 既に登録されている親チケットに、作業単位の子チケットをぶら下げる
+const [parent] = await findTickets({ q: "ユーザー認証", limit: "20" });
+await addChildTickets(parent.wbs, [
+  { title: "申請画面の作成", priority: "高" },
+  { title: "リセットメール送信APIの作成", priority: "高" },
+]);`;
 }
 
 function pythonSample(c: SampleContext): string {
@@ -125,14 +169,14 @@ API_KEY = os.environ["DEV_TICKET_API_KEY"]
 BASE_URL = "${c.baseUrl}"
 
 
-def create_tickets(tickets):
+def post_tickets(payload):
     res = requests.post(
         f"{BASE_URL}/api/v1/tickets",
         headers={
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json",
         },
-        json={"sprintId": "${c.sprintId}", "tickets": tickets},
+        json=payload,
         timeout=30,
     )
 
@@ -145,7 +189,34 @@ def create_tickets(tickets):
     for w in body.get("warnings", []):
         print("警告:", w)
 
-    return body["created"]  # [{"wbs": "T-054", "title": "…"}]
+    return body["created"]  # [{"wbs": "T-054", "title": "…", "parentWbs": None}]
+
+
+def create_tickets(tickets):
+    """新しくチケットを作る"""
+    return post_tickets({"sprintId": "${c.sprintId}", "tickets": tickets})
+
+
+def add_child_tickets(parent_wbs, children):
+    """既に登録されているチケットに子チケットを足す。
+
+    枝番（T-012-3 など）は既存の子の続きから自動で振られ、登録先スプリントは親と同じになる。
+    """
+    return post_tickets({"tickets": [{**c, "parentWbs": parent_wbs} for c in children]})
+
+
+def find_tickets(**query):
+    """子を足す親を探す（q はタイトルの部分一致。wbs / sprintId でも絞れる）"""
+    res = requests.get(
+        f"{BASE_URL}/api/v1/tickets",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        params=query,
+        timeout=30,
+    )
+    body = res.json()
+    if not res.ok:
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+    return body["tickets"]  # parentWbs が None のものだけが親になれる
 
 
 # ── ここから下が「自分のシステムのデータ」を渡す部分 ──
@@ -161,7 +232,14 @@ created = create_tickets([
     for alert in alerts
 ])
 
-print(created)  # [{"wbs": "T-054", "title": "…"}, …]`;
+print(created)  # [{"wbs": "T-054", "title": "…"}, …]
+
+# 例: 既に登録されている親チケットに、作業単位の子チケットをぶら下げる
+parent = find_tickets(q="ユーザー認証", limit=20)[0]
+add_child_tickets(parent["wbs"], [
+    {"title": "申請画面の作成", "priority": "高"},
+    {"title": "リセットメール送信APIの作成", "priority": "高"},
+])`;
 }
 
 export function buildApiSample(lang: SampleLang, ctx: SampleContext): string {

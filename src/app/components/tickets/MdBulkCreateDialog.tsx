@@ -11,7 +11,7 @@ import { useToast } from "@/app/contexts/ToastContext";
 import { escStack } from "@/app/lib/escStack";
 import { MD_MAX_LENGTH } from "@/app/lib/markdown";
 import { mdTextToTickets, flattenTickets, countTickets } from "@/app/lib/mdTickets/parse";
-import { MD_TICKET_TEMPLATE, buildMdTicketPrompt } from "@/app/lib/mdTickets/template";
+import { MD_TICKET_TEMPLATE, MD_CHILD_TICKET_TEMPLATE, buildMdTicketPrompt } from "@/app/lib/mdTickets/template";
 import type { ParsedTicket, ParseWarning } from "@/app/lib/mdTickets/types";
 import { insertBulkTickets, type BulkInsertTicket } from "@/app/lib/bulkTicketInsert";
 
@@ -92,21 +92,32 @@ let pasteSeq = 0;
 // ── 本体 ──────────────────────────────────────────────────────────────────
 
 export function MdBulkCreateDialog({
-  sprintId, sprintName, projectId, projectSlug, currentTicketCount, onClose, onCreated,
+  sprintId, sprintName, projectId, projectSlug, currentTicketCount, parentTicket, zIndexBase = 300,
+  onClose, onCreated,
 }: {
   sprintId: string; sprintName?: string; projectId?: string; projectSlug?: string;
   currentTicketCount?: number;
+  /**
+   * 既存チケットの配下へ子チケットとして取り込む場合の親。
+   * 指定すると階層を作らず、読み取ったチケットを全てこの親の子として登録する。
+   */
+  parentTicket?: { id: string; wbs: string; title: string };
+  zIndexBase?: number;
   onClose: () => void; onCreated: (createdWbs: string[]) => void;
 }) {
   const { userName } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
 
+  const isChildMode = !!parentTicket;
+
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [files, setFiles] = useState<LoadedFile[]>([]);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
-  const [flat, setFlat] = useState(false);
+  // 子チケットモードでは階層を作れないため、常にフラット（トグルも出さない）
+  const [flatChoice, setFlat] = useState(false);
+  const flat = isChildMode || flatChoice;
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -306,10 +317,16 @@ export function MdBulkCreateDialog({
     const now = new Date();
     const today = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}`;
     void copyText(
-      buildMdTicketPrompt({ memberNames, categoryNames: categories.map(c => c.name), sprintName, today }),
+      buildMdTicketPrompt({
+        memberNames, categoryNames: categories.map(c => c.name), sprintName, today,
+        parentTicket: parentTicket ? { wbs: parentTicket.wbs, title: parentTicket.title } : undefined,
+      }),
       "AI用プロンプト",
     );
   };
+
+  /** 記入例。子チケットモードでは階層のないフラットな例を出す */
+  const templateText = isChildMode ? MD_CHILD_TICKET_TEMPLATE : MD_TICKET_TEMPLATE;
 
   // ── 登録 ──────────────────────────────────────────────────────────────
 
@@ -335,7 +352,11 @@ export function MdBulkCreateDialog({
       sprintId, projectId: projectId ?? "", projectSlug,
       createdBy: userName || null,
       tickets: selected.map(toInsert),
-      limit: currentTicketCount != null ? { max: plan.maxTicketsPerSprint, current: currentTicketCount } : undefined,
+      parentTicket: parentTicket ? { id: parentTicket.id, wbs: parentTicket.wbs } : undefined,
+      // 子チケットモードは呼び出し元がスプリントの件数を持たないため、current は insertBulkTickets に数えさせる
+      limit: isChildMode
+        ? { max: plan.maxTicketsPerSprint }
+        : currentTicketCount != null ? { max: plan.maxTicketsPerSprint, current: currentTicketCount } : undefined,
     });
 
     setSaving(false);
@@ -419,7 +440,7 @@ export function MdBulkCreateDialog({
   return (
     <>
       <style>{`@keyframes md-bulk-spin { to { transform: rotate(360deg); } }`}</style>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
 
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true); }}
@@ -428,7 +449,7 @@ export function MdBulkCreateDialog({
         style={{
           position: "fixed", top: "5vh", left: "50%", transform: "translateX(-50%)",
           width: "min(94vw, 720px)", maxHeight: "90vh",
-          background: "#FAFAF8", zIndex: 301, borderRadius: 16,
+          background: "#FAFAF8", zIndex: zIndexBase + 1, borderRadius: 16,
           boxShadow: "0 24px 80px rgba(0,0,0,0.22)",
           display: "flex", flexDirection: "column", overflow: "hidden",
         }}
@@ -446,13 +467,17 @@ export function MdBulkCreateDialog({
         {/* ヘッダー */}
         <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 9, background: "#F0F9FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <FileText style={{ width: 16, height: 16, color: "#0284C7" }} />
+            <div style={{ width: 32, height: 32, borderRadius: 9, background: isChildMode ? "#ECFDF5" : "#F0F9FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              {isChildMode
+                ? <CornerDownRight style={{ width: 16, height: 16, color: "#059669" }} />
+                : <FileText style={{ width: 16, height: 16, color: "#0284C7" }} />}
             </div>
-            <div>
-              <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>MDファイルから一括作成</p>
-              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>
-                {sprintName ?? "チケット一括作成"}
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                {isChildMode ? "MDファイルから子チケットを一括作成" : "MDファイルから一括作成"}
+              </p>
+              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {parentTicket ? `${parentTicket.wbs} ${parentTicket.title}` : sprintName ?? "チケット一括作成"}
               </h2>
             </div>
           </div>
@@ -469,6 +494,15 @@ export function MdBulkCreateDialog({
         {phase === "drop" ? (
           /* ── 画面A: 取り込み ── */
           <div style={{ padding: 24, overflowY: "auto" }}>
+            {isChildMode && (
+              <div style={{ marginBottom: 12, padding: "9px 13px", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.18)", borderRadius: 10, display: "flex", alignItems: "flex-start", gap: 7 }}>
+                <CornerDownRight style={{ width: 13, height: 13, color: "#059669", flexShrink: 0, marginTop: 2 }} />
+                <span style={{ fontSize: 11.5, color: "#047857", lineHeight: 1.6 }}>
+                  読み取った見出しは、すべて <b>{parentTicket!.wbs} {parentTicket!.title}</b> の子チケットとして登録されます。
+                  登録先のスプリントは親チケットと同じになります。
+                </span>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -481,7 +515,9 @@ export function MdBulkCreateDialog({
               }}
             >
               <Upload style={{ width: 26, height: 26, color: dragOver ? "#059669" : "#C9C4BB" }} />
-              <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714" }}>MDファイルを選択</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: "#1A1714" }}>
+                {isChildMode ? "子チケットのMDファイルを選択" : "MDファイルを選択"}
+              </span>
               <span style={{ fontSize: 12, color: "#9E9690" }}>クリック、またはドラッグ＆ドロップ（複数まとめて可）</span>
               <span style={{ fontSize: 10.5, color: "#C9C4BB" }}>.md / .markdown</span>
             </button>
@@ -524,7 +560,7 @@ export function MdBulkCreateDialog({
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   type="button"
-                  onClick={() => void copyText(MD_TICKET_TEMPLATE, "テンプレート")}
+                  onClick={() => void copyText(templateText, "テンプレート")}
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 13px", fontSize: 12, fontWeight: 600, color: "#6B6458", background: "#F4F5F6", border: "1px solid rgba(26,23,20,0.10)", borderRadius: 8, cursor: "pointer" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECEAE6"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
@@ -565,7 +601,7 @@ export function MdBulkCreateDialog({
                   marginTop: 8, padding: 12, background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)",
                   borderRadius: 9, fontSize: 11, lineHeight: 1.6, color: "#1A1714",
                   fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", maxHeight: 260, overflowY: "auto",
-                }}>{MD_TICKET_TEMPLATE}</pre>
+                }}>{templateText}</pre>
               )}
             </div>
           </div>
@@ -581,7 +617,14 @@ export function MdBulkCreateDialog({
                   </span>
                   <span style={{ fontSize: 11, color: "#9E9690", flexShrink: 0 }}>／ {countTickets(tickets)}件</span>
                 </div>
-                {hasChildren && (
+                {isChildMode && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#059669", fontWeight: 600 }}>
+                    <CornerDownRight style={{ width: 11, height: 11 }} />
+                    すべて {parentTicket!.wbs} の子チケットになります
+                    {hasChildren && "（階層は1段までのため、読み取った子も同じ並びになります）"}
+                  </span>
+                )}
+                {hasChildren && !isChildMode && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 11, color: "#9E9690" }}>階層</span>
                     <div style={{ display: "flex", gap: 3, padding: 2, background: "#ECEAE6", borderRadius: 7 }}>
@@ -718,7 +761,7 @@ export function MdBulkCreateDialog({
                 }}
               >
                 {saving && <Loader2 style={{ width: 13, height: 13, animation: "md-bulk-spin 1s linear infinite" }} />}
-                {saving ? "作成中..." : `チケット化する (${selectedCount}件)`}
+                {saving ? "作成中..." : isChildMode ? `子チケットにする (${selectedCount}件)` : `チケット化する (${selectedCount}件)`}
               </button>
             </div>
           </>

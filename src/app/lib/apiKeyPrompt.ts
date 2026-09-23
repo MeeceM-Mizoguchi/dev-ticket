@@ -95,7 +95,8 @@ description は **Markdown 文字列**で渡す。決まった項目構成で書
 - 複数の作業に分かれるもの（機能単位・改修一式など）だけ \`children\` に子チケットを入れる。
 - 階層は**1段まで**。子の中にさらに \`children\` を入れない。
 - **子チケットにも親と同じ項目と本文を書く**。子だからといって省略しない。
-- 迷ったら子を作らない。`;
+- 迷ったら子を作らない。
+- **既に登録されているチケットに子を足す**場合は \`children\` ではなく \`parentWbs\` を使う（後述）。`;
 
 /**
  * AIに渡す手順書を組み立てる。
@@ -115,23 +116,39 @@ export function buildApiSetupPrompt(ctx: ApiSetupContext): string {
 あなたはこれから、Dev Ticket（プロジェクト管理ツール）の API を呼んでチケットを登録します。
 以下の仕様に厳密に従ってください。
 
+## APIキー
+
+\`\`\`
+${key}
+\`\`\`
+
+${ctx.plainKey
+  ? `- 上の1行が **Dev Ticket のAPIキー**（\`dvt_live_\` で始まる文字列）。
+- **この手順書にキーはもう含まれている。**利用者に「APIキーを教えてください」と聞き直さないこと。
+- すべてのリクエストで \`Authorization: Bearer <上のAPIキー>\` として送る。`
+  : `- 上の行はプレースホルダ。控えてある実際のキー（\`dvt_live_\` で始まる文字列）に置き換えること。
+- 既に環境変数や設定ファイルへ登録済みであれば、そちらを使ってよい。
+- すべてのリクエストで \`Authorization: Bearer <上のAPIキー>\` として送る。`}
+- キーはパスワードと同じもの。**ソースコードに直接書かず、ログや出力にも書き出さないこと。**
+
 ## 接続情報
 
-- エンドポイント: \`POST ${ctx.baseUrl}/api/v1/tickets\`
-- 認証ヘッダー: \`Authorization: Bearer ${key}\`
-- \`Content-Type: application/json\`
-- 対象プロジェクト: ${ctx.projectName}（APIキーに紐づいているので指定不要）
-- **登録先スプリント: ${ctx.sprintName || "(名称未設定)"}**
-- **\`sprintId\`: \`${ctx.sprintId}\`**
+| 項目 | 値 |
+|---|---|
+| チケットを登録する | \`POST ${ctx.baseUrl}/api/v1/tickets\` |
+| 既存チケットを一覧する | \`GET ${ctx.baseUrl}/api/v1/tickets\` |
+| 候補値（スプリント・担当者・分類）を取る | \`GET ${ctx.baseUrl}/api/v1/context\` |
+| 認証ヘッダー | \`Authorization: Bearer <上のAPIキー>\` |
+| Content-Type | \`application/json\` |
+| 対象プロジェクト | ${ctx.projectName}（APIキーに紐づいているので指定不要） |
+| **登録先スプリント** | **${ctx.sprintName || "(名称未設定)"}** |
+| **sprintId** | **\`${ctx.sprintId}\`** |
 
 ⚠️ \`sprintId\` は上の値を**そのまま使う**こと。この手順は利用者が「${ctx.sprintName || "このスプリント"}」の画面から
 　 コピーしたものであり、登録先はここで確定している。**自分で別のスプリントを選び直さないこと。**
 　 利用者が会話の中で別のスプリントを明示的に指定した場合のみ、そちらに変更する。
 
-${ctx.plainKey ? "" : `※ APIキーは上のプレースホルダを、控えてある実際のキー（\`dvt_live_\` で始まる文字列）に置き換えてください。
-　 既に環境変数や設定ファイルへ登録済みであれば、そちらを使ってください。
-
-`}## リクエストの形
+## リクエストの形
 
 \`\`\`json
 {
@@ -167,11 +184,32 @@ ${ctx.plainKey ? "" : `※ APIキーは上のプレースホルダを、控え�
 | estimatedHours | | 時間数（整数） | 0 |
 | description | | 本文（Markdown 文字列） | 空欄 |
 | children | | 子チケットの配列（同じ形・1階層まで） | なし |
+| parentWbs | | **既に登録されているチケット**のWBS（例: \`T-012\`）。指定するとその子として登録される | 新しい親チケットとして登録 |
 
 - 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
 - 表に無いキーは送らない（送っても無視される）。
 - assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
-- 1回のリクエストで送れる親チケットは 200 件まで、親1件あたりの子は 50 件まで。
+- 1回のリクエストで送れる \`tickets\` は 200 件まで、親1件あたりの子は 50 件まで。
+
+## 既に登録されているチケットに子チケットを足す
+
+新しく親を作るのではなく既存チケットの下に足したいときは、\`tickets\` の各要素に \`parentWbs\` を書く。
+
+\`\`\`json
+{
+  "tickets": [
+    { "title": "申請画面の作成", "priority": "高", "parentWbs": "T-012", "description": "**概要**\\n…" },
+    { "title": "リセットメール送信APIの作成", "priority": "高", "parentWbs": "T-012", "description": "**概要**\\n…" }
+  ]
+}
+\`\`\`
+
+- 枝番（\`T-012-3\` など）は**既存の子の続きから自動で振られる**。自分で採番しない。
+- 登録先スプリントは**親チケットと同じ**になる。この形だけを送るときは \`sprintId\` を書かない。
+- \`parentWbs\` を書いた要素に \`children\` は書けない（階層は1段まで）。子チケットの下にさらに子も作れない。
+- WBS の代わりにチケットIDで指定する場合は \`parentId\` を使う。両方書いた場合は \`parentId\` が優先される。
+- 新しく作るチケットと \`parentWbs\` 付きのチケットを**同じリクエストに混ぜてよい**。その場合は \`sprintId\` が必要。
+- **親のWBSを推測で書かない。**分からなければ後述の \`GET /api/v1/tickets\` で探すか、利用者に確認する。
 
 ${DESCRIPTION_SPEC}
 
@@ -183,10 +221,12 @@ ${DESCRIPTION_SPEC}
 {
   "ok": true,
   "count": 3,
-  "created": [{ "wbs": "T-054", "title": "…" }],
+  "created": [{ "wbs": "T-054", "title": "…", "parentWbs": null }],
   "warnings": ["「…」: 担当者「佐藤」はプロジェクトのメンバーに見つからないため空欄にしました"]
 }
 \`\`\`
+
+\`created[].parentWbs\` は、既存チケットの子として登録されたものだけ親のWBSが入る（新しい親は \`null\`）。
 
 - \`warnings\` が空でなければ、**必ず利用者に読み上げて報告する**。登録自体は成功しているが、担当者や分類が空欄になっている可能性がある。
 - \`401\` はキーが無効・失効・期限切れ。\`403\` はプランの上限超過。\`429\` はリクエスト過多（1分あたり60回まで）。
@@ -200,6 +240,32 @@ ${DESCRIPTION_SPEC}
 **スプリント一覧が取れても、登録先を \`${ctx.sprintId}\` から変えてはならない。**
 この呼び出しは担当者名や分類名の最新の候補を確かめるためのものである。
 
+## 補足: 子チケットを足す親を探したいとき
+
+\`GET ${ctx.baseUrl}/api/v1/tickets\`（同じ Authorization ヘッダー）で既存チケットを一覧できる。
+ここで返る \`wbs\` を、そのまま \`parentWbs\` に使う。
+
+| クエリ | 意味 |
+|---|---|
+| \`sprintId\` / \`sprintName\` | スプリントで絞る（省略時はプロジェクト全体） |
+| \`q\` | タイトルの部分一致で絞る |
+| \`wbs\` | そのチケットと、その子チケットだけを返す |
+| \`limit\` | 返す件数（既定100・最大500） |
+
+\`\`\`json
+{
+  "count": 2,
+  "hasMore": false,
+  "tickets": [
+    { "id": "TKT-…", "wbs": "T-012", "title": "ユーザー認証機能のリニューアル", "status": "進行中", "priority": "高", "assignee": "山田太郎", "parentWbs": null, "sprintId": "…", "sprintName": "…" },
+    { "id": "TKT-…", "wbs": "T-012-1", "title": "申請画面の作成", "status": "未着手", "priority": "高", "assignee": null, "parentWbs": "T-012", "sprintId": "…", "sprintName": "…" }
+  ]
+}
+\`\`\`
+
+- \`parentWbs\` が \`null\` のものだけが親になれる。子チケット（\`T-012-1\` など）の下にさらに子は作れない。
+- **どの親に足すか確信が持てないときは、候補を利用者に示して確認する。**勝手に決めない。
+
 ## 今日の日付
 
 ${ctx.today}
@@ -212,5 +278,8 @@ export function buildApiQuickReference(baseUrl: string): string {
 Authorization: Bearer dvt_live_...
 Content-Type: application/json
 
-{ "sprintId": "...", "tickets": [ { "title": "...", ... } ] }`;
+{ "sprintId": "...", "tickets": [ { "title": "...", ... } ] }
+
+// 既存チケットに子チケットを足す（親は GET /api/v1/tickets で探せる）
+{ "tickets": [ { "title": "...", "parentWbs": "T-012" } ] }`;
 }
