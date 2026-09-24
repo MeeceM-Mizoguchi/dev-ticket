@@ -32,8 +32,8 @@ import {
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
-  convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint,
-  type GoogleDriveProjectConfig, type GoogleDriveMode,
+  convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
+  type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
 import { FileKindIcon } from "@/app/components/files/FileKindIcon";
@@ -58,6 +58,29 @@ function summarize(items: string[], head = 3): string {
   return items.length <= head
     ? items.join("、")
     : `${items.slice(0, head).join("、")} ほか ${items.length - head} 件`;
+}
+
+/**
+ * フォルダ配下（入れ子のフォルダの中まで）の行を集める。
+ * 削除の確認ダイアログの件数と、削除後の一覧の整理に使う。
+ * （サーバー側はフォルダの行を1つ消せば子孫もDBのカスケードで消えるが、
+ *   画面側の files にはその子孫が残るため、ここで同じ範囲を割り出す）
+ */
+function collectDescendants(files: ProjectFile[], folderId: string): ProjectFile[] {
+  const out: ProjectFile[] = [];
+  const visited = new Set<string>();
+  const stack = [folderId];
+  while (stack.length) {
+    const current = stack.pop() as string;
+    if (visited.has(current)) continue; // 万一 parentId が循環していても止まる
+    visited.add(current);
+    for (const f of files) {
+      if ((f.parentId ?? null) !== current) continue;
+      out.push(f);
+      if (f.isFolder) stack.push(f.id);
+    }
+  }
+  return out;
 }
 
 const KIND_ICON = {
@@ -129,6 +152,12 @@ export function FileBoxPage() {
   // フォルダを丸ごと上げると時間がかかるので、何件目かを出す
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProjectFile | null>(null);
+  // 削除のとき Googleドライブ上の実体もゴミ箱へ入れるか。
+  // 既定は false（＝Drive には残す）。取り込んだファイルが利用者の原本のことがあり、
+  // 既定で消すと巻き添えになるため、毎回この画面で選んでもらう。
+  const [deleteFromDrive, setDeleteFromDrive] = useState(false);
+  // BUG-05 削除も await を含むので ref で二重起動を止める
+  const deletingRef = useRef(false);
   const [previewTarget, setPreviewTarget] = useState<ProjectFile | null>(null);
   // コメントのリンクから開かれた時の着地先（BRU12-025）
   const [focusComment, setFocusComment] = useState<{ commentId: string | null; replyId: string | null } | null>(null);
@@ -765,7 +794,7 @@ export function FileBoxPage() {
 
   // モーダルの onClose は escStack に積まれるため、毎レンダーで作り直さないよう固定する
   const closePreview = useCallback(() => { setPreviewTarget(null); setFocusComment(null); }, []);
-  const closeDelete = useCallback(() => setDeleteTarget(null), []);
+  const closeDelete = useCallback(() => { setDeleteTarget(null); setDeleteFromDrive(false); }, []);
 
   // 共有用リンク。Slack やメールに貼ると、開いた人はそのままプレビュー（フォルダなら
   // そのフォルダを開いた状態）で着地する。
@@ -775,19 +804,71 @@ export function FileBoxPage() {
     void copyShareLink({ kind: file.isFolder ? "file-folder" : "file", id: file.id });
   }, [copyShareLink]);
 
-  const handleDelete = useCallback(async (file: ProjectFile) => {
-    setDeleteTarget(null);
+  /**
+   * @param alsoDrive  Googleドライブ上の実体もゴミ箱へ入れる（確認ダイアログのチェック）
+   * @param googleCount 対象に含まれる Googleドライブ上のファイルの件数（文言の出し分け用）
+   */
+  const handleDelete = useCallback(async (file: ProjectFile, alsoDrive: boolean, googleCount: number) => {
+    // BUG-05 await を含むので ref で二重起動を止める。
+    // ダイアログは閉じずに「処理中...」を出したままにするので、state だけでは素通りしうる。
+    if (deletingRef.current) return;
+    deletingRef.current = true;
     try {
-      await deleteProjectFile(file.id);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "削除に失敗しました", "error");
-      return;
+      // ★ Drive 側が先。DevTicket の行を消すと、実体を指す external_id ごと消えて
+      //   「どのファイルを消せばいいか」が分からなくなる。
+      //   消せないものがあっても DevTicket 側の削除は続ける（結果はトーストで伝える）。
+      let drive: TrashResult | null = null;
+      let driveError: string | null = null;
+      if (alsoDrive) {
+        try {
+          drive = await trashGoogleFiles(file.isFolder ? { folderId: file.id } : { fileId: file.id });
+        } catch (e) {
+          driveError = e instanceof Error ? e.message : "Googleドライブ側で削除できませんでした";
+        }
+      }
+
+      try {
+        await deleteProjectFile(file.id);
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "削除に失敗しました", "error");
+        return;
+      }
+
+      toast(!alsoDrive && googleCount > 0
+        ? `「${file.fileName}」をファイルボックスから削除しました。Googleドライブ上のファイルは残っています`
+        : `「${file.fileName}」を削除しました`);
+
+      // Drive 側の結果は別のトーストで伝える。消せなかったものに必ず気づけるようにする
+      if (alsoDrive) {
+        if (driveError) {
+          toast(`Googleドライブ上のファイルは削除できませんでした（${driveError}）。Googleドライブには残っています`, "error");
+        } else if (drive && drive.failed.length > 0) {
+          toast(`Googleドライブ上のファイル ${drive.failed.length} 件を削除できませんでした：`
+            + `${summarize(drive.failed.map(f => f.name))}。Googleドライブには残っています`, "error");
+        } else if (drive && drive.trashed > 0) {
+          toast(drive.trashed > 1
+            ? `Googleドライブ上のファイル ${drive.trashed} 件をゴミ箱へ移動しました`
+            : "Googleドライブ上のファイルをゴミ箱へ移動しました");
+        }
+      }
+
+      if (file.isFolder) {
+        // フォルダの行を消すと子孫の行もDBのカスケードで消える。画面側も同じ範囲を落とす
+        // （残すと、検索したときだけ消えたはずのファイルが出てくる）
+        const gone = new Set([file.id, ...collectDescendants(files, file.id).map(f => f.id)]);
+        setFiles(prev => prev.filter(f => !gone.has(f.id)));
+      } else if (isGoogleFile(file)) {
+        // Googleドライブ上のファイルはサーバー側も id で1行だけ消す（同名＝別バージョンではない）
+        setFiles(prev => prev.filter(f => f.id !== file.id));
+      } else {
+        // サーバー側は同名の全バージョンを消すので、画面側も同じ粒度で消す
+        setFiles(prev => prev.filter(f => f.fileName !== file.fileName));
+      }
+      emitLinkItemsChanged(file.projectId, "file");
+    } finally {
+      deletingRef.current = false;
     }
-    toast(`「${file.fileName}」を削除しました`);
-    // サーバー側は同名の全バージョンを消すので、画面側も同じ粒度で消す
-    setFiles(prev => prev.filter(f => f.fileName !== file.fileName));
-    emitLinkItemsChanged(file.projectId, "file");
-  }, [toast]);
+  }, [toast, files]);
 
   // 保存や差し替えのたびに版が増えるので、一覧は同名ファイルの最新版だけを見せる。
   // (files は created_at 降順で取得済み。同名なら version が大きい方を残す)
@@ -1114,23 +1195,51 @@ export function FileBoxPage() {
           focusReplyId={focusComment?.replyId ?? null}
           onSaved={() => { load(); if (project) emitLinkItemsChanged(project.id, "file"); }} />
       )}
-      {deleteTarget && (
-        <ConfirmDialog
-          title={deleteTarget.isFolder ? "フォルダを削除" : "ファイルを削除"}
-          message={deleteTarget.isFolder
-            ? `フォルダ「${deleteTarget.fileName}」を削除します。フォルダ内のフォルダとファイルもすべて削除されます。`
-            // Googleファイルの実体はDrive側にある。DevTicketの一覧から外すだけで、
-            // Drive上のファイルは消さない（他の人が編集中でも巻き添えにしないため）。
-            : isGoogleFile(deleteTarget)
-              ? `「${deleteTarget.fileName}」をファイルボックスから削除します。Googleドライブ上のファイルは残ります。`
-              : deleteTarget.version > 1
-                ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
-                : `「${deleteTarget.fileName}」を削除します。`}
-          confirmLabel="削除する"
-          onConfirm={() => handleDelete(deleteTarget)}
-          onClose={closeDelete}
-        />
-      )}
+      {deleteTarget && (() => {
+        // Googleドライブ上のファイルの実体は Drive 側にある。どちらにするかは毎回選んでもらう。
+        // フォルダは配下（入れ子のフォルダの中まで）をまとめて数え、
+        // 「中身もすべて Drive から消す／Drive 上はすべて残す」を1つのチェックで選ばせる。
+        const googleCount = deleteTarget.isFolder
+          ? collectDescendants(files, deleteTarget.id).filter(f => !f.isFolder && isGoogleFile(f)).length
+          : (isGoogleFile(deleteTarget) ? 1 : 0);
+        // チェックが付いていても、Googleドライブ上のファイルが無ければ Drive へは行かない
+        const alsoDrive = deleteFromDrive && googleCount > 0;
+
+        const message = deleteTarget.isFolder
+          ? `フォルダ「${deleteTarget.fileName}」を削除します。フォルダ内のフォルダとファイルもすべて削除されます。`
+            + (googleCount > 0 ? `\nこのフォルダには Googleドライブ上のファイルが ${googleCount} 件あります。` : "")
+          : deleteTarget.version > 1 && !isGoogleFile(deleteTarget)
+            ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
+            : `「${deleteTarget.fileName}」を削除します。`;
+
+        return (
+          <ConfirmDialog
+            title={deleteTarget.isFolder ? "フォルダを削除" : "ファイルを削除"}
+            message={message}
+            extra={googleCount > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#1A1714", cursor: "pointer" }}>
+                  <input type="checkbox" checked={deleteFromDrive}
+                    onChange={e => setDeleteFromDrive(e.target.checked)}
+                    style={{ width: 14, height: 14, accentColor: "#059669", cursor: "pointer", flexShrink: 0 }} />
+                  {deleteTarget.isFolder
+                    ? `Googleドライブ上のファイル ${googleCount} 件もすべてゴミ箱へ移動する`
+                    : "Googleドライブ上のファイルもゴミ箱へ移動する"}
+                </label>
+                <p style={{ margin: 0, fontSize: 12, color: "#6B6458", lineHeight: 1.6 }}>
+                  {deleteFromDrive
+                    // 完全削除ではなくゴミ箱なので、取り違えても Drive 側から戻せることを伝える
+                    ? "Googleドライブのゴミ箱に入ります。取り消したいときは Googleドライブのゴミ箱から元に戻せます。"
+                    : "チェックしない場合はファイルボックスから削除するだけで、Googleドライブ上のファイルは残ります。"}
+                </p>
+              </div>
+            ) : undefined}
+            confirmLabel="削除する"
+            onConfirm={() => handleDelete(deleteTarget, alsoDrive, googleCount)}
+            onClose={closeDelete}
+          />
+        );
+      })()}
       {convertPrompt && (() => {
         // 変換すると元の .xlsx 等は DevTicket に残らない。既定は「そのまま」。
         const many = convertPrompt.names.length > 1;

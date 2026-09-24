@@ -335,7 +335,10 @@ export default async function handler(req: any, res: any) {
     if (file.external_provider === "google") {
       const { error } = await sb.from("project_files").delete().eq("id", fileId);
       if (error) return res.status(500).json({ error: error.message });
-      // Googleドライブ上の実体は残す（設計書 2章 決定事項8）
+      // Googleドライブ上の実体にはここでは触れない（storage にも実体は無い）。
+      // Drive 側をゴミ箱へ入れるかは利用者が確認ダイアログで選び、
+      // 選ばれたときだけクライアントが「先に」 api/google/trash を呼ぶ（設計書 2章 決定事項8）。
+      // ★ 順序が逆になるとこの行が消え、実体を指す external_id ごと失われて手が出せなくなる。
       return res.json({ ok: true, deleted: 0 });
     }
 

@@ -44,7 +44,7 @@ public = false」とある。本機能は**この方針を部分的に緩める*
 | ⑤ | 保存先の指定 | **Google Picker で「共有ドライブの中のフォルダ」を選択**。共有ドライブそのものは Picker で選択できない（⑤補足）。`drive.file` では `drives.list` / `drives.create` も使えないため、顧客側で作成済みのものを選んでもらう |
 | ⑥ | フォルダ構成 | 共有ドライブ: `<選んだフォルダ>/<プロジェクト名>/`／個人ドライブ: `マイドライブ/DevTicket/<プロジェクト名>/` を**自動生成**する |
 | ⑦ | 権限の配り方 | 既定は**メンバーへの個別付与**（`type:"user", role:"writer"`）。リンク共有は**ファイルごとの明示的オプトイン** |
-| ⑧ | DevTicketで削除したとき | **Googleドライブ側のファイルは残す**。DevTicketの一覧から外すだけ |
+| ⑧ | DevTicketで削除したとき | **確認ダイアログで利用者に選ばせる**。既定は「Googleドライブ上のファイルは残す」。選ばれたときだけ Drive 側を**ゴミ箱へ移動**する（⑧補足） |
 | ⑨ | 同期の向き | 原則 **DevTicket → Google の一方通行**。ただし**名前と存在だけ**は Drive → DevTicket へも取り込む（⑨補足） |
 | ⑩ | 個人ドライブ時の警告 | 作成前に**注意モーダル**を表示。「次回以降表示しない」を持つ |
 
@@ -70,6 +70,27 @@ DevTicket 上に2つ並び、同期しないまま別々に育つ**（どちら�
 どちらが適切かは利用者の用途次第なので、**推奨表示も初期選択も置かない**。
 どちらかを初期選択にすると、それ自体が暗黙の推奨になるうえ、元に戻せない変換を
 うっかり既定のまま進めてしまう形も生まれる。未選択の間は保存ボタンを押せないようにする。
+
+### 2.2 ⑧補足：削除のときに Drive 側をどうするか
+
+当初は「**Drive 側は常に残す**（DevTicket は索引なので、索引から外しても倉庫には手を出さない）」
+としていたが、実際に使うと **DevTicket から消したファイルが Drive にだけ溜まり続ける**。
+取り込み時にコピーを作る経路（`import-files` / `convert-existing` / 一覧の「G」ボタン）があるぶん、
+使うほど Drive 側だけが増えていく。
+
+かといって**常に消すのも危険**で、`import-files` は保存先フォルダの中にあったファイルを
+コピーせず原本のまま登録する（5.1.3）。常に消す実装にすると、利用者の原本を巻き添えにする。
+
+そこで**確認ダイアログのチェックボックスで毎回選ばせる**。既定はオフ（＝Drive に残す）。
+
+- **完全削除(`files.delete`)ではなくゴミ箱(`trashed=true`)** にする。
+  取り違えても Drive のゴミ箱から戻せる
+- **フォルダの削除は、配下（入れ子のフォルダの中まで）をまとめて1つのチェックで選ばせる**。
+  「中身もすべて Drive から消す／Drive 上はすべて残す」の二択で、ファイル単位では選ばせない
+- **`drive.file` スコープの都合で、消せないファイルが必ず残る**。
+  他の人がこのアプリで作った／Picker で選んだファイルは、削除する人のトークンからは 404 になる。
+  1件失敗しても止めず、最後まで試して**消せなかったものを件数と名前で伝える**
+  （DevTicket 側の削除は予定どおり進める）
 
 ---
 
@@ -465,6 +486,7 @@ Googleファイルの行は `file_path = ''`, `file_size = 0`, `version = 1`,
 | `picker-token` | POST | Picker 用の短命アクセストークン（drive.file のみ）。ログインしていれば発行（5.1.3） |
 | `import-files` | POST | Picker で選ばれた既存の Googleファイルを取り込む。保存先の外はコピーして追加（5.1.3） |
 | `convert-existing` | POST | ファイルボックスにある Office文書を Google形式にコピーする。元は残す（5.1.4） |
+| `trash` | POST | `{ fileId }` / `{ folderId }` → Drive 側をゴミ箱へ（2.2）。**DevTicket 側を消す前に呼ぶ** |
 | `test-connection` | POST | 5.3 の接続テスト |
 
 すべて [`project-files/[action].ts`](../api/project-files/[action].ts) と同じく
@@ -546,7 +568,7 @@ Google側の権限と DevTicket のメンバーシップは**自動では同期�
 | コメント（`project_file_comments`） | `(project_id, file_name)` で引くので構造上は動くが、**本機能では無効にする**（ビューアを開かないため付ける場所がない） |
 | 版（`version`） | Googleに版の概念を持ち込まない。常に `1` |
 | 改名 | DevTicket側の改名時に `files.update` でDrive側も改名する |
-| 削除 | **Drive側は残す**（決定事項 ⑧）。確認ダイアログに「Googleドライブ上のファイルは残ります」と明記 |
+| 削除 | **確認ダイアログのチェックで選ばせる**（決定事項 ⑧・2.2）。既定は残す。チェックされたときだけ Drive 側をゴミ箱へ移動する |
 | `%` サジェスト（`emitLinkItemsChanged`） | 通常ファイルと同じく対象にする |
 | 共有リンク（`?file=...`） | DevTicketのURLで着地したら、そのままDriveへ転送する |
 
@@ -556,6 +578,7 @@ Google側の権限と DevTicket のメンバーシップは**自動では同期�
 |---|---|
 | DevTicketでフォルダ間を移動 | Drive側は動かない |
 | DevTicketで改名 | Drive側も改名する |
+| DevTicketで削除 | 利用者が選ぶ。チェックすれば Drive 側もゴミ箱へ（2.2）。既定は残す |
 | **Drive側で改名** | **DevTicket側も追従する**（9.1.1） |
 | **Drive側で削除** | 一覧に「Driveで削除済み」と出す。**DevTicketの行は消さない** |
 | Drive側でフォルダを移動 | 追わない。Drive側の階層と DevTicket のフォルダは別物のため |
@@ -603,7 +626,7 @@ Google を連携していないユーザーが見ているときは何もしな�
 |---|---|
 | [`signed-url`](../api/project-files/[action].ts#L200) | Googleファイルは `external_url` を返す |
 | [`dav-url`](../api/project-files/[action].ts#L220) | 対象外（400を返す） |
-| [`delete`](../api/project-files/[action].ts#L298) | `storage.remove` をスキップ。行だけ消す |
+| [`delete`](../api/project-files/[action].ts#L298) | `storage.remove` をスキップ。行だけ消す。Drive 側は `api/google/trash` が受け持つ（2.2） |
 | [`register`](../api/project-files/[action].ts#L145) の版採番 | Googleファイルは通らない経路 |
 | [`getFileKind`](../src/app/lib/projectFiles.ts#L47) | Google3種の判定・アイコン・色を追加 |
 | [`canPreviewInBrowser`](../src/app/lib/projectFiles.ts#L51) | 常に `false` |
@@ -616,6 +639,12 @@ Google を連携していないユーザーが見ているときは何もしな�
 
 **残る要検証**
 
+- **`drive.file` スコープで、他の人が追加したファイルがどこまで見えるか。**
+  スコープの建前どおりなら「本人がこのアプリで作った／Picker で選んだ」ファイルしか触れず、
+  削除（`trash`）は 404 で落ちる。同じ理屈で `sync-names` の `files.list` にも載らず、
+  Drive にまだ在るのに「Driveで削除済み」と誤表示される可能性がある。
+  **複数のアカウントで実機確認すること。**（`trash` 側は 404/403 を失敗として
+  名前付きで伝えるので、気づけないまま進むことはない）
 - 1ファイルあたりの権限エントリ数の上限。公式ドキュメントで確認できなかった。
   メンバーが数百人規模の組織で `permissions.create` を回したときの挙動を確認すること。
 
