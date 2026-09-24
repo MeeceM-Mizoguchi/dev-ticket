@@ -57,6 +57,8 @@ const MIME: Record<string, string> = {
   presentation: "application/vnd.google-apps.presentation",
 };
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+// 別のファイルを指すだけの入れ物。中身を持たないので、指している先に読み替えて扱う
+const SHORTCUT_MIME = "application/vnd.google-apps.shortcut";
 
 const DEFAULT_NAME: Record<string, string> = {
   spreadsheet: "無題のスプレッドシート",
@@ -1018,8 +1020,14 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // ── 既存の Googleファイルを取り込む ──────────────────
-    // もともと Drive にあるスプシ・ドキュメント・スライドを、ファイルボックスへ追加する。
+    // ── 既存の Driveファイルを取り込む ──────────────────
+    // もともと Drive にあるファイルを、ファイルボックスへ追加する。
+    //
+    // ★ 種別は問わない。Google形式（スプシ・ドキュメント・スライド）でも、
+    //   Office文書・PDF・画像・zip でも、Drive にあるものは全て追加できる。
+    //   どれも storage に実体を持たず、クリックすると Drive が開く形で揃える。
+    //   「DevTicket に取り込めるサイズか」で追加できるものが変わってしまうと、
+    //   ファイルボックスに置けないファイルが出てしまうため、実体は持たない。
     //
     // ★ fileIds は Picker で選ばれたものに限る（URL貼り付けも、Picker で1回 Select させてから来る）。
     //   drive.file スコープでは、Picker で選ばれていないファイルは files.get が 404 になる。
@@ -1035,6 +1043,8 @@ export default async function handler(req: any, res: any) {
     //   新規作成したファイルと全く同じに扱える。
     //   代わりに元のファイルは残り、変更履歴とコメントはコピーに引き継がれない。
     //   保存先フォルダの中に既にあるものだけは、そのまま追加する。
+    //   Google形式以外（Office文書・PDF など）のコピーは Drive の容量を消費する点にも注意
+    //   （Google形式は容量を消費しない）。
     if (action === "import-files") {
       const projectId = String(body.projectId ?? "");
       const fileIds: string[] = Array.isArray(body.fileIds)
@@ -1069,39 +1079,57 @@ export default async function handler(req: any, res: any) {
       const taken = new Set((existing ?? []).map(r => String(r.file_name)));
       const already = new Set((existing ?? []).map(r => String(r.external_id ?? "")).filter(Boolean));
 
-      const GOOGLE_TYPES = new Set(Object.values(MIME));
       const imported: { fileName: string; copied: boolean }[] = [];
       const failed: { name: string; reason: string }[] = [];
       const shareFailed: { name: string; reason: string }[] = [];
 
+      // 1件ぶんのメタ情報を引く。ショートカットの解決でもう一度使う
+      const fields = "id,name,mimeType,size,parents,webViewLink,trashed,"
+        + "shortcutDetails(targetId),capabilities(canCopy)";
+      const fetchMeta = async (id: string) => {
+        try {
+          return await drive(accessToken,
+            `/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=${fields}`);
+        } catch (e) {
+          // drive() の 403/404 の文言は「管理者設定」「共有ドライブへのアクセス権」向けなので、ここ用に言い直す
+          const status = e instanceof HttpError ? e.status : 0;
+          throw new Error(status === 404 || status === 403
+            ? "このファイルを開けません（削除されたか、あなたに閲覧権限がありません）"
+            : (e instanceof Error ? e.message : "ファイルを確認できませんでした"));
+        }
+      };
+
       for (const sourceId of fileIds) {
         let label = sourceId;
         try {
-          let src: any;
-          try {
-            src = await drive(accessToken,
-              `/files/${encodeURIComponent(sourceId)}?supportsAllDrives=true`
-              + "&fields=id,name,mimeType,parents,webViewLink,trashed,capabilities(canCopy)");
-          } catch (e) {
-            // drive() の 403/404 の文言は「管理者設定」「共有ドライブへのアクセス権」向けなので、ここ用に言い直す
-            const status = e instanceof HttpError ? e.status : 0;
-            throw new Error(status === 404 || status === 403
-              ? "このファイルを開けません（削除されたか、あなたに閲覧権限がありません）"
-              : (e instanceof Error ? e.message : "ファイルを確認できませんでした"));
-          }
+          let src: any = await fetchMeta(sourceId);
           label = String(src?.name ?? sourceId);
 
-          if (src?.trashed) throw new Error("ゴミ箱に入っているファイルです");
-          const drawio = isDrawio(src ?? {});
-          if (!drawio && !GOOGLE_TYPES.has(String(src?.mimeType))) {
-            throw new Error("スプレッドシート・ドキュメント・スライド・draw.io の図以外は追加できません");
+          // ショートカットは中身を持たない。そのままコピーすると「コピーされたショートカット」に
+          // なってしまうので、指している先のファイルに読み替える
+          if (String(src?.mimeType) === SHORTCUT_MIME) {
+            const targetId = String(src?.shortcutDetails?.targetId ?? "");
+            if (!targetId) throw new Error("ショートカットの参照先が見つかりません");
+            src = await fetchMeta(targetId);
+            label = String(src?.name ?? label);
           }
 
+          if (src?.trashed) throw new Error("ゴミ箱に入っているファイルです");
+          // フォルダは Picker で選べないが、URL貼り付けからは届きうる。
+          // DevTicket 側のフォルダとは別物なので、階層ごとの取り込みは行わない
+          if (String(src?.mimeType) === FOLDER_MIME) {
+            throw new Error("フォルダは追加できません（中のファイルを選んでください）");
+          }
+
+          const drawio = isDrawio(src ?? {});
           const inFolder = Array.isArray(src?.parents) && src.parents.includes(folderId);
           let fileId = String(src.id);
           let webViewLink = String(src.webViewLink ?? "");
-          const kind = drawio ? "drawio" : (Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? "spreadsheet");
-          const named = sanitizeFileName(label) || DEFAULT_NAME[kind];
+          // Google形式（スプシ・ドキュメント・スライド）だけは拡張子を持たない。
+          // それ以外は Drive 上の名前をそのまま使う（.xlsx / .pdf などの拡張子ごと）
+          const googleKind = Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? null;
+          const named = sanitizeFileName(label)
+            || DEFAULT_NAME[drawio ? "drawio" : (googleKind ?? "")] || "無題のファイル";
           // MIME だけで draw.io と判定したファイルは拡張子が無いことがあるので付ける
           // （コピーの名前にもなるので、Drive 上でも draw.io の図だと分かるようになる）
           const name = nextFreeName(drawio ? withDrawioExt(named) : named, taken);
@@ -1131,7 +1159,9 @@ export default async function handler(req: any, res: any) {
             project_id: projectId,
             folder_path: "",
             file_name: name,
-            file_size: 0,
+            // Google形式のファイルはサイズを持たない（Drive が size を返さない）ので 0 のまま。
+            // Office文書・PDF などは一覧でサイズを出せるよう、Drive の値を入れておく
+            file_size: Number(src.size ?? 0) || 0,
             // draw.io の図は MIME がまちまち（octet-stream 等）なので揃える。
             // 画面側は file_type で種別を見分けている（projectFiles.ts の getFileKind）
             file_type: drawio ? DRAWIO_MIME : String(src.mimeType),

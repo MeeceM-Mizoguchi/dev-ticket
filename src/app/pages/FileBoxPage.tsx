@@ -27,12 +27,12 @@ import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
   downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
-  isGoogleFile, GOOGLE_KIND_LABEL, googleConvertKind, googleExportUrl,
+  isGoogleFile, googleFileLabel, googleConvertKind, googleExportUrl,
   isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind,
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
-  convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT,
+  convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint,
   type GoogleDriveProjectConfig, type GoogleDriveMode,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -682,7 +682,10 @@ export function FileBoxPage() {
     }
     if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
     // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
-    if (getFileKind(file.fileName, file.fileType) === "drawio") toast(DRAWIO_OPEN_HINT, "info");
+    if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
+    // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
+    const office = googleConvertKind(file.fileName);
+    if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
   }, [toast]);
 
   // GoogleファイルをOffice形式で書き出す。
@@ -1048,8 +1051,11 @@ export function FileBoxPage() {
                       )}
                     </TruncatedText>
                     <p style={{ margin: "2px 0 0", fontSize: 11, color: "#A09790" }}>
-                      {/* Googleファイルはサイズを持たないので、代わりに種別を出す */}
-                      {isGoogle ? (GOOGLE_KIND_LABEL[kind] ?? "Googleドライブ") : formatFileSize(f.fileSize)} · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
+                      {/* Googleドライブ上のファイルは種別を出す（Google形式はサイズを持たないため）。
+                          Office文書・PDF などはサイズが分かるので、種別に続けて出す */}
+                      {isGoogle
+                        ? (f.fileSize > 0 ? `${googleFileLabel(f)} · ${formatFileSize(f.fileSize)}` : googleFileLabel(f))
+                        : formatFileSize(f.fileSize)} · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
                     </p>
                   </div>
                   <button onClick={e => { e.stopPropagation(); handleCopyLink(f); }} title="リンクをコピー"
@@ -1076,9 +1082,11 @@ export function FileBoxPage() {
                       </button>
                     );
                   })()}
-                  {/* Googleファイルは storage に実体が無いので、Google側でOffice形式に書き出す */}
+                  {/* Googleドライブ上のファイルは storage に実体が無いので、Drive から直接落とす。
+                      Google形式だけは元の形式が無いため Office形式へ書き出す */}
                   <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
-                    title={!isGoogle ? "ダウンロード" : kind === "drawio" ? ".drawio 形式でダウンロード" : "Office形式でダウンロード"}
+                    title={kind === "gsheet" || kind === "gdoc" || kind === "gslide"
+                      ? "Office形式でダウンロード" : "ダウンロード"}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Download style={{ width: 13, height: 13 }} />
                   </button>

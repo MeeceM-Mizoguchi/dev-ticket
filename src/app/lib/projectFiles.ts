@@ -70,6 +70,32 @@ export const GOOGLE_KIND_LABEL: Partial<Record<FileKind, string>> = {
   drawio: "draw.io（Googleドライブ）",
 };
 
+// Google形式ではないが Drive に置いてあるファイル（Office文書・PDF・画像など）の呼び名。
+// storage にあるものと同じアイコン・同じ拡張子で並ぶので、
+// 「これは Drive 側にある」ことが分かるよう、表示名に（Googleドライブ）を添える。
+const DRIVE_KIND_LABEL: Partial<Record<FileKind, string>> = {
+  excel: "Excel", word: "Word", powerpoint: "PowerPoint",
+  pdf: "PDF", image: "画像", text: "テキスト",
+};
+
+/** Googleドライブ上のファイルの表示名（一覧のサブ行・メンションのカードで使う） */
+export function googleFileLabel(file: { fileName: string; fileType: string }): string {
+  const kind = getFileKind(file.fileName, file.fileType);
+  const google = GOOGLE_KIND_LABEL[kind];
+  if (google) return google;
+  const drive = DRIVE_KIND_LABEL[kind];
+  return drive ? `${drive}（Googleドライブ）` : "Googleドライブ";
+}
+
+/**
+ * Google形式（スプレッドシート・ドキュメント・スライド等）か。
+ * Google形式だけは拡張子を持たず、ダウンロード時に Office 形式へ変換される。
+ * Drive 上の Office文書・PDF・draw.io 図はこれに当たらない。
+ */
+export function isGoogleNativeType(fileType?: string | null): boolean {
+  return !!fileType && fileType.startsWith("application/vnd.google-apps.");
+}
+
 // アップロード時に Google 形式へ変換できる拡張子。
 //
 // ★ xlsm は入れない。マクロは変換で必ず失われ、しかも元ファイルが手元に残らない。
@@ -96,15 +122,26 @@ const GOOGLE_EXPORT: Partial<Record<FileKind, (id: string) => string>> = {
   gsheet: id => `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`,
   gdoc: id => `https://docs.google.com/document/d/${id}/export?format=docx`,
   gslide: id => `https://docs.google.com/presentation/d/${id}/export/pptx`,
-  // draw.io の図は変換せず、.drawio のまま落とす（Drive 上の普通のファイルなので）
-  drawio: id => `https://drive.google.com/uc?export=download&id=${id}`,
 };
 
-/** Googleファイルを Office 形式で書き出すURL。対象外なら null */
+// Google形式でないもの（draw.io の図・Office文書・PDF・画像など、Drive 上の普通のファイル）は
+// 変換しようがないので、そのままの形で落とす。
+const driveDownloadUrl = (id: string) => `https://drive.google.com/uc?export=download&id=${id}`;
+
+/**
+ * Googleドライブ上のファイルをダウンロードするURL。
+ * スプレッドシート・ドキュメント・スライドは Office 形式へ書き出し、
+ * それ以外（Office文書・PDF・画像・draw.io 図など）は元の形式のまま落とす。
+ * 落としようがないもの（externalId が無い／Googleフォーム・図形描画など）は null。
+ */
 export function googleExportUrl(file: { fileType: string; fileName: string; externalId?: string | null }): string | null {
   if (!file.externalId) return null;
   const build = GOOGLE_EXPORT[getFileKind(file.fileName, file.fileType)];
-  return build ? build(file.externalId) : null;
+  if (build) return build(file.externalId);
+  // Google形式のうち Office に対応するものが無いもの（フォーム・図形描画・Jamboard 等）は、
+  // ファイルとして落とせない。呼び出し側で「この形式は書き出せません」と伝える
+  if (isGoogleNativeType(file.fileType)) return null;
+  return driveDownloadUrl(file.externalId);
 }
 
 const EXT_KIND: Record<string, FileKind> = {

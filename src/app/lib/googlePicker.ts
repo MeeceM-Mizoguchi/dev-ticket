@@ -1,5 +1,4 @@
 import { fetchPickerToken } from "@/app/lib/googleDrive";
-import { DRAWIO_MIME } from "@/app/lib/projectFiles";
 
 // Google Picker（保存先フォルダの選択）
 //
@@ -98,24 +97,8 @@ export async function pickSharedFolder(): Promise<PickedFolder | null> {
   });
 }
 
-// 取り込める形式（スプレッドシート / ドキュメント / スライド / draw.io の図）
-//
-// draw.io の図は、draw.io 自身が保存したものなら application/vnd.jgraph.mxfile になるが、
-// Googleドライブへ手でアップロードされた .drawio は octet-stream や XML として登録されることがある。
-// それらも一覧に出さないと選べないので含める。.drawio 以外のファイルが選ばれた場合は、
-// サーバー（import-files）が拡張子で見分けて理由付きで弾く。
-const IMPORTABLE_MIME = [
-  "application/vnd.google-apps.spreadsheet",
-  "application/vnd.google-apps.document",
-  "application/vnd.google-apps.presentation",
-  DRAWIO_MIME,
-  "application/octet-stream",
-  "application/xml",
-  "text/xml",
-].join(",");
-
 /**
- * 既存の Googleファイルを選ばせる（ファイルボックスへの取り込み用）。
+ * 既存の Driveファイルを選ばせる（ファイルボックスへの取り込み用）。
  *
  * ★ Picker で選ぶこと自体が、drive.file でそのファイルを扱うための許可になる。
  *   選ばれていないファイルは、IDが分かっていてもサーバーから 404 になる。
@@ -162,17 +145,19 @@ export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
         .addView(new picker.DocsView(picker.ViewId.DOCS)
           .setFileIds(fileIds.join(",")));
     } else {
+      // ★ 種別で絞らない（setMimeTypes を付けない）。Drive にあるものは
+      //   Office文書でも PDF でも追加でき、どれも Drive で開く形に揃えているため、
+      //   一覧に出ないファイルがあると「なぜか選べない」だけの状態になる。
+      //   フォルダは中に入るために出すだけで、選択はできない（setSelectFolderEnabled を付けていない）。
       builder
         .setTitle("ファイルボックスに追加するファイルを選択")
         .enableFeature(picker.Feature.MULTISELECT_ENABLED)
         // マイドライブ・共有アイテム
         .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setMimeTypes(IMPORTABLE_MIME)
           .setIncludeFolders(true))
         // 共有ドライブ。setEnableDrives を付けたビューは共有ドライブを出すものなので、
         // マイドライブ用のビューとは分けて、タブを2つ並べる
         .addView(new picker.DocsView(picker.ViewId.DOCS)
-          .setMimeTypes(IMPORTABLE_MIME)
           .setIncludeFolders(true)
           .setEnableDrives(true));
     }
@@ -185,8 +170,9 @@ export async function pickGoogleFiles(fileIds?: string[]): Promise<string[]> {
 }
 
 /**
- * Google のスプレッドシート・ドキュメント・スライド、Googleドライブ上の draw.io の図の URL から
- * ファイルIDを取り出す。
+ * Googleドライブ上のファイルの URL からファイルIDを取り出す。
+ * Google形式（スプレッドシート等）の編集画面、Drive のファイル画面（Office文書・PDF などはこの形）、
+ * draw.io で開いているときの URL に対応する。
  * 対応していない URL なら null（呼び出し側で「このURLは追加できません」と伝える）。
  */
 export function parseGoogleFileUrl(raw: string): string | null {

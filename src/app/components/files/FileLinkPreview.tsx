@@ -7,9 +7,9 @@ import { mapProjectFile } from "@/app/lib/mappers";
 import type { ProjectFile } from "@/app/types";
 import {
   downloadProjectFile, openProjectFileInApp,
-  isGoogleFile, getFileKind, GOOGLE_KIND_LABEL, KIND_COLOR,
+  isGoogleFile, getFileKind, googleFileLabel, googleConvertKind, GOOGLE_APP_LABEL, KIND_COLOR,
 } from "@/app/lib/projectFiles";
-import { openGoogleFile, DRAWIO_OPEN_HINT } from "@/app/lib/googleDrive";
+import { openGoogleFile, DRAWIO_OPEN_HINT, officeOnDriveHint } from "@/app/lib/googleDrive";
 import { FileViewerModal } from "./FileViewerModal";
 import { FileKindIcon } from "./FileKindIcon";
 
@@ -109,7 +109,9 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
               {file.fileName}
             </p>
             <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#A09790" }}>
-              {GOOGLE_KIND_LABEL[kind] ?? "Googleドライブ"}のファイルです
+              {/* Google形式は「Googleスプレッドシート」、Drive上の Office文書等は
+                  「Excel（Googleドライブ）」のように出る。どちらも Drive で開く */}
+              {googleFileLabel(file)}
             </p>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
@@ -120,12 +122,17 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
             <button autoFocus
               onClick={() => {
                 if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
-                // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
+                // draw.io の図と Office文書は Googleドライブのファイル画面が開くので、
+                // そこからの操作を案内する（FileBoxPage の handleOpenGoogle と同じ案内）
                 if (kind === "drawio") toast(DRAWIO_OPEN_HINT, "info");
+                else {
+                  const office = googleConvertKind(file.fileName);
+                  if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+                }
                 onClose();
               }}
               style={{ padding: "8px 16px", background: "#059669", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", gap: 6 }}>
-              <ExternalLink style={{ width: 12, height: 12 }} />Googleで開く
+              <ExternalLink style={{ width: 12, height: 12 }} />Googleドライブで開く
             </button>
           </div>
         </div>

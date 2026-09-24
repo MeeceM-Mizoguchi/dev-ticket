@@ -158,7 +158,8 @@ export interface ImportResult {
 }
 
 /**
- * もともと Drive にある Googleファイルをファイルボックスへ取り込む。
+ * もともと Drive にあるファイルをファイルボックスへ取り込む。種別は問わない
+ * （Google形式・Office文書・PDF・画像など、Drive にあるものは全て追加できる）。
  * fileIds は pickGoogleFiles()（Picker）で選ばれたものに限る。
  * 保存先フォルダの外にあるものは、サーバー側で保存先へコピーしてから追加される。
  */
@@ -235,6 +236,18 @@ export function testGoogleConnection(folderId: string): Promise<{ ok: boolean; s
  */
 export const DRAWIO_OPEN_HINT =
   "Googleドライブの画面上部の「アプリで開く」から「draw.io」を選ぶと編集できます（初回は draw.io への許可が必要です）";
+
+/**
+ * Drive 上の Office文書（.xlsx / .docx / .pptx など）を開いたときの案内。
+ *
+ * これらは Google形式ではないので、開く先は Googleドライブのプレビュー画面になる。
+ * 中身を見るだけならそのままでよく、編集はその画面から Google の各アプリで開いてもらう
+ * （Office形式のまま編集・保存される）。
+ * @param app 「スプレッドシート」「ドキュメント」「スライド」のいずれか
+ */
+export function officeOnDriveHint(app: string): string {
+  return `Googleドライブの画面上部の「Google${app}で開く」から編集できます（${app}で編集しても元の形式のまま保存されます）`;
+}
 
 /**
  * Googleファイルを別タブで開く。
