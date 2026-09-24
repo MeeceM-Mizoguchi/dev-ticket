@@ -174,6 +174,28 @@ export function renameGoogleFile(fileId: string, newName: string): Promise<{ ok:
   return postApi<{ ok: boolean }>("rename", { fileId, newName });
 }
 
+export interface TrashResult {
+  /** ゴミ箱へ移動できた件数 */
+  trashed: number;
+  /** 移動できなかったもの（他の人が追加したファイル・権限不足など） */
+  failed: { name: string; reason: string }[];
+}
+
+/**
+ * Googleドライブ上の実体をゴミ箱へ移動する。
+ *
+ * ★ DevTicket 側の削除(deleteProjectFile)より「前」に呼ぶこと。
+ *   Drive の実体を指す external_id は project_files の行にしか無く、
+ *   先に行を消すと、どれを消せばいいか分からなくなる。
+ *
+ * フォルダを渡すと、配下（入れ子のフォルダの中まで）のGoogleドライブ上のファイルを
+ * まとめてゴミ箱へ入れる。DevTicket 側はフォルダの行を消せば子孫の行もDBが消すので、
+ * 「消える前に Drive 側を片付ける」ための経路。
+ */
+export function trashGoogleFiles(target: { fileId?: string; folderId?: string }): Promise<TrashResult> {
+  return postApi<TrashResult>("trash", target);
+}
+
 /** リンクを知っている全員が編集できる状態にする / やめる */
 export function setGoogleLinkShare(fileId: string, enabled: boolean): Promise<{ linkShared: boolean }> {
   return postApi<{ linkShared: boolean }>("share-link", { fileId, enabled });

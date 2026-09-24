@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { DialogShell } from "./DialogShell";
 import { BtnSecondary } from "./BtnSecondary";
 import { BtnSpinner } from "./PageLoader";
 
 export function ConfirmDialog({
-  message, onConfirm, onClose, title = "削除の確認", confirmLabel = "削除する", confirmColor = "#DC2626", hasWarningText = true, zIndex,
+  message, onConfirm, onClose, title = "削除の確認", confirmLabel = "削除する", confirmColor = "#DC2626", hasWarningText = true, zIndex, extra,
 }: {
   message: string;
   onConfirm: () => void | Promise<void>;
@@ -16,6 +16,9 @@ export function ConfirmDialog({
   confirmColor?: string;  // 🛠️ ボタンの色（破棄する時の赤、閉じる時の緑など）を変えられるように追加
   hasWarningText?: boolean; // 🛠️ 「この操作は取り消せません。」の表示・非表示を選べるように追加
   zIndex?: number;        // 🛠️ 子チケット画面等からの呼び出し時にz-indexのデッドロックを防ぐプロパティを追加
+  /** 本文の下に差し込む追加の入力（例: ファイルボックスの「Googleドライブ上のファイルも削除する」）。
+   *  状態は呼び出し側が持つ。渡さなければ今まで通りの確認ダイアログ。 */
+  extra?: ReactNode;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -41,6 +44,7 @@ export function ConfirmDialog({
           </button>
         </>}>
         <p style={{ fontSize: 14, color: "#1A1714", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{message}</p>
+        {extra}
         {hasWarningText && <p style={{ fontSize: 12, color: "#A09790" }}>この操作は取り消せません。</p>}
       </DialogShell>
     </div>

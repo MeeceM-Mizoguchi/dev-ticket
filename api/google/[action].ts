@@ -34,6 +34,7 @@ import crypto from "crypto";
 //   POST /api/google/import-files     { projectId, fileIds, parentId? }   → { imported, failed, shareFailed }
 //   POST /api/google/convert-existing { fileId }                          → { file, url, fileName }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
+//   POST /api/google/trash            { fileId } / { folderId }           → { trashed, failed }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
@@ -532,6 +533,52 @@ async function resolveParent(
     .select("id, project_id, is_folder").eq("id", String(raw)).maybeSingle();
   if (!parent || parent.project_id !== projectId || !parent.is_folder) return false;
   return String(parent.id);
+}
+
+/** Drive 上の実体を持つ行（Googleドライブ上のファイル） */
+type DriveRow = { id: string; file_name: string; external_id: string };
+
+/**
+ * フォルダ配下（入れ子のフォルダの中まで）の、Driveに実体があるファイルを集める。
+ *
+ * ★ project_files.parent_id は `on delete cascade`（add_project_files_folders.sql）。
+ *   フォルダの行を消すと子孫の行はDBが勝手に消すので、消える前にここで拾い切らないと
+ *   Drive 側に手を出す機会が二度と来ない（external_id は行にしか無い）。
+ */
+async function collectDriveDescendants(
+  sb: SupabaseClient, projectId: string, folderId: string,
+): Promise<DriveRow[]> {
+  // 1回で全件引いてメモリ上で辿る。階層ごとに問い合わせると深さの分だけ往復が増える。
+  // BUG-01 途中で止まっても結果が再現するよう順序を固定する。
+  const { data: rows } = await sb.from("project_files")
+    .select("id, file_name, parent_id, external_id, external_provider")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: true }).order("id", { ascending: true });
+
+  type Row = { id: string; file_name: string; parent_id: string | null; external_id: string | null; external_provider: string | null };
+  const byParent = new Map<string, Row[]>();
+  for (const r of (rows ?? []) as Row[]) {
+    const key = String(r.parent_id ?? "");
+    const bucket = byParent.get(key);
+    if (bucket) bucket.push(r); else byParent.set(key, [r]);
+  }
+
+  const out: DriveRow[] = [];
+  const visited = new Set<string>();
+  const stack = [folderId];
+  while (stack.length) {
+    const current = stack.pop() as string;
+    // 万一 parent_id に循環があっても止まるようにする
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const child of byParent.get(current) ?? []) {
+      if (child.external_provider === "google" && child.external_id) {
+        out.push({ id: String(child.id), file_name: String(child.file_name), external_id: String(child.external_id) });
+      }
+      stack.push(String(child.id));
+    }
+  }
+  return out;
 }
 
 /** 組織の連携設定を引く */
@@ -1309,6 +1356,69 @@ export default async function handler(req: any, res: any) {
         method: "PATCH", body: { name: newName },
       });
       return res.json({ ok: true });
+    }
+
+    // ── Drive 側をゴミ箱へ移動 ────────────────────────────
+    // DevTicket 側の削除は api/project-files/delete が行う。改名と同じく、
+    // クライアントが2本を順に呼ぶ（api/ 配下のルートファイル同士は import しない方針）。
+    //
+    // ★ 必ず DevTicket 側を消す前に呼ぶこと。
+    //   Drive の実体を指す external_id は project_files の行にしか無く、
+    //   先に行を消すと「どれを消せばいいか」が分からなくなる。
+    //
+    // ★ 完全削除(DELETE)ではなくゴミ箱(trashed=true)にする。
+    //   取り込んだファイルが利用者の原本であることがあり
+    //   （import-files は保存先フォルダの中にあったものをコピーせず原本のまま登録する）、
+    //   取り違えて消しても Drive のゴミ箱から戻せるようにしておく。
+    //
+    // ★ 消せなかったものは失敗として返すだけで、処理は止めない。
+    //   drive.file スコープでは「本人がこのアプリで作った／Pickerで選んだ」ファイルしか
+    //   触れないため、他の人が作ったファイルは 404 になる。
+    //   1件で止めると、消せるはずの残りまで Drive に残ってしまう。
+    if (action === "trash") {
+      const fileId = String(body.fileId ?? "");
+      const folderId = String(body.folderId ?? "");
+      if (!fileId && !folderId) return res.status(400).json({ error: "fileId または folderId が必要です" });
+
+      const { data: origin } = await sb.from("project_files")
+        .select("id, project_id, file_name, is_folder, external_id, external_provider")
+        .eq("id", folderId || fileId).maybeSingle();
+      if (!origin) return res.status(404).json({ error: "File not found" });
+      if (!(await isMember(sb, origin.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const targets: DriveRow[] = folderId
+        ? await collectDriveDescendants(sb, String(origin.project_id), String(origin.id))
+        : (origin.external_provider === "google" && origin.external_id
+          ? [{ id: String(origin.id), file_name: String(origin.file_name), external_id: String(origin.external_id) }]
+          : []);
+
+      // Googleドライブ上のファイルが1件も無いなら、連携の有無を問わず何もしない。
+      // （連携していない人のフォルダ削除を、ここで 428 にして止めないため）
+      if (targets.length === 0) return res.json({ trashed: 0, failed: [] });
+
+      const accessToken = await getAccessToken(sb, profile.id);
+
+      let trashed = 0;
+      const failed: { name: string; reason: string }[] = [];
+      for (const t of targets) {
+        try {
+          await drive(accessToken, `/files/${encodeURIComponent(t.external_id)}?supportsAllDrives=true`, {
+            method: "PATCH", body: { trashed: true },
+          });
+          trashed++;
+        } catch (e) {
+          // drive() の 403/404 の文言は「管理者設定」「共有ドライブへのアクセス権」向けなので、
+          // 削除の文脈に言い直す（多くは drive.file スコープで他人のファイルに触れないケース）。
+          const status = e instanceof HttpError ? e.status : 0;
+          failed.push({
+            name: t.file_name,
+            reason: status === 404 || status === 403
+              ? "あなたのGoogleアカウントからは操作できません（他の人が追加したファイルなど）"
+              : (e instanceof Error ? e.message : "Googleドライブ側で削除できませんでした"),
+          });
+        }
+      }
+      return res.json({ trashed, failed });
     }
 
     // ── リンク共有の ON/OFF ──────────────────────────────
