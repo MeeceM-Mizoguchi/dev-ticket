@@ -20,7 +20,8 @@ import { GOOGLE_CREATE_LABEL, KIND_COLOR, type GoogleCreateKind } from "@/app/li
 //
 // クリックで展開し、次のことができる。
 //   ・スプレッドシート / ドキュメント / スライド / draw.io の図を新規作成して別タブで開く
-//   ・もともと Drive にある Googleファイル・draw.io の図を追加する（Picker で選ぶ / URL を貼る）
+//   ・もともと Drive にあるファイルを追加する（Picker で選ぶ / URL を貼る）
+//     種別は問わない。Office文書・PDF・画像なども追加でき、どれも Drive で開く
 
 const ITEMS: { kind: GoogleCreateKind; icon: typeof FileSpreadsheet; color: string }[] = [
   { kind: "spreadsheet", icon: FileSpreadsheet, color: KIND_COLOR.gsheet },
@@ -139,7 +140,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   }, [projectId, parentId, onCreated, toast, handleError]);
 
   /**
-   * 既存の Googleファイルを追加する。
+   * 既存の Driveファイルを追加する（種別は問わない）。
    * @param fileIds URL から取り出したID。指定するとそのファイルだけを Picker に出す
    */
   const runImport = useCallback(async (fileIds?: string[]) => {
@@ -216,7 +217,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const submitUrl = useCallback(() => {
     const id = parseGoogleFileUrl(urlText);
     if (!id) {
-      setUrlError("スプレッドシート・ドキュメント・スライド・draw.io の図のURLを貼り付けてください（例: https://docs.google.com/spreadsheets/d/… / https://app.diagrams.net/#G…）");
+      setUrlError("GoogleドライブのファイルのURLを貼り付けてください（例: https://drive.google.com/file/d/… / https://docs.google.com/spreadsheets/d/…）");
       return;
     }
     setUrlOpen(false);
@@ -285,6 +286,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
               ? `${drive.folderName ?? "共有ドライブ"} の中に保存されます。`
               : "あなたのGoogleドライブに保存されます。"}
             <br />保存先の外にあるファイルは、保存先へコピーして追加します。
+            <br />Excel・PDF なども追加できます（開くときはGoogleドライブが開きます）。
           </p>
         </div>
       )}
@@ -307,7 +309,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             </button>
           </>}>
           <label style={{ fontSize: 11, fontWeight: 700, color: "#9E9690", display: "block", marginBottom: 6 }}>
-            スプレッドシート・ドキュメント・スライド・draw.io の図のURL
+            GoogleドライブのファイルのURL
           </label>
           <input
             type="url"

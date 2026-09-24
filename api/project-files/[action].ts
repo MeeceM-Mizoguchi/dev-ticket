@@ -78,8 +78,10 @@ async function isMember(sb: SupabaseClient, projectId: string, profile: { id: st
   return data === true;
 }
 
-// Drive 上の draw.io 図の file_type。api/google/[action].ts の DRAWIO_MIME と揃えること
-const DRAWIO_MIME = "application/vnd.jgraph.mxfile";
+// Google形式（スプレッドシート・ドキュメント・スライド等）の MIME タイプの接頭辞。
+// Googleドライブ上のファイルでも、Google形式でないもの（Office文書・PDF・draw.io 図など）は
+// 拡張子を持つので、改名のときに扱いを分ける。
+const GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps.";
 
 function extOf(fileName: string): string {
   const i = fileName.lastIndexOf(".");
@@ -268,11 +270,13 @@ export default async function handler(req: any, res: any) {
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
 
-    // Googleファイルは版を持たず、拡張子も無い。フォルダと同じく1行だけを書き換える。
+    // Googleドライブ上のファイルは版を持たない。フォルダと同じく1行だけを書き換える。
     const isSingleRow = file.is_folder || file.external_provider === "google";
-    // Drive 上の draw.io 図だけは Googleファイルでも拡張子（.drawio）を持つ。
-    // 落とすと Drive 上で draw.io のファイルだと分からなくなるので、通常のファイルと同じく保つ。
-    const keepExt = !isSingleRow || file.file_type === DRAWIO_MIME;
+    // 拡張子を持たないのは Google形式（スプレッドシート等）とフォルダだけ。
+    // Drive 上の draw.io 図・Office文書・PDF などは拡張子がファイルの種別そのものなので、
+    // 落とすと Drive 上でも DevTicket 上でも何のファイルか分からなくなる。必ず保つ。
+    const keepExt = !file.is_folder
+      && (!isSingleRow || !String(file.file_type ?? "").startsWith(GOOGLE_NATIVE_PREFIX));
 
     let newName = sanitizeFileName(rawName);
     if (!newName) return res.status(400).json({ error: "使用できない名前です" });
