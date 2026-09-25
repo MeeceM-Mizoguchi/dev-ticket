@@ -63,6 +63,14 @@ function summarize(items: string[], head = 3): string {
 }
 
 /**
+ * 同じファイル（の別の版）か。版は「同じフォルダにある同名の行」で束ねる。
+ * 名前だけで見ると、別フォルダにある同名の別ファイルまで1つにまとまってしまう。
+ */
+function isSameFile(a: ProjectFile, b: ProjectFile): boolean {
+  return a.fileName === b.fileName && (a.parentId ?? null) === (b.parentId ?? null);
+}
+
+/**
  * フォルダ配下（入れ子のフォルダの中まで）の行を集める。
  * 削除の確認ダイアログの件数と、削除後の一覧の整理に使う。
  * （サーバー側はフォルダの行を1つ消せば子孫もDBのカスケードで消えるが、
@@ -320,7 +328,7 @@ export function FileBoxPage() {
     const base = files.find(f => f.id === wanted);
     const newest = base
       ? files.reduce<ProjectFile | null>((best, f) =>
-        f.fileName === base.fileName && (!best || f.version > best.version) ? f : best, null)
+        isSameFile(f, base) && (!best || f.version > best.version) ? f : best, null)
       : null;
     if (newest && isGoogleFile(newest)) {
       // Googleファイルはビューアを持たない。共有リンクで来たら、そのタブのまま Google へ送る。
@@ -398,7 +406,7 @@ export function FileBoxPage() {
   useEffect(() => {
     if (!previewTarget) return;
     const newest = files.reduce<ProjectFile | null>((best, f) =>
-      f.fileName === previewTarget.fileName && (!best || f.version > best.version) ? f : best, null);
+      isSameFile(f, previewTarget) && (!best || f.version > best.version) ? f : best, null);
     if (newest && newest.id !== previewTarget.id) setPreviewTarget(newest);
   }, [files, previewTarget]);
 
@@ -556,12 +564,28 @@ export function FileBoxPage() {
   const handleMoveFile = useCallback(async (file: ProjectFile, targetFolderId: string | null) => {
     if (!project) return;
     if (file.isFolder && file.id === targetFolderId) return;
+    const fromFolderId = file.parentId ?? null;
+    if (fromFolderId === targetFolderId) return;
+    // 同じフォルダの同名＝同じファイルの版という作りなので、移動先に同名があると
+    // 2つのファイルが1つに合体してしまう。改名してから移してもらう。
+    if (files.some(o => o.id !== file.id && o.fileName === file.fileName && (o.parentId ?? null) === targetFolderId)) {
+      toast(`移動先に同じ名前の${file.isFolder ? "フォルダ" : "ファイル"}「${file.fileName}」があるため移動できません。名前を変更してから移動してください`, "error");
+      return;
+    }
     try {
-      const { error } = await supabase!
+      // フォルダとGoogleファイルは版を持たないので、その1行だけを動かす。
+      // 通常のファイルは同じフォルダにある同名の全版をまとめて動かす（別フォルダの同名は別ファイル）。
+      let query = supabase!
         .from("project_files")
         .update({ parent_id: targetFolderId })
-        .eq("project_id", project.id)
-        .eq("file_name", file.fileName);
+        .eq("project_id", project.id);
+      if (file.isFolder || isGoogleFile(file)) {
+        query = query.eq("id", file.id);
+      } else {
+        query = query.eq("file_name", file.fileName);
+        query = fromFolderId === null ? query.is("parent_id", null) : query.eq("parent_id", fromFolderId);
+      }
+      const { error } = await query;
       if (error) throw error;
       const targetFolder = files.find(f => f.id === targetFolderId);
       toast(`「${file.fileName}」を「${targetFolder?.fileName ?? "ファイルボックス（ルート）"}」へ移動しました`);
@@ -865,8 +889,8 @@ export function FileBoxPage() {
         // Googleドライブ上のファイルはサーバー側も id で1行だけ消す（同名＝別バージョンではない）
         setFiles(prev => prev.filter(f => f.id !== file.id));
       } else {
-        // サーバー側は同名の全バージョンを消すので、画面側も同じ粒度で消す
-        setFiles(prev => prev.filter(f => f.fileName !== file.fileName));
+        // サーバー側は同じフォルダの同名の全バージョンを消すので、画面側も同じ粒度で消す
+        setFiles(prev => prev.filter(f => !isSameFile(f, file)));
       }
       emitLinkItemsChanged(file.projectId, "file");
     } finally {
@@ -875,9 +899,9 @@ export function FileBoxPage() {
   }, [toast, files]);
 
   // 保存や差し替えのたびに版が増えるので、一覧は同名ファイルの最新版だけを見せる。
-  // (files は created_at 降順で取得済み。同名なら version が大きい方を残す)
+  // (files は created_at 降順で取得済み。同じフォルダの同名なら version が大きい方を残す)
   const latestOnly = files.filter(f =>
-    !files.some(o => o.fileName === f.fileName && o.version > f.version));
+    !files.some(o => isSameFile(o, f) && o.version > f.version));
 
   const currentLevelItems = search
     ? latestOnly.filter(f => f.fileName.toLowerCase().includes(search.toLowerCase()) || f.uploadedBy.toLowerCase().includes(search.toLowerCase()))

@@ -30,7 +30,7 @@ const DAV_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 function b64url(buf: Buffer | string): string {
   return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function signDavToken(payload: { p: string; n: string; u: string; e: number }): string {
+function signDavToken(payload: { p: string; n: string; u: string; e: number; f?: string }): string {
   const secret = process.env.DAV_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
   const body = b64url(JSON.stringify(payload));
   const sig = b64url(crypto.createHmac("sha256", secret).update(body).digest());
@@ -116,6 +116,25 @@ function nextFreeName(fileName: string, taken: Set<string>): string {
   return `${stem} (${Date.now()})${ext}`;
 }
 
+/**
+ * 同じフォルダの行だけに絞る（parentId が null ならルート直下）。
+ *
+ * ファイルの引き当てキーは (project_id, parent_id, file_name)。
+ * 以前は (project_id, file_name) だったため、別フォルダに同名があるだけで
+ * アップロードや改名に「(1)」が付いていた。版・改名・削除・重複判定はすべてこの範囲で行う。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function inFolder<Q extends { eq: any; is: any }>(q: Q, parentId: string | null): Q {
+  return parentId ? q.eq("parent_id", parentId) : q.is("parent_id", null);
+}
+
+/** そのファイルの全版の id（コメントは file_id でどのファイルのものかを見分ける） */
+async function versionIdsOf(sb: SupabaseClient, projectId: string, parentId: string | null, fileName: string) {
+  const { data } = await inFolder(sb.from("project_files")
+    .select("id").eq("project_id", projectId).eq("file_name", fileName), parentId);
+  return (data ?? []).map(r => String(r.id));
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -156,14 +175,6 @@ export default async function handler(req: any, res: any) {
     // 他プロジェクト配下のオブジェクトを自プロジェクトの行として登録させない
     if (!path.startsWith(`${projectId}/`)) return res.status(400).json({ error: "Invalid path" });
 
-    // 手動アップロード（uniqueName）は「既存ファイルの新バージョン」ではなく別ファイルとして扱う。
-    // エディタ保存・WebDAV保存はフラグを立てないので、これまで通り版が上がる。
-    if (body.uniqueName) {
-      const { data: rows } = await sb.from("project_files")
-        .select("file_name").eq("project_id", projectId);
-      fileName = nextFreeName(fileName, new Set((rows ?? []).map(r => String(r.file_name))));
-    }
-
     // 置き場所のフォルダ。フォルダごとのアップロードで階層を再現するために受け取る。
     // 他プロジェクトのフォルダや、フォルダでない行を親に指定させない。
     // 不正なら storage の実体を残さず弾く（DB登録失敗と同じ扱い）。
@@ -179,9 +190,18 @@ export default async function handler(req: any, res: any) {
       parentId = String(parent.id);
     }
 
+    // 手動アップロード（uniqueName）は「既存ファイルの新バージョン」ではなく別ファイルとして扱う。
+    // エディタ保存・WebDAV保存はフラグを立てないので、これまで通り版が上がる。
+    // 重複を避けるのは同じフォルダの中だけ（別フォルダの同名は別ファイル）。
+    if (body.uniqueName) {
+      const { data: rows } = await inFolder(sb.from("project_files")
+        .select("file_name").eq("project_id", projectId), parentId);
+      fileName = nextFreeName(fileName, new Set((rows ?? []).map(r => String(r.file_name))));
+    }
+
     // 版番号はサーバーで採番する（クライアント側の一覧が古くても衝突しない）
-    const { data: sameName } = await sb.from("project_files")
-      .select("version").eq("project_id", projectId).eq("file_name", fileName)
+    const { data: sameName } = await inFolder(sb.from("project_files")
+      .select("version").eq("project_id", projectId).eq("file_name", fileName), parentId)
       .order("version", { ascending: false }).limit(1);
     const version = (sameName?.[0]?.version ?? 0) + 1;
 
@@ -234,7 +254,7 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, external_provider").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, parent_id, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
     // Googleドライブ上のファイルは storage に実体が無く、WebDAV で開く対象にならない
@@ -247,8 +267,10 @@ export default async function handler(req: any, res: any) {
     // 同じファイルを別物と見なして、開くたびに更新を促してくる。
     // 枠に丸めることで、同じファイルなら同じURLになる（有効期間は 12〜24時間）。
     const slot = (Math.floor(Date.now() / DAV_TOKEN_TTL_MS) + 2) * DAV_TOKEN_TTL_MS;
+    // f = 置き場所のフォルダ（""=ルート）。別フォルダに同名のファイルがありうるので、
+    // 名前だけでは「どのファイルか」が決まらない。
     const token = signDavToken({
-      p: file.project_id, n: file.file_name, u: profile.name, e: slot,
+      p: file.project_id, n: file.file_name, u: profile.name, e: slot, f: file.parent_id ?? "",
     });
     const proto = String(req.headers["x-forwarded-proto"] ?? "https");
     const base = process.env.PUBLIC_URL || `${proto}://${req.headers.host}`;
@@ -257,18 +279,19 @@ export default async function handler(req: any, res: any) {
   }
 
   // ── 名前の変更（同名ファイルの全バージョン + コメントの引き当てキー） ──
-  // file_name は「どのファイルか」を指す引き当てキーそのもの（版・コメント・WebDAV が
-  // これで引く）。1行だけ書き換えると版が分裂し、コメントも迷子になるので、
-  // 削除と同じ粒度＝同名の全行をまとめて付け替える。
+  // (parent_id, file_name) は「どのファイルか」を指す引き当てキーそのもの（版・コメント・
+  // WebDAV がこれで引く）。1行だけ書き換えると版が分裂し、コメントも迷子になるので、
+  // 削除と同じ粒度＝同じフォルダの同名の全行をまとめて付け替える。
   if (action === "rename") {
     const fileId = String(body.fileId ?? "");
     const rawName = String(body.newName ?? "");
     if (!fileId || !rawName.trim()) return res.status(400).json({ error: "fileId and newName are required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, file_type, is_folder, external_provider").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, file_type, parent_id, is_folder, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    const parentId: string | null = file.parent_id ?? null;
 
     // Googleドライブ上のファイルは版を持たない。フォルダと同じく1行だけを書き換える。
     const isSingleRow = file.is_folder || file.external_provider === "google";
@@ -292,26 +315,30 @@ export default async function handler(req: any, res: any) {
 
     if (newName === file.file_name) return res.json({ fileName: newName });
 
-    // 版番号の採番・手動アップロード時の重複回避がプロジェクト全体で file_name を見ているので、
-    // ここでの重複判定も同じ範囲に揃える（自分自身の版は除く）。
-    const { data: rows } = await sb.from("project_files")
-      .select("file_name").eq("project_id", file.project_id).neq("file_name", file.file_name);
+    // 版番号の採番・手動アップロード時の重複回避と同じく、同じフォルダの中だけで重複を避ける
+    // （自分自身の版は除く）。別フォルダの同名は別ファイルなので気にしない。
+    const { data: rows } = await inFolder(sb.from("project_files")
+      .select("file_name").eq("project_id", file.project_id).neq("file_name", file.file_name), parentId);
     newName = nextFreeName(newName, new Set((rows ?? []).map(r => String(r.file_name))));
 
+    // コメントの付け替え対象を、名前を変える前に押さえておく（版の id で引く）
+    const versionIds = isSingleRow ? [] : await versionIdsOf(sb, file.project_id, parentId, file.file_name);
+
     // フォルダとGoogleファイルは版もコメントも持たず、別の階層に同名が並びうる。
-    // 巻き込み更新をしていいのはファイル（＝同名が同一ファイルの版）だけ。
+    // 巻き込み更新をしていいのはファイル（＝同じフォルダの同名が同一ファイルの版）だけ。
     const update = sb.from("project_files").update({ file_name: newName });
     const { error } = await (isSingleRow
       ? update.eq("id", fileId)
-      : update.eq("project_id", file.project_id).eq("file_name", file.file_name));
+      : inFolder(update.eq("project_id", file.project_id).eq("file_name", file.file_name), parentId));
     if (error) return res.status(500).json({ error: error.message });
 
     // コメント(BRU12-025)は project_files への FK を持たず (project_id, file_name) で引くので、
     // ここで一緒に付け替えないとリネームした瞬間に全部見えなくなる。
-    if (!isSingleRow) {
+    // 別フォルダの同名ファイルのコメントを巻き込まないよう、このファイルの版に付いたものだけ。
+    if (versionIds.length > 0) {
       const { error: cErr } = await sb.from("project_file_comments")
         .update({ file_name: newName })
-        .eq("project_id", file.project_id).eq("file_name", file.file_name);
+        .eq("project_id", file.project_id).in("file_id", versionIds);
       if (cErr) console.error("[project-files] comment rename failed:", cErr.message);
     }
 
@@ -324,9 +351,10 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, external_provider").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, parent_id, external_provider").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    const parentId: string | null = file.parent_id ?? null;
 
     // ★ Googleファイルは「その1行だけ」を id で消す。
     //   通常のファイルは同名＝同じファイルの別バージョンなので file_name でまとめて消してよいが、
@@ -342,22 +370,26 @@ export default async function handler(req: any, res: any) {
       return res.json({ ok: true, deleted: 0 });
     }
 
-    // 一覧は最新版だけを見せているので、削除も同名の全版をまとめて消す。
+    // 一覧は最新版だけを見せているので、削除も同じフォルダの同名の全版をまとめて消す。
     // (最新版だけ消すと、画面上は古い版が復活したように見えてしまう)
-    const { data: all } = await sb.from("project_files")
-      .select("id, file_path").eq("project_id", file.project_id).eq("file_name", file.file_name);
+    // 別フォルダの同名は別ファイルなので巻き込まない。
+    const { data: all } = await inFolder(sb.from("project_files")
+      .select("id, file_path").eq("project_id", file.project_id).eq("file_name", file.file_name), parentId);
+    const ids = (all ?? []).map(r => String(r.id));
     const paths = (all ?? []).map(r => r.file_path).filter(Boolean);
 
-    const { error } = await sb.from("project_files")
-      .delete().eq("project_id", file.project_id).eq("file_name", file.file_name);
+    const { error } = await inFolder(sb.from("project_files")
+      .delete().eq("project_id", file.project_id).eq("file_name", file.file_name), parentId);
     if (error) return res.status(500).json({ error: error.message });
     if (paths.length) await sb.storage.from(BUCKET).remove(paths);
 
     // コメント(BRU12-025)は版をまたぐため project_files への FK を持たない＝
-    // 行を消しても連鎖しない。同じ引き当てキーでここで一緒に片付ける（孤児を残さない）。
-    const { error: cErr } = await sb.from("project_file_comments")
-      .delete().eq("project_id", file.project_id).eq("file_name", file.file_name);
-    if (cErr) console.error("[project-files] comment cleanup failed:", cErr.message);
+    // 行を消しても連鎖しない。このファイルの版に付いたものをここで一緒に片付ける（孤児を残さない）。
+    if (ids.length > 0) {
+      const { error: cErr } = await sb.from("project_file_comments")
+        .delete().eq("project_id", file.project_id).in("file_id", ids);
+      if (cErr) console.error("[project-files] comment cleanup failed:", cErr.message);
+    }
 
     return res.json({ ok: true, deleted: paths.length });
   }
