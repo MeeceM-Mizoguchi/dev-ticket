@@ -7,7 +7,7 @@
 // キーの平文は AES-256-GCM で暗号化して保存してある（暗号鍵はサーバー側の環境変数から導出）。
 // そのため「使用するキー」で選ぶだけで、サーバーが復号した平文をプロンプトへ埋め込める。
 // 利用者がキーを控えて貼り直す必要はない。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   KeyRound, Plus, Copy, Trash2, AlertTriangle, Sparkles, Loader2,
   ChevronRight, ChevronDown, ShieldCheck, Ban, Terminal, Globe,
@@ -92,6 +92,9 @@ export function ApiIntegrationDialog({
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [revealing, setRevealing] = useState(false);
   const [revealError, setRevealError] = useState<{ message: string; needsReissue: boolean } | null>(null);
+  // どのキーの復号を済ませた（または実行中）か。初回読み込みで復号済みのキーを
+  // 選択キーの effect がもう一度復号しに行かないようにする。
+  const revealedForRef = useRef<string>("");
 
   // 発行フォーム
   const [formOpen, setFormOpen] = useState(false);
@@ -132,16 +135,34 @@ export function ApiIntegrationDialog({
     }
     if (!projectId) { setLoading(false); return; }
 
+    // 既定キーの復号まで済ませてから本文を出す。
+    // 一覧だけ先に出すと、復号が終わるまでの1〜3秒「キー無しのコピーボタン」が押せてしまい、
+    // APIキーの入っていないプロンプトがコピーされていた。
+    let cancelled = false;
     void (async () => {
-      const [{ data: project }, { data: categories }] = await Promise.all([
+      const [{ data: project }, { data: categories }, rows] = await Promise.all([
         supabase!.from("projects").select("members").eq("id", projectId).maybeSingle(),
         supabase!.from("ticket_categories").select("name").eq("project_id", projectId).order("created_at"),
+        listApiKeys(projectId),
       ]);
+      // 既定の選択キー（一覧は作成日の降順なので、最後に発行した有効なキー）
+      const first = rows.find(isActiveKey);
+      const revealed = first ? await revealApiKey(first.id) : null;
+      if (cancelled) return;
+
       setMemberNames(Array.isArray(project?.members) ? (project!.members as string[]) : []);
       setCategoryNames(Array.isArray(categories) ? categories.map((c: { name: string }) => c.name) : []);
-      await reloadKeys();
+      setKeys(rows);
+      if (first && revealed) {
+        revealedForRef.current = first.id;
+        setSelectedKeyId(first.id);
+        if (revealed.ok) { setRevealedKey(revealed.plainKey); setRevealError(null); }
+        else { setRevealedKey(null); setRevealError({ message: revealed.error, needsReissue: revealed.needsReissue }); }
+      }
+      setLoading(false);
     })();
-  }, [projectId, reloadKeys]);
+    return () => { cancelled = true; };
+  }, [projectId]);
 
   const activeKeys = useMemo(() => keys.filter(isActiveKey), [keys]);
 
@@ -151,21 +172,31 @@ export function ApiIntegrationDialog({
     setSelectedKeyId(activeKeys[0]?.id ?? "");
   }, [activeKeys, selectedKeyId]);
 
-  // 選ばれたキーの平文をサーバーで復号して取り出す。
-  // 発行直後も選択が切り替わるので一度呼ばれるが、返るのは同じ平文なので実害はない。
+  // 選ばれたキーの平文をサーバーで復号して取り出す（プルダウンで切り替えたとき）。
+  // 初回の既定キーと発行直後のキーは平文が手元にあるので、revealedForRef で復号を省く。
   useEffect(() => {
-    if (!selectedKeyId) { setRevealedKey(null); setRevealError(null); return; }
+    if (!selectedKeyId) { revealedForRef.current = ""; setRevealedKey(null); setRevealError(null); return; }
+    if (revealedForRef.current === selectedKeyId) return;
+    revealedForRef.current = selectedKeyId;
     let cancelled = false;
+    let done = false;
     setRevealing(true);
+    // 前のキーの平文を残したままにすると、復号中に押されたとき別のキー入りでコピーされる
+    setRevealedKey(null);
     setRevealError(null);
     void revealApiKey(selectedKeyId).then(result => {
+      done = true;
       if (cancelled) return;
       setRevealing(false);
       if (result.ok) { setRevealedKey(result.plainKey); return; }
       setRevealedKey(null);
       setRevealError({ message: result.error, needsReissue: result.needsReissue });
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // 復号の途中で打ち切られたら、次回やり直せるように「復号済み」の印を外す
+      if (!done && revealedForRef.current === selectedKeyId) revealedForRef.current = "";
+    };
   }, [selectedKeyId]);
 
   // ── コピー ────────────────────────────────────────────────────
@@ -201,7 +232,9 @@ export function ApiIntegrationDialog({
 
     setIssuedKey({ plain: result.result.plainKey, name: result.result.row.name });
     // 「使い方」タブへそのまま引き継ぐ（復号のための往復を省く）
+    revealedForRef.current = result.result.row.id;
     setRevealedKey(result.result.plainKey);
+    setRevealing(false);
     setRevealError(null);
     setFormOpen(false);
     setFormName("");
@@ -363,9 +396,9 @@ export function ApiIntegrationDialog({
           </select>
           {/* 選ばれたキーの平文をサーバーで復号し、そのままプロンプトへ埋め込む。
               利用者がキーを控えて貼り直す必要はない。 */}
-          <p style={{ fontSize: 10.5, marginTop: 6, lineHeight: 1.7, color: revealError ? "#DC2626" : keyEmbedded ? GREEN : "#B0A9A4" }}>
+          <p style={{ fontSize: 10.5, marginTop: 6, lineHeight: 1.7, color: revealError ? "#DC2626" : keyEmbedded ? GREEN : "#B0A9A4", display: "flex", alignItems: "center", gap: 5 }}>
             {revealing
-              ? "キーを読み込んでいます…"
+              ? <><Loader2 className="animate-spin" style={{ width: 12, height: 12, color: GREEN, flexShrink: 0 }} />キーを読み込んでいます…</>
               : revealError
                 ? (revealError.needsReissue
                   ? "⚠ このキーは以前の方式で発行されているため、プロンプトへ埋め込めません。「APIキー」タブで新しく発行し直してください。"
@@ -377,9 +410,12 @@ export function ApiIntegrationDialog({
         </div>
 
         <div>
-          <Btn onClick={() => void copy(prompt, "プロンプト")}>
-            <Sparkles style={{ width: 13, height: 13 }} />
-            {keyEmbedded ? "プロンプトをコピー（APIキー入り）" : "プロンプトをコピー"}
+          {/* 復号中に押されるとキー無しのプロンプトがコピーされるため、終わるまで押させない */}
+          <Btn onClick={() => void copy(prompt, "プロンプト")} disabled={revealing}>
+            {revealing
+              ? <Loader2 className="animate-spin" style={{ width: 13, height: 13 }} />
+              : <Sparkles style={{ width: 13, height: 13 }} />}
+            {revealing ? "キーを読み込み中…" : keyEmbedded ? "プロンプトをコピー（APIキー入り）" : "プロンプトをコピー"}
           </Btn>
           {/* 「キーも一緒にコピーされている」ことが分からず、キーを別途コピーして貼る手間が
               生まれていたため、何がコピーされたのかをボタンの直下で明示する。 */}
@@ -818,7 +854,12 @@ export function ApiIntegrationDialog({
           {loadError
             ? <p style={{ fontSize: 12, color: "#DC2626" }}>{loadError}</p>
             : loading
-              ? <p style={{ fontSize: 12, color: "#9E9690", textAlign: "center", padding: "24px 0" }}>読み込み中…</p>
+              ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "40px 0" }}>
+                  <Loader2 className="animate-spin" style={{ width: 22, height: 22, color: GREEN }} />
+                  <p style={{ fontSize: 12, color: "#9E9690" }}>APIキーを読み込んでいます…</p>
+                </div>
+              )
               : issuedKey
                 ? renderIssued()
                 : tab === "usage" ? renderUsage()
