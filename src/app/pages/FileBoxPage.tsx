@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
@@ -51,7 +51,9 @@ const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃
 // Google 側で名前を変える操作はどう急いでもこれより時間がかかるので、取りこぼさない。
 // 画面遷移・リロードのときは間引かず必ず同期する。
 const DRIVE_SYNC_MIN_INTERVAL_MS = 10_000;
-const TOO_MANY_MSG = `一度に扱えるのは ${MAX_UPLOAD_ENTRIES} 件までです。先頭の ${MAX_UPLOAD_ENTRIES} 件だけ取り込みます`;
+// パンくずのドロップ先を表すキー。ルートは folderId が null なので代わりにこれを使う
+const ROOT_CRUMB = "__root__";
+const TOO_MANY_MSG =`一度に扱えるのは ${MAX_UPLOAD_ENTRIES} 件までです。先頭の ${MAX_UPLOAD_ENTRIES} 件だけ取り込みます`;
 
 // 何十件も並べるとトーストが画面を埋めるので、先頭数件だけ出して残りは件数で伝える
 function summarize(items: string[], head = 3): string {
@@ -179,6 +181,8 @@ export function FileBoxPage() {
 
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [draggingFile, setDraggingFile] = useState<ProjectFile | null>(null);
+  // パンくずのどれにドラッグ中か。ルート（ファイルボックス）は ROOT_CRUMB で表す
+  const [dragOverCrumb, setDragOverCrumb] = useState<string | null>(null);
 
   // Googleドライブ連携の設定。null なら「Googleアプリ」ボタンを出さない。
   // 一覧と同じ read で取るので、ボタンだけ遅れて出ることがない（load() 参照）。
@@ -881,6 +885,63 @@ export function FileBoxPage() {
 
   const visible = currentLevelItems;
 
+  // パンくずをドロップ先にする。上の階層へ戻すのにフォルダ行は使えないので、
+  // 一覧の行を掴んでパンくずで離せば、その階層へ移動できるようにする。
+  // 外から来たファイル/フォルダはフォルダ行と同じく、その階層へアップロードする。
+  const crumbDropProps = (targetFolderId: string | null) => {
+    const key = targetFolderId ?? ROOT_CRUMB;
+    // 今いる場所へ落としても何も変わらないので、ドロップ先として扱わない
+    const isSameFolder = !!draggingFile && (draggingFile.parentId ?? null) === targetFolderId;
+    return {
+      onDragOver: (e: DragEvent<HTMLElement>) => {
+        // 何もしない場所でも preventDefault しないとブラウザがファイルを開いてしまう
+        e.preventDefault();
+        e.stopPropagation();
+        const isExternal = e.dataTransfer.types.includes("Files");
+        if (!isExternal && (!draggingFile || isSameFolder)) {
+          e.dataTransfer.dropEffect = "none";
+          return;
+        }
+        e.dataTransfer.dropEffect = isExternal ? "copy" : "move";
+        if (dragOverCrumb !== key) setDragOverCrumb(key);
+      },
+      onDragLeave: (e: DragEvent<HTMLElement>) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setDragOverCrumb(prev => (prev === key ? null : prev));
+      },
+      onDrop: (e: DragEvent<HTMLElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOverCrumb(null);
+        if (e.dataTransfer.types.includes("Files")) {
+          handleDropUpload(e, targetFolderId);
+        } else if (draggingFile && !isSameFolder) {
+          handleMoveFile(draggingFile, targetFolderId);
+          setDraggingFile(null);
+        }
+      },
+    };
+  };
+
+  const crumbStyle = (targetFolderId: string | null, isCurrent: boolean): CSSProperties => {
+    const isHover = dragOverCrumb === (targetFolderId ?? ROOT_CRUMB);
+    return {
+      background: isHover ? "#FEF3C7" : "none",
+      border: "none",
+      outline: isHover ? "2px dashed #D97706" : "none",
+      outlineOffset: -2,
+      borderRadius: 6,
+      cursor: "pointer",
+      color: isHover ? "#B45309" : isCurrent ? "#1A1714" : "#059669",
+      fontWeight: isCurrent ? 700 : 600,
+      // ドラッグで狙いやすいよう当たり判定を広げる（見た目の位置は margin で打ち消す）
+      padding: "3px 6px",
+      margin: "-3px -6px",
+      fontSize: 12,
+      transition: "background 0.15s",
+    };
+  };
+
   // ── ガード ─────────────────────────────────────────────────
   // 黙ってリダイレクトせず、理由と開こうとしたURLを出す（docs/not-found-page-design.md）。
   const accessBlocked = projectAccessView(notFound ? null : project, { userRole, userName, userOrgId });
@@ -968,28 +1029,25 @@ export function FileBoxPage() {
         {/* パンくずナビゲーション */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, fontSize: 12, flexWrap: "wrap" }}>
           <button onClick={() => handleNavigateBreadcrumb(-1)}
-            onDragOver={e => e.preventDefault()}
-            onDrop={e => {
-              e.preventDefault();
-              if (draggingFile) { handleMoveFile(draggingFile, null); setDraggingFile(null); }
-            }}
-            style={{ background: "none", border: "none", cursor: "pointer", color: breadcrumbs.length === 0 ? "#1A1714" : "#059669", fontWeight: breadcrumbs.length === 0 ? 700 : 600, padding: 0, fontSize: 12 }}>
+            {...crumbDropProps(null)}
+            style={crumbStyle(null, breadcrumbs.length === 0)}>
             ファイルボックス
           </button>
           {breadcrumbs.map((b, idx) => (
             <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <ChevronRight style={{ width: 10, height: 10, color: "#C9C4BB" }} />
               <button onClick={() => handleNavigateBreadcrumb(idx)}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => {
-                  e.preventDefault();
-                  if (draggingFile) { handleMoveFile(draggingFile, b.id); setDraggingFile(null); }
-                }}
-                style={{ background: "none", border: "none", cursor: "pointer", color: idx === breadcrumbs.length - 1 ? "#1A1714" : "#059669", fontWeight: idx === breadcrumbs.length - 1 ? 700 : 600, padding: 0, fontSize: 12 }}>
+                {...crumbDropProps(b.id)}
+                style={crumbStyle(b.id, idx === breadcrumbs.length - 1)}>
                 {b.name}
               </button>
             </div>
           ))}
+          {draggingFile && (
+            <span style={{ marginLeft: 8, fontSize: 11, color: "#B0A9A4" }}>
+              パンくずで離すとその階層へ移動します
+            </span>
+          )}
         </div>
 
         {/* アップロード */}
@@ -1100,7 +1158,7 @@ export function FileBoxPage() {
                     setDraggingFile(f);
                     e.dataTransfer.setData("text/plain", f.id);
                   }}
-                  onDragEnd={() => setDraggingFile(null)}
+                  onDragEnd={() => { setDraggingFile(null); setDragOverCrumb(null); }}
                   style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 8, cursor: "grab", borderBottom: "1px solid rgba(26,23,20,0.05)",
                     opacity: draggingFile?.id === f.id ? 0.4 : 1,
