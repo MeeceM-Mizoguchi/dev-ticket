@@ -8,10 +8,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { ExternalLink, ChevronDown, ChevronUp, GitPullRequest, Link2 } from "lucide-react";
-import { fetchPull, mergeBlockReason, relativeTime, GithubApiError } from "@/app/lib/github";
+import { fetchPull, mergeBlockReason, isAwaitingChecks, relativeTime, GithubApiError } from "@/app/lib/github";
 import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/types";
 
 const BLACK = "#1F2328";
+
+/** CI実行中の行を引き直す間隔 */
+const CI_WATCH_POLL_MS = 15_000;
+/** 引き直しをやめるまでの時間。止まったままのチェックで延々と GitHub を叩かない */
+const CI_WATCH_MAX_MS = 15 * 60_000;
 
 export function PullRequestList({ projectId, projectSlug, repo, pulls, level, links, selected, onToggleSelect, onMergeClick, onLinkClick, onDetailLoaded, writeBlocked, refreshedAt }: {
   projectId: string;
@@ -127,6 +132,32 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
       })
       .finally(() => setLoadingDetail(false));
   }, [open, detail, loadingDetail, detailAt, projectId, pull.number]);
+
+  // CIが走っている行は、終わるまでこの行だけ引き直す（BRU17-022）。
+  // 画面は自動では取り直さないため、放っておくと CI が終わっても「CI 実行中」のまま
+  // 選べない・押せない状態が「更新」を押すまで続き、CIが長引いているように見えていた。
+  // 差し替えは中身だけで、スピナーは出さない（BUG-02／03）
+  const awaitingChecks = isAwaitingChecks(shown);
+  useEffect(() => {
+    if (!awaitingChecks) return;
+    const at = detailAt;
+    const startedAt = Date.now();
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (Date.now() - startedAt > CI_WATCH_MAX_MS) { window.clearInterval(timer); return; }
+      if (inFlight) return;
+      inFlight = true;
+      fetchPull(projectId, pull.number)
+        .then(r => {
+          if (detailAtRef.current !== at) return;
+          setDetail(r.pull);
+          onDetailLoadedRef.current?.(r.pull);
+        })
+        .catch(() => { /* 次の回で取り直す */ })
+        .finally(() => { inFlight = false; });
+    }, CI_WATCH_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [awaitingChecks, detailAt, projectId, pull.number]);
 
   return (
     <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.09)", borderRadius: 12, overflow: "hidden" }}>

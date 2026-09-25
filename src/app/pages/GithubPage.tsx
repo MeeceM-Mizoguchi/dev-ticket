@@ -406,6 +406,16 @@ export function GithubPage() {
    */
   const applyPullDetail = useCallback((detail: GithubPull) => {
     setPulls(prev => prev.map(p => (p.number === detail.number ? { ...p, ...detail } : p)));
+    // 選んだあとに押し直し等でCIが走り出したものは選択から外す。
+    // 行のチェックボックスは押せなくなるので、残すと外す手段が無いまま対象に入り続ける
+    if (mergeBlockReason(detail)) {
+      setSelected(prev => {
+        if (!prev.has(detail.number)) return prev;
+        const next = new Set(prev);
+        next.delete(detail.number);
+        return next;
+      });
+    }
   }, []);
 
   // マージできる状態のものだけを選択対象にする
