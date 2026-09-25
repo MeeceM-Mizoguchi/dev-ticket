@@ -35,6 +35,8 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/clients", element: <ClientsPage /> },
   // クライアント単位の打ち合わせメモ（プロジェクト配下の議事録とは別物）
   { path: "/clients/:clientId/notes", element: <ClientNotesPage /> },
+  // フォルダ用の静的セグメントなので /:noteId より優先される
+  { path: "/clients/:clientId/notes/folders/:folderId", element: <ClientNotesPage /> },
   { path: "/clients/:clientId/notes/:noteId", element: <ClientNotesPage /> },
   { path: "/members", element: <MembersPage /> },
   { path: "/permissions", element: <PermissionsPage /> },

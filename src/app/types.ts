@@ -496,12 +496,17 @@ export interface MeetingMinute {
 /**
  * クライアント（取引先企業）単位の打ち合わせメモ。
  * 議事録(MeetingMinute)はプロジェクト単位なので、どのプロジェクトにも属さない
- * 「その会社との打ち合わせ」はこちらに書く。フォルダ階層は持たない。
+ * 「その会社との打ち合わせ」はこちらに書く。フォルダ階層は議事録と同仕様。
  */
 export interface ClientNote {
   id: string; clientId: string; title: string;
   /** 打ち合わせ日 (yyyy-mm-dd) */
   noteDate: string;
+  /** 階層フォルダ（議事録と同仕様）。NULL = ルート直下 */
+  parentId: string | null;
+  /** true のときはフォルダ行。noteDate/attendees/content などの列は使わない */
+  isFolder: boolean;
+  sortOrder: number;
   attendees: string[]; content: string;
   images: string[];
   organizationId?: string | null;

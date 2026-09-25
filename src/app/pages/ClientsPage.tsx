@@ -55,14 +55,19 @@ export function ClientsPage() {
 
   // メモ件数はRLSで見える範囲しか返らないので、クライアント側で数えるだけでよい。
   // テーブル未作成(add_client_notes.sql 未実行)の環境でも一覧が壊れないよう、エラーは握りつぶす。
-  const refreshNoteCounts = () => {
+  // フォルダ行(is_folder)は件数に含めない。add_client_notes_folders.sql 未実行で列が無い環境は
+  // client_id だけで引き直す（その環境にはフォルダ行が存在しない）。
+  const refreshNoteCounts = async () => {
     if (!isSupabaseEnabled) return;
-    supabase!.from("client_notes").select("client_id").then(({ data, error }) => {
-      if (error || !data) return;
-      const counts: Record<string, number> = {};
-      for (const row of data) counts[row.client_id] = (counts[row.client_id] ?? 0) + 1;
-      setNoteCounts(counts);
-    });
+    const first = await supabase!.from("client_notes").select("client_id, is_folder");
+    const { data, error } = first.error ? await supabase!.from("client_notes").select("client_id") : first;
+    if (error || !data) return;
+    const counts: Record<string, number> = {};
+    for (const row of data as { client_id: string; is_folder?: boolean }[]) {
+      if (row.is_folder) continue;
+      counts[row.client_id] = (counts[row.client_id] ?? 0) + 1;
+    }
+    setNoteCounts(counts);
   };
 
   useEffect(() => {

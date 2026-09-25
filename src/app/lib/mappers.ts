@@ -222,5 +222,5 @@ export function mapMeetingMinute(r: any): MeetingMinute {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapClientNote(r: any): ClientNote {
-  return { id: r.id, clientId: r.client_id, title: r.title || "", noteDate: r.note_date || "", attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], organizationId: r.organization_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+  return { id: r.id, clientId: r.client_id, title: r.title || "", noteDate: r.note_date || "", parentId: r.parent_id ?? null, isFolder: r.is_folder ?? false, sortOrder: r.sort_order ?? 0, attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], organizationId: r.organization_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
 }
