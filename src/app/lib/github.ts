@@ -402,16 +402,26 @@ const CHECKS_REGISTER_GRACE_MS = 3 * 60 * 1000;
  *
  * 作成直後はチェックがまだ1件も登録されていない（none）ことがあるので、
  * 作成から少しの間は none も「これから走る」とみなす。
+ *
+ * CIが走っている間は mergeable_state を問わず「完了待ち」とする（BRU17-022）。
+ * blocked のときだけに絞っていると、必須でないチェックが走っている間や、
+ * マージ先が進んで GitHub が可否を計算し直している間は clean／unstable が返り、
+ * 一覧の表示は「CI 実行中」なのにチェックボックスもマージボタンも押せてしまっていた。
+ * コンフリクトは待っても直らないので対象にしない。
  */
 export function isAwaitingChecks(
-  p: Pick<GithubPull, "mergeableState" | "checkState" | "createdAt"> & { draft?: boolean; merged?: boolean },
+  p: Pick<GithubPull, "mergeableState" | "checkState" | "createdAt">
+    & { draft?: boolean; merged?: boolean; mergeable?: boolean | null },
 ): boolean {
-  if (p.merged || p.draft || p.mergeableState !== "blocked") return false;
+  if (p.merged || p.draft) return false;
+  if (p.mergeableState === "dirty" || p.mergeable === false) return false;
   if (p.checkState === "pending") return true;
-  if (p.checkState !== "none") return false;
+  if (p.mergeableState !== "blocked" || p.checkState !== "none") return false;
   const created = new Date(p.createdAt).getTime();
   return !Number.isNaN(created) && Date.now() - created < CHECKS_REGISTER_GRACE_MS;
 }
+
+const CI_RUNNING_REASON = "CI 実行中のため、まだマージできません（完了すればマージできます）";
 
 /** 「まだマージできない理由」。null ならマージ可能（docs 7-2 の表） */
 export function mergeBlockReason(
@@ -419,14 +429,16 @@ export function mergeBlockReason(
 ): string | null {
   if (p.merged) return "すでにマージされています";
   if (p.draft) return "Draft のためマージできません";
+  // CIが走っている間は、GitHub が clean と答えていても通さない（BRU17-022）。
+  // 一覧に「CI 実行中」と出ているPRを選べる・押せる状態にしない。
+  // 待てば通るので、人がやることが違う「必須チェック不足」とは言い分ける
+  if (p.checkState && p.createdAt && isAwaitingChecks({ ...p, checkState: p.checkState, createdAt: p.createdAt })) {
+    return CI_RUNNING_REASON;
+  }
   switch (p.mergeableState) {
     case "clean": return null;
     case "dirty": return "コンフリクトがあります";
-    case "blocked":
-      // 同じ blocked でも、CIの完了待ちなら待てば通る。人がやることが違うので言い分ける
-      return p.checkState && p.createdAt && isAwaitingChecks({ ...p, checkState: p.checkState, createdAt: p.createdAt })
-        ? "CI 実行中のため、まだマージできません（完了すればマージできます）"
-        : "必須チェックまたはレビュー承認が不足しています";
+    case "blocked": return "必須チェックまたはレビュー承認が不足しています";
     case "behind": return "ベースブランチより古いため更新が必要です";
     case "draft": return "Draft のためマージできません";
     case "unknown": return "GitHub側で判定中です";
