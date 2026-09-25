@@ -1,6 +1,6 @@
 // 稼働中（今表示している画面）のバージョン。
 // vite.config.ts の define で、ビルド時刻(JST)から自動採番した値が埋め込まれる。
-// 例: "v2026.06.28.1322"  ※ dev サーバーでは起動時刻ベースの値になる。
+// 例: "v2026.06.28.132205"（秒まで）  ※ dev サーバーでは起動時刻ベースの値になる。
 declare const __APP_VERSION__: string;
 
 export const APP_VERSION: string = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "v0.0.0.0000";
@@ -21,12 +21,12 @@ export const APP_DEPLOY_ENV: string = typeof __APP_DEPLOY_ENV__ !== "undefined" 
 
 // ── 「このバージョンがいつ更新されたか」の表示用 ────────────────────────
 // 基準は APP_BUILD_TIME（epoch ms＝ビルドされた瞬間そのもの）。
-// 焼込みが無い環境（古いバンドル等）では、バージョン文字列 "v2026.08.22.1917" から
-// 分単位まで復元する。採番は JST 基準なので、JST の壁時計時刻として UTC に戻す。
+// 焼込みが無い環境（古いバンドル等）では、バージョン文字列 "v2026.08.22.1917"（旧・分単位）
+// または "v2026.08.22.191705"（秒単位）から復元する。採番は JST 基準なので、JST の壁時計時刻として UTC に戻す。
 function parseVersionToDate(v: string): Date | null {
-  const m = /^v(\d{4})\.(\d{2})\.(\d{2})\.(\d{2})(\d{2})$/.exec(v);
+  const m = /^v(\d{4})\.(\d{2})\.(\d{2})\.(\d{2})(\d{2})(\d{2})?$/.exec(v);
   if (!m) return null;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]) - 9, Number(m[5])));
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]) - 9, Number(m[5]), Number(m[6] ?? 0)));
   return Number.isNaN(d.getTime()) ? null : d;
 }
 

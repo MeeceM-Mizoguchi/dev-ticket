@@ -38,6 +38,9 @@ const LIVE_POLL = 4 * 1000;
 // DB に記録されてからこの時間が過ぎても本番が切り替わらない版は、デプロイ失敗とみなして待たない。
 // （待ち続けて画面を塞がないための上限。通常は記録から1〜2分で切り替わる）
 const MAX_PENDING_AGE_SEC = 10 * 60;
+// 公開待ちの間に、さらに新しい版のデプロイが始まった(マージが連続した等)とき、
+// 途中の版がすでに本番に出ていれば、後の版をこの時間だけ待ってから途中の版で妥協する。
+const CHAIN_WAIT = 3 * 60 * 1000;
 
 // 同じ版へのリロードを何回まで試すか（＝リロードループ防止）。
 // 以前は「1回試したら二度と試さない」だったため、CDN の伝播待ちなどで
@@ -251,6 +254,12 @@ async function fetchPendingRelease(force: boolean): Promise<PendingRelease | nul
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
+// ビルド時刻(epoch ms 文字列)で a が b より新しいか。数値にならない値は新しいとみなさない。
+function isLater(a: string, b: string): boolean {
+  const x = Number(a), y = Number(b);
+  return Number.isFinite(x) && Number.isFinite(y) && x > y;
+}
+
 // オーバーレイの裏で入力が続かないよう、フォーカスを外しておく。
 function blurActive(): void {
   try { (document.activeElement as HTMLElement | null)?.blur?.(); } catch { /* ignore */ }
@@ -295,14 +304,14 @@ function hardReload(buildTime: string): void {
 
 // 本番が新しい版を返すようになった → キャッシュを片付けてリロードする。
 // ここから先はページが入れ替わるまでオーバーレイを閉じない。
-async function startReload(server: ServerBuild): Promise<void> {
+async function startReload(server: ServerBuild, note: string | null = null): Promise<void> {
   blurActive();
   const prev = readAttempt();
   const same = prev?.to === server.buildTime;
   writeAttempt({ to: server.buildTime, count: same ? prev!.count + 1 : 1, at: Date.now() });
 
   const version = server.version ?? state.version;
-  setState({ phase: "preparing", progress: 62, version, note: null });
+  setState({ phase: "preparing", progress: 62, version, note });
   await Promise.all([purgeStaleCaches(), sleep(MIN_PREPARE)]);
   setState({ phase: "reloading", progress: 80 });
 
@@ -313,29 +322,49 @@ async function startReload(server: ServerBuild): Promise<void> {
 }
 
 // デプロイは始まっているが本番はまだ古い版 → 切り替わるまで待つ。
-async function startWaiting(pending: PendingRelease): Promise<void> {
+// マージが連続してデプロイが続けて走ったときは、最後の版が出るまで待ってから1回だけリロードする
+// （途中の版で一度更新を終えると、次の画面遷移でもう一度全画面の更新が始まってしまう）。
+async function startWaiting(pending: PendingRelease, note: string | null = null): Promise<void> {
   blurActive();
   const started = Date.now();
-  setState({ phase: "waiting", progress: 6, version: pending.version, note: null });
+  let target = pending;
+  let live: ServerBuild | null = null; // 本番に出ている、今より新しい版（target より古いこともある）
+  let liveSince = 0;
+  setState({ phase: "waiting", progress: 6, version: target.version, note });
   // 残り時間は分からないので、最初は速く・だんだんゆっくり 58% へ近づける
   const tick = setInterval(() => {
     setState({ progress: 8 + 50 * (1 - Math.exp(-(Date.now() - started) / 45000)) });
   }, 500);
   try {
-    while (Date.now() < pending.deadline) {
+    while (Date.now() < target.deadline) {
       await sleep(LIVE_POLL);
+      // 待っている間に、さらに新しい版のデプロイが始まっていないか（PENDING_POLL 間隔で間引かれる）
+      const newer = await fetchPendingRelease(false);
+      if (newer && isLater(newer.buildTime, target.buildTime)) {
+        target = newer;
+        setState({ version: newer.version });
+      }
       const server = await fetchServerBuild();
       if (server && server.buildTime !== APP_BUILD_TIME) {
-        clearInterval(tick);
-        await startReload(server);
-        return;
+        if (!isLater(target.buildTime, server.buildTime)) {
+          clearInterval(tick);
+          await startReload(server);
+          return;
+        }
+        // 途中の版だけが出ている。後の版を待つが、待ちすぎたら途中の版で更新する
+        if (live?.buildTime !== server.buildTime) { live = server; liveSince = Date.now(); }
+        if (Date.now() - liveSince >= CHAIN_WAIT) break;
       }
     }
   } finally {
     clearInterval(tick);
   }
+  if (live) {
+    await startReload(live);
+    return;
+  }
   // 公開が終わらなかった（デプロイ失敗など）。今の版は動いているので画面を返す。
-  try { sessionStorage.setItem(SKIP_PENDING_KEY, pending.buildTime); } catch { /* ignore */ }
+  try { sessionStorage.setItem(SKIP_PENDING_KEY, target.buildTime); } catch { /* ignore */ }
   setState(IDLE);
   notify("新しいバージョンの公開を確認できませんでした。現在のバージョンのままご利用いただけます。", "info");
 }
@@ -367,6 +396,23 @@ function waitForSettled(): Promise<void> {
 
 let manualNotified = false;
 
+const CHAIN_NOTE = "続けて公開された新しいバージョンに更新します";
+
+// 更新を終える直前に、さらに新しい版が出ている／公開中でないか確かめ、あれば更新を続ける。
+async function chainToNewer(): Promise<boolean> {
+  const server = await fetchServerBuild();
+  if (server && isLater(server.buildTime, APP_BUILD_TIME)) {
+    void startReload(server, CHAIN_NOTE);
+    return true;
+  }
+  const pending = await fetchPendingRelease(true);
+  if (pending) {
+    void startWaiting(pending, CHAIN_NOTE);
+    return true;
+  }
+  return false;
+}
+
 // 自動更新でリロードしてきた直後の仕上げ。
 async function finishLanding(): Promise<void> {
   if (!bootLanded) {
@@ -396,6 +442,10 @@ async function finishLanding(): Promise<void> {
   }, 200);
   await waitForSettled();
   clearInterval(tick);
+
+  // 続けて次のデプロイが走っていた（マージが連続した等）なら、閉じずにそのまま次の版へ乗り継ぐ。
+  // ここで閉じると、次の画面遷移や定期確認でもう一度全画面の更新が始まってしまう。
+  if (await chainToNewer()) return;
 
   setState({ phase: "done", progress: 100 });
   await sleep(DONE_HOLD);
