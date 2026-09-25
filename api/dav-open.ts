@@ -10,7 +10,7 @@ import crypto from "crypto";
 //
 // 認証: Office はアプリのログインセッション(JWT)を送ってこないので、
 //       URL のパスに HMAC 署名付きトークンを埋めて本人性を担保する。
-//       トークンは「プロジェクト + ファイル名」を指し、常に最新版に解決される。
+//       トークンは「プロジェクト + フォルダ + ファイル名」を指し、常に最新版に解決される。
 //       (fileId 固定にすると、保存で版が増えた瞬間にトークンが古い版を指してしまう)
 //
 // ★ ルーティングの経緯（重要）:
@@ -40,7 +40,10 @@ const MIME: Record<string, string> = {
   ppt: "application/vnd.ms-powerpoint",
 };
 
-export interface DavPayload { p: string; n: string; u: string; e: number }
+// f = 置き場所のフォルダ id（"" = ルート直下）。別フォルダに同名のファイルがありうるため、
+// 名前と組にして「どのファイルか」を決める。f が無いのはこの項目を足す前に発行された
+// トークン（最長24時間で失効）で、その場合は従来どおり名前だけで引く。
+export interface DavPayload { p: string; n: string; u: string; e: number; f?: string }
 
 function secret(): string {
   return process.env.DAV_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -152,10 +155,11 @@ export default async function handler(req: any, res: any) {
 
   // トークンが指すファイルの最新版を引く
   const latest = async () => {
-    const { data } = await sb.from("project_files")
-      .select("id, file_name, file_size, file_path, folder_path, version, created_at")
-      .eq("project_id", payload.p).eq("file_name", payload.n)
-      .order("version", { ascending: false }).limit(1);
+    let q = sb.from("project_files")
+      .select("id, file_name, file_size, file_path, folder_path, parent_id, version, created_at")
+      .eq("project_id", payload.p).eq("file_name", payload.n);
+    if (payload.f !== undefined) q = payload.f ? q.eq("parent_id", payload.f) : q.is("parent_id", null);
+    const { data } = await q.order("version", { ascending: false }).limit(1);
     return data?.[0] ?? null;
   };
 
@@ -305,10 +309,14 @@ ${body}
 
     // フォルダは元の版から引き継ぐ。"" を固定で入れていたため、フォルダ内のファイルを
     // アプリで開いて保存するとルート階層へ移動してしまっていた（画面側は 6c35e51 で対応済み）。
+    // parent_id も引き継ぐ。版は (parent_id, file_name) で束ねるので、落とすと
+    // 新しい版だけがルートへ出て、元のフォルダには古い版が残って見える。
+    const parentId: string | null = row?.parent_id ?? (payload.f ? payload.f : null);
     const { data: inserted, error: insErr } = await sb.from("project_files").insert({
       project_id: payload.p, folder_path: row?.folder_path ?? "", file_name: payload.n,
       file_size: body.length, file_type: contentType, file_path: path,
       version: (row?.version ?? 0) + 1, uploaded_by: payload.u,
+      ...(parentId ? { parent_id: parentId } : {}),
     }).select("id, version, created_at").maybeSingle();
     if (insErr || !inserted) {
       await sb.storage.from(BUCKET).remove([path]);

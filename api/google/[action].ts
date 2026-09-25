@@ -491,9 +491,16 @@ async function grantMembers(
 }
 
 // ── 名前の重複回避 ──────────────────────────────────────────
-// project_files の file_name は「どのファイルか」を指す引き当てキー（版・コメント・改名・削除が
-// これで引く）。Googleファイルにも同じ規則を通すため、登録前に空き名を探しておく。
+// project_files の (parent_id, file_name) は「どのファイルか」を指す引き当てキー（版・コメント・
+// 改名・削除がこれで引く）。Googleファイルにも同じ規則を通すため、登録前に空き名を探しておく。
+// 重複を避けるのは同じフォルダの中だけ（別フォルダの同名は別ファイル）。
 // api/project-files/[action].ts の nextFreeName と同じ規則。
+async function namesInFolder(sb: SupabaseClient, projectId: string, parentId: string | null): Promise<Set<string>> {
+  let q = sb.from("project_files").select("file_name").eq("project_id", projectId);
+  q = parentId ? q.eq("parent_id", parentId) : q.is("parent_id", null);
+  const { data } = await q;
+  return new Set((data ?? []).map(r => String(r.file_name)));
+}
 function splitName(fileName: string): { base: string; ext: string } {
   const i = fileName.lastIndexOf(".");
   return i > 0 ? { base: fileName.slice(0, i), ext: fileName.slice(i) } : { base: fileName, ext: "" };
@@ -844,9 +851,7 @@ export default async function handler(req: any, res: any) {
       // draw.io 図は拡張子 .drawio を持つ（Drive 上で draw.io の図だと分かるように）
       const named = sanitizeFileName(String(body.name ?? "")) || DEFAULT_NAME[kind];
       const wanted = drawio ? withDrawioExt(named) : named;
-      const { data: existing } = await sb.from("project_files")
-        .select("file_name").eq("project_id", projectId);
-      const fileName = nextFreeName(wanted, new Set((existing ?? []).map(r => String(r.file_name))));
+      const fileName = nextFreeName(wanted, await namesInFolder(sb, projectId, parentId));
 
       const created = drawio
         ? await createDrawioFile(accessToken, fileName, folderId)
@@ -938,9 +943,7 @@ export default async function handler(req: any, res: any) {
 
       // Google形式に拡張子は無いので落とす。DevTicket 側で一意な名前を先に押さえる。
       const base = sanitizeFileName(splitName(sourceName).base) || DEFAULT_NAME[kind];
-      const { data: existing } = await sb.from("project_files")
-        .select("file_name").eq("project_id", projectId);
-      const fileName = nextFreeName(base, new Set((existing ?? []).map(r => String(r.file_name))));
+      const fileName = nextFreeName(base, await namesInFolder(sb, projectId, parentId));
 
       const { id: fileId, webViewLink } = await uploadAsGoogleFormat(
         accessToken, bytes, sourceType, fileName, kind, folderId);
@@ -1028,9 +1031,8 @@ export default async function handler(req: any, res: any) {
 
       // 名前は拡張子を落としたもの。同名の Googleファイルが既にあれば「(1)」を付ける
       const base = sanitizeFileName(splitName(String(src.file_name)).base) || DEFAULT_NAME[conv.kind];
-      const { data: existing } = await sb.from("project_files")
-        .select("file_name").eq("project_id", src.project_id);
-      const fileName = nextFreeName(base, new Set((existing ?? []).map(r => String(r.file_name))));
+      const fileName = nextFreeName(base,
+        await namesInFolder(sb, String(src.project_id), src.parent_id ? String(src.parent_id) : null));
 
       // 保存時の file_type が空・不正確なこともあるので、拡張子から決めた形式を優先する
       const { id: newId, webViewLink } = await uploadAsGoogleFormat(
@@ -1120,10 +1122,10 @@ export default async function handler(req: any, res: any) {
       const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
       const people = await projectMemberEmails(sb, project as any);
 
-      // 名前の重複判定と、同じファイルの二重登録の判定に使う
+      // 名前の重複判定（追加先のフォルダの中だけ）と、同じファイルの二重登録の判定（プロジェクト全体）に使う
       const { data: existing } = await sb.from("project_files")
         .select("file_name, external_id").eq("project_id", projectId);
-      const taken = new Set((existing ?? []).map(r => String(r.file_name)));
+      const taken = await namesInFolder(sb, projectId, parentId);
       const already = new Set((existing ?? []).map(r => String(r.external_id ?? "")).filter(Boolean));
 
       const imported: { fileName: string; copied: boolean }[] = [];
@@ -1255,7 +1257,7 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まっても結果が再現する）
       const { data: rows } = await sb.from("project_files")
-        .select("id, file_name, file_type, external_id")
+        .select("id, file_name, file_type, parent_id, external_id")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
       const targets = (rows ?? []).filter(r => !!r.external_id);
@@ -1299,10 +1301,18 @@ export default async function handler(req: any, res: any) {
         if (!pageToken) break;
       }
 
-      // 名前の重複を避けるため、Googleファイル以外も含めた現在の名前を押さえておく
+      // 名前の重複を避けるため、Googleファイル以外も含めた現在の名前をフォルダごとに押さえておく
+      // （重複を避けるのは同じフォルダの中だけ。別フォルダの同名は別ファイル）
       const { data: allRows } = await sb.from("project_files")
-        .select("id, file_name").eq("project_id", projectId);
-      const taken = new Set((allRows ?? []).map(r => String(r.file_name)));
+        .select("id, file_name, parent_id").eq("project_id", projectId);
+      const takenByFolder = new Map<string, Set<string>>();
+      const takenIn = (parentId: unknown): Set<string> => {
+        const key = parentId ? String(parentId) : "";
+        let set = takenByFolder.get(key);
+        if (!set) { set = new Set(); takenByFolder.set(key, set); }
+        return set;
+      };
+      for (const r of allRows ?? []) takenIn(r.parent_id).add(String(r.file_name));
 
       const renamed: { before: string; after: string }[] = [];
       // Drive 上に見つからなかった行。★ DevTicket の行は消さない。
@@ -1321,6 +1331,7 @@ export default async function handler(req: any, res: any) {
         // ★ file_name は DevTicket 内部の引き当てキー。重複したまま取り込むと、
         //   検索や %サジェストで別のファイルと見分けがつかなくなる。
         //   Googleと表示名がズレるのは避けられないが、安全側に倒す。
+        const taken = takenIn(row.parent_id);
         taken.delete(String(row.file_name));
         const next = nextFreeName(sanitizeFileName(current) || String(row.file_name), taken);
         taken.add(next);

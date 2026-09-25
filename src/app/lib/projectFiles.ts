@@ -299,7 +299,7 @@ export async function fetchProjectFileFresh(fileId?: string | null, fallbackUrl?
  * ②ブラウザ→ストレージへ直接アップロード（サーバーレス関数のサイズ上限を回避）
  * ③サーバー側でDB登録（版番号の採番も含む）
  *
- * @param opts.uniqueName 同名のファイルが既にあるとき、新バージョンにせず
+ * @param opts.uniqueName 同じフォルダに同名のファイルが既にあるとき、新バージョンにせず
  *   「foo (1).xlsx」のように別ファイルとして登録する（手動アップロード用）。
  *   エディタ保存やWebDAV保存では指定しない＝これまで通り版が上がる。
  * @returns 実際に登録されたファイル名（改名された場合はその名前）
@@ -368,8 +368,9 @@ export async function fetchDavUrl(fileId: string): Promise<string> {
 
 /**
  * ファイル名を変更する。
- * file_name は版・コメント・WebDAV の引き当てキーなので、サーバー側で同名の全バージョンと
- * コメントをまとめて付け替える。拡張子は元のものが保たれ、同名が既にあれば「(1)」が付く。
+ * (フォルダ, file_name) は版・コメント・WebDAV の引き当てキーなので、サーバー側で同名の全バージョンと
+ * コメントをまとめて付け替える。拡張子は元のものが保たれ、同じフォルダに同名が既にあれば「(1)」が付く
+ * （別フォルダの同名は関係ない）。
  * @returns 実際に登録された名前（重複回避で変わることがある）
  */
 export async function renameProjectFile(fileId: string, newName: string): Promise<string> {

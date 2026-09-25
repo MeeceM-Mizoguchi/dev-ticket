@@ -5,10 +5,11 @@
 // 「同期も永続化も既存経路のまま」で済んだが、ファイルビューアには共有ドキュメントが
 // 無いため、専用テーブル project_file_comments に置く（supabase/add_file_comments.sql）。
 //
-// 【引き当てキー】(projectId, fileName)。fileId ではない。
-// ファイルボックスは「同名ファイル＝同じファイルの版」で、保存や再アップロードのたびに
-// project_files の行が増える（一覧は最新版だけを見せる）。fileId で縛るとエディタ保存の
+// 【引き当てキー】(projectId, fileName)＋「そのファイルの全版の id」。1つの版の fileId ではない。
+// ファイルボックスは「同じフォルダの同名ファイル＝同じファイルの版」で、保存や再アップロードの
+// たびに project_files の行が増える（一覧は最新版だけを見せる）。fileId で縛るとエディタ保存の
 // 直後にコメントが全部消えたように見えるため、版をまたいで引ける名前をキーにする。
+// 別フォルダには同名の別ファイルがありうるので、名前に加えて「このフォルダにある版の id」で絞る。
 //
 // 【リアルタイム共有】Postgres の変更通知は使わず、書いた側が broadcast を1発投げて
 // 相手に読み直させる（whiteboardService の退去通知と同じ作り）。コメントは秒単位の即時性を
@@ -55,6 +56,12 @@ export interface FileCommentAuthor { id: string; name: string }
 /** ビューアを開いているファイルの識別（コメントの引き当てキー）。 */
 export interface FileCommentTarget {
   projectId: string;
+  /**
+   * 置き場所のフォルダ（null = ルート直下）。別フォルダに同名のファイルがありうるので、
+   * 名前だけでは「どのファイルのコメントか」が決まらない。読み出しはこのフォルダにある
+   * 同名の版の id（= コメントの file_id）で絞る。
+   */
+  parentId: string | null;
   /** 版をまたいで引くためのキー */
   fileName: string;
   /** 書き込み時に「どの版に対して書かれたか」を残すだけ。引き当てには使わない */
@@ -92,10 +99,24 @@ export async function listFileComments(target: FileCommentTarget): Promise<{
   const empty = { comments: [], replies: {} };
   if (!isSupabaseEnabled || !target.projectId || !target.fileName) return empty;
 
+  // このファイルの全版の id。コメントは書かれた版の id(file_id) を持っているので、
+  // それで絞れば別フォルダの同名ファイルのコメントが混ざらない。
+  let versions = supabase!.from("project_files").select("id")
+    .eq("project_id", target.projectId).eq("file_name", target.fileName);
+  versions = target.parentId ? versions.eq("parent_id", target.parentId) : versions.is("parent_id", null);
+  const { data: vRows, error: vErr } = await versions;
+  if (vErr) {
+    console.error("[fileComments] version lookup failed:", vErr.message);
+    return empty;
+  }
+  const versionIds = (vRows ?? []).map(r => String((r as { id: string }).id));
+  if (versionIds.length === 0) return empty;
+
   const { data, error } = await supabase!.from(TABLE)
     .select("*")
     .eq("project_id", target.projectId)
     .eq("file_name", target.fileName)
+    .in("file_id", versionIds)
     // 同時刻の行で順番が入れ替わらないよう id も重ねる（BUG-01 と同じ理由）
     .order("created_at", { ascending: true })
     .order("id", { ascending: true });
@@ -240,7 +261,7 @@ const CHANGED_EVENT = "file-comments-changed";
 
 function changedTopic(target: FileCommentTarget): string {
   // ファイル名はそのままだとチャンネル名に使えない文字が混じるので通す
-  return `fc:${target.projectId}:${encodeURIComponent(target.fileName)}`;
+  return `fc:${target.projectId}:${target.parentId ?? ""}:${encodeURIComponent(target.fileName)}`;
 }
 
 /**

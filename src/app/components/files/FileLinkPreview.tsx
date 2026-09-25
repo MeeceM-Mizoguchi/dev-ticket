@@ -27,7 +27,8 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
     let cancelled = false;
     (async () => {
       // メンションが持つのは挿入時点の行ID。保存のたびに版が増えるため、
-      // 同じ(プロジェクト, ファイル名)の最新版に解決してから開く。
+      // 同じ(プロジェクト, フォルダ, ファイル名)の最新版に解決してから開く。
+      // 別フォルダには同名の別ファイルがありうるので、フォルダも合わせる。
       const { data: base } = await supabase!.from("project_files")
         .select("*").eq("id", fileId).maybeSingle();
       if (!base) {
@@ -40,8 +41,10 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
         if (!cancelled) setFile(mapProjectFile(base));
         return;
       }
-      const { data: rows } = await supabase!.from("project_files").select("*")
-        .eq("project_id", base.project_id).eq("file_name", base.file_name)
+      let versions = supabase!.from("project_files").select("*")
+        .eq("project_id", base.project_id).eq("file_name", base.file_name);
+      versions = base.parent_id ? versions.eq("parent_id", base.parent_id) : versions.is("parent_id", null);
+      const { data: rows } = await versions
         .order("version", { ascending: false }).limit(1);
       if (cancelled) return;
       if (rows?.[0]) setFile(mapProjectFile(rows[0]));

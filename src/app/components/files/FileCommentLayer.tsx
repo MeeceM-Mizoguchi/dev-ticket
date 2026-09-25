@@ -163,11 +163,12 @@ export function FileCommentLayer({
   const dragPos = useRef<{ id: string; x: number; y: number } | null>(null);
   const suppressClick = useRef(false); // 動かした直後の click で吹き出しを開かない
 
-  // コメントは版をまたいで引く（同名ファイル＝同じファイルの版なので、
+  // コメントは版をまたいで引く（同じフォルダの同名ファイル＝同じファイルの版なので、
   // エディタ保存で file.id が変わってもコメントは同じものを見せ続ける）
+  const parentId = file.parentId ?? null;
   const target = useMemo<FileCommentTarget>(
-    () => ({ projectId: file.projectId, fileName: file.fileName, fileId: file.id }),
-    [file.projectId, file.fileName, file.id],
+    () => ({ projectId: file.projectId, parentId, fileName: file.fileName, fileId: file.id }),
+    [file.projectId, parentId, file.fileName, file.id],
   );
   const author = useMemo(() => ({ id: userId, name: userName }), [userId, userName]);
 
@@ -175,11 +176,11 @@ export function FileCommentLayer({
   // 読み直しでは loading state を持たない（一度出したピンをスピナーで隠すと
   // 相手の書き込みが届くたびに画面が消える＝BUG-02 と同じ見え方になる）。
   const broadcastRef = useRef<() => void>(() => {});
-  // 読み直しの識別は projectId + fileName だけで足りる（file.id は書き込み時にしか使わない）。
+  // 読み直しの識別は projectId + parentId + fileName だけで足りる（file.id は書き込み時にしか使わない）。
   // ここに target をそのまま入れると、エディタ保存で版が上がるたびに購読を張り直してしまう。
   const readKey = useMemo(
-    () => ({ projectId: file.projectId, fileName: file.fileName, fileId: "" }),
-    [file.projectId, file.fileName],
+    () => ({ projectId: file.projectId, parentId, fileName: file.fileName, fileId: "" }),
+    [file.projectId, parentId, file.fileName],
   );
   const reload = useCallback(async () => {
     const { comments: cs, replies: rs } = await listFileComments(readKey);
