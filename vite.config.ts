@@ -22,11 +22,13 @@ function figmaAssetResolver() {
 // ビルドのたびに「ビルド日時(JST)」から自動採番したバージョンを1回だけ生成する。
 // この1つの値を define（バンドルへ焼込み）/ build-info.json / publish-version.mjs(DB)
 // の3か所で共有することで、稼働中の画面のバージョンとDB記録が必ず一致する。
+// 秒まで入れる: 分単位だと、マージが連続して同じ分に2本ビルドされたとき同じ版名になり、
+// app_version(version が主キー)に後の版が記録されず、デプロイ検知が後の版の公開を待てなかった。
 function genAppBuild(): { version: string; buildTime: string } {
   const now = new Date();
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000); // UTC+9
   const p = (n: number) => String(n).padStart(2, '0');
-  const version = `v${jst.getUTCFullYear()}.${p(jst.getUTCMonth() + 1)}.${p(jst.getUTCDate())}.${p(jst.getUTCHours())}${p(jst.getUTCMinutes())}`;
+  const version = `v${jst.getUTCFullYear()}.${p(jst.getUTCMonth() + 1)}.${p(jst.getUTCDate())}.${p(jst.getUTCHours())}${p(jst.getUTCMinutes())}${p(jst.getUTCSeconds())}`;
   return { version, buildTime: now.getTime().toString() };
 }
 const APP_BUILD = genAppBuild();
