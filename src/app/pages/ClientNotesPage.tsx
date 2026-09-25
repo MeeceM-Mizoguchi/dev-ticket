@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { Building2, ChevronRight, FileText, Plus, Search, Trash2, Users, X } from "lucide-react";
+import { Building2, ChevronDown, ChevronRight, FileText, FileUp, FolderOpen, FolderPlus, Link2, Loader2, Plus, Search, Trash2, Upload, Users, X } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { usePlan } from "@/app/contexts/PlanContext";
@@ -9,6 +10,8 @@ import { CLIENTS } from "@/app/data/mock";
 import { mapClient, mapClientNote } from "@/app/lib/mappers";
 import type { Client, ClientNote } from "@/app/types";
 import { submitOnEnter } from "@/app/lib/submitKey";
+import { appOrigin } from "@/app/lib/appOrigin";
+import { readMinutesMarkdownFiles, MINUTES_MD_ACCEPT } from "@/app/lib/minutesMdImport";
 import { RichEditor } from "@/app/components/shared/RichEditor";
 import { ImageAttachments } from "@/app/components/shared/ImageAttachments";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -16,6 +19,8 @@ import { NotFoundView } from "@/app/components/shared/NotFoundView";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { ArticleExportButton } from "@/app/components/shared/ArticleExportButton";
+import { DocTree, FolderMoveModal, buildDocTree, isCyclicMove, type DocTreeNode } from "@/app/components/shared/DocTree";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/app/components/ui/dropdown-menu";
 import { exportClientNoteArticle } from "@/app/lib/articleExport";
 
 function formatDate(d: string) {
@@ -33,10 +38,11 @@ function plainText(html: string): string {
  *
  * 議事録(MinutesPage)はプロジェクト配下なので、どのプロジェクトにも属さない
  * 「その会社との打ち合わせ」の置き場が無かった。この画面がその受け皿。
- * 構成は議事録に寄せてあるが、フォルダ階層とアクション項目は持たない。
+ * フォルダ階層・MD取り込み・リンクコピーは議事録と同仕様（アクション項目は持たない）。
  */
 export function ClientNotesPage() {
-  const { clientId, noteId: noteIdParam } = useParams<{ clientId: string; noteId?: string }>();
+  const { clientId, noteId: noteIdParam, folderId: folderIdParam } =
+    useParams<{ clientId: string; noteId?: string; folderId?: string }>();
   const navigate = useNavigate();
   const { userRole, userName, userOrgId } = useAuth();
   const { plan } = usePlan();
@@ -54,9 +60,21 @@ export function ClientNotesPage() {
   const [content, setContent] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<ClientNote | null>(null);
+  const [movingNodeTarget, setMovingNodeTarget] = useState<ClientNote | null>(null);
+  const [isTreeDragOverRoot, setIsTreeDragOverRoot] = useState(false);
+  // 作成直後のフォルダ/メモを一時的にハイライトし、そこまでスクロールする（議事録と同仕様）
+  const [highlightIds, setHighlightIds] = useState<string[]>([]);
+  const [scrollToId, setScrollToId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [showExternalInput, setShowExternalInput] = useState(false);
   const [externalInput, setExternalInput] = useState("");
+  // MD取り込みの進捗（null=非実行中）。取り込み中は「新規メモ」ボタンを進捗表示へ差し替える。
+  const [mdImportProgress, setMdImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const singleMdInputRef = useRef<HTMLInputElement | null>(null);
+  const bulkMdInputRef = useRef<HTMLInputElement | null>(null);
+  // どのフォルダへ取り込むか。input は1組を使い回すので、開く直前にここへ入れて change で読む。
+  const mdImportParentRef = useRef<string | null>(null);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 編集欄(title/noteDate/…)がどのメモの中身で埋まっているか。
@@ -64,7 +82,7 @@ export function ClientNotesPage() {
   const hydratedIdRef = useRef<string | null>(null);
   // BUG-02/03: 一度でも読み終えたら、以後はスピナーでコンテンツを隠さない
   const initializedRef = useRef(false);
-  // BUG-05: 「新規メモ」連打での二重登録を止める
+  // BUG-05: 「新規メモ」「新規フォルダ」連打での二重登録を止める
   const creatingRef = useRef(false);
 
   const canEdit = isSupabaseEnabled
@@ -106,19 +124,47 @@ export function ClientNotesPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // URL(/clients/:clientId/notes/:noteId)からの選択
+  // URL(/clients/:clientId/notes/:noteId または /notes/folders/:folderId)からの選択
   useEffect(() => {
-    if (!noteIdParam) { setSelectedId(null); return; }
+    const target = folderIdParam ?? noteIdParam;
+    if (!target) { setSelectedId(null); return; }
     if (notes.length === 0) return;
-    const found = notes.find(n => n.id === noteIdParam);
+    const found = notes.find(n => n.id.toLowerCase() === target.toLowerCase());
     if (found) setSelectedId(found.id);
-  }, [noteIdParam, notes]);
+  }, [noteIdParam, folderIdParam, notes]);
 
   const selected = notes.find(n => n.id === selectedId) ?? null;
 
-  // URLで名指しされたメモが実在しない（削除済みリンク等）。
+  // URLで名指しされたメモ/フォルダが実在しない（削除済みリンク等）。
   // 作成直後は load() 後に navigate するので notes に載っており、ここには落ちない。
-  const noteMissing = !loading && !!noteIdParam && !notes.some(n => n.id === noteIdParam);
+  const routeTarget = folderIdParam ?? noteIdParam;
+  const routeTargetMissing = !loading && !!routeTarget
+    && !notes.some(n => n.id.toLowerCase() === routeTarget.toLowerCase());
+
+  // ツリー用の並び。フォルダを先頭に、メモは打ち合わせ日の新しい順（議事録と同じ）。
+  const orderedNotes = useMemo(() => [...notes].sort((a, b) => {
+    if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
+    if (a.isFolder) return a.sortOrder - b.sortOrder || a.title.localeCompare(b.title, "ja");
+    return (b.noteDate || "").localeCompare(a.noteDate || "")
+      || (b.createdAt || "").localeCompare(a.createdAt || "");
+  }), [notes]);
+  const tree = useMemo(() => buildDocTree(orderedNotes), [orderedNotes]);
+  const noteCount = useMemo(() => notes.filter(n => !n.isFolder).length, [notes]);
+  const noteById = useMemo(() => new Map(notes.map(n => [n.id, n])), [notes]);
+
+  // パンくず用：選択中の祖先フォルダ一覧
+  const ancestors = useMemo(() => {
+    if (!selected) return [];
+    const list: ClientNote[] = [];
+    let current: ClientNote | undefined = selected;
+    while (current?.parentId) {
+      const parent: ClientNote | undefined = noteById.get(current.parentId);
+      if (!parent) break;
+      list.unshift(parent);
+      current = parent;
+    }
+    return list;
+  }, [selected, noteById]);
 
   useEffect(() => {
     setTitle(selected?.title ?? "");
@@ -140,6 +186,21 @@ export function ClientNotesPage() {
   const gotoNote = useCallback((id: string) => {
     navigate(`/clients/${clientId}/notes/${id}`);
   }, [navigate, clientId]);
+
+  const gotoFolder = useCallback((id: string) => {
+    navigate(`/clients/${clientId}/notes/folders/${id}`);
+  }, [navigate, clientId]);
+
+  // 作成したノードまでスクロールして数秒ハイライトする（議事録と同仕様）
+  const flashCreated = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    setHighlightIds(ids);
+    setScrollToId(ids[0]);
+    highlightTimer.current = setTimeout(() => { setHighlightIds([]); setScrollToId(null); }, 2400);
+  }, []);
+
+  useEffect(() => () => { if (highlightTimer.current) clearTimeout(highlightTimer.current); }, []);
 
   const scheduleSave = useCallback((
     patch: Partial<{ title: string; noteDate: string; attendees: string[]; content: string }>,
@@ -180,7 +241,7 @@ export function ClientNotesPage() {
     await supabase!.from("client_notes").update({ images: next, updated_at: new Date().toISOString() }).eq("id", selectedId);
   }, [selectedId]);
 
-  const handleAdd = async () => {
+  const handleAdd = async (parentId: string | null = null) => {
     if (!client || !isSupabaseEnabled) return;
     // BUG-05: await をまたぐので ref でガードする（state だけだと同レンダーの連打をすり抜ける）
     if (creatingRef.current) return;
@@ -189,7 +250,7 @@ export function ClientNotesPage() {
       const id = crypto.randomUUID();
       const today = new Date().toISOString().slice(0, 10);
       const { error } = await supabase!.from("client_notes").insert({
-        id, client_id: client.id,
+        id, client_id: client.id, parent_id: parentId,
         organization_id: client.organizationId ?? userOrgId ?? null,
         title: "新規メモ", note_date: today, attendees: [], content: "", images: [],
         created_by: userName || "",
@@ -201,9 +262,142 @@ export function ClientNotesPage() {
       }
       await load();
       gotoNote(id);
+      flashCreated([id]);
     } finally {
       creatingRef.current = false;
     }
+  };
+
+  // ── フォルダ（議事録と同仕様） ─────────────────────────────────
+  const handleAddFolder = async (parentId: string | null = null) => {
+    if (!client || !isSupabaseEnabled) return;
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      const id = crypto.randomUUID();
+      const { error } = await supabase!.from("client_notes").insert({
+        id, client_id: client.id, parent_id: parentId,
+        organization_id: client.organizationId ?? userOrgId ?? null,
+        title: "無題のフォルダ", is_folder: true, attendees: [], content: "", images: [],
+        sort_order: notes.filter(n => n.parentId === parentId).length,
+        created_by: userName || "",
+      });
+      if (error) {
+        console.error("[ClientNotesPage] folder insert error:", error);
+        toast("フォルダの作成に失敗しました", "error");
+        return;
+      }
+      await load();
+      gotoFolder(id);
+      flashCreated([id]);
+    } finally {
+      creatingRef.current = false;
+    }
+  };
+
+  const handleRenameNode = useCallback(async (id: string, nextTitle: string) => {
+    setNotes(prev => prev.map(n => n.id === id ? { ...n, title: nextTitle } : n));
+    if (id === selectedId) setTitle(nextTitle);
+    const { error } = await supabase!.from("client_notes")
+      .update({ title: nextTitle, updated_at: new Date().toISOString() }).eq("id", id);
+    if (error) {
+      console.error("[ClientNotesPage] rename error:", error);
+      toast("名前の変更に失敗しました", "error");
+      void load();
+    }
+  }, [selectedId, load, toast]);
+
+  const handleMoveNode = useCallback(async (draggedId: string, targetParentId: string | null) => {
+    if (draggedId === targetParentId) return;
+    const dragged = notes.find(n => n.id === draggedId);
+    if (!dragged || dragged.parentId === targetParentId) return;
+    if (isCyclicMove(notes, draggedId, targetParentId)) {
+      toast("フォルダを自身の子孫フォルダ配下に移動することはできません", "error");
+      return;
+    }
+    const sortOrder = notes.filter(n => n.parentId === targetParentId).length;
+    setNotes(prev => prev.map(n => n.id === draggedId ? { ...n, parentId: targetParentId, sortOrder } : n));
+    const { error } = await supabase!.from("client_notes")
+      .update({ parent_id: targetParentId, sort_order: sortOrder, updated_at: new Date().toISOString() })
+      .eq("id", draggedId);
+    if (error) {
+      console.error("[ClientNotesPage] move error:", error);
+      toast("移動に失敗しました", "error");
+    } else {
+      toast("配置を変更しました");
+    }
+    void load();
+  }, [notes, load, toast]);
+
+  // プロジェクト配下ではないので shareLink(プロジェクトslug前提)は使わず、ここで組み立てる。
+  // オリジンは必ず appOrigin() を通す（ネイティブの capacitor:// を渡さないため）。
+  const handleCopyLink = useCallback(async (node: { id: string; isFolder: boolean }) => {
+    const origin = appOrigin();
+    if (!origin || !clientId) {
+      toast("共有URLの設定(VITE_PUBLIC_APP_ORIGIN)がないためリンクを作れません", "error");
+      return;
+    }
+    const base = `${origin}/clients/${encodeURIComponent(clientId)}/notes`;
+    const url = node.isFolder ? `${base}/folders/${node.id}` : `${base}/${node.id}`;
+    if (await copyText(url)) toast("リンクをコピーしました");
+    else toast("リンクのコピーに失敗しました", "error");
+  }, [clientId, toast]);
+
+  // ── MDファイル取り込み（単体 / 一括） ──────────────────────────
+  // 1ファイル = 1メモ。議事録と同じ読み取り(minutesMdImport)を使い、
+  // タイトル・日付・参加者は本文の前置きから拾う。parentId を渡すとそのフォルダ直下に入る。
+  const handleImportMdFiles = useCallback(async (files: File[], parentId: string | null = null) => {
+    if (!client || !isSupabaseEnabled || files.length === 0) return;
+    setMdImportProgress({ done: 0, total: files.length });
+
+    const { minutes: imported, skipped } = await readMinutesMarkdownFiles(
+      files, orgMembers, (done, total) => setMdImportProgress({ done, total }),
+    );
+
+    if (imported.length === 0) {
+      setMdImportProgress(null);
+      toast(skipped[0]?.reason ?? "取り込める内容がありませんでした", "error");
+      return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = imported.map(m => ({
+      id: crypto.randomUUID(), client_id: client.id, parent_id: parentId,
+      organization_id: client.organizationId ?? userOrgId ?? null,
+      title: m.title, note_date: m.meetingDate || today,
+      attendees: m.attendees, content: m.content, images: [],
+      created_by: userName || "",
+    }));
+
+    const { error } = await supabase!.from("client_notes").insert(rows);
+    setMdImportProgress(null);
+    if (error) {
+      console.error("[ClientNotesPage] md import insert error:", error);
+      toast("メモの作成に失敗しました", "error");
+      return;
+    }
+
+    await load();
+    toast(`${rows.length}件のメモを作成しました${skipped.length ? `（${skipped.length}件はスキップ）` : ""}`);
+    gotoNote(rows[0].id);
+    // フォルダへ取り込んだときは畳んだ中に入って見えないので、開いて光らせる
+    flashCreated(rows.map(r => r.id));
+  }, [client, orgMembers, userOrgId, userName, load, toast, gotoNote, flashCreated]);
+
+  // フォルダのメニューから開いたときは、そのフォルダを親にして取り込む
+  const handleOpenMdPicker = useCallback((parentId: string | null, multiple: boolean) => {
+    mdImportParentRef.current = parentId;
+    (multiple ? bulkMdInputRef : singleMdInputRef).current?.click();
+  }, []);
+
+  const handleMdInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
+    // 同じファイルを続けて選び直せるように値をクリアする
+    e.target.value = "";
+    // 取り込み先は「開く直前に指定されたフォルダ」。次回にひきずらないよう毎回リセットする
+    const parentId = mdImportParentRef.current;
+    mdImportParentRef.current = null;
+    if (picked.length > 0) void handleImportMdFiles(picked, parentId);
   };
 
   const handleDelete = async (note: ClientNote) => {
@@ -213,12 +407,15 @@ export function ClientNotesPage() {
       const { error } = await supabase!.from("client_notes").delete().eq("id", note.id);
       if (error) { toast("削除に失敗しました", "error"); throw error; }
     }
-    setNotes(prev => prev.filter(n => n.id !== note.id));
-    if (selectedId === note.id) {
+    // フォルダを消すと配下も消える(cascade)ので、選択中が子孫なら選択を外す
+    const isSelectionGone = selectedId === note.id
+      || (!!selectedId && isCyclicMove(notes, note.id, selectedId));
+    if (isSelectionGone) {
       setSelectedId(null);
       navigate(`/clients/${clientId}/notes`);
     }
-    toast(`「${note.title || "新規メモ"}」を削除しました`);
+    toast(`「${note.title || (note.isFolder ? "無題のフォルダ" : "新規メモ")}」を削除しました`);
+    void load();
   };
 
   const toggleAttendee = (name: string) => {
@@ -238,14 +435,15 @@ export function ClientNotesPage() {
     setShowExternalInput(false);
   };
 
-  const filteredNotes = useMemo(() => {
-    if (!sidebarSearch) return notes;
+  // 検索中はフォルダ階層をたたんで、一致したメモだけを平らに並べる（議事録と同仕様）
+  const searchedNotes = useMemo(() => {
+    if (!sidebarSearch) return [];
     const q = sidebarSearch.toLowerCase();
-    return notes.filter(n =>
+    return orderedNotes.filter(n => !n.isFolder && (
       (n.title || "").toLowerCase().includes(q)
       || plainText(n.content).toLowerCase().includes(q)
-      || n.attendees.some(a => a.toLowerCase().includes(q)));
-  }, [notes, sidebarSearch]);
+      || n.attendees.some(a => a.toLowerCase().includes(q))));
+  }, [orderedNotes, sidebarSearch]);
 
   if (loading && !initializedRef.current) return <PageLoader />;
 
@@ -253,13 +451,14 @@ export function ClientNotesPage() {
     <NotFoundView kind="resource" label="クライアント"
       backTo={{ label: "クライアント一覧へ", to: "/clients" }} />
   );
-  if (noteMissing) return (
-    <NotFoundView kind="resource" label="打ち合わせメモ"
+  if (routeTargetMissing) return (
+    <NotFoundView kind="resource" label={folderIdParam ? "フォルダ" : "打ち合わせメモ"}
       backTo={{ label: "メモ一覧へ", to: `/clients/${clientId}/notes` }} />
   );
 
   return (
     <div style={{ padding: "24px 24px 0", minWidth: 900 }}>
+      <style>{"@keyframes client-notes-md-spin { to { transform: rotate(360deg); } }"}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12 }}>
         <button onClick={() => navigate("/clients")}
           style={{ color: "#059669", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
@@ -273,7 +472,7 @@ export function ClientNotesPage() {
         <div style={{ minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}>打ち合わせメモ</h1>
           <p style={{ fontSize: 12, color: "#A09790", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {client ? `${client.name} · ${notes.length} 件` : "..."}
+            {client ? `${client.name} · ${noteCount} 件` : "..."}
           </p>
         </div>
         {!canEdit && (
@@ -282,8 +481,22 @@ export function ClientNotesPage() {
       </div>
 
       <div style={{ display: "flex", gap: 16, height: "calc(100vh - 175px)", overflow: "hidden" }}>
-        {/* 左: メモ一覧 */}
-        <div style={{ width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14, border: "1px solid rgba(26,23,20,0.07)", padding: 10, overflowY: "auto" }}>
+        {/* 左: メモ一覧（フォルダツリー）。枠へのドロップでルート直下へ戻す */}
+        <div
+          onDragOver={e => { if (!canEdit || sidebarSearch) return; e.preventDefault(); setIsTreeDragOverRoot(true); }}
+          onDragLeave={() => setIsTreeDragOverRoot(false)}
+          onDrop={async e => {
+            if (!canEdit || sidebarSearch) return;
+            e.preventDefault();
+            setIsTreeDragOverRoot(false);
+            const draggedId = e.dataTransfer.getData("text/plain");
+            if (draggedId) await handleMoveNode(draggedId, null);
+          }}
+          style={{
+            width: 260, flexShrink: 0, background: "#FFFFFF", borderRadius: 14,
+            border: isTreeDragOverRoot ? "1px dashed #059669" : "1px solid rgba(26,23,20,0.07)",
+            padding: 10, overflowY: "auto", transition: "all 0.15s",
+          }}>
           <div style={{ position: "relative", marginBottom: 8 }}>
             <Search style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", width: 11, height: 11, color: sidebarSearch ? "#059669" : "#C9C4BB", pointerEvents: "none" }} />
             <input value={sidebarSearch} onChange={e => setSidebarSearch(e.target.value)} placeholder="検索..."
@@ -297,35 +510,109 @@ export function ClientNotesPage() {
           </div>
 
           {canEdit && (
-            <button onClick={handleAdd}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", marginBottom: 6, background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              <Plus style={{ width: 12, height: 12 }} />新規メモ
-            </button>
+            <>
+              {/* MD取り込み用の隠しinput。単体/一括で multiple だけが違う。 */}
+              <input ref={singleMdInputRef} type="file" accept={MINUTES_MD_ACCEPT} onChange={handleMdInputChange} style={{ display: "none" }} />
+              <input ref={bulkMdInputRef} type="file" accept={MINUTES_MD_ACCEPT} multiple onChange={handleMdInputChange} style={{ display: "none" }} />
+              <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
+                    <button
+                      style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", background: "#ECFDF5", color: "#059669", border: "1.5px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
+                      {mdImportProgress ? (
+                        <>
+                          <Loader2 style={{ width: 12, height: 12, animation: "client-notes-md-spin 1s linear infinite" }} />
+                          取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
+                        </>
+                      ) : (
+                        <>
+                          <Plus style={{ width: 12, height: 12 }} />新規メモ
+                          <ChevronDown style={{ width: 11, height: 11 }} />
+                        </>
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
+                    <DropdownMenuItem onSelect={() => handleAdd(null)}>
+                      <FileText style={{ width: 14, height: 14 }} />新規メモを作成
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => handleOpenMdPicker(null, false)}>
+                      <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => handleOpenMdPicker(null, true)}>
+                      <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <button onClick={() => handleAddFolder(null)}
+                  title="新規フォルダ"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4, padding: "7px 10px", background: "#FFFBEB", color: "#D97706", border: "1.5px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <FolderPlus style={{ width: 13, height: 13 }} />
+                </button>
+              </div>
+            </>
           )}
 
-          {filteredNotes.length === 0 ? (
-            <div style={{ padding: "24px 8px", textAlign: "center" }}>
-              <FileText style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
-              <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>
-                {sidebarSearch ? `「${sidebarSearch}」に一致するメモがありません` : "メモがありません"}
-              </p>
-            </div>
-          ) : filteredNotes.map(note => {
-            const isSelected = selectedId === note.id;
-            return (
-              <div key={note.id} onClick={() => gotoNote(note.id)}
-                style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "7px 8px", borderRadius: 7, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 1 }}>
-                <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 2 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <TruncatedText as="div" text={note.title || "新規メモ"}
-                    style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
-                  <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>
-                    {formatDate(note.noteDate)}{note.attendees.length > 0 ? ` · ${note.attendees.length}名` : ""}
+          {sidebarSearch ? (
+            searchedNotes.length === 0 ? (
+              <div style={{ padding: "24px 8px", textAlign: "center" }}>
+                <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>「{sidebarSearch}」に一致するメモがありません</p>
+              </div>
+            ) : searchedNotes.map(note => {
+              const parent = note.parentId ? noteById.get(note.parentId) : null;
+              const isSelected = selectedId === note.id;
+              return (
+                <div key={note.id} onClick={() => gotoNote(note.id)}
+                  style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "7px 8px", borderRadius: 7, cursor: "pointer", background: isSelected ? "#ECFDF5" : "transparent", marginBottom: 1 }}>
+                  <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <TruncatedText as="div" text={note.title || "新規メモ"}
+                      style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714" }} />
+                    <div style={{ fontSize: 10, color: "#B0A9A4", marginTop: 1 }}>
+                      {formatDate(note.noteDate)}{parent ? ` · ${parent.title || "無題のフォルダ"}` : ""}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          ) : tree.length === 0 ? (
+            <div style={{ padding: "24px 8px", textAlign: "center" }}>
+              <FileText style={{ width: 24, height: 24, color: "#D4CEC8", margin: "0 auto 8px" }} />
+              <p style={{ fontSize: 11, color: "#B0A9A4", margin: 0 }}>メモがありません</p>
+            </div>
+          ) : (
+            <DocTree
+              tree={tree}
+              selectedId={selectedId}
+              canEdit={canEdit}
+              onSelect={(node: DocTreeNode) => { if (node.isFolder) gotoFolder(node.id); else gotoNote(node.id); }}
+              onAddChild={(parentId, isFolder) => { if (isFolder) void handleAddFolder(parentId); else void handleAdd(parentId); }}
+              addItemLabel="メモを追加"
+              onRename={handleRenameNode}
+              onDelete={node => { const n = noteById.get(node.id); if (n) setDeleteTarget(n); }}
+              onMove={handleMoveNode}
+              onOpenMoveModal={node => { const n = noteById.get(node.id); if (n) setMovingNodeTarget(n); }}
+              onCopyLink={handleCopyLink}
+              onImportMd={canEdit ? handleOpenMdPicker : undefined}
+              highlightIds={highlightIds}
+              scrollToId={scrollToId}
+              renderItemRow={(node, isSelected) => {
+                const n = noteById.get(node.id);
+                return (
+                  <>
+                    <FileText style={{ width: 12, height: 12, color: isSelected ? "#059669" : "#B0A9A4", flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <TruncatedText as="p" text={node.title || "新規メモ"}
+                        style={{ fontSize: 12, fontWeight: isSelected ? 700 : 500, color: isSelected ? "#059669" : "#1A1714", margin: 0 }} />
+                      <p style={{ fontSize: 10, color: "#B0A9A4", margin: 0 }}>
+                        {formatDate(n?.noteDate ?? "")}{n && n.attendees.length > 0 ? ` · ${n.attendees.length}名` : ""}
+                      </p>
+                    </div>
+                  </>
+                );
+              }}
+            />
+          )}
         </div>
 
         {/* 右: 本文 */}
@@ -337,15 +624,81 @@ export function ClientNotesPage() {
                 {canEdit ? "左の一覧からメモを選択するか、新規作成してください" : "左の一覧からメモを選択してください"}
               </p>
             </div>
+          ) : selected.isFolder ? (
+            <div style={{ padding: "60px 0", textAlign: "center" }}>
+              <FolderOpen style={{ width: 32, height: 32, color: "#FCD34D", margin: "0 auto 10px" }} />
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#1A1714", margin: "0 0 6px" }}>{selected.title || "無題のフォルダ"}</p>
+              <p style={{ fontSize: 12, color: "#B0A9A4", margin: "0 0 16px" }}>
+                {notes.filter(n => n.parentId === selected.id).length} 件のアイテム
+              </p>
+              <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+                <button onClick={() => handleCopyLink(selected)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#ECFDF5", color: "#059669", border: "1px solid #A7F3D0", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  <Link2 style={{ width: 13, height: 13 }} />リンクをコピー
+                </button>
+                {canEdit && (
+                  <button onClick={() => handleAdd(selected.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#FFFFFF", color: "#6B6458", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    <Plus style={{ width: 13, height: 13 }} />このフォルダにメモを追加
+                  </button>
+                )}
+                {/* フォルダを開いた状態からも取り込めるようにする。取り込み先はこのフォルダ。 */}
+                {canEdit && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild disabled={!!mdImportProgress}>
+                      <button
+                        style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", background: "#FFFFFF", color: "#6B6458", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: mdImportProgress ? "default" : "pointer" }}>
+                        {mdImportProgress ? (
+                          <>
+                            <Loader2 style={{ width: 13, height: 13, animation: "client-notes-md-spin 1s linear infinite" }} />
+                            取り込み中 {mdImportProgress.done}/{mdImportProgress.total}
+                          </>
+                        ) : (
+                          <>
+                            <FileUp style={{ width: 13, height: 13 }} />MDから追加
+                            <ChevronDown style={{ width: 11, height: 11 }} />
+                          </>
+                        )}
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" style={{ minWidth: 190 }}>
+                      <DropdownMenuItem onSelect={() => handleOpenMdPicker(selected.id, false)}>
+                        <FileUp style={{ width: 14, height: 14 }} />MDファイルから作成
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => handleOpenMdPicker(selected.id, true)}>
+                        <Upload style={{ width: 14, height: 14 }} />一括MD取り込み
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
+            </div>
           ) : (
             <>
-              {/* 固定ヘッダー: タイトル・エクスポート・削除・打ち合わせ日・参加者 */}
+              {/* 固定ヘッダー: タイトル・リンク・エクスポート・削除・打ち合わせ日・参加者 */}
               <div style={{ padding: "20px 20px 12px", flexShrink: 0, borderBottom: "1px solid rgba(26,23,20,0.06)" }}>
+                {ancestors.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#9E9690", marginBottom: 8, flexWrap: "wrap" }}>
+                    <span onClick={() => { setSelectedId(null); navigate(`/clients/${clientId}/notes`); }} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>メモホーム</span>
+                    {ancestors.map(folder => (
+                      <div key={folder.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span>&gt;</span>
+                        <span onClick={() => gotoFolder(folder.id)} style={{ color: "#059669", cursor: "pointer", fontWeight: 600 }}>
+                          {folder.title || "無題のフォルダ"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
                   <input value={title} disabled={!canEdit}
                     onChange={e => { setTitle(e.target.value); scheduleSave({ title: e.target.value, noteDate, attendees, content }); }}
                     placeholder="メモのタイトル"
                     style={{ flex: 1, boxSizing: "border-box", border: "none", outline: "none", fontSize: 20, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", padding: 0, background: "transparent" }} />
+                  <button onClick={() => handleCopyLink(selected)} title="このメモへのリンクをコピー"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 4, flexShrink: 0, display: "flex", alignItems: "center" }}>
+                    <Link2 style={{ width: 14, height: 14 }} />
+                  </button>
                   <ArticleExportButton formats={["xlsx", "docx", "pdf", "md"]}
                     onExport={f => exportClientNoteArticle(selected, client?.name ?? "", f)} />
                   {canEdit && (
@@ -448,10 +801,25 @@ export function ClientNotesPage() {
 
       {deleteTarget && (
         <ConfirmDialog
-          title="メモの削除"
-          message={`「${deleteTarget.title || "新規メモ"}」を削除します。`}
+          title={deleteTarget.isFolder ? "フォルダの削除" : "メモの削除"}
+          message={deleteTarget.isFolder
+            ? `「${deleteTarget.title || "無題のフォルダ"}」を削除します。フォルダ内のメモも一緒に削除されます。`
+            : `「${deleteTarget.title || "新規メモ"}」を削除します。`}
           onConfirm={() => handleDelete(deleteTarget)}
           onClose={() => setDeleteTarget(null)} />
+      )}
+
+      {/* Googleドライブ風のフォルダ階層一覧選択移動モーダル */}
+      {movingNodeTarget && (
+        <FolderMoveModal
+          node={movingNodeTarget}
+          items={notes}
+          onClose={() => setMovingNodeTarget(null)}
+          onConfirm={async targetParentId => {
+            await handleMoveNode(movingNodeTarget.id, targetParentId);
+            setMovingNodeTarget(null);
+          }}
+        />
       )}
     </div>
   );
