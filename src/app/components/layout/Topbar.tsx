@@ -88,6 +88,10 @@ export function Topbar() {
       supabase!.from("app_version").select("version, released_at").order("released_at", { ascending: false }).limit(50)
         .then(({ data }) => { setVersionHistory(data ?? []); setHistoryLoading(false); });
     }
+    // 開いた瞬間に新しい版（公開準備中を含む）が無いか確かめる。履歴には新しい版が出ているのに
+    // 定期確認の順番待ちでプログレスが出ない、というすき間を無くすため。
+    // 新しい版があればバージョン情報は閉じ、更新のプログレスに任せる。
+    void checkForUpdate({ fresh: true }).then(r => { if (r === "updating") setShowVersion(false); });
   }, [isSystemAdmin]);
 
   // 単なる location.reload() だと、デプロイ中(DBには記録済み・本番はまだ旧版)は旧版が返るだけで
