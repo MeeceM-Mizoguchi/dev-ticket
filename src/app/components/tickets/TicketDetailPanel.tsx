@@ -102,6 +102,32 @@ const PRIORITY_OPTIONS: SelectOption[] = [
 
 let isParentNavigationActive = false;
 
+// ↑↓キーでのチケット切り替え用。背後の一覧に並んでいる行（data-wbs）を
+// 画面上の並び順（DOM順）で拾い、今のチケットの1つ上／下を返す。
+// 絞り込み・並び替え・折りたたみ後の「見えている順番」にそのまま従うため、各画面で順序を持たなくてよい。
+function findAdjacentTicketRow(currentWbs: string, dir: -1 | 1): { wbs: string; el: HTMLElement } | null {
+  const seen = new Set<string>();
+  const rows: HTMLElement[] = [];
+  document.querySelectorAll<HTMLElement>("[data-wbs]").forEach(el => {
+    const wbs = el.dataset.wbs;
+    // 非表示（display:none の折りたたみ等）と、同じWBSの重複は除く
+    if (!wbs || seen.has(wbs) || el.getClientRects().length === 0) return;
+    seen.add(wbs);
+    rows.push(el);
+  });
+  const idx = rows.findIndex(el => el.dataset.wbs === currentWbs);
+  if (idx < 0) return null;
+  const next = rows[idx + dir];
+  return next ? { wbs: next.dataset.wbs!, el: next } : null;
+}
+
+/** 入力中の欄・選択メニュー上での↑↓はその部品の操作なので、チケット切り替えに使わない */
+function isArrowKeyOwnedByTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return !!target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"], [role="listbox"], [role="menu"], [role="slider"]');
+}
+
 function formatTs(ts: string) {
   if (!ts) return "";
   const d = new Date(ts);
@@ -285,7 +311,7 @@ function ChildHoursBadge({ hours }: { hours: number }) {
 }
 
 export function TicketDetailPanel({
-  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onMoved, onSelectTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
+  ticket, projectId, sprintId, sprintSlug, projectSlug, onClose, onUpdated, onDeleted, onMoved, onSelectTicket, onNavigateTicket, projectPermissions, anchor, showParentBackground, forceNoAnim,
 }: {
   ticket: SprintTicket | null; projectId?: string; sprintId?: string; sprintSlug?: string; projectSlug?: string; onClose: () => void; onUpdated?: () => void | Promise<void>; onDeleted?: () => void;
   /**
@@ -294,6 +320,11 @@ export function TicketDetailPanel({
    * onUpdated の完了後・onClose の直前に呼ぶ。
    */
   onMoved?: (movedWbs: string, targetSprintId: string) => void;
+  /**
+   * ↑↓キーで背後の一覧の上／下のチケットへ切り替えるときに、切り替え先のWBSを渡して呼ばれる。
+   * 渡した画面だけ↑↓での切り替えが有効になる（一覧の行に data-wbs が付いていること）。
+   */
+  onNavigateTicket?: (wbs: string) => void;
   onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean
 }) {
 
@@ -864,6 +895,42 @@ export function TicketDetailPanel({
     escStack.push(stableEscHandler);
     return () => escStack.pop(stableEscHandler);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ───────── ↑↓キーで背後の一覧の上／下のチケットへ切り替える ─────────
+  // リスナーは1回だけ登録し、最新の値は ref から読む（Esc と同じ考え方）。
+  const onNavigateTicketRef = useRef(onNavigateTicket);
+  onNavigateTicketRef.current = onNavigateTicket;
+  const currentWbsRef = useRef<string | null>(null);
+  currentWbsRef.current = ticket?.wbs ?? null;
+  // パネル内でモーダル・ドロップダウン等を開いている間は切り替えない
+  const arrowNavBlockedRef = useRef(false);
+  arrowNavBlockedRef.current = isClosing || prGuardActive || showMonitor || !!pendingHandover || showRecommend
+    || showDeleteConfirm || showWithdrawConfirm || showParentStartConfirm || showMoveModal
+    || showCreateChild || showMdChildImport || showPrLeaveConfirm || showUndecidedConfirm
+    || showChangeDatePicker || showCompletionOverlay || assigneeOpen || reviewerOpen;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      // 押しっぱなしの連続切り替えは各種取得が詰まるので受けない
+      if (e.defaultPrevented || e.repeat || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const navigate = onNavigateTicketRef.current;
+      const currentWbs = currentWbsRef.current;
+      if (!navigate || !currentWbs || arrowNavBlockedRef.current) return;
+      // ダイアログ・画像プレビュー等が上に重なっている間は、そちらの操作を優先する
+      if (!escStack.isTop(stableEscHandler)) return;
+      if (isArrowKeyOwnedByTarget(e.target)) return;
+      const next = findAdjacentTicketRow(currentWbs, e.key === "ArrowUp" ? -1 : 1);
+      if (!next) return;
+      e.preventDefault();
+      // 一覧を上下に送る操作なので、開くたびのスライドインは出さずにその場で差し替える
+      isParentNavRef.current = true;
+      navigate(next.wbs);
+      next.el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [stableEscHandler]);
 
   // Runs synchronously before paint — sets the panel animation value without any visible flash.
   // useLayoutEffect + setState causes a sync re-render before the browser draws, so the first
