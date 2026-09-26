@@ -50,7 +50,7 @@ export function ClientNotesPage() {
 
   const [client, setClient] = useState<Client | null>(null);
   const [notes, setNotes] = useState<ClientNote[]>([]);
-  const [orgMembers, setOrgMembers] = useState<string[]>([]);
+  const [projectMembers, setProjectMembers] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [clientMissing, setClientMissing] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -111,12 +111,26 @@ export function ClientNotesPage() {
     setClientMissing(!clientRow);
     setNotes((noteRows ?? []).map(mapClientNote));
 
-    // 参加者チップ・@メンションの候補。owner が他組織を見ているときはその組織の顔ぶれを出す。
-    const orgId = (clientRow?.organization_id as string | null) ?? userOrgId ?? null;
-    const { data: profileRows } = await (orgId
-      ? supabase!.from("profiles").select("name").eq("organization_id", orgId).order("name")
-      : supabase!.from("profiles").select("name").order("name"));
-    setOrgMembers((profileRows ?? []).map(p => p.name as string).filter(Boolean));
+    // 参加者チップ・@メンション・MD取り込みの参加者照合の候補。
+    // 組織の全員を出すと、この会社と無関係なプロジェクトの人の名前まで見えてしまうため、
+    // この会社を「クライアント」に持つプロジェクトのメンバー(projects.members)だけに絞る。
+    // projects.client は会社名で持っている（NewProjectDialog が clients.name を入れる）。
+    // owner が他組織を見ているときはその組織のプロジェクトから引く。
+    const members = new Set<string>();
+    if (clientRow?.name) {
+      const orgId = (clientRow.organization_id as string | null) ?? userOrgId ?? null;
+      let q = supabase!.from("projects").select("members").eq("client", clientRow.name as string);
+      if (orgId) q = q.eq("organization_id", orgId);
+      // BUG-01
+      const { data: projectRows } = await q
+        .order("created_at", { ascending: true }).order("id", { ascending: true });
+      for (const p of projectRows ?? []) {
+        for (const n of ((p as { members?: unknown }).members as unknown[] | null) ?? []) {
+          if (typeof n === "string" && n) members.add(n);
+        }
+      }
+    }
+    setProjectMembers([...members].sort((a, b) => a.localeCompare(b, "ja")));
 
     initializedRef.current = true;
     setLoading(false);
@@ -351,7 +365,7 @@ export function ClientNotesPage() {
     setMdImportProgress({ done: 0, total: files.length });
 
     const { minutes: imported, skipped } = await readMinutesMarkdownFiles(
-      files, orgMembers, (done, total) => setMdImportProgress({ done, total }),
+      files, projectMembers, (done, total) => setMdImportProgress({ done, total }),
     );
 
     if (imported.length === 0) {
@@ -382,7 +396,7 @@ export function ClientNotesPage() {
     gotoNote(rows[0].id);
     // フォルダへ取り込んだときは畳んだ中に入って見えないので、開いて光らせる
     flashCreated(rows.map(r => r.id));
-  }, [client, orgMembers, userOrgId, userName, load, toast, gotoNote, flashCreated]);
+  }, [client, projectMembers, userOrgId, userName, load, toast, gotoNote, flashCreated]);
 
   // フォルダのメニューから開いたときは、そのフォルダを親にして取り込む
   const handleOpenMdPicker = useCallback((parentId: string | null, multiple: boolean) => {
@@ -720,7 +734,7 @@ export function ClientNotesPage() {
                       <Users style={{ width: 10, height: 10 }} />参加者
                     </label>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
-                      {orgMembers.map(member => {
+                      {projectMembers.map(member => {
                         const active = attendees.includes(member);
                         return (
                           <button key={member} disabled={!canEdit} onClick={() => toggleAttendee(member)}
@@ -730,7 +744,7 @@ export function ClientNotesPage() {
                         );
                       })}
                       {/* 先方の出席者など、社内メンバー以外は自由入力で足す */}
-                      {attendees.filter(a => !orgMembers.includes(a)).map(external => (
+                      {attendees.filter(a => !projectMembers.includes(a)).map(external => (
                         <span key={external} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 20, border: "1.5px solid #059669", background: "#ECFDF5", color: "#059669" }}>
                           {external}
                           {canEdit && (
@@ -773,7 +787,7 @@ export function ClientNotesPage() {
                 <RichEditor value={content} readOnly={!canEdit}
                   onChange={v => { setContent(v); scheduleSave({ title, noteDate, attendees, content: v }); }}
                   onSubmit={() => { if (canEdit) scheduleSave({ title, noteDate, attendees, content }, true); }}
-                  placeholder="打ち合わせの内容を入力..." members={orgMembers} minHeight={220}
+                  placeholder="打ち合わせの内容を入力..." members={projectMembers} minHeight={220}
                   style={{ flex: 1, minHeight: 0 }}
                   onImageUpload={canEdit ? async (file) => {
                     if (plan.maxImagesPerItem !== null) {
