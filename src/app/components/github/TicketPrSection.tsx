@@ -40,6 +40,7 @@ import { CreatePullPrepDialog, type PrepState } from "@/app/components/github/Cr
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { BulkMergePromptDialog } from "@/app/components/github/BulkMergePromptDialog";
+import { MergePrepDialog } from "@/app/components/github/MergePrepDialog";
 import type {
   TicketGithubLink, TicketGithubLinkCandidate, TicketGithubBranch, GithubPull, GithubBranch,
   GithubAccessLevel, GithubMergeMethod, GithubPerms, TicketStatus,
@@ -143,6 +144,8 @@ export function TicketPrSection({
    * state だけだと、同じレンダーのハンドラが2回走ったときに両方すり抜ける
    */
   const preparingMergeRef = useRef(false);
+  /** マージ準備の実行回。キャンセルのあとに返ってきた結果を捨てる目印 */
+  const mergeRunRef = useRef(0);
   /** マージ前にCIの完了を待っている間の表示（BRU17-007）。null なら待っていない */
   const [mergeWaitNote, setMergeWaitNote] = useState<string | null>(null);
   const [mergeTarget, setMergeTarget] = useState<GithubPull | null>(null);
@@ -421,13 +424,16 @@ export function TicketPrSection({
     if (preparingMergeRef.current) return;
     preparingMergeRef.current = true;
     const key = currentKeyRef.current;
+    const run = ++mergeRunRef.current;
+    // 別チケットへの切り替え・キャンセルのあとに返ってきた結果は捨てる
+    const alive = () => currentKeyRef.current === key && mergeRunRef.current === run;
     setPreparingMerge(number);
     try {
       let [detail, list] = await Promise.all([
         fetchPull(projectId, number),
         fetchPulls(projectId).catch(() => null),
       ]);
-      if (currentKeyRef.current !== key) return; // 別チケットに切り替わっていたら捨てる
+      if (!alive()) return;
 
       // PRを作った直後・push した直後は、必須チェック（CI）が走っている間 GitHub が
       // blocked を返す。そのまま確認を開くと「マージできないPR」として除外され、
@@ -445,14 +451,14 @@ export function TicketPrSection({
           if (!waiting) break;
           setMergeWaitNote(p.checkState === "pending" && p.checkSummary ? p.checkSummary : "CIの開始待ち");
           await new Promise(r => setTimeout(r, MERGE_CI_POLL_MS));
-          if (currentKeyRef.current !== key) return;
+          if (!alive()) return;
           detail = await fetchPull(projectId, number);
-          if (currentKeyRef.current !== key) return;
+          if (!alive()) return;
         }
         setMergeWaitNote(null);
         // 待っている間に他のPRの状態も変わっている（先にマージされた等）ので引き直す
         list = await fetchPulls(projectId).catch(() => list);
-        if (currentKeyRef.current !== key) return;
+        if (!alive()) return;
       }
 
       const others = (list?.pulls ?? []).filter(p => p.number !== number);
@@ -461,12 +467,25 @@ export function TicketPrSection({
       //（一覧が実データを引くのは上位15件だけ）。確実に揃っている詳細の方を使う
       setMergePrompt({ target: detail.pull, pulls: [detail.pull, ...others] });
     } catch (e) {
-      if (currentKeyRef.current !== key) return;
+      if (!alive()) return;
       toast(e instanceof GithubApiError ? e.message : "PRの詳細を取得できませんでした", "error");
     } finally {
-      preparingMergeRef.current = false;
-      if (currentKeyRef.current === key) { setPreparingMerge(null); setMergeWaitNote(null); }
+      // キャンセル済みなら、後始末はキャンセル側で済んでいる（押し直した次の回を巻き込まない）。
+      // チケットを切り替えた場合も進捗は必ず消す。画面を塞ぐ幕が残ったままになるため
+      if (mergeRunRef.current === run) {
+        preparingMergeRef.current = false;
+        setPreparingMerge(null);
+        setMergeWaitNote(null);
+      }
     }
+  };
+
+  /** マージ準備をやめる。CI待ちは最大3分画面を塞ぐので、途中で抜けられるようにする */
+  const cancelMerge = () => {
+    mergeRunRef.current++;
+    preparingMergeRef.current = false;
+    setPreparingMerge(null);
+    setMergeWaitNote(null);
   };
 
   // onMerged は「GitHub 側のマージが終わった」合図。ダイアログの進捗を次の段
@@ -796,6 +815,15 @@ export function TicketPrSection({
         その内側に置いた position:fixed のダイアログはパネル基準に閉じ込められることがある。
         オーバーレイは body 直下に出す
       */}
+      {/*
+        マージを押してから確認が開くまで（詳細＋オープンなPR全件の取得、CI待ち）。
+        ボタンの文言だけだと処理中なのか分かりにくいので、GitHubタブの更新と同じ大きなリングを出す
+      */}
+      {preparingMerge !== null && createPortal(
+        <div style={{ position: "relative", zIndex: 340 }}>
+          <MergePrepDialog number={preparingMerge} waitNote={mergeWaitNote} onCancel={cancelMerge} />
+        </div>, document.body)}
+
       {prep && createPortal(
         <div style={{ position: "relative", zIndex: 340 }}>
           <CreatePullPrepDialog state={prep} onCancel={cancelPrep} />

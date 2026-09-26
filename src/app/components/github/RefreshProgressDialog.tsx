@@ -36,7 +36,7 @@ const SIZE = 148;
 const SW = 10;
 
 /** 経過時間から作る目安の％。2.2秒でだいたい6割まで進み、あとは詰まっていく */
-function useCreepingPercent(running: boolean) {
+export function useCreepingPercent(running: boolean) {
   const [pct, setPct] = useState(0);
   useEffect(() => {
     if (!running) return;
@@ -49,6 +49,58 @@ function useCreepingPercent(running: boolean) {
     return () => window.clearInterval(id);
   }, [running]);
   return pct;
+}
+
+/**
+ * 真ん中の大きなリング。マージ前の確認（TicketPrSection）でも同じものを出すので切り出してある。
+ * caption は実行中に％の下へ出す一言
+ */
+export function ProgressRing({ pct, state, caption = "更新中" }: {
+  pct: number;
+  state: RefreshProgressState;
+  caption?: string;
+}) {
+  const running = state === "running";
+  const failed = state === "error";
+  const color = failed ? AMBER : GREEN;
+
+  const R = (SIZE - SW) / 2;
+  const C = 2 * Math.PI * R;
+  const mid = SIZE / 2;
+
+  return (
+    <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}
+      style={{ position: "relative", width: SIZE, height: SIZE }}>
+      <style>{`@keyframes rp-glint { to { transform: rotate(360deg); } }`}</style>
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ display: "block", transform: "rotate(-90deg)" }}>
+        <circle cx={mid} cy={mid} r={R} fill="none" stroke={TRACK} strokeWidth={SW} />
+        <circle cx={mid} cy={mid} r={R} fill="none" stroke={color} strokeWidth={SW} strokeLinecap="round"
+          strokeDasharray={C} strokeDashoffset={C * (1 - pct / 100)}
+          style={{ transition: "stroke-dashoffset .45s ease, stroke .3s ease" }} />
+        {/* 実行中だけ、輪の上を小さな光が回る。％が詰まって動きが小さくなっても止まって見えないように */}
+        {running && (
+          <g style={{ transformOrigin: "50% 50%", animation: "rp-glint 1.4s linear infinite" }}>
+            <circle cx={mid} cy={mid} r={R} fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth={SW - 4}
+              strokeLinecap="round" strokeDasharray={`10 ${C}`} />
+          </g>
+        )}
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center" }}>
+        {state === "done" ? (
+          <Check style={{ width: 52, height: 52, color: GREEN }} strokeWidth={3} />
+        ) : failed ? (
+          <span style={{ fontSize: 44, fontWeight: 800, color: AMBER, lineHeight: 1 }}>!</span>
+        ) : (
+          <>
+            <span style={{ fontSize: 34, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.03em", fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>
+              {pct}<small style={{ fontSize: 16, marginLeft: 1 }}>%</small>
+            </span>
+            <span style={{ fontSize: 12, color: "#A09790", marginTop: 6 }}>{caption}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function RefreshProgressDialog({ tab, done, state, message, onClose }: {
@@ -65,11 +117,6 @@ export function RefreshProgressDialog({ tab, done, state, message, onClose }: {
   const creeping = useCreepingPercent(running);
   const floor = Math.min(94, Math.round((done.length / STEP_COUNT[tab]) * 100));
   const pct = state === "done" ? 100 : Math.max(creeping, floor);
-  const color = failed ? AMBER : GREEN;
-
-  const R = (SIZE - SW) / 2;
-  const C = 2 * Math.PI * R;
-  const mid = SIZE / 2;
 
   return (
     <DialogShell
@@ -79,38 +126,8 @@ export function RefreshProgressDialog({ tab, done, state, message, onClose }: {
       minHeight={0}
       onClose={onClose}
       footer={<BtnSecondary onClick={onClose}>閉じる</BtnSecondary>}>
-      <style>{`@keyframes rp-glint { to { transform: rotate(360deg); } }`}</style>
       <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 18, padding: "12px 0 4px" }}>
-        <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}
-          style={{ position: "relative", width: SIZE, height: SIZE }}>
-          <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ display: "block", transform: "rotate(-90deg)" }}>
-            <circle cx={mid} cy={mid} r={R} fill="none" stroke={TRACK} strokeWidth={SW} />
-            <circle cx={mid} cy={mid} r={R} fill="none" stroke={color} strokeWidth={SW} strokeLinecap="round"
-              strokeDasharray={C} strokeDashoffset={C * (1 - pct / 100)}
-              style={{ transition: "stroke-dashoffset .45s ease, stroke .3s ease" }} />
-            {/* 実行中だけ、輪の上を小さな光が回る。％が詰まって動きが小さくなっても止まって見えないように */}
-            {running && (
-              <g style={{ transformOrigin: "50% 50%", animation: "rp-glint 1.4s linear infinite" }}>
-                <circle cx={mid} cy={mid} r={R} fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth={SW - 4}
-                  strokeLinecap="round" strokeDasharray={`10 ${C}`} />
-              </g>
-            )}
-          </svg>
-          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center" }}>
-            {state === "done" ? (
-              <Check style={{ width: 52, height: 52, color: GREEN }} strokeWidth={3} />
-            ) : failed ? (
-              <span style={{ fontSize: 44, fontWeight: 800, color: AMBER, lineHeight: 1 }}>!</span>
-            ) : (
-              <>
-                <span style={{ fontSize: 34, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.03em", fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>
-                  {pct}<small style={{ fontSize: 16, marginLeft: 1 }}>%</small>
-                </span>
-                <span style={{ fontSize: 12, color: "#A09790", marginTop: 6 }}>更新中</span>
-              </>
-            )}
-          </div>
-        </div>
+        <ProgressRing pct={pct} state={state} />
 
         <p style={{ fontSize: 14, color: failed ? AMBER : "#1A1714", lineHeight: 1.8, textAlign: "center" as const }}>
           {running ? "GitHubから最新の状態を取り直しています。"
