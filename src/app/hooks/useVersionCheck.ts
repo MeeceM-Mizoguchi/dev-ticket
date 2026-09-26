@@ -29,9 +29,11 @@ import { APP_BUILD_TIME, APP_DEPLOY_ENV, APP_VERSION } from "@/lib/version";
 // ※dev サーバーは build-info.json が無い(404)ためスキップされる。
 
 const CHECK_INTERVAL = 60 * 1000;
-// 画面遷移のたびに確認するが、連続した遷移で叩きすぎないよう間引く。
-const NAV_THROTTLE = 10 * 1000;
-// DB(RPC)への問い合わせは自動確認では最短この間隔。手動確認では毎回問い合わせる。
+// 画面遷移のたびに確認する（DB も見る）。連続した遷移で叩きすぎないよう、ごく短い間隔だけまとめる。
+const NAV_DEDUPE = 3 * 1000;
+// ボタン・リンクのクリックでも確認する（DB も見る）。クリックは頻繁なので最短この間隔。
+const CLICK_THROTTLE = 10 * 1000;
+// DB(RPC)への問い合わせは定期確認では最短この間隔。利用者の操作・手動確認では毎回問い合わせる。
 const PENDING_POLL = 30 * 1000;
 // 公開待ちの間、build-info.json を確かめる間隔。
 const LIVE_POLL = 4 * 1000;
@@ -460,6 +462,7 @@ export type UpdateCheckResult =
   | "unknown"; // 確認できなかった（dev サーバー・オフライン等）
 
 let inFlight: Promise<UpdateCheckResult> | null = null;
+let inFlightFresh = false; // 走っている確認が DB まで見るものか
 
 // 自動確認で、同じ版へのリロードを続けてよいか（リロードループ防止）。
 function mayRetry(target: string): boolean {
@@ -478,7 +481,7 @@ function mayRetry(target: string): boolean {
   return Date.now() - prev.at >= RETRY_COOLDOWN;
 }
 
-async function runCheck(manual: boolean): Promise<UpdateCheckResult> {
+async function runCheck(manual: boolean, fresh: boolean): Promise<UpdateCheckResult> {
   const server = await fetchServerBuild();
   if (!server) return "unknown";
   if (state.phase !== "idle") return "updating";
@@ -492,7 +495,7 @@ async function runCheck(manual: boolean): Promise<UpdateCheckResult> {
   }
   clearAttempt(); // 最新版で稼働中
 
-  const pending = await fetchPendingRelease(manual);
+  const pending = await fetchPendingRelease(fresh);
   if (pending && state.phase === "idle") {
     void startWaiting(pending);
     return "updating";
@@ -503,12 +506,36 @@ async function runCheck(manual: boolean): Promise<UpdateCheckResult> {
 /**
  * 新しいバージョンがあるか確かめ、あれば更新オーバーレイを出して更新を始める。
  * 何度呼んでも同時に走るのは1本だけ。
+ *
+ * - manual: 「最新版を確認して再読み込み」。リロードの試行回数をリセットしてやり直す（DB も必ず見る）
+ * - fresh:  DB の間引き(PENDING_POLL)を無視して、公開準備中の版も必ず確かめる（画面遷移・クリック・バージョン情報）
  */
-export function checkForUpdate(opts: { manual?: boolean } = {}): Promise<UpdateCheckResult> {
+export function checkForUpdate(opts: { manual?: boolean; fresh?: boolean } = {}): Promise<UpdateCheckResult> {
   if (state.phase !== "idle") return Promise.resolve("updating");
   if (!APP_BUILD_TIME) return Promise.resolve("unknown"); // ビルド時刻が焼き込まれていない環境
-  if (!inFlight) inFlight = runCheck(!!opts.manual).finally(() => { inFlight = null; });
+  const manual = !!opts.manual;
+  const fresh = manual || !!opts.fresh;
+  if (inFlight) {
+    // 走っている確認が DB を見ない定期確認なら、DB まで見たい確認は終わってからもう一度確かめる。
+    // （リンクのクリック＋画面遷移のように同時に来たものは、DB まで見ている方に相乗りする）
+    // 手動確認は試行回数のリセットが要るので、相乗りせず必ず自分で確かめ直す。
+    if (!fresh || (inFlightFresh && !manual)) return inFlight;
+    return inFlight.then(r => (r === "updating" ? r : checkForUpdate(opts)));
+  }
+  inFlightFresh = fresh;
+  inFlight = runCheck(manual, fresh).finally(() => { inFlight = null; });
   return inFlight;
+}
+
+// クリックで確認するのはボタン・リンク類だけ。入力欄・エディタの中は、打っている最中に
+// プログレスで画面を塞がないよう対象外にする。
+const CLICK_TARGET = 'button, a[href], [role="button"], [role="menuitem"], [role="tab"], [role="option"], summary';
+const TYPING_AREA = 'input, textarea, select, [contenteditable=""], [contenteditable="true"]';
+
+function isCheckableClick(e: MouseEvent): boolean {
+  const el = e.target instanceof Element ? e.target : null;
+  if (!el || !el.closest(CLICK_TARGET)) return false;
+  return !el.closest(TYPING_AREA);
 }
 
 /** 失敗画面の「再読み込み」。キャッシュを片付けて取り直す。 */
@@ -525,8 +552,11 @@ export function dismissUpdate(): void {
 // ── 監視 ─────────────────────────────────────────────────────────────────────
 
 let landingStarted = false;
+let lastClickCheck = 0;
 
-// トリガー: 起動(リロード含む)・定期確認・画面遷移・フォーカス/タブ復帰・bfcache 復元・オンライン復帰。
+// トリガー: 起動(リロード含む)・定期確認・画面遷移・ボタン/リンクのクリック・フォーカス/タブ復帰・bfcache 復元・オンライン復帰。
+// 画面遷移とクリックは利用者が画面を使っている瞬間なので、DB まで見て公開準備中の版も即座に拾う。
+// （定期確認だけだと、バージョン情報の履歴には新しい版が出ているのにプログレスが最大1分出なかった）
 // アプリ最上位(App.tsx の VersionWatcher)で常時1つだけ動かす。
 export function useVersionCheck() {
   const { toast } = useToast();
@@ -559,12 +589,21 @@ export function useVersionCheck() {
     // 画面が真っ白になる。起動時の事故(index.html のウォッチドッグ)と同じ原因なので、
     // ここでも版を確かめて、新しい版が出ていれば更新に乗せる。
     const onPreloadError = () => { void checkForUpdate(); };
+    // ボタン・リンクのクリック。各ボタンには手を入れず、ここ1か所で拾う。
+    // キャプチャ段階で見るので、stopPropagation しているボタンでも拾える（クリック自体の処理は妨げない）。
+    const onClick = (e: MouseEvent) => {
+      if (!isCheckableClick(e)) return;
+      if (Date.now() - lastClickCheck < CLICK_THROTTLE) return;
+      lastClickCheck = Date.now();
+      void checkForUpdate({ fresh: true });
+    };
 
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("online", onOnline);
     window.addEventListener("vite:preloadError", onPreloadError);
+    document.addEventListener("click", onClick, { capture: true, passive: true });
 
     return () => {
       clearInterval(id);
@@ -573,14 +612,15 @@ export function useVersionCheck() {
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("vite:preloadError", onPreloadError);
+      document.removeEventListener("click", onClick, { capture: true });
     };
   }, []);
 
   // 画面遷移したとき（初回描画は上の起動時確認に任せる）
   useEffect(() => {
     if (!navMountedRef.current) { navMountedRef.current = true; return; }
-    if (Date.now() - lastNavCheckRef.current < NAV_THROTTLE) return;
+    if (Date.now() - lastNavCheckRef.current < NAV_DEDUPE) return;
     lastNavCheckRef.current = Date.now();
-    void checkForUpdate();
+    void checkForUpdate({ fresh: true });
   }, [pathname]);
 }
