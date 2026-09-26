@@ -26,4 +26,9 @@ export const escStack = {
     const i = window.__escStack!.lastIndexOf(fn);
     if (i >= 0) window.__escStack!.splice(i, 1);
   },
+  /** fn が最前面（＝上に重なっているモーダル等が無い）かどうか */
+  isTop(fn: EscHandler): boolean {
+    const stack = window.__escStack!;
+    return stack.length > 0 && stack[stack.length - 1] === fn;
+  },
 };

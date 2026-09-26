@@ -677,6 +677,14 @@ export function SprintPage() {
               setSelectedTicketWbs(t.wbs);
             }
           }}
+          // ↑↓キーで一覧の上／下のチケットへ。一覧を送るだけなので親子の背景表示は持ち越さない
+          onNavigateTicket={wbs => {
+            window.history.pushState({ fromSprintList: true }, '', `/${projectSlug}/${wbs}`);
+            setBackgroundParentWbs(null);
+            setIsParentNav(false);
+            setClosedHighlightWbs(null);
+            setSelectedTicketWbs(wbs);
+          }}
           showParentBackground={!!backgroundParentWbs}
           projectPermissions={projectPermissions ?? undefined}
           forceNoAnim={isParentNav}

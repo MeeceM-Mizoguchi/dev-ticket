@@ -372,6 +372,8 @@ export function TicketSearchPage() {
         // 移動先で採番し直されるので、閉じたあとは新しいWBSの行を目印にする（onClose の直前に来る）
         onMoved={movedWbs => { movedAwayRef.current = movedWbs; }}
         onSelectTicket={t => { if (t.wbs) openTicket(t.wbs); }}
+        // ↑↓キーで検索結果の上／下のチケットへ
+        onNavigateTicket={openTicket}
       />
 
       {bulk.ui}
