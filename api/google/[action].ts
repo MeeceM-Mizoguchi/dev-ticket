@@ -603,6 +603,95 @@ async function orgConfig(sb: SupabaseClient, orgId: string | null): Promise<OrgC
   };
 }
 
+// ── 共有ドライブの代行 ──────────────────────────────────────
+// drive.file スコープでは、トークンから触れるのは「その人がこのアプリで作った／Picker で選んだ」
+// ものだけ。共有ドライブの保存先フォルダを Picker で選んだのは設定した管理者なので、
+// ほかのメンバーのトークンからは保存先フォルダも、その下のファイルも 404 になる
+// （BRU18-003: 設定した人以外は変換アップロード・新規作成・名前の同期がすべて失敗していた）。
+//
+// そこで共有ドライブ運用に限り、本人のトークンで 404 になったら、組織の管理者のトークンで
+// 同じ操作をやり直す。管理者のトークンも drive.file のままで、スコープは広げない。
+// 代行で作ったファイルは Drive 上は管理者のアプリが作った扱いになるが、共有ドライブなので
+// 所有者は組織で、DevTicket 上の追加者（uploaded_by）は操作した本人のまま残す。
+//
+// ★ 呼ぶ前に必ず isMember を通すこと。代行は「プロジェクトのメンバーの操作」であることが前提。
+// ★ my_drive では代行しない。個人のドライブに他人のトークンで書き込むことになるため。
+const MAX_DELEGATES = 5;
+
+type DriveActor = { accessToken: string; email: string };
+
+async function driveActors(
+  sb: SupabaseClient, profile: { id: string; google_email?: string | null }, cfg: OrgConfig, orgId: string | null,
+) {
+  // 本人が未連携なら、ここで従来どおり 428（連携してください）を返す
+  const self: DriveActor = {
+    accessToken: await getAccessToken(sb, profile.id), email: String(profile.google_email ?? ""),
+  };
+  let candidates: { id: string; email: string }[] | null = null;
+  const tokens = new Map<string, DriveActor | null>();
+
+  // 保存先フォルダを選べるのは管理者だけ（resolve-folder / test-connection）なので、代行者も管理者に絞る
+  const loadCandidates = async () => {
+    if (candidates) return candidates;
+    candidates = [];
+    if (cfg.mode !== "shared_drive" || !orgId) return candidates;
+    const { data: admins } = await sb.from("profiles")
+      .select("id, role").eq("organization_id", orgId).in("role", ["admin", "owner"])
+      .order("id", { ascending: true });
+    const ids = (admins ?? [])
+      .filter(r => String(r.id) !== profile.id)
+      // 組織の管理者を先に試す（owner は運営の立場で設定していることがある）
+      .sort((a, b) => (a.role === "admin" ? 0 : 1) - (b.role === "admin" ? 0 : 1))
+      .map(r => String(r.id));
+    if (ids.length === 0) return candidates;
+    const { data: rows } = await sb.from("google_drive_tokens")
+      .select("user_id, google_email").in("user_id", ids);
+    const emailById = new Map((rows ?? []).map(r => [String(r.user_id), String(r.google_email ?? "")]));
+    candidates = ids.filter(id => emailById.has(id)).slice(0, MAX_DELEGATES)
+      .map(id => ({ id, email: emailById.get(id) as string }));
+    return candidates;
+  };
+
+  const delegate = async (c: { id: string; email: string }): Promise<DriveActor | null> => {
+    if (!tokens.has(c.id)) {
+      // 連携が切れている管理者は飛ばす（本人の操作を管理者側の事情で止めない）
+      const accessToken = await getAccessToken(sb, c.id).catch(() => "");
+      tokens.set(c.id, accessToken ? { accessToken, email: c.email } : null);
+    }
+    return tokens.get(c.id) ?? null;
+  };
+
+  /** 本人 → 管理者 の順に fn を試す（管理者は共有ドライブ運用のときだけ）。404 以外の失敗はそのまま投げる */
+  return async function run<T>(fn: (actor: DriveActor) => Promise<T>): Promise<T> {
+    try {
+      return await fn(self);
+    } catch (e) {
+      if (!(e instanceof HttpError) || e.status !== 404 || cfg.mode !== "shared_drive") throw e;
+      for (const c of await loadCandidates()) {
+        const actor = await delegate(c);
+        if (!actor) continue;
+        try {
+          return await fn(actor);
+        } catch (e2) {
+          if (e2 instanceof HttpError && e2.status === 404) continue;
+          throw e2;
+        }
+      }
+      throw e;
+    }
+  };
+}
+
+/** プロジェクトが属する組織の driveActors を作る（ファイル単位の操作用） */
+async function driveActorsForProject(
+  sb: SupabaseClient, profile: { id: string; google_email?: string | null }, projectId: string,
+) {
+  const { data: project } = await sb.from("projects")
+    .select("organization_id").eq("id", projectId).maybeSingle();
+  const orgId = project?.organization_id ? String(project.organization_id) : null;
+  return driveActors(sb, profile, await orgConfig(sb, orgId), orgId);
+}
+
 // ============================================================
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
@@ -843,8 +932,10 @@ export default async function handler(req: any, res: any) {
       const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
       if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
 
-      const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+      const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
+      const { actor, folderId } = await run(async a =>
+        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+      const accessToken = actor.accessToken;
 
       // DevTicket 側で一意な名前を先に決める。file_name は改名・削除・コメントの
       // 引き当てキーなので、重複したまま登録すると別のファイルを巻き込む。
@@ -866,7 +957,7 @@ export default async function handler(req: any, res: any) {
       // 共有ドライブなら、そのドライブのメンバーには既に見えている。
       // それでも配るのは、ドライブのメンバーではない人（プロジェクトには入っている）に届けるため。
       const people = await projectMemberEmails(sb, project as any);
-      const share = await grantMembers(accessToken, String(created.id), people, String(profile.google_email ?? ""));
+      const share = await grantMembers(accessToken, String(created.id), people, actor.email);
 
       const { data: inserted, error } = await sb.from("project_files").insert({
         project_id: projectId,
@@ -938,8 +1029,10 @@ export default async function handler(req: any, res: any) {
       if (dlErr || !blob) throw new HttpError(502, "アップロードしたファイルを読み出せませんでした");
       const bytes = Buffer.from(await blob.arrayBuffer());
 
-      const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+      const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
+      const { actor, folderId } = await run(async a =>
+        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+      const accessToken = actor.accessToken;
 
       // Google形式に拡張子は無いので落とす。DevTicket 側で一意な名前を先に押さえる。
       const base = sanitizeFileName(splitName(sourceName).base) || DEFAULT_NAME[kind];
@@ -949,7 +1042,7 @@ export default async function handler(req: any, res: any) {
         accessToken, bytes, sourceType, fileName, kind, folderId);
 
       const people = await projectMemberEmails(sb, project as any);
-      const share = await grantMembers(accessToken, fileId, people, String(profile.google_email ?? ""));
+      const share = await grantMembers(accessToken, fileId, people, actor.email);
 
       const { data: inserted, error } = await sb.from("project_files").insert({
         project_id: projectId,
@@ -1026,8 +1119,10 @@ export default async function handler(req: any, res: any) {
       if (dlErr || !blob) throw new HttpError(502, "ファイルを読み出せませんでした");
       const bytes = Buffer.from(await blob.arrayBuffer());
 
-      const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+      const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
+      const { actor, folderId } = await run(async a =>
+        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+      const accessToken = actor.accessToken;
 
       // 名前は拡張子を落としたもの。同名の Googleファイルが既にあれば「(1)」を付ける
       const base = sanitizeFileName(splitName(String(src.file_name)).base) || DEFAULT_NAME[conv.kind];
@@ -1039,7 +1134,7 @@ export default async function handler(req: any, res: any) {
         accessToken, bytes, conv.mime, fileName, conv.kind, folderId);
 
       const people = await projectMemberEmails(sb, project as any);
-      const share = await grantMembers(accessToken, newId, people, String(profile.google_email ?? ""));
+      const share = await grantMembers(accessToken, newId, people, actor.email);
 
       const { data: inserted, error } = await sb.from("project_files").insert({
         project_id: src.project_id,
@@ -1276,30 +1371,33 @@ export default async function handler(req: any, res: any) {
         .select("user_id").eq("user_id", profile.id).maybeSingle();
       if (!token) return res.json({ renamed: [], missing: [], skipped: true });
 
-      const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
-
       // フォルダ内を全件引く。ページングは100件ごと（1プロジェクトでこれを超えることは稀だが、
       // 打ち切ると「消された」と誤判定するので必ず最後まで辿る）
-      const live = new Map<string, string>(); // fileId → name
-      let pageToken = "";
-      for (let page = 0; page < 20; page++) {
-        const params = new URLSearchParams({
-          q: `'${q(folderId)}' in parents and trashed=false`,
-          fields: "nextPageToken,files(id,name)",
-          pageSize: "100",
-          supportsAllDrives: "true",
-          includeItemsFromAllDrives: "true",
-        });
-        if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
-          params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+      // 保存先フォルダが本人から見えないときは管理者のトークンで見る（driveActors 参照）
+      const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
+      const live = await run(async ({ accessToken }) => {
+        const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+        const found = new Map<string, string>(); // fileId → name
+        let pageToken = "";
+        for (let page = 0; page < 20; page++) {
+          const params = new URLSearchParams({
+            q: `'${q(folderId)}' in parents and trashed=false`,
+            fields: "nextPageToken,files(id,name)",
+            pageSize: "100",
+            supportsAllDrives: "true",
+            includeItemsFromAllDrives: "true",
+          });
+          if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
+            params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+          }
+          if (pageToken) params.set("pageToken", pageToken);
+          const listed = await drive(accessToken, `/files?${params}`);
+          for (const f of listed?.files ?? []) found.set(String(f.id), String(f.name));
+          pageToken = String(listed?.nextPageToken ?? "");
+          if (!pageToken) break;
         }
-        if (pageToken) params.set("pageToken", pageToken);
-        const listed = await drive(accessToken, `/files?${params}`);
-        for (const f of listed?.files ?? []) live.set(String(f.id), String(f.name));
-        pageToken = String(listed?.nextPageToken ?? "");
-        if (!pageToken) break;
-      }
+        return found;
+      });
 
       // 名前の重複を避けるため、Googleファイル以外も含めた現在の名前をフォルダごとに押さえておく
       // （重複を避けるのは同じフォルダの中だけ。別フォルダの同名は別ファイル）
@@ -1362,10 +1460,11 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: "Googleファイルではありません" });
       }
 
-      const accessToken = await getAccessToken(sb, profile.id);
-      await drive(accessToken, `/files/${encodeURIComponent(String(file.external_id))}?supportsAllDrives=true`, {
-        method: "PATCH", body: { name: newName },
-      });
+      const run = await driveActorsForProject(sb, profile, String(file.project_id));
+      await run(({ accessToken }) =>
+        drive(accessToken, `/files/${encodeURIComponent(String(file.external_id))}?supportsAllDrives=true`, {
+          method: "PATCH", body: { name: newName },
+        }));
       return res.json({ ok: true });
     }
 
@@ -1407,15 +1506,16 @@ export default async function handler(req: any, res: any) {
       // （連携していない人のフォルダ削除を、ここで 428 にして止めないため）
       if (targets.length === 0) return res.json({ trashed: 0, failed: [] });
 
-      const accessToken = await getAccessToken(sb, profile.id);
+      const run = await driveActorsForProject(sb, profile, String(origin.project_id));
 
       let trashed = 0;
       const failed: { name: string; reason: string }[] = [];
       for (const t of targets) {
         try {
-          await drive(accessToken, `/files/${encodeURIComponent(t.external_id)}?supportsAllDrives=true`, {
-            method: "PATCH", body: { trashed: true },
-          });
+          await run(({ accessToken }) =>
+            drive(accessToken, `/files/${encodeURIComponent(t.external_id)}?supportsAllDrives=true`, {
+              method: "PATCH", body: { trashed: true },
+            }));
           trashed++;
         } catch (e) {
           // drive() の 403/404 の文言は「管理者設定」「共有ドライブへのアクセス権」向けなので、
@@ -1448,18 +1548,20 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: "Googleファイルではありません" });
       }
 
-      const accessToken = await getAccessToken(sb, profile.id);
+      const run = await driveActorsForProject(sb, profile, String(file.project_id));
       const gid = encodeURIComponent(String(file.external_id));
 
       if (enabled) {
-        await drive(accessToken, `/files/${gid}/permissions?supportsAllDrives=true`, {
-          method: "POST",
-          // allowFileDiscovery=false で検索には出さない（URLを知っている人だけ）
-          body: { type: "anyone", role: "writer", allowFileDiscovery: false },
-        });
+        await run(({ accessToken }) =>
+          drive(accessToken, `/files/${gid}/permissions?supportsAllDrives=true`, {
+            method: "POST",
+            // allowFileDiscovery=false で検索には出さない（URLを知っている人だけ）
+            body: { type: "anyone", role: "writer", allowFileDiscovery: false },
+          }));
       } else {
         // type=anyone の権限IDは固定で "anyone"
-        await drive(accessToken, `/files/${gid}/permissions/anyone?supportsAllDrives=true`, { method: "DELETE" })
+        await run(({ accessToken }) =>
+          drive(accessToken, `/files/${gid}/permissions/anyone?supportsAllDrives=true`, { method: "DELETE" }))
           .catch(() => undefined); // 既に無い場合は成功扱い
       }
 
@@ -1494,13 +1596,26 @@ export default async function handler(req: any, res: any) {
       const targets = (files ?? []).filter(f => !!f.external_id);
       if (targets.length === 0) return res.json({ granted: 0, failed: [] });
 
-      const accessToken = await getAccessToken(sb, profile.id);
+      const orgId = project.organization_id ? String(project.organization_id) : null;
+      const run = await driveActors(sb, profile, await orgConfig(sb, orgId), orgId);
       const people = await projectMemberEmails(sb, project as any);
 
       let granted = 0;
       const failed: { name: string; reason: string }[] = [];
       for (const f of targets) {
-        const r = await grantMembers(accessToken, String(f.external_id), people, String(profile.google_email ?? ""));
+        // grantMembers は1人ずつの失敗を握りつぶすので、先にどのトークンから触れるファイルかを確かめる
+        let actor: DriveActor;
+        try {
+          actor = await run(async a => {
+            await drive(a.accessToken,
+              `/files/${encodeURIComponent(String(f.external_id))}?supportsAllDrives=true&fields=id`);
+            return a;
+          });
+        } catch (e) {
+          failed.push({ name: String(f.file_name), reason: e instanceof Error ? e.message : "ファイルを確認できませんでした" });
+          continue;
+        }
+        const r = await grantMembers(actor.accessToken, String(f.external_id), people, actor.email);
         granted += r.granted;
         for (const x of r.failed) failed.push({ name: `${f.file_name} / ${x.name}`, reason: x.reason });
       }
