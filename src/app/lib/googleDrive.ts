@@ -85,9 +85,34 @@ export function fetchGoogleDriveStatus(projectId?: string | null): Promise<Googl
  * サーバーから302させず、認可URLをJSONで受けてブラウザ側で遷移する
  * （302だと誰の連携かを示す情報をクエリに載せる必要が出て、URLとログに残るため）。
  */
-export async function startGoogleOAuth(): Promise<void> {
-  const { url } = await postApi<{ url: string }>("oauth-start");
+export async function startGoogleOAuth(returnTo: string = currentPathForReturn()): Promise<void> {
+  const { url } = await postApi<{ url: string }>("oauth-start", { returnTo });
   window.location.href = url;
+}
+
+/** 連携結果を載せるクエリ。連携後に戻ってきた画面で読み、すぐに消す */
+export const GOOGLE_RESULT_PARAM = "google";
+export const GOOGLE_MESSAGE_PARAM = "message";
+
+/**
+ * 連携後に戻る先＝今の画面（BRU17-028）。
+ * 以前は必ず管理者向けの外部連携画面へ戻っていたため、一般メンバーは行き止まりになっていた。
+ * 前回の連携結果のクエリが残っていたら落としておく（戻ったときに二重に付くため）。
+ */
+function currentPathForReturn(): string {
+  const params = new URLSearchParams(window.location.search);
+  params.delete(GOOGLE_RESULT_PARAM);
+  params.delete(GOOGLE_MESSAGE_PARAM);
+  const qs = params.toString();
+  return `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+}
+
+/**
+ * 紐づけたGoogleアカウントへ、見てよい既存のGoogleファイルの権限を付け直す（BRU17-028）。
+ * それまでのファイルは招待メールのアドレス宛てに配られているため、紐づけ直後に呼ぶ。
+ */
+export function grantGoogleToSelf(): Promise<{ granted: number; failed: { name: string; reason: string }[] }> {
+  return postApi<{ granted: number; failed: { name: string; reason: string }[] }>("grant-self");
 }
 
 export function disconnectGoogle(): Promise<{ ok: boolean }> {

@@ -36,6 +36,7 @@ import {
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
+import { useGoogleLinkGate } from "@/app/hooks/useGoogleLinkGate";
 import { FileKindIcon } from "@/app/components/files/FileKindIcon";
 import { BlockingSpinner } from "@/app/components/shared/BlockingSpinner";
 import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
@@ -216,6 +217,10 @@ export function FileBoxPage() {
 
   const isAdminRole = userRole === "owner" || userRole === "admin";
 
+  // BRU17-028 Googleアカウントを紐づけていない人には、Googleファイルを開く前に紐づけるかを尋ねる
+  const googleLinkGate = useGoogleLinkGate();
+  const guardGoogleOpen = googleLinkGate.guard;
+
   // ── Drive 側の変更の取り込み ─────────────────────────────
   // Google の画面で名前を変えても DevTicket は気づけないので、こちらから取りに行く。
   // （設計書 9.1 のとおり、同期は DevTicket → Google の一方通行のままで、
@@ -322,6 +327,7 @@ export function FileBoxPage() {
   // URLに残った版が古くても、同名の最新版に読み替える。
   // コメントのリンク(?file=..&comment=..[&reply=..], BRU12-025)なら、その付随情報も
   // ビューアへ渡して該当ピンへ着地させる。
+  const googleLinked = googleLinkGate.linked;
   useEffect(() => {
     const wanted = searchParams.get("file");
     if (!wanted || files.length === 0) return;
@@ -330,6 +336,8 @@ export function FileBoxPage() {
       ? files.reduce<ProjectFile | null>((best, f) =>
         isSameFile(f, base) && (!best || f.version > best.version) ? f : best, null)
       : null;
+    // Googleファイルは、紐づけの有無が分かるまで待つ（未紐づけなら先に確認を出すため。BRU17-028）
+    if (newest && isGoogleFile(newest) && googleLinked === null) return;
     if (newest && isGoogleFile(newest)) {
       // Googleファイルはビューアを持たない。共有リンクで来たら、そのタブのまま Google へ送る。
       //
@@ -341,11 +349,17 @@ export function FileBoxPage() {
       //
       // ★ href ではなく replace で移動する。href だと履歴に ?file= 付きの一覧が残り、
       //   「戻る」でここへ戻る → また Google へ送られる、を繰り返して抜けられなくなる。
+      //
+      // ★ 未紐づけのときは確認を挟むので、先にクエリを落としてから（下の共通処理）確認を出す。
+      //   同じタブの移動なので、確認の「紐づけずに開く」から送ってもブロックされない。
       if (newest.externalUrl) {
-        window.location.replace(newest.externalUrl);
-        return;
-      }
-      toast("このファイルのURLが見つかりません", "error");
+        const url = newest.externalUrl;
+        if (googleLinked) {
+          window.location.replace(url);
+          return;
+        }
+        guardGoogleOpen(() => window.location.replace(url));
+      } else toast("このファイルのURLが見つかりません", "error");
     } else if (newest) {
       setPreviewTarget(newest);
       setFocusComment({
@@ -358,7 +372,7 @@ export function FileBoxPage() {
     searchParams.delete(FILE_COMMENT_PARAM);
     searchParams.delete(FILE_REPLY_PARAM);
     setSearchParams(searchParams, { replace: true });
-  }, [files, searchParams, setSearchParams, toast]);
+  }, [files, searchParams, setSearchParams, toast, googleLinked, guardGoogleOpen]);
 
   /**
    * 開くフォルダを URL に反映する。既定では履歴に積むので、
@@ -737,13 +751,17 @@ export function FileBoxPage() {
       toast(`「${file.fileName}」はGoogleドライブ上で削除されているため開けません`, "error");
       return;
     }
-    if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
-    // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
-    if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
-    // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
-    const office = googleConvertKind(file.fileName);
-    if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
-  }, [toast]);
+    if (!file.externalUrl) { toast("このファイルのURLが見つかりません", "error"); return; }
+    // 未紐づけなら先に紐づけるかを尋ねる（BRU17-028）。「紐づけずに開く」を選んだときもここから開く
+    guardGoogleOpen(() => {
+      if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
+      // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
+      if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
+      // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
+      const office = googleConvertKind(file.fileName);
+      if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+    });
+  }, [toast, guardGoogleOpen]);
 
   // GoogleファイルをOffice形式で書き出す。
   // 閲覧者自身のGoogleログインで直接落とすので、サーバーを経由しない。
@@ -1270,6 +1288,7 @@ export function FileBoxPage() {
 
       {convertingUpload && <BlockingSpinner label="Google形式に変換してアップロードしています" />}
       {convertingOpen && <BlockingSpinner label="Google形式にコピーしています" />}
+      {googleLinkGate.dialog}
       {previewTarget && (
         <FileViewerModal file={previewTarget} onClose={closePreview}
           onDownload={handleDownload} onOpenInApp={handleOpenInApp}
