@@ -83,9 +83,11 @@ export function InviteDialog({ onClose, onInvited, fixedOrganizationId, fixedOrg
     const organizationId = fixedOrganizationId ?? (isOwner ? selectedOrgId : myOrgId) ?? null;
 
     try {
+      // API 側で「オーナー／管理者か」を確かめるため、ログイン中のトークンを渡す
+      const session = isSupabaseEnabled ? (await supabase!.auth.getSession()).data.session : null;
       const res = await fetch("/api/invite", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token ?? ""}` },
         body: JSON.stringify({ email, name, role, group, organizationId }),
       });
       const json = await res.json();

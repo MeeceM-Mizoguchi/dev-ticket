@@ -18,7 +18,7 @@ function getRoleColor(role: string) { return ROLE_COLORS[role] ?? DEFAULT_ROLE_C
 
 export function MemberCard({ member, canEdit, canDelete, canManageSkills, skills, memberSkills, highlighted, cardRef, onEdit, onDetail, onDelete, onSkills, onAutoUpdateChanged, onAutoUpdateFailed }: {
   member: Member; canEdit: boolean; canDelete: boolean;
-  // ENHA2-034: スキルUI は「メンバー管理」権限(canAccessMembers)を持つ人だけに見せる
+  // ENHA2-034: スキルUI はメンバー管理できる人（オーナー／管理者）だけに見せる
   canManageSkills?: boolean;
   skills?: Skill[];
   memberSkills?: MemberSkill[];

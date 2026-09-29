@@ -32,7 +32,9 @@ const PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: string; mee
   // 🌟 追加: 組織権限の一番上に「プロジェクト作成」を配置
   { key: "canCreateProject", label: "プロジェクト作成", desc: "システム内で新しいプロジェクトを立ち上げることが可能" },
   { key: "canSkipReview", label: "レビュースキップ", desc: "レビューをスキップして次ステータスへ進められる" },
-  { key: "canAccessMembers", label: "メンバー管理", desc: "メンバー管理画面へのアクセスが可能" },
+  // 「メンバー管理」は置かない。メンバー管理はオーナーと管理者だけに固定している
+  // （MembersPage の canManageMembers / api/_lib/memberAuth.ts）。ここで一般ロールに付けられると、
+  // 画面には入れるのに招待・編集・削除はできない、という中途半端な状態になっていた。
   { key: "canAccessRoles", label: "ロール設定", desc: "ロール設定画面へのアクセスが可能" },
   { key: "canAccessGroups", label: "アサイン計画", desc: "アサイン計画画面へのアクセスが可能" },
   { key: "canAccessAdminSettings", label: "外部連携", desc: "Slack通知・GitHub連携など、外部サービスとの接続設定画面へのアクセスが可能" },
@@ -305,7 +307,7 @@ function RoleModal({
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(0,0,0,0.40)", backdropFilter: "blur(4px)" }} />
-      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 24px 64px rgba(0,0,0,0.20)", width: 500, maxHeight: "88vh", overflow: "auto" }}>
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 401, background: "#FFF", borderRadius: 16, boxShadow: "0 24px 64px rgba(0,0,0,0.20)", width: "min(880px, calc(100vw - 48px))", maxHeight: "92vh", overflow: "auto" }}>
 
         {/* Header */}
         <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid #F3F4F6", display: "flex", alignItems: "center", gap: 10, position: "sticky" as const, top: 0, background: "#FFF", zIndex: 1 }}>
@@ -322,7 +324,7 @@ function RoleModal({
 
         <div style={{ padding: "20px 24px" }}>
           {/* Name fields */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>
                 表示名 <span style={{ color: "#DC2626" }}>*</span>
@@ -364,7 +366,8 @@ function RoleModal({
           {/* Permissions */}
           <div>
             <p style={{ fontSize: 11, fontWeight: 600, color: "#374151", marginBottom: 10 }}>権限設定</p>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+            {/* PC で縦に積むとスクロールが要るので、2列に並べて1画面に収める */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6 }}>
               {modalPermFlags.map(f => {
                 // 🌟 修正: 管理者なら強制的に true とし、クリックを無効化、半透明にして操作不可をアピール
                 const active = isAdmin ? true : perms[f.key];
