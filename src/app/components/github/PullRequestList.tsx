@@ -8,6 +8,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { ExternalLink, ChevronDown, ChevronUp, GitPullRequest, Link2 } from "lucide-react";
+import { copyText } from "@/lib/clipboard";
+import { useToast } from "@/app/contexts/ToastContext";
 import { fetchPull, mergeBlockReason, isAwaitingChecks, relativeTime, GithubApiError } from "@/app/lib/github";
 import type { GithubPull, GithubAccessLevel, TicketGithubLink } from "@/app/types";
 
@@ -26,7 +28,10 @@ export function PullRequestList({ projectId, projectSlug, repo, pulls, level, li
   pulls: GithubPull[];
   level: GithubAccessLevel;
   links: TicketGithubLink[];
-  /** まとめてマージ用の選択状態。undefined なら選択機能を出さない */
+  /**
+   * 選択状態（リンクのまとめてコピー・まとめてマージに使う）。undefined なら選択機能を出さない。
+   * リンクのコピーはマージできないPRにも使うので、行の状態に関係なく選べる
+   */
   selected?: Set<number>;
   onToggleSelect?: (number: number) => void;
   onMergeClick: (pull: GithubPull) => void;
@@ -79,6 +84,7 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
   refreshedAt?: string | null;
 }) {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<GithubPull | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -163,12 +169,14 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
     <div style={{ background: "#FFF", border: "1px solid rgba(26,23,20,0.09)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ padding: "12px 14px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-          {/* まとめてマージ用の選択。マージできない状態のものは選ばせない */}
-          {onToggleSelect && level === "merge" && (
-            <input type="checkbox" checked={checked} disabled={!!blocked}
+          {/* リンクのまとめてコピー・まとめてマージ用の選択。
+              コピーはマージできないPRにも使うので、ここでは止めない
+              （まとめてマージは選択のうちマージできるものだけを対象にする＝GithubPage） */}
+          {onToggleSelect && (
+            <input type="checkbox" checked={checked}
               onChange={() => onToggleSelect(pull.number)}
-              title={blocked ?? "まとめてマージの対象にする"}
-              style={{ marginTop: 3, flexShrink: 0, cursor: blocked ? "not-allowed" : "pointer" }} />
+              title="選択する"
+              style={{ marginTop: 3, flexShrink: 0, cursor: "pointer" }} />
           )}
           <GitPullRequest style={{ width: 15, height: 15, color: pull.draft ? "#8A837B" : "#059669", flexShrink: 0, marginTop: 2 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -223,6 +231,14 @@ function PullRow({ projectId, projectSlug, repo, pull, level, linked, checked, o
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            <button onClick={async () => {
+                if (await copyText(pull.url)) toast("リンクをコピーしました");
+                else toast("リンクのコピーに失敗しました", "error");
+              }}
+              title="PRのリンクをコピー"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#4B4540", cursor: "pointer", whiteSpace: "nowrap" as const }}>
+              <Link2 style={{ width: 12, height: 12 }} />リンク
+            </button>
             <button onClick={() => setOpen(v => !v)}
               style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "6px 12px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: "#4B4540", cursor: "pointer", whiteSpace: "nowrap" as const }}>
               詳細 {open ? <ChevronUp style={{ width: 11, height: 11 }} /> : <ChevronDown style={{ width: 11, height: 11 }} />}

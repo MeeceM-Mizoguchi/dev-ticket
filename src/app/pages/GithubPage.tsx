@@ -4,8 +4,9 @@
 // （黙ってリダイレクトしない＝docs/not-found-page-design.md の方針）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { ExternalLink, RefreshCw, GitPullRequest, GitBranch, FolderKanban, ChevronRight } from "lucide-react";
+import { ExternalLink, RefreshCw, GitPullRequest, GitBranch, FolderKanban, ChevronRight, Link2 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import { copyText } from "@/lib/clipboard";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
@@ -401,30 +402,33 @@ export function GithubPage() {
    *
    * GitHub の mergeable_state は要求されてから計算されるため、一覧の取得では
    * "unknown"（＝マージ可否は判定中）で返ってくることがある。行はその後に引き直した
-   * 詳細を優先して出すので、取り込まないと「行のチェックボックスは押せるのに
-   * 全件選択の母数には入っていない」という食い違いが残る。
+   * 詳細を優先して出すので、取り込まないと「行ではマージできるのに
+   * まとめてマージの対象には入らない」という食い違いが残る。
+   *
+   * 選んだあとに押し直し等でCIが走り出したものも選択からは外さない（リンクのコピーには使えるため）。
+   * まとめてマージの対象からは selectedMergeable の側で外れる。
    */
   const applyPullDetail = useCallback((detail: GithubPull) => {
     setPulls(prev => prev.map(p => (p.number === detail.number ? { ...p, ...detail } : p)));
-    // 選んだあとに押し直し等でCIが走り出したものは選択から外す。
-    // 行のチェックボックスは押せなくなるので、残すと外す手段が無いまま対象に入り続ける
-    if (mergeBlockReason(detail)) {
-      setSelected(prev => {
-        if (!prev.has(detail.number)) return prev;
-        const next = new Set(prev);
-        next.delete(detail.number);
-        return next;
-      });
-    }
   }, []);
 
-  // マージできる状態のものだけを選択対象にする
   const mergeablePulls = useMemo(() => pulls.filter(p => !mergeBlockReason(p)), [pulls]);
+  // 選択は一覧の並び順で持つ（コピーしたリンクが画面と同じ順に縦に並ぶように）
   const selectedPulls = useMemo(() => pulls.filter(p => selected.has(p.number)), [pulls, selected]);
-  const allMergeableSelected = useMemo(
-    () => mergeablePulls.length > 0 && mergeablePulls.every(p => selected.has(p.number)),
-    [mergeablePulls, selected],
-  );
+  // まとめてマージは、選択のうちマージできる状態のものだけを対象にする
+  const selectedMergeable = useMemo(() => selectedPulls.filter(p => !mergeBlockReason(p)), [selectedPulls]);
+  const allSelected = pulls.length > 0 && pulls.every(p => selected.has(p.number));
+  const canBulkMerge = perms.merge === "write" && !writeBlock && mergeablePulls.length > 1;
+
+  // スプリント一覧の「リンクをコピー」と同じく、1行に1件ずつ改行で並べる
+  const copySelectedLinks = async () => {
+    if (selectedPulls.length === 0) return;
+    if (await copyText(selectedPulls.map(p => p.url).join("\n"))) {
+      toast(`${selectedPulls.length}件のPRのリンクをコピーしました`, "success");
+    } else {
+      toast("リンクのコピーに失敗しました", "error");
+    }
+  };
 
   // onMerged は「GitHub 側のマージが終わった」合図。ダイアログの進捗を次の段
   //（一覧の取り直し）へ進めるために呼ぶ
@@ -591,29 +595,22 @@ export function GithubPage() {
                 canCreate={perms.pull === "write"}
                 onCreate={name => openCreatePull(name)}
               />
-              {/* まとめてマージの操作バー。マージできるPRが2件以上あるときだけ出す */}
-              {perms.merge === "write" && !writeBlock && mergeablePulls.length > 1 && (
+              {/* 選択の操作バー（リンクのまとめてコピー・まとめてマージ）。
+                  まとめてマージのボタンは、マージできるPRが2件以上あるときだけ出す */}
+              {pulls.length > 0 && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, background: selected.size ? "#F0F9FF" : "#FFF", border: `1px solid ${selected.size ? "rgba(2,132,199,0.28)" : "rgba(26,23,20,0.09)"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: "#4B4540" }}>
-                      {/* 件数の一致で判定すると、母数（マージできるもの）に入っていないPRを
-                          手で選んだ瞬間にチェックが外れて見える。「マージできるものが
-                          全部入っているか」で判定し、外すときも自分の分だけ外す（BRU13-036） */}
+                      {/* 件数の一致ではなく「一覧のPRが全部入っているか」で判定する（BRU13-036） */}
                       <input type="checkbox"
-                        checked={allMergeableSelected}
-                        ref={el => { if (el) el.indeterminate = !allMergeableSelected && mergeablePulls.some(p => selected.has(p.number)); }}
+                        checked={allSelected}
+                        ref={el => { if (el) el.indeterminate = !allSelected && pulls.some(p => selected.has(p.number)); }}
                         onChange={e => {
                           // 更新関数は後で走ることがあるので、押した時点の状態を先に取り出す
                           const on = e.target.checked;
-                          setSelected(prev => {
-                            const next = new Set(prev);
-                            for (const p of mergeablePulls) {
-                              if (on) next.add(p.number); else next.delete(p.number);
-                            }
-                            return next;
-                          });
+                          setSelected(on ? new Set(pulls.map(p => p.number)) : new Set());
                         }} />
-                      マージできるもの全件を選択（{mergeablePulls.length}件）
+                      すべて選択（{pulls.length}件）
                     </label>
                     {selected.size > 0 && (
                       <span style={{ fontSize: 12, fontWeight: 700, color: "#0284C7" }}>{selected.size}件を選択中</span>
@@ -626,10 +623,19 @@ export function GithubPage() {
                         選択を解除
                       </button>
                     )}
-                    <button onClick={() => setBulkTargets(selectedPulls)} disabled={selected.size === 0}
-                      style={{ padding: "6px 16px", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", background: selected.size ? BLACK : "#E5E7EB", color: selected.size ? "#FFF" : "#9CA3AF", cursor: selected.size ? "pointer" : "not-allowed", whiteSpace: "nowrap" as const }}>
-                      まとめてマージする
+                    <button onClick={copySelectedLinks} disabled={selected.size === 0}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 13px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "1px solid rgba(26,23,20,0.14)", background: "#FFF", color: selected.size ? "#4B4540" : "#B0A9A4", cursor: selected.size ? "pointer" : "not-allowed", whiteSpace: "nowrap" as const }}>
+                      <Link2 style={{ width: 12, height: 12 }} />リンクをコピー
                     </button>
+                    {canBulkMerge && (
+                      <button onClick={() => setBulkTargets(selectedMergeable)} disabled={selectedMergeable.length === 0}
+                        title={selected.size > 0 && selectedMergeable.length < selected.size
+                          ? `マージできない ${selected.size - selectedMergeable.length}件 は対象から外れます`
+                          : undefined}
+                        style={{ padding: "6px 16px", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", background: selectedMergeable.length ? BLACK : "#E5E7EB", color: selectedMergeable.length ? "#FFF" : "#9CA3AF", cursor: selectedMergeable.length ? "pointer" : "not-allowed", whiteSpace: "nowrap" as const }}>
+                        まとめてマージする{selectedMergeable.length > 0 && selectedMergeable.length < selected.size ? `（${selectedMergeable.length}件）` : ""}
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
