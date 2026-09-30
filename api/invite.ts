@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
-import { requireMemberManager } from "./_lib/memberAuth";
+import { requireMemberManager } from "./_lib/memberAuth.js";
 
 const ROLE_JA: Record<string, string> = {
   admin: "管理者", "project-manager": "プロジェクトマネージャー",

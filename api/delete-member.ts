@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { requireMemberManager } from "./_lib/memberAuth";
+import { requireMemberManager } from "./_lib/memberAuth.js";
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });

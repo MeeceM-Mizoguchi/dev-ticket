@@ -1,4 +1,4 @@
-import { assertProjectAccess, authenticateCaller, serviceClient } from "../../_lib/projectAuth";
+import { assertProjectAccess, authenticateCaller, serviceClient } from "../../_lib/projectAuth.js";
 
 function calcTicketActualHours(t: {
   started_at: string | null;

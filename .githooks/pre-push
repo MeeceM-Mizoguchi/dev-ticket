@@ -29,4 +29,14 @@ if ! node scripts/check-ime-enter.mjs; then
   exit 1
 fi
 
+echo "[pre-push] api/ の相対 import を検査しています..."
+
+if ! node scripts/check-api-imports.mjs; then
+  echo "[pre-push] push を中止しました。"
+  echo "  上の import の末尾に .js を付けてください。これも npm run build の検査で、"
+  echo "  直さないと本番でその API が全リクエスト 500 になります（2026-09-30 に発生）。"
+  echo ""
+  exit 1
+fi
+
 exit 0

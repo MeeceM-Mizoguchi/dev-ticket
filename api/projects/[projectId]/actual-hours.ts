@@ -1,4 +1,4 @@
-import { requireProjectAccess, serviceClient } from "../../_lib/projectAuth";
+import { requireProjectAccess, serviceClient } from "../../_lib/projectAuth.js";
 
 function calcTicketActualHours(t: {
   started_at: string | null;
