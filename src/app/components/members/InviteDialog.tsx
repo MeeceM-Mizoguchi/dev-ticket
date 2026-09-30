@@ -90,9 +90,11 @@ export function InviteDialog({ onClose, onInvited, fixedOrganizationId, fixedOrg
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token ?? ""}` },
         body: JSON.stringify({ email, name, role, group, organizationId }),
       });
-      const json = await res.json();
+      // 関数ごと落ちた時の Vercel の 500 は JSON でない。そのまま json() すると catch で
+      // 「ネットワークエラー」になり本当の原因が見えなくなるので、本文が読めなくてもステータスは出す。
+      const json = await res.json().catch(() => null);
       if (!res.ok) {
-        setError(json.error || "送信に失敗しました");
+        setError(json?.error || `送信に失敗しました（${res.status}）`);
         setSending(false);
       } else {
         toast(`${email} に招待メールを送信しました`);

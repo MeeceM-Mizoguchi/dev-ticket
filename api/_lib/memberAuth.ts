@@ -9,7 +9,7 @@
 // オーナー（DevTicket運営）と各組織の管理者だけ。ロール設定の権限では広げない。
 // 画面側の判定（src/app/pages/MembersPage.tsx の canManageMembers）と揃えること。
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { authenticateCaller, type AuthFailure } from "./projectAuth";
+import { authenticateCaller, type AuthFailure } from "./projectAuth.js";
 
 export type MemberManager = {
   id: string;

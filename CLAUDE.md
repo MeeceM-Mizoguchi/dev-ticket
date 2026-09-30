@@ -13,14 +13,14 @@ React 18 + TypeScript + Vite / Supabase / Vercel サーバーレス。
 npm run build
 ```
 
-**`npx vite build` 単体で済ませない。** build スクリプトは3段構成で、
+**`npx vite build` 単体で済ませない。** build スクリプトは4段構成で、
 
 ```
-node scripts/check-ime-enter.mjs && vite build && node scripts/publish-version.mjs
+node scripts/check-ime-enter.mjs && node scripts/check-api-imports.mjs && vite build && node scripts/publish-version.mjs
 ```
 
-**1段目が落ちると `vite build` が一度も走らず、Vercel のデプロイが失敗する。**
-`npx vite build` はこの1段目を飛ばすので、手元では緑に見えて本番が止まる。
+**検査（1・2段目）が落ちると `vite build` が一度も走らず、Vercel のデプロイが失敗する。**
+`npx vite build` は検査を飛ばすので、手元では緑に見えて本番が止まる。
 
 > 2026-09-01、これが原因で main のビルドが約1時間デプロイ不能になり、
 > PR 3件（#419 / #420 / #421）の変更がすべて本番へ出ていなかった。
@@ -70,6 +70,22 @@ if (isPlainEnter(e)) { ... }   // または !isImeComposing(e)
 > **新規ファイルで漏れやすい。** 既存ファイルは周りが手本になるが、
 > ゼロから書くときは意識しないと `submitKey.ts` に手が伸びない。実際 2026-09-01 の
 > 事故は新規作成した `CreateBranchDialog.tsx` で起きた。
+
+---
+
+## 2.5 `api/` の相対 import には必ず `.js` を付ける
+
+```ts
+import { requireMemberManager } from "./_lib/memberAuth";     // ✗ 本番で関数ごと落ちる
+import { requireMemberManager } from "./_lib/memberAuth.js";  // ○（.ts のソースでも .js と書く）
+```
+
+`"type": "module"` のため Vercel は `api/*.ts` を ESM として動かし、拡張子なしの相対 import は
+`ERR_MODULE_NOT_FOUND` になる。**その関数は全リクエストが 500** になるが、`vite build` は
+`api/` を見ないので手元では気づけない。`scripts/check-api-imports.mjs` がビルドを止める。
+
+> 2026-09-30、#473 で追加した `_lib/memberAuth` の import が原因で、招待・メンバー削除が
+> 本番で全件失敗した（画面には「ネットワークエラー」とだけ出ていた）。
 
 ---
 

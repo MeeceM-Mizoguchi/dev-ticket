@@ -10,4 +10,4 @@
 //   - dev サーバー（vite の api 解決）が /api/dav/... を叩けるようにするため
 //   - 本番でも単一セグメント(/api/dav/<token>)が来た場合の入口として
 // 残しており、実装は dav-open.ts をそのまま使う。
-export { default } from "../dav-open";
+export { default } from "../dav-open.js";

@@ -159,8 +159,13 @@ export function MembersPage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token ?? ""}` },
         body: JSON.stringify({ userId: member.id, memberName: member.name }),
       });
-      const json = await res.json();
-      if (!res.ok) { toast(json.error || "削除に失敗しました", "error"); throw new Error(json.error); }
+      // 関数ごと落ちた時の 500 は JSON でないので、本文が読めなくてもステータスは出す
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg = json?.error || `削除に失敗しました（${res.status}）`;
+        toast(msg, "error");
+        throw new Error(msg);
+      }
     }
     setMembers(prev => prev.filter(m => m.id !== member.id));
     toast(`「${member.name}」を削除しました`);
