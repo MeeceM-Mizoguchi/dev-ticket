@@ -11,6 +11,7 @@ import { FieldTextarea } from "@/app/components/shared/FieldTextarea";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { computeProjectStatus } from "@/app/lib/helpers";
 import { findSlugConflict, SLUG_CONFLICT_MESSAGE } from "@/app/lib/projectResolve";
+import { renameGoogleProjectFolder } from "@/app/lib/googleDrive";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
@@ -79,6 +80,12 @@ export function EditProjectDialog({ project, onClose, onUpdated }: {
       if (error?.code === "23505") {
         setSlugError("その識別子はすでに使用されています。");
         return;
+      }
+      // Googleドライブ上のプロジェクトのフォルダ名も合わせる（共有ドライブ運用のみ。API 側で判定）。
+      // 待たない: フォルダは ID で引くので、反映が遅れても失敗してもファイルは開ける
+      if (!error && name.trim() !== project.name.trim()) {
+        void renameGoogleProjectFolder(project.id, project.name)
+          .catch(e => console.warn("[google] project folder rename failed:", e));
       }
     }
     onUpdated?.();

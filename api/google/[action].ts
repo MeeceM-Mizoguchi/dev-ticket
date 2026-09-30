@@ -34,6 +34,7 @@ import crypto from "crypto";
 //   POST /api/google/import-files     { projectId, fileIds, parentId? }   → { imported, failed, shareFailed }
 //   POST /api/google/convert-existing { fileId }                          → { file, url, fileName }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
+//   POST /api/google/rename-project-folder { projectId, oldName }         → { renamed, skipped, reason }
 //   POST /api/google/trash            { fileId } / { folderId }           → { trashed, failed }
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
@@ -296,16 +297,10 @@ function q(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-/**
- * 指定の親の下にある同名フォルダを探し、無ければ作ってIDを返す。
- *
- * 毎回 files.list で名前引きしているのは、フォルダIDをDBに覚えるとその
- * フォルダがDrive側で消されたときに二度と作り直せなくなるため。
- * （Drive側の変更はDevTicketからは検知できない。設計書 9.1）
- */
-async function ensureFolder(
+/** 指定の親の下にある同名フォルダのIDを返す。無ければ null */
+async function findFolder(
   accessToken: string, name: string, parentId: string, driveId: string | null,
-): Promise<string> {
+): Promise<string | null> {
   const params = new URLSearchParams({
     q: `name='${q(name)}' and mimeType='${FOLDER_MIME}' and '${q(parentId)}' in parents and trashed=false`,
     fields: "files(id,name)",
@@ -316,7 +311,15 @@ async function ensureFolder(
   if (driveId) { params.set("corpora", "drive"); params.set("driveId", driveId); }
 
   const found = await drive(accessToken, `/files?${params}`);
-  if (found?.files?.[0]?.id) return found.files[0].id as string;
+  return found?.files?.[0]?.id ? String(found.files[0].id) : null;
+}
+
+/** 指定の親の下にある同名フォルダを探し、無ければ作ってIDを返す */
+async function ensureFolder(
+  accessToken: string, name: string, parentId: string, driveId: string | null,
+): Promise<string> {
+  const found = await findFolder(accessToken, name, parentId, driveId);
+  if (found) return found;
 
   const created = await drive(accessToken, "/files?supportsAllDrives=true&fields=id", {
     method: "POST",
@@ -326,26 +329,94 @@ async function ensureFolder(
   return created.id as string;
 }
 
+// ── プロジェクトの保存先フォルダ ──────────────────────────
+//   shared_drive … <管理者がPickerで選んだフォルダ>/<プロジェクト名>/
+//   my_drive     … マイドライブ/DevTicket/<プロジェクト名>/
+//
+// 共有ドライブ運用で "DevTicket" 階層を作らないのは、管理者が選んだフォルダが
+// すでに「DevTicket用の置き場所」だから。ここで足すと DevTicket/DevTicket/ になる。
+//
+// ★ 一度見つけた／作ったフォルダは ID を google_project_folders に覚え、以後は ID で引く。
+//   以前は毎回プロジェクト名で探していたため、プロジェクト名を変えると空のフォルダが新しく作られ、
+//   既存のGoogleファイルが全件「Googleドライブ上で削除されています」と出て開けなくなっていた。
+//   ID で引けば、プロジェクト名の変更にも Drive 側でのフォルダ名の変更にも影響されない。
+//
+// ★ 覚えたフォルダがゴミ箱にあるときだけ、名前で探し直して（無ければ作って）覚え直す。
+//   404 のときは覚えた ID を上書きしない。drive.file スコープでは「このトークンから見えないだけ」と
+//   「完全に消された」を区別できず、見えない人の操作で上書きすると、見えている人の側が壊れる。
+//   404 の間は名前で探す従来の動きになる（driveActors が次の人のトークンで試し直す）。
+//
+// テーブルは supabase/add_google_project_folders.sql。未作成でも読み書きが失敗するだけで、
+// 名前で探す従来の動きになる。
+
+/** プロジェクトのフォルダ名。空のプロジェクト名でフォルダを作らせない（ensureFolderPath の「無題のフォルダ」と同じ考え方） */
+function projectFolderName(projectName: unknown): string {
+  return String(projectName ?? "").trim() || "無題のプロジェクト";
+}
+
 /**
- * 保存先フォルダを解決する。
- *
- *   shared_drive … <管理者がPickerで選んだフォルダ>/<プロジェクト名>/
- *   my_drive     … マイドライブ/DevTicket/<プロジェクト名>/
- *
- * 共有ドライブ運用で "DevTicket" 階層を作らないのは、管理者が選んだフォルダが
- * すでに「DevTicket用の置き場所」だから。ここで足すと DevTicket/DevTicket/ になる。
+ * フォルダIDを覚える単位。
+ *   shared_drive … 組織で1つ。保存先フォルダの設定を変えたら別の置き場所として扱う（古い場所の ID を使わない）
+ *   my_drive     … 人ごと。フォルダはファイルを作った人それぞれのマイドライブにある
+ */
+function folderScopeKey(cfg: OrgConfig, userId: string): string {
+  return cfg.mode === "shared_drive" ? `shared:${cfg.sharedFolderId}` : `user:${userId}`;
+}
+
+/** プロジェクトのフォルダを置く親。create=false で my_drive の DevTicket フォルダがまだ無ければ null */
+async function projectFolderParent(
+  accessToken: string, cfg: OrgConfig, create: boolean,
+): Promise<{ parentId: string; driveId: string | null } | null> {
+  if (cfg.mode === "shared_drive") return { parentId: String(cfg.sharedFolderId), driveId: cfg.sharedDriveId };
+  const root = create
+    ? await ensureFolder(accessToken, ROOT_FOLDER_NAME, "root", null)
+    : await findFolder(accessToken, ROOT_FOLDER_NAME, "root", null);
+  return root ? { parentId: root, driveId: null } : null;
+}
+
+async function rememberedFolder(sb: SupabaseClient, projectId: string, scopeKey: string): Promise<string | null> {
+  const { data, error } = await sb.from("google_project_folders")
+    .select("folder_id").eq("project_id", projectId).eq("scope_key", scopeKey).maybeSingle();
+  if (error || !data?.folder_id) return null;
+  return String(data.folder_id);
+}
+
+async function rememberFolder(sb: SupabaseClient, projectId: string, scopeKey: string, folderId: string): Promise<void> {
+  await sb.from("google_project_folders").upsert(
+    { project_id: projectId, scope_key: scopeKey, folder_id: folderId, updated_at: new Date().toISOString() },
+    { onConflict: "project_id,scope_key" },
+  );
+}
+
+/**
+ * 保存先フォルダを解決する（無ければ作る）。
+ * userId は Drive を操作する本人。my_drive では代行しないので、トークンの持ち主と一致する。
  */
 async function resolveTargetFolder(
-  accessToken: string, cfg: OrgConfig, projectName: string,
+  sb: SupabaseClient, accessToken: string, cfg: OrgConfig,
+  project: { id: unknown; name: unknown }, userId: string,
 ): Promise<string> {
-  // 空のプロジェクト名でフォルダを作らせない（ensureFolderPath の「無題のフォルダ」と同じ考え方）
-  const safeName = projectName.trim() || "無題のプロジェクト";
+  const projectId = String(project.id);
+  const scopeKey = folderScopeKey(cfg, userId);
 
-  if (cfg.mode === "shared_drive") {
-    return ensureFolder(accessToken, safeName, String(cfg.sharedFolderId), cfg.sharedDriveId);
+  const remembered = await rememberedFolder(sb, projectId, scopeKey);
+  let replace = !remembered;
+  if (remembered) {
+    try {
+      const info = await drive(accessToken,
+        `/files/${encodeURIComponent(remembered)}?supportsAllDrives=true&fields=id,trashed`);
+      if (!info?.trashed) return remembered;
+      replace = true;
+    } catch (e) {
+      // 404 は見えないだけの可能性があるので上書きしない（上のコメント参照）
+      if (!(e instanceof HttpError) || e.status !== 404) throw e;
+    }
   }
-  const devticket = await ensureFolder(accessToken, ROOT_FOLDER_NAME, "root", null);
-  return ensureFolder(accessToken, safeName, devticket, null);
+
+  const parent = await projectFolderParent(accessToken, cfg, true);
+  const folderId = await ensureFolder(accessToken, projectFolderName(project.name), parent!.parentId, parent!.driveId);
+  if (replace) await rememberFolder(sb, projectId, scopeKey, folderId);
+  return folderId;
 }
 
 // ── Office文書 → Google形式 ──────────────────────────────
@@ -1163,7 +1234,7 @@ export default async function handler(req: any, res: any) {
 
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
       const { actor, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
       const accessToken = actor.accessToken;
 
       // DevTicket 側で一意な名前を先に決める。file_name は改名・削除・コメントの
@@ -1260,7 +1331,7 @@ export default async function handler(req: any, res: any) {
 
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
       const { actor, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
       const accessToken = actor.accessToken;
 
       // Google形式に拡張子は無いので落とす。DevTicket 側で一意な名前を先に押さえる。
@@ -1350,7 +1421,7 @@ export default async function handler(req: any, res: any) {
 
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
       const { actor, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
       const accessToken = actor.accessToken;
 
       // 名前は拡張子を落としたもの。同名の Googleファイルが既にあれば「(1)」を付ける
@@ -1453,7 +1524,7 @@ export default async function handler(req: any, res: any) {
       const self = run.self;
       const accessToken = self.accessToken;
       const { actor: dest, folderId } = await run(async a =>
-        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+        ({ actor: a, folderId: await resolveTargetFolder(sb, a.accessToken, cfg, project, profile.id) }));
       // 保存先が本人のトークンから見えないとき。files.copy は使えず、中身を中継する
       const delegated = dest !== self;
       const people = await projectMemberEmails(sb, project as any);
@@ -1629,7 +1700,7 @@ export default async function handler(req: any, res: any) {
       // 保存先フォルダが本人から見えないときは管理者のトークンで見る（driveActors 参照）
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
       const live = await run(async ({ accessToken }) => {
-        const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+        const folderId = await resolveTargetFolder(sb, accessToken, cfg, project, profile.id);
         const found = new Map<string, string>(); // fileId → name
         let pageToken = "";
         for (let page = 0; page < 20; page++) {
@@ -1719,6 +1790,120 @@ export default async function handler(req: any, res: any) {
           method: "PATCH", body: { name: newName },
         }));
       return res.json({ ok: true });
+    }
+
+    // ── プロジェクト名の変更を Drive のフォルダ名へ反映 ─────
+    // DevTicket 側の変更（projects の update）はプロジェクト編集ダイアログが行い、その後にこれを呼ぶ。
+    //
+    // 1. 保存先フォルダの ID をまだ覚えていなければ、変更前の名前（oldName）で探して覚える。
+    //    テーブル追加前から使っているプロジェクトは ID を覚えておらず、ここで覚えないと
+    //    新しい名前で探して見つからず、既存のファイルが全件「削除済み」に見えてしまう。
+    // 2. 共有ドライブ運用なら、フォルダ名を新しいプロジェクト名に変える。
+    //
+    // ★ マイドライブ運用ではフォルダ名を変えない。フォルダは作った人それぞれのマイドライブにあり、
+    //   全員分を変えるには他人のトークンで個人のドライブを書き換えることになる（driveActors の my_drive と同じ方針）。
+    //   本人の分の ID を覚えるだけにする。フォルダは ID で引くので、名前が古いままでも開ける。
+    //
+    // ★ 名前の反映は見た目を揃えるためのもの。失敗してもファイルは ID で引けるので、
+    //   失敗は skipped / reason で返し、エラーにはしない（プロジェクト名の変更は成立している）。
+    if (action === "rename-project-folder") {
+      const projectId = String(body.projectId ?? "");
+      if (!projectId) return res.status(400).json({ error: "projectId が必要です" });
+      if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const { data: project } = await sb.from("projects")
+        .select("id, name, organization_id").eq("id", projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+
+      const orgId = project.organization_id ? String(project.organization_id) : null;
+      const cfg = await orgConfig(sb, orgId);
+      const skipped = (reason: string) => res.json({ renamed: false, skipped: true, reason });
+      if (cfg.mode === "off") return skipped("off");
+      if (cfg.mode === "shared_drive" && !cfg.sharedFolderId) return skipped("no_folder");
+
+      const { data: token } = await sb.from("google_drive_tokens")
+        .select("user_id").eq("user_id", profile.id).maybeSingle();
+      if (!token) return skipped("not_linked");
+
+      const newName = projectFolderName(project.name);
+      const oldName = String(body.oldName ?? "").trim();
+      const scopeKey = folderScopeKey(cfg, profile.id);
+
+      // 変更前の名前で見つけたフォルダが、本当にこのプロジェクトのものかを確かめる。
+      // oldName はクライアントから来るので、それだけを信じると別プロジェクトのフォルダを取り込みうる。
+      // このプロジェクトのGoogleファイルが1件でも入っていれば、このプロジェクトのフォルダと見なす。
+      const { data: ownFiles } = await sb.from("project_files")
+        .select("external_id").eq("project_id", projectId).eq("external_provider", "google");
+      const ownIds = new Set((ownFiles ?? []).map(r => String(r.external_id ?? "")).filter(Boolean));
+      const holdsOwnFile = async (accessToken: string, folderId: string): Promise<boolean> => {
+        let pageToken = "";
+        for (let page = 0; page < 20; page++) {
+          const params = new URLSearchParams({
+            q: `'${q(folderId)}' in parents and trashed=false`,
+            fields: "nextPageToken,files(id)",
+            pageSize: "100",
+            supportsAllDrives: "true",
+            includeItemsFromAllDrives: "true",
+          });
+          if (cfg.mode === "shared_drive" && cfg.sharedDriveId) {
+            params.set("corpora", "drive"); params.set("driveId", cfg.sharedDriveId);
+          }
+          if (pageToken) params.set("pageToken", pageToken);
+          const listed = await drive(accessToken, `/files?${params}`);
+          if ((listed?.files ?? []).some((f: { id?: unknown }) => ownIds.has(String(f.id)))) return true;
+          pageToken = String(listed?.nextPageToken ?? "");
+          if (!pageToken) return false;
+        }
+        return false;
+      };
+
+      const NOT_FOUND = "プロジェクトのフォルダが見つかりません";
+      const run = await driveActors(sb, profile, cfg, orgId);
+      try {
+        const result = await run(async ({ accessToken }) => {
+          let folderId = await rememberedFolder(sb, projectId, scopeKey);
+          if (!folderId) {
+            // 変更前の名前が無い・同じなら、探し直す意味が無い（フォルダはまだ作られていないか、名前で引ける）
+            if (!oldName || oldName === newName || ownIds.size === 0) return { renamed: false, reason: "not_remembered" };
+            const parent = await projectFolderParent(accessToken, cfg, false);
+            const found = parent ? await findFolder(accessToken, oldName, parent.parentId, parent.driveId) : null;
+            // 共有ドライブでは、本人のトークンからは管理者が作ったフォルダが見えない。404 にして管理者で試し直す
+            if (!found || !(await holdsOwnFile(accessToken, found))) {
+              if (cfg.mode === "shared_drive") throw new HttpError(404, NOT_FOUND);
+              return { renamed: false, reason: "not_found" };
+            }
+            folderId = found;
+            await rememberFolder(sb, projectId, scopeKey, folderId);
+          }
+
+          if (cfg.mode !== "shared_drive") return { renamed: false, reason: "my_drive" };
+
+          const info = await drive(accessToken,
+            `/files/${encodeURIComponent(folderId)}?supportsAllDrives=true&fields=id,name,trashed`);
+          if (info?.trashed) return { renamed: false, reason: "trashed" };
+          const currentName = String(info?.name ?? "");
+          if (currentName === newName) return { renamed: false, reason: "same" };
+
+          // 同じ組織に今のフォルダ名と同じ名前のプロジェクトが他にあるときは変えない。
+          // 以前は名前でフォルダを引いていたため、同名のプロジェクトは1つのフォルダを共有していることがあり、
+          // 変えると相手のプロジェクトのフォルダ名まで変わってしまう。
+          const { data: sameName } = await sb.from("projects")
+            .select("id").eq("organization_id", orgId).eq("name", currentName).neq("id", projectId).limit(1);
+          if ((sameName ?? []).length > 0) return { renamed: false, reason: "shared_with_other_project" };
+          const { data: claimed } = await sb.from("google_project_folders")
+            .select("project_id").eq("folder_id", folderId).neq("project_id", projectId).limit(1);
+          if ((claimed ?? []).length > 0) return { renamed: false, reason: "shared_with_other_project" };
+
+          await drive(accessToken, `/files/${encodeURIComponent(folderId)}?supportsAllDrives=true`, {
+            method: "PATCH", body: { name: newName },
+          });
+          return { renamed: true, reason: "" };
+        });
+        return res.json({ ...result, skipped: !result.renamed });
+      } catch (e) {
+        if (e instanceof HttpError && e.status === 404) return skipped("not_found");
+        throw e;
+      }
     }
 
     // ── Drive 側をゴミ箱へ移動 ────────────────────────────

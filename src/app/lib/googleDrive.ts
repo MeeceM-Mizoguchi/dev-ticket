@@ -200,6 +200,20 @@ export function renameGoogleFile(fileId: string, newName: string): Promise<{ ok:
   return postApi<{ ok: boolean }>("rename", { fileId, newName });
 }
 
+/**
+ * プロジェクト名の変更を、Googleドライブ上の保存先フォルダ名へ反映する（共有ドライブ運用のみ）。
+ * DevTicket 側の projects の更新の後に、変更前の名前を渡して呼ぶ。
+ *
+ * マイドライブ運用・Google未連携などでは何もしない（skipped）。
+ * 反映できなくても、フォルダは ID で引くのでファイルは開ける。
+ */
+export function renameGoogleProjectFolder(
+  projectId: string, oldName: string,
+): Promise<{ renamed: boolean; skipped: boolean; reason: string }> {
+  return postApi<{ renamed: boolean; skipped: boolean; reason: string }>(
+    "rename-project-folder", { projectId, oldName });
+}
+
 export interface TrashResult {
   /** ゴミ箱へ移動できた件数 */
   trashed: number;
