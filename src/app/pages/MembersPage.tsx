@@ -23,7 +23,7 @@ import { SKILL_LAYERS } from "@/app/lib/skills";
 import { fetchSkills, fetchMemberSkills } from "@/app/lib/skillsApi";
 
 export function MembersPage() {
-  const { userRole, userId, isSystemAdmin, userPermissions } = useAuth();
+  const { userRole, userId, isSystemAdmin } = useAuth();
   const { plan } = usePlan();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -55,11 +55,14 @@ export function MembersPage() {
   const [layerFilter, setLayerFilter] = useState<SkillLayer | "all">("all");
 
   const isOwner = userRole === "owner";
-  const canAdd = isOwner || userRole === "admin" || userRole === "project-manager";
-  const canEdit = isOwner || userRole === "admin" || userRole === "project-manager";
-  // ENHA2-034: スキルUI・学習のお知らせは「メンバー管理」権限を持つ人だけに見せる。
-  // 一般の開発者には何も表示しない。
-  const canManageSkills = Boolean(userPermissions.canAccessMembers) || isOwner;
+  // メンバー管理（画面・招待・編集・削除・スキル）はオーナーと管理者だけ。
+  // ロール設定の権限では広げない（「メンバー管理」の項目はロール設定から外した）。
+  // ★ api/_lib/memberAuth.ts の requireMemberManager と揃えること
+  const canManageMembers = isOwner || userRole === "admin";
+  const canAdd = canManageMembers;
+  const canEdit = canManageMembers;
+  // ENHA2-034: スキルUI・学習のお知らせもメンバー管理できる人だけに見せる（MlSetupGate と同じ判定）
+  const canManageSkills = canManageMembers;
   // BRU9-041: 履歴の閲覧は canManageSkills、過去の状態への復元はオーナー/管理者だけ。
   // ※ 画面で隠すだけでなく restore_member_skills RPC 側でもロールを検証している
   //   （UIを隠すだけではRPCを直接叩けてしまうため）。
@@ -149,9 +152,11 @@ export function MembersPage() {
 
   const handleDeleteMember = async (member: Member) => {
     if (isSupabaseEnabled) {
+      // API 側で「オーナー／管理者か」を確かめるため、ログイン中のトークンを渡す
+      const { data: { session } } = await supabase!.auth.getSession();
       const res = await fetch("/api/delete-member", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token ?? ""}` },
         body: JSON.stringify({ userId: member.id, memberName: member.name }),
       });
       const json = await res.json();
@@ -179,7 +184,7 @@ export function MembersPage() {
   // ENHA2-034: ルートガード。
   // 他の管理画面(RolesPage/PermissionsPage等)には全てガードがあるが、
   // MembersPage だけ抜けていて /members 直打ちで到達できた。スキル情報を載せる前に塞ぐ。
-  if (isSupabaseEnabled && !canManageSkills && !canAdd) {
+  if (isSupabaseEnabled && !canManageMembers) {
     // 黙ってダッシュボードへ飛ばさず、理由を出す（docs/not-found-page-design.md）。
     return <NotFoundView kind="no-permission" label="メンバー管理" />;
   }
@@ -319,7 +324,7 @@ export function MembersPage() {
               {filtered.map(m => (
                 <MemberCard key={m.id} member={m}
                   canEdit={canEdit}
-                  canDelete={m.id !== userId && m.role !== "owner" && (isOwner || (m.role === "admin" ? userRole === "admin" : (userRole === "admin" || userRole === "project-manager")))}
+                  canDelete={canManageMembers && m.id !== userId && m.role !== "owner"}
                   canManageSkills={canManageSkills}
                   skills={skills}
                   memberSkills={memberSkills}

@@ -13,8 +13,8 @@
 //   ＋ 保険として、万一まだ分析されていない組織（デプロイ後に新規作成された組織など）に
 //      出会ったら、その場で分析を走らせる。
 //
-// ★表示対象は「メンバー管理」権限(canAccessMembers)を持つ人だけ★
-//   一般ユーザーには何も出さない。
+// ★表示対象はメンバー管理できる人（オーナー／管理者）だけ★
+//   一般ユーザーには何も出さない。MembersPage の canManageMembers と同じ判定。
 
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
@@ -27,14 +27,14 @@ import {
 import { MlNoticeModal, SkillReviewPromptDialog } from "@/app/components/members/MlNoticeModal";
 
 export function MlSetupGate() {
-  const { userId, userOrgId, userRole, userPermissions } = useAuth();
+  const { userId, userOrgId, userRole } = useAuth();
   const navigate = useNavigate();
 
   const [showNotice, setShowNotice] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [examples, setExamples] = useState<string[]>([]);
 
-  const canManageSkills = Boolean(userPermissions.canAccessMembers) || userRole === "owner";
+  const canManageSkills = userRole === "owner" || userRole === "admin";
 
   // 自動登録されたスキルの実例を作る（誘導ダイアログに出す）
   const loadExamples = async (orgId: string) => {

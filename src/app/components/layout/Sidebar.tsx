@@ -15,7 +15,8 @@ const NAV_ITEMS: { id: Page; label: string; icon: ElementType; roles?: Role[]; p
   { id: "release-notes", label: "リリースノート", icon: FileText },
   { id: "reports", label: "レポート管理", icon: FileBarChart2, permission: "canAccessReports" },
   { id: "clients", label: "クライアント", icon: Building2, roles: ["admin", "project-manager", "owner"] },
-  { id: "members", label: "メンバー", icon: Users, permission: "canAccessMembers" },
+  // メンバー管理はオーナーと管理者だけ（ロール設定の権限では広げない。MembersPage の canManageMembers）
+  { id: "members", label: "メンバー", icon: Users, roles: ["admin", "owner"] },
   { id: "permissions", label: "アサイン計画", icon: CalendarRange, permission: "canAccessGroups" },
   { id: "roles", label: "ロール設定", icon: UserCog, permission: "canAccessRoles" },
   // 中身は Slack通知 / メンバーのSlack ID / GitHub連携。実態が「外部サービス連携」なので

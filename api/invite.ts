@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
+import { requireMemberManager } from "./_lib/memberAuth";
 
 const ROLE_JA: Record<string, string> = {
   admin: "管理者", "project-manager": "プロジェクトマネージャー",
@@ -131,6 +132,21 @@ export default async function handler(req: any, res: any) {
   if (!resendKey) return res.status(500).json({ error: "Resend API key not configured" });
 
   const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
+
+  // メンバー管理はオーナーと管理者だけ（api/_lib/memberAuth.ts）
+  const auth = await requireMemberManager(sb, req);
+  if (!auth.ok) return res.status(auth.status).json({ error: auth.error });
+  const manager = auth.manager;
+
+  // オーナーは画面からもAPIからも作らない（MemberEditDialog / InviteDialog も選択肢から外している）
+  if (role === "owner") return res.status(400).json({ error: "オーナーとして招待することはできません" });
+
+  // 管理者は自分の組織にしか招待できない。組織の指定は無視して自分の組織に固定する
+  const targetOrgId: string | null = manager.role === "owner" ? (organizationId || null) : manager.organizationId;
+  if (manager.role !== "owner" && !targetOrgId) {
+    return res.status(403).json({ error: "所属組織が設定されていないため招待できません" });
+  }
+
   // @vercel/node + pnpm では auth.admin の継承型が解決されないため型のみ緩める（実行時は有効）
   const authAdmin = (sb.auth as any).admin;
 
@@ -140,7 +156,7 @@ export default async function handler(req: any, res: any) {
     type: "invite",
     email,
     options: {
-      data: { name: name || "", role: role || "developer", group_name: group || "", organization_id: organizationId || null },
+      data: { name: name || "", role: role || "developer", group_name: group || "", organization_id: targetOrgId },
       redirectTo: `${publicUrl}/accept-invite`,
     },
   });
@@ -155,6 +171,16 @@ export default async function handler(req: any, res: any) {
     data = mlResult.data;
     error = mlResult.error;
     verifyType = "magiclink";
+  }
+
+  // 既に登録済みのユーザーを招待し直すと、下の upsert でロールと組織が上書きされる。
+  // 管理者が他組織の人・オーナーを自分の組織へ引き抜けないよう、既存の所属を確かめる。
+  if (verifyType === "magiclink" && data?.user?.id && manager.role !== "owner") {
+    const { data: existing } = await sb.from("profiles")
+      .select("role, organization_id").eq("id", data.user.id).maybeSingle();
+    if (existing && (existing.role === "owner" || String(existing.organization_id ?? "") !== targetOrgId)) {
+      return res.status(403).json({ error: "このメールアドレスは別の組織で登録済みのため招待できません" });
+    }
   }
 
   if (error || !data?.properties?.hashed_token) {
@@ -177,7 +203,7 @@ export default async function handler(req: any, res: any) {
       role: role || "developer",
       group_name: group || "",
       status: "invited",
-      organization_id: organizationId || null,
+      organization_id: targetOrgId,
     }, { onConflict: "id" });
   }
 
