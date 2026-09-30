@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, RefreshCw } from "lucide-react";
+import { Bell, Trash2, ClipboardList, Check, Bug, Megaphone, ChevronRight, Fingerprint, ShieldOff, Info, Copy, X, RefreshCw, Unlink } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useRefresh } from "@/app/contexts/RefreshContext";
 import { NOTIFICATIONS as MOCK_NOTIFICATIONS } from "@/app/data/mock";
@@ -20,7 +20,8 @@ import { buildFileCommentPath, parseFileMentionContext } from "@/app/lib/fileCom
 import { parseTaskMentionContext } from "@/app/lib/taskNotify";
 import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
 import { useGoogleAccountLink } from "@/app/hooks/useGoogleAccountLink";
-import { startGoogleOAuth } from "@/app/lib/googleDrive";
+import { startGoogleOAuth, disconnectGoogle } from "@/app/lib/googleDrive";
+import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
 import { useToast } from "@/app/contexts/ToastContext";
 
@@ -45,7 +46,7 @@ function formatRelative(ts: string): string {
 const NOTIF_VIEWED_KEY = "notif_last_viewed_at";
 
 export function Topbar() {
-  const { userName, isSystemAdmin } = useAuth();
+  const { userName, userRole, isSystemAdmin } = useAuth();
   const { refreshNonce, refreshing, refresh } = useRefresh();
   const navigate = useNavigate();
   const [showBugReport, setShowBugReport] = useState(false);
@@ -82,6 +83,19 @@ export function Topbar() {
       setGoogleLinking(false);
     }
   }, [toast]);
+
+  // 紐づけの解除。確認ダイアログを挟む（ConfirmDialog が処理中の二度押しを止める）
+  const [confirmGoogleUnlink, setConfirmGoogleUnlink] = useState(false);
+  const handleUnlinkGoogle = useCallback(async () => {
+    try {
+      // Google 側の許可も取り消され、DevTicket に保存していたトークンも消える（api/google の disconnect）
+      await disconnectGoogle();
+      toast("Googleアカウントの紐づけを解除しました");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "紐づけを解除できませんでした", "error");
+    }
+    await googleLink.reload().catch(() => undefined);
+  }, [toast, googleLink]);
 
   // バージョン情報ポップアップ
   const [showVersion, setShowVersion] = useState(false);
@@ -820,6 +834,24 @@ export function Topbar() {
                               {googleLink.googleEmail}
                             </div>
                           )}
+                          {/* 別のアカウントへの変更は紐づけをやり直すだけ（Google の画面でアカウントを選び直す）。
+                              前のアカウントの許可はサーバーが取り消す（api/google の oauth-callback） */}
+                          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                            <button
+                              onClick={() => { void handleLinkGoogle(); }}
+                              disabled={googleLinking}
+                              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, border: "1px solid rgba(26,23,20,0.12)", background: "#fff", fontSize: 11, fontWeight: 600, color: "#3D3732", cursor: googleLinking ? "default" : "pointer", opacity: googleLinking ? 0.6 : 1, whiteSpace: "nowrap" }}>
+                              <RefreshCw style={{ width: 11, height: 11 }} />
+                              {googleLinking ? "移動しています…" : "別のアカウントに変更"}
+                            </button>
+                            <button
+                              onClick={() => { setShowUserMenu(false); setConfirmGoogleUnlink(true); }}
+                              disabled={googleLinking}
+                              style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 7, border: "1px solid rgba(220,38,38,0.25)", background: "#FEF2F2", fontSize: 11, fontWeight: 600, color: "#DC2626", cursor: googleLinking ? "default" : "pointer", opacity: googleLinking ? 0.6 : 1, whiteSpace: "nowrap" }}>
+                              <Unlink style={{ width: 11, height: 11 }} />
+                              解除
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ) : (
@@ -854,6 +886,28 @@ export function Topbar() {
           )}
         </div>
       </div>
+
+      {/* Googleアカウントの紐づけ解除の確認 */}
+      {confirmGoogleUnlink && (
+        <ConfirmDialog
+          title="Googleアカウントの紐づけ解除"
+          confirmLabel="解除する"
+          hasWarningText={false}
+          message={[
+            `${googleLink.googleEmail ?? "Googleアカウント"} の紐づけを解除しますか？`,
+            "",
+            "・解除すると、Googleファイルの新規作成・変換・取り込みができなくなります（もう一度紐づければ使えます）",
+            "・これまでに共有されたGoogleファイルの権限は、Google側にそのまま残ります",
+            // 開く直前の権限付与（ensure-access）は作成者のトークンで行うため
+            "・あなたが作成したGoogleファイルを、他のメンバーが開けるようにする処理が失敗することがあります",
+            ...(userRole === "admin" || userRole === "owner"
+              ? ["・共有ドライブの保存先を設定した管理者が解除すると、他のメンバーのGoogleファイル操作が失敗することがあります"]
+              : []),
+          ].join("\n")}
+          onConfirm={handleUnlinkGoogle}
+          onClose={() => setConfirmGoogleUnlink(false)}
+        />
+      )}
 
       {/* 生体認証用トースト */}
       {bioToast && (

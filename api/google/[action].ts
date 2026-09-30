@@ -875,6 +875,10 @@ export default async function handler(req: any, res: any) {
       googleEmail = String(meJson?.email ?? "");
     } catch { /* 表示用なので取れなくても連携は成立させる */ }
 
+    // 別のアカウントに変更する場合に、前のアカウントのトークンを後で無効化するため先に読んでおく
+    const { data: previous } = await sb.from("google_drive_tokens")
+      .select("refresh_token, google_email").eq("user_id", payload.u).maybeSingle();
+
     const { error: upsertErr } = await sb.from("google_drive_tokens").upsert({
       user_id: payload.u,
       organization_id: payload.o ?? "",
@@ -883,6 +887,16 @@ export default async function handler(req: any, res: any) {
       updated_at: new Date().toISOString(),
     }, { onConflict: "user_id" });
     if (upsertErr) return back({ google: "error", message: "連携情報の保存に失敗しました" });
+
+    // 別のアカウントに変更したときは、前のアカウントの許可を Google 側でも取り消す
+    // （上書きで DevTicket からは消えるが、Google のアカウント設定に許可が残り続けるため。disconnect と同じ）。
+    // ★ 同じアカウントで紐づけ直したときは取り消さない。取り消しはそのアカウントの許可ごと無効にするので、
+    //   いま受け取ったばかりのトークンまで使えなくなる。アドレスが取れず同じか分からないときも取り消さない。
+    const prevEmail = String(previous?.google_email ?? "").trim().toLowerCase();
+    if (previous?.refresh_token && prevEmail && googleEmail && prevEmail !== googleEmail.trim().toLowerCase()) {
+      await fetch(`${REVOKE_URL}?token=${encodeURIComponent(String(previous.refresh_token))}`, { method: "POST" })
+        .catch(() => undefined);
+    }
 
     await sb.from("profiles").update({ google_email: googleEmail || null }).eq("id", payload.u);
     return back({ google: "success" });
@@ -915,8 +929,10 @@ export default async function handler(req: any, res: any) {
         scope: SCOPE,
         // access_type=offline + prompt=consent の両方が無いと refresh_token が返らない。
         // 2回目以降の連携でも確実に受け取るため prompt=consent を必ず付ける。
+        // select_account は、ブラウザでログイン中のGoogleアカウントに黙って決まらないよう、
+        // 毎回どのアカウントで紐づけるかを選ばせるため（右上メニューの「別のアカウントに変更」）。
         access_type: "offline",
-        prompt: "consent",
+        prompt: "select_account consent",
         include_granted_scopes: "true",
         state,
       });
