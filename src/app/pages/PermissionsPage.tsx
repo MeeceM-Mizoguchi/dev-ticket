@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { Plus, X, Check, Users, GripVertical, Settings, AlertTriangle, CalendarRange, FolderKanban, ChevronDown, ChevronUp, Search } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapMember, mapProject } from "@/app/lib/mappers";
@@ -667,12 +668,6 @@ export function PermissionsPage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <OrgSelector />
-          <button onClick={() => setShowNewGroupModal(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", background: "#059669", color: "#FFF", fontSize: 13, fontWeight: 700, borderRadius: 10, border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(5,150,105,0.25)", transition: "background 0.15s", whiteSpace: "nowrap" as const }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
-            <Plus style={{ width: 15, height: 15 }} />新規グループ作成
-          </button>
         </div>
       </div>
 
@@ -732,6 +727,7 @@ export function PermissionsPage() {
           onRemoveMember={removeMemberFromGroup}
           onSettings={(id) => setSettingsGroupId(id)}
           onDelete={handleDeleteGroup}
+          onCreate={() => setShowNewGroupModal(true)}
         />
 
         {/* ── Column 3: Projects ── */}
@@ -778,8 +774,6 @@ export function PermissionsPage() {
 }
 
 // ── Members Column ────────────────────────────────────────────────────────────
-const MEMBERS_INITIAL_COUNT = 8;
-
 function MembersColumn({ members, groups, groupMemberships, onDragStart, currentUserRole }: {
   members: Member[];
   groups: PermissionGroup[];
@@ -787,11 +781,8 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
   onDragStart: (e: DragEvent, payload: DragPayload) => void;
   currentUserRole: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const filteredMembers = members.filter(m => m.name.toLowerCase().includes(searchQuery.toLowerCase()));
-  const hasMore = filteredMembers.length > MEMBERS_INITIAL_COUNT;
-  const displayMembers = expanded ? filteredMembers : filteredMembers.slice(0, MEMBERS_INITIAL_COUNT);
   const isCurrentUserAdmin = currentUserRole === "admin";
   const isCurrentUserOwner = currentUserRole === "owner";
 
@@ -822,7 +813,7 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
           {filteredMembers.length === 0 && (
             <p style={{ textAlign: "center" as const, fontSize: 12, color: "#C9C4BB", padding: "24px 0" }}>メンバーなし</p>
           )}
-          {displayMembers.map(m => {
+          {filteredMembers.map(m => {
             const memberGroupIds = groupMemberships.filter(gm => gm.member_id === m.id).map(gm => gm.group_id);
             const memberGroupNames = memberGroupIds.map(gid => groups.find(g => g.id === gid)?.name).filter(Boolean);
             const isAdmin = m.role === "admin";
@@ -853,20 +844,6 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
               </div>
             );
           })}
-
-          {/* アコーディオン展開ボタン */}
-          {hasMore && (
-            <button
-              onClick={() => setExpanded(v => !v)}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "7px 8px", marginTop: 2, borderRadius: 8, border: "1.5px dashed rgba(26,23,20,0.12)", background: "transparent", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#6B6458", transition: "all 0.15s" }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(5,150,105,0.30)"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.borderColor = "rgba(26,23,20,0.12)"; (e.currentTarget as HTMLElement).style.color = "#6B6458"; }}>
-              {expanded
-                ? <><ChevronUp style={{ width: 12, height: 12 }} />折りたたむ</>
-                : <><ChevronDown style={{ width: 12, height: 12 }} />全メンバーを見る（残り{filteredMembers.length - MEMBERS_INITIAL_COUNT}名）</>
-              }
-            </button>
-          )}
         </div>
       </div>
     </div>
@@ -874,7 +851,7 @@ function MembersColumn({ members, groups, groupMemberships, onDragStart, current
 }
 
 // ── Groups Column ─────────────────────────────────────────────────────────────
-function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart, onDragOver, onDragLeave, onDrop, onRemoveMember, onSettings, onDelete }: {
+function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart, onDragOver, onDragLeave, onDrop, onRemoveMember, onSettings, onDelete, onCreate }: {
   groups: PermissionGroup[];
   members: Member[];
   groupMemberships: GroupMembership[];
@@ -886,6 +863,7 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
   onRemoveMember: (groupId: number, memberId: string) => void;
   onSettings: (groupId: number) => void;
   onDelete: (groupId: number) => void;
+  onCreate: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -896,7 +874,15 @@ function GroupsColumn({ groups, members, groupMemberships, dragOver, onDragStart
         <div style={{ padding: "12px 14px", borderBottom: "1px solid rgba(26,23,20,0.06)", background: "#FAFAF9", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
             <p style={{ fontSize: 12, fontWeight: 700, color: "#1A1714" }}>グループ一覧</p>
-            <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{filteredGroups.length}件</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 11, color: "#A09790", background: "#F4F5F6", padding: "2px 8px", borderRadius: 20, fontWeight: 600 }}>{filteredGroups.length}件</span>
+              <button onClick={onCreate} title="新規グループ作成"
+                style={{ display: "flex", alignItems: "center", gap: 3, padding: "4px 9px", background: "#059669", color: "#FFF", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "none", cursor: "pointer", transition: "background 0.15s", whiteSpace: "nowrap" as const }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#047857"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#059669"; }}>
+                <Plus style={{ width: 12, height: 12 }} />作成
+              </button>
+            </div>
           </div>
           <div style={{ position: "relative", marginBottom: 6 }}>
             <Search style={{ width: 12, height: 12, color: "#A09790", position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)" }} />
@@ -1263,19 +1249,71 @@ function ProjectsColumn({ projects, groups, members, groupMemberships, dragOver,
   );
 }
 
+// ── プルダウンの選択肢パネル ─────────────────────────────────────────────────────
+// モーダル本体は overflow でスクロールするため、absolute で出すと下端で切れて選べなくなる。
+// body 直下へポータルし、ボタン位置に fixed で置く（下が足りなければ上に開く）。
+const FLOATING_MENU_GAP = 4;
+
+function FloatingMenu({ anchorRef, onClose, children }: {
+  anchorRef: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const menu = menuRef.current;
+    if (!anchor || !menu) return;
+    const r = anchor.getBoundingClientRect();
+    const h = menu.offsetHeight;
+    const below = r.bottom + FLOATING_MENU_GAP;
+    const top = below + h > window.innerHeight && r.top - FLOATING_MENU_GAP - h >= 0
+      ? r.top - FLOATING_MENU_GAP - h
+      : below;
+    setPos({ top, right: window.innerWidth - r.right });
+  }, [anchorRef]);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t) || anchorRef.current?.contains(t)) return;
+      onClose();
+    };
+    // 位置を固定しているので、背後がスクロールしたら置き去りにせず閉じる
+    const onScroll = (e: Event) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onClose);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onClose);
+    };
+  }, [anchorRef, onClose]);
+
+  return createPortal(
+    <div ref={menuRef} style={{
+      position: "fixed", top: pos?.top ?? 0, right: pos?.right ?? 0, zIndex: 600,
+      visibility: pos ? "visible" : "hidden",
+      background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 200, overflow: "hidden",
+    }}>
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 // ── AccessLevel カスタムドロップダウン ──────────────────────────────────────────
 function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onChange: (v: AccessLevel) => void; color?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
 
   const current = ACCESS_LEVEL_OPTIONS.find(o => o.value === value) ?? ACCESS_LEVEL_OPTIONS[0];
   const isActive = value !== "none";
@@ -1297,11 +1335,7 @@ function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onC
         <ChevronDown style={{ width: 11, height: 11, opacity: 0.5, flexShrink: 0 }} />
       </button>
       {open && (
-        <div style={{
-          position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600,
-          background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 200, overflow: "hidden",
-        }}>
+        <FloatingMenu anchorRef={ref} onClose={close}>
           {ACCESS_LEVEL_OPTIONS.map(o => (
             <button key={o.value} type="button"
               onClick={() => { onChange(o.value as AccessLevel); setOpen(false); }}
@@ -1316,7 +1350,7 @@ function AccessLevelSelect({ value, onChange, color }: { value: AccessLevel; onC
               {o.label}
             </button>
           ))}
-        </div>
+        </FloatingMenu>
       )}
     </div>
   );
@@ -1331,15 +1365,7 @@ function GithubActionRow({ block, value, onChange }: {
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
 
   const options: GithubActionLevel[] = ["none", "view", "write"];
   const labelOf = (v: GithubActionLevel) => (v === "write" ? block.writeLabel : GITHUB_LEVEL_LABELS[v]);
@@ -1369,7 +1395,7 @@ function GithubActionRow({ block, value, onChange }: {
             <ChevronDown style={{ width: 11, height: 11, opacity: 0.5, flexShrink: 0 }} />
           </button>
           {open && (
-            <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 600, background: "#FFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 200, overflow: "hidden" }}>
+            <FloatingMenu anchorRef={ref} onClose={close}>
               {options.map(o => (
                 <button key={o} type="button"
                   onClick={() => { onChange(o); setOpen(false); }}
@@ -1384,7 +1410,7 @@ function GithubActionRow({ block, value, onChange }: {
                   {labelOf(o)}
                 </button>
               ))}
-            </div>
+            </FloatingMenu>
           )}
         </div>
       </div>
