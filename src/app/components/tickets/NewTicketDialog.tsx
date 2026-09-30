@@ -12,7 +12,7 @@ import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { RichEditor, clipboardHasTable } from "@/app/components/shared/RichEditor";
 import { DatePicker } from "@/app/components/shared/DatePicker";
-import { fireSlackNotify } from "@/app/utils/slackNotify";
+import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
 // CustomSelect コンポーネントをインポート
 import { CustomSelect, type SelectOption } from "@/app/components/shared/CustomSelect";
 // 削除確認UIと同じ統一デザインのモーダルを出すために ConfirmDialog をインポート
@@ -576,7 +576,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
                   project_slug: effectiveProjectSlug, is_read: false,
                 });
                 if (nErr) console.error("[notifications] new ticket (child early) insert failed:", nErr.message);
-                fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+                fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: slackTicketLink(effectiveProjectSlug, wbs, title) });
               }
               await notifyMentions(wbs);
             } catch (e) { console.error("[NewTicketDialog] notify (child early) failed:", e); }
@@ -638,7 +638,7 @@ export function NewTicketDialog({ sprintId, projectId, projectSlug, onClose, onC
             project_slug: effectiveProjectSlug, is_read: false,
           });
           if (nErr2) console.error("[notifications] new ticket insert failed:", nErr2.message);
-          fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: `${wbs}: ${title}` });
+          fireSlackNotify({ recipientUserNames: [finalAssignee], projectSlug: effectiveProjectSlug, title: "チケットが割り当てられました", body: slackTicketLink(effectiveProjectSlug, wbs, title) });
         }
         await notifyMentions(wbs);
       } catch (e) { console.error("[NewTicketDialog] notify failed:", e); }

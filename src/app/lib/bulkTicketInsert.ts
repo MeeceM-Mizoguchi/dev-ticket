@@ -5,6 +5,7 @@
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { getDefaultProgressForStatus } from "@/app/lib/helpers";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
+import { fireSlackNotify, slackTicketLinkList } from "@/app/utils/slackNotify";
 import type { TicketStatus, Priority } from "@/app/types";
 
 export interface BulkInsertTicket {
@@ -221,6 +222,24 @@ export async function insertBulkTickets(params: BulkInsertParams): Promise<BulkI
         project_slug: projectSlug, is_read: false,
       })),
     );
+
+    // Slack は担当者ごとに1投稿へまとめる（一括作成で1件ずつ流すとチャンネルが埋まるため）
+    if (projectSlug) {
+      const byAssignee = new Map<string, { wbs: string; title: string }[]>();
+      for (const t of notifySource) {
+        const list = byAssignee.get(t.assignee) ?? [];
+        list.push({ wbs: t.wbs, title: t.title });
+        byAssignee.set(t.assignee, list);
+      }
+      for (const [assignee, list] of byAssignee) {
+        fireSlackNotify({
+          recipientUserNames: [assignee],
+          projectSlug,
+          title: list.length > 1 ? `チケットが${list.length}件割り当てられました` : "チケットが割り当てられました",
+          body: slackTicketLinkList(projectSlug, list),
+        });
+      }
+    }
   }
 
   emitLinkItemsChanged(projectId, "ticket");   // 他タブの # サジェストへ即時反映

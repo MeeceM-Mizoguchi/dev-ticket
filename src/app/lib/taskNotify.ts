@@ -8,7 +8,7 @@
 // 飛び先はチケットではなくタスクなので、mention_context に「task:{taskId}」を入れる
 // （Topbar が解釈して /tasks?task={id} へ飛ばす）。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { fireSlackNotify } from "@/app/utils/slackNotify";
+import { fireSlackNotify, slackTaskLink } from "@/app/utils/slackNotify";
 
 const TASK_CONTEXT_PREFIX = "task:";
 
@@ -58,7 +58,7 @@ async function notify(base: TaskNotifyBase, toUserName: string, title: string, b
     recipientUserNames: [toUserName],
     projectSlug: base.projectSlug ?? "",
     title,
-    body: `タスク: ${base.taskTitle}`,
+    body: slackTaskLink(base.taskId, base.taskTitle),
   });
 }
 
