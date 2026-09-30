@@ -374,6 +374,17 @@ async function uploadAsGoogleFormat(
   accessToken: string, bytes: Buffer<ArrayBuffer>, sourceType: string,
   name: string, kind: string, folderId: string,
 ): Promise<{ id: string; webViewLink: string }> {
+  return uploadToDrive(accessToken, bytes, sourceType, name, MIME[kind], folderId, "Google形式への変換に失敗しました");
+}
+
+/**
+ * 中身を Drive へ再開可能アップロードで送る。
+ * targetMime に Google形式を渡すと変換され、元の形式を渡すとそのまま保存される。
+ */
+async function uploadToDrive(
+  accessToken: string, bytes: Buffer<ArrayBuffer>, sourceType: string,
+  name: string, targetMime: string, folderId: string, failMessage: string,
+): Promise<{ id: string; webViewLink: string }> {
   // ① セッションを作る
   const params = new URLSearchParams({
     uploadType: "resumable", supportsAllDrives: "true", fields: "id,name,webViewLink",
@@ -386,7 +397,7 @@ async function uploadAsGoogleFormat(
       "X-Upload-Content-Type": sourceType,
       "X-Upload-Content-Length": String(bytes.length),
     },
-    body: JSON.stringify({ name, mimeType: MIME[kind], parents: [folderId] }),
+    body: JSON.stringify({ name, mimeType: targetMime, parents: [folderId] }),
   });
   if (!init.ok) {
     const j = await init.json().catch(() => ({}));
@@ -407,9 +418,78 @@ async function uploadAsGoogleFormat(
   if (!put.ok || !created?.id) {
     const reason = created?.error?.errors?.[0]?.reason || "";
     throw new HttpError(put.status || 502,
-      driveErrorMessage(put.status, reason, created?.error?.message || "Google形式への変換に失敗しました"));
+      driveErrorMessage(put.status, reason, created?.error?.message || failMessage));
   }
   return { id: String(created.id), webViewLink: String(created.webViewLink ?? "") };
+}
+
+// ── 別のトークンの保存先へ中継する（import-files 用） ──────────
+// drive.file では「コピー元を Picker で選んだ本人」と「共有ドライブの保存先を Picker で選んだ管理者」の
+// トークンが別になることがある（BRU18-013）。どちらか一方のトークンでは files.copy ができないので、
+// 本人のトークンで中身を読み出し、管理者のトークンで保存先へアップロードし直す。
+
+// 中継する1ファイルの上限。中身をいったん関数のメモリに載せるため
+const RELAY_MAX_BYTES = 100 * 1024 * 1024;
+
+// Google形式は中身を持たないので、Office形式で書き出してから Google形式へ変換し直す。
+// ★ CONVERTIBLE と対になる形式（書き出し → uploadAsGoogleFormat で戻せるもの）だけを置くこと。
+const GOOGLE_EXPORT: Record<string, string> = {
+  spreadsheet: CONVERTIBLE.xlsx.mime,
+  document: CONVERTIBLE.docx.mime,
+  presentation: CONVERTIBLE.pptx.mime,
+};
+
+/** Drive からファイルの中身を読み出す（alt=media / export の共通処理） */
+async function downloadDrive(accessToken: string, path: string): Promise<Buffer<ArrayBuffer>> {
+  const res = await fetch(`${DRIVE_API}${path}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    const reason = j?.error?.errors?.[0]?.reason || "";
+    if (reason === "exportSizeLimitExceeded") {
+      throw new HttpError(res.status, "Googleファイルが大きすぎるため、共有ドライブの保存先へ追加できません");
+    }
+    if (reason === "cannotDownloadFile" || reason === "cannotExportFile") {
+      throw new HttpError(res.status, "持ち主がダウンロードを禁止しているため追加できません");
+    }
+    throw new HttpError(res.status,
+      driveErrorMessage(res.status, reason, j?.error?.message || "ファイルの中身を読み出せませんでした"));
+  }
+  const bytes = Buffer.from(await res.arrayBuffer());
+  if (bytes.length > RELAY_MAX_BYTES) {
+    throw new HttpError(413, `ファイルが大きすぎるため、共有ドライブの保存先へ追加できません（${RELAY_MAX_BYTES / 1024 / 1024} MB まで）`);
+  }
+  return bytes;
+}
+
+/**
+ * readerToken で読めるファイルを、writerToken で見える folderId へ複製する。
+ * files.copy と違い、変更履歴・コメントに加えて、Google形式では一部の書式も引き継がれない
+ * （Office形式を経由するため）。
+ */
+async function relayCopy(
+  readerToken: string, writerToken: string,
+  src: { id: string; mimeType: string; size?: unknown }, name: string, drawio: boolean, folderId: string,
+): Promise<{ id: string; webViewLink: string }> {
+  const gid = encodeURIComponent(src.id);
+  const googleKind = Object.keys(MIME).find(k => MIME[k] === src.mimeType) ?? null;
+  if (googleKind) {
+    const exportMime = GOOGLE_EXPORT[googleKind];
+    const bytes = await downloadDrive(readerToken,
+      `/files/${gid}/export?mimeType=${encodeURIComponent(exportMime)}`);
+    return uploadAsGoogleFormat(writerToken, bytes, exportMime, name, googleKind, folderId);
+  }
+  // フォーム・図形描画などは書き出した形から元の形式へ戻せない
+  if (src.mimeType.startsWith("application/vnd.google-apps.")) {
+    throw new HttpError(400, "この種類のGoogleファイルは共有ドライブの保存先へ追加できません（スプレッドシート・ドキュメント・スライド・通常のファイルのみ）");
+  }
+  // 読み出す前に弾けるものは弾く（Drive が size を返すのは通常のファイルだけ）
+  if (Number(src.size ?? 0) > RELAY_MAX_BYTES) {
+    throw new HttpError(413, `ファイルが大きすぎるため、共有ドライブの保存先へ追加できません（${RELAY_MAX_BYTES / 1024 / 1024} MB まで）`);
+  }
+  const bytes = await downloadDrive(readerToken, `/files/${gid}?alt=media&supportsAllDrives=true`);
+  // 手でアップロードされた .drawio は MIME が octet-stream 等のことがあるので、draw.io の形式に揃える
+  const type = drawio ? DRAWIO_MIME : (src.mimeType || "application/octet-stream");
+  return uploadToDrive(writerToken, bytes, type, name, type, folderId, "共有ドライブの保存先へ追加できませんでした");
 }
 
 /**
@@ -683,7 +763,7 @@ async function driveActors(
   };
 
   /** 本人 → 管理者 の順に fn を試す（管理者は共有ドライブ運用のときだけ）。404 以外の失敗はそのまま投げる */
-  return async function run<T>(fn: (actor: DriveActor) => Promise<T>): Promise<T> {
+  const run = async function run<T>(fn: (actor: DriveActor) => Promise<T>): Promise<T> {
     try {
       return await fn(self);
     } catch (e) {
@@ -701,6 +781,8 @@ async function driveActors(
       throw e;
     }
   };
+  // self … 本人のトークン。本人が Picker で選んだファイルは本人のトークンでしか読めない（import-files）
+  return Object.assign(run, { self });
 }
 
 /** プロジェクトが属する組織の driveActors を作る（ファイル単位の操作用） */
@@ -1336,6 +1418,8 @@ export default async function handler(req: any, res: any) {
     //   保存先フォルダの中に既にあるものだけは、そのまま追加する。
     //   Google形式以外（Office文書・PDF など）のコピーは Drive の容量を消費する点にも注意
     //   （Google形式は容量を消費しない）。
+    //   保存先が本人のトークンから見えない共有ドライブ運用では、files.copy の代わりに
+    //   中身を中継して複製する（relayCopy。Google形式は Office形式を経由するので一部の書式が変わりうる）。
     if (action === "import-files") {
       const projectId = String(body.projectId ?? "");
       const fileIds: string[] = Array.isArray(body.fileIds)
@@ -1360,8 +1444,18 @@ export default async function handler(req: any, res: any) {
       const parentId = await resolveParent(sb, projectId, body.parentId ?? null);
       if (parentId === false) return res.status(400).json({ error: "保存先のフォルダが見つかりません" });
 
-      const accessToken = await getAccessToken(sb, profile.id);
-      const folderId = await resolveTargetFolder(accessToken, cfg, String(project.name ?? ""));
+      // ★ トークンは2つ使い分ける（BRU18-013）。
+      //   ・Picker で選ばれたコピー元 … 選んだ本人のトークンでしか見えない（self）
+      //   ・共有ドライブの保存先フォルダ … 保存先を Picker で選んだ管理者のトークンでしか見えないことがある
+      //     （BRU18-003 と同じ。driveActors で本人 → 管理者の順に試す）
+      //   本人から保存先が見えないと、以前は保存先を探す段階の 404 で全件失敗していた。
+      const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
+      const self = run.self;
+      const accessToken = self.accessToken;
+      const { actor: dest, folderId } = await run(async a =>
+        ({ actor: a, folderId: await resolveTargetFolder(a.accessToken, cfg, String(project.name ?? "")) }));
+      // 保存先が本人のトークンから見えないとき。files.copy は使えず、中身を中継する
+      const delegated = dest !== self;
       const people = await projectMemberEmails(sb, project as any);
 
       // 名前の重複判定（追加先のフォルダの中だけ）と、同じファイルの二重登録の判定（プロジェクト全体）に使う
@@ -1430,20 +1524,32 @@ export default async function handler(req: any, res: any) {
             if (already.has(fileId)) throw new Error("既にファイルボックスに追加されています");
           } else {
             // 持ち主が「閲覧者のコピーを禁止」にしていると、コピーできない
+            // （中継でも同じ。この設定では閲覧者のダウンロードも禁止される）
             if (src?.capabilities?.canCopy === false) {
               throw new Error("持ち主がコピーを禁止しているため追加できません");
             }
-            const copied = await drive(accessToken,
-              `/files/${encodeURIComponent(fileId)}/copy?supportsAllDrives=true&fields=id,name,webViewLink`, {
-                method: "POST",
-                body: { name, parents: [folderId] },
-              });
-            if (!copied?.id) throw new Error("コピーを作成できませんでした");
-            fileId = String(copied.id);
-            webViewLink = String(copied.webViewLink ?? "");
+            if (delegated) {
+              const relayed = await relayCopy(accessToken, dest.accessToken,
+                { id: fileId, mimeType: String(src.mimeType ?? ""), size: src.size }, name, drawio, folderId);
+              fileId = relayed.id;
+              webViewLink = relayed.webViewLink;
+            } else {
+              const copied = await drive(accessToken,
+                `/files/${encodeURIComponent(fileId)}/copy?supportsAllDrives=true&fields=id,name,webViewLink`, {
+                  method: "POST",
+                  body: { name, parents: [folderId] },
+                });
+              if (!copied?.id) throw new Error("コピーを作成できませんでした");
+              fileId = String(copied.id);
+              webViewLink = String(copied.webViewLink ?? "");
+            }
           }
 
-          const share = await grantMembers(accessToken, fileId, people, String(profile.google_email ?? ""));
+          // 配るのは、そのファイルが見えるトークン。コピー・中継で作ったものは保存先側（dest）、
+          // 保存先にもともとあったものは本人が Picker で選んだので本人のトークンで見える。
+          // 作った人は既に権限を持つので配布から外す（中継なら管理者が外れ、本人には配られる）
+          const owner = inFolder ? self : dest;
+          const share = await grantMembers(owner.accessToken, fileId, people, owner.email);
           for (const x of share.failed) shareFailed.push({ name: `${name} / ${x.name}`, reason: x.reason });
 
           const { error } = await sb.from("project_files").insert({
@@ -1467,7 +1573,7 @@ export default async function handler(req: any, res: any) {
           if (error) {
             // こちらで作ったコピーだけ片付ける。そのまま追加しようとした元ファイルには触らない
             if (!inFolder) {
-              await drive(accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, { method: "DELETE" })
+              await drive(dest.accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, { method: "DELETE" })
                 .catch(() => undefined);
             }
             throw new Error(error.message);
