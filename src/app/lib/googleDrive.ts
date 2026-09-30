@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 import type { ProjectFile } from "@/app/types";
 import { stageProjectFile, registerStagedFile, type GoogleAppKind, type GoogleCreateKind } from "@/app/lib/projectFiles";
+import { openPendingTab } from "@/app/lib/pendingTab";
 
 // Googleドライブ連携のクライアント側入口（設計: docs/google-drive-integration-design.md）
 //
@@ -306,4 +307,70 @@ export function openGoogleFile(file: Pick<ProjectFile, "externalUrl">): boolean 
   if (!file.externalUrl) return false;
   window.open(file.externalUrl, "_blank", "noopener,noreferrer");
   return true;
+}
+
+export interface EnsureAccessResult {
+  /** 紐づけたGoogleアカウントで開ける状態になった（付与した／付与済みの記録があった） */
+  ok: boolean;
+  /** サーバー側の記録により、Drive への問い合わせを省いた */
+  cached?: boolean;
+  /** 付与しなかった理由（未紐づけ・運営アカウント・連携が無効） */
+  skipped?: string;
+  /** 付与に失敗した理由 */
+  reason?: string;
+}
+
+// このタブの中で権限を確かめ終えたファイル。2回目以降はサーバーへも問い合わせずに開く。
+// （紐づけを変えると OAuth のリダイレクトで読み込み直しになり、ここも空に戻る）
+const accessEnsured = new Set<string>();
+// 同じファイルへの問い合わせが重なったら1本にまとめる（連打・共有リンクの effect の再実行）
+const accessInFlight = new Map<string, Promise<EnsureAccessResult>>();
+
+/**
+ * 開く直前に、紐づけたGoogleアカウントへそのファイルの編集権限を付ける。
+ * 後から紐づけた人・後からプロジェクトに入った人は、作成時の配布に含まれていないため。
+ */
+export function ensureGoogleAccess(fileId: string): Promise<EnsureAccessResult> {
+  const inFlight = accessInFlight.get(fileId);
+  if (inFlight) return inFlight;
+  const p = postApi<EnsureAccessResult>("ensure-access", { fileId })
+    .then(r => { if (r.ok) accessEnsured.add(fileId); return r; })
+    .finally(() => { accessInFlight.delete(fileId); });
+  accessInFlight.set(fileId, p);
+  return p;
+}
+
+/**
+ * 権限を確かめてから Googleファイルを別タブで開く。
+ *
+ * ★ クリックと同じ実行の中で呼ぶこと。権限の確認を await する前に空タブを確保し、
+ *   終わってから URL を流し込む（await の後の window.open はポップアップブロックに当たる。pendingTab.ts 参照）。
+ * ★ 付与に失敗しても開く。共有ドライブのメンバーなど、付与しなくても開ける人がいるため。
+ *   失敗の理由は warning で返すので、呼び出し側で伝える。
+ *
+ * @param linked Googleアカウントを紐づけているか。false なら確認せずにそのまま開く（付ける先が無い）
+ */
+export async function openGoogleFileEnsuringAccess(
+  file: Pick<ProjectFile, "id" | "fileName" | "externalUrl">, linked: boolean | null,
+): Promise<{ opened: boolean; warning?: string }> {
+  const url = file.externalUrl;
+  if (!url) return { opened: false };
+  if (linked === false || accessEnsured.has(file.id)) return { opened: openGoogleFile(file) };
+  // BUG-05 確認中にもう一度押されても、空タブを増やさない（1回目の確認が終わればそのタブが開く）
+  if (accessInFlight.has(file.id)) return { opened: true };
+
+  const tab = openPendingTab(
+    "Googleで開いています",
+    `「${file.fileName}」を開けるよう、紐づけたGoogleアカウントの権限を確認しています。`,
+  );
+  let warning: string | undefined;
+  try {
+    const r = await ensureGoogleAccess(file.id);
+    if (!r.ok && r.reason) warning = `紐づけたGoogleアカウントに共有できませんでした（${r.reason}）`;
+  } catch (e) {
+    warning = e instanceof Error ? e.message : "Googleファイルの権限を確認できませんでした";
+  }
+  if (!tab) return { opened: false, warning };
+  tab.location.href = url;
+  return { opened: true, warning };
 }

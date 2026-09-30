@@ -31,7 +31,7 @@ import {
   isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind,
 } from "@/app/lib/projectFiles";
 import {
-  openGoogleFile, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
+  openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
   convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
 } from "@/app/lib/googleDrive";
@@ -355,7 +355,11 @@ export function FileBoxPage() {
       if (newest.externalUrl) {
         const url = newest.externalUrl;
         if (googleLinked) {
-          window.location.replace(url);
+          // 紐づけたGoogleアカウントに権限が無ければ、付けてから送る（同じタブの移動なので await の後でもブロックされない）。
+          // 付けられなくても送る（共有ドライブのメンバーなど、付与しなくても開ける人がいるため）
+          const fileId = newest.id;
+          void ensureGoogleAccess(fileId).catch(() => undefined)
+            .finally(() => window.location.replace(url));
           return;
         }
         guardGoogleOpen(() => window.location.replace(url));
@@ -754,14 +758,18 @@ export function FileBoxPage() {
     if (!file.externalUrl) { toast("このファイルのURLが見つかりません", "error"); return; }
     // 未紐づけなら先に紐づけるかを尋ねる（BRU17-028）。「紐づけずに開く」を選んだときもここから開く
     guardGoogleOpen(() => {
-      if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
-      // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
-      if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
-      // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
-      const office = googleConvertKind(file.fileName);
-      if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+      // 紐づけたGoogleアカウントに権限が無ければ、付けてから開く（後から紐づけた・後から参加した人向け）
+      void openGoogleFileEnsuringAccess(file, googleLinked).then(r => {
+        if (!r.opened) { toast("別タブを開けませんでした。ブラウザのポップアップの設定を確認してください", "error"); return; }
+        if (r.warning) toast(r.warning, "error");
+        // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
+        if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
+        // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
+        const office = googleConvertKind(file.fileName);
+        if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+      });
     });
-  }, [toast, guardGoogleOpen]);
+  }, [toast, guardGoogleOpen, googleLinked]);
 
   // GoogleファイルをOffice形式で書き出す。
   // 閲覧者自身のGoogleログインで直接落とすので、サーバーを経由しない。

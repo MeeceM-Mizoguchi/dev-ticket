@@ -9,7 +9,7 @@ import {
   downloadProjectFile, openProjectFileInApp,
   isGoogleFile, getFileKind, googleFileLabel, googleConvertKind, GOOGLE_APP_LABEL, KIND_COLOR,
 } from "@/app/lib/projectFiles";
-import { openGoogleFile, DRAWIO_OPEN_HINT, officeOnDriveHint } from "@/app/lib/googleDrive";
+import { openGoogleFileEnsuringAccess, DRAWIO_OPEN_HINT, officeOnDriveHint } from "@/app/lib/googleDrive";
 import { useGoogleLinkGate } from "@/app/hooks/useGoogleLinkGate";
 import { FileViewerModal } from "./FileViewerModal";
 import { FileKindIcon } from "./FileKindIcon";
@@ -129,15 +129,19 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
               onClick={() => {
                 if (!file.externalUrl) { toast("このファイルのURLが見つかりません", "error"); return; }
                 googleLinkGate.guard(() => {
-                  if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
-                  // draw.io の図と Office文書は Googleドライブのファイル画面が開くので、
-                  // そこからの操作を案内する（FileBoxPage の handleOpenGoogle と同じ案内）
-                  if (kind === "drawio") toast(DRAWIO_OPEN_HINT, "info");
-                  else {
-                    const office = googleConvertKind(file.fileName);
-                    if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
-                  }
-                  onClose();
+                  // 紐づけたGoogleアカウントに権限が無ければ、付けてから開く（FileBoxPage の handleOpenGoogle と同じ）
+                  void openGoogleFileEnsuringAccess(file, googleLinkGate.linked).then(r => {
+                    if (!r.opened) { toast("別タブを開けませんでした。ブラウザのポップアップの設定を確認してください", "error"); return; }
+                    if (r.warning) toast(r.warning, "error");
+                    // draw.io の図と Office文書は Googleドライブのファイル画面が開くので、
+                    // そこからの操作を案内する（FileBoxPage の handleOpenGoogle と同じ案内）
+                    if (kind === "drawio") toast(DRAWIO_OPEN_HINT, "info");
+                    else {
+                      const office = googleConvertKind(file.fileName);
+                      if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+                    }
+                    onClose();
+                  });
                 });
               }}
               style={{ padding: "8px 16px", background: "#059669", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", gap: 6 }}>
