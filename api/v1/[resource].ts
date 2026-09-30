@@ -599,6 +599,64 @@ async function handleListTickets(sb: SupabaseClient, key: ApiKeyRow, query: any,
   });
 }
 
+// ── 担当者への Slack 通知 ─────────────────────────────────────
+// 画面から作ったとき（/api/slack-notify）と同じ見た目で、プロジェクトのチャンネルへ投稿する。
+// 担当者ごとに1投稿にまとめ、チケット名はチケット詳細へのリンクにする。
+
+/** リンクに使う公開オリジン。未設定ならリンク無しで送る */
+function appPublicOrigin(): string {
+  return (process.env.PUBLIC_URL || process.env.VITE_PUBLIC_APP_ORIGIN || "").replace(/\/+$/, "");
+}
+
+/** 1投稿に並べるチケットの上限。超えた分は「ほかN件」にまとめる */
+const SLACK_MAX_TICKET_LINES = 20;
+
+function escapeSlackText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function notifyAssignSlack(
+  sb: SupabaseClient,
+  project: any,
+  tickets: { assignee: string; wbs: string; title: string }[],
+): Promise<void> {
+  if (!project?.slack_notifications_enabled || !project?.slack_channel || !project?.slack_access_token) return;
+  const slug = String(project.slug ?? "");
+  const origin = appPublicOrigin();
+
+  const byAssignee = new Map<string, { wbs: string; title: string }[]>();
+  for (const t of tickets) {
+    const list = byAssignee.get(t.assignee) ?? [];
+    list.push(t);
+    byAssignee.set(t.assignee, list);
+  }
+
+  const { data: profiles } = await sb
+    .from("profiles").select("name, slack_member_id").in("name", Array.from(byAssignee.keys()));
+
+  for (const [assignee, list] of byAssignee) {
+    const memberId = (profiles ?? []).find((p: any) => p.name === assignee)?.slack_member_id;
+    const mention = memberId ? `<@${memberId}>` : assignee;
+    const lines = list.slice(0, SLACK_MAX_TICKET_LINES).map(t => {
+      const label = escapeSlackText(`${t.wbs}: ${t.title}`);
+      return origin && slug
+        ? `<${origin}/${encodeURIComponent(slug)}/${encodeURIComponent(t.wbs)}|${label}>`
+        : label;
+    });
+    if (list.length > SLACK_MAX_TICKET_LINES) lines.push(`ほか${list.length - SLACK_MAX_TICKET_LINES}件`);
+    const title = list.length > 1 ? `チケットが${list.length}件割り当てられました` : "チケットが割り当てられました";
+    const text = `*${title}*\n${mention} ${lines.join("\n")}`;
+
+    const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${project.slack_access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: project.slack_channel, text }),
+    });
+    const json = await slackRes.json() as { ok: boolean; error?: string };
+    if (!json.ok) console.error("[api/v1] slack:", json.error);
+  }
+}
+
 // ── POST /api/v1/tickets ─────────────────────────────────────
 async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
   const sprintId = typeof body?.sprintId === "string" ? body.sprintId.trim() : "";
@@ -615,7 +673,9 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
   // ── 文脈（スプリント一覧・メンバー・分類）と入力の正規化 ──
   const [{ data: sprintRows, error: sprintError }, { data: project }, { data: categoryRows }] = await Promise.all([
     sb.from("sprints").select("id, name, identifier").eq("project_id", key.project_id),
-    sb.from("projects").select("slug, members, organization_id").eq("id", key.project_id).maybeSingle(),
+    sb.from("projects")
+      .select("slug, members, organization_id, slack_access_token, slack_channel, slack_notifications_enabled")
+      .eq("id", key.project_id).maybeSingle(),
     sb.from("ticket_categories").select("id, name").eq("project_id", key.project_id),
   ]);
   if (sprintError) return res.status(500).json({ error: sprintError.message });
@@ -856,6 +916,9 @@ async function handleCreateTickets(sb: SupabaseClient, key: ApiKeyRow, body: any
         project_slug: project?.slug ?? null, is_read: false,
       })),
     );
+    // 登録自体は済んでいるので、Slack の失敗でレスポンスを落とさない
+    await notifyAssignSlack(sb, project, notifySource).catch(e =>
+      console.error("[api/v1] slack:", (e as Error)?.message));
   }
 
   return res.status(201).json({

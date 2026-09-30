@@ -48,7 +48,7 @@ import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
 import { TicketPrSection, type TicketPrState } from "@/app/components/github/TicketPrSection";
 import { PrLinkLeaveDialog } from "@/app/components/github/PrLinkLeaveDialog";
 import { recordMilestoneFromTicketStatus, fetchMilestones } from "@/app/hooks/useProject";
-import { fireSlackNotify } from "@/app/utils/slackNotify";
+import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
 import { escStack } from "@/app/lib/escStack";
 import { submitOnEnter } from "@/app/lib/submitKey";
 
@@ -1719,7 +1719,7 @@ export function TicketDetailPanel({
         recipientUserNames: [name],
         projectSlug,
         title: "チケットが割り当てられました",
-        body: `${ticket.wbs}: ${ticket.title}`,
+        body: slackTicketLink(projectSlug, ticket.wbs, ticket.title),
       });
     }
   };

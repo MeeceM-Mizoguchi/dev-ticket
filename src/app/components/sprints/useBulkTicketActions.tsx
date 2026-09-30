@@ -22,7 +22,7 @@ import { bulkDeleteTickets, bulkMoveTickets } from "@/app/lib/bulkTicketOps";
 import { exportTicketList, type TicketExportFormat } from "@/app/lib/ticketExport";
 import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
 import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
-import { fireSlackNotify } from "@/app/utils/slackNotify";
+import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
 
 function estimateScale(hours: number): DevScale | null {
   if (!hours || hours <= 0) return null;
@@ -260,7 +260,7 @@ export function useBulkTicketActions({
               ticket_id: r.ticket.id, ticket_wbs: r.ticket.wbs, ticket_title: r.ticket.title,
               project_slug: projectSlug, is_read: false,
             });
-            fireSlackNotify({ recipientUserNames: [chosen.name], projectSlug, title: "チケットが割り当てられました", body: `${r.ticket.wbs}: ${r.ticket.title}` });
+            fireSlackNotify({ recipientUserNames: [chosen.name], projectSlug, title: "チケットが割り当てられました", body: slackTicketLink(projectSlug, r.ticket.wbs, r.ticket.title) });
           }
           assignedIds.push(r.ticket.id);
         }
