@@ -10,6 +10,7 @@ import {
   isGoogleFile, getFileKind, googleFileLabel, googleConvertKind, GOOGLE_APP_LABEL, KIND_COLOR,
 } from "@/app/lib/projectFiles";
 import { openGoogleFile, DRAWIO_OPEN_HINT, officeOnDriveHint } from "@/app/lib/googleDrive";
+import { useGoogleLinkGate } from "@/app/hooks/useGoogleLinkGate";
 import { FileViewerModal } from "./FileViewerModal";
 import { FileKindIcon } from "./FileKindIcon";
 
@@ -21,6 +22,8 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
   const [file, setFile] = useState<ProjectFile | null>(null);
   const [error, setError] = useState("");
   const { toast } = useToast();
+  // BRU17-028 未紐づけなら開く前に紐づけるかを尋ねる。このカード(zIndex 9999)より前に出す
+  const googleLinkGate = useGoogleLinkGate({ zIndex: 10000 });
 
   useEffect(() => {
     if (!isSupabaseEnabled) return;
@@ -124,20 +127,25 @@ export function FileLinkPreview({ fileId, onClose }: { fileId: string; onClose: 
             </button>
             <button autoFocus
               onClick={() => {
-                if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
-                // draw.io の図と Office文書は Googleドライブのファイル画面が開くので、
-                // そこからの操作を案内する（FileBoxPage の handleOpenGoogle と同じ案内）
-                if (kind === "drawio") toast(DRAWIO_OPEN_HINT, "info");
-                else {
-                  const office = googleConvertKind(file.fileName);
-                  if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
-                }
-                onClose();
+                if (!file.externalUrl) { toast("このファイルのURLが見つかりません", "error"); return; }
+                googleLinkGate.guard(() => {
+                  if (!openGoogleFile(file)) { toast("このファイルのURLが見つかりません", "error"); return; }
+                  // draw.io の図と Office文書は Googleドライブのファイル画面が開くので、
+                  // そこからの操作を案内する（FileBoxPage の handleOpenGoogle と同じ案内）
+                  if (kind === "drawio") toast(DRAWIO_OPEN_HINT, "info");
+                  else {
+                    const office = googleConvertKind(file.fileName);
+                    if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+                  }
+                  onClose();
+                });
               }}
               style={{ padding: "8px 16px", background: "#059669", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", color: "#fff", display: "flex", alignItems: "center", gap: 6 }}>
               <ExternalLink style={{ width: 12, height: 12 }} />Googleドライブで開く
             </button>
           </div>
+          {/* カードの中に置く。カードがクリックの伝播を止めているので、確認の操作で背景の「閉じる」が走らない */}
+          {googleLinkGate.dialog}
         </div>
       </div>,
       document.body

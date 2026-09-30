@@ -193,7 +193,7 @@ export function GoogleDriveSetting({ isAdmin, orgId }: Props) {
             共有ドライブの選択と設定の保存には、Googleアカウントの連携が必要です。<br />
             DevTicket が作成したファイルのみにアクセスします（他のファイルは見えません）。
           </p>
-          <button onClick={() => { void startGoogleOAuth(); }}
+          <button onClick={() => { void startGoogleOAuth("/admin-settings?tab=google"); }}
             style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "11px 26px", fontSize: 13, fontWeight: 600, borderRadius: 10, border: "1px solid rgba(26,23,20,0.12)", cursor: "pointer", background: "#fff", color: "#1A1714" }}>
             {GOOGLE_ICON} Googleに接続する
           </button>

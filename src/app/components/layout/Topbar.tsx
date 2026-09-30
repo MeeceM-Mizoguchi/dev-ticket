@@ -19,6 +19,10 @@ import { buildWhiteboardPath, parseWhiteboardMentionContext } from "@/app/lib/wh
 import { buildFileCommentPath, parseFileMentionContext } from "@/app/lib/fileCommentLink";
 import { parseTaskMentionContext } from "@/app/lib/taskNotify";
 import type { AppNotification, ActionMemoCategory, NotificationType, Announcement, AnnouncementItem } from "@/app/types";
+import { useGoogleAccountLink } from "@/app/hooks/useGoogleAccountLink";
+import { startGoogleOAuth } from "@/app/lib/googleDrive";
+import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
+import { useToast } from "@/app/contexts/ToastContext";
 
 function notifTypeToCategory(type: NotificationType): ActionMemoCategory {
   if (type === "assign") return "todo";
@@ -58,6 +62,26 @@ export function Topbar() {
   const [bioRegistered, setBioRegistered] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
   const [bioToast, setBioToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  // Googleアカウントの紐づけ（BRU17-028）。組織でGoogleドライブ連携が有効なときだけメニューに出す
+  const googleLink = useGoogleAccountLink();
+  const { toast } = useToast();
+  // BUG-05 連携開始は await を含むので ref で二重起動を止める
+  const googleLinkingRef = useRef(false);
+  const [googleLinking, setGoogleLinking] = useState(false);
+  const handleLinkGoogle = useCallback(async () => {
+    if (googleLinkingRef.current) return;
+    googleLinkingRef.current = true;
+    setGoogleLinking(true);
+    try {
+      // 連携が済むと今の画面へ戻ってくる（後処理は GoogleLinkReturnHandler）
+      await startGoogleOAuth();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "連携を開始できませんでした", "error");
+      googleLinkingRef.current = false;
+      setGoogleLinking(false);
+    }
+  }, [toast]);
 
   // バージョン情報ポップアップ
   const [showVersion, setShowVersion] = useState(false);
@@ -732,7 +756,13 @@ export function Topbar() {
         <div style={{ width: 1, height: 18, background: "rgba(26,23,20,0.08)", margin: "0 4px" }} />
         <div style={{ position: "relative" }}>
           <button
-            onClick={() => { if (showUserMenu) setShowUserMenu(false); else { void refreshBioState(); setShowUserMenu(true); } }}
+            onClick={() => {
+              if (showUserMenu) { setShowUserMenu(false); return; }
+              void refreshBioState();
+              // 外部連携画面で解除・連携し直した分も拾う
+              void googleLink.reload().catch(() => undefined);
+              setShowUserMenu(true);
+            }}
             style={{ display: "flex", alignItems: "center", gap: 7, padding: "4px 10px 4px 5px", borderRadius: 9999, background: showUserMenu ? "#ECECEC" : "#F4F5F6", border: "none", cursor: "pointer", transition: "background 0.15s" }}
             onMouseEnter={e => { if (!showUserMenu) (e.currentTarget as HTMLElement).style.background = "#ECECEC"; }}
             onMouseLeave={e => { if (!showUserMenu) (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}>
@@ -768,6 +798,44 @@ export function Topbar() {
                     <ShieldOff style={{ width: 16, height: 16, color: "#EF4444", flexShrink: 0 }} />
                     <span style={{ fontSize: 13, fontWeight: 600, color: "#EF4444" }}>{bioBusy ? "処理中…" : "生体データを削除"}</span>
                   </button>
+                )}
+
+                {/* Googleアカウントの紐づけ（BRU17-028） */}
+                {googleLink.driveEnabled && googleLink.linked !== null && (
+                  <>
+                    <div style={{ height: 1, background: "rgba(26,23,20,0.06)", margin: "4px 4px" }} />
+                    {googleLink.linked ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px" }}>
+                        <span style={{ display: "flex", flexShrink: 0 }}><GoogleGLogo size={16} /></span>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}>Googleアカウント</span>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 700, color: "#047857", background: "rgba(5,150,105,0.12)", borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" }}>
+                              <Check style={{ width: 10, height: 10 }} />紐づけ済み
+                            </span>
+                          </div>
+                          {googleLink.googleEmail && (
+                            <div title={googleLink.googleEmail}
+                              style={{ fontSize: 11, color: "#A09790", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {googleLink.googleEmail}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { void handleLinkGoogle(); }}
+                        disabled={googleLinking}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderRadius: 9, border: "none", background: "transparent", cursor: googleLinking ? "default" : "pointer", textAlign: "left", opacity: googleLinking ? 0.6 : 1, transition: "background 0.12s" }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                        <span style={{ display: "flex", flexShrink: 0 }}><GoogleGLogo size={16} /></span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", whiteSpace: "nowrap" }}>
+                          {googleLinking ? "Googleへ移動しています…" : "Googleアカウントを紐づける"}
+                        </span>
+                      </button>
+                    )}
+                  </>
                 )}
 
                 <div style={{ height: 1, background: "rgba(26,23,20,0.06)", margin: "4px 4px" }} />

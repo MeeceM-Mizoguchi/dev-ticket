@@ -24,7 +24,7 @@ import crypto from "crypto";
 //   「顧客側で作成済みの共有ドライブを Google Picker で選んでもらう」形になっている。
 //
 // endpoints (Vercel の [action] 動的セグメント):
-//   POST /api/google/oauth-start      {}                                  → { url }
+//   POST /api/google/oauth-start      { returnTo? }                       → { url }
 //   GET  /api/google/oauth-callback   ?code=&state=                       → 302
 //   POST /api/google/status           { projectId? }                      → { connected, mode, ... }
 //   POST /api/google/disconnect       {}                                  → { ok }
@@ -38,6 +38,7 @@ import crypto from "crypto";
 //   POST /api/google/share-link       { fileId, enabled }                 → { linkShared }
 //   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
+//   POST /api/google/grant-self       {}                                  → { granted, failed }
 //   POST /api/google/resolve-folder   { folderId }                        → { id, name, driveId }
 //   POST /api/google/test-connection  { folderId }                        → { ok } / 400
 
@@ -123,12 +124,15 @@ function b64url(buf: Buffer | string): string {
 function stateSecret(): string {
   return process.env.DAV_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 }
-function signState(payload: { u: string; o: string; e: number }): string {
+// r … 連携後に戻る画面（BRU17-028）。右上メニューやファイルボックスから連携した一般メンバーを、
+//     管理者しか開けない外部連携画面ではなく元の画面へ戻すため。署名の中に入れるので書き換えられない。
+type StatePayload = { u: string; o: string; e: number; r?: string };
+function signState(payload: StatePayload): string {
   const body = b64url(JSON.stringify(payload));
   const sig = b64url(crypto.createHmac("sha256", stateSecret()).update(body).digest());
   return `${body}.${sig}`;
 }
-function verifyState(token: string): { u: string; o: string; e: number } | null {
+function verifyState(token: string): StatePayload | null {
   const [body, sig] = String(token || "").split(".");
   if (!body || !sig) return null;
   const expect = b64url(crypto.createHmac("sha256", stateSecret()).update(body).digest());
@@ -184,6 +188,20 @@ function publicUrl(req: any): string {
 }
 function redirectUri(req: any): string {
   return `${publicUrl(req)}/api/google/oauth-callback`;
+}
+
+const DEFAULT_RETURN = "/admin-settings?tab=google";
+
+/**
+ * 連携後に戻す画面のパス。自サイト内のパスだけを受け付ける。
+ * "//evil.example" や "/\evil.example" はブラウザが別オリジンとして解釈するので弾く（オープンリダイレクト対策）。
+ */
+function safeReturnPath(raw: unknown): string | undefined {
+  const s = String(raw ?? "");
+  if (!s.startsWith("/") || s.startsWith("//") || s.startsWith("/\\")) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(s) || s.length > 1000) return undefined;
+  return s;
 }
 
 // ── トークン ────────────────────────────────────────────────
@@ -450,7 +468,7 @@ async function projectMemberEmails(
 ): Promise<{ email: string; name: string }[]> {
   if (!project.organization_id) return [];
   const { data: rows } = await sb.from("profiles")
-    .select("name, email, role, status")
+    .select("name, email, google_email, role, status")
     .eq("organization_id", project.organization_id);
 
   const members = new Set((project.members ?? []).map(String));
@@ -458,7 +476,9 @@ async function projectMemberEmails(
     .filter(r => r.role !== "owner")
     .filter(r => r.status !== "invited")
     .filter(r => members.has(String(r.name)) || r.role === "admin" || r.role === "project-manager")
-    .map(r => ({ email: String(r.email || "").trim(), name: String(r.name || "") }))
+    // ★ 本人が紐づけたGoogleアカウントがあれば、そちらへ配る（BRU17-028）。
+    //   招待メールのアドレスがGoogleアカウントでないと、そのアドレスに権限を付けても開けないため。
+    .map(r => ({ email: String(r.google_email || r.email || "").trim(), name: String(r.name || "") }))
     .filter(r => !!r.email);
 }
 
@@ -702,13 +722,15 @@ export default async function handler(req: any, res: any) {
 
   // ── OAuth コールバック（Googleからのリダイレクト。ここだけ GET かつ未認証） ──
   if (action === "oauth-callback") {
+    // キャンセル（error=access_denied）のときも state は付いてくるので、先に読んで戻り先を決める
+    const payload = verifyState(String(req.query?.state ?? ""));
+    const returnTo = safeReturnPath(payload?.r) ?? DEFAULT_RETURN;
     const back = (params: Record<string, string>) =>
-      res.redirect(302, `${publicUrl(req)}/admin-settings?tab=google&${new URLSearchParams(params)}`);
+      res.redirect(302, `${publicUrl(req)}${returnTo}${returnTo.includes("?") ? "&" : "?"}${new URLSearchParams(params)}`);
 
     const err = String(req.query?.error ?? "");
     if (err) return back({ google: "error", message: err === "access_denied" ? "連携がキャンセルされました" : err });
 
-    const payload = verifyState(String(req.query?.state ?? ""));
     if (!payload) return back({ google: "error", message: "連携の有効期限が切れました。もう一度お試しください" });
 
     const code = String(req.query?.code ?? "");
@@ -772,10 +794,12 @@ export default async function handler(req: any, res: any) {
       const clientId = process.env.GOOGLE_CLIENT_ID;
       if (!clientId) return res.status(500).json({ error: "Google連携が設定されていません" });
 
+      const returnTo = safeReturnPath(body.returnTo);
       const state = signState({
         u: profile.id,
         o: String(profile.organization_id ?? ""),
         e: Date.now() + STATE_TTL_MS,
+        ...(returnTo ? { r: returnTo } : {}),
       });
       const params = new URLSearchParams({
         client_id: clientId,
@@ -1618,6 +1642,99 @@ export default async function handler(req: any, res: any) {
         const r = await grantMembers(actor.accessToken, String(f.external_id), people, actor.email);
         granted += r.granted;
         for (const x of r.failed) failed.push({ name: `${f.file_name} / ${x.name}`, reason: x.reason });
+      }
+      return res.json({ granted, failed });
+    }
+
+    // ── 紐づけたGoogleアカウントへ、既存ファイルの権限を付け直す（BRU17-028） ──
+    // これまでのファイルは招待メールのアドレス宛てに配られている。そのアドレスがGoogleアカウントで
+    // なければ開けないので、紐づけが終わった直後に画面から呼び、本人が見てよい全Googleファイルへ
+    // 紐づけたアドレスの権限を足す（招待メール宛ての権限は消さない）。
+    //
+    // ★ drive.file スコープでは、本人のトークンからは他人が作ったファイルに触れない（404）。
+    //   そのため次の順にトークンを試す。どれもスコープは drive.file のままで、広げない。
+    //     本人 → そのファイルの作成者 → 組織の管理者（共有ドライブ運用のみ。driveActors と同じ理由）
+    //   作成者のトークンを使うのは、作成時に作成者自身が行った配布（grantMembers）を
+    //   宛先だけ差し替えてやり直すため。マイドライブ運用でも作成者本人のファイルなので代行にならない。
+    if (action === "grant-self") {
+      const googleEmail = String(profile.google_email ?? "").trim();
+      if (!googleEmail) return res.status(428).json({ error: "Googleアカウントが連携されていません" });
+      // projectMemberEmails と同じく、運営(owner)には自動で配らない
+      if (profile.role === "owner" || !profile.organization_id) return res.json({ granted: 0, failed: [] });
+
+      const orgId = String(profile.organization_id);
+      const cfg = await orgConfig(sb, orgId);
+      if (cfg.mode === "off") return res.json({ granted: 0, failed: [] });
+
+      // 本人が見てよいプロジェクトだけ（RLS と同じ規則。isMember 参照）
+      const { data: projects } = await sb.from("projects")
+        .select("id").eq("organization_id", orgId).order("id", { ascending: true });
+      const projectIds: string[] = [];
+      for (const p of projects ?? []) {
+        if (await isMember(sb, String(p.id), profile)) projectIds.push(String(p.id));
+      }
+      if (projectIds.length === 0) return res.json({ granted: 0, failed: [] });
+
+      // BUG-01 同じ順序で処理する（途中で止まったとき、どこまで終わったかが再現する）
+      const { data: files } = await sb.from("project_files")
+        .select("id, file_name, external_id, uploaded_by")
+        .in("project_id", projectIds).eq("external_provider", "google")
+        .order("created_at", { ascending: true }).order("id", { ascending: true });
+      const targets = (files ?? []).filter(f => !!f.external_id);
+      if (targets.length === 0) return res.json({ granted: 0, failed: [] });
+
+      // 作成者（uploaded_by は名前）→ id、と管理者の一覧。トークンを持つ人だけ候補にする
+      const { data: people } = await sb.from("profiles")
+        .select("id, name, role").eq("organization_id", orgId).order("id", { ascending: true });
+      const { data: tokenRows } = await sb.from("google_drive_tokens")
+        .select("user_id").in("user_id", (people ?? []).map(r => String(r.id)));
+      const hasToken = new Set((tokenRows ?? []).map(r => String(r.user_id)));
+      const idByName = new Map((people ?? []).map(r => [String(r.name), String(r.id)]));
+      const admins = cfg.mode === "shared_drive"
+        ? (people ?? [])
+          .filter(r => (r.role === "admin" || r.role === "owner") && hasToken.has(String(r.id)))
+          .sort((a, b) => (a.role === "admin" ? 0 : 1) - (b.role === "admin" ? 0 : 1))
+          .slice(0, MAX_DELEGATES).map(r => String(r.id))
+        : [];
+
+      const tokens = new Map<string, string>();
+      const tokenOf = async (userId: string): Promise<string> => {
+        if (!tokens.has(userId)) {
+          // 連携が切れている人は飛ばす（本人の操作を他人の事情で止めない）
+          tokens.set(userId, await getAccessToken(sb, userId).catch(() => ""));
+        }
+        return tokens.get(userId) ?? "";
+      };
+
+      let granted = 0;
+      const failed: { name: string; reason: string }[] = [];
+      for (const f of targets) {
+        const creator = idByName.get(String(f.uploaded_by ?? ""));
+        const order = [...new Set([
+          profile.id,
+          ...(creator && hasToken.has(creator) ? [creator] : []),
+          ...admins,
+        ])];
+        let done = false;
+        let reason = "このファイルに権限を付けられるGoogleアカウントが見つかりません（作成者のGoogle連携が切れている可能性があります）";
+        for (const userId of order) {
+          const accessToken = await tokenOf(userId);
+          if (!accessToken) continue;
+          try {
+            await drive(accessToken,
+              `/files/${encodeURIComponent(String(f.external_id))}/permissions?supportsAllDrives=true&sendNotificationEmail=false`,
+              { method: "POST", body: { type: "user", role: "writer", emailAddress: googleEmail } });
+            done = true;
+            break;
+          } catch (e) {
+            // 404 はこのトークンから見えないだけ。次の候補で試す
+            if (e instanceof HttpError && e.status === 404) continue;
+            reason = e instanceof Error ? e.message : "権限を付けられませんでした";
+            break;
+          }
+        }
+        if (done) granted++;
+        else failed.push({ name: String(f.file_name), reason });
       }
       return res.json({ granted, failed });
     }

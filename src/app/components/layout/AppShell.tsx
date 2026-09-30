@@ -10,6 +10,7 @@ import { CallProvider } from "@/app/contexts/CallContext";
 import { RefreshProvider, useRefresh } from "@/app/contexts/RefreshContext";
 import { CallLayer } from "@/app/components/call/CallLayer";
 import { MlSetupGate } from "@/app/components/members/MlSetupGate";
+import { GoogleLinkReturnHandler } from "./GoogleLinkReturnHandler";
 import { clearRedirect, rememberRedirect } from "@/app/lib/authRedirect";
 
 export function AppShell() {
@@ -97,6 +98,8 @@ export function ProtectedShell() {
       {/* ENHA2-034 学習の初回セットアップ。ログイン直後・どの画面にいても走る。
           メンバー管理権限を持つ人以外には何も起きない（内部で判定）。 */}
       <MlSetupGate />
+      {/* BRU17-028 Googleアカウントの紐づけから戻ってきたときの後処理（1つだけ置く） */}
+      <GoogleLinkReturnHandler />
     </CallProvider>
   );
 }
