@@ -39,6 +39,7 @@ import crypto from "crypto";
 //   POST /api/google/sync-names       { projectId }                       → { renamed, missing }
 //   POST /api/google/sync-permissions { projectId }                       → { granted, failed }
 //   POST /api/google/grant-self       {}                                  → { granted, failed }
+//   POST /api/google/ensure-access    { fileId }                          → { ok, cached?, skipped?, reason? }
 //   POST /api/google/resolve-folder   { folderId }                        → { id, name, driveId }
 //   POST /api/google/test-connection  { folderId }                        → { ok } / 400
 
@@ -710,6 +711,112 @@ async function driveActorsForProject(
     .select("organization_id").eq("id", projectId).maybeSingle();
   const orgId = project?.organization_id ? String(project.organization_id) : null;
   return driveActors(sb, profile, await orgConfig(sb, orgId), orgId);
+}
+
+// ── 紐づけたGoogleアカウントへの権限付与（grant-self / ensure-access 共通） ──
+// ★ drive.file スコープでは、本人のトークンからは他人が作ったファイルに触れない（404）。
+//   そのため次の順にトークンを試す。どれもスコープは drive.file のままで、広げない。
+//     本人 → そのファイルの作成者 → 組織の管理者（共有ドライブ運用のみ。driveActors と同じ理由）
+//   作成者のトークンを使うのは、作成時に作成者自身が行った配布（grantMembers）を
+//   宛先だけ差し替えてやり直すため。マイドライブ運用でも作成者本人のファイルなので代行にならない。
+
+type GrantContext = {
+  /** そのファイルに試すトークンの持ち主（user_id）を、試す順に */
+  candidatesFor: (uploadedBy: string) => string[];
+  /** 連携が切れている人は "" */
+  tokenOf: (userId: string) => Promise<string>;
+  selfId: string;
+};
+
+async function grantContext(
+  sb: SupabaseClient, orgId: string, cfg: OrgConfig, selfId: string,
+): Promise<GrantContext> {
+  // 作成者（uploaded_by は名前）→ id、と管理者の一覧。トークンを持つ人だけ候補にする
+  const { data: people } = await sb.from("profiles")
+    .select("id, name, role").eq("organization_id", orgId).order("id", { ascending: true });
+  const { data: tokenRows } = await sb.from("google_drive_tokens")
+    .select("user_id").in("user_id", (people ?? []).map(r => String(r.id)));
+  const hasToken = new Set((tokenRows ?? []).map(r => String(r.user_id)));
+  const idByName = new Map((people ?? []).map(r => [String(r.name), String(r.id)]));
+  const admins = cfg.mode === "shared_drive"
+    ? (people ?? [])
+      .filter(r => (r.role === "admin" || r.role === "owner") && hasToken.has(String(r.id)))
+      .sort((a, b) => (a.role === "admin" ? 0 : 1) - (b.role === "admin" ? 0 : 1))
+      .slice(0, MAX_DELEGATES).map(r => String(r.id))
+    : [];
+
+  const tokens = new Map<string, string>();
+  const tokenOf = async (userId: string): Promise<string> => {
+    if (!tokens.has(userId)) {
+      // 連携が切れている人は飛ばす（本人の操作を他人の事情で止めない）
+      tokens.set(userId, await getAccessToken(sb, userId).catch(() => ""));
+    }
+    return tokens.get(userId) ?? "";
+  };
+
+  const candidatesFor = (uploadedBy: string) => {
+    const creator = idByName.get(uploadedBy);
+    return [...new Set([
+      selfId,
+      ...(creator && hasToken.has(creator) ? [creator] : []),
+      ...admins,
+    ])];
+  };
+  return { candidatesFor, tokenOf, selfId };
+}
+
+/**
+ * 1ファイルに、紐づけたGoogleアカウントの編集権限を付ける。
+ *
+ * 本人のトークンでファイルが見えるなら、それは本人がこのアプリで作った／Picker で選んだファイルで、
+ * 紐づけたアカウントは既に開ける。そのときは権限を足さない
+ * （自分が所有者のファイルに自分の writer 権限を足そうとすると、Drive がエラーを返すことがあるため）。
+ */
+async function grantEmailOnFile(
+  ctx: GrantContext, file: { external_id: unknown; uploaded_by: unknown }, email: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const gid = encodeURIComponent(String(file.external_id));
+  let reason = "このファイルに権限を付けられるGoogleアカウントが見つかりません（作成者のGoogle連携が切れている可能性があります）";
+  for (const userId of ctx.candidatesFor(String(file.uploaded_by ?? ""))) {
+    const accessToken = await ctx.tokenOf(userId);
+    if (!accessToken) continue;
+    try {
+      if (userId === ctx.selfId) {
+        await drive(accessToken, `/files/${gid}?supportsAllDrives=true&fields=id`);
+      } else {
+        await drive(accessToken,
+          `/files/${gid}/permissions?supportsAllDrives=true&sendNotificationEmail=false`,
+          { method: "POST", body: { type: "user", role: "writer", emailAddress: email } });
+      }
+      return { ok: true };
+    } catch (e) {
+      // 404 はこのトークンから見えないだけ。次の候補で試す
+      if (e instanceof HttpError && e.status === 404) continue;
+      reason = e instanceof Error ? e.message : "権限を付けられませんでした";
+      break;
+    }
+  }
+  return { ok: false, reason };
+}
+
+// ── 権限付与の記録（ensure-access の省略用） ────────────────
+// 開くたびに Drive へ権限付与を頼むと毎回1秒ほど待たされるので、付けたことを記録して2回目以降は省く。
+// Google 側で手動で共有を外されても DevTicket は気づけないため、記録には期限を設けて定期的に付け直す。
+// テーブルは supabase/add_google_file_grants.sql。未作成でも読み書きが失敗するだけで、毎回付与する動きになる。
+const GRANT_RECORD_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+async function hasFreshGrant(sb: SupabaseClient, fileId: string, email: string): Promise<boolean> {
+  const { data, error } = await sb.from("google_file_grants")
+    .select("granted_at").eq("file_id", fileId).eq("google_email", email).maybeSingle();
+  if (error || !data?.granted_at) return false;
+  return Date.now() - new Date(String(data.granted_at)).getTime() < GRANT_RECORD_TTL_MS;
+}
+
+async function recordGrant(sb: SupabaseClient, fileId: string, email: string): Promise<void> {
+  await sb.from("google_file_grants").upsert(
+    { file_id: fileId, google_email: email, granted_at: new Date().toISOString() },
+    { onConflict: "file_id,google_email" },
+  );
 }
 
 // ============================================================
@@ -1650,12 +1757,7 @@ export default async function handler(req: any, res: any) {
     // これまでのファイルは招待メールのアドレス宛てに配られている。そのアドレスがGoogleアカウントで
     // なければ開けないので、紐づけが終わった直後に画面から呼び、本人が見てよい全Googleファイルへ
     // 紐づけたアドレスの権限を足す（招待メール宛ての権限は消さない）。
-    //
-    // ★ drive.file スコープでは、本人のトークンからは他人が作ったファイルに触れない（404）。
-    //   そのため次の順にトークンを試す。どれもスコープは drive.file のままで、広げない。
-    //     本人 → そのファイルの作成者 → 組織の管理者（共有ドライブ運用のみ。driveActors と同じ理由）
-    //   作成者のトークンを使うのは、作成時に作成者自身が行った配布（grantMembers）を
-    //   宛先だけ差し替えてやり直すため。マイドライブ運用でも作成者本人のファイルなので代行にならない。
+    // トークンを試す順は grantEmailOnFile を参照。
     if (action === "grant-self") {
       const googleEmail = String(profile.google_email ?? "").trim();
       if (!googleEmail) return res.status(428).json({ error: "Googleアカウントが連携されていません" });
@@ -1683,60 +1785,68 @@ export default async function handler(req: any, res: any) {
       const targets = (files ?? []).filter(f => !!f.external_id);
       if (targets.length === 0) return res.json({ granted: 0, failed: [] });
 
-      // 作成者（uploaded_by は名前）→ id、と管理者の一覧。トークンを持つ人だけ候補にする
-      const { data: people } = await sb.from("profiles")
-        .select("id, name, role").eq("organization_id", orgId).order("id", { ascending: true });
-      const { data: tokenRows } = await sb.from("google_drive_tokens")
-        .select("user_id").in("user_id", (people ?? []).map(r => String(r.id)));
-      const hasToken = new Set((tokenRows ?? []).map(r => String(r.user_id)));
-      const idByName = new Map((people ?? []).map(r => [String(r.name), String(r.id)]));
-      const admins = cfg.mode === "shared_drive"
-        ? (people ?? [])
-          .filter(r => (r.role === "admin" || r.role === "owner") && hasToken.has(String(r.id)))
-          .sort((a, b) => (a.role === "admin" ? 0 : 1) - (b.role === "admin" ? 0 : 1))
-          .slice(0, MAX_DELEGATES).map(r => String(r.id))
-        : [];
-
-      const tokens = new Map<string, string>();
-      const tokenOf = async (userId: string): Promise<string> => {
-        if (!tokens.has(userId)) {
-          // 連携が切れている人は飛ばす（本人の操作を他人の事情で止めない）
-          tokens.set(userId, await getAccessToken(sb, userId).catch(() => ""));
-        }
-        return tokens.get(userId) ?? "";
-      };
+      const ctx = await grantContext(sb, orgId, cfg, profile.id);
+      const recordEmail = googleEmail.toLowerCase();
 
       let granted = 0;
       const failed: { name: string; reason: string }[] = [];
       for (const f of targets) {
-        const creator = idByName.get(String(f.uploaded_by ?? ""));
-        const order = [...new Set([
-          profile.id,
-          ...(creator && hasToken.has(creator) ? [creator] : []),
-          ...admins,
-        ])];
-        let done = false;
-        let reason = "このファイルに権限を付けられるGoogleアカウントが見つかりません（作成者のGoogle連携が切れている可能性があります）";
-        for (const userId of order) {
-          const accessToken = await tokenOf(userId);
-          if (!accessToken) continue;
-          try {
-            await drive(accessToken,
-              `/files/${encodeURIComponent(String(f.external_id))}/permissions?supportsAllDrives=true&sendNotificationEmail=false`,
-              { method: "POST", body: { type: "user", role: "writer", emailAddress: googleEmail } });
-            done = true;
-            break;
-          } catch (e) {
-            // 404 はこのトークンから見えないだけ。次の候補で試す
-            if (e instanceof HttpError && e.status === 404) continue;
-            reason = e instanceof Error ? e.message : "権限を付けられませんでした";
-            break;
-          }
-        }
-        if (done) granted++;
-        else failed.push({ name: String(f.file_name), reason });
+        const r = await grantEmailOnFile(ctx, f, googleEmail);
+        if (r.ok) {
+          granted++;
+          // 開くとき（ensure-access）に付け直しを省けるよう記録しておく
+          await recordGrant(sb, String(f.id), recordEmail);
+        } else failed.push({ name: String(f.file_name), reason: r.reason });
       }
       return res.json({ granted, failed });
+    }
+
+    // ── 開く直前に、紐づけたGoogleアカウントへ権限を付ける ──
+    // 権限は作成時のメンバーと、紐づけ直後（grant-self）にしか配られない。そのため
+    //   ・紐づけ済みの人が、後からプロジェクトに追加された
+    //   ・grant-self が入る前に紐づけた／grant-self がそのファイルだけ失敗した
+    // といった人は、開くと Google の「アクセス権が必要です」になる。
+    // ファイルを開く直前にここを通し、足りなければその場で付ける。
+    //
+    // 一度付けたら google_file_grants に記録して、期限内は Drive へ問い合わせずに返す
+    // （毎回だと開くまで1秒ほど待たされるため）。
+    //
+    // 付けられなかったときも 200 で返す（ok=false）。共有ドライブのメンバーなど、
+    // 付与しなくても開ける人がいるので、画面は理由を伝えつつそのまま開く。
+    if (action === "ensure-access") {
+      const fileId = String(body.fileId ?? "");
+      if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
+
+      const { data: file } = await sb.from("project_files")
+        .select("id, project_id, file_name, external_id, external_provider, uploaded_by")
+        .eq("id", fileId).maybeSingle();
+      if (!file) return res.status(404).json({ error: "File not found" });
+      if (!(await isMember(sb, String(file.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+      if (file.external_provider !== "google" || !file.external_id) {
+        return res.status(400).json({ error: "Googleファイルではありません" });
+      }
+
+      const googleEmail = String(profile.google_email ?? "").trim();
+      if (!googleEmail) return res.json({ ok: false, skipped: "not-linked" });
+      // projectMemberEmails / grant-self と同じく、運営(owner)には自動で配らない
+      if (profile.role === "owner") return res.json({ ok: false, skipped: "owner" });
+
+      const recordEmail = googleEmail.toLowerCase();
+      if (await hasFreshGrant(sb, String(file.id), recordEmail)) return res.json({ ok: true, cached: true });
+
+      const { data: project } = await sb.from("projects")
+        .select("organization_id").eq("id", String(file.project_id)).maybeSingle();
+      const orgId = project?.organization_id ? String(project.organization_id) : "";
+      if (!orgId) return res.json({ ok: false, skipped: "no-org" });
+      const cfg = await orgConfig(sb, orgId);
+      if (cfg.mode === "off") return res.json({ ok: false, skipped: "off" });
+
+      const ctx = await grantContext(sb, orgId, cfg, profile.id);
+      const r = await grantEmailOnFile(ctx, file, googleEmail);
+      if (!r.ok) return res.json({ ok: false, reason: r.reason });
+
+      await recordGrant(sb, String(file.id), recordEmail);
+      return res.json({ ok: true, cached: false });
     }
 
     return res.status(404).json({ error: "Unknown action" });
