@@ -33,6 +33,7 @@ import crypto from "crypto";
 //   POST /api/google/convert-staged   { projectId, path, kind, fileName, ... } → { file, url }
 //   POST /api/google/import-files     { projectId, fileIds, parentId? }   → { imported, failed, shareFailed }
 //   POST /api/google/convert-existing { fileId }                          → { file, url, fileName }
+//   POST /api/google/export-office    { fileId }                          → { file, fileName }
 //   POST /api/google/rename           { fileId, newName }                 → { ok }
 //   POST /api/google/rename-project-folder { projectId, oldName }         → { renamed, skipped, reason }
 //   POST /api/google/trash            { fileId } / { folderId }           → { trashed, failed }
@@ -510,24 +511,36 @@ const GOOGLE_EXPORT: Record<string, string> = {
   presentation: CONVERTIBLE.pptx.mime,
 };
 
-/** Drive からファイルの中身を読み出す（alt=media / export の共通処理） */
-async function downloadDrive(accessToken: string, path: string): Promise<Buffer<ArrayBuffer>> {
+// GOOGLE_EXPORT で書き出したときに付ける拡張子（export-office で DevTicket に保存するときの名前用）
+const GOOGLE_EXPORT_EXT: Record<string, string> = {
+  spreadsheet: ".xlsx",
+  document: ".docx",
+  presentation: ".pptx",
+};
+
+/**
+ * Drive からファイルの中身を読み出す（alt=media / export の共通処理）
+ * @param doing エラー文の「〜できません」に入る操作名（relayCopy と export-office で使い分ける）
+ */
+async function downloadDrive(
+  accessToken: string, path: string, doing = "共有ドライブの保存先へ追加",
+): Promise<Buffer<ArrayBuffer>> {
   const res = await fetch(`${DRIVE_API}${path}`, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
     const reason = j?.error?.errors?.[0]?.reason || "";
     if (reason === "exportSizeLimitExceeded") {
-      throw new HttpError(res.status, "Googleファイルが大きすぎるため、共有ドライブの保存先へ追加できません");
+      throw new HttpError(res.status, `Googleファイルが大きすぎるため、${doing}できません`);
     }
     if (reason === "cannotDownloadFile" || reason === "cannotExportFile") {
-      throw new HttpError(res.status, "持ち主がダウンロードを禁止しているため追加できません");
+      throw new HttpError(res.status, `持ち主がダウンロードを禁止しているため、${doing}できません`);
     }
     throw new HttpError(res.status,
       driveErrorMessage(res.status, reason, j?.error?.message || "ファイルの中身を読み出せませんでした"));
   }
   const bytes = Buffer.from(await res.arrayBuffer());
   if (bytes.length > RELAY_MAX_BYTES) {
-    throw new HttpError(413, `ファイルが大きすぎるため、共有ドライブの保存先へ追加できません（${RELAY_MAX_BYTES / 1024 / 1024} MB まで）`);
+    throw new HttpError(413, `ファイルが大きすぎるため、${doing}できません（${RELAY_MAX_BYTES / 1024 / 1024} MB まで）`);
   }
   return bytes;
 }
@@ -1462,6 +1475,98 @@ export default async function handler(req: any, res: any) {
         file: inserted, url: webViewLink, fileName,
         shared: share.granted, failed: share.failed,
       });
+    }
+
+    // ── ファイルボックスにある Googleファイルを Office文書に変換する ──
+    // convert-existing の逆向き。スプレッドシート → Excel、ドキュメント → Word、スライド → PowerPoint。
+    // 元の Googleファイルはそのまま残し、Office文書を同じフォルダに1行追加する。
+    //
+    // ★ 変換後のファイルは Drive ではなく DevTicket の Storage に置く（通常のアップロードと同じ行にする）。
+    //   そうすることで、ビュワー・アプリで開く（WebDAV）・画面で編集・版管理・コメントが
+    //   既存のまま使える。Google連携していないメンバーも開ける。
+    // ★ 中身を読み出すトークンは「本人 → 作成者 → 組織の管理者」の順に試す（grantContext と同じ）。
+    //   drive.file では他人がアプリで作ったファイルは本人のトークンから 404 になるため。
+    //   Storage への保存はサーバーが行うので、本人が Google連携していなくても変換できる。
+    // ★ Drive の export は 10MB までしか書き出せない（超えると exportSizeLimitExceeded）。
+    if (action === "export-office") {
+      const fileId = String(body.fileId ?? "");
+      if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
+
+      const { data: src } = await sb.from("project_files")
+        .select("id, project_id, file_name, file_type, parent_id, is_folder, external_provider, external_id, uploaded_by")
+        .eq("id", fileId).maybeSingle();
+      if (!src) return res.status(404).json({ error: "ファイルが見つかりません" });
+      if (!(await isMember(sb, String(src.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+
+      const kind = Object.keys(MIME).find(k => MIME[k] === src.file_type) ?? null;
+      if (src.is_folder || src.external_provider !== "google" || !src.external_id || !kind) {
+        return res.status(400).json({ error: "スプレッドシート・ドキュメント・スライド以外のファイルは変換できません" });
+      }
+
+      const { data: project } = await sb.from("projects")
+        .select("organization_id").eq("id", String(src.project_id)).maybeSingle();
+      const orgId = project?.organization_id ? String(project.organization_id) : "";
+      const cfg = await orgConfig(sb, orgId || null);
+      if (!orgId || cfg.mode === "off") {
+        return res.status(403).json({ error: "この組織ではGoogleドライブ連携が有効になっていません" });
+      }
+
+      // 中身を読み出す。404 はそのトークンから見えないだけなので次の候補で試す
+      const exportMime = GOOGLE_EXPORT[kind];
+      const exportPath = `/files/${encodeURIComponent(String(src.external_id))}/export?mimeType=${encodeURIComponent(exportMime)}`;
+      const ctx = await grantContext(sb, orgId, cfg, profile.id);
+      let bytes: Buffer<ArrayBuffer> | null = null;
+      let lastError: unknown = null;
+      for (const userId of ctx.candidatesFor(String(src.uploaded_by ?? ""))) {
+        const accessToken = await ctx.tokenOf(userId);
+        if (!accessToken) continue;
+        try {
+          bytes = await downloadDrive(accessToken, exportPath, "Office形式に変換");
+          break;
+        } catch (e) {
+          lastError = e;
+          if (e instanceof HttpError && e.status === 404) continue;
+          throw e;
+        }
+      }
+      if (!bytes) {
+        if (lastError instanceof HttpError) throw lastError;
+        throw new HttpError(400,
+          "このファイルを読み出せるGoogleアカウントが見つかりません（作成者のGoogle連携が切れている可能性があります）");
+      }
+
+      // 名前は「元の名前.xlsx」。同じフォルダに同名があれば「(1)」を付ける
+      const ext = GOOGLE_EXPORT_EXT[kind];
+      const base = sanitizeFileName(String(src.file_name)) || DEFAULT_NAME[kind];
+      const parentId = src.parent_id ? String(src.parent_id) : null;
+      const fileName = nextFreeName(`${base}${ext}`, await namesInFolder(sb, String(src.project_id), parentId));
+
+      // 保存キーは api/project-files/[action].ts の sign-upload と同じ形（日本語名をキーに使わない）
+      const path = `${src.project_id}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+      const { error: upErr } = await sb.storage.from(STAGING_BUCKET)
+        .upload(path, bytes, { contentType: exportMime, upsert: false });
+      if (upErr) throw new HttpError(502, `変換したファイルを保存できませんでした（${upErr.message}）`);
+
+      const { data: inserted, error } = await sb.from("project_files").insert({
+        project_id: src.project_id,
+        folder_path: "",
+        file_name: fileName,
+        file_size: bytes.length,
+        file_type: exportMime,
+        file_path: path,
+        version: 1,
+        uploaded_by: profile.name,
+        // 元のファイルと同じフォルダに並べる
+        ...(parentId ? { parent_id: parentId } : {}),
+      }).select().maybeSingle();
+
+      if (error) {
+        // Storage 上の孤児を残さない
+        await sb.storage.from(STAGING_BUCKET).remove([path]);
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json({ file: inserted, fileName });
     }
 
     // ── 既存の Driveファイルを取り込む ──────────────────
