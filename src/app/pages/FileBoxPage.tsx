@@ -28,11 +28,11 @@ import {
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
   downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
   isGoogleFile, googleFileLabel, googleConvertKind, googleExportUrl,
-  isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind,
+  isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind, type FileKind,
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
-  convertExistingFile, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
+  convertExistingFile, exportGoogleToOffice, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -40,6 +40,7 @@ import { useGoogleLinkGate } from "@/app/hooks/useGoogleLinkGate";
 import { FileKindIcon } from "@/app/components/files/FileKindIcon";
 import { BlockingSpinner } from "@/app/components/shared/BlockingSpinner";
 import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
+import { OfficeLetterIcon } from "@/app/components/files/OfficeLetterIcon";
 import { openPendingTab } from "@/app/lib/pendingTab";
 import {
   collectDropEntries, collectInputEntries, looksLikeFolder,
@@ -47,6 +48,12 @@ import {
 } from "@/app/lib/folderUpload";
 
 const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
+// Office文書に変換できる Googleファイルの種別と、変換先（スプレッドシート → Excel 等）
+const OFFICE_EXPORT_KIND: Partial<Record<FileKind, GoogleAppKind>> = {
+  gsheet: "spreadsheet",
+  gdoc: "document",
+  gslide: "presentation",
+};
 // タブ復帰での Drive 同期を間引く間隔。
 // タブを往復するだけの操作で毎回サーバーレス関数を起こさないため。
 // Google 側で名前を変える操作はどう急いでもこれより時間がかかるので、取りこぼさない。
@@ -819,6 +826,31 @@ export function FileBoxPage() {
     }
   }, [project, toast, load]);
 
+  // Googleスプレッドシート / ドキュメント / スライドを Excel / Word / PowerPoint に変換する（handleOpenAsGoogle の逆向き）。
+  // 元の Googleファイルは残り、通常のファイルとして Office文書が同じフォルダに1行増える。
+  // 増えた行は普通にアップロードしたファイルと同じなので、クリックでビュワー → アプリで開く・画面で編集ができる。
+  const exportOfficeRef = useRef(false); // BUG-05 連打で何個も作らせない
+  const [exportingOffice, setExportingOffice] = useState<GoogleAppKind | null>(null);
+  const handleExportAsOffice = useCallback(async (file: ProjectFile) => {
+    const kind = OFFICE_EXPORT_KIND[getFileKind(file.fileName, file.fileType)];
+    if (!kind || !project) return;
+    if (exportOfficeRef.current) return;
+    exportOfficeRef.current = true;
+    setExportingOffice(kind);
+    try {
+      const res = await exportGoogleToOffice(file.id);
+      // 元のファイルとは別物であることを必ず伝える（片方を編集してももう片方には反映されない）
+      toast(`「${res.fileName}」として${OFFICE_APP_LABEL[kind]}に変換しました。元の「${file.fileName}」とは別のファイルです`);
+      emitLinkItemsChanged(project.id, "file");
+      load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : `${OFFICE_APP_LABEL[kind]}に変換できませんでした`, "error");
+    } finally {
+      exportOfficeRef.current = false;
+      setExportingOffice(null);
+    }
+  }, [project, toast, load]);
+
   const handleExportGoogle = useCallback((file: ProjectFile) => {
     const url = googleExportUrl(file);
     if (!url) { toast("この形式は書き出せません", "error"); return; }
@@ -1271,6 +1303,19 @@ export function FileBoxPage() {
                       </button>
                     );
                   })()}
+                  {/* 上の逆向き。スプレッドシート / ドキュメント / スライドを Excel / Word / PowerPoint に変換する。
+                      Drive で削除済みのものは中身を読めないので出さない */}
+                  {isGoogle && !isMissing && googleDrive && OFFICE_EXPORT_KIND[kind] && (() => {
+                    const ok = OFFICE_EXPORT_KIND[kind]!;
+                    const label = `${OFFICE_APP_LABEL[ok]}に変換（コピーを作成）`;
+                    return (
+                      <button onClick={e => { e.stopPropagation(); void handleExportAsOffice(f); }}
+                        title={label} aria-label={label} disabled={exportingOffice !== null}
+                        style={{ background: "none", border: "none", cursor: exportingOffice ? "wait" : "pointer", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                        <OfficeLetterIcon kind={ok} size={13} />
+                      </button>
+                    );
+                  })()}
                   {/* Googleドライブ上のファイルは storage に実体が無いので、Drive から直接落とす。
                       Google形式だけは元の形式が無いため Office形式へ書き出す */}
                   <button onClick={e => { e.stopPropagation(); isGoogle ? handleExportGoogle(f) : handleDownload(f); }}
@@ -1296,6 +1341,7 @@ export function FileBoxPage() {
 
       {convertingUpload && <BlockingSpinner label="Google形式に変換してアップロードしています" />}
       {convertingOpen && <BlockingSpinner label="Google形式にコピーしています" />}
+      {exportingOffice && <BlockingSpinner label={`${OFFICE_APP_LABEL[exportingOffice]}に変換しています`} />}
       {googleLinkGate.dialog}
       {previewTarget && (
         <FileViewerModal file={previewTarget} onClose={closePreview}

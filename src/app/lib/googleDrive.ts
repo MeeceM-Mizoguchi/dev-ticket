@@ -174,6 +174,17 @@ export function convertExistingFile(fileId: string): Promise<CreateResult> {
   return postApi<CreateResult>("convert-existing", { fileId });
 }
 
+/**
+ * ファイルボックスにある Googleファイルを Office文書に変換する（convertExistingFile の逆向き）。
+ * スプレッドシート → .xlsx / ドキュメント → .docx / スライド → .pptx。
+ * 元の Googleファイルは残り、通常のファイルとして Office文書が同じフォルダに1行増える
+ * （ビュワー・アプリで開く・画面で編集が既存のまま使える）。
+ * @returns 登録された名前
+ */
+export function exportGoogleToOffice(fileId: string): Promise<{ file: unknown; fileName: string }> {
+  return postApi<{ file: unknown; fileName: string }>("export-office", { fileId });
+}
+
 export interface ImportResult {
   /** 追加できたもの。copied=true は保存先フォルダの外にあったためコピーして追加したもの */
   imported: { fileName: string; copied: boolean }[];
