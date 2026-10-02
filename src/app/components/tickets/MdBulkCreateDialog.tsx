@@ -9,6 +9,7 @@ import { useAuth } from "@/app/contexts/AuthContext";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { escStack } from "@/app/lib/escStack";
+import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { MD_MAX_LENGTH } from "@/app/lib/markdown";
 import { mdTextToTickets, flattenTickets, countTickets } from "@/app/lib/mdTickets/parse";
 import { MD_TICKET_TEMPLATE, MD_CHILD_TICKET_TEMPLATE, buildMdTicketPrompt } from "@/app/lib/mdTickets/template";
@@ -465,8 +466,9 @@ export function MdBulkCreateDialog({
         />
 
         {/* ヘッダー */}
-        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          {/* flex:1 + minWidth:0 が無いと長いタイトルが縮まずヘッダーを押し広げ、× ボタンが枠外へ出てしまう */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
             <div style={{ width: 32, height: 32, borderRadius: 9, background: isChildMode ? "#ECFDF5" : "#F0F9FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               {isChildMode
                 ? <CornerDownRight style={{ width: 16, height: 16, color: "#059669" }} />
@@ -476,14 +478,17 @@ export function MdBulkCreateDialog({
               <p style={{ fontSize: 10, color: "#B0A9A4", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
                 {isChildMode ? "MDファイルから子チケットを一括作成" : "MDファイルから一括作成"}
               </p>
-              <h2 style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {parentTicket ? `${parentTicket.wbs} ${parentTicket.title}` : sprintName ?? "チケット一括作成"}
-              </h2>
+              <TruncatedText
+                as="h2"
+                text={parentTicket ? `${parentTicket.wbs} ${parentTicket.title}` : sprintName ?? "チケット一括作成"}
+                style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.02em" }}
+              />
             </div>
           </div>
           <button
             onClick={onClose}
-            style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+            aria-label="閉じる"
+            style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4", flexShrink: 0 }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F4F5F6"; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >

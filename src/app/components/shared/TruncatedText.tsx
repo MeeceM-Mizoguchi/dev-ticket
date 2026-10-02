@@ -43,10 +43,23 @@ export interface TruncatedTextProps {
   always?: boolean;
 }
 
-export function TruncatedText({
-  text, children, as: Tag = "span", style, className, title, always = false,
-}: TruncatedTextProps) {
-  const ref = useRef<HTMLElement | null>(null);
+/**
+ * 見切れ判定 → ツールチップ表示の中身。TruncatedText で包めない要素
+ * （チケット詳細の編集できるタイトル <input> 等）はこれを直接使う:
+ *
+ *   const tip = useTruncatedTip<HTMLInputElement>(title, { disabled: editing });
+ *   <input ref={tip.ref} onMouseEnter={tip.onMouseEnter} onMouseLeave={tip.close} ... />
+ *   {tip.tip}
+ *
+ * <input> も scrollWidth > clientWidth で見切れを判定できる。
+ */
+export function useTruncatedTip<T extends HTMLElement = HTMLElement>(
+  text: string,
+  opts?: { always?: boolean; disabled?: boolean },
+) {
+  const always = opts?.always ?? false;
+  const disabled = opts?.disabled ?? false;
+  const ref = useRef<T | null>(null);
   const timerRef = useRef<number | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
 
@@ -57,6 +70,9 @@ export function TruncatedText({
   const close = useCallback(() => { clearTimer(); setAnchor(null); }, []);
 
   useEffect(() => () => clearTimer(), []);
+
+  // 編集を始めた等で無効になったら、出ているものも消す
+  useEffect(() => { if (disabled) close(); }, [disabled, close]);
 
   // 出している間にスクロール/リサイズされると位置がずれるだけなので閉じる。
   // ツリーやモーダルの中のスクロールも拾うので capture で聞く。
@@ -70,8 +86,9 @@ export function TruncatedText({
     };
   }, [anchor, close]);
 
-  const handleEnter = () => {
+  const onMouseEnter = () => {
     clearTimer();
+    if (disabled) return;
     timerRef.current = window.setTimeout(() => {
       const el = ref.current;
       if (!el || !text) return;
@@ -82,13 +99,26 @@ export function TruncatedText({
     }, OPEN_DELAY_MS);
   };
 
+  return {
+    ref,
+    onMouseEnter,
+    close,
+    tip: anchor ? createPortal(<Tip anchor={anchor} text={text} />, document.body) : null,
+  };
+}
+
+export function TruncatedText({
+  text, children, as: Tag = "span", style, className, title, always = false,
+}: TruncatedTextProps) {
+  const { ref, onMouseEnter, close, tip } = useTruncatedTip(text, { always });
+
   return (
     <>
       <Tag
         ref={ref}
         className={className}
         title={title}
-        onMouseEnter={handleEnter}
+        onMouseEnter={onMouseEnter}
         onMouseLeave={close}
         // 行をクリックして画面が変わった後に残らないように
         onClick={close}
@@ -96,7 +126,7 @@ export function TruncatedText({
       >
         {children ?? text}
       </Tag>
-      {anchor && createPortal(<Tip anchor={anchor} text={text} />, document.body)}
+      {tip}
     </>
   );
 }

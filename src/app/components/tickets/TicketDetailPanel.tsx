@@ -42,6 +42,7 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
+import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
 import { CompletionOverlay } from "@/app/components/tickets/CompletionOverlay";
@@ -348,6 +349,10 @@ export function TicketDetailPanel({
   const [panelAnim, setPanelAnim] = useState("slideInPanel 0.28s cubic-bezier(0.16,1,0.3,1)");
 
   const [title, setTitle] = useState(ticket?.title ?? "");
+  // タイトル欄は <input> なので TruncatedText で包めない。見切れ時の全文ツールチップはフックで付ける
+  // （編集中はカーソル位置の邪魔になるので出さない）
+  const [titleFocused, setTitleFocused] = useState(false);
+  const titleTip = useTruncatedTip<HTMLInputElement>(title, { disabled: titleFocused });
   const [showMonitor, setShowMonitor] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 🌟 追加: 取下の確認モーダル表示用ステート
@@ -2832,16 +2837,24 @@ export function TicketDetailPanel({
                 )}
               </div>
               <input
+                ref={titleTip.ref}
                 value={title}
                 disabled={!canEdit}
                 onChange={e => setTitle(e.target.value)}
+                onMouseEnter={titleTip.onMouseEnter}
+                onMouseLeave={titleTip.close}
                 onBlur={e => {
+                  setTitleFocused(false);
                   (e.currentTarget as HTMLElement).style.borderBottomColor = "transparent";
                   if (canEdit && e.target.value.trim()) save({ title: e.target.value });
                 }}
-                style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3, background: "transparent", border: "none", outline: "none", width: "100%", padding: 0, borderBottom: "1.5px solid transparent", transition: "border-color 0.15s", cursor: canEdit ? "text" : "default" }}
-                onFocus={e => { if (canEdit) (e.currentTarget as HTMLElement).style.borderBottomColor = "#059669"; }}
+                style={{ fontSize: 16, fontWeight: 800, color: "#1A1714", fontFamily: "var(--font-heading)", letterSpacing: "-0.025em", lineHeight: 1.3, background: "transparent", border: "none", outline: "none", width: "100%", padding: 0, borderBottom: "1.5px solid transparent", transition: "border-color 0.15s", cursor: canEdit ? "text" : "default", textOverflow: "ellipsis" }}
+                onFocus={e => {
+                  setTitleFocused(true);
+                  if (canEdit) (e.currentTarget as HTMLElement).style.borderBottomColor = "#059669";
+                }}
               />
+              {titleTip.tip}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
               <div style={{ position: "relative" }}>
