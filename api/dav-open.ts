@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import { canSeeFile, fileActorById } from "./_lib/fileAccess.js";
 
 // ENHA2-035 ファイルボックス: WebDAV エンドポイント（実装本体）
 //
@@ -50,7 +51,9 @@ const MIME: Record<string, string> = {
 // f = 置き場所のフォルダ id（"" = ルート直下）。別フォルダに同名のファイルがありうるため、
 // 名前と組にして「どのファイルか」を決める。f が無いのはこの項目を足す前に発行された
 // トークン（最長24時間で失効）で、その場合は従来どおり名前だけで引く。
-export interface DavPayload { p: string; n: string; u: string; e: number; f?: string }
+// i = 開いた本人の id。限定公開のファイルを、いまも見てよい人かをリクエストのたびに確かめるのに使う
+// （共有先から外された後も、発行済みのトークンで開き続けられないようにする）。
+export interface DavPayload { p: string; n: string; u: string; e: number; f?: string; i?: string }
 
 function secret(): string {
   return process.env.DAV_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -179,7 +182,7 @@ export default async function handler(req: any, res: any) {
   // トークンが指すファイルの最新版を引く
   const latest = async () => {
     let q = sb.from("project_files")
-      .select("id, file_name, file_size, file_path, folder_path, parent_id, version, created_at")
+      .select("id, file_name, file_size, file_path, folder_path, parent_id, version, created_at, owner_id, acl_id")
       .eq("project_id", payload.p).eq("file_name", payload.n);
     if (payload.f !== undefined) q = payload.f ? q.eq("parent_id", payload.f) : q.is("parent_id", null);
     const { data } = await q.order("version", { ascending: false }).limit(1);
@@ -193,6 +196,14 @@ export default async function handler(req: any, res: any) {
 
   const row = await latest();
   if (!row && method !== "PUT") { res.statusCode = 404; return res.end("Not Found"); }
+
+  // 限定公開のファイルは、所有者・共有先・オーナーにしか読み書きさせない。
+  // i の無い古いトークンでは誰が開いているか分からないので、限定公開のファイルは開かせない。
+  // 見えないファイルは「無い」のと同じ 404 で返す（api/project-files と同じ）。
+  if (row?.acl_id) {
+    const actor = await fileActorById(sb, payload.i ?? "");
+    if (!actor || !(await canSeeFile(sb, actor, row))) { res.statusCode = 404; return res.end("Not Found"); }
+  }
 
   // セグメントは経路によってエンコード済み（dev）だったりデコード済み（rewrite）だったりする。
   // そのまま encode すると日本語名が二重エンコード（%25E6...）になり、LOCK の lockroot が
@@ -343,6 +354,8 @@ ${body}
       project_id: payload.p, folder_path: row?.folder_path ?? "", file_name: payload.n,
       file_size: body.length, file_type: contentType, file_path: path,
       version: (row?.version ?? 0) + 1, uploaded_by: payload.u,
+      // 最初の版にだけ効く。既存ファイルの新しい版は DB のトリガーが所有者と公開範囲を引き継がせる
+      ...(payload.i ? { owner_id: payload.i } : {}),
       ...(parentId ? { parent_id: parentId } : {}),
     }).select("id, version, created_at").maybeSingle();
     if (insErr || !inserted) {

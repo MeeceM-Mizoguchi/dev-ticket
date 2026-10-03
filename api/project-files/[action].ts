@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import { canSeeFile, fileDeleteBlocker, isFileOwner } from "../_lib/fileAccess.js";
 
 // ENHA2-035 ファイルボックス
 // project-files バケットは非公開。クライアントは storage を直接叩かず、
@@ -20,6 +21,15 @@ import crypto from "crypto";
 //   POST /api/project-files/rename      { fileId, newName }        → { fileName }
 //   POST /api/project-files/delete      { fileId }               → { ok: true }
 //   POST /api/project-files/restore-version { fileId(戻したい版) } → { file, restoredFrom }
+//   POST /api/project-files/move        { fileId, targetFolderId } → { ok: true }
+//   POST /api/project-files/set-visibility { fileId, visibility }  → { aclId }
+//   POST /api/project-files/share-add   { fileId, memberIds }     → { ok: true }
+//   POST /api/project-files/share-remove { fileId, memberId }     → { ok: true }
+//
+// 限定公開（project_files.acl_id）のファイルは、所有者・共有先・オーナーにしか見せない。
+// ここは service_role で RLS が効かないので、ファイルを引くアクションは必ず canSeeFile を通すこと
+// （規則は api/_lib/fileAccess.ts。DB 側は supabase/add_file_box_private.sql）。
+// 見えないファイルは「無い」のと同じ 404 で返す（存在を知らせない）。
 
 const BUCKET = "project-files";
 const SIGNED_URL_TTL_SEC = 60;
@@ -31,7 +41,7 @@ const DAV_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 function b64url(buf: Buffer | string): string {
   return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function signDavToken(payload: { p: string; n: string; u: string; e: number; f?: string }): string {
+function signDavToken(payload: { p: string; n: string; u: string; e: number; f?: string; i?: string }): string {
   const secret = process.env.DAV_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
   const body = b64url(JSON.stringify(payload));
   const sig = b64url(crypto.createHmac("sha256", secret).update(body).digest());
@@ -136,6 +146,15 @@ async function versionIdsOf(sb: SupabaseClient, projectId: string, parentId: str
   return (data ?? []).map(r => String(r.id));
 }
 
+/**
+ * 使われなくなった限定公開の単位を片付ける（共有先はカスケードで消える）。
+ * まだどこかの行が指していれば DB が消させない（FK）ので、消し過ぎることはない。
+ */
+async function dropAcl(sb: SupabaseClient, aclId: string): Promise<void> {
+  const { error } = await sb.from("project_file_acls").delete().eq("id", aclId);
+  if (error) console.error("[project-files] acl cleanup failed:", error.message);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
@@ -202,14 +221,25 @@ export default async function handler(req: any, res: any) {
 
     // 版番号はサーバーで採番する（クライアント側の一覧が古くても衝突しない）
     const { data: sameName } = await inFolder(sb.from("project_files")
-      .select("version").eq("project_id", projectId).eq("file_name", fileName), parentId)
+      .select("version, owner_id, acl_id").eq("project_id", projectId).eq("file_name", fileName), parentId)
       .order("version", { ascending: false }).limit(1);
-    const version = (sameName?.[0]?.version ?? 0) + 1;
+    let version = (sameName?.[0]?.version ?? 0) + 1;
 
+    // 同名のファイルが、登録する人から見えない限定公開のものだったとき。
+    // そのまま登録すると他人の限定公開ファイルの新しい版になってしまうので、別名の別ファイルにする。
+    if (sameName?.[0] && !(await canSeeFile(sb, profile, sameName[0]))) {
+      const { data: rows } = await inFolder(sb.from("project_files")
+        .select("file_name").eq("project_id", projectId), parentId);
+      fileName = nextFreeName(fileName, new Set((rows ?? []).map(r => String(r.file_name))));
+      version = 1;
+    }
+
+    // owner_id は最初の版にだけ効く。既存ファイルの新しい版は、DB のトリガーが
+    // 最初の版の所有者と公開範囲を引き継がせる（add_file_box_private.sql）。
     const { data: inserted, error } = await sb.from("project_files").insert({
       project_id: projectId, folder_path: "", file_name: fileName,
       file_size: Number(body.fileSize) || 0, file_type: String(body.fileType ?? ""),
-      file_path: path, version, uploaded_by: profile.name,
+      file_path: path, version, uploaded_by: profile.name, owner_id: profile.id,
       // ルート直下のときは列に触れない（旧スキーマでも動くようにするため）
       ...(parentId ? { parent_id: parentId } : {}),
     }).select().maybeSingle();
@@ -229,9 +259,10 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, file_type, file_path, external_provider, external_url").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, file_type, file_path, external_provider, external_url, owner_id, acl_id").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
 
     // Googleドライブ上のファイルは storage に実体が無い。署名付きURLは発行できないので、
     // 開く先(webViewLink)をそのまま返す（docs/google-drive-integration-design.md 9.2）
@@ -255,9 +286,10 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, parent_id, external_provider").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, parent_id, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
     // Googleドライブ上のファイルは storage に実体が無く、WebDAV で開く対象にならない
     if (file.external_provider === "google") {
       return res.status(400).json({ error: "Googleドライブ上のファイルはデスクトップアプリで開けません" });
@@ -270,8 +302,10 @@ export default async function handler(req: any, res: any) {
     const slot = (Math.floor(Date.now() / DAV_TOKEN_TTL_MS) + 2) * DAV_TOKEN_TTL_MS;
     // f = 置き場所のフォルダ（""=ルート）。別フォルダに同名のファイルがありうるので、
     // 名前だけでは「どのファイルか」が決まらない。
+    // i = 開いた本人。トークンは最長24時間使えるので、その間に限定公開の共有先から外されたら
+    // 開けなくなるよう、api/dav-open.ts がリクエストのたびにこの人で判定し直す。
     const token = signDavToken({
-      p: file.project_id, n: file.file_name, u: profile.name, e: slot, f: file.parent_id ?? "",
+      p: file.project_id, n: file.file_name, u: profile.name, e: slot, f: file.parent_id ?? "", i: profile.id,
     });
     const proto = String(req.headers["x-forwarded-proto"] ?? "https");
     const base = process.env.PUBLIC_URL || `${proto}://${req.headers.host}`;
@@ -289,9 +323,10 @@ export default async function handler(req: any, res: any) {
     if (!fileId || !rawName.trim()) return res.status(400).json({ error: "fileId and newName are required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, file_type, parent_id, is_folder, external_provider").eq("id", fileId).maybeSingle();
+      .select("project_id, file_name, file_type, parent_id, is_folder, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
     const parentId: string | null = file.parent_id ?? null;
 
     // Googleドライブ上のファイルは版を持たない。フォルダと同じく1行だけを書き換える。
@@ -354,10 +389,11 @@ export default async function handler(req: any, res: any) {
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: src } = await sb.from("project_files")
-      .select("project_id, file_name, file_type, file_path, file_size, folder_path, parent_id, version, is_folder, external_provider")
+      .select("project_id, file_name, file_type, file_path, file_size, folder_path, parent_id, version, is_folder, external_provider, owner_id, acl_id")
       .eq("id", fileId).maybeSingle();
     if (!src) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, src.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    if (!(await canSeeFile(sb, profile, src))) return res.status(404).json({ error: "File not found" });
     // フォルダとGoogleファイルは版を持たない
     if (src.is_folder || src.external_provider === "google" || !src.file_path) {
       return res.status(400).json({ error: "このファイルはバージョンを戻せません" });
@@ -390,14 +426,18 @@ export default async function handler(req: any, res: any) {
   }
 
   // ── 削除（同名ファイルの全バージョン + ストレージ実体） ──────
+  // 削除できるのは 所有者 / オーナー / アサイン計画で「ファイルの削除」を付けたメンバー。
+  // 画面はボタンを出し分けているが、それは見た目の補助で、止めているのはここ。
   if (action === "delete") {
     const fileId = String(body.fileId ?? "");
     if (!fileId) return res.status(400).json({ error: "fileId is required" });
 
     const { data: file } = await sb.from("project_files")
-      .select("project_id, file_name, parent_id, external_provider").eq("id", fileId).maybeSingle();
+      .select("id, project_id, file_name, parent_id, is_folder, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
     if (!file) return res.status(404).json({ error: "File not found" });
     if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    const blocker = await fileDeleteBlocker(sb, profile, file);
+    if (blocker) return res.status(403).json({ error: blocker });
     const parentId: string | null = file.parent_id ?? null;
 
     // ★ Googleファイルは「その1行だけ」を id で消す。
@@ -407,6 +447,7 @@ export default async function handler(req: any, res: any) {
     if (file.external_provider === "google") {
       const { error } = await sb.from("project_files").delete().eq("id", fileId);
       if (error) return res.status(500).json({ error: error.message });
+      if (file.acl_id) await dropAcl(sb, String(file.acl_id));
       // Googleドライブ上の実体にはここでは触れない（storage にも実体は無い）。
       // Drive 側をゴミ箱へ入れるかは利用者が確認ダイアログで選び、
       // 選ばれたときだけクライアントが「先に」 api/google/trash を呼ぶ（設計書 2章 決定事項8）。
@@ -426,6 +467,7 @@ export default async function handler(req: any, res: any) {
       .delete().eq("project_id", file.project_id).eq("file_name", file.file_name), parentId);
     if (error) return res.status(500).json({ error: error.message });
     if (paths.length) await sb.storage.from(BUCKET).remove(paths);
+    if (file.acl_id) await dropAcl(sb, String(file.acl_id));
 
     // コメント(BRU12-025)は版をまたぐため project_files への FK を持たない＝
     // 行を消しても連鎖しない。このファイルの版に付いたものをここで一緒に片付ける（孤児を残さない）。
@@ -436,6 +478,148 @@ export default async function handler(req: any, res: any) {
     }
 
     return res.json({ ok: true, deleted: paths.length });
+  }
+
+  // ── 移動 ─────────────────────────────────────────────────
+  // 画面から直接 update させないのは、移動する人から見えない限定公開ファイルと同名のとき、
+  // 画面側の重複チェックでは気づけず、2つのファイルの版が1つに混ざってしまうため。
+  if (action === "move") {
+    const fileId = String(body.fileId ?? "");
+    if (!fileId) return res.status(400).json({ error: "fileId is required" });
+
+    const { data: file } = await sb.from("project_files")
+      .select("id, project_id, file_name, parent_id, is_folder, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
+    if (!file) return res.status(404).json({ error: "File not found" });
+    if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
+    const fromParentId: string | null = file.parent_id ?? null;
+
+    let targetId: string | null = null;
+    if (body.targetFolderId) {
+      const { data: target } = await sb.from("project_files")
+        .select("id, project_id, parent_id, is_folder").eq("id", String(body.targetFolderId)).maybeSingle();
+      if (!target || target.project_id !== file.project_id || !target.is_folder) {
+        return res.status(400).json({ error: "移動先のフォルダが見つかりません" });
+      }
+      targetId = String(target.id);
+
+      // フォルダを自分自身や、自分の中のフォルダへは移せない（階層が輪になり、どこからも辿れなくなる）
+      if (file.is_folder) {
+        const seen = new Set<string>();
+        let cur: string | null = targetId;
+        while (cur && !seen.has(cur)) {
+          if (cur === fileId) return res.status(400).json({ error: "フォルダを、そのフォルダ自身の中へは移動できません" });
+          seen.add(cur);
+          const up: { data: { parent_id?: unknown } | null } =
+            await sb.from("project_files").select("parent_id").eq("id", cur).maybeSingle();
+          cur = up.data?.parent_id ? String(up.data.parent_id) : null;
+        }
+      }
+    }
+    if (fromParentId === targetId) return res.json({ ok: true });
+
+    // 同じフォルダの同名＝同じファイルの版という作りなので、移動先に同名があると
+    // 2つのファイルが1つに合体してしまう。見えない限定公開ファイルも含めて確かめる。
+    const { data: clash } = await inFolder(sb.from("project_files")
+      .select("id").eq("project_id", file.project_id).eq("file_name", file.file_name), targetId).limit(1);
+    if ((clash ?? []).length > 0) {
+      return res.status(409).json({
+        error: `移動先に同じ名前の${file.is_folder ? "フォルダ" : "ファイル"}「${file.file_name}」があるため移動できません。名前を変更してから移動してください`,
+      });
+    }
+
+    // フォルダとGoogleファイルは版を持たないので、その1行だけを動かす。
+    // 通常のファイルは同じフォルダにある同名の全版をまとめて動かす（別フォルダの同名は別ファイル）。
+    const update = sb.from("project_files").update({ parent_id: targetId });
+    const { error } = await (file.is_folder || file.external_provider === "google"
+      ? update.eq("id", fileId)
+      : inFolder(update.eq("project_id", file.project_id).eq("file_name", file.file_name), fromParentId));
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
+  }
+
+  // ── 公開範囲（限定公開にする / プロジェクト全員に戻す）・共有先の付け外し ──
+  // できるのは所有者（最初にアップロードした人）だけ。オーナーも共有先を見られるが、変更はできない。
+  if (action === "set-visibility" || action === "share-add" || action === "share-remove") {
+    const fileId = String(body.fileId ?? "");
+    if (!fileId) return res.status(400).json({ error: "fileId is required" });
+
+    const { data: file } = await sb.from("project_files")
+      .select("id, project_id, file_name, parent_id, is_folder, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
+    if (!file) return res.status(404).json({ error: "File not found" });
+    if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
+    if (file.is_folder) return res.status(400).json({ error: "フォルダは限定公開にできません" });
+    if (!isFileOwner(profile, file)) {
+      return res.status(403).json({ error: "公開範囲を変更できるのは、このファイルを追加した人だけです" });
+    }
+    const aclId: string | null = file.acl_id ? String(file.acl_id) : null;
+
+    if (action === "set-visibility") {
+      const makePrivate = body.visibility === "private";
+
+      if (!makePrivate) {
+        if (!aclId) return res.json({ aclId: null });
+        // 先に行の acl_id を外してから acl を消す（逆順だと FK で消せない）。
+        // 共有先は acl と一緒に消える。残すと、次に限定公開にしたとき前の共有先が黙って復活する。
+        const { error } = await sb.from("project_files").update({ acl_id: null }).eq("acl_id", aclId);
+        if (error) return res.status(500).json({ error: error.message });
+        await dropAcl(sb, aclId);
+        return res.json({ aclId: null });
+      }
+
+      if (aclId) return res.json({ aclId });
+      const { data: acl, error: aclErr } = await sb.from("project_file_acls")
+        .insert({ project_id: file.project_id, created_by: profile.id }).select("id").maybeSingle();
+      if (aclErr || !acl) return res.status(500).json({ error: aclErr?.message ?? "限定公開にできませんでした" });
+
+      // Googleファイルは版を持たないので1行だけ。通常のファイルは全版に付ける
+      // （古い版の行だけ公開のまま残ると、その版の id から中身を開けてしまう）。
+      const update = sb.from("project_files").update({ acl_id: acl.id });
+      const { error } = await (file.external_provider === "google"
+        ? update.eq("id", fileId)
+        : inFolder(update.eq("project_id", file.project_id).eq("file_name", file.file_name)
+          .eq("is_folder", false), file.parent_id ?? null));
+      if (error) {
+        await sb.from("project_files").update({ acl_id: null }).eq("acl_id", acl.id);
+        await dropAcl(sb, String(acl.id));
+        return res.status(500).json({ error: error.message });
+      }
+      return res.json({ aclId: String(acl.id) });
+    }
+
+    if (!aclId) return res.status(400).json({ error: "このファイルは限定公開ではありません" });
+
+    if (action === "share-add") {
+      const memberIds: string[] = Array.isArray(body.memberIds)
+        ? [...new Set(body.memberIds.map((x: unknown) => String(x)).filter(Boolean))] as string[]
+        : [];
+      if (memberIds.length === 0) return res.json({ ok: true });
+      if (memberIds.length > 100) return res.status(400).json({ error: "一度に共有できるのは100人までです" });
+
+      // プロジェクトを見られない人には共有しない（共有しても辿り着けず、名前だけが共有先に残る）
+      const rows: Record<string, string>[] = [];
+      for (const id of memberIds) {
+        if (id === profile.id) continue;
+        if (!(await isMember(sb, file.project_id, { id }))) {
+          return res.status(400).json({ error: "このプロジェクトのメンバーではない人は共有先にできません" });
+        }
+        rows.push({ acl_id: aclId, profile_id: id, project_id: String(file.project_id), created_by: profile.id });
+      }
+      if (rows.length > 0) {
+        const { error } = await sb.from("project_file_acl_members")
+          .upsert(rows, { onConflict: "acl_id,profile_id" });
+        if (error) return res.status(500).json({ error: error.message });
+      }
+      return res.json({ ok: true });
+    }
+
+    const memberId = String(body.memberId ?? "");
+    if (!memberId) return res.status(400).json({ error: "memberId is required" });
+    const { error } = await sb.from("project_file_acl_members")
+      .delete().eq("acl_id", aclId).eq("profile_id", memberId);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
   }
 
   return res.status(404).json({ error: "Unknown action" });

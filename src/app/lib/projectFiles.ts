@@ -1,4 +1,5 @@
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
+import type { FileShareMember } from "@/app/types";
 
 // ENHA2-035 ファイルボックス共通ロジック
 // 「ブラウザで閲覧」は全てクライアント内(自前ビューア)で完結させ、
@@ -384,6 +385,99 @@ export async function restoreFileVersion(fileId: string): Promise<void> {
 export async function renameProjectFile(fileId: string, newName: string): Promise<string> {
   const res = await postApi<{ fileName: string }>("rename", { fileId, newName });
   return res.fileName;
+}
+
+/**
+ * ファイル／フォルダを別のフォルダへ移す（targetFolderId が null ならルート直下）。
+ * 画面から直接 update しないのは、自分からは見えない限定公開ファイルと同名のときに
+ * 版が混ざるのをサーバー側で止めるため。
+ */
+export async function moveProjectFile(fileId: string, targetFolderId: string | null): Promise<void> {
+  await postApi<{ ok: boolean }>("move", { fileId, targetFolderId });
+}
+
+// ── 限定公開 ───────────────────────────────────────────────
+// 設定できるのは所有者（最初にアップロードした人）だけ。判定はサーバー側が行う。
+// 見られるのは 所有者 / 共有先 / オーナー（DB の RLS と api/_lib/fileAccess.ts）。
+
+/** 限定公開にする（共有先なし＝自分のみ）／プロジェクト全員に戻す。戻すと共有先も消える */
+export async function setFileVisibility(fileId: string, makePrivate: boolean): Promise<string | null> {
+  const res = await postApi<{ aclId: string | null }>(
+    "set-visibility", { fileId, visibility: makePrivate ? "private" : "project" });
+  return res.aclId;
+}
+
+export async function addFileShares(fileId: string, memberIds: string[]): Promise<void> {
+  await postApi<{ ok: boolean }>("share-add", { fileId, memberIds });
+}
+
+export async function removeFileShare(fileId: string, memberId: string): Promise<void> {
+  await postApi<{ ok: boolean }>("share-remove", { fileId, memberId });
+}
+
+/**
+ * プロジェクト内の限定公開ファイルの共有先を、限定公開の単位（aclId）ごとにまとめて引く。
+ * RLS で、自分が見られるファイルの分しか返らない。
+ * SQL 未適用（テーブルが無い）でも一覧が全滅しないよう、失敗は空で返す。
+ */
+export async function loadFileShareMap(projectId: string): Promise<Record<string, FileShareMember[]>> {
+  if (!isSupabaseEnabled || !projectId) return {};
+  const { data, error } = await supabase!
+    .from("project_file_acl_members")
+    .select("acl_id, profile_id, profiles(name)")
+    .eq("project_id", projectId)
+    // BUG-01 表示順がリロードのたびに変わらないよう2つ重ねる
+    .order("created_at", { ascending: true }).order("profile_id", { ascending: true });
+  if (error) return {};
+  const out: Record<string, FileShareMember[]> = {};
+  for (const r of (data ?? []) as any[]) {
+    const m: FileShareMember = { id: r.profile_id, name: (r.profiles?.name as string | undefined) ?? "" };
+    const list = out[r.acl_id];
+    if (list) list.push(m); else out[r.acl_id] = [m];
+  }
+  return out;
+}
+
+/**
+ * 共有先に選べるメンバー。そのプロジェクトを見られる人（project_visible_to と同じ規則）:
+ *   projects.members に名前がある人、または組織の admin / project-manager。
+ * オーナーは共有しなくても見られるので候補に出さない。
+ */
+export async function loadFileShareCandidates(
+  projectId: string, orgId: string | null, excludeUserId: string,
+): Promise<FileShareMember[]> {
+  if (!isSupabaseEnabled || !projectId) return [];
+  const { data: proj } = await supabase!.from("projects")
+    .select("members, organization_id").eq("id", projectId).maybeSingle();
+  const memberNames = new Set(((proj as any)?.members ?? []) as string[]);
+  // 組織はプロジェクトの所属で引く（オーナーが他組織のPJを開いたときも正しくなる）
+  const projectOrgId = ((proj as any)?.organization_id as string | null) ?? orgId;
+
+  let q = supabase!.from("profiles").select("id, name, role").neq("status", "inactive");
+  if (projectOrgId) q = q.eq("organization_id", projectOrgId);
+  const { data: profiles } = await q.order("name", { ascending: true }).order("id", { ascending: true });
+
+  return ((profiles ?? []) as any[])
+    .filter(p => p.id !== excludeUserId && p.name && p.role !== "owner"
+      && (memberNames.has(p.name) || p.role === "admin" || p.role === "project-manager"))
+    .map(p => ({ id: p.id as string, name: p.name as string }));
+}
+
+/**
+ * 限定公開のファイルを見られる人の名前（所有者＋共有先）。コメントの通知先を絞るのに使う。
+ * 見られない人へ通知すると、開けないリンクと一緒にファイル名が届いてしまう。
+ */
+export async function loadFileViewerNames(file: { aclId?: string | null; ownerId?: string | null }): Promise<string[]> {
+  if (!isSupabaseEnabled || !file.aclId) return [];
+  const [shares, owner] = await Promise.all([
+    supabase!.from("project_file_acl_members").select("profiles(name)").eq("acl_id", file.aclId),
+    file.ownerId
+      ? supabase!.from("profiles").select("name").eq("id", file.ownerId).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  const names = ((shares.data ?? []) as any[]).map(r => (r.profiles?.name as string | undefined) ?? "");
+  names.push(((owner.data as any)?.name as string | undefined) ?? "");
+  return [...new Set(names.filter(Boolean))];
 }
 
 /** DB行とストレージ実体をまとめて削除する */

@@ -46,6 +46,7 @@ import {
   type FileComment, type FileCommentReply, type FileCommentTarget,
 } from "@/app/lib/fileComments";
 import { notifyFileCommentMentions, notifyFileCommentReply } from "@/app/lib/fileCommentNotify";
+import { loadFileViewerNames } from "@/app/lib/projectFiles";
 import { Avatar, Composer, ItemMenu, PIN_CURSOR, commentCardStyle } from "../comments/CommentKit";
 import { CommentListPanel } from "../whiteboard/CommentListPanel";
 import { MentionText } from "../whiteboard/MentionText";
@@ -216,6 +217,24 @@ export function FileCommentLayer({
     });
     return () => { cancelled = true; };
   }, [file.projectId]);
+
+  // 限定公開のファイルでは、通知を「このファイルを見られる人」（所有者＋共有先）にだけ送る。
+  // 見られない人へ送ると、開けないリンクと一緒にファイル名が届いてしまう（ホワイトボードと同じ扱い）。
+  // 読み込めるまでは空＝誰にも送らない側に倒す。メンション候補の表示（members）は絞らない。
+  const [viewerNames, setViewerNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (!file.aclId) return;
+    let cancelled = false;
+    setViewerNames([]);
+    void loadFileViewerNames({ aclId: file.aclId, ownerId: file.ownerId }).then((names) => {
+      if (!cancelled) setViewerNames(names);
+    });
+    return () => { cancelled = true; };
+  }, [file.aclId, file.ownerId]);
+  const notifyMembers = useMemo(
+    () => (file.aclId ? members.filter((m) => viewerNames.includes(m)) : members),
+    [file.aclId, members, viewerNames],
+  );
 
   useEffect(() => {
     onCountChange?.(comments.filter((c) => !c.resolved).length);
@@ -502,7 +521,7 @@ export function FileCommentLayer({
     setCommentMode(false);
     pinOpen(c.id);
     commit(saveFileComment(target, c));
-    void notifyFileCommentMentions(notifyBase(c.id), text, members);
+    void notifyFileCommentMentions(notifyBase(c.id), text, notifyMembers);
   };
 
   const saveReply = (comment: FileComment) => {
@@ -514,8 +533,11 @@ export function FileCommentLayer({
     setReplyOpen(false);   // 「返信」を押したら入力欄は閉じる（仕様）
     setShowReplies(true);  // 書いた返信がそのまま見えるように一覧は開く
     commit(saveFileCommentReply(target, r));
-    void notifyFileCommentMentions(notifyBase(comment.id, r.id), text, members);
-    void notifyFileCommentReply(notifyBase(comment.id, r.id), text, comment.userName);
+    void notifyFileCommentMentions(notifyBase(comment.id, r.id), text, notifyMembers);
+    // 返信先の人が、限定公開の共有先から外れていることがある
+    if (!file.aclId || viewerNames.includes(comment.userName)) {
+      void notifyFileCommentReply(notifyBase(comment.id, r.id), text, comment.userName);
+    }
   };
 
   const saveEdit = (comment: FileComment) => {
@@ -526,7 +548,7 @@ export function FileCommentLayer({
       const prev = comment.text;
       setComments((cs) => cs.map((c) => (c.id === editing.id ? { ...c, text, updatedAt: now } : c)));
       commit(updateFileCommentText(editing.id, text));
-      void notifyFileCommentMentions(notifyBase(comment.id), text, members, prev);
+      void notifyFileCommentMentions(notifyBase(comment.id), text, notifyMembers, prev);
     } else {
       const prev = (replies[comment.id] ?? []).find((r) => r.id === editing.id)?.text;
       setReplies((rs) => ({
@@ -534,7 +556,7 @@ export function FileCommentLayer({
         [comment.id]: (rs[comment.id] ?? []).map((r) => (r.id === editing.id ? { ...r, text, updatedAt: now } : r)),
       }));
       commit(updateFileCommentText(editing.id, text));
-      void notifyFileCommentMentions(notifyBase(comment.id, editing.id), text, members, prev);
+      void notifyFileCommentMentions(notifyBase(comment.id, editing.id), text, notifyMembers, prev);
     }
     setEditing(null);
   };

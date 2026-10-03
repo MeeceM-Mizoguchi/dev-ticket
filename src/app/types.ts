@@ -326,7 +326,13 @@ export interface ProjectFile {
   externalId?: string | null;        // Drive の fileId
   externalUrl?: string | null;       // 別タブで開くURL(webViewLink)
   linkShared?: boolean;              // リンクを知っている全員が編集できる状態か
+  /** 所有者（最初にアップロードした人）の userId。公開範囲の変更と削除の判定に使う。不明なら null */
+  ownerId?: string | null;
+  /** 限定公開の単位の id。null = プロジェクト全員に公開。入っていれば所有者・共有先・オーナーだけが見られる */
+  aclId?: string | null;
 }
+/** 限定公開の共有先（id は profiles.id = auth.uid()） */
+export interface FileShareMember { id: string; name: string }
 export interface Sprint {
   id: string; projectId: string; name: string; goal: string;
   status: SprintStatus; startDate: string; endDate: string;
@@ -692,6 +698,8 @@ export interface UserPermissions {
   canAccessOrganization: boolean;
   canUpdateAnnouncement: boolean;
   canAccessReports: boolean;
+  /** ファイルボックスで、自分以外が追加したファイル・フォルダも削除できる（アサイン計画で付与） */
+  canDeleteFiles?: boolean;
   wikiPermission: AccessLevel;
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
