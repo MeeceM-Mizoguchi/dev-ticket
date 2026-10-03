@@ -21,7 +21,14 @@ import crypto from "crypto";
 //   そこで vercel.json の rewrite で /api/dav/* を、確実に関数へ届く
 //   単一セグメントのパス /api/dav-open?path=... へ寄せ、その実装をここに置く。
 //   パスは req.query.path（配列 or "a/b" 形式の文字列）で受け取る。
-//   dev サーバーと本番の単一セグメントは api/dav/[...path].ts が本ファイルを再エクスポートして使う。
+//
+// ★ api/dav/ 配下に関数ファイル（以前の api/dav/[...path].ts）を置かないこと。
+//   本番ではファイルの経路が rewrite より先に評価されるため、そのキャッチオールが
+//   親フォルダ /api/dav/<token>/（末尾スラッシュ）を横取りして Vercel の 404 にしていた。
+//   Office は保存できるかを親フォルダへの PROPFIND で判断するので、ここが 404 だと
+//   読み取り専用に落ちる。さらに WebDAV メソッドで 404 を連発すると、Vercel の防御に
+//   スキャナーと見なされて PROPFIND / LOCK にチャレンジ(403)をかけられる。
+//   dev サーバーも vite.config.ts の devApiPlugin で同じ振り分けにしてある。
 //
 // 既知の制約:
 //   - Vercel のリクエストボディ上限 4.5MB を超える保存は失敗する（エラーを返す）
@@ -91,7 +98,7 @@ function extOf(name: string): string {
 
 // パスセグメントを取り出す。
 //  - 本番(rewrite 経由): req.query.path は "token/ファイル名.xlsx"（文字列）か配列
-//  - dev / 本番の単一セグメント([...path]): req.query.path は params 由来の文字列/配列
+//  - dev(vite.config.ts の devApiPlugin): req.query.path は "token/ファイル名.xlsx"（文字列）
 // どちらでも同じ配列へ正規化する。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function pathSegments(req: any): string[] {
@@ -117,9 +124,25 @@ export default async function handler(req: any, res: any) {
 
   // トークンを含まないルートへの OPTIONS は、Office の WebDAV 探索なので
   // 機能の広告だけ返す（中身は一切返さない）。
+  // PROPFIND も空のフォルダとして答える（404 を返すとスキャナー扱いされる。上の★参照）。
   if (segs.length === 0) {
-    if (method !== "OPTIONS") { res.statusCode = 404; return res.end("Not Found"); }
-    davHeaders(); res.statusCode = 200; return res.end();
+    davHeaders();
+    if (method === "OPTIONS") { res.statusCode = 200; return res.end(); }
+    if (method === "PROPFIND") {
+      res.setHeader("Content-Type", 'application/xml; charset="utf-8"');
+      res.statusCode = 207;
+      return res.end(`<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/api/dav/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>`);
+    }
+    res.statusCode = 404; return res.end("Not Found");
   }
 
   // ★ OPTIONS はトークン検証より前に、常に成功させる。
@@ -171,7 +194,11 @@ export default async function handler(req: any, res: any) {
   const row = await latest();
   if (!row && method !== "PUT") { res.statusCode = 404; return res.end("Not Found"); }
 
-  const href = `/api/dav/${segs.map(encodeURIComponent).join("/")}`;
+  // セグメントは経路によってエンコード済み（dev）だったりデコード済み（rewrite）だったりする。
+  // そのまま encode すると日本語名が二重エンコード（%25E6...）になり、LOCK の lockroot が
+  // Office が開いた URL と食い違う。一度デコードしてから encode し直して揃える。
+  const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+  const href = `/api/dav/${segs.map(s => encodeURIComponent(safeDecode(s))).join("/")}`;
   const contentType = MIME[extOf(payload.n)] ?? "application/octet-stream";
 
   if (method === "HEAD" || method === "GET") {

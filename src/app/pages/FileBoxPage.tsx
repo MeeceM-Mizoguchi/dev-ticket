@@ -1348,6 +1348,11 @@ export function FileBoxPage() {
           onDownload={handleDownload} onOpenInApp={handleOpenInApp}
           focusCommentId={focusComment?.commentId ?? null}
           focusReplyId={focusComment?.replyId ?? null}
+          versions={files.filter(f => isSameFile(f, previewTarget))}
+          onRestored={() => {
+            toast(`「${previewTarget.fileName}」を過去のバージョンに戻しました`);
+            load(); if (project) emitLinkItemsChanged(project.id, "file");
+          }}
           onSaved={() => { load(); if (project) emitLinkItemsChanged(project.id, "file"); }} />
       )}
       {deleteTarget && (() => {
