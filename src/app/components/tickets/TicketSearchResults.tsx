@@ -204,8 +204,8 @@ export function TicketSearchResults({
                 </span>
               )}
               <span style={{ width: 4, height: 4, borderRadius: "50%", background: priColor, flexShrink: 0 }} />
-              {/* 説明文は今まで通りブラウザ標準の title で。ツールチップはタイトルの全文 */}
-              <TruncatedText text={t.title} title={row.descriptionText || undefined}
+              {/* ツールチップは見切れたタイトルの全文だけ（説明文はチケットを開いて読む） */}
+              <TruncatedText text={t.title}
                 style={{ fontSize: 12, fontWeight: 500, color: "#1A1714" }} />
             </div>
 

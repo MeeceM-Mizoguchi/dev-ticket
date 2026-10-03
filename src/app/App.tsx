@@ -24,6 +24,7 @@ import { OrgProvider } from "@/app/contexts/OrgContext";
 import { PlanProvider } from "@/app/contexts/PlanContext";
 import { useVersionCheck } from "@/app/hooks/useVersionCheck";
 import { AppUpdateOverlay } from "@/app/components/shared/AppUpdateOverlay";
+import { NativeTitleTips } from "@/app/components/shared/HoverTip";
 
 // ネイティブアプリ(macOS/iPad)では営業用LPを表示せず、
 // ログイン済みならダッシュボード、未ログインならログイン画面へ直行する。
@@ -62,6 +63,8 @@ export default function App() {
   return (
     <ToastProvider>
       <VersionWatcher />
+      {/* title 属性のツールチップを、全画面でブラウザ標準からアプリの見た目へ置き換える */}
+      <NativeTitleTips />
       <AlertProvider>
         <AuthProvider>
           <PreviewPanelProvider>

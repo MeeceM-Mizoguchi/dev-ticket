@@ -3,6 +3,9 @@
 // 見た目は TruncatedText / PlanTooltip と同じ（#1A1714 のダーク＋三角）。
 // title 属性はOSごとに見た目も出るまでの時間も違い、改行も効かないので、表の中では使わない。
 //
+// それ以外の画面に書かれている title は、NativeTitleTips（アプリ最上位に1つ）が拾って
+// 同じ見た目で出し直す。ブラウザ標準のツールチップはどの画面でも出ない。
+//
 // 表は「説明を出したい要素」が1行に10個以上あり、行数も数百になる。要素ごとに
 // 状態とイベントを持たせると重いので、入れ物に1つだけ聞き役を置いて data-tip 属性を拾う。
 //
@@ -96,6 +99,168 @@ export function Tip({ anchor, text }: { anchor: TipAnchor; text: string }) {
       )}
     </div>
   );
+}
+
+/** 自前でツールチップを出している要素（data-tip / TruncatedText）。この内側では title 側は黙る */
+const OWN_TIP_SELECTOR = "[data-tip], [data-truncated-tip]";
+/** 見切れ判定で見る子孫の上限（大きな入れ物に title が付いていても重くしない） */
+const TRUNCATION_SCAN_LIMIT = 40;
+const TEXT_INPUT_TYPES = new Set(["text", "search", "url", "email", "tel", "number", "password"]);
+
+function isTextField(el: Element): el is HTMLInputElement | HTMLTextAreaElement {
+  if (el instanceof HTMLTextAreaElement) return true;
+  return el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type);
+}
+
+/** はみ出した分が実際に切られているか（スクロールできる入れ物は「見切れ」ではない） */
+function isClipped(el: Element): boolean {
+  // 1px はブラウザの丸め誤差の逃がし
+  const w = el.scrollWidth > el.clientWidth + 1;
+  const h = el.scrollHeight > el.clientHeight + 1;
+  if (!w && !h) return false;
+  if (isTextField(el)) return w;
+  const cs = window.getComputedStyle(el);
+  const cut = (v: string) => v === "hidden" || v === "clip";
+  return (w && cut(cs.overflowX)) || (h && cut(cs.overflowY));
+}
+
+/**
+ * title を黒いツールチップで出すかどうか。
+ *   ・文字がある要素 … 見切れているときだけ（全部見えているなら邪魔なだけ）
+ *   ・文字がない要素（アイコンだけのボタン等）… 説明がそれしか無いので常に出す
+ */
+function shouldShowTitleTip(el: Element): boolean {
+  if (isTextField(el)) return el.value === "" || isClipped(el);
+  const own = (el.textContent ?? "").trim();
+  if (!own) return true;
+
+  if (isClipped(el)) return true;
+  const inner = el.querySelectorAll("*");
+  for (let i = 0; i < inner.length && i < TRUNCATION_SCAN_LIMIT; i++) {
+    if (isClipped(inner[i])) return true;
+  }
+  // <td style="overflow:hidden"><span title>…</span></td> のように、切っているのが外側のこともある。
+  // 他の文字も抱えている入れ物まで遡ると、関係ない見切れを拾うのでそこで止める
+  for (let p = el.parentElement, i = 0; p && i < 3; p = p.parentElement, i++) {
+    if ((p.textContent ?? "").trim() !== own) break;
+    if (isClipped(p)) return true;
+  }
+  return false;
+}
+
+/**
+ * React が DOM に持たせている「いまの props」の title。
+ * 外していた title を戻すとき、乗せている間に props が変わっていたら古い文言を戻さないために見る。
+ * undefined = React の管理外（外部ライブラリが直接作った要素など）。
+ */
+function liveTitleProp(el: Element): string | null | undefined {
+  const key = Object.keys(el).find(k => k.startsWith("__reactProps$"));
+  if (!key) return undefined;
+  const title = (el as unknown as Record<string, { title?: unknown } | undefined>)[key]?.title;
+  return typeof title === "string" ? title : null;
+}
+
+/**
+ * ブラウザ標準の title ツールチップを、全画面でアプリのツールチップに置き換える。
+ * アプリの最上位に1つだけ置く（App.tsx）。各画面は今まで通り title を書けばよい。
+ *
+ * ブラウザ標準のツールチップは CSS では止められず、title 属性が付いている限り出る。
+ * そこで、マウスが乗っている間だけ title を DOM から外し（＝標準は出ない）、
+ * 離れたら戻す。外すのは祖先の title も含む（子の title を外すと、親の title が出てくるため）。
+ *
+ * 出す条件は shouldShowTitleTip を参照。data-tip / TruncatedText の内側では、
+ * そちらが自前で出すのでここでは出さない（標準を止めるだけ）。
+ */
+export function NativeTitleTips() {
+  const [shown, setShown] = useState<{ anchor: TipAnchor; text: string } | null>(null);
+
+  useEffect(() => {
+    let timer: number | null = null;
+    /** いま狙っている要素。同じ要素の中で動いただけなら出し直さない（点滅防止） */
+    let target: Element | null = null;
+    /** title を外している要素と、その文言 */
+    const stash = new Map<Element, string>();
+
+    const clearTimer = () => {
+      if (timer !== null) { window.clearTimeout(timer); timer = null; }
+    };
+    const hide = () => { clearTimer(); setShown(null); };
+
+    const restore = (el: Element, text: string) => {
+      stash.delete(el);
+      el.removeAttribute("data-title-stashed");
+      if (el.hasAttribute("title")) return;   // 乗せている間に React が書き直した
+      const live = liveTitleProp(el);
+      const value = live === undefined ? text : live;
+      if (value) el.setAttribute("title", value);
+    };
+    const restoreAll = () => {
+      Array.from(stash).forEach(([el, text]) => restore(el, text));
+      target = null;
+    };
+
+    const onOver = (e: MouseEvent) => {
+      const from = e.target instanceof Element ? e.target : null;
+
+      // 近い順に、title を持つ（または外してある）祖先を集める。
+      // iframe は中へイベントが届かず外し時を取れない。本文エディタ(.ProseMirror)の中は
+      // エディタが DOM の変化を監視していて、属性を触ると描き直しが走るので触らない
+      const editor = from?.closest(".ProseMirror") ?? null;
+      const chain: Element[] = [];
+      for (let el = from; el; el = el.parentElement) {
+        if (el.tagName === "IFRAME" || (el as HTMLElement).isContentEditable || editor?.contains(el)) continue;
+        if (el.hasAttribute("title") || stash.has(el)) chain.push(el);
+      }
+
+      Array.from(stash).forEach(([el, text]) => { if (!chain.includes(el)) restore(el, text); });
+      for (const el of chain) {
+        const title = el.getAttribute("title");
+        if (title === null) continue;
+        stash.set(el, title);
+        el.removeAttribute("title");
+        // title を外している間の目印（TruncatedText がこの上では出さないために見る）
+        el.setAttribute("data-title-stashed", "");
+      }
+
+      const nearest = chain[0] ?? null;
+      if (nearest === target) return;
+      hide();
+      target = nearest;
+      if (!nearest || !from) return;
+
+      const own = from.closest(OWN_TIP_SELECTOR);
+      if (own && (own === nearest || nearest.contains(own))) return;
+      // 見切れツールチップを抱えている入れ物（行など）。そちらがセル単位で出すので重ねない
+      if (nearest.querySelector("[data-truncated-tip]")) return;
+
+      timer = window.setTimeout(() => {
+        const text = stash.get(nearest) ?? "";
+        if (!text.trim() || !nearest.isConnected || !shouldShowTitleTip(nearest)) return;
+        const r = nearest.getBoundingClientRect();
+        setShown({ anchor: { top: r.top, bottom: r.bottom, left: r.left }, text });
+      }, OPEN_DELAY_MS);
+    };
+
+    const onLeave = () => { hide(); restoreAll(); };
+
+    document.addEventListener("mouseover", onOver);
+    document.documentElement.addEventListener("mouseleave", onLeave);
+    // 出したまま画面が動くとずれるだけなので消す。押したときも用が済んだとみなす
+    document.addEventListener("mousedown", hide);
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+    return () => {
+      clearTimer();
+      restoreAll();
+      document.removeEventListener("mouseover", onOver);
+      document.documentElement.removeEventListener("mouseleave", onLeave);
+      document.removeEventListener("mousedown", hide);
+      window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("resize", hide);
+    };
+  }, []);
+
+  return shown ? createPortal(<Tip anchor={shown.anchor} text={shown.text} />, document.body) : null;
 }
 
 /**
