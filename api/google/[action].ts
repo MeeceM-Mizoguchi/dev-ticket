@@ -1901,6 +1901,12 @@ export default async function handler(req: any, res: any) {
         const next = nextFreeName(sanitizeFileName(current) || String(row.file_name), taken);
         taken.add(next);
 
+        // ★ 「変わったか」は Drive の生の名前ではなく、保存する名前で判定する。
+        //   使えない文字や前後の空白を取り除いた結果、または同名を避けて「(1)」を付けた結果が
+        //   今の名前と同じなら、何も変わっていない。ここで止めないと、開くたびに同じ名前で
+        //   上書きして「A → A」の通知を出し続ける。
+        if (next === row.file_name) continue;
+
         const { error } = await sb.from("project_files")
           .update({ file_name: next }).eq("id", row.id);
         if (error) { console.error("[google] sync rename failed:", error.message); continue; }
