@@ -12,7 +12,7 @@ const sizeConfig: Record<DialogSize, { maxWidth: number; minHeight?: number }> =
   xl: { maxWidth: 940 },
 };
 
-export function DialogShell({ title, onClose, children, footer, size = "md", zIndex = 300, minHeight: minHeightProp, busy = false }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode; size?: DialogSize; zIndex?: number;
+export function DialogShell({ title, onClose, children, footer, size = "md", zIndex = 300, minHeight: minHeightProp, busy = false, confirmClose = false }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode; size?: DialogSize; zIndex?: number;
   /** サイズ既定の最低高さを上書きする。中身が短いのに縦に間延びさせたくないダイアログで 0 を渡す */
   minHeight?: number;
   /**
