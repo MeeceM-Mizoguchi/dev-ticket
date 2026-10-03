@@ -385,7 +385,7 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
   }
 
   return (
-    <DialogShell title={`${pulls.length}件をまとめてマージ`} size="lg" minHeight={merging ? 0 : undefined} onClose={onClose} busy={merging}
+    <DialogShell title={`${pulls.length}件をまとめてマージ`} size="lg" minHeight={merging ? 0 : undefined} onClose={onClose} busy={merging} confirmClose
       footer={<>
         <BtnSecondary onClick={onClose} disabled={merging}>キャンセル</BtnSecondary>
         {/* 権限で弾かれたあとは押させない。押しても同じ理由で必ず失敗するため */}

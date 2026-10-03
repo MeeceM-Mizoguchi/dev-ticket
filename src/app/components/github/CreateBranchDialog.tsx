@@ -125,7 +125,7 @@ export function CreateBranchDialog({
   };
 
   return (
-    <DialogShell title="ブランチを作成" size="md" onClose={onClose} busy={busy}
+    <DialogShell title="ブランチを作成" size="md" onClose={onClose} busy={busy} confirmClose
       footer={<>
         <BtnSecondary onClick={onClose} disabled={busy}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleCreate} disabled={!canCreate}

@@ -316,7 +316,7 @@ export function CreatePullDialog({ projectId, projectSlug, repo, branches, defau
   };
 
   return (
-    <DialogShell title="プルリクエストを作成" size="lg" minHeight={busy ? 0 : undefined} onClose={onClose} busy={busy}
+    <DialogShell title="プルリクエストを作成" size="lg" minHeight={busy ? 0 : undefined} onClose={onClose} busy={busy} confirmClose
       footer={<>
         <BtnSecondary onClick={onClose} disabled={busy}>キャンセル</BtnSecondary>
         <button type="button" onClick={handleCreate} disabled={!canCreate}
