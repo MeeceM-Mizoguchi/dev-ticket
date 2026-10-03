@@ -4269,6 +4269,25 @@ function overrideReason(body: Record<string, any>): string {
   return String(body?.reason ?? "").trim().slice(0, 300);
 }
 
+/**
+ * マージしたPRの紐付け行を「マージ済み」にする。
+ *
+ * チケット詳細の「マージする」ボタンは ticket_github_links.state だけを見て出している。
+ * syncReleasesNow が state を直すのは「リリース待ち → リリース済み」へ進めたチケットのPRだけで、
+ * 既にリリース済みのチケットへ追加したPRや、他にオープンなPRが残っているチケットのPRは
+ * Webhook が届くまで「オープン」のまま残り、マージ済みなのにボタンが出続けていた。
+ * マージした事実はここで分かっているので、Webhook を待たずに書く。
+ *
+ * 表示用の更新なので、書けなくてもマージの結果は変えない。
+ */
+async function markLinksMerged(sb: SupabaseClient, projectId: string, numbers: number[]) {
+  if (!numbers.length) return;
+  try {
+    await sb.from("ticket_github_links").update({ state: "merged" })
+      .eq("project_id", projectId).eq("kind", "pull").in("number", numbers);
+  } catch { /* 表示用。落ちてもマージの結果には影響させない */ }
+}
+
 async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: any) {
   if (req.method !== "POST") throw new HttpError(405, "Method Not Allowed");
   const body = parseBody(req);
@@ -4322,6 +4341,7 @@ async function handleMerge(sb: SupabaseClient, caller: Caller, req: any, res: an
         },
       }));
     await writeLog(sb, ctx, caller, "merge", number, "ok", `${method} / ${result?.sha ?? ""}`);
+    await markLinksMerged(sb, ctx.id, [number]);
     // マージした直後に「リリース待ち → リリース済み」を反映する
     await syncReleasesNow(sb, ctx.id);
     return res.status(200).json({ ok: true, sha: result?.sha ?? null });
@@ -4739,6 +4759,9 @@ async function handleMergeBulk(sb: SupabaseClient, caller: Caller, req: any, res
       stopped = true;
     }
   }
+
+  // 途中で打ち切った場合も、入った分は「マージ済み」にしておく
+  await markLinksMerged(sb, ctx.id, results.filter(r => r.ok).map(r => r.number));
 
   // まとめてマージしたぶんも、最後に1回だけ反映する
   if (results.some(r => r.ok)) await syncReleasesNow(sb, ctx.id);
