@@ -367,6 +367,14 @@ export async function fetchDavUrl(fileId: string): Promise<string> {
 }
 
 /**
+ * 過去の版の中身を「最新版 + 1」として登録し直す（間の版は消さない）。
+ * @param fileId 戻したい版の行の id
+ */
+export async function restoreFileVersion(fileId: string): Promise<void> {
+  await postApi<{ file: unknown }>("restore-version", { fileId });
+}
+
+/**
  * ファイル名を変更する。
  * (フォルダ, file_name) は版・コメント・WebDAV の引き当てキーなので、サーバー側で同名の全バージョンと
  * コメントをまとめて付け替える。拡張子は元のものが保たれ、同じフォルダに同名が既にあれば「(1)」が付く

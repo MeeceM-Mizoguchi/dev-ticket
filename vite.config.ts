@@ -154,8 +154,11 @@ function devApiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith('/api/')) return next()
         const url = new URL(req.url, 'http://localhost')
-        const segments = url.pathname.replace(/^\/api\//, '').split('/').filter(Boolean)
-        const hit = resolveHandler(segments, API_DIR, {})
+        // 本番の vercel.json の rewrite（/api/dav/* → /api/dav-open?path=*）と同じ振り分けにする
+        const dav = url.pathname.match(/^\/api\/dav(?:\/(.*))?$/)
+        const hit = dav
+          ? { file: path.join(API_DIR, 'dav-open.ts'), params: { path: dav[1] ?? '' } }
+          : resolveHandler(url.pathname.replace(/^\/api\//, '').split('/').filter(Boolean), API_DIR, {})
         if (!hit) return next()
 
         // Vercel の (req, res) インターフェースに寄せる

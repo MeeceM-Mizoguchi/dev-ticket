@@ -19,12 +19,13 @@ import crypto from "crypto";
 //   POST /api/project-files/signed-url  { fileId, mode }         → { url, ... }
 //   POST /api/project-files/rename      { fileId, newName }        → { fileName }
 //   POST /api/project-files/delete      { fileId }               → { ok: true }
+//   POST /api/project-files/restore-version { fileId(戻したい版) } → { file, restoredFrom }
 
 const BUCKET = "project-files";
 const SIGNED_URL_TTL_SEC = 60;
 const DAV_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
-// ★ api/dav/[...path].ts の verifyDavToken と対になっている。
+// ★ api/dav-open.ts の verifyDavToken と対になっている。
 //   片方だけ変えると WebDAV 保存が 401 になるので必ず両方あわせて直すこと。
 //   (api/ 配下のルートファイル同士を import し合わないよう、あえて複製している)
 function b64url(buf: Buffer | string): string {
@@ -343,6 +344,49 @@ export default async function handler(req: any, res: any) {
     }
 
     return res.json({ fileName: newName });
+  }
+
+  // ── 過去バージョンに戻す ─────────────────────────────────
+  // 指定した版の中身を複製して「最新版 + 1」として登録する。間の版は消さないので、
+  // 戻した後でも元の最新版へ戻し直せる（Office の WebDAV 保存・画面内エディタ保存と同じく版が1つ増えるだけ）。
+  if (action === "restore-version") {
+    const fileId = String(body.fileId ?? "");
+    if (!fileId) return res.status(400).json({ error: "fileId is required" });
+
+    const { data: src } = await sb.from("project_files")
+      .select("project_id, file_name, file_type, file_path, file_size, folder_path, parent_id, version, is_folder, external_provider")
+      .eq("id", fileId).maybeSingle();
+    if (!src) return res.status(404).json({ error: "File not found" });
+    if (!(await isMember(sb, src.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+    // フォルダとGoogleファイルは版を持たない
+    if (src.is_folder || src.external_provider === "google" || !src.file_path) {
+      return res.status(400).json({ error: "このファイルはバージョンを戻せません" });
+    }
+    const parentId: string | null = src.parent_id ?? null;
+
+    const { data: newest } = await inFolder(sb.from("project_files")
+      .select("version").eq("project_id", src.project_id).eq("file_name", src.file_name), parentId)
+      .order("version", { ascending: false }).limit(1);
+    const latestVersion = Number(newest?.[0]?.version ?? src.version);
+    if (src.version === latestVersion) return res.status(400).json({ error: "すでに最新のバージョンです" });
+
+    // 実体は複製する。同じ file_path を2行で共有すると、片方の削除で他方の中身が消えるため
+    const ext = extOf(src.file_name);
+    const path = `${src.project_id}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext ? `.${ext}` : ""}`;
+    const { error: cpErr } = await sb.storage.from(BUCKET).copy(src.file_path, path);
+    if (cpErr) return res.status(500).json({ error: `ファイルの複製に失敗しました: ${cpErr.message}` });
+
+    const { data: inserted, error: insErr } = await sb.from("project_files").insert({
+      project_id: src.project_id, folder_path: src.folder_path ?? "", file_name: src.file_name,
+      file_size: src.file_size, file_type: src.file_type, file_path: path,
+      version: latestVersion + 1, uploaded_by: profile.name,
+      ...(parentId ? { parent_id: parentId } : {}),
+    }).select().maybeSingle();
+    if (insErr || !inserted) {
+      await sb.storage.from(BUCKET).remove([path]);
+      return res.status(500).json({ error: insErr?.message ?? "Insert failed" });
+    }
+    return res.json({ file: inserted, restoredFrom: src.version });
   }
 
   // ── 削除（同名ファイルの全バージョン + ストレージ実体） ──────

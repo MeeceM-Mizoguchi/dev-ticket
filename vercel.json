@@ -13,6 +13,7 @@
     }
   },
   "rewrites": [
+    { "source": "/api/dav/:token/", "destination": "/api/dav-open?path=:token" },
     { "source": "/api/dav/:path*", "destination": "/api/dav-open?path=:path*" },
     { "source": "/((?!api/|assets/).*)", "destination": "/index.html" }
   ],
