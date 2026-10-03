@@ -24,6 +24,66 @@ const OPEN_DELAY_MS = 120;
 
 type Anchor = TipAnchor;
 
+/**
+ * セルの中にある「それ自体が押せる／自分の説明を持つ」もの。この上ではタイトルの
+ * ツールチップを出さない（ボタンの説明と重なるため）。data-title-stashed は
+ * NativeTitleTips が title を外している間に付ける目印。
+ */
+const HOT_SELECTOR = "button, a, input, select, textarea, [title], [data-title-stashed], [data-tip]";
+
+/** マウスが乗っていれば反応する範囲。横は x、縦は y の要素の箱で決める */
+type Zone = { x: Element; y: Element };
+
+/** 同じ範囲に、見切れツールチップを持つ別の要素があるか（あると2つ同時に出てしまう） */
+function holdsOtherTip(box: Element, el: Element): boolean {
+  return Array.from(box.querySelectorAll("[data-truncated-tip]")).some(o => o !== el);
+}
+
+/**
+ * 文字の箱ではなく「セル」で反応させるための範囲を決める。
+ *
+ *   ・表の行（1段の grid）の中 … 横はその列、縦は行の高さいっぱい。
+ *     行は alignItems:center が多く、セルの箱は文字の高さしかないので、縦は行から取る。
+ *   ・横並び(flex)の中 … 縦はその並びの高さ。他に文字が無ければ横も並び全体
+ *     （行頭の丸やすき間でも反応させる）。
+ *   ・どちらでもない、または同じ範囲に別の見切れツールチップがある … 文字の箱だけ。
+ */
+function resolveZone(el: HTMLElement): Zone {
+  const self: Zone = { x: el, y: el };
+  const parent = el.parentElement;
+  if (!parent) return self;
+
+  let cell: Element = el;
+  for (let p: Element | null = parent, i = 0; p && i < 2; cell = p, p = p.parentElement, i++) {
+    const cs = window.getComputedStyle(p);
+    if (cs.display !== "grid" && cs.display !== "inline-grid") continue;
+    if (holdsOtherTip(cell, el)) return self;
+    // カードを縦横に並べた grid は行ではない。縦を広げると同じ列のカード全部で反応してしまう
+    const cr = cell.getBoundingClientRect();
+    const singleRow = Array.from(p.children).every(c => {
+      const r = c.getBoundingClientRect();
+      return r.height === 0 || (r.top < cr.bottom && r.bottom > cr.top);
+    });
+    return { x: cell, y: singleRow ? p : cell };
+  }
+
+  const cs = window.getComputedStyle(parent);
+  const isFlexRow = (cs.display === "flex" || cs.display === "inline-flex") && cs.flexDirection.startsWith("row");
+  if (!isFlexRow || holdsOtherTip(parent, el)) return self;
+  const alone = (parent.textContent ?? "").trim() === (el.textContent ?? "").trim();
+  return { x: alone ? parent : el, y: parent };
+}
+
+function inZone(zone: Zone, el: Element, e: MouseEvent): boolean {
+  if (e.target instanceof Element) {
+    const hot = e.target.closest(HOT_SELECTOR);
+    if (hot && !hot.contains(el)) return false;
+  }
+  const xr = zone.x.getBoundingClientRect();
+  const yr = zone.y.getBoundingClientRect();
+  return e.clientX >= xr.left && e.clientX <= xr.right && e.clientY >= yr.top && e.clientY <= yr.bottom;
+}
+
 export interface TruncatedTextProps {
   /** ツールチップに出す全文。children 未指定ならこれをそのまま描画する */
   text: string;
@@ -55,10 +115,19 @@ export interface TruncatedTextProps {
  */
 export function useTruncatedTip<T extends HTMLElement = HTMLElement>(
   text: string,
-  opts?: { always?: boolean; disabled?: boolean },
+  opts?: {
+    always?: boolean;
+    disabled?: boolean;
+    /**
+     * "cell" にすると、文字の箱ではなくセル全体（resolveZone 参照）で反応する。
+     * マウスの出入りはフックが自分で聞くので、onMouseEnter / close を要素へ渡さないこと。
+     */
+    area?: "self" | "cell";
+  },
 ) {
   const always = opts?.always ?? false;
   const disabled = opts?.disabled ?? false;
+  const area = opts?.area ?? "self";
   const ref = useRef<T | null>(null);
   const timerRef = useRef<number | null>(null);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
@@ -99,6 +168,38 @@ export function useTruncatedTip<T extends HTMLElement = HTMLElement>(
     }, OPEN_DELAY_MS);
   };
 
+  // セルで反応させる場合。行(2つ上まで)に聞き役を置き、マウスが範囲に入ったかを自分で判定する
+  const enterRef = useRef(onMouseEnter);
+  enterRef.current = onMouseEnter;
+  useEffect(() => {
+    if (area !== "cell") return;
+    const el = ref.current;
+    const outer = el?.parentElement?.parentElement ?? el?.parentElement;
+    if (!el || !outer) return;
+
+    let zone: Zone | null = null;
+    let inside = false;
+    const onMove = (e: MouseEvent) => {
+      zone ??= resolveZone(el);
+      const hit = inZone(zone, el, e);
+      // 範囲の中を動いているだけなら何もしない（スクロールや押下で閉じた後に出し直さない）
+      if (hit === inside) return;
+      inside = hit;
+      if (hit) enterRef.current(); else close();
+    };
+    const onLeave = () => { zone = null; inside = false; close(); };
+
+    outer.addEventListener("mousemove", onMove);
+    outer.addEventListener("mouseleave", onLeave);
+    // 行をクリックして画面が変わった後に残らないように
+    outer.addEventListener("mousedown", close);
+    return () => {
+      outer.removeEventListener("mousedown", close);
+      outer.removeEventListener("mousemove", onMove);
+      outer.removeEventListener("mouseleave", onLeave);
+    };
+  }, [area, close]);
+
   return {
     ref,
     onMouseEnter,
@@ -110,7 +211,8 @@ export function useTruncatedTip<T extends HTMLElement = HTMLElement>(
 export function TruncatedText({
   text, children, as: Tag = "span", style, className, title, always = false,
 }: TruncatedTextProps) {
-  const { ref, onMouseEnter, close, tip } = useTruncatedTip(text, { always });
+  // 文字の上ぴったりでなくても、セルに乗っていれば出す（行の上下の余白や行頭の丸でも反応する）
+  const { ref, close, tip } = useTruncatedTip(text, { always, area: "cell" });
 
   return (
     <>
@@ -118,8 +220,8 @@ export function TruncatedText({
         ref={ref}
         className={className}
         title={title}
-        onMouseEnter={onMouseEnter}
-        onMouseLeave={close}
+        // NativeTitleTips 向けの目印（ここは自前で出すので、title 側のツールチップを重ねない）
+        data-truncated-tip=""
         // 行をクリックして画面が変わった後に残らないように
         onClick={close}
         style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...style }}
