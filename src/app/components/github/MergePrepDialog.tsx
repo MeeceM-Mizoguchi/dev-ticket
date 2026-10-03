@@ -25,6 +25,7 @@ export function MergePrepDialog({ number, waitNote, onCancel }: {
       size="sm"
       minHeight={0}
       onClose={onCancel}
+      confirmClose
       footer={<BtnSecondary onClick={onCancel}>キャンセル</BtnSecondary>}>
       <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 18, padding: "12px 0 4px" }}>
         <ProgressRing pct={pct} state="running" caption={waitNote ? "CI待ち" : "確認中"} />

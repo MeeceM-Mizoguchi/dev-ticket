@@ -133,7 +133,7 @@ export function BulkMergePromptDialog({ target, pulls, repo, onSingle, onProceed
     return (
       <DialogShell
         title={excluded.some(r => r.state.kind === "conflict") ? "コンフリクトしているPRがあります" : "マージできないPRがあります"}
-        size="lg" minHeight={0} onClose={onClose}
+        size="lg" minHeight={0} onClose={onClose} confirmClose
         footer={<>
           <OutlineButton onClick={onReview}>PRを見直す</OutlineButton>
           <PrimaryButton onClick={() => onProceed(remaining)} disabled={remaining.length === 0}
@@ -199,7 +199,7 @@ export function BulkMergePromptDialog({ target, pulls, repo, onSingle, onProceed
 
   const others = rows.length - 1;
   return (
-    <DialogShell title="他のPRもまとめてマージしますか？" size="lg" minHeight={0} onClose={onClose}
+    <DialogShell title="他のPRもまとめてマージしますか？" size="lg" minHeight={0} onClose={onClose} confirmClose
       footer={<>
         <OutlineButton onClick={onSingle}>単体でマージする</OutlineButton>
         <PrimaryButton onClick={handleYes}>はい、まとめてマージする</PrimaryButton>
