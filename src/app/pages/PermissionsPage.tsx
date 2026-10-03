@@ -24,6 +24,9 @@ const PROJECT_PERM_FLAGS: { key: keyof UserPermissions; label: string; desc: str
   { key: "canCreateSprint", label: "スプリント作成", desc: "スプリントの新規作成が可能", color: "#0284C7" },
   { key: "canEditDelete", label: "編集・削除", desc: "チケット・スプリントの編集・削除が可能", color: "#D97706" },
   { key: "canReview", label: "レビュー権限", desc: "レビュアーとして承認・差し戻しが可能", color: "#7C3AED" },
+  // ファイルボックスの削除は、追加した本人とオーナー以外はこの権限が要る（admin でも自動では付かない）。
+  // 判定はサーバー側（api/_lib/fileAccess.ts）が project_member_permissions のこのキーを見て行う。
+  { key: "canDeleteFiles", label: "ファイルの削除", desc: "ファイルボックスで、他の人が追加したファイル・フォルダも削除できる", color: "#DC2626" },
 ];
 
 const DEFAULT_GROUP_PERMS: UserPermissions = {

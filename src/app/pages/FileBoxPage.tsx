@@ -3,13 +3,13 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow,
+  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow, Lock,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { mapProject, mapProjectFile } from "@/app/lib/mappers";
-import type { Project, ProjectFile, AccessLevel, UserPermissions } from "@/app/types";
+import type { Project, ProjectFile, AccessLevel, UserPermissions, FileShareMember } from "@/app/types";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
 import { FILE_COMMENT_PARAM, FILE_REPLY_PARAM } from "@/app/lib/fileCommentLink";
 import { FILE_FOLDER_PARAM } from "@/app/lib/shareLink";
@@ -23,16 +23,20 @@ import { projectAccessView } from "@/app/components/shared/NotFoundView";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { FileViewerModal } from "@/app/components/files/FileViewerModal";
+import { FileShareDialog } from "@/app/components/files/FileShareDialog";
+import { PRIVATE_BG, PRIVATE_BORDER, PRIVATE_COLOR } from "@/app/components/whiteboard/PrivateBadge";
 import {
   fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
   downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
   isGoogleFile, googleFileLabel, googleConvertKind, googleExportUrl,
   isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind, type FileKind,
+  moveProjectFile, setFileVisibility, addFileShares, removeFileShare, loadFileShareMap, loadFileShareCandidates,
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
   convertExistingFile, exportGoogleToOffice, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
+  syncGoogleFileAcl,
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
 } from "@/app/lib/googleDrive";
 import { GoogleAppsButton } from "@/app/components/files/GoogleAppsButton";
@@ -217,6 +221,18 @@ export function FileBoxPage() {
   //   うっかり既定のまま進めてしまう形も避けたい）
   const [convertChoice, setConvertChoice] = useState<"keep" | "convert" | null>(null);
 
+  // 限定公開の共有先（aclId ごと）。一覧と同じ束で取る（load() 参照）
+  const [shareMap, setShareMap] = useState<Record<string, FileShareMember[]>>({});
+  // 自分のものでないファイルも削除できるか（オーナー、またはアサイン計画の「ファイルの削除」）。
+  // 削除ボタンの出し分けに使うだけで、実際に止めているのはサーバー側（api/project-files の delete）。
+  const [canDeleteAny, setCanDeleteAny] = useState(false);
+  // 公開範囲ダイアログの対象
+  const [shareTarget, setShareTarget] = useState<ProjectFile | null>(null);
+  const [shareCandidates, setShareCandidates] = useState<FileShareMember[]>([]);
+  const [loadingCandidates, setLoadingCandidates] = useState(false);
+  // BUG-05 公開範囲の変更は Drive への往復を含むことがあるので ref で二重起動を止める
+  const sharingRef = useRef(false);
+
   const [effectiveWikiPerm, setEffectiveWikiPerm] = useState<AccessLevel>("edit");
   const [effectiveBacklogPerm, setEffectiveBacklogPerm] = useState<AccessLevel>("edit");
   const [effectiveMinutesPerm, setEffectiveMinutesPerm] = useState<AccessLevel>("edit");
@@ -273,16 +289,22 @@ export function FileBoxPage() {
     // 「プロジェクト解決 → 一覧取得 → 連携状態」と往復が数珠つなぎになり、
     // 一覧が描かれてから「Googleアプリ」ボタンだけ遅れて生えてくる（BUG-04 と同じ）。
     // 組織はプロジェクトの所属で引く（owner が他組織のPJを開いたときも正しくなる）。
-    const [{ data }, permResult, orgResult] = await Promise.all([
+    // 権限の行は admin でも読む。「ファイルの削除」はオーナー以外、ロールに関係なく
+    // アサイン計画で付けてもらう権限なので（admin だから消せる、とはしない）。
+    const [{ data }, permResult, orgResult, shares] = await Promise.all([
       supabase!.from("project_files").select("*").eq("project_id", p.id).order("created_at", { ascending: false }),
-      isAdminRole ? Promise.resolve({ data: null }) :
+      userRole === "owner" ? Promise.resolve({ data: null }) :
         supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle(),
       p.organization_id
         ? supabase!.from("organizations")
           .select("google_drive_mode, google_shared_drive_name").eq("id", p.organization_id).maybeSingle()
         : Promise.resolve({ data: null }),
+      loadFileShareMap(p.id),
     ]);
     setFiles((data ?? []).map(mapProjectFile));
+    setShareMap(shares);
+    const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
+    setCanDeleteAny(userRole === "owner" || perms?.canDeleteFiles === true);
 
     // 読めなかったとき(null)は連携なしに倒す。ボタンを出してから消すとチラつくため。
     const driveMode = (orgResult.data?.google_drive_mode ?? "off") as GoogleDriveMode;
@@ -295,7 +317,6 @@ export function FileBoxPage() {
       setEffectiveWikiPerm("edit"); setEffectiveBacklogPerm("edit");
       setEffectiveMinutesPerm("edit"); setEffectiveWhiteboardPerm("edit");
     } else {
-      const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
       // ここで読むのはサブナビに出す他ページの権限のみ。
       // ファイルボックス自身はプロジェクトメンバーであれば常に利用できる
       setEffectiveWikiPerm((perms?.wikiPermission as AccessLevel | undefined) ?? "none");
@@ -310,7 +331,7 @@ export function FileBoxPage() {
     if ((data ?? []).some(r => r.external_provider === "google")) {
       void syncFromDrive(p.id, forceDriveSync);
     }
-  }, [projectSlug, userId, isAdminRole, syncFromDrive]);
+  }, [projectSlug, userId, userRole, isAdminRole, syncFromDrive]);
 
   // 画面遷移・リロードのときは間引かずに同期する（タブ復帰だけ間引く）
   useEffect(() => { load(true); }, [load]);
@@ -598,20 +619,9 @@ export function FileBoxPage() {
       return;
     }
     try {
-      // フォルダとGoogleファイルは版を持たないので、その1行だけを動かす。
-      // 通常のファイルは同じフォルダにある同名の全版をまとめて動かす（別フォルダの同名は別ファイル）。
-      let query = supabase!
-        .from("project_files")
-        .update({ parent_id: targetFolderId })
-        .eq("project_id", project.id);
-      if (file.isFolder || isGoogleFile(file)) {
-        query = query.eq("id", file.id);
-      } else {
-        query = query.eq("file_name", file.fileName);
-        query = fromFolderId === null ? query.is("parent_id", null) : query.eq("parent_id", fromFolderId);
-      }
-      const { error } = await query;
-      if (error) throw error;
+      // 移動はサーバー側で行う。上の重複チェックは画面に見えているファイルしか見られないが、
+      // 移動先に自分からは見えない限定公開の同名ファイルがあると版が混ざるので、サーバーで確かめ直す。
+      await moveProjectFile(file.id, targetFolderId);
       const targetFolder = files.find(f => f.id === targetFolderId);
       toast(`「${file.fileName}」を「${targetFolder?.fileName ?? "ファイルボックス（ルート）"}」へ移動しました`);
       load();
@@ -878,7 +888,53 @@ export function FileBoxPage() {
     }
   }, [toast, load]);
 
+  // ── 公開範囲（限定公開） ─────────────────────────────────
+  // 設定できるのは所有者（最初にアップロードした人）だけ。判定はサーバー側が行う。
+  useEffect(() => {
+    if (!shareTarget || !project) return;
+    let cancelled = false;
+    setLoadingCandidates(true);
+    void loadFileShareCandidates(project.id, userOrgId, userId).then(list => {
+      if (cancelled) return;
+      setShareCandidates(list);
+      setLoadingCandidates(false);
+    });
+    return () => { cancelled = true; };
+  }, [shareTarget?.id, project?.id, userOrgId, userId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * 公開範囲の変更を1つ実行する。DevTicket 側を変えた後、Googleドライブ上のファイルなら
+   * Drive 側の編集者も合わせる（api/ 配下のルートファイル同士は import し合わない方針のため2回に分けて呼ぶ）。
+   */
+  const changeShare = useCallback(async (file: ProjectFile, change: () => Promise<unknown>, done: string) => {
+    if (sharingRef.current) return;
+    sharingRef.current = true;
+    try {
+      await change();
+      if (isGoogleFile(file)) {
+        try {
+          const r = await syncGoogleFileAcl(file.id);
+          if (r.failed.length > 0) {
+            toast(`Googleドライブ側で権限を変更できなかった相手がいます：${summarize(r.failed.map(f => f.name))}`, "error");
+          }
+        } catch (e) {
+          // DevTicket 側は既に変わっている。巻き戻さず、ズレたことだけ伝える
+          console.error("[FileBox] google acl sync failed:", e);
+          toast(`Googleドライブ側の権限は変更できませんでした（${e instanceof Error ? e.message : "不明なエラー"}）。ファイルボックス上の公開範囲は変更されています`, "error");
+        }
+      }
+      toast(done);
+      emitLinkItemsChanged(file.projectId, "file"); // 他タブの %サジェストへ即時反映
+      await load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "公開範囲の変更に失敗しました", "error");
+    } finally {
+      sharingRef.current = false;
+    }
+  }, [toast, load]);
+
   // モーダルの onClose は escStack に積まれるため、毎レンダーで作り直さないよう固定する
+  const closeShare = useCallback(() => setShareTarget(null), []);
   const closePreview = useCallback(() => { setPreviewTarget(null); setFocusComment(null); }, []);
   const closeDelete = useCallback(() => { setDeleteTarget(null); setDeleteFromDrive(false); }, []);
 
@@ -1220,10 +1276,13 @@ export function FileBoxPage() {
                       style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                       <Pencil style={{ width: 13, height: 13 }} />
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                      <Trash2 style={{ width: 13, height: 13 }} />
-                    </button>
+                    {/* 中身に他の人のファイルが入っているかはサーバーが確かめる（消せないときは理由が返る） */}
+                    {(canDeleteAny || f.ownerId === userId) && (
+                      <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                        <Trash2 style={{ width: 13, height: 13 }} />
+                      </button>
+                    )}
                   </div>
                 );
               }
@@ -1233,6 +1292,9 @@ export function FileBoxPage() {
               const Icon = KIND_ICON[kind];
               const isGoogle = isGoogleFile(f);
               const isMissing = isGoogle && missingGoogleIds.has(f.id);
+              // 所有者 = 最初にアップロードした人。公開範囲を変えられるのは所有者だけ
+              const isMine = !!f.ownerId && f.ownerId === userId;
+              const sharedWith = f.aclId ? (shareMap[f.aclId] ?? []) : [];
               return (
                 <div key={f.id} onClick={() => isGoogle ? handleOpenGoogle(f, isMissing) : setPreviewTarget(f)}
                   draggable
@@ -1254,6 +1316,16 @@ export function FileBoxPage() {
                       {/* Googleファイルに版の概念は無い（常に v1）ので出さない */}
                       {!isGoogle && f.version > 1 && (
                         <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#EEF2FF", color: "#4F46E5" }}>v{f.version}</span>
+                      )}
+                      {/* 限定公開。プロジェクト全員には見えていないことを一覧で分かるようにする */}
+                      {f.aclId && (
+                        <span title={sharedWith.length === 0
+                          ? "限定公開: 追加した人だけが見られます"
+                          : `限定公開: 追加した人と ${sharedWith.map(m => m.name || "（不明なユーザー）").join("、")} だけが見られます`}
+                          style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: PRIVATE_BG, color: PRIVATE_COLOR, border: `1px solid ${PRIVATE_BORDER}`, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                          <Lock style={{ width: 9, height: 9 }} />
+                          {sharedWith.length === 0 ? (isMine ? "自分のみ" : "限定公開") : `${sharedWith.length}人に共有`}
+                        </span>
                       )}
                       {/* リンク共有は「URLを知っていれば誰でも編集できる」状態。
                           気づかないまま放置されないよう、一覧で常に見えるようにする */}
@@ -1283,6 +1355,16 @@ export function FileBoxPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Link2 style={{ width: 13, height: 13 }} />
                   </button>
+                  {/* 公開範囲。変更できるのは所有者だけ。限定公開のファイルは、
+                      共有された人とオーナーも「誰に共有されているか」を見られる（読み取り専用） */}
+                  {(isMine || f.aclId) && (
+                    <button onClick={e => { e.stopPropagation(); setShareTarget(f); }}
+                      title={!f.aclId ? "公開範囲を設定する（限定公開にする）"
+                        : isMine ? "公開範囲（限定公開）を変更する" : "公開範囲（限定公開）を確認する"}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: f.aclId ? PRIVATE_COLOR : "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Lock style={{ width: 13, height: 13 }} />
+                    </button>
+                  )}
                   {isGoogle && (
                     <button onClick={e => { e.stopPropagation(); handleToggleLinkShare(f); }}
                       title={f.linkShared ? "リンク共有を解除する" : "リンクを知っている全員が編集できるようにする"}
@@ -1328,10 +1410,13 @@ export function FileBoxPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Pencil style={{ width: 13, height: 13 }} />
                   </button>
-                  <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                    <Trash2 style={{ width: 13, height: 13 }} />
-                  </button>
+                  {/* 削除できるのは 所有者 / オーナー / 「ファイルの削除」権限を持つ人 */}
+                  {(canDeleteAny || isMine) && (
+                    <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Trash2 style={{ width: 13, height: 13 }} />
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -1355,6 +1440,29 @@ export function FileBoxPage() {
           }}
           onSaved={() => { load(); if (project) emitLinkItemsChanged(project.id, "file"); }} />
       )}
+      {shareTarget && (() => {
+        // 設定を変えるたびに一覧を引き直すので、開いた時点の行ではなく最新の行を見せる
+        const current = files.find(f => f.id === shareTarget.id) ?? shareTarget;
+        const name = current.fileName;
+        return (
+          <FileShareDialog
+            file={current}
+            shares={current.aclId ? (shareMap[current.aclId] ?? []) : []}
+            canManage={!!current.ownerId && current.ownerId === userId}
+            candidates={shareCandidates}
+            loadingCandidates={loadingCandidates}
+            onMakePrivate={() => changeShare(current, () => setFileVisibility(current.id, true),
+              `「${name}」を限定公開にしました。いまはあなただけが見られます`)}
+            onMakePublic={() => changeShare(current, () => setFileVisibility(current.id, false),
+              `「${name}」の限定公開を解除しました。プロジェクトのメンバー全員が見られます`)}
+            onAdd={ids => changeShare(current, () => addFileShares(current.id, ids),
+              `「${name}」を ${ids.length} 人に共有しました`)}
+            onRemove={m => changeShare(current, () => removeFileShare(current.id, m.id),
+              `${m.name || "メンバー"} さんへの共有を解除しました`)}
+            onClose={closeShare}
+          />
+        );
+      })()}
       {deleteTarget && (() => {
         // Googleドライブ上のファイルの実体は Drive 側にある。どちらにするかは毎回選んでもらう。
         // フォルダは配下（入れ子のフォルダの中まで）をまとめて数え、

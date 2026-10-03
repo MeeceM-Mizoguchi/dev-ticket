@@ -321,6 +321,7 @@ export function WhiteboardPage() {
         {!sidebarHidden && (
           <BoardListSidebar
             boards={boards} selectedId={boardId ?? null} canEdit={canEdit} loading={loading} userId={userId}
+            isPlatformOwner={userRole === "owner"}
             onSelect={(id) => navigate(`/${projectSlug}/whiteboard/${id}`)}
             onCreate={handleCreate} onRename={handleRename} onDelete={handleDelete}
             onTogglePrivate={handleTogglePrivate}
@@ -386,6 +387,8 @@ export function WhiteboardPage() {
           loadingCandidates={shareCandidates === null}
           onAdd={(ids) => handleAddShares(shareBoard, ids)}
           onRemove={(m) => handleRemoveShare(shareBoard, m)}
+          // 付け外しできるのは作成者だけ。オーナーが他の人のボードを開いたときは確認のみ
+          readOnly={shareBoard.createdBy !== userId}
           onClose={() => setShareTargetId(null)} />
       )}
 

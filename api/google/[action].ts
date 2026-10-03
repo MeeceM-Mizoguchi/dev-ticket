@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
+import {
+  canSeeFile, fileDeleteBlocker, isFileOwner, seesFileRow, sharedAclIds,
+} from "../_lib/fileAccess.js";
 
 // Googleドライブ連携（ファイルボックス）
 // 設計: docs/google-drive-integration-design.md
@@ -648,6 +651,17 @@ async function projectMemberEmails(
 }
 
 /**
+ * 「操作した人だけ」の限定公開を新しく作り、その id を返す（共有先なし）。
+ * 限定公開のファイルから作ったコピーを、公開にせずに登録するために使う。
+ */
+async function newPrivateAcl(sb: SupabaseClient, projectId: string, userId: string): Promise<string> {
+  const { data, error } = await sb.from("project_file_acls")
+    .insert({ project_id: projectId, created_by: userId }).select("id").maybeSingle();
+  if (error || !data) throw new HttpError(500, error?.message ?? "限定公開の設定を作成できませんでした");
+  return String(data.id);
+}
+
+/**
  * ファイルをメンバーへ配る。
  *
  * sendNotificationEmail=false は必須。既定(true)のままだと、ファイルを1つ作るたびに
@@ -1281,6 +1295,7 @@ export default async function handler(req: any, res: any) {
         file_path: "",
         version: 1,
         uploaded_by: profile.name,
+        owner_id: profile.id,
         external_provider: "google",
         external_id: String(created.id),
         external_url: String(created.webViewLink),
@@ -1366,6 +1381,7 @@ export default async function handler(req: any, res: any) {
         file_path: "",
         version: 1,
         uploaded_by: profile.name,
+        owner_id: profile.id,
         external_provider: "google",
         external_id: fileId,
         external_url: webViewLink,
@@ -1402,10 +1418,11 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: src } = await sb.from("project_files")
-        .select("id, project_id, file_name, file_type, file_path, parent_id, is_folder, external_provider")
+        .select("id, project_id, file_name, file_type, file_path, parent_id, is_folder, external_provider, owner_id, acl_id")
         .eq("id", fileId).maybeSingle();
       if (!src) return res.status(404).json({ error: "ファイルが見つかりません" });
       if (!(await isMember(sb, src.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+      if (!(await canSeeFile(sb, profile, src))) return res.status(404).json({ error: "ファイルが見つかりません" });
       if (src.is_folder || src.external_provider === "google" || !src.file_path) {
         return res.status(400).json({ error: "このファイルはGoogle形式にできません" });
       }
@@ -1446,7 +1463,10 @@ export default async function handler(req: any, res: any) {
       const { id: newId, webViewLink } = await uploadAsGoogleFormat(
         accessToken, bytes, conv.mime, fileName, conv.kind, folderId);
 
-      const people = await projectMemberEmails(sb, project as any);
+      // 元が限定公開なら、コピーは「操作した人だけ」の限定公開で作り、メンバーへは配らない。
+      // 公開で作ると、限定公開のファイルの中身がコピーを通じて全員に見えてしまう。
+      const privateAclId = src.acl_id ? await newPrivateAcl(sb, String(src.project_id), profile.id) : null;
+      const people = privateAclId ? [] : await projectMemberEmails(sb, project as any);
       const share = await grantMembers(accessToken, newId, people, actor.email);
 
       const { data: inserted, error } = await sb.from("project_files").insert({
@@ -1458,6 +1478,8 @@ export default async function handler(req: any, res: any) {
         file_path: "",
         version: 1,
         uploaded_by: profile.name,
+        owner_id: profile.id,
+        ...(privateAclId ? { acl_id: privateAclId } : {}),
         external_provider: "google",
         external_id: newId,
         external_url: webViewLink,
@@ -1468,6 +1490,7 @@ export default async function handler(req: any, res: any) {
       if (error) {
         await drive(accessToken, `/files/${encodeURIComponent(newId)}?supportsAllDrives=true`, { method: "DELETE" })
           .catch(() => undefined);
+        if (privateAclId) await sb.from("project_file_acls").delete().eq("id", privateAclId);
         return res.status(500).json({ error: error.message });
       }
 
@@ -1493,10 +1516,11 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: src } = await sb.from("project_files")
-        .select("id, project_id, file_name, file_type, parent_id, is_folder, external_provider, external_id, uploaded_by")
+        .select("id, project_id, file_name, file_type, parent_id, is_folder, external_provider, external_id, uploaded_by, owner_id, acl_id")
         .eq("id", fileId).maybeSingle();
       if (!src) return res.status(404).json({ error: "ファイルが見つかりません" });
       if (!(await isMember(sb, String(src.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+      if (!(await canSeeFile(sb, profile, src))) return res.status(404).json({ error: "ファイルが見つかりません" });
 
       const kind = Object.keys(MIME).find(k => MIME[k] === src.file_type) ?? null;
       if (src.is_folder || src.external_provider !== "google" || !src.external_id || !kind) {
@@ -1547,6 +1571,9 @@ export default async function handler(req: any, res: any) {
         .upload(path, bytes, { contentType: exportMime, upsert: false });
       if (upErr) throw new HttpError(502, `変換したファイルを保存できませんでした（${upErr.message}）`);
 
+      // 元が限定公開なら、変換したファイルも「操作した人だけ」の限定公開で作る（convert-existing と同じ理由）
+      const privateAclId = src.acl_id ? await newPrivateAcl(sb, String(src.project_id), profile.id) : null;
+
       const { data: inserted, error } = await sb.from("project_files").insert({
         project_id: src.project_id,
         folder_path: "",
@@ -1556,6 +1583,8 @@ export default async function handler(req: any, res: any) {
         file_path: path,
         version: 1,
         uploaded_by: profile.name,
+        owner_id: profile.id,
+        ...(privateAclId ? { acl_id: privateAclId } : {}),
         // 元のファイルと同じフォルダに並べる
         ...(parentId ? { parent_id: parentId } : {}),
       }).select().maybeSingle();
@@ -1563,6 +1592,7 @@ export default async function handler(req: any, res: any) {
       if (error) {
         // Storage 上の孤児を残さない
         await sb.storage.from(STAGING_BUCKET).remove([path]);
+        if (privateAclId) await sb.from("project_file_acls").delete().eq("id", privateAclId);
         return res.status(500).json({ error: error.message });
       }
 
@@ -1741,6 +1771,7 @@ export default async function handler(req: any, res: any) {
             file_path: "",
             version: 1,
             uploaded_by: profile.name,
+            owner_id: profile.id,
             external_provider: "google",
             external_id: fileId,
             external_url: webViewLink,
@@ -1781,7 +1812,7 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まっても結果が再現する）
       const { data: rows } = await sb.from("project_files")
-        .select("id, file_name, file_type, parent_id, external_id")
+        .select("id, file_name, file_type, parent_id, external_id, owner_id, acl_id")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
       const targets = (rows ?? []).filter(r => !!r.external_id);
@@ -1841,6 +1872,10 @@ export default async function handler(req: any, res: any) {
       };
       for (const r of allRows ?? []) takenIn(r.parent_id).add(String(r.file_name));
 
+      // 名前の取り込み自体は全ファイルに行うが、結果として返すのは呼び出した人が見られる分だけ
+      // （見えない限定公開ファイルの名前を、トーストを通じて知らせない）。
+      const shared = await sharedAclIds(sb, profile);
+
       const renamed: { before: string; after: string }[] = [];
       // Drive 上に見つからなかった行。★ DevTicket の行は消さない。
       //   Drive 側の誤操作や、権限の都合で一時的に見えないだけの可能性があり、
@@ -1849,7 +1884,10 @@ export default async function handler(req: any, res: any) {
 
       for (const row of targets) {
         const liveName = live.get(String(row.external_id));
-        if (liveName === undefined) { missing.push(String(row.id)); continue; }
+        if (liveName === undefined) {
+          if (seesFileRow(profile, row, shared)) missing.push(String(row.id));
+          continue;
+        }
         // draw.io の図は DevTicket 側では必ず .drawio を付けて持つ（Drive 側で外されても付け直す）
         const current = row.file_type === DRAWIO_MIME ? withDrawioExt(liveName) : liveName;
         if (current === row.file_name) continue;
@@ -1866,7 +1904,7 @@ export default async function handler(req: any, res: any) {
         const { error } = await sb.from("project_files")
           .update({ file_name: next }).eq("id", row.id);
         if (error) { console.error("[google] sync rename failed:", error.message); continue; }
-        renamed.push({ before: String(row.file_name), after: next });
+        if (seesFileRow(profile, row, shared)) renamed.push({ before: String(row.file_name), after: next });
       }
 
       return res.json({ renamed, missing, skipped: false });
@@ -1882,9 +1920,10 @@ export default async function handler(req: any, res: any) {
       if (!fileId || !newName) return res.status(400).json({ error: "fileId と newName が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("project_id, external_id, external_provider").eq("id", fileId).maybeSingle();
+        .select("project_id, external_id, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+      if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
       if (file.external_provider !== "google" || !file.external_id) {
         return res.status(400).json({ error: "Googleファイルではありません" });
       }
@@ -2034,10 +2073,14 @@ export default async function handler(req: any, res: any) {
       if (!fileId && !folderId) return res.status(400).json({ error: "fileId または folderId が必要です" });
 
       const { data: origin } = await sb.from("project_files")
-        .select("id, project_id, file_name, is_folder, external_id, external_provider")
+        .select("id, project_id, file_name, is_folder, external_id, external_provider, owner_id, acl_id")
         .eq("id", folderId || fileId).maybeSingle();
       if (!origin) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, origin.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+      // この後に呼ばれる api/project-files/delete と同じ規則で止める。
+      // こちらだけ通ると、DevTicket 上では消せないファイルを Drive のゴミ箱へ入れられてしまう。
+      const blocker = await fileDeleteBlocker(sb, profile, origin);
+      if (blocker) return res.status(403).json({ error: blocker });
 
       const targets: DriveRow[] = folderId
         ? await collectDriveDescendants(sb, String(origin.project_id), String(origin.id))
@@ -2084,11 +2127,16 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("project_id, external_id, external_provider").eq("id", fileId).maybeSingle();
+        .select("project_id, external_id, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+      if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
       if (file.external_provider !== "google" || !file.external_id) {
         return res.status(400).json({ error: "Googleファイルではありません" });
+      }
+      // リンク共有は「URLを知っていれば誰でも編集できる」状態。限定公開と両立しない
+      if (enabled && file.acl_id) {
+        return res.status(400).json({ error: "限定公開のファイルはリンク共有にできません。先に限定公開を解除してください" });
       }
 
       const run = await driveActorsForProject(sb, profile, String(file.project_id));
@@ -2132,11 +2180,13 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まったとき、どこまで終わったかが再現する）
       const { data: files } = await sb.from("project_files")
-        .select("id, file_name, external_id")
+        .select("id, file_name, external_id, acl_id")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
 
-      const targets = (files ?? []).filter(f => !!f.external_id);
+      // 限定公開のファイルは配り直さない（全員に配ると限定公開でなくなる）。
+      // 共有先への権限は sync-acl が付ける。
+      const targets = (files ?? []).filter(f => !!f.external_id && !f.acl_id);
       if (targets.length === 0) return res.json({ granted: 0, failed: [] });
 
       const orgId = project.organization_id ? String(project.organization_id) : null;
@@ -2191,10 +2241,12 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まったとき、どこまで終わったかが再現する）
       const { data: files } = await sb.from("project_files")
-        .select("id, file_name, external_id, uploaded_by")
+        .select("id, file_name, external_id, uploaded_by, owner_id, acl_id")
         .in("project_id", projectIds).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
-      const targets = (files ?? []).filter(f => !!f.external_id);
+      // 本人から見えない限定公開のファイルには権限を付けない
+      const shared = await sharedAclIds(sb, profile);
+      const targets = (files ?? []).filter(f => !!f.external_id && seesFileRow(profile, f, shared));
       if (targets.length === 0) return res.json({ granted: 0, failed: [] });
 
       const ctx = await grantContext(sb, orgId, cfg, profile.id);
@@ -2230,10 +2282,12 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("id, project_id, file_name, external_id, external_provider, uploaded_by")
+        .select("id, project_id, file_name, external_id, external_provider, uploaded_by, owner_id, acl_id")
         .eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, String(file.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+      // ここを通すと編集権限が付くので、限定公開の共有先でない人には必ず止める
+      if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
       if (file.external_provider !== "google" || !file.external_id) {
         return res.status(400).json({ error: "Googleファイルではありません" });
       }
@@ -2259,6 +2313,128 @@ export default async function handler(req: any, res: any) {
 
       await recordGrant(sb, String(file.id), recordEmail);
       return res.json({ ok: true, cached: false });
+    }
+
+    // ── 限定公開の設定を Drive の権限へ反映する ──────────────
+    // DevTicket 側の公開範囲・共有先の変更は api/project-files が行い、その後にクライアントがこれを呼ぶ
+    // （改名・削除と同じく2本を順に呼ぶ。api/ 配下のルートファイル同士は import しない方針）。
+    //
+    // DevTicket は Googleファイルを作るとき・開くときに、メンバーを Drive の編集者として追加している。
+    // そのため DevTicket 上で隠すだけでは、既に編集者になっている人が URL から開けてしまう。
+    //   限定公開   … 所有者と共有先以外の「プロジェクトのメンバー」を編集者から外し、リンク共有も切る
+    //   公開に戻す … メンバーへ配り直す
+    // 何度呼んでも同じ結果になるよう、毎回 DB の今の設定に Drive を合わせる。
+    //
+    // ★ 外すのは「DevTicket が配る相手」（プロジェクトのメンバー）のアドレスだけ。
+    //   Googleドライブの画面で手動で追加された外部の人や、共有ドライブ自体のメンバーとして
+    //   見えている人は、ここでは外さない（外せない）。
+    if (action === "sync-acl") {
+      const fileId = String(body.fileId ?? "");
+      if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
+
+      const { data: file } = await sb.from("project_files")
+        .select("id, project_id, file_name, external_id, external_provider, link_shared, owner_id, acl_id")
+        .eq("id", fileId).maybeSingle();
+      if (!file) return res.status(404).json({ error: "File not found" });
+      if (!(await isMember(sb, String(file.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
+      if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
+      if (file.external_provider !== "google" || !file.external_id) {
+        return res.status(400).json({ error: "Googleファイルではありません" });
+      }
+      if (!isFileOwner(profile, file)) {
+        return res.status(403).json({ error: "公開範囲を変更できるのは、このファイルを追加した人だけです" });
+      }
+
+      const { data: project } = await sb.from("projects")
+        .select("id, organization_id, members").eq("id", String(file.project_id)).maybeSingle();
+      if (!project) return res.status(404).json({ error: "プロジェクトが見つかりません" });
+      const orgId = project.organization_id ? String(project.organization_id) : null;
+      const cfg = await orgConfig(sb, orgId);
+      if (cfg.mode === "off") return res.json({ removed: 0, granted: 0, failed: [], skipped: true });
+
+      const run = await driveActors(sb, profile, cfg, orgId);
+      const gid = encodeURIComponent(String(file.external_id));
+      const people = await projectMemberEmails(sb, project as any);
+
+      // 公開に戻したとき: 作成時と同じく、メンバー全員へ配り直す
+      if (!file.acl_id) {
+        const r = await run(a => grantMembers(a.accessToken, String(file.external_id), people, a.email));
+        return res.json({ removed: 0, granted: r.granted, failed: r.failed, skipped: false });
+      }
+
+      // 見てよい人（所有者＋共有先）のアドレス。招待メールと紐づけたGoogleアカウントの両方を持つ
+      // （どちらのアドレスで配ったかは時期によって違うため。BRU17-028）
+      const { data: shareRows } = await sb.from("project_file_acl_members")
+        .select("profile_id").eq("acl_id", String(file.acl_id));
+      const allowedIds = [...new Set([String(file.owner_id), ...(shareRows ?? []).map(r => String(r.profile_id))])];
+      const { data: allowedProfiles } = await sb.from("profiles")
+        .select("id, name, email, google_email").in("id", allowedIds);
+      const lower = (v: unknown) => String(v ?? "").trim().toLowerCase();
+      const allowed = new Set<string>();
+      for (const p of allowedProfiles ?? []) {
+        if (lower(p.email)) allowed.add(lower(p.email));
+        if (lower(p.google_email)) allowed.add(lower(p.google_email));
+      }
+
+      // DevTicket が配る相手のアドレス（外す候補）。projectMemberEmails は片方のアドレスしか返さないので、
+      // 同じ人たちの両方のアドレスを引き直す
+      const memberNames = new Set(people.map(p => p.name));
+      const { data: orgProfiles } = orgId
+        ? await sb.from("profiles").select("name, email, google_email").eq("organization_id", orgId)
+        : { data: [] as { name: unknown; email: unknown; google_email: unknown }[] };
+      const managed = new Set<string>();
+      for (const p of orgProfiles ?? []) {
+        if (!memberNames.has(String(p.name))) continue;
+        if (lower(p.email)) managed.add(lower(p.email));
+        if (lower(p.google_email)) managed.add(lower(p.google_email));
+      }
+
+      const result = await run(async ({ accessToken, email: actorEmail }) => {
+        const listed = await drive(accessToken,
+          `/files/${gid}/permissions?supportsAllDrives=true&pageSize=100&fields=permissions(id,type,role,emailAddress)`);
+        const perms: { id: string; type: string; role: string; emailAddress?: string }[] = listed?.permissions ?? [];
+
+        let removed = 0;
+        const failed: { name: string; reason: string }[] = [];
+        const present = new Set<string>();
+        for (const p of perms) {
+          const addr = lower(p.emailAddress);
+          const isLink = p.type === "anyone";
+          // 所有者・共有ドライブの管理者の権限には触らない（外すとファイルを管理できる人がいなくなる）
+          const removable = p.type === "user" && !["owner", "organizer", "fileOrganizer"].includes(p.role)
+            && managed.has(addr) && !allowed.has(addr) && addr !== lower(actorEmail);
+          if (!isLink && !removable) { if (addr) present.add(addr); continue; }
+          try {
+            await drive(accessToken,
+              `/files/${gid}/permissions/${encodeURIComponent(p.id)}?supportsAllDrives=true`, { method: "DELETE" });
+            removed++;
+          } catch (e) {
+            // 共有ドライブのメンバーとして見えている人の権限は、ファイル単位では外せない
+            failed.push({
+              name: isLink ? "リンク共有" : String(p.emailAddress ?? ""),
+              reason: e instanceof Error ? e.message : "権限を外せませんでした",
+            });
+          }
+        }
+
+        // 共有先のうち、まだ権限が無い人へ配る（紐づけたGoogleアカウントがあればそちらへ）
+        const targets = (allowedProfiles ?? [])
+          .filter(p => String(p.id) !== profile.id)
+          .map(p => ({ email: String(p.google_email || p.email || "").trim(), name: String(p.name ?? "") }))
+          .filter(p => !!p.email && !present.has(p.email.toLowerCase()));
+        const g = await grantMembers(accessToken, String(file.external_id), targets, actorEmail);
+        return { removed, granted: g.granted, failed: [...failed, ...g.failed] };
+      });
+
+      if (file.link_shared) {
+        await sb.from("project_files")
+          .update({ link_shared: false, link_shared_by: null, link_shared_at: null }).eq("id", fileId);
+      }
+      // 開くときの付与の省略用の記録（ensure-access）は捨てる。外した人の記録が残っていると、
+      // 後で共有先に戻したときに「付与済み」と見なされて権限が付かない
+      await sb.from("google_file_grants").delete().eq("file_id", fileId);
+
+      return res.json({ ...result, skipped: false });
     }
 
     return res.status(404).json({ error: "Unknown action" });

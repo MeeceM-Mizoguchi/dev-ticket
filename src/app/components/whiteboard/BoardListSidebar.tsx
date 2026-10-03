@@ -16,6 +16,11 @@ interface Props {
   loading?: boolean;
   /** プライベート切替を出すかの判定に使う（作成者本人にだけ出す） */
   userId: string;
+  /**
+   * オーナー（role='owner'）か。オーナーは他の人のプライベートボードも見られ、
+   * 誰に共有されているかを確認できる（変更はできない。RLS は add_file_box_private.sql の 6章）。
+   */
+  isPlatformOwner?: boolean;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string, title: string) => void;
@@ -28,7 +33,7 @@ interface Props {
   onCollapse: () => void;
 }
 
-export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId, onSelect, onCreate, onRename, onDelete, onTogglePrivate, onToggleArchive, onOpenShare, onCollapse }: Props) {
+export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId, isPlatformOwner = false, onSelect, onCreate, onRename, onDelete, onTogglePrivate, onToggleArchive, onOpenShare, onCollapse }: Props) {
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -80,12 +85,22 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId,
     const shareCount = b.sharedWith.length;
     // 作成者から見た印は「自分のみ / N人に共有」、共有された側から見た印は「共有」。
     // 共有された側にとっては人数より「これは限定公開のボードだ」という事実の方が大事。
-    const privateLabel = !isOwner ? "共有" : shareCount > 0 ? `${shareCount}人に共有` : "自分のみ";
-    const privateHint = !isOwner
-      ? "作成者から共有された、選ばれたメンバーだけが見られるボードです"
-      : shareCount > 0
-        ? `あなたと ${b.sharedWith.map((m) => m.name || "（不明なユーザー）").join("、")} だけが見られます`
-        : "自分だけが見られるボードです";
+    // オーナーが他の人のボードを見ているときは、共有された側ではないので、誰に公開されているかをそのまま出す。
+    const viewingAsPlatformOwner = isPlatformOwner && !isOwner;
+    const sharedNames = b.sharedWith.map((m) => m.name || "（不明なユーザー）").join("、");
+    const creatorLabel = b.createdByName || "作成者";
+    const privateLabel = viewingAsPlatformOwner
+      ? (shareCount > 0 ? `${shareCount}人に共有` : "作成者のみ")
+      : !isOwner ? "共有" : shareCount > 0 ? `${shareCount}人に共有` : "自分のみ";
+    const privateHint = viewingAsPlatformOwner
+      ? (shareCount > 0
+        ? `${creatorLabel} と ${sharedNames} だけが見られるボードです（オーナーとして表示しています）`
+        : `${creatorLabel} だけが見られるボードです（オーナーとして表示しています）`)
+      : !isOwner
+        ? "作成者から共有された、選ばれたメンバーだけが見られるボードです"
+        : shareCount > 0
+          ? `あなたと ${sharedNames} だけが見られます`
+          : "自分だけが見られるボードです";
     const RowIcon = isArchived ? Archive : isPrivate ? (shareCount > 0 ? Users : Lock) : PenTool;
     const iconColor = isArchived ? "#A09790" : isPrivate ? PRIVATE_COLOR : active ? "#059669" : "#C9C4BB";
     return (
@@ -134,12 +149,21 @@ export function BoardListSidebar({ boards, selectedId, canEdit, loading, userId,
                     : <><Archive style={{ width: 13, height: 13 }} />アーカイブ</>}
                 </DropdownMenuItem>
               )}
-              {/* プライベートボードを消せるのは作成者だけ（RLS の wb_delete）。
+              {/* プライベートボードを消せるのは作成者とオーナーだけ（RLS の wb_delete）。
                   共有された側に出すと、押しても何も起きないメニューになる */}
-              {(!isPrivate || isOwner) && (
+              {(!isPrivate || isOwner || isPlatformOwner) && (
                 <DropdownMenuItem onSelect={() => onDelete(b.id)}>
                   <Trash2 style={{ width: 13, height: 13 }} />ボード削除
                 </DropdownMenuItem>
+              )}
+              {/* オーナーは共有先を見られるが、変更はできない（ダイアログは読み取り専用で開く） */}
+              {viewingAsPlatformOwner && isPrivate && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => onOpenShare(b.id)}>
+                    <Users style={{ width: 13, height: 13 }} />共有先を確認
+                  </DropdownMenuItem>
+                </>
               )}
               {isOwner && (
                 <>

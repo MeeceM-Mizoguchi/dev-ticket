@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { X, Download, Loader2, FileWarning, MonitorCog, Pencil, Eye, MessageSquare, List, History, RotateCcw } from "lucide-react";
+import { X, Download, Loader2, FileWarning, MonitorCog, Pencil, Eye, MessageSquare, List, History, RotateCcw, Lock } from "lucide-react";
 import type { ProjectFile } from "@/app/types";
 import { escStack } from "@/app/lib/escStack";
 import { fetchSignedUrl, getFileKind, getExt, formatFileSize, isOfficeFile, canPreviewInBrowser, isEditableInBrowser, fetchFileWithRetry, restoreFileVersion } from "@/app/lib/projectFiles";
@@ -9,6 +9,7 @@ import { ExcelViewer } from "./ExcelViewer";
 import { ExcelEditor, type EditorHandle } from "./ExcelEditor";
 import { WordEditor } from "./WordEditor";
 import { FileCommentLayer } from "./FileCommentLayer";
+import { PRIVATE_BG, PRIVATE_BORDER, PRIVATE_COLOR } from "@/app/components/whiteboard/PrivateBadge";
 
 // ENHA2-035 自前ファイルビューア
 // 署名付きURLからブラウザが直接ファイルを取得し、レンダリングもすべてブラウザ内で行う。
@@ -247,6 +248,13 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSave
             <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.fileName}</p>
             <p style={{ margin: 0, fontSize: 11, color: "#A09790" }}>{formatFileSize(shown.fileSize)} · {shown.uploadedBy}</p>
           </div>
+          {/* 限定公開。開いている書類がプロジェクト全員には見えていないことを示す */}
+          {file.aclId && (
+            <span title="限定公開: 追加した人と、共有されたメンバーだけが見られるファイルです"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, whiteSpace: "nowrap", padding: "4px 10px", fontSize: 11, fontWeight: 700, lineHeight: 1, color: PRIVATE_COLOR, background: PRIVATE_BG, border: `1px solid ${PRIVATE_BORDER}`, borderRadius: 20 }}>
+              <Lock style={{ width: 12, height: 12 }} />限定公開
+            </span>
+          )}
           {/* バージョン履歴（版が2つ以上あるときだけ） */}
           {history.length > 1 && !editing && (
             <button onClick={() => setHistoryOpen(v => !v)} title="バージョン履歴（過去の版の表示・ダウンロード・復元）"

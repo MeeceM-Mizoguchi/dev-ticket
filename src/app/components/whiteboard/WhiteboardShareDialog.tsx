@@ -24,9 +24,14 @@ interface Props {
   onAdd: (memberIds: string[]) => Promise<void>;
   onRemove: (member: WhiteboardShareMember) => Promise<void>;
   onClose: () => void;
+  /**
+   * 読み取り専用。オーナー（role='owner'）が他の人のボードの共有先を確認するときに使う。
+   * 付け外しできるのは作成者だけなので、解除ボタンと追加欄を出さない。
+   */
+  readOnly?: boolean;
 }
 
-export function WhiteboardShareDialog({ board, candidates, loadingCandidates, onAdd, onRemove, onClose }: Props) {
+export function WhiteboardShareDialog({ board, candidates, loadingCandidates, onAdd, onRemove, onClose, readOnly = false }: Props) {
   const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -53,7 +58,7 @@ export function WhiteboardShareDialog({ board, candidates, loadingCandidates, on
   };
 
   return (
-    <DialogShell title="共有するメンバー" size="md" onClose={onClose} busy={busy}
+    <DialogShell title={readOnly ? "共有先の確認" : "共有するメンバー"} size="md" onClose={onClose} busy={busy}
       footer={<BtnSecondary onClick={onClose} disabled={busy}>閉じる</BtnSecondary>}>
 
       {/* 対象のボード。どれを共有しているのか見失わないように出す */}
@@ -65,9 +70,13 @@ export function WhiteboardShareDialog({ board, candidates, loadingCandidates, on
       <p style={{ display: "flex", gap: 7, fontSize: 11, color: "#6B6458", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "8px 10px", margin: 0, lineHeight: 1.6 }}>
         <Info style={{ width: 13, height: 13, color: "#0284C7", flexShrink: 0, marginTop: 1 }} />
         <span>
-          このボードはプライベートモードです。ここで選んだメンバーだけが、あなたと同じように
-          閲覧・編集できます（できることは、そのメンバーのプロジェクト権限に従います）。
-          プライベートモードを解除すると、この共有設定も一緒に解除されます。
+          {readOnly
+            ? `このボードはプライベートモードです。作成者${board.createdByName ? `（${board.createdByName}）` : ""}と、下のメンバーだけが見られます。共有先を変更できるのは作成者だけです（オーナーとして表示しています）。`
+            : <>
+              このボードはプライベートモードです。ここで選んだメンバーだけが、あなたと同じように
+              閲覧・編集できます（できることは、そのメンバーのプロジェクト権限に従います）。
+              プライベートモードを解除すると、この共有設定も一緒に解除されます。
+            </>}
         </span>
       </p>
 
@@ -83,7 +92,9 @@ export function WhiteboardShareDialog({ board, candidates, loadingCandidates, on
 
         {shares.length === 0 ? (
           <p style={{ fontSize: 11.5, color: "#A09790", margin: 0, padding: "10px 2px" }}>
-            まだ誰にも共有していません。いまはあなただけがこのボードを見られます。
+            {readOnly
+              ? "誰にも共有されていません。作成者だけが見られます。"
+              : "まだ誰にも共有していません。いまはあなただけがこのボードを見られます。"}
           </p>
         ) : (
           <div style={{ border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, overflow: "hidden" }}>
@@ -93,13 +104,15 @@ export function WhiteboardShareDialog({ board, candidates, loadingCandidates, on
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {s.name || "（不明なユーザー）"}
                 </span>
-                <button type="button" title="共有を解除する" disabled={busy}
-                  onClick={() => void run(() => onRemove(s))}
-                  style={{ border: "none", background: "transparent", padding: 4, cursor: busy ? "default" : "pointer", display: "flex", color: "#C9C4BB", flexShrink: 0 }}
-                  onMouseEnter={(e) => { if (!busy) (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
-                  <Trash2 style={{ width: 13, height: 13 }} />
-                </button>
+                {!readOnly && (
+                  <button type="button" title="共有を解除する" disabled={busy}
+                    onClick={() => void run(() => onRemove(s))}
+                    style={{ border: "none", background: "transparent", padding: 4, cursor: busy ? "default" : "pointer", display: "flex", color: "#C9C4BB", flexShrink: 0 }}
+                    onMouseEnter={(e) => { if (!busy) (e.currentTarget as HTMLElement).style.color = "#DC2626"; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "#C9C4BB"; }}>
+                    <Trash2 style={{ width: 13, height: 13 }} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -107,6 +120,7 @@ export function WhiteboardShareDialog({ board, candidates, loadingCandidates, on
       </div>
 
       {/* ── 追加 ── */}
+      {!readOnly && (
       <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 14 }}>
         <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", margin: "0 0 8px" }}>
           プロジェクトのメンバーから選ぶ
@@ -165,6 +179,7 @@ export function WhiteboardShareDialog({ board, candidates, loadingCandidates, on
           </>
         )}
       </div>
+      )}
     </DialogShell>
   );
 }

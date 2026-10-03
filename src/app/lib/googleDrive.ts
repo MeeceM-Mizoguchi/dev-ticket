@@ -206,6 +206,26 @@ export function importGoogleFiles(
   return postApi<ImportResult>("import-files", { projectId, fileIds, parentId: parentId ?? null });
 }
 
+export interface SyncAclResult {
+  /** Drive の編集者から外した人数（リンク共有の解除も1件と数える） */
+  removed: number;
+  /** 新しく権限を付けた人数 */
+  granted: number;
+  /** 外せなかった・付けられなかった相手（共有ドライブのメンバーとして見えている人など） */
+  failed: { name: string; reason: string }[];
+  /** 組織のGoogle連携がオフで、何もしなかった */
+  skipped: boolean;
+}
+
+/**
+ * 限定公開の設定を Googleドライブ側の権限へ反映する。
+ * DevTicket 側の変更（setFileVisibility / addFileShares / removeFileShare）の後に呼ぶ。
+ * 何度呼んでも、その時点の設定に Drive を合わせるだけ。
+ */
+export function syncGoogleFileAcl(fileId: string): Promise<SyncAclResult> {
+  return postApi<SyncAclResult>("sync-acl", { fileId });
+}
+
 /** Drive 側のファイル名も合わせる。DevTicket 側の改名(renameProjectFile)の後に呼ぶ */
 export function renameGoogleFile(fileId: string, newName: string): Promise<{ ok: boolean }> {
   return postApi<{ ok: boolean }>("rename", { fileId, newName });
