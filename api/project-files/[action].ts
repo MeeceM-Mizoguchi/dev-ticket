@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { canSeeFile, fileDeleteBlocker, isFileOwner } from "../_lib/fileAccess.js";
+import { fileQuotaBlocker, getFileQuota } from "../_lib/fileQuota.js";
 
 // ENHA2-035 ファイルボックス
 // project-files バケットは非公開。クライアントは storage を直接叩かず、
@@ -15,7 +16,8 @@ import { canSeeFile, fileDeleteBlocker, isFileOwner } from "../_lib/fileAccess.j
 // サーバーレス関数の body を経由しないので、Vercel のリクエストサイズ上限に縛られない。
 //
 // endpoints (Vercel の [action] 動的セグメント):
-//   POST /api/project-files/upload-url  { projectId, fileName }  → { path, token }
+//   POST /api/project-files/usage       { projectId }            → { usedBytes, limitBytes }
+//   POST /api/project-files/upload-url  { projectId, fileName, fileSize? } → { path, token }
 //   POST /api/project-files/register    { projectId, path, fileName, fileSize, fileType, parentId? } → { file }
 //   POST /api/project-files/signed-url  { fileId, mode }         → { url, ... }
 //   POST /api/project-files/rename      { fileId, newName }        → { fileName }
@@ -168,12 +170,31 @@ export default async function handler(req: any, res: any) {
   const profile = await getProfile(sb, req);
   if (!profile) return res.status(401).json({ error: "Unauthorized" });
 
+  // ── 容量の使用状況（組織全体の使用量と、プランの上限） ──────
+  // 画面側で合計しないのは、自分から見えない限定公開ファイルの分が抜けるため。
+  // SQL 未適用などで確認できないときは usedBytes を null で返す（画面は容量の表示を出さない）。
+  if (action === "usage") {
+    const projectId = String(body.projectId ?? "");
+    if (!projectId) return res.status(400).json({ error: "projectId is required" });
+    if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+    const quota = await getFileQuota(sb, projectId);
+    return res.json({ usedBytes: quota?.usedBytes ?? null, limitBytes: quota?.limitBytes ?? null });
+  }
+
   // ── アップロード用の署名付きURLを発行 ──────────────────────
   if (action === "upload-url") {
     const projectId = String(body.projectId ?? "");
     const fileName = String(body.fileName ?? "");
     if (!projectId || !fileName) return res.status(400).json({ error: "projectId and fileName are required" });
     if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
+
+    // 容量を超えるなら、実体を送らせる前に止める（送ってから register で弾くと転送が無駄になる）。
+    // fileSize を付けてこない呼び出し（Google形式への変換の一時置き）はここでは見ない。
+    // 止めているのは register のほうで、ここは早めに知らせるための補助。
+    if (body.fileSize != null) {
+      const blocker = await fileQuotaBlocker(sb, projectId, Number(body.fileSize) || 0);
+      if (blocker) return res.status(413).json({ error: blocker });
+    }
 
     // 保存キーはサーバーが決める（クライアントに任意パスを書かせない）。
     // 日本語ファイル名をキーに使わないため、表示名は register 時にDBへ保存する。
@@ -194,6 +215,14 @@ export default async function handler(req: any, res: any) {
     if (!(await isMember(sb, projectId, profile))) return res.status(403).json({ error: "Forbidden" });
     // 他プロジェクト配下のオブジェクトを自プロジェクトの行として登録させない
     if (!path.startsWith(`${projectId}/`)) return res.status(400).json({ error: "Invalid path" });
+
+    // 容量の上限。超えるなら storage の実体を残さず弾く（DB登録失敗と同じ扱い）。
+    // 画面内エディタの保存（＝新しい版の登録）もここを通る。
+    const quotaBlocker = await fileQuotaBlocker(sb, projectId, Number(body.fileSize) || 0);
+    if (quotaBlocker) {
+      await sb.storage.from(BUCKET).remove([path]);
+      return res.status(413).json({ error: quotaBlocker });
+    }
 
     // 置き場所のフォルダ。フォルダごとのアップロードで階層を再現するために受け取る。
     // 他プロジェクトのフォルダや、フォルダでない行を親に指定させない。
@@ -405,6 +434,10 @@ export default async function handler(req: any, res: any) {
       .order("version", { ascending: false }).limit(1);
     const latestVersion = Number(newest?.[0]?.version ?? src.version);
     if (src.version === latestVersion) return res.status(400).json({ error: "すでに最新のバージョンです" });
+
+    // 戻すと実体が1つ増える（複製する）ので、容量の上限を見る
+    const quotaBlocker = await fileQuotaBlocker(sb, src.project_id, Number(src.file_size) || 0);
+    if (quotaBlocker) return res.status(413).json({ error: quotaBlocker });
 
     // 実体は複製する。同じ file_path を2行で共有すると、片方の削除で他方の中身が消えるため
     const ext = extOf(src.file_name);

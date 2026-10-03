@@ -219,7 +219,8 @@ export function isEditableInBrowser(fileName: string): boolean {
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 // 種別ごとの表示色（一覧のアイコン用）
@@ -294,6 +295,23 @@ export async function fetchProjectFileFresh(fileId?: string | null, fallbackUrl?
   return fetchFileWithRetry(fallbackUrl);
 }
 
+/** ファイルボックスの容量。上限はプランで決まり、使用量は組織の全プロジェクトの合計 */
+export type FileBoxUsage = { usedBytes: number; limitBytes: number | null };
+
+/**
+ * 容量の使用状況を取得する。確認できないとき（SQL 未適用・通信失敗など）は null。
+ * 集計はサーバー側で行う（自分から見えない限定公開ファイルや古い版の分も含めるため）。
+ */
+export async function fetchFileBoxUsage(projectId: string): Promise<FileBoxUsage | null> {
+  if (!isSupabaseEnabled || !projectId) return null;
+  try {
+    const res = await postApi<{ usedBytes: number | null; limitBytes: number | null }>("usage", { projectId });
+    return res.usedBytes == null ? null : { usedBytes: res.usedBytes, limitBytes: res.limitBytes };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * ファイルをアップロードする。
  * ①サーバーが保存キーを決めて署名付きアップロードURLを発行
@@ -318,9 +336,13 @@ export async function uploadProjectFile(
  * ここに置いたものをサーバーが Drive へ中継する（googleDrive.ts の uploadAsGoogleFile）。
  * @returns ストレージ上の保存キー
  */
-export async function stageProjectFile(projectId: string, file: File): Promise<string> {
+export async function stageProjectFile(
+  projectId: string, file: File, opts?: { skipQuotaCheck?: boolean },
+): Promise<string> {
+  // fileSize を付けると、サーバーが容量の上限を超えるものを送る前に止める。
+  // Google形式への変換の一時置きは storage に残らないので付けない（skipQuotaCheck）。
   const { path, token } = await postApi<{ path: string; token: string }>(
-    "upload-url", { projectId, fileName: file.name });
+    "upload-url", { projectId, fileName: file.name, ...(opts?.skipQuotaCheck ? {} : { fileSize: file.size }) });
 
   const { error } = await supabase!.storage.from("project-files")
     .uploadToSignedUrl(path, token, file, { contentType: file.type || "application/octet-stream" });

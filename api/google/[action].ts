@@ -4,6 +4,7 @@ import crypto from "crypto";
 import {
   canSeeFile, fileDeleteBlocker, isFileOwner, seesFileRow, sharedAclIds,
 } from "../_lib/fileAccess.js";
+import { fileQuotaBlocker } from "../_lib/fileQuota.js";
 
 // Googleドライブ連携（ファイルボックス）
 // 設計: docs/google-drive-integration-design.md
@@ -1558,6 +1559,10 @@ export default async function handler(req: any, res: any) {
         throw new HttpError(400,
           "このファイルを読み出せるGoogleアカウントが見つかりません（作成者のGoogle連携が切れている可能性があります）");
       }
+
+      // Office文書は storage に実体を持つので、容量の上限を見る（Googleファイルのままなら使わない）
+      const quotaBlocker = await fileQuotaBlocker(sb, String(src.project_id), bytes.length);
+      if (quotaBlocker) throw new HttpError(413, quotaBlocker);
 
       // 名前は「元の名前.xlsx」。同じフォルダに同名があれば「(1)」を付ける
       const ext = GOOGLE_EXPORT_EXT[kind];

@@ -205,6 +205,7 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
   const [maxImagesPerItem, setMaxImagesPerItem] = useState<number | null>(plan?.maxImagesPerItem ?? null);
   const [maxCommentsPerTicket, setMaxCommentsPerTicket] = useState<number | null>(plan?.maxCommentsPerTicket ?? null);
   const [maxFiltersPerSprint, setMaxFiltersPerSprint] = useState<number | null>(plan?.maxFiltersPerSprint ?? null);
+  const [maxFileStorageGb, setMaxFileStorageGb] = useState<number | null>(plan?.maxFileStorageGb ?? null);
   const [featureNotifications, setFeatureNotifications] = useState(plan?.featureNotifications ?? true);
   const [featureCsvExport, setFeatureCsvExport] = useState(plan?.featureCsvExport ?? true);
   const [featureActualMonitor, setFeatureActualMonitor] = useState(plan?.featureActualMonitor ?? true);
@@ -216,6 +217,19 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
 
   const isSystem = !!plan?.isSystem;
   const isEdit = !!plan && !isSystem;
+
+  // システムの「無制限」プランは、ファイルボックスの容量だけ変更できる（ほかの項目は固定）
+  const handleSaveSystemStorage = async () => {
+    setSaving(true);
+    if (isSupabaseEnabled) {
+      const { error } = await supabase!.from("plans")
+        .update({ max_file_storage_gb: maxFileStorageGb }).eq("id", plan!.id);
+      if (error) { toast("更新に失敗しました", "error"); setSaving(false); return; }
+    }
+    toast(`「${plan!.name}」のファイルボックス容量を更新しました`);
+    onSaved();
+    onClose();
+  };
 
   const handleSave = async () => {
     if (!name.trim()) { setNameErr(true); return; }
@@ -230,6 +244,8 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
       max_images_per_item: maxImagesPerItem,
       max_comments_per_ticket: maxCommentsPerTicket,
       max_filters_per_sprint: maxFiltersPerSprint,
+      // supabase/add_file_box_storage_limit.sql の適用が前提
+      max_file_storage_gb: maxFileStorageGb,
       feature_notifications: featureNotifications,
       feature_csv_export: featureCsvExport,
       feature_actual_monitor: featureActualMonitor,
@@ -268,7 +284,12 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
       onClose={saving ? () => {} : onClose}
       footer={
         isSystem ? (
-          <BtnSecondary onClick={onClose}>閉じる</BtnSecondary>
+          <>
+            <BtnSecondary onClick={onClose} disabled={saving}>閉じる</BtnSecondary>
+            <BtnPrimary onClick={handleSaveSystemStorage} disabled={saving}>
+              {saving ? "保存中..." : "容量の設定を保存"}
+            </BtnPrimary>
+          </>
         ) : (
           <>
             <BtnSecondary onClick={onClose} disabled={saving}>キャンセル</BtnSecondary>
@@ -302,7 +323,13 @@ function PlanFormDialog({ plan, onClose, onSaved }: { plan?: PlanSettings; onClo
         <LimitInput label="添付画像枚数（1アイテムあたり）" value={maxImagesPerItem} onChange={setMaxImagesPerItem} />
         <LimitInput label="コメント投稿数（1チケットあたり）" value={maxCommentsPerTicket} onChange={setMaxCommentsPerTicket} />
         <LimitInput label="Myフィルタ保存数（1スプリントあたり）" value={maxFiltersPerSprint} onChange={setMaxFiltersPerSprint} />
+        <LimitInput label="ファイルボックス容量（GB・組織全体の合計）" value={maxFileStorageGb} onChange={setMaxFileStorageGb} />
       </div>
+      {isSystem && (
+        <p style={{ fontSize: 11, color: "#A09790", margin: "8px 0 0" }}>
+          システムプランで変更できるのは「ファイルボックス容量」だけです。
+        </p>
+      )}
 
       <SectionLabel label="機能 ON/OFF" />
       <div style={{ background: "#FAFAF8", borderRadius: 10, padding: "0 12px", border: "1px solid rgba(26,23,20,0.07)" }}>
@@ -328,7 +355,8 @@ function PlanCard({ plan, onClick, onDelete }: { plan: PlanSettings; onClick: ()
     { label: "画像", val: plan.maxImagesPerItem },
     { label: "コメント", val: plan.maxCommentsPerTicket },
     { label: "フィルタ", val: plan.maxFiltersPerSprint },
-  ];
+    { label: "容量", val: plan.maxFileStorageGb, unit: "GB" },
+  ] as { label: string; val: number | null; unit?: string }[];
   const featuresOff = [
     !plan.featureNotifications && "通知",
     !plan.featureCsvExport && "CSV",
@@ -377,7 +405,7 @@ function PlanCard({ plan, onClick, onDelete }: { plan: PlanSettings; onClick: ()
         ) : (
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" as const }}>
             {limits.filter(l => l.val !== null).map(l => (
-              <span key={l.label} style={{ fontSize: 10, fontWeight: 600, color: "#92400E", background: "#FEF3C7", borderRadius: 5, padding: "2px 6px" }}>{l.label}: {l.val}</span>
+              <span key={l.label} style={{ fontSize: 10, fontWeight: 600, color: "#92400E", background: "#FEF3C7", borderRadius: 5, padding: "2px 6px" }}>{l.label}: {l.val}{l.unit ?? ""}</span>
             ))}
             {featuresOff.map(f => (
               <span key={f} style={{ fontSize: 10, fontWeight: 600, color: "#991B1B", background: "#FEF2F2", borderRadius: 5, padding: "2px 6px" }}>{f} OFF</span>
@@ -724,6 +752,9 @@ export function OrganizationPage() {
         featureBulkCreate: (row.feature_bulk_create as boolean) ?? true,
         // 未適用の環境（列が無い）では true 扱い。PlanContext と揃えている
         featureGithub: (row.feature_github as boolean | undefined) ?? true,
+        featureKnowledgeAi: (row.feature_knowledge_ai as boolean | undefined) ?? true,
+        maxKnowledgeDocsPerProject: (row.max_knowledge_docs_per_project as number | null) ?? null,
+        maxFileStorageGb: (row.max_file_storage_gb as number | null) ?? null,
       })));
     }
   };
@@ -815,6 +846,9 @@ export function OrganizationPage() {
   const totalMembers = orgs.reduce((sum, o) => sum + o.memberCount, 0);
   const totalActive  = orgs.reduce((sum, o) => sum + o.activeCount,  0);
   const nonSystemPlans = plans.filter(p => !p.isSystem);
+  // システムの「無制限」プランも、ファイルボックスの容量だけは DB の値を持つ。
+  // 読めるまで（と SQL 未適用の環境）は、固定値の UNLIMITED_PLAN で出す。
+  const systemPlan = plans.find(p => p.id === UNLIMITED_PLAN.id) ?? UNLIMITED_PLAN;
 
   if (loading) return <PageLoader />;
 
@@ -872,7 +906,7 @@ export function OrganizationPage() {
             <span style={{ fontSize: 12, fontWeight: 700, color: "#2563EB", background: "#EFF6FF", padding: "2px 9px", borderRadius: 20 }}>{plans.length}</span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
-            <PlanCard plan={UNLIMITED_PLAN} onClick={() => setEditPlan(UNLIMITED_PLAN)} />
+            <PlanCard plan={systemPlan} onClick={() => setEditPlan(systemPlan)} />
             {nonSystemPlans.map(p => (
               <PlanCard key={p.id} plan={p}
                 onClick={() => setEditPlan(p)}

@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow, Lock,
+  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow, Lock, HardDrive,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -32,6 +32,7 @@ import {
   isGoogleFile, googleFileLabel, googleConvertKind, googleExportUrl,
   isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind, type FileKind,
   moveProjectFile, setFileVisibility, addFileShares, removeFileShare, loadFileShareMap, loadFileShareCandidates,
+  fetchFileBoxUsage, type FileBoxUsage,
 } from "@/app/lib/projectFiles";
 import {
   openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
@@ -125,6 +126,50 @@ function Sk({ w, h, radius }: { w: number | string; h: number; radius?: number }
   return <div className="skeleton-shimmer" style={{ width: w, height: h, borderRadius: radius ?? 6, flexShrink: 0 }} />;
 }
 
+/**
+ * 容量の使用状況（組織全体の合計と、プランの上限）。
+ * 上限なしのプランではバーを出さず、使用量だけを出す。
+ * @param usage undefined は取得中。高さだけ確保して、届いたときに一覧が下へずれないようにする
+ */
+function StorageUsageBar({ usage }: { usage: FileBoxUsage | undefined }) {
+  const row: CSSProperties = { display: "flex", alignItems: "center", gap: 10, height: 18, marginBottom: 10 };
+  if (!usage) return <div style={row} aria-hidden="true" />;
+
+  const { usedBytes, limitBytes } = usage;
+  if (limitBytes === null) {
+    return (
+      <div style={row}>
+        <HardDrive style={{ width: 13, height: 13, color: "#B0A9A4", flexShrink: 0 }} />
+        <span style={{ fontSize: 11, color: "#6B6458" }}>
+          使用中 <b style={{ color: "#1A1714" }}>{formatFileSize(usedBytes)}</b>（組織全体・上限なし）
+        </span>
+      </div>
+    );
+  }
+
+  const ratio = limitBytes > 0 ? usedBytes / limitBytes : 1;
+  // 小数第1位まで出す。整数に丸めると、10GB のうち 20MB のような使い始めが「0%」になる。
+  // 切り捨てにしているのは、上限に届く前に「100.0%」と出さないため。
+  // 少しでも使っていれば 0.1% を下限にする（0.1% 未満も 0.1% と出す）。
+  const percent = usedBytes <= 0 ? 0 : Math.min(100, Math.max(0.1, Math.floor(ratio * 1000) / 10));
+  const full = usedBytes >= limitBytes;
+  const color = ratio >= 0.95 ? "#DC2626" : ratio >= 0.8 ? "#D97706" : "#059669";
+  return (
+    <div style={row}>
+      <HardDrive style={{ width: 13, height: 13, color, flexShrink: 0 }} />
+      <div role="progressbar" aria-label="ファイルボックスの使用容量" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
+        style={{ flex: 1, minWidth: 80, height: 6, borderRadius: 3, background: "#EFEDE9", overflow: "hidden" }}>
+        <div style={{ width: `${percent}%`, minWidth: usedBytes > 0 ? 4 : 0, height: "100%", borderRadius: 3, background: color, transition: "width 0.3s, background 0.3s" }} />
+      </div>
+      <span style={{ fontSize: 11, color: "#6B6458", whiteSpace: "nowrap", flexShrink: 0 }}>
+        <b style={{ color: ratio >= 0.8 ? color : "#1A1714" }}>{formatFileSize(usedBytes)}</b>
+        {" / "}{formatFileSize(limitBytes)} 使用中（{percent.toFixed(1)}%・組織全体）
+        {full && <span style={{ color, fontWeight: 700 }}>　上限に達しています。不要なファイルを削除してください</span>}
+      </span>
+    </div>
+  );
+}
+
 function FileListSkeleton() {
   const nameW = ["58%", "42%", "66%", "36%", "50%"];
   return (
@@ -160,6 +205,8 @@ export function FileBoxPage() {
 
   const [project, setProject] = useState<Project | null>(null);
   const [files, setFiles] = useState<ProjectFile[]>([]);
+  // 容量の使用状況。undefined=取得中 / null=確認できない（表示しない）
+  const [usage, setUsage] = useState<FileBoxUsage | null | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
@@ -303,6 +350,9 @@ export function FileBoxPage() {
     ]);
     setFiles((data ?? []).map(mapProjectFile));
     setShareMap(shares);
+    // 容量は一覧と一緒に取り直す（アップロード・削除・アプリ側での保存のあとも load を通る）。
+    // await しないのは、サーバーレス関数の往復で一覧の描画を待たせないため。
+    void fetchFileBoxUsage(p.id).then(setUsage);
     const perms = permResult.data?.permissions as Partial<UserPermissions> | null;
     setCanDeleteAny(userRole === "owner" || perms?.canDeleteFiles === true);
 
@@ -1188,6 +1238,9 @@ export function FileBoxPage() {
           )}
         </div>
 
+        {/* 容量（組織全体の使用量 / プランの上限） */}
+        {usage !== null && <StorageUsageBar usage={usage} />}
+
         {/* アップロード */}
         <div
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
@@ -1344,13 +1397,15 @@ export function FileBoxPage() {
                       )}
                     </TruncatedText>
                     <p style={{ margin: "2px 0 0", fontSize: 11, color: "#A09790" }}>
-                      {/* Googleドライブ上のファイルは種別を出す（Google形式はサイズを持たないため）。
-                          Office文書・PDF などはサイズが分かるので、種別に続けて出す */}
-                      {isGoogle
-                        ? (f.fileSize > 0 ? `${googleFileLabel(f)} · ${formatFileSize(f.fileSize)}` : googleFileLabel(f))
-                        : formatFileSize(f.fileSize)} · {f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
+                      {/* Googleドライブ上のファイルは種別を出す（拡張子が無く、名前だけでは何か分からないため）。
+                          サイズは行の右側に出す */}
+                      {isGoogle && `${googleFileLabel(f)} · `}{f.uploadedBy || "不明"} · {formatDateTime(f.createdAt)}
                     </p>
                   </div>
+                  {/* サイズ（最新版のもの）。Google形式はサイズを持たないので空欄にする */}
+                  <span style={{ width: 72, flexShrink: 0, textAlign: "right", fontSize: 11, color: "#6B6458", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                    {!isGoogle || f.fileSize > 0 ? formatFileSize(f.fileSize) : ""}
+                  </span>
                   <button onClick={e => { e.stopPropagation(); handleCopyLink(f); }} title="リンクをコピー"
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Link2 style={{ width: 13, height: 13 }} />

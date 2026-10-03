@@ -679,6 +679,8 @@ export interface PlanSettings {
   featureKnowledgeAi: boolean;
   featureGithub: boolean;
   maxKnowledgeDocsPerProject: number | null;
+  /** ファイルボックスの容量の上限（GB・組織全体）。null は無制限 */
+  maxFileStorageGb: number | null;
 }
 
 export interface UserPermissions {
