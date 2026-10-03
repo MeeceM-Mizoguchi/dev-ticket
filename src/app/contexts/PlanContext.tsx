@@ -23,6 +23,7 @@ export const UNLIMITED_PLAN: PlanSettings = {
   featureKnowledgeAi: true,
   featureGithub: true,
   maxKnowledgeDocsPerProject: null,
+  maxFileStorageGb: null,
 };
 
 interface PlanContextValue {
@@ -60,6 +61,7 @@ function mapPlan(row: Record<string, unknown>): PlanSettings {
     featureKnowledgeAi: (row.feature_knowledge_ai as boolean | undefined) ?? true,
     featureGithub: (row.feature_github as boolean | undefined) ?? true,
     maxKnowledgeDocsPerProject: (row.max_knowledge_docs_per_project as number | null) ?? null,
+    maxFileStorageGb: (row.max_file_storage_gb as number | null) ?? null,
   };
 }
 

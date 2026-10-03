@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { canSeeFile, fileActorById } from "./_lib/fileAccess.js";
+import { fileQuotaBlocker } from "./_lib/fileQuota.js";
 
 // ENHA2-035 ファイルボックス: WebDAV エンドポイント（実装本体）
 //
@@ -337,6 +338,12 @@ ${body}
       // 黙って壊れるより、はっきり失敗させる（Office 側に保存エラーとして表示される）
       res.statusCode = 413;
       return res.end("File too large for WebDAV save (limit 4.5MB)");
+    }
+    // 容量の上限。保存のたびに版（＝実体）が増えるので、上書き保存でも見る。
+    // 507 は WebDAV の「保存先の空きが足りない」（RFC 4918）。Office 側に保存エラーとして出る。
+    if (await fileQuotaBlocker(sb, payload.p, body.length)) {
+      res.statusCode = 507;
+      return res.end("File box storage quota exceeded");
     }
 
     const ext = extOf(payload.n);

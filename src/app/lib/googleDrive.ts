@@ -148,7 +148,9 @@ export type GoogleUploadResult =
 export async function uploadAsGoogleFile(
   projectId: string, file: File, kind: GoogleAppKind, parentId?: string | null,
 ): Promise<GoogleUploadResult> {
-  const path = await stageProjectFile(projectId, file);
+  // 変換できれば実体は Drive 側へ移り、ファイルボックスの容量は使わない。
+  // 変換に失敗して「そのまま保存」になったときは、下の registerStagedFile が容量を確かめる。
+  const path = await stageProjectFile(projectId, file, { skipQuotaCheck: true });
 
   try {
     const res = await postApi<CreateResult>("convert-staged", {
