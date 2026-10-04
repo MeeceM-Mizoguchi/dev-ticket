@@ -12,6 +12,7 @@ import { StepProgressPanel, type ProgressStep } from "@/app/components/shared/St
 import { MERGE_METHOD_LABELS, loadMergeMethod, saveMergeMethod, GithubApiError } from "@/app/lib/github";
 import { MergePrecheckNotice } from "@/app/components/github/MergePrecheckNotice";
 import { CheckGateNotice, REASON_MIN } from "@/app/components/github/CheckGateNotice";
+import { celebrateMerge } from "@/app/components/github/MergeCelebration";
 import type {
   GithubPull, GithubMergeMethod, GithubMergePrecheckResult, GithubMergePrecheckRow,
 } from "@/app/types";
@@ -106,6 +107,8 @@ export function MergeConfirmDialog({ pull, repo, actorName, onClose, onPrecheck,
     try {
       await onMerge(method, () => setPhase("refreshing"), reason.trim());
       saveMergeMethod(method);
+      // このダイアログは成功と同時に閉じるので、完了の表示は最上位の側に任せる
+      celebrateMerge({ title: `#${pull.number} ${pull.title}`, sub: `${pull.base} ← ${pull.head}` });
       onClose();
     } catch (e) {
       // 閉じずに理由を見せる。

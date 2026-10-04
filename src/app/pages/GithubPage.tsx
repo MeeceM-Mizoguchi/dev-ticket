@@ -436,7 +436,7 @@ export function GithubPage() {
     if (!project?.id || !mergeTarget) return;
     await mergePull(project.id, mergeTarget.number, method, reason, projectSlug ?? project.slug);
     onMerged();
-    toast(`#${mergeTarget.number} をマージしました`, "success");
+    // 完了の知らせはダイアログが全画面で出す（MergeCelebration）。ここでトーストは重ねない
     // loadedTabs は落とさない。落とすと取り直しの間だけページ全体がローダーに変わり、
     // 進捗を出しているダイアログの裏で表示が二度切り替わって見える
     await loadTab("pulls", true);
