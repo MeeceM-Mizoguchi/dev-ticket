@@ -16,6 +16,7 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { navigateInActiveTab } from "@/app/contexts/TabContext";
 import { escStack } from "@/app/lib/escStack";
+import { celebrateMerge } from "@/app/components/github/MergeCelebration";
 import type { GithubRunProgress } from "@/app/types";
 
 /** 実行中の行を見に行く間隔 */
@@ -146,6 +147,23 @@ export function GithubRunOverlay() {
     }, POLL_MS);
     return () => window.clearInterval(id);
   }, [running, runId, startedAt]);
+
+  // 見届けたマージが成功で終わったら、画面から実行したときと同じ完了の表示を重ねる。
+  // 拾うのは実行中の行だけなので、ここを通るのは「待っている間に終わった」1回に限られる。
+  // まとめてマージは全件が通ったときだけ（内訳を読ませるべきときに覆い隠さない）
+  const runState = run?.state;
+  const celebratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!run || runState !== "done" || celebratedRef.current === run.id) return;
+    celebratedRef.current = run.id;
+    if (run.kind === "merge") {
+      celebrateMerge({ title: run.label || "プルリクエストをマージしました" });
+    } else if (run.kind === "merge-bulk" && (run.result?.merged ?? 0) > 0 && !run.result?.failed) {
+      celebrateMerge({ title: `${run.result!.merged}件のプルリクエストをマージしました` });
+    }
+    // 行は取り直しのたびに作り直されるので、見るのは状態の変化だけにする
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, runState]);
 
   // 実行中は ESC でも閉じられない。積んでおかないと裏の画面の閉じる処理に届いてしまう
   useEffect(() => {

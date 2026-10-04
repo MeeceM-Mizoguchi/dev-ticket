@@ -30,6 +30,7 @@ import {
 import { PermissionBlockNotice } from "@/app/components/github/PermissionBlockNotice";
 import { MergePrecheckNotice } from "@/app/components/github/MergePrecheckNotice";
 import { CheckGateNotice, REASON_MIN } from "@/app/components/github/CheckGateNotice";
+import { celebrateMerge, pullNumbersLine } from "@/app/components/github/MergeCelebration";
 import type {
   GithubPull, GithubMergeMethod, GithubBulkMergeResult, GithubPermissionBlock, GithubMergePrecheckResult,
   GithubMergePrecheckRow, GithubRunProgress,
@@ -256,6 +257,13 @@ export function BulkMergeDialog({ pulls, repo, actorName, onClose, onPrecheck, o
     setBlocked(r.permission ?? null);
     setResult(r);
     setPhase("idle");
+    // 全件が通ったときだけ祝う。1件でも失敗・未実行があるなら、読ませるべきは結果の内訳
+    if (r.merged > 0 && r.failed === 0) {
+      celebrateMerge({
+        title: `${r.merged}件のプルリクエストをマージしました`,
+        sub: pullNumbersLine(r.results.filter(x => x.ok).map(x => x.number)),
+      });
+    }
   };
 
   // 実行はサーバー側の1リクエストで通しで走る。「マージ中」の一言で数十秒待たせると、

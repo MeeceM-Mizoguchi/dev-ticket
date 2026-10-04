@@ -495,7 +495,7 @@ export function TicketPrSection({
     if (!mergeTarget) return;
     await mergePull(projectId, mergeTarget.number, method, reason, projectSlug);
     onMerged();
-    toast(`#${mergeTarget.number} をマージしました`, "success");
+    // 完了の知らせはダイアログが全画面で出す（MergeCelebration）。ここでトーストは重ねない
     await load();
     onLinked?.();
   };
