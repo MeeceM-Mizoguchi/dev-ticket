@@ -1,7 +1,7 @@
 // ============================================================
 // APIキーの発行と復号。管理画面（ApiIntegrationDialog）から呼ばれる。
 //
-//   POST /api/api-keys/create  { name, projectId, expiresInDays } → { plainKey, key }
+//   POST /api/api-keys/create  { name, projectId, expiresInDays, scope } → { plainKey, key }
 //   POST /api/api-keys/reveal  { id }                             → { plainKey }
 //
 // 認証は「ログイン中ユーザーの Supabase アクセストークン」。
@@ -26,6 +26,13 @@ const KEY_PREFIX = "dvt_live_";
 const VISIBLE_CHARS = 8;
 /** 暗号文の形式バージョン。将来アルゴリズムを変える余地を残す */
 const CIPHER_VERSION = "v1";
+/**
+ * キーごとの権限（supabase/add_api_key_scopes.sql）。
+ *   write … 登録のみ（従来のキーと同じ）／ read … 読み取りのみ ／ full … すべて
+ * api/v1/[resource].ts の KeyScope と揃えること。
+ */
+const SCOPES = ["write", "read", "full"] as const;
+type KeyScope = typeof SCOPES[number];
 
 // @vercel/node の型チェックが auth.getUser を解決できないケースがあるため型だけ緩める
 // (api/project-files/[action].ts と同じ回避)
@@ -116,8 +123,9 @@ function sameOrg(caller: Caller, organizationId: string | null): boolean {
 }
 
 // ── 行のマッピング（クライアントの ApiKeyRow と揃える） ────────
-function mapRow(row: Record<string, unknown>) {
+function mapRow(row: Record<string, unknown>, scope: KeyScope) {
   return {
+    scope,
     id: row.id,
     name: row.name,
     key_prefix: row.key_prefix,
@@ -147,6 +155,13 @@ async function handleCreate(sb: SupabaseClient, caller: Caller, body: any, res: 
   if (expiresInDays !== null && (!isFinite(expiresInDays) || expiresInDays <= 0 || expiresInDays > 3650)) {
     return res.status(400).json({ error: "有効期限の指定が不正です" });
   }
+  // 未指定は従来どおり「登録のみ」。知らない値を黙って write に倒すと、
+  // 画面で選んだ権限と違うキーが出来てしまうので弾く。
+  const rawScope = body?.scope === undefined || body?.scope === null ? "write" : String(body.scope);
+  if (!(SCOPES as readonly string[]).includes(rawScope)) {
+    return res.status(400).json({ error: "権限の指定が不正です" });
+  }
+  const scope = rawScope as KeyScope;
 
   const { data: project } = await sb
     .from("projects").select("id, organization_id").eq("id", projectId).maybeSingle();
@@ -178,12 +193,20 @@ async function handleCreate(sb: SupabaseClient, caller: Caller, body: any, res: 
       organization_id: organizationId,
       created_by: caller.name || null,
       expires_at: expiresAt,
+      // write は列の既定値と同じ。列に触らないことで、add_api_key_scopes.sql を
+      // まだ流していない環境でも従来のキーは発行できる。
+      ...(scope === "write" ? {} : { scope }),
     })
     .select(SELECT_COLS)
     .single();
 
   if (error || !data) {
     const message = error?.message ?? "APIキーの発行に失敗しました";
+    if (/scope/.test(message)) {
+      return res.status(500).json({
+        error: "この権限のAPIキーを発行するには、supabase/add_api_key_scopes.sql を Supabase で実行してください",
+      });
+    }
     if (/key_cipher/.test(message)) {
       return res.status(500).json({
         error: "APIキーのテーブルが古い形式です。supabase/add_api_keys.sql を Supabase で実行し直してください",
@@ -197,7 +220,7 @@ async function handleCreate(sb: SupabaseClient, caller: Caller, body: any, res: 
     return res.status(500).json({ error: `APIキーの発行に失敗しました: ${message}` });
   }
 
-  return res.status(201).json({ plainKey, key: mapRow(data) });
+  return res.status(201).json({ plainKey, key: mapRow(data, scope) });
 }
 
 // ── POST /api/api-keys/reveal ────────────────────────────────

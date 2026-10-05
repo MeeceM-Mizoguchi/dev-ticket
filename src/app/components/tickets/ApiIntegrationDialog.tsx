@@ -20,7 +20,8 @@ import { useToast } from "@/app/contexts/ToastContext";
 import {
   listApiKeys, createApiKey, revealApiKey, revokeApiKey, deleteApiKey,
   isActiveKey, keyStatus, maskedKey, formatRelative, formatDay,
-  type ApiKeyRow,
+  API_KEY_SCOPES, scopeLabel, canCreateTickets,
+  type ApiKeyRow, type ApiKeyScope,
 } from "@/app/lib/apiKeys";
 import { buildApiSetupPrompt } from "@/app/lib/apiKeyPrompt";
 import { buildApiSample, buildKeySetupSnippet, SAMPLE_LANGS, API_LIMITS, type SampleLang } from "@/app/lib/apiSamples";
@@ -100,11 +101,14 @@ export function ApiIntegrationDialog({
   const [formOpen, setFormOpen] = useState(false);
   const [formName, setFormName] = useState("");
   const [formExpiry, setFormExpiry] = useState<number | null>(90);
+  // 既定は従来と同じ「登録のみ」。この画面はチケットを登録するためのものなので、
+  // 何も考えずに発行したキーが読み取り・ステータス更新までできてしまわないようにする。
+  const [formScope, setFormScope] = useState<ApiKeyScope>("write");
   const [issuing, setIssuing] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   // 発行直後に大きく見せるための平文（あとから「APIキー」タブでも取り出せる）
-  const [issuedKey, setIssuedKey] = useState<{ plain: string; name: string } | null>(null);
+  const [issuedKey, setIssuedKey] = useState<{ plain: string; name: string; scope: ApiKeyScope } | null>(null);
 
   // 失効の確認
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyRow | null>(null);
@@ -145,8 +149,9 @@ export function ApiIntegrationDialog({
         supabase!.from("ticket_categories").select("name").eq("project_id", projectId).order("created_at"),
         listApiKeys(projectId),
       ]);
-      // 既定の選択キー（一覧は作成日の降順なので、最後に発行した有効なキー）
-      const first = rows.find(isActiveKey);
+      // 既定の選択キー（一覧は作成日の降順なので、最後に発行した有効なキー）。
+      // 「読み取りのみ」のキーでは登録できないので、この画面の「使用するキー」には出さない
+      const first = rows.find(k => isActiveKey(k) && canCreateTickets(k));
       const revealed = first ? await revealApiKey(first.id) : null;
       if (cancelled) return;
 
@@ -164,7 +169,7 @@ export function ApiIntegrationDialog({
     return () => { cancelled = true; };
   }, [projectId]);
 
-  const activeKeys = useMemo(() => keys.filter(isActiveKey), [keys]);
+  const activeKeys = useMemo(() => keys.filter(k => isActiveKey(k) && canCreateTickets(k)), [keys]);
 
   // 既定の選択キー。最後に使ったものではなく、最後に発行したもの（一覧は作成日の降順）
   useEffect(() => {
@@ -226,21 +231,26 @@ export function ApiIntegrationDialog({
       name: formName,
       projectId,
       expiresInDays: formExpiry,
+      scope: formScope,
     });
     setIssuing(false);
     if (!result.ok) { setFormError(result.error); return; }
 
-    setIssuedKey({ plain: result.result.plainKey, name: result.result.row.name });
-    // 「使い方」タブへそのまま引き継ぐ（復号のための往復を省く）
-    revealedForRef.current = result.result.row.id;
-    setRevealedKey(result.result.plainKey);
-    setRevealing(false);
-    setRevealError(null);
+    setIssuedKey({ plain: result.result.plainKey, name: result.result.row.name, scope: result.result.row.scope });
+    if (canCreateTickets(result.result.row)) {
+      // 「使い方」タブへそのまま引き継ぐ（復号のための往復を省く）
+      revealedForRef.current = result.result.row.id;
+      setRevealedKey(result.result.plainKey);
+      setRevealing(false);
+      setRevealError(null);
+    }
     setFormOpen(false);
     setFormName("");
     setFormExpiry(90);
+    setFormScope("write");
     setKeys(prev => [result.result.row, ...prev]);
-    setSelectedKeyId(result.result.row.id);
+    // 「読み取りのみ」のキーは登録に使えないので、「使用するキー」の選択は動かさない
+    if (canCreateTickets(result.result.row)) setSelectedKeyId(result.result.row.id);
   };
 
   const handleRevoke = async (key: ApiKeyRow) => {
@@ -305,19 +315,32 @@ export function ApiIntegrationDialog({
         </p>
       </div>
 
-      <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 15 }}>
-        <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>AIに使ってもらう場合</p>
-        <SectionNote>
-          キーだけを渡してもAIは動きません。エンドポイント・JSONの形式・このプロジェクトのメンバー名や分類名を含んだプロンプトに、
-          <strong>上のAPIキーを埋め込んだ状態</strong>でコピーします。AIに貼るだけで登録できます。
-          文章の先頭に「## APIキー」の項目として入るので、<strong>キーを別にコピーする必要はありません。</strong>
-        </SectionNote>
-        <div style={{ marginTop: 10 }}>
-          <Btn onClick={() => void copy(buildPrompt(issuedKey.plain), "プロンプト")}>
-            <Sparkles style={{ width: 13, height: 13 }} />プロンプトをコピー（APIキー入り）
-          </Btn>
+      {issuedKey.scope !== "write" && (
+        <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 15 }}>
+          <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>AIにチケットを読み取らせて実装する場合</p>
+          <SectionNote>
+            このキー（権限: {scopeLabel(issuedKey.scope)}）は、AIがチケットの本文・画像・コメント・子チケットを読み取るのに使えます。
+            <strong>チケットの詳細画面を開き、ヘッダーの ✨（AIで実装）</strong>から、どこまでやるかを選んで手順をコピーしてください。
+            キーはそこで自動的に埋め込まれます。
+          </SectionNote>
         </div>
-      </div>
+      )}
+
+      {issuedKey.scope !== "read" && (
+        <div style={{ borderTop: "1px solid rgba(26,23,20,0.07)", paddingTop: 15 }}>
+          <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>AIにチケットを登録してもらう場合</p>
+          <SectionNote>
+            キーだけを渡してもAIは動きません。エンドポイント・JSONの形式・このプロジェクトのメンバー名や分類名を含んだプロンプトに、
+            <strong>上のAPIキーを埋め込んだ状態</strong>でコピーします。AIに貼るだけで登録できます。
+            文章の先頭に「## APIキー」の項目として入るので、<strong>キーを別にコピーする必要はありません。</strong>
+          </SectionNote>
+          <div style={{ marginTop: 10 }}>
+            <Btn onClick={() => void copy(buildPrompt(issuedKey.plain), "プロンプト")}>
+              <Sparkles style={{ width: 13, height: 13 }} />プロンプトをコピー（APIキー入り）
+            </Btn>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -508,6 +531,8 @@ export function ApiIntegrationDialog({
               { m: "POST", path: "/api/v1/tickets", desc: "チケットを登録する（既存チケットへの子の追加も）" },
               { m: "GET", path: "/api/v1/tickets", desc: "既存チケットを一覧する（子を足す親を探す）" },
               { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
+              { m: "GET", path: "/api/v1/ticket?wbs=…", desc: "チケット1件の本文・画像・コメント・子チケットを読み取る（権限: 読み取りのみ／すべて）" },
+              { m: "POST", path: "/api/v1/ticket-status", desc: "ステータスを前へ進める（権限: すべて）" },
             ].map(e => (
               <div key={`${e.m} ${e.path}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: e.m === "POST" ? GREEN : "#0284C7", minWidth: 34 }}>{e.m}</span>
@@ -708,6 +733,28 @@ export function ApiIntegrationDialog({
           </div>
 
           <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 6 }}>権限</label>
+            <select
+              value={formScope}
+              onChange={e => setFormScope(e.target.value as ApiKeyScope)}
+              style={{
+                width: "100%", padding: "9px 11px", fontSize: 12.5, color: "#1A1714",
+                background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, cursor: "pointer",
+              }}>
+              {API_KEY_SCOPES.map(s => (
+                <option key={s.value} value={s.value}>{s.label} — {s.description}</option>
+              ))}
+            </select>
+            <p style={{ fontSize: 10.5, color: formScope === "full" ? "#D97706" : "#B0A9A4", marginTop: 5, lineHeight: 1.7 }}>
+              {formScope === "full"
+                ? "AIにチケットを読み取らせて実装し、ステータスも進めさせる場合に選びます。このキーが漏れると、チケットの中身を読まれ、ステータスを変更されます。"
+                : formScope === "read"
+                  ? "AIにチケットを読み取らせて実装する場合に選びます。チケットの登録とステータスの更新はできません。"
+                  : "チケットを登録するだけの場合に選びます。チケットの中身の読み取りとステータスの更新はできません。"}
+            </p>
+          </div>
+
+          <div>
             <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", marginBottom: 4 }}>対象プロジェクト</p>
             <p style={{ fontSize: 12, color: "#1A1714" }}>{projectName}</p>
             <p style={{ fontSize: 10.5, color: "#B0A9A4", marginTop: 4, lineHeight: 1.7 }}>
@@ -752,6 +799,9 @@ export function ApiIntegrationDialog({
                 </code>
                 <span style={{ fontSize: 10, fontWeight: 700, color: stColor, background: stBg, padding: "2px 8px", borderRadius: 5 }}>
                   {st.label}
+                </span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F3F4F6", padding: "2px 8px", borderRadius: 5 }}>
+                  権限: {scopeLabel(k.scope)}
                 </span>
               </div>
               <p style={{ fontSize: 11.5, color: "#6B6458", marginTop: 4 }}>{k.name}</p>
