@@ -14,9 +14,34 @@ import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 /** 発行するキーの接頭辞。キー単体を見て発行元が分かるようにする（sk_live_=Stripe と同じ発想） */
 export const API_KEY_PREFIX = "dvt_live_";
 
+/**
+ * キーごとの権限（supabase/add_api_key_scopes.sql）。発行時にプルダウンで選ぶ。
+ * api/v1/[resource].ts の KeyScope と揃えること。
+ */
+export type ApiKeyScope = "write" | "read" | "full";
+
+/** プルダウンに出す順。AIに実装させる用途が主なので「すべて」を先頭に置く */
+export const API_KEY_SCOPES: { value: ApiKeyScope; label: string; description: string }[] = [
+  { value: "full", label: "すべて", description: "チケットの登録・読み取り・ステータスの更新" },
+  { value: "read", label: "読み取りのみ", description: "チケットの本文・画像・コメント・子チケットの読み取り" },
+  { value: "write", label: "登録のみ", description: "チケットの登録（これまでのキーと同じ）" },
+];
+
+export function scopeLabel(scope: ApiKeyScope): string {
+  return API_KEY_SCOPES.find(s => s.value === scope)?.label ?? scope;
+}
+
+/** チケットの中身（GET /api/v1/ticket）を読めるキーか */
+export const canReadTickets = (k: ApiKeyRow) => k.scope !== "write";
+/** チケットを登録（POST /api/v1/tickets）できるキーか */
+export const canCreateTickets = (k: ApiKeyRow) => k.scope !== "read";
+/** ステータスを更新（POST /api/v1/ticket-status）できるキーか */
+export const canUpdateStatus = (k: ApiKeyRow) => k.scope === "full";
+
 export interface ApiKeyRow {
   id: string;
   name: string;
+  scope: ApiKeyScope;
   /** 例: "dvt_live_a1b2c3d4"。これ以降は復元できない */
   keyPrefix: string;
   projectId: string;
@@ -46,6 +71,8 @@ function mapRow(row: Record<string, unknown>): ApiKeyRow {
   return {
     id: String(row.id),
     name: String(row.name ?? ""),
+    // 列が無い（add_api_key_scopes.sql 未適用）場合は、従来どおりの「登録のみ」
+    scope: row.scope === "read" || row.scope === "full" ? row.scope : "write",
     keyPrefix: String(row.key_prefix ?? ""),
     projectId: String(row.project_id ?? ""),
     organizationId: (row.organization_id as string | null) ?? null,
@@ -101,13 +128,19 @@ async function postApi<T>(action: "create" | "reveal", body: unknown): Promise<
 /** プロジェクトのAPIキー一覧。管理者以外は RLS により常に空が返る。 */
 export async function listApiKeys(projectId: string): Promise<ApiKeyRow[]> {
   if (!isSupabaseEnabled || !projectId) return [];
-  const { data, error } = await supabase!
+  const cols = "id, name, key_prefix, project_id, organization_id, created_by, created_at, expires_at, revoked_at, last_used_at";
+  const load = (select: string) => supabase!
     .from("api_keys")
-    .select("id, name, key_prefix, project_id, organization_id, created_by, created_at, expires_at, revoked_at, last_used_at")
+    .select(select)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false });
+
+  let { data, error } = await load(`${cols}, scope`);
+  // scope 列は後から足したもの。SQL を流す前の環境で一覧が空になると
+  // 「キーが全部消えた」ように見えるので、列なしで引き直す。
+  if (error) ({ data, error } = await load(cols));
   if (error || !data) return [];
-  return data.map(mapRow);
+  return (data as unknown as Record<string, unknown>[]).map(mapRow);
 }
 
 // ── 発行 ──────────────────────────────────────────────────────
@@ -117,6 +150,8 @@ export interface CreateApiKeyParams {
   projectId: string;
   /** 有効期限（日数）。null は無期限 */
   expiresInDays: number | null;
+  /** 権限。省略時は「登録のみ」 */
+  scope?: ApiKeyScope;
 }
 
 export interface CreateApiKeyResult {
@@ -142,6 +177,7 @@ export async function createApiKey(
     name,
     projectId: params.projectId,
     expiresInDays: params.expiresInDays,
+    scope: params.scope ?? "write",
   });
   if (!res.ok) return { ok: false, error: res.error };
 

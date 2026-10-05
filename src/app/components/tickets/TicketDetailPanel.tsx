@@ -42,6 +42,7 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
+import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
 import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
@@ -487,6 +488,8 @@ export function TicketDetailPanel({
   const [showCreateChild, setShowCreateChild] = useState(false);
   // MDファイルから子チケットをまとめて作る（1件ずつの showCreateChild と同じ場所から開く）
   const [showMdChildImport, setShowMdChildImport] = useState(false);
+  // AIにこのチケットを読み取らせて実装させる手順をコピーする（子チケットからも開ける）
+  const [showAiImplement, setShowAiImplement] = useState(false);
 
   // 🌟 追加(BRU11-046): 子チケットの実績工数の合計。
   // 一覧の各行に出しているバッジ（ChildHoursBadge）と同じ計算をそのまま足し上げる。
@@ -911,7 +914,7 @@ export function TicketDetailPanel({
   const arrowNavBlockedRef = useRef(false);
   arrowNavBlockedRef.current = isClosing || prGuardActive || showMonitor || !!pendingHandover || showRecommend
     || showDeleteConfirm || showWithdrawConfirm || showParentStartConfirm || showMoveModal
-    || showCreateChild || showMdChildImport || showPrLeaveConfirm || showUndecidedConfirm
+    || showCreateChild || showMdChildImport || showAiImplement || showPrLeaveConfirm || showUndecidedConfirm
     || showChangeDatePicker || showCompletionOverlay || assigneeOpen || reviewerOpen;
 
   useEffect(() => {
@@ -2497,6 +2500,15 @@ export function TicketDetailPanel({
           onCreated={() => { setShowMdChildImport(false); loadChildTickets(ticket.id); onUpdated?.(); }}
         />
       )}
+      {showAiImplement && ticket && projectId && (
+        <AiImplementDialog
+          ticket={{ wbs: ticket.wbs, title: ticket.title, parentId: ticket.parentId }}
+          childCount={childTickets.length}
+          projectId={projectId}
+          projectName={breadcrumbProjName}
+          onClose={() => setShowAiImplement(false)}
+        />
+      )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes commentRingPulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0)}22%{box-shadow:0 0 0 4px rgba(249,115,22,0.55),0 0 18px 3px rgba(249,115,22,0.35)}50%{box-shadow:0 0 0 2px rgba(249,115,22,0.28),0 0 9px 2px rgba(249,115,22,0.18)}74%{box-shadow:0 0 0 4px rgba(249,115,22,0.50),0 0 18px 3px rgba(249,115,22,0.32)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}.comment-ring-pulse{animation:commentRingPulse 2s ease-out; border-radius:8px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
 
       {/* Image preview modal — ←→キー / 左右の矢印で同じ並びの画像を送れる */}
@@ -2914,6 +2926,14 @@ export function TicketDetailPanel({
                     <Activity style={{ width: 15, height: 15 }} />
                   </button>
                 </PlanTooltip>
+              )}
+              {canEdit && projectId && isSupabaseEnabled && (
+                <button onClick={() => setShowAiImplement(true)} title="AIで実装（チケットを読み取らせる手順をコピー）"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#F5F3FF"; (e.currentTarget as HTMLElement).style.color = "#7C3AED"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <Sparkles style={{ width: 15, height: 15 }} />
+                </button>
               )}
               {canEdit && !ticket.parentId && (
                 <button onClick={() => setShowCreateChild(true)} title="子チケットを作成"

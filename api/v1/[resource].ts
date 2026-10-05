@@ -1,9 +1,16 @@
 // ============================================================
 // API連携: 外部のAI／システムから Dev Ticket を操作する公開API
 //
-//   GET  /api/v1/context   … 登録に必要な文脈（スプリント／メンバー／分類／候補値）
-//   GET  /api/v1/tickets   … 既存チケットの一覧（子チケットを足す親を探すため）
-//   POST /api/v1/tickets   … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
+//   GET  /api/v1/context        … 登録に必要な文脈（スプリント／メンバー／分類／候補値）
+//   GET  /api/v1/tickets        … 既存チケットの一覧（子チケットを足す親を探すため）
+//   POST /api/v1/tickets        … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
+//   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
+//   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中／レビュー中／対応完了）
+//
+// 下の2つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
+//   write … 登録のみ（context / tickets）    ← これまでに発行されたキーはすべてこれ
+//   read  … 読み取りのみ（context / tickets の GET / ticket）
+//   full  … すべて
 //
 // 認証は Dev Ticket が発行する APIキー:
 //   Authorization: Bearer dvt_live_xxxxx
@@ -19,7 +26,10 @@
 //     ・src/app/lib/mdTickets/parse.ts        （ステータス／優先度の写像）
 //     ・src/app/lib/bulkTicketInsert.ts       （登録するカラムと通知）
 //     ・src/app/lib/apiKeyPrompt.ts           （AIに渡す仕様書。ここと食い違うとAIが失敗する）
+//     ・src/app/lib/apiImplementPrompt.ts     （AIに渡す実装用の手順書。同上）
+//     ・src/app/components/tickets/TicketDetailPanel.tsx（ステータス変更時の副作用。handleUpdateStatus と揃える）
 //     ・supabase/add_api_keys.sql             （reserve_ticket_wbs / consume_api_key_rate）
+//     ・supabase/add_api_key_scopes.sql       （api_keys.scope）
 // ============================================================
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
@@ -38,6 +48,16 @@ const MAX_DESCRIPTION_LENGTH = 100_000;
 /** GET /api/v1/tickets の既定／最大の返却件数 */
 const LIST_DEFAULT_LIMIT = 100;
 const LIST_MAX_LIMIT = 500;
+/** GET /api/v1/ticket で1チケットあたりに返すコメントの上限（新しいほうから） */
+const MAX_COMMENTS_PER_TICKET = 200;
+
+// ── キーの権限 ────────────────────────────────────────────────
+type KeyScope = "write" | "read" | "full";
+const SCOPE_LABEL: Record<KeyScope, string> = { write: "登録のみ", read: "読み取りのみ", full: "すべて" };
+/** scope 列が無い（add_api_key_scopes.sql 未適用）・未知の値は、従来どおりの「登録のみ」に倒す */
+function scopeOf(raw: unknown): KeyScope {
+  return raw === "read" || raw === "full" ? raw : "write";
+}
 
 // ── ステータス／優先度の写像（src/app/lib/mdTickets/parse.ts と同じ内容） ──
 const STATUS_LABELS = ["未着手", "進行中", "レビュー中", "レビュー完了", "STG完了", "UAT完了", "クローズ"];
@@ -250,6 +270,7 @@ interface ApiKeyRow {
   created_by: string | null;
   expires_at: string | null;
   revoked_at: string | null;
+  scope: KeyScope;
 }
 
 type AuthResult =
@@ -274,9 +295,11 @@ async function authenticate(sb: SupabaseClient, req: any): Promise<AuthResult> {
   }
 
   const hash = crypto.createHash("sha256").update(token).digest("hex");
+  // 列を名指しせず * で引く。scope 列は後から足したもので、名指しすると
+  // add_api_key_scopes.sql を流す前の環境では全キーが「無効」になってしまう。
   const { data: key } = await sb
     .from("api_keys")
-    .select("id, name, project_id, organization_id, created_by, expires_at, revoked_at")
+    .select("*")
     .eq("key_hash", hash)
     .maybeSingle();
 
@@ -299,7 +322,15 @@ async function authenticate(sb: SupabaseClient, req: any): Promise<AuthResult> {
     return { ok: false, status: 429, error: `リクエストが多すぎます（${RATE_WINDOW_SEC}秒あたり${RATE_LIMIT}回まで）。少し待ってから再試行してください` };
   }
 
-  return { ok: true, key: key as ApiKeyRow };
+  return {
+    ok: true,
+    key: {
+      id: key.id, name: key.name, project_id: key.project_id,
+      organization_id: key.organization_id ?? null, created_by: key.created_by ?? null,
+      expires_at: key.expires_at ?? null, revoked_at: key.revoked_at ?? null,
+      scope: scopeOf(key.scope),
+    },
+  };
 }
 
 // ── プラン上限 ────────────────────────────────────────────────
@@ -596,6 +627,446 @@ async function handleListTickets(sb: SupabaseClient, key: ApiKeyRow, query: any,
       sprintId: t.sprint_id,
       sprintName: (sprintById.get(t.sprint_id) as any)?.name ?? null,
     })),
+  });
+}
+
+// ── HTML → テキスト（AIに読ませるための逆変換） ───────────────
+// 本文とコメントは TipTap の HTML で保存されている。そのまま返すとタグが大半を占めて
+// 読みにくいので、Markdown 風のテキストへ直して返す。mdToHtml の完全な逆変換ではなく
+// 「読んで内容が分かること」が目的（表は | 区切りの行、入れ子のリストは平らな箇条書きになる）。
+// 画像は ![画像](URL) として本文中の位置に残し、URL は images にも集めて返す。
+
+function decodeEntities(s: string): string {
+  const fromCode = (n: number) => { try { return String.fromCodePoint(n); } catch { return ""; } };
+  return s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => fromCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_m, d: string) => fromCode(Number(d)))
+    // &amp; は最後。先に戻すと "&amp;lt;" が "<" まで戻ってしまう
+    .replace(/&amp;/g, "&");
+}
+
+/** タグの中から属性値を取り出す。data-src を src と取り違えないよう、直前は空白に限る */
+function attrOf(attrs: string, name: string): string {
+  const m = attrs.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
+  return decodeEntities(m?.[1] ?? m?.[2] ?? "");
+}
+
+// export しているのは検証用（mdToHtml と同じ理由）。
+export function htmlToText(html: string): { text: string; images: string[] } {
+  const images: string[] = [];
+  const blocks: string[] = [];
+
+  let s = html.split(CODE_MARK).join("").replace(/\r\n?/g, "\n");
+
+  // コードブロックは中の改行と字下げをそのまま残すため、先に退避する
+  s = s.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_m, body: string) => {
+    const code = decodeEntities(body.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")).replace(/\n+$/, "");
+    blocks.push("```\n" + code + "\n```");
+    return `\n\n${CODE_MARK}${blocks.length - 1}${CODE_MARK}\n\n`;
+  });
+
+  // HTML ソース上の改行は空白と同じ意味しか持たない
+  s = s.replace(/\n+/g, " ");
+
+  s = s.replace(/<img\b([^>]*)>/gi, (_m, attrs: string) => {
+    const src = attrOf(attrs, "src");
+    if (!src) return "";
+    // 貼り付けた画像が data: のまま入っている古い本文がある。返すと応答が数MBになるので捨てる
+    if (/^data:/i.test(src)) return "（本文に直接埋め込まれた画像。URLが無いため取得できません）";
+    images.push(src);
+    return `![${attrOf(attrs, "alt") || "画像"}](${src})`;
+  });
+
+  s = s.replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (_m, attrs: string, label: string) => {
+    const href = attrOf(attrs, "href");
+    const text = label.replace(/<[^>]+>/g, "").trim();
+    if (!href) return text;
+    if (!text || text === href) return href;
+    return `[${text}](${href})`;
+  });
+
+  s = s
+    .replace(/<\/?(strong|b)\b[^>]*>/gi, "**")
+    .replace(/<\/?(em|i)\b[^>]*>/gi, "*")
+    .replace(/<\/?(s|del|strike)\b[^>]*>/gi, "~~")
+    .replace(/<\/?code\b[^>]*>/gi, "`");
+
+  // TipTap は <li><p>…</p></li> の形で出す。<p> を残すと項目ごとに空行が入るので剥がす（表のセルも同じ）
+  s = s
+    .replace(/<li\b([^>]*)>\s*<p\b[^>]*>/gi, "<li$1>").replace(/<\/p>\s*<\/li>/gi, "</li>")
+    .replace(/<(td|th)\b([^>]*)>\s*<p\b[^>]*>/gi, "<$1$2>").replace(/<\/p>\s*<\/(td|th)>/gi, "</$1>");
+
+  // 番号付きリストは番号を振り直す（入れ子でないものだけ。入れ子は下の箇条書きに落ちる）
+  s = s.replace(/<ol\b[^>]*>((?:(?!<\/?[ou]l\b)[\s\S])*?)<\/ol>/gi, (_m, inner: string) => {
+    let n = 0;
+    return "\n\n" + inner.replace(/<li\b[^>]*>/gi, () => `\n${++n}. `) + "\n\n";
+  });
+  s = s.replace(/<li\b([^>]*)>/gi, (_m, attrs: string) => {
+    const checked = attrOf(attrs, "data-checked");
+    return checked === "true" ? "\n- [x] " : checked === "false" ? "\n- [ ] " : "\n- ";
+  });
+
+  s = s
+    .replace(/<h([1-6])\b[^>]*>/gi, (_m, n: string) => `\n\n${"#".repeat(Number(n))} `)
+    .replace(/<blockquote\b[^>]*>/gi, "\n\n> ")
+    .replace(/<hr\b[^>]*>/gi, "\n\n---\n\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<table\b[^>]*>/gi, "\n\n")
+    .replace(/<tr\b[^>]*>/gi, "\n| ")
+    .replace(/<\/(td|th)>/gi, " | ")
+    .replace(/<\/(p|div|h[1-6]|blockquote|ul|ol|table)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "");
+
+  s = decodeEntities(s)
+    .split("\n").map(line => line.trim()).join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  s = s.replace(new RegExp(CODE_MARK + "(\\d+)" + CODE_MARK, "g"), (_m, i: string) => blocks[Number(i)] ?? "");
+  return { text: s, images };
+}
+
+// ── チケットの解決（読み取り・ステータス更新で共通） ──────────
+/** 画面（helpers.ts の STATUS_RANK）と同じ並び。「後ろへ戻さない」の判定に使う */
+const STATUS_RANK: Record<string, number> = {
+  todo: 0, "in-progress": 1, "in-review": 2, "review-done": 3,
+  "stg-test": 4, uat: 5, done: 6, closed: 7, "waiting-release": 8, released: 9,
+  "on-hold": -1, withdrawn: -2,
+};
+
+/** 子チケットの closed は画面で「対応完了」と呼んでいる（親の「クローズ」とは別の意味） */
+function statusLabelFor(status: string, isChild: boolean): string {
+  if (isChild && status === "closed") return "対応完了";
+  return STATUS_LABEL_BY_VALUE[status] ?? status;
+}
+
+/** "T-012-2" と "T-012-10" を数値として比べる（文字列比較だと 10 が 2 より前に来る） */
+function compareWbs(a: string, b: string): number {
+  const as = String(a).split("-"), bs = String(b).split("-");
+  for (let i = 0; i < Math.min(as.length, bs.length); i++) {
+    const an = /^\d+$/.test(as[i]), bn = /^\d+$/.test(bs[i]);
+    const d = an && bn ? Number(as[i]) - Number(bs[i]) : as[i].localeCompare(bs[i]);
+    if (d !== 0) return d;
+  }
+  return as.length - bs.length;
+}
+
+type TicketLookup =
+  | { ok: true; row: any; sprints: { id: string; name: string }[] }
+  | { ok: false; status: number; error: string };
+
+/**
+ * WBS（または id）からチケットを1件引く。
+ *
+ * 引くのは「このAPIキーのプロジェクトに属するスプリント」の中だけ。
+ * service_role 接続で RLS が効かないため、ここを絞らないと他テナントのチケットを
+ * 読めたり、ステータスを書き換えられたりしてしまう。
+ */
+async function lookupTicket(
+  sb: SupabaseClient, key: ApiKeyRow, ref: { wbs: string; id: string }, cols: string,
+): Promise<TicketLookup> {
+  if (!ref.wbs && !ref.id) return { ok: false, status: 400, error: "wbs（または id）は必須です" };
+  if (ref.wbs && !/^[A-Za-z0-9_-]+$/.test(ref.wbs)) {
+    return { ok: false, status: 400, error: `wbs の形式が正しくありません: ${ref.wbs}` };
+  }
+
+  const { data: sprintRows, error: sprintError } = await sb
+    .from("sprints").select("id, name").eq("project_id", key.project_id);
+  if (sprintError) return { ok: false, status: 500, error: sprintError.message };
+  const sprints = (sprintRows ?? []) as { id: string; name: string }[];
+  const label = ref.id || ref.wbs;
+  const notFound: TicketLookup = {
+    ok: false, status: 404,
+    error: `チケット「${label}」がこのAPIキーのプロジェクトに見つかりません。GET /api/v1/tickets で探せます`,
+  };
+  if (sprints.length === 0) return notFound;
+
+  let q = sb.from("sprint_tickets").select(cols).in("sprint_id", sprints.map(s => s.id));
+  // 小文字で書かれたWBS（bru19-001）も受ける
+  q = ref.id ? q.eq("id", ref.id) : q.in("wbs", [...new Set([ref.wbs, ref.wbs.toUpperCase()])]);
+  const { data, error } = await q.order("id", { ascending: true }).limit(5);
+  if (error) return { ok: false, status: 500, error: error.message };
+
+  const rows = (data ?? []) as any[];
+  if (rows.length === 0) return notFound;
+  const exact = ref.id ? rows : rows.filter(r => r.wbs === ref.wbs);
+  const hit = exact.length > 0 ? exact : rows;
+  if (hit.length > 1) {
+    return {
+      ok: false, status: 409,
+      error: `WBS「${ref.wbs}」のチケットが複数あります。id で指定してください（${hit.map(r => r.id).join(" / ")}）`,
+    };
+  }
+  return { ok: true, row: hit[0], sprints };
+}
+
+// ── GET /api/v1/ticket ───────────────────────────────────────
+//
+// AI がチケットを読み取って実装するためのもの。1回の呼び出しで
+// 「そのチケット・親（子を指定した場合）・子チケット全部」の本文・画像・添付・コメントを返す。
+// 人が画面からコピーして貼り直していた内容を、これ1つで渡せるようにしている。
+//
+// 画像と添付は public バケットの URL をそのまま返す（認証なしで GET できる）。
+const DETAIL_COLS =
+  "id, wbs, title, status, priority, assignee, start_date, due_date, estimated_hours, description, images, category_id, sprint_id, parent_id";
+
+const urlList = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((u): u is string => typeof u === "string" && !!u && !/^data:/i.test(u)) : [];
+
+async function handleTicketDetail(sb: SupabaseClient, key: ApiKeyRow, query: any, res: any) {
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : Array.isArray(v) ? String(v[0] ?? "").trim() : "");
+  const found = await lookupTicket(sb, key, { wbs: str(query?.wbs), id: str(query?.id) }, DETAIL_COLS);
+  if (!found.ok) return res.status(found.status).json({ error: found.error });
+  const row = found.row;
+
+  // 子を指定されたら親を、親を指定されたら子を全部引く（階層は1段まで）
+  const [{ data: project }, { data: categoryRows }, related] = await Promise.all([
+    sb.from("projects").select("name, slug").eq("id", key.project_id).maybeSingle(),
+    sb.from("ticket_categories").select("id, name").eq("project_id", key.project_id),
+    row.parent_id
+      ? sb.from("sprint_tickets").select(DETAIL_COLS).eq("id", row.parent_id).limit(1)
+      : sb.from("sprint_tickets").select(DETAIL_COLS).eq("parent_id", row.id)
+        .order("wbs", { ascending: true }).order("id", { ascending: true }),
+  ]);
+  if (related.error) return res.status(500).json({ error: related.error.message });
+
+  const relatedRows = (related.data ?? []) as any[];
+  const parentRow = row.parent_id ? (relatedRows[0] ?? null) : null;
+  const childRows = row.parent_id ? [] : [...relatedRows].sort((a, b) => compareWbs(a.wbs, b.wbs));
+  const all: any[] = [row, ...(parentRow ? [parentRow] : []), ...childRows];
+  const ids = all.map(t => t.id as string);
+
+  // コメントは新しい順に引いて、チケットごとに上限で切ってから古い順へ戻す。
+  // 古い順のまま引くと、行数の上限に当たったとき「最近のやり取り」のほうが落ちる。
+  // status_change（ステータス変更の自動記録）は実装の材料にならないので返さない。
+  const [commentsRes, attachRes] = await Promise.all([
+    sb.from("ticket_comments").select("*").in("ticket_id", ids).neq("comment_type", "status_change")
+      .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(1000),
+    sb.from("ticket_attachments").select("*").in("ticket_id", ids)
+      .order("created_at", { ascending: true }).order("id", { ascending: true }),
+  ]);
+  if (commentsRes.error) return res.status(500).json({ error: commentsRes.error.message });
+  // 添付は後から足したテーブル（add_ticket_attachments.sql）。無い環境では添付なしとして続ける
+  if (attachRes.error) console.error("[api/v1] attachments:", attachRes.error.message);
+
+  const commentsByTicket = new Map<string, any[]>();
+  for (const c of (commentsRes.data ?? []) as any[]) {
+    const list = commentsByTicket.get(c.ticket_id) ?? [];
+    list.push(c);
+    commentsByTicket.set(c.ticket_id, list);
+  }
+  const attachByTicket = new Map<string, any[]>();
+  for (const a of (attachRes.data ?? []) as any[]) {
+    const list = attachByTicket.get(a.ticket_id) ?? [];
+    list.push(a);
+    attachByTicket.set(a.ticket_id, list);
+  }
+
+  const sprintNameById = new Map(found.sprints.map(s => [s.id, s.name]));
+  const categoryNameById = new Map(((categoryRows ?? []) as any[]).map(c => [c.id as string, c.name as string]));
+  const wbsById = new Map(all.map(t => [t.id as string, t.wbs as string]));
+  const origin = appPublicOrigin();
+  const slug = String(project?.slug ?? "");
+
+  const toView = (t: any) => {
+    const isChild = !!t.parent_id;
+    const body = htmlToText(String(t.description ?? ""));
+    const allComments = commentsByTicket.get(t.id) ?? [];
+    const comments = allComments.slice(0, MAX_COMMENTS_PER_TICKET).reverse().map(c => {
+      const text = htmlToText(String(c.content ?? ""));
+      return {
+        id: c.id,
+        author: c.user_name,
+        type: c.comment_type,
+        createdAt: c.created_at,
+        replyTo: c.reply_to ?? null,
+        body: text.text,
+        images: [...new Set([...text.images, ...urlList(c.images)])],
+      };
+    });
+    return {
+      id: t.id,
+      wbs: t.wbs,
+      title: t.title,
+      status: statusLabelFor(t.status, isChild),
+      priority: PRIORITY_LABEL_BY_VALUE[t.priority] ?? t.priority,
+      assignee: t.assignee || null,
+      category: categoryNameById.get(t.category_id) ?? null,
+      startDate: t.start_date ?? null,
+      dueDate: t.due_date ?? null,
+      estimatedHours: t.estimated_hours ?? 0,
+      sprintName: sprintNameById.get(t.sprint_id) ?? null,
+      parentWbs: isChild ? (wbsById.get(t.parent_id) ?? String(t.wbs).replace(/-\d+$/, "")) : null,
+      url: origin && slug ? `${origin}/${encodeURIComponent(slug)}/${encodeURIComponent(t.wbs)}` : null,
+      description: body.text,
+      // 本文に貼られた画像と、画像欄に添付された画像の両方
+      images: [...new Set([...body.images, ...urlList(t.images)])],
+      attachments: (attachByTicket.get(t.id) ?? []).map(a => ({
+        fileName: a.file_name, fileType: a.file_type, fileSize: a.file_size, url: a.file_url,
+      })),
+      comments,
+      // 上限で落としたコメントの件数（古いほうから落ちる）
+      commentsOmitted: Math.max(0, allComments.length - comments.length),
+    };
+  };
+
+  return res.status(200).json({
+    project: { name: project?.name ?? null, slug: slug || null },
+    ticket: toView(row),
+    parent: parentRow ? toView(parentRow) : null,
+    children: childRows.map(toView),
+  });
+}
+
+// ── POST /api/v1/ticket-status ───────────────────────────────
+//
+// AI が実装の進み具合に合わせてステータスを前へ進めるためのもの。
+// 画面（TicketDetailPanel）のボタンを押したときと同じ結果になるよう、ステータスのほかに
+// 進捗率・マイルストーン時刻・コメント欄の履歴も書く。
+//
+// 意図的に狭くしてある:
+//   ・行き先は 進行中／レビュー中（親のみ）／対応完了（子のみ）の3つだけ。
+//     それより先（レビュー完了・STG・リリース）は人の判断なので API からは動かさない。
+//   ・前へ進めるだけ。すでに同じか先のステータスなら何もしない（changed: false）。
+//     AI が同じ呼び出しを2回送っても、履歴が2行になったり後戻りしたりしない。
+//   ・保留中・取下のチケットには触らない。
+//   ・レビュー中にするとき、レビュアーの指定・レビュー回数の加算・レビュー依頼の通知は行わない
+//     （画面の「レビュー依頼」とは別物。AI は誰に依頼するかを決められないため）。
+const STATUS_TARGET_BY_LABEL: Record<string, "in-progress" | "in-review" | "closed"> = {
+  "進行中": "in-progress", "対応中": "in-progress", inprogress: "in-progress",
+  "レビュー中": "in-review", inreview: "in-review",
+  "対応完了": "closed", "完了": "closed", closed: "closed", done: "closed",
+};
+
+/** 親をこのステータスにするとき、子に求める最低ランク（helpers.ts の PARENT_STATUS_MIN_CHILD_RANK と同じ） */
+const IN_REVIEW_MIN_CHILD_RANK = 3;
+
+function newCommentId(): string {
+  // 画面は CMT-<ミリ秒> だが、こちらは子と親へ続けて書くので同じミリ秒に重なりうる
+  return `CMT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+  const wbs = typeof body?.wbs === "string" ? body.wbs.trim() : "";
+  const id = typeof body?.id === "string" ? body.id.trim() : "";
+  const rawStatus = typeof body?.status === "string" ? body.status.trim() : "";
+
+  const target = STATUS_TARGET_BY_LABEL[normalizeValue(rawStatus)];
+  if (!target) {
+    return res.status(400).json({
+      error: `status「${rawStatus}」は指定できません。APIから変更できるのは 進行中 / レビュー中 / 対応完了（子チケットのみ）です`,
+    });
+  }
+
+  const found = await lookupTicket(sb, key, { wbs, id },
+    "id, wbs, title, status, sprint_id, parent_id, started_at, review_requested_at");
+  if (!found.ok) return res.status(found.status).json({ error: found.error });
+  const row = found.row;
+  const isChild = !!row.parent_id;
+  const current = String(row.status ?? "todo");
+
+  if (target === "in-review" && isChild) {
+    return res.status(400).json({ error: `「${row.wbs}」は子チケットです。子チケットに「レビュー中」はありません（終わったら「対応完了」にします）` });
+  }
+  if (target === "closed" && !isChild) {
+    return res.status(400).json({ error: `「${row.wbs}」は親チケットです。「対応完了」にできるのは子チケットだけです` });
+  }
+  if (current === "on-hold" || current === "withdrawn") {
+    return res.status(409).json({
+      error: `「${row.wbs}」は${statusLabelFor(current, isChild)}のため、ステータスを変更しません`,
+    });
+  }
+
+  const fromLabel = statusLabelFor(current, isChild);
+  const toLabel = statusLabelFor(target, isChild);
+
+  // 後ろへは戻さない。同じステータスへの再送もここで止まる
+  if ((STATUS_RANK[current] ?? 0) >= STATUS_RANK[target]) {
+    return res.status(200).json({
+      ok: true, changed: false, wbs: row.wbs, status: fromLabel, parentStarted: null,
+      message: `すでに「${fromLabel}」のため変更していません`,
+    });
+  }
+
+  // 親をレビュー中にできるのは、子がすべて終わっているときだけ（画面の validateParentStatusChange と同じ。取下の子は数えない）
+  if (target === "in-review") {
+    const { data: childRows, error: childError } = await sb
+      .from("sprint_tickets").select("wbs, status").eq("parent_id", row.id);
+    if (childError) return res.status(500).json({ error: childError.message });
+    const blocking = ((childRows ?? []) as any[])
+      .filter(c => c.status !== "withdrawn" && (STATUS_RANK[c.status] ?? 0) < IN_REVIEW_MIN_CHILD_RANK)
+      .sort((a, b) => compareWbs(a.wbs, b.wbs));
+    if (blocking.length > 0) {
+      return res.status(409).json({
+        error: `子チケット ${blocking.length}件（${blocking.map(c => c.wbs).join(" / ")}）が対応完了していないため「レビュー中」にできません`,
+      });
+    }
+  }
+
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { status: target, progress: STATUS_PROGRESS[target] ?? 0 };
+  if (isChild) {
+    // 子は実績モニター非対応。着手と完了の時刻だけを持つ（画面の startChildSelf / handleChildComplete と同じ）。
+    // 実績工数（actual_work_hours）は書かない。空のままなら画面が着手〜完了から自動で計算する
+    if (target === "in-progress") patch.started_at = now;
+    if (target === "closed") patch.released_at = now;
+  } else {
+    // 親はマイルストーンを順に埋める（recordMilestoneFromTicketStatus の「前進」と同じ）
+    if (!row.started_at) patch.started_at = now;
+    if (target === "in-review" && !row.review_requested_at) patch.review_requested_at = now;
+  }
+
+  // 条件に元のステータスを入れておく。読んでから書くまでの間に人が画面で動かしていたら上書きしない
+  const { data: updated, error: updateError } = await sb
+    .from("sprint_tickets").update(patch).eq("id", row.id).eq("status", current).select("id");
+  if (updateError) return res.status(500).json({ error: `ステータスの更新に失敗しました: ${updateError.message}` });
+  if (!updated || updated.length === 0) {
+    return res.status(409).json({ error: `「${row.wbs}」のステータスが直前に変更されたため、更新を取りやめました。もう一度読み取ってから判断してください` });
+  }
+
+  // コメント欄の履歴。誰の操作かは「キーを発行した人」で残し、API経由であることを本文に書く
+  const actor = key.created_by || "API連携";
+  const via = `API連携（${esc(key.name)}）`;
+  const warnings: string[] = [];
+  const comments: Record<string, unknown>[] = [{
+    id: newCommentId(), ticket_id: row.id, user_name: actor,
+    content: isChild
+      ? (target === "closed" ? `<p>対応完了しました（${via}）</p>` : `<p>着手開始しました（${via}）</p>`)
+      : `<p>${via}：ステータスを「${toLabel}」に変更しました</p>`,
+    ticket_status: target, comment_type: "status_change", images: [],
+  }];
+
+  // 子に着手したとき親が未着手なら、親も進行中にする（画面の startParentTicket と同じ）
+  let parentStarted: string | null = null;
+  if (isChild && target === "in-progress") {
+    const { data: parent } = await sb
+      .from("sprint_tickets").select("id, wbs, status, started_at").eq("id", row.parent_id).maybeSingle();
+    if (parent && parent.status === "todo") {
+      const parentPatch: Record<string, unknown> = { status: "in-progress", progress: STATUS_PROGRESS["in-progress"] };
+      if (!parent.started_at) parentPatch.started_at = now;
+      const { data: parentUpdated, error: parentError } = await sb
+        .from("sprint_tickets").update(parentPatch).eq("id", parent.id).eq("status", "todo").select("id");
+      if (parentError) {
+        warnings.push(`親チケット「${parent.wbs}」を進行中にできませんでした: ${parentError.message}`);
+      } else if (parentUpdated && parentUpdated.length > 0) {
+        parentStarted = parent.wbs as string;
+        comments.push({
+          id: newCommentId(), ticket_id: parent.id, user_name: actor,
+          content: `<p>子チケット着手に伴い、ステータスを「進行中」に変更しました（${via}）</p>`,
+          ticket_status: "in-progress", comment_type: "status_change", images: [],
+        });
+      }
+    }
+  }
+
+  // ステータス自体は変わっているので、履歴の失敗で応答を落とさない
+  const { error: commentError } = await sb.from("ticket_comments").insert(comments);
+  if (commentError) warnings.push(`コメント欄への履歴の記録に失敗しました: ${commentError.message}`);
+
+  return res.status(200).json({
+    ok: true, changed: true, wbs: row.wbs, from: fromLabel, status: toLabel, parentStarted, warnings,
   });
 }
 
@@ -941,8 +1412,10 @@ export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const resource = String(req.query?.resource ?? "");
-  if (resource !== "tickets" && resource !== "context") {
-    return res.status(404).json({ error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context のいずれか）` });
+  if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status") {
+    return res.status(404).json({
+      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status のいずれか）`,
+    });
   }
 
   let sb: SupabaseClient;
@@ -956,6 +1429,38 @@ export default async function handler(req: any, res: any) {
     return handleContext(sb, auth.key, res);
   }
 
+  const scope = auth.key.scope;
+  /** 権限が足りないときの 403。どの権限のキーが要るのかまで伝える（AIが利用者へそのまま報告できるように） */
+  const denied = (what: string, needs: string) => res.status(403).json({
+    error: `このAPIキー（権限: ${SCOPE_LABEL[scope]}）では${what}できません。${needs}のキーを発行して使ってください`,
+  });
+
+  if (resource === "ticket") {
+    if (req.method !== "GET") return res.status(405).json({ error: "GET を使ってください" });
+    if (scope === "write") return denied("チケットの中身を読み取り", "権限が「読み取りのみ」または「すべて」");
+    try {
+      return await handleTicketDetail(sb, auth.key, req.query ?? {}, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  if (resource === "ticket-status") {
+    if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+    if (scope !== "full") return denied("ステータスを更新", "権限が「すべて」");
+    let statusBody: any;
+    try {
+      statusBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await handleUpdateStatus(sb, auth.key, statusBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
   // resource === "tickets"
   // GET は一覧（子チケットを足す親を探すため）、POST は登録。
   if (req.method === "GET") {
@@ -966,6 +1471,7 @@ export default async function handler(req: any, res: any) {
     }
   }
   if (req.method !== "POST") return res.status(405).json({ error: "一覧は GET、登録は POST を使ってください" });
+  if (scope === "read") return denied("チケットを登録", "権限が「登録のみ」または「すべて」");
 
   let body: any;
   try {
