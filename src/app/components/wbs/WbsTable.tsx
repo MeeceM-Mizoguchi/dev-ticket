@@ -67,6 +67,8 @@ interface WbsTableProps {
   onMove: (dragId: string, targetId: string, mode: WbsDropMode) => void;
   /** 右の枠の末尾に出すガント */
   gantt: WbsGanttModel;
+  /** 「チケット」列の中身（紐づいたチケットのチップと「＋」） */
+  renderTickets: (row: WbsRow) => ReactNode;
 }
 
 // ── セルの中の入力部品 ────────────────────────────────────────
@@ -147,6 +149,7 @@ interface RowCtx {
   onUpdate: (id: string, patch: Partial<WbsItem>) => void;
   onDragStart: (e: DragEvent, id: string) => void;
   onDragEnd: () => void;
+  renderTickets: (row: WbsRow) => ReactNode;
 }
 
 function renderCell(key: WbsColKey, row: WbsRow, ctx: RowCtx): ReactNode {
@@ -230,7 +233,7 @@ function renderCell(key: WbsColKey, row: WbsRow, ctx: RowCtx): ReactNode {
       );
     }
     case "tickets":
-      return null;
+      return ctx.renderTickets(row);
     case "note": {
       const isEditing = ctx.editing?.id === item.id && ctx.editing.field === "note";
       return (
@@ -303,7 +306,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMod
 
 export function WbsTable({
   rows, levels, statuses, members, holidays, canEdit, freezeKey, selectedId, onSelect, editing, onEditingChange,
-  highlightIds, scrollTo, onUpdate, onMove, gantt,
+  highlightIds, scrollTo, onUpdate, onMove, gantt, renderTickets,
 }: WbsTableProps) {
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
@@ -407,7 +410,7 @@ export function WbsTable({
   };
 
   const ctx: RowCtx = {
-    levels, statuses, members, holidays, canEdit, editing, onEditingChange, onUpdate,
+    levels, statuses, members, holidays, canEdit, editing, onEditingChange, onUpdate, renderTickets,
     onDragStart: (e, id) => {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", id);

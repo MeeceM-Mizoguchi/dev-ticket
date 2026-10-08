@@ -348,3 +348,43 @@ export async function deleteWbsHoliday(id: string): Promise<boolean> {
   if (error) { console.error("[wbs] delete holiday failed:", error.message); return false; }
   return true;
 }
+
+// ── 行とチケットの紐づけ ──────────────────────────────────────
+
+/**
+ * そのWBSの紐づけを全部取り、行ごとにまとめる（行の id → チケットの id の配列）。
+ * 行の id を in で並べると行数が多いときにURLが長くなりすぎるので、wbs_items を内部結合して絞る。
+ */
+export async function loadWbsItemTickets(sheetId: string): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (!isSupabaseEnabled || !sheetId) return map;
+  const { data, error } = await supabase!
+    .from("wbs_item_tickets").select("wbs_item_id, ticket_id, created_at, wbs_items!inner(wbs_sheet_id)")
+    .eq("wbs_items.wbs_sheet_id", sheetId)
+    .order("created_at", { ascending: true })
+    .order("ticket_id", { ascending: true });
+  if (error) { console.error("[wbs] load item tickets failed:", error.message); return map; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const r of (data ?? []) as any[]) {
+    const list = map.get(r.wbs_item_id);
+    if (list) list.push(r.ticket_id); else map.set(r.wbs_item_id, [r.ticket_id]);
+  }
+  return map;
+}
+
+/** 紐づけを足す。すでにある組み合わせは無視する（同じ紐づけを2回登録しない） */
+export async function addWbsItemTickets(itemId: string, ticketIds: string[]): Promise<boolean> {
+  if (!isSupabaseEnabled || ticketIds.length === 0) return true;
+  const { error } = await supabase!.from("wbs_item_tickets")
+    .upsert(ticketIds.map(id => ({ wbs_item_id: itemId, ticket_id: id })), { onConflict: "wbs_item_id,ticket_id", ignoreDuplicates: true });
+  if (error) { console.error("[wbs] add item tickets failed:", error.message); return false; }
+  return true;
+}
+
+/** 紐づけを外す。行もチケットも残る */
+export async function removeWbsItemTickets(itemId: string, ticketIds: string[]): Promise<boolean> {
+  if (!isSupabaseEnabled || ticketIds.length === 0) return true;
+  const { error } = await supabase!.from("wbs_item_tickets").delete().eq("wbs_item_id", itemId).in("ticket_id", ticketIds);
+  if (error) { console.error("[wbs] remove item tickets failed:", error.message); return false; }
+  return true;
+}

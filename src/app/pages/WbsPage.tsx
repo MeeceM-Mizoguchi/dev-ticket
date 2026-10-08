@@ -5,14 +5,14 @@
 // ここでいう「WBS」は作業分解表のこと。チケット番号（SprintTicket.wbs）とは別物。
 //
 // ページ全体は縦にスクロールさせない。画面の残りの高さいっぱいを表とガントの領域にする。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { FolderKanban, ChevronRight, GanttChartSquare, Plus } from "lucide-react";
-import { isSupabaseEnabled } from "@/lib/supabase";
+import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
-import { mapProject } from "@/app/lib/mappers";
-import type { AccessLevel, Project, WbsLevels, WbsSheet } from "@/app/types";
+import { mapProject, mapSprint } from "@/app/lib/mappers";
+import type { AccessLevel, Project, Sprint, UserPermissions, WbsLevels, WbsSheet } from "@/app/types";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
@@ -29,6 +29,8 @@ import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
 import { WbsVisibilityDialog } from "@/app/components/wbs/WbsVisibilityDialog";
 import { WbsWorkspace } from "@/app/components/wbs/WbsWorkspace";
+import type { WbsTicketRef } from "@/app/components/wbs/WbsTicketLinkDialog";
+import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { WBS_COLORS, wbsToolBtn } from "@/app/components/wbs/wbsStyles";
 
 /** 段数を減らせなかったときに出すダイアログの中身 */
@@ -43,6 +45,12 @@ export function WbsPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [sheets, setSheets] = useState<WbsSheet[]>([]);
   const [perm, setPerm] = useState<AccessLevel>("none");
+  // チケットの紐づけ用。スプリントをまたいで、そのプロジェクトのチケットを全部持つ
+  const [sprints, setSprints] = useState<Sprint[]>([]);
+  // チケット詳細パネルへ渡す、このプロジェクトでの権限（チケットの編集可否の判定に使われる）
+  const [projectPermissions, setProjectPermissions] = useState<UserPermissions | null>(null);
+  // 詳細パネルで開いているチケット。URL は変えない（スプリント画面へは遷移しない）
+  const [openTicketId, setOpenTicketId] = useState<string | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
   const [notFound, setNotFound] = useState(false);
   // 旧識別子(project_slug_aliases)で着地したときの現行slug。URLを正へ寄せるためだけに使う
@@ -72,12 +80,22 @@ export function WbsPage() {
     setAliasCanonicalSlug(found.viaAlias ? found.canonicalSlug : null);
     setProject(mapProject(p));
 
-    const [level, list] = await Promise.all([
+    const [level, list, { data: s }, { data: pmp }] = await Promise.all([
       loadWbsPermission(p.id, userId, isAdminRole),
       loadWbsSheets(p.id),
+      supabase!.from("sprints").select("*, sprint_tickets(*)").eq("project_id", p.id)
+        .order("start_date")
+        .order("id")
+        .order("created_at", { referencedTable: "sprint_tickets" })
+        .order("id", { referencedTable: "sprint_tickets" }),
+      userId
+        ? supabase!.from("project_member_permissions").select("permissions").eq("project_id", p.id).eq("member_id", userId).maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
     setPerm(level);
     setSheets(list);
+    setSprints((s ?? []).map(mapSprint));
+    if (pmp?.permissions) setProjectPermissions(pmp.permissions as UserPermissions);
     initializedRef.current = true;
     setLoading(false);
   }, [projectSlug, userId, isAdminRole]);
@@ -104,6 +122,21 @@ export function WbsPage() {
       navigate(`/${projectSlug}/wbs/${sheets[0].id}`, { replace: true });
     }
   }, [loading, projectSlug, wbsId, sheets, navigate]);
+
+  // ── チケット ────────────────────────────────────────────────
+  const tickets = useMemo<WbsTicketRef[]>(
+    () => sprints.flatMap(sp => sp.tickets.map(ticket => ({ ticket, sprintId: sp.id, sprintName: sp.name }))),
+    [sprints],
+  );
+  const openTicket = useMemo(() => {
+    if (!openTicketId) return null;
+    for (const sp of sprints) {
+      const ticket = sp.tickets.find(t => t.id === openTicketId);
+      if (ticket) return { ticket, sprint: sp };
+    }
+    return null;
+  }, [openTicketId, sprints]);
+  const handleOpenTicket = useCallback((id: string) => setOpenTicketId(id), []);
 
   // WBSを切り替えたら、前のWBSの強調は持ち越さない
   useEffect(() => { setHighlightIds([]); }, [wbsId]);
@@ -242,11 +275,28 @@ export function WbsPage() {
           <div style={{ flex: 1, minHeight: 0, background: "#FFFFFF", border: `1px solid ${WBS_COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
             {current && project && (
               <WbsWorkspace key={current.id} sheet={current} project={project} canEdit={canEdit}
+                tickets={tickets} onOpenTicket={handleOpenTicket}
                 highlightIds={highlightIds} onHighlightChange={setHighlightIds} />
             )}
           </div>
         </>
       )}
+
+      {/* 紐づけたチケットの詳細。WBS画面のまま右から開く（使い方は一覧検索の画面と同じ）。
+          URL を変えないので、閉じれば表のスクロール位置もそのまま残る */}
+      <TicketDetailPanel
+        ticket={openTicket?.ticket ?? null}
+        projectId={project?.id}
+        sprintId={openTicket?.sprint.id}
+        sprintSlug={openTicket?.sprint.identifier || undefined}
+        projectSlug={projectSlug}
+        projectPermissions={projectPermissions ?? undefined}
+        onClose={() => setOpenTicketId(null)}
+        onUpdated={load}
+        onDeleted={() => { setOpenTicketId(null); load().catch(() => { }); }}
+        // 子チケット・親チケットへの移動も、このパネルの中で切り替える
+        onSelectTicket={t => { if (t.id) setOpenTicketId(t.id); }}
+      />
 
       {nameDialog && (
         <WbsSheetNameDialog

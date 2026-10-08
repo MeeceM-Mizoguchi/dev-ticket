@@ -10,13 +10,16 @@ import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { computeSortOrder } from "@/app/lib/taskService";
 import {
-  WBS_LEVEL_LABELS, WBS_SORT_GAP, createWbsItem, deleteWbsItem, loadWbsHolidays, loadWbsItems, loadWbsStatuses, renumberWbsItems, updateWbsItem,
+  WBS_LEVEL_LABELS, WBS_SORT_GAP, addWbsItemTickets, createWbsItem, deleteWbsItem, loadWbsHolidays, loadWbsItemTickets, loadWbsItems,
+  loadWbsStatuses, removeWbsItemTickets, renumberWbsItems, updateWbsItem,
 } from "@/app/lib/wbsService";
 import { buildWbsGantt, buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
 import type { Project, WbsHoliday, WbsItem, WbsSheet, WbsStatus } from "@/app/types";
 import { WbsSummary } from "./WbsSummary";
 import { WbsStatusDialog } from "./WbsStatusDialog";
 import { WbsHolidayDialog } from "./WbsHolidayDialog";
+import { WbsTicketLinkDialog, type WbsTicketRef } from "./WbsTicketLinkDialog";
+import { WbsTicketCell } from "./WbsTicketCell";
 import { WbsTable, visibleWbsColumns, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
 import { wbsToolBtn, wbsToolBtnDisabled, wbsToolLabel, wbsToolSelect } from "./wbsStyles";
 
@@ -31,10 +34,14 @@ function readFreeze(userId: string, sheetId: string): WbsColKey {
   return "note";
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighlightChange }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange }: {
   sheet: WbsSheet;
   project: Project;
   canEdit: boolean;
+  /** そのプロジェクトのチケット（スプリントをまたいだ全件）。紐づけの候補とチップの表示に使う */
+  tickets: WbsTicketRef[];
+  /** チップを押したとき。WBS画面のままチケット詳細パネルを開く */
+  onOpenTicket: (ticketId: string) => void;
   /** 段数を減らせない理由になっている行 */
   highlightIds: string[];
   onHighlightChange: (ids: string[]) => void;
@@ -45,6 +52,8 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
   const [items, setItems] = useState<WbsItem[]>([]);
   const [statuses, setStatuses] = useState<WbsStatus[]>([]);
   const [holidays, setHolidays] = useState<WbsHoliday[]>([]);
+  // 行の id → 紐づいたチケットの id
+  const [links, setLinks] = useState<Map<string, string[]>>(new Map());
   const [loading, setLoading] = useState(true);
   // 一度でもデータを読んだら、以後は再読み込みでスピナーに差し替えない（画面のちらつき防止）
   const initializedRef = useRef(false);
@@ -55,15 +64,19 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [holidayOpen, setHolidayOpen] = useState(false);
+  const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
 
   const load = useCallback(async () => {
-    const [its, sts, hols] = await Promise.all([loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id)]);
+    const [its, sts, hols, lks] = await Promise.all([
+      loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id), loadWbsItemTickets(sheet.id),
+    ]);
     setItems(its);
     setStatuses(sts);
     setHolidays(hols);
+    setLinks(lks);
     initializedRef.current = true;
     setLoading(false);
   }, [sheet.id, project.id]);
@@ -102,6 +115,33 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
     setFreezeKey(key);
     try { localStorage.setItem(freezeStorageKey(userId, sheet.id), key); } catch { /* 保存できなくても表示は切り替える */ }
   };
+
+  // ── チケットの紐づけ ────────────────────────────────────────
+  const ticketById = useMemo(() => new Map(tickets.map(t => [t.ticket.id, t])), [tickets]);
+
+  /**
+   * その行に紐づいたチケット。削除されたチケットは一覧に無いので、ここで自然に落ちる
+   * （DB 側の紐づけも on delete cascade で消えている）。
+   */
+  const linkedTicketsOf = useCallback((itemId: string): WbsTicketRef[] =>
+    (links.get(itemId) ?? []).map(id => ticketById.get(id)).filter((t): t is WbsTicketRef => !!t),
+  [links, ticketById]);
+
+  const linkTarget = rows.find(r => r.item.id === linkTargetId) ?? null;
+
+  const handleLinkSubmit = async (addIds: string[], removeIds: string[]): Promise<boolean> => {
+    if (!linkTarget) return false;
+    const itemId = linkTarget.item.id;
+    const [okAdd, okRemove] = await Promise.all([addWbsItemTickets(itemId, addIds), removeWbsItemTickets(itemId, removeIds)]);
+    // 片方だけ通った場合もあるので、成否に関わらず DB の状態を読み直して合わせる
+    setLinks(await loadWbsItemTickets(sheet.id));
+    return okAdd && okRemove;
+  };
+
+  const renderTickets = useCallback((row: (typeof rows)[number]) => (
+    <WbsTicketCell tickets={linkedTicketsOf(row.item.id)} canEdit={canEdit}
+      onOpen={onOpenTicket} onAdd={() => setLinkTargetId(row.item.id)} />
+  ), [linkedTicketsOf, canEdit, onOpenTicket]);
 
   // ── 編集 ────────────────────────────────────────────────────
   const handleUpdate = useCallback((id: string, patch: Partial<WbsItem>) => {
@@ -283,7 +323,7 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
           editing={editing} onEditingChange={setEditing}
           highlightIds={highlightSet} scrollTo={scrollTo}
           onUpdate={handleUpdate} onMove={handleMove}
-          gantt={gantt}
+          gantt={gantt} renderTickets={renderTickets}
         />
       </div>
 
@@ -293,6 +333,16 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
 
       {holidayOpen && (
         <WbsHolidayDialog projectId={project.id} projectName={project.name} holidays={holidays} onChanged={reloadHolidays} onClose={() => setHolidayOpen(false)} />
+      )}
+
+      {linkTarget && (
+        <WbsTicketLinkDialog
+          itemName={linkTarget.item.name}
+          tickets={tickets}
+          linkedIds={linkedTicketsOf(linkTarget.item.id).map(t => t.ticket.id)}
+          onSubmit={handleLinkSubmit}
+          onClose={() => setLinkTargetId(null)}
+        />
       )}
 
       {deleteTarget && (
