@@ -4,8 +4,8 @@
 // テーブルと RLS は supabase/add_wbs.sql。可視範囲（公開設定）は RLS が絞るので、
 // ここに組織やメンバーの条件は要らない。「閲覧のみ／編集可」の出し分けは画面側で行う。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { mapWbsSheet } from "@/app/lib/mappers";
-import type { AccessLevel, UserPermissions, WbsLevels, WbsSheet, WbsVisibility } from "@/app/types";
+import { mapWbsItem, mapWbsSheet, mapWbsStatus } from "@/app/lib/mappers";
+import type { AccessLevel, UserPermissions, WbsItem, WbsLevels, WbsSheet, WbsStatus, WbsVisibility } from "@/app/types";
 
 /** 並びの初期間隔。追加は末尾に積み、並べ替えは前後の中点を採る（tasks.sort_order と同じ） */
 export const WBS_SORT_GAP = 1024;
@@ -185,5 +185,83 @@ export async function saveWbsVisibility(sheetId: string, visibility: WbsVisibili
   const { error } = await supabase!.from("wbs_sheets")
     .update({ visibility, updated_at: new Date().toISOString() }).eq("id", sheetId);
   if (error) { console.error("[wbs] update visibility failed:", error.message); return false; }
+  return true;
+}
+
+// ── ステータス ────────────────────────────────────────────────
+
+export async function loadWbsStatuses(sheetId: string): Promise<WbsStatus[]> {
+  if (!isSupabaseEnabled || !sheetId) return [];
+  const { data, error } = await supabase!
+    .from("wbs_statuses").select("*").eq("wbs_sheet_id", sheetId)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) { console.error("[wbs] load statuses failed:", error.message); return []; }
+  return (data ?? []).map(mapWbsStatus);
+}
+
+// ── 行 ────────────────────────────────────────────────────────
+
+/** そのWBSの行を全部取る。木の形への組み立ては画面側（wbsCalc.buildWbsRows）で行う */
+export async function loadWbsItems(sheetId: string): Promise<WbsItem[]> {
+  if (!isSupabaseEnabled || !sheetId) return [];
+  const { data, error } = await supabase!
+    .from("wbs_items").select("*").eq("wbs_sheet_id", sheetId)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) { console.error("[wbs] load items failed:", error.message); return []; }
+  return (data ?? []).map(mapWbsItem);
+}
+
+export async function createWbsItem(input: {
+  sheetId: string; parentId: string | null; level: number; statusId: string | null; sortOrder: number;
+}): Promise<WbsItem | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data, error } = await supabase!.from("wbs_items").insert({
+    wbs_sheet_id: input.sheetId,
+    parent_id: input.parentId,
+    level: input.level,
+    status_id: input.statusId,
+    sort_order: input.sortOrder,
+  }).select().single();
+  if (error || !data) { console.error("[wbs] insert item failed:", error?.message); return null; }
+  return mapWbsItem(data);
+}
+
+/** 画面の WbsItem 形（camelCase）を受け取り、変更分だけを DB 形へ移して更新する */
+export async function updateWbsItem(id: string, patch: Partial<WbsItem>): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (patch.name !== undefined)      row.name = patch.name;
+  if (patch.assignee !== undefined)  row.assignee = patch.assignee;
+  if (patch.startDate !== undefined) row.start_date = patch.startDate || null;
+  if (patch.endDate !== undefined)   row.end_date = patch.endDate || null;
+  if (patch.progress !== undefined)  row.progress = Math.max(0, Math.min(100, Math.round(patch.progress)));
+  if (patch.statusId !== undefined)  row.status_id = patch.statusId;
+  if (patch.note !== undefined)      row.note = patch.note;
+  if (patch.parentId !== undefined)  row.parent_id = patch.parentId;
+  if (patch.sortOrder !== undefined) row.sort_order = patch.sortOrder;
+  const { error } = await supabase!.from("wbs_items").update(row).eq("id", id);
+  if (error) { console.error("[wbs] update item failed:", error.message); return false; }
+  return true;
+}
+
+/** 行を消す。下の行と紐づけは on delete cascade で一緒に消える */
+export async function deleteWbsItem(id: string): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  const { error } = await supabase!.from("wbs_items").delete().eq("id", id);
+  if (error) { console.error("[wbs] delete item failed:", error.message); return false; }
+  return true;
+}
+
+/** 中点が潰れたときの採番し直し。渡した順に間隔を空けて振り直す */
+export async function renumberWbsItems(orderedIds: string[]): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  const results = await Promise.all(orderedIds.map((id, i) =>
+    supabase!.from("wbs_items").update({ sort_order: i * WBS_SORT_GAP }).eq("id", id),
+  ));
+  const failed = results.find(r => r.error);
+  if (failed?.error) { console.error("[wbs] renumber items failed:", failed.error.message); return false; }
   return true;
 }

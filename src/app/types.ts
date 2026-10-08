@@ -1220,3 +1220,34 @@ export interface WbsSheet {
   createdByName: string;
   sortOrder: number;
 }
+
+/** WBSごとのステータス。チケットのステータス（未着手・進行中・レビュー中など）とは別物 */
+export interface WbsStatus {
+  id: string;
+  sheetId: string;
+  name: string;
+  /** 背景色（#RRGGBB） */
+  color: string;
+  sortOrder: number;
+}
+
+/** WBSの行。大項目・中項目・小項目をそれぞれ1行として持つ */
+export interface WbsItem {
+  id: string;
+  sheetId: string;
+  /** 属している上の段の行。null = 大項目 */
+  parentId: string | null;
+  /** 段。1=大項目 / 2=中項目 / 3=小項目 */
+  level: number;
+  name: string;
+  /** 担当者（profiles.name）。未設定は "" */
+  assignee: string;
+  /** YYYY-MM-DD。未設定は "" */
+  startDate: string;
+  endDate: string;
+  /** 手で入力した進捗率（0〜100）。一番右の段の行でだけ使う */
+  progress: number;
+  statusId: string | null;
+  note: string;
+  sortOrder: number;
+}

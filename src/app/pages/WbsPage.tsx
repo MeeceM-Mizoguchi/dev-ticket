@@ -28,6 +28,7 @@ import {
 import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
 import { WbsVisibilityDialog } from "@/app/components/wbs/WbsVisibilityDialog";
+import { WbsWorkspace } from "@/app/components/wbs/WbsWorkspace";
 import { WBS_COLORS, wbsToolBtn } from "@/app/components/wbs/wbsStyles";
 
 /** 段数を減らせなかったときに出すダイアログの中身 */
@@ -238,7 +239,12 @@ export function WbsPage() {
           )}
 
           {/* 表とガントの領域。画面の残りの高さいっぱいを使う */}
-          <div style={{ flex: 1, minHeight: 0, background: "#FFFFFF", border: `1px solid ${WBS_COLORS.border}`, borderRadius: 12, overflow: "hidden" }} />
+          <div style={{ flex: 1, minHeight: 0, background: "#FFFFFF", border: `1px solid ${WBS_COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
+            {current && project && (
+              <WbsWorkspace key={current.id} sheet={current} project={project} canEdit={canEdit}
+                highlightIds={highlightIds} onHighlightChange={setHighlightIds} />
+            )}
+          </div>
         </>
       )}
 
