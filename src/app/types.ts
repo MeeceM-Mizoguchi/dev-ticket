@@ -706,6 +706,8 @@ export interface UserPermissions {
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
   whiteboardPermission: AccessLevel;
+  /** ENHA2-053 WBS（作業分解表）。チケット番号の「WBS」とは別物 */
+  wbsPermission: AccessLevel;
   /**
    * 旧・GitHub権限（BRU13-054 以前）。
    * 移行SQLで下の3キーへ展開済みだが、SQLを当てていない環境から読むことがあるため
@@ -1197,4 +1199,64 @@ export interface GithubReleaseSyncResult {
     deployMessage?: string;
     error?: string;
   }[];
+}
+
+// ── ENHA2-053 WBS（作業分解表） ──────────────────────────────────────────────
+// ここでいう「WBS」は作業分解表のこと。チケット番号（SprintTicket.wbs）とは別物。
+
+/** 項目の段数。3=大・中・小 / 2=大・中 / 1=大のみ */
+export type WbsLevels = 1 | 2 | 3;
+/** project = プロジェクトの全メンバー / members = 指定したメンバーのみ */
+export type WbsVisibility = "project" | "members";
+
+export interface WbsSheet {
+  id: string;
+  projectId: string;
+  name: string;
+  levels: WbsLevels;
+  visibility: WbsVisibility;
+  /** 作成者の profiles.id。公開設定の変更と削除ができる人の基点 */
+  createdBy: string | null;
+  createdByName: string;
+  sortOrder: number;
+}
+
+/** WBSごとのステータス。チケットのステータス（未着手・進行中・レビュー中など）とは別物 */
+export interface WbsStatus {
+  id: string;
+  sheetId: string;
+  name: string;
+  /** 背景色（#RRGGBB） */
+  color: string;
+  sortOrder: number;
+}
+
+/** WBSの行。大項目・中項目・小項目をそれぞれ1行として持つ */
+export interface WbsItem {
+  id: string;
+  sheetId: string;
+  /** 属している上の段の行。null = 大項目 */
+  parentId: string | null;
+  /** 段。1=大項目 / 2=中項目 / 3=小項目 */
+  level: number;
+  name: string;
+  /** 担当者（profiles.name）。未設定は "" */
+  assignee: string;
+  /** YYYY-MM-DD。未設定は "" */
+  startDate: string;
+  endDate: string;
+  /** 手で入力した進捗率（0〜100）。一番右の段の行でだけ使う */
+  progress: number;
+  statusId: string | null;
+  note: string;
+  sortOrder: number;
+}
+
+/** プロジェクトごとの祝日。そのプロジェクトの全WBSで共通に使う */
+export interface WbsHoliday {
+  id: string;
+  projectId: string;
+  /** YYYY-MM-DD */
+  date: string;
+  name: string;
 }

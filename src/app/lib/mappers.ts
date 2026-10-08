@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem, WbsHoliday } from "@/app/types";
 import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
@@ -223,4 +223,37 @@ export function mapMeetingMinute(r: any): MeetingMinute {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapClientNote(r: any): ClientNote {
   return { id: r.id, clientId: r.client_id, title: r.title || "", noteDate: r.note_date || "", parentId: r.parent_id ?? null, isFolder: r.is_folder ?? false, sortOrder: r.sort_order ?? 0, attendees: Array.isArray(r.attendees) ? r.attendees : [], content: r.content || "", images: Array.isArray(r.images) ? r.images : [], organizationId: r.organization_id ?? null, createdBy: r.created_by || "", createdAt: r.created_at || "", updatedAt: r.updated_at || "" };
+}
+
+// ── ENHA2-053 WBS（作業分解表） ──
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWbsSheet(r: any): WbsSheet {
+  const levels = r.levels === 1 || r.levels === 2 ? r.levels : 3;
+  return {
+    id: r.id, projectId: r.project_id, name: r.name || "",
+    levels, visibility: r.visibility === "members" ? "members" : "project",
+    createdBy: r.created_by ?? null, createdByName: r.created_by_name || "",
+    sortOrder: r.sort_order ?? 0,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWbsStatus(r: any): WbsStatus {
+  return { id: r.id, sheetId: r.wbs_sheet_id, name: r.name || "", color: r.color || "#EDECF4", sortOrder: r.sort_order ?? 0 };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWbsItem(r: any): WbsItem {
+  return {
+    id: r.id, sheetId: r.wbs_sheet_id, parentId: r.parent_id ?? null, level: r.level ?? 1,
+    name: r.name || "", assignee: r.assignee || "",
+    startDate: r.start_date || "", endDate: r.end_date || "",
+    progress: r.progress ?? 0, statusId: r.status_id ?? null, note: r.note || "",
+    sortOrder: r.sort_order ?? 0,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWbsHoliday(r: any): WbsHoliday {
+  return { id: r.id, projectId: r.project_id, date: r.holiday_date || "", name: r.name || "" };
 }
