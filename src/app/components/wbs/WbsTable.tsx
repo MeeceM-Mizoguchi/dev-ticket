@@ -1,7 +1,7 @@
 // ENHA2-053 WBSの表。
 //
 // 作り:
-//   ・左の枠（固定した列）と右の枠（固定していない列）の2つに分ける。
+//   ・左の枠（固定した列）と右の枠（固定していない列＋ガント）の2つに分ける。
 //     左の枠は横スクロールさせず、列を枠の幅に合わせて縮める。右の枠だけが横にスクロールする。
 //   ・縦のスクロールは2つの枠で同期させ、行がずれないようにする。見出しはそれぞれの枠の上端に固定。
 //   ・行は table ではなく、高さを固定した div を並べる（2つの枠で行の高さを必ず揃えるため）。
@@ -11,12 +11,12 @@ import { GripVertical } from "lucide-react";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { submitOnEnter } from "@/app/lib/submitKey";
-import { businessDays, textColorOn, type WbsRow } from "@/app/lib/wbsCalc";
+import { businessDays, textColorOn, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
 import type { WbsItem, WbsStatus } from "@/app/types";
 import { WBS_COLORS } from "./wbsStyles";
+import { WBS_GANTT_HEAD_H, WbsGanttHeader, WbsGanttOverlay, WbsGanttStrip, ganttWidth } from "./WbsGantt";
 
 export const WBS_ROW_H = 30;
-const HEAD_H = 34;
 
 export type WbsColKey = "no" | "l1" | "l2" | "l3" | "assignee" | "start" | "end" | "days" | "progress" | "status" | "tickets" | "note";
 
@@ -65,6 +65,8 @@ interface WbsTableProps {
   scrollTo: { id: string; nonce: number } | null;
   onUpdate: (id: string, patch: Partial<WbsItem>) => void;
   onMove: (dragId: string, targetId: string, mode: WbsDropMode) => void;
+  /** 右の枠の末尾に出すガント */
+  gantt: WbsGanttModel;
 }
 
 // ── セルの中の入力部品 ────────────────────────────────────────
@@ -258,12 +260,14 @@ function rowBackground(row: WbsRow, selected: boolean, highlighted: boolean): st
 type Col = (typeof WBS_COLUMNS)[number];
 
 /** 1行。side=left は枠の幅に合わせて縮む格子、side=right は px 幅の並び */
-function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMode, ctx, onSelect, onDragOverRow, onDropRow }: {
+function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMode, ctx, onSelect, onDragOverRow, onDropRow, tail }: {
   row: WbsRow; cols: Col[]; side: "left" | "right"; template: string;
   selected: boolean; highlighted: boolean; dropMode: WbsDropMode | null; ctx: RowCtx;
   onSelect: (id: string) => void;
   onDragOverRow?: (e: DragEvent, row: WbsRow) => void;
   onDropRow?: (e: DragEvent) => void;
+  /** セルの後ろに続けて出すもの（右の枠のガントの帯） */
+  tail?: ReactNode;
 }) {
   const { item } = row;
   return (
@@ -283,6 +287,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMod
           {renderCell(c.key, row, ctx)}
         </div>
       ))}
+      {tail}
       {dropMode && (
         // 落とす先の目印。before/after は線、into（下の段として入れる）は枠
         <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1,
@@ -298,7 +303,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMod
 
 export function WbsTable({
   rows, levels, statuses, members, holidays, canEdit, freezeKey, selectedId, onSelect, editing, onEditingChange,
-  highlightIds, scrollTo, onUpdate, onMove,
+  highlightIds, scrollTo, onUpdate, onMove, gantt,
 }: WbsTableProps) {
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
@@ -311,11 +316,13 @@ export function WbsTable({
   // freezeKey の列が段数の変更で消えていたら（例：小項目まで固定 → 2段へ）、全列を固定に戻す
   const frozen = cols.some(c => c.key === freezeKey) ? cols.slice(0, freezeIdx + 1) : cols;
   const scrolling = cols.slice(frozen.length);
-  const hasRight = scrolling.length > 0;
+  // 見出しの高さは、ガントの見出し（4段）に揃える。左右の枠で必ず同じ高さにすること
+  const headH = WBS_GANTT_HEAD_H;
 
   const leftTemplate = frozen.map(c => `minmax(0, ${c.width}fr)`).join(" ");
   const leftBasis = frozen.reduce((a, c) => a + c.width, 0);
-  const rightWidth = scrolling.reduce((a, c) => a + c.width, 0);
+  const colsWidth = scrolling.reduce((a, c) => a + c.width, 0);
+  const rightWidth = colsWidth + ganttWidth(gantt);
 
   // ── 高さの計測（空の行で画面の下まで罫線を引くため） ──
   useLayoutEffect(() => {
@@ -331,9 +338,9 @@ export function WbsTable({
     ro.observe(el);
     if (rightRef.current) ro.observe(rightRef.current);
     return () => ro.disconnect();
-  }, [hasRight]);
+  }, []);
 
-  const fillerCount = Math.max(0, Math.ceil((viewH - HEAD_H) / WBS_ROW_H) - rows.length);
+  const fillerCount = Math.max(0, Math.ceil((viewH - headH) / WBS_ROW_H) - rows.length);
 
   // ── 縦スクロールの同期 ──
   const syncScroll = (from: "left" | "right") => {
@@ -350,7 +357,7 @@ export function WbsTable({
     if (idx < 0 || !el) return;
     const top = idx * WBS_ROW_H;
     // 見出しのぶんを除いた見えている範囲に入っていれば動かさない
-    const visibleH = el.clientHeight - HEAD_H;
+    const visibleH = el.clientHeight - headH;
     if (top < el.scrollTop || top + WBS_ROW_H > el.scrollTop + visibleH) {
       el.scrollTop = Math.max(0, top - Math.max(0, (visibleH - WBS_ROW_H) / 2));
     }
@@ -411,7 +418,7 @@ export function WbsTable({
 
   const headCell = (c: Col, side: "left" | "right"): ReactNode => (
     <div key={c.key} style={{
-      display: "flex", alignItems: "center", justifyContent: "center", minWidth: 0, height: HEAD_H, padding: "0 4px", boxSizing: "border-box",
+      display: "flex", alignItems: "center", justifyContent: "center", minWidth: 0, height: headH, padding: "0 4px", boxSizing: "border-box",
       fontSize: 11, fontWeight: 700, color: WBS_COLORS.headText, borderRight: "1px solid rgba(255,255,255,0.18)",
       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
       ...(side === "right" ? { flex: `0 0 ${c.width}px`, width: c.width } : null),
@@ -424,6 +431,7 @@ export function WbsTable({
         {list.map(c => (
           <div key={c.key} style={{ ...cellBase, ...(side === "right" ? { flex: `0 0 ${c.width}px`, width: c.width } : null) }} />
         ))}
+        {side === "right" && <WbsGanttStrip model={gantt} rowH={WBS_ROW_H} />}
       </div>
     ));
 
@@ -433,11 +441,9 @@ export function WbsTable({
 
       {/* 左の枠：固定した列。横スクロールなしで枠の幅に収める */}
       <div ref={leftRef} onScroll={() => syncScroll("left")}
-        className={hasRight ? "wbs-vscroll-hide" : undefined}
+        className="wbs-vscroll-hide"
         style={{ position: "relative", overflowX: "hidden", overflowY: "auto", minWidth: 0,
-          ...(hasRight
-            ? { flex: `0 1 ${leftBasis}px`, maxWidth: "70%", borderRight: `2px solid ${WBS_COLORS.headBg}` }
-            : { flex: 1 }) }}>
+          flex: `0 1 ${leftBasis}px`, maxWidth: "70%", borderRight: `2px solid ${WBS_COLORS.headBg}` }}>
         <div style={{ position: "sticky", top: 0, zIndex: 3, display: "grid", gridTemplateColumns: leftTemplate, background: WBS_COLORS.headBg }}>
           {frozen.map(c => headCell(c, "left"))}
         </div>
@@ -452,23 +458,25 @@ export function WbsTable({
         {hBarH > 0 && <div style={{ height: hBarH }} />}
       </div>
 
-      {/* 右の枠：固定していない列。ここだけが横にスクロールする */}
-      {hasRight && (
-        <div ref={rightRef} onScroll={() => syncScroll("right")}
-          style={{ position: "relative", flex: 1, minWidth: 0, overflow: "auto" }}>
-          <div style={{ width: rightWidth, minWidth: "100%" }}>
-            <div style={{ position: "sticky", top: 0, zIndex: 3, display: "flex", background: WBS_COLORS.headBg }}>
-              {scrolling.map(c => headCell(c, "right"))}
-            </div>
-            {rows.map(row => (
-              <WbsTableRow key={row.item.id} row={row} cols={scrolling} side="right" template=""
-                selected={selectedId === row.item.id} highlighted={highlightIds.has(row.item.id)}
-                dropMode={null} ctx={ctx} onSelect={onSelect} />
-            ))}
-            {fillers("right", scrolling)}
+      {/* 右の枠：固定していない列とガント。ここだけが横にスクロールする */}
+      <div ref={rightRef} onScroll={() => syncScroll("right")}
+        style={{ position: "relative", flex: 1, minWidth: 0, overflow: "auto" }}>
+        <div style={{ position: "relative", width: rightWidth, minHeight: "100%" }}>
+          <div style={{ position: "sticky", top: 0, zIndex: 3, display: "flex", background: WBS_COLORS.headBg }}>
+            {scrolling.map(c => headCell(c, "right"))}
+            <WbsGanttHeader model={gantt} />
           </div>
+          {rows.map(row => (
+            <WbsTableRow key={row.item.id} row={row} cols={scrolling} side="right" template=""
+              selected={selectedId === row.item.id} highlighted={highlightIds.has(row.item.id)}
+              dropMode={null} ctx={ctx} onSelect={onSelect}
+              tail={<WbsGanttStrip model={gantt} row={row} statuses={statuses} rowH={WBS_ROW_H} />} />
+          ))}
+          {fillers("right", scrolling)}
+          {/* 土日・祝日の縦帯と今日の印。行の帯より上、見出しより下に重ねる */}
+          <WbsGanttOverlay model={gantt} left={colsWidth} top={headH} rowH={WBS_ROW_H} />
         </div>
-      )}
+      </div>
     </div>
   );
 }

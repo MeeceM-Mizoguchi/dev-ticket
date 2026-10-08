@@ -1,11 +1,12 @@
 // ENHA2-053 WBS画面の上部の集計。
 //
 // 左から「全体進捗率／総タスク数／遅延」を常に表示し、その右にステータスごとの件数を並べる。
+// 右端（ガントの上）には「最大並行タスク数／負荷状況／総稼働日数」を出す。
 // 件数は保存せず、表と同じ行のデータから計算する。数えるのは一番右の段の行だけ。
 // ステータスの名前は自由に変わるので、集計をステータスの名前に頼らない（id で数える）。
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { WbsRow } from "@/app/lib/wbsCalc";
+import type { WbsGanttModel, WbsRow } from "@/app/lib/wbsCalc";
 import type { WbsStatus } from "@/app/types";
 import { WBS_COLORS } from "./wbsStyles";
 
@@ -20,7 +21,7 @@ function Tile({ label, children, minWidth }: { label: string; children: ReactNod
 
 const valueStyle = { fontSize: 18, fontWeight: 800, lineHeight: 1.2, fontFamily: "var(--font-heading)" } as const;
 
-export function WbsSummary({ rows, statuses }: { rows: WbsRow[]; statuses: WbsStatus[] }) {
+export function WbsSummary({ rows, statuses, gantt }: { rows: WbsRow[]; statuses: WbsStatus[]; gantt: WbsGanttModel }) {
   const [open, setOpen] = useState(true);
 
   const stats = useMemo(() => {
@@ -68,6 +69,14 @@ export function WbsSummary({ rows, statuses }: { rows: WbsRow[]; statuses: WbsSt
           ))}
         </div>
       )}
+
+      {/* ガントの集計。件数の部分を閉じているときも右端に寄せる */}
+      {!open && <div style={{ flex: 1 }} />}
+      <Tile label="最大並行タスク数"><span style={{ ...valueStyle, fontSize: 15, color: WBS_COLORS.text }}>{gantt.maxConcurrent} タスク</span></Tile>
+      <Tile label="負荷状況">
+        <span style={{ ...valueStyle, fontSize: 13, color: gantt.maxConcurrent >= 3 ? "#DC2525" : WBS_COLORS.text }}>{gantt.loadLabel}</span>
+      </Tile>
+      <Tile label="総稼働日数"><span style={{ ...valueStyle, fontSize: 15, color: WBS_COLORS.text }}>{gantt.workingDays} 日</span></Tile>
     </div>
   );
 }

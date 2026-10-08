@@ -1,4 +1,4 @@
-import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem } from "@/app/types";
+import type { Project, Client, Sprint, SprintTicket, TicketCategory, Member, TicketComment, TicketSourceFile, TicketAttachment, ProjectFile, AppNotification, ActionMemo, BacklogItem, WikiPage, MeetingMinute, ClientNote, BugReport, Skill, MemberSkill, SkillUpdateRun, MemberSkillChange, MlBatchRun, MlBatchMemberRun, KnowledgeDocument, KnowledgeChunk, KnowledgeSearchHit, KnowledgeFolder, Task, TaskShare, WbsSheet, WbsStatus, WbsItem, WbsHoliday } from "@/app/types";
 import { compareWbs } from "@/app/lib/helpers";
 
 // ── ENHA2-032 タスク ──
@@ -251,4 +251,9 @@ export function mapWbsItem(r: any): WbsItem {
     progress: r.progress ?? 0, statusId: r.status_id ?? null, note: r.note || "",
     sortOrder: r.sort_order ?? 0,
   };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mapWbsHoliday(r: any): WbsHoliday {
+  return { id: r.id, projectId: r.project_id, date: r.holiday_date || "", name: r.name || "" };
 }

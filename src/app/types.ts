@@ -1251,3 +1251,12 @@ export interface WbsItem {
   note: string;
   sortOrder: number;
 }
+
+/** プロジェクトごとの祝日。そのプロジェクトの全WBSで共通に使う */
+export interface WbsHoliday {
+  id: string;
+  projectId: string;
+  /** YYYY-MM-DD */
+  date: string;
+  name: string;
+}

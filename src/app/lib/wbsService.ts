@@ -4,8 +4,8 @@
 // テーブルと RLS は supabase/add_wbs.sql。可視範囲（公開設定）は RLS が絞るので、
 // ここに組織やメンバーの条件は要らない。「閲覧のみ／編集可」の出し分けは画面側で行う。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
-import { mapWbsItem, mapWbsSheet, mapWbsStatus } from "@/app/lib/mappers";
-import type { AccessLevel, UserPermissions, WbsItem, WbsLevels, WbsSheet, WbsStatus, WbsVisibility } from "@/app/types";
+import { mapWbsHoliday, mapWbsItem, mapWbsSheet, mapWbsStatus } from "@/app/lib/mappers";
+import type { AccessLevel, UserPermissions, WbsHoliday, WbsItem, WbsLevels, WbsSheet, WbsStatus, WbsVisibility } from "@/app/types";
 
 /** 並びの初期間隔。追加は末尾に積み、並べ替えは前後の中点を採る（tasks.sort_order と同じ） */
 export const WBS_SORT_GAP = 1024;
@@ -319,5 +319,32 @@ export async function renumberWbsItems(orderedIds: string[]): Promise<boolean> {
   ));
   const failed = results.find(r => r.error);
   if (failed?.error) { console.error("[wbs] renumber items failed:", failed.error.message); return false; }
+  return true;
+}
+
+// ── 祝日（プロジェクトごと） ──────────────────────────────────
+
+export async function loadWbsHolidays(projectId: string): Promise<WbsHoliday[]> {
+  if (!isSupabaseEnabled || !projectId) return [];
+  const { data, error } = await supabase!
+    .from("wbs_holidays").select("*").eq("project_id", projectId)
+    .order("holiday_date", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) { console.error("[wbs] load holidays failed:", error.message); return []; }
+  return (data ?? []).map(mapWbsHoliday);
+}
+
+export async function createWbsHoliday(input: { projectId: string; date: string; name: string }): Promise<WbsHoliday | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data, error } = await supabase!.from("wbs_holidays")
+    .insert({ project_id: input.projectId, holiday_date: input.date, name: input.name }).select().single();
+  if (error || !data) { console.error("[wbs] insert holiday failed:", error?.message); return null; }
+  return mapWbsHoliday(data);
+}
+
+export async function deleteWbsHoliday(id: string): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  const { error } = await supabase!.from("wbs_holidays").delete().eq("id", id);
+  if (error) { console.error("[wbs] delete holiday failed:", error.message); return false; }
   return true;
 }

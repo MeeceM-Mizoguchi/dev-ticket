@@ -3,23 +3,22 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, CornerDownRight, Tags } from "lucide-react";
+import { Plus, Trash2, CornerDownRight, Tags, CalendarOff } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { computeSortOrder } from "@/app/lib/taskService";
 import {
-  WBS_LEVEL_LABELS, WBS_SORT_GAP, createWbsItem, deleteWbsItem, loadWbsItems, loadWbsStatuses, renumberWbsItems, updateWbsItem,
+  WBS_LEVEL_LABELS, WBS_SORT_GAP, createWbsItem, deleteWbsItem, loadWbsHolidays, loadWbsItems, loadWbsStatuses, renumberWbsItems, updateWbsItem,
 } from "@/app/lib/wbsService";
-import { buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
-import type { Project, WbsItem, WbsSheet, WbsStatus } from "@/app/types";
+import { buildWbsGantt, buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
+import type { Project, WbsHoliday, WbsItem, WbsSheet, WbsStatus } from "@/app/types";
 import { WbsSummary } from "./WbsSummary";
 import { WbsStatusDialog } from "./WbsStatusDialog";
+import { WbsHolidayDialog } from "./WbsHolidayDialog";
 import { WbsTable, visibleWbsColumns, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
 import { wbsToolBtn, wbsToolBtnDisabled, wbsToolLabel, wbsToolSelect } from "./wbsStyles";
-
-const NO_HOLIDAYS: ReadonlySet<string> = new Set();
 
 /** 列固定の位置は、WBSごと・利用者ごとにブラウザへ保存する */
 function freezeStorageKey(userId: string, sheetId: string) { return `devticket:wbs:freeze:${userId}:${sheetId}`; }
@@ -45,6 +44,7 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
 
   const [items, setItems] = useState<WbsItem[]>([]);
   const [statuses, setStatuses] = useState<WbsStatus[]>([]);
+  const [holidays, setHolidays] = useState<WbsHoliday[]>([]);
   const [loading, setLoading] = useState(true);
   // 一度でもデータを読んだら、以後は再読み込みでスピナーに差し替えない（画面のちらつき防止）
   const initializedRef = useRef(false);
@@ -54,23 +54,31 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
   const [scrollTo, setScrollTo] = useState<{ id: string; nonce: number } | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
+  const [holidayOpen, setHolidayOpen] = useState(false);
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
 
   const load = useCallback(async () => {
-    const [its, sts] = await Promise.all([loadWbsItems(sheet.id), loadWbsStatuses(sheet.id)]);
+    const [its, sts, hols] = await Promise.all([loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id)]);
     setItems(its);
     setStatuses(sts);
+    setHolidays(hols);
     initializedRef.current = true;
     setLoading(false);
-  }, [sheet.id]);
+  }, [sheet.id, project.id]);
+
+  const reloadHolidays = useCallback(async () => { setHolidays(await loadWbsHolidays(project.id)); }, [project.id]);
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
 
   const today = todayStr();
   const rows = useMemo(() => buildWbsRows(items, sheet.levels, today), [items, sheet.levels, today]);
   const cols = useMemo(() => visibleWbsColumns(sheet.levels), [sheet.levels]);
+  // 祝日は「日付 → 祝日名」。予定日数とガントの両方で、土日と同じく稼働日から除く
+  const holidayNames = useMemo(() => new Map(holidays.map(h => [h.date, h.name])), [holidays]);
+  const holidaySet = useMemo(() => new Set(holidays.map(h => h.date)), [holidays]);
+  const gantt = useMemo(() => buildWbsGantt(rows, holidayNames, today), [rows, holidayNames, today]);
   const selected = rows.find(r => r.item.id === selectedId) ?? null;
   const highlightSet = useMemo(() => new Set(highlightIds), [highlightIds]);
 
@@ -221,7 +229,7 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <WbsSummary rows={rows} statuses={statuses} />
+      <WbsSummary rows={rows} statuses={statuses} gantt={gantt} />
 
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #E2E6EC", flexWrap: "wrap" }}>
         {canEdit && (
@@ -255,6 +263,11 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
             <Tags style={{ width: 12, height: 12 }} />ステータス設定
           </button>
         )}
+        {canEdit && (
+          <button type="button" onClick={() => setHolidayOpen(true)} title="このプロジェクトの祝日を登録します（全WBSで共通）" style={wbsToolBtn}>
+            <CalendarOff style={{ width: 12, height: 12 }} />祝日設定
+          </button>
+        )}
         <span style={wbsToolLabel}>列固定</span>
         <select value={cols.some(c => c.key === freezeKey) ? freezeKey : "note"} onChange={e => changeFreeze(e.target.value as WbsColKey)}
           title="どの列までを左に固定するか。固定していない列は横にスクロールします" style={wbsToolSelect}>
@@ -265,16 +278,21 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
       <div style={{ flex: 1, minHeight: 0 }}>
         <WbsTable
           rows={rows} levels={sheet.levels} statuses={statuses} members={project.members}
-          holidays={NO_HOLIDAYS} canEdit={canEdit} freezeKey={freezeKey}
+          holidays={holidaySet} canEdit={canEdit} freezeKey={freezeKey}
           selectedId={selectedId} onSelect={setSelectedId}
           editing={editing} onEditingChange={setEditing}
           highlightIds={highlightSet} scrollTo={scrollTo}
           onUpdate={handleUpdate} onMove={handleMove}
+          gantt={gantt}
         />
       </div>
 
       {statusOpen && (
         <WbsStatusDialog sheetId={sheet.id} statuses={statuses} items={items} onChanged={load} onClose={() => setStatusOpen(false)} />
+      )}
+
+      {holidayOpen && (
+        <WbsHolidayDialog projectId={project.id} projectName={project.name} holidays={holidays} onChanged={reloadHolidays} onClose={() => setHolidayOpen(false)} />
       )}
 
       {deleteTarget && (
