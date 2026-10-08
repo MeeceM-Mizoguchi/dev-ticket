@@ -200,6 +200,62 @@ export async function loadWbsStatuses(sheetId: string): Promise<WbsStatus[]> {
   return (data ?? []).map(mapWbsStatus);
 }
 
+export async function createWbsStatus(input: { sheetId: string; name: string; color: string; sortOrder: number }): Promise<WbsStatus | null> {
+  if (!isSupabaseEnabled) return null;
+  const { data, error } = await supabase!.from("wbs_statuses").insert({
+    wbs_sheet_id: input.sheetId, name: input.name, color: input.color, sort_order: input.sortOrder,
+  }).select().single();
+  if (error || !data) { console.error("[wbs] insert status failed:", error?.message); return null; }
+  return mapWbsStatus(data);
+}
+
+export async function updateWbsStatus(id: string, patch: { name?: string; color?: string }): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row: Record<string, any> = {};
+  if (patch.name !== undefined) row.name = patch.name;
+  if (patch.color !== undefined) row.color = patch.color;
+  const { error } = await supabase!.from("wbs_statuses").update(row).eq("id", id);
+  if (error) { console.error("[wbs] update status failed:", error.message); return false; }
+  return true;
+}
+
+/** ステータスの並び順を、渡した順に振り直す */
+export async function reorderWbsStatuses(orderedIds: string[]): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  const results = await Promise.all(orderedIds.map((id, i) =>
+    supabase!.from("wbs_statuses").update({ sort_order: i * WBS_SORT_GAP }).eq("id", id),
+  ));
+  const failed = results.find(r => r.error);
+  if (failed?.error) { console.error("[wbs] reorder statuses failed:", failed.error.message); return false; }
+  return true;
+}
+
+/**
+ * ステータスを消す。行で使われているときは、先に該当する行を移し先へ付け替える
+ * （付け替えずに消すと status_id が空になり、どのステータスだったかが失われる）。
+ * includeUnset: status_id が空の行（画面では先頭のステータスとして扱っている）も一緒に移す。
+ *   先頭のステータスを消すときに true を渡す。
+ */
+export async function deleteWbsStatus(input: {
+  sheetId: string; statusId: string; moveToId: string | null; includeUnset: boolean;
+}): Promise<boolean> {
+  if (!isSupabaseEnabled) return true;
+  if (input.moveToId) {
+    const { error } = await supabase!.from("wbs_items")
+      .update({ status_id: input.moveToId }).eq("wbs_sheet_id", input.sheetId).eq("status_id", input.statusId);
+    if (error) { console.error("[wbs] move items to status failed:", error.message); return false; }
+    if (input.includeUnset) {
+      const { error: e2 } = await supabase!.from("wbs_items")
+        .update({ status_id: input.moveToId }).eq("wbs_sheet_id", input.sheetId).is("status_id", null);
+      if (e2) { console.error("[wbs] move unset items to status failed:", e2.message); return false; }
+    }
+  }
+  const { error } = await supabase!.from("wbs_statuses").delete().eq("id", input.statusId);
+  if (error) { console.error("[wbs] delete status failed:", error.message); return false; }
+  return true;
+}
+
 // ── 行 ────────────────────────────────────────────────────────
 
 /** そのWBSの行を全部取る。木の形への組み立ては画面側（wbsCalc.buildWbsRows）で行う */

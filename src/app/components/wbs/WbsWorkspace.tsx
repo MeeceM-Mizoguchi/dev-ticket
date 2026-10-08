@@ -3,7 +3,7 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, CornerDownRight } from "lucide-react";
+import { Plus, Trash2, CornerDownRight, Tags } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -14,6 +14,8 @@ import {
 } from "@/app/lib/wbsService";
 import { buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
 import type { Project, WbsItem, WbsSheet, WbsStatus } from "@/app/types";
+import { WbsSummary } from "./WbsSummary";
+import { WbsStatusDialog } from "./WbsStatusDialog";
 import { WbsTable, visibleWbsColumns, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
 import { wbsToolBtn, wbsToolBtnDisabled, wbsToolLabel, wbsToolSelect } from "./wbsStyles";
 
@@ -51,6 +53,7 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
   const [editing, setEditing] = useState<WbsEditing | null>(null);
   const [scrollTo, setScrollTo] = useState<{ id: string; nonce: number } | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
@@ -218,6 +221,8 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <WbsSummary rows={rows} statuses={statuses} />
+
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #E2E6EC", flexWrap: "wrap" }}>
         {canEdit && (
           <>
@@ -245,6 +250,11 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
         )}
 
         <div style={{ flex: 1 }} />
+        {canEdit && (
+          <button type="button" onClick={() => setStatusOpen(true)} title="このWBSのステータスを追加・削除・変更します" style={wbsToolBtn}>
+            <Tags style={{ width: 12, height: 12 }} />ステータス設定
+          </button>
+        )}
         <span style={wbsToolLabel}>列固定</span>
         <select value={cols.some(c => c.key === freezeKey) ? freezeKey : "note"} onChange={e => changeFreeze(e.target.value as WbsColKey)}
           title="どの列までを左に固定するか。固定していない列は横にスクロールします" style={wbsToolSelect}>
@@ -262,6 +272,10 @@ export function WbsWorkspace({ sheet, project, canEdit, highlightIds, onHighligh
           onUpdate={handleUpdate} onMove={handleMove}
         />
       </div>
+
+      {statusOpen && (
+        <WbsStatusDialog sheetId={sheet.id} statuses={statuses} items={items} onChanged={load} onClose={() => setStatusOpen(false)} />
+      )}
 
       {deleteTarget && (
         <ConfirmDialog
