@@ -706,6 +706,8 @@ export interface UserPermissions {
   backlogPermission: AccessLevel;
   minutesPermission: AccessLevel;
   whiteboardPermission: AccessLevel;
+  /** ENHA2-053 WBS（作業分解表）。チケット番号の「WBS」とは別物 */
+  wbsPermission: AccessLevel;
   /**
    * 旧・GitHub権限（BRU13-054 以前）。
    * 移行SQLで下の3キーへ展開済みだが、SQLを当てていない環境から読むことがあるため
@@ -1197,4 +1199,24 @@ export interface GithubReleaseSyncResult {
     deployMessage?: string;
     error?: string;
   }[];
+}
+
+// ── ENHA2-053 WBS（作業分解表） ──────────────────────────────────────────────
+// ここでいう「WBS」は作業分解表のこと。チケット番号（SprintTicket.wbs）とは別物。
+
+/** 項目の段数。3=大・中・小 / 2=大・中 / 1=大のみ */
+export type WbsLevels = 1 | 2 | 3;
+/** project = プロジェクトの全メンバー / members = 指定したメンバーのみ */
+export type WbsVisibility = "project" | "members";
+
+export interface WbsSheet {
+  id: string;
+  projectId: string;
+  name: string;
+  levels: WbsLevels;
+  visibility: WbsVisibility;
+  /** 作成者の profiles.id。公開設定の変更と削除ができる人の基点 */
+  createdBy: string | null;
+  createdByName: string;
+  sortOrder: number;
 }

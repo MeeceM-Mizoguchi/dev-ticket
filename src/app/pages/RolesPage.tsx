@@ -22,7 +22,7 @@ const DEFAULT_PERMS: UserPermissions = {
   canAccessWiki: false, canAccessBacklog: false, canAccessMinutes: false,
   canAccessOrganization: false, canAccessReports: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
-  whiteboardPermission: "none",
+  whiteboardPermission: "none", wbsPermission: "none",
   // GitHubはプロジェクト単位の権限なので、ロール既定は「権限なし」。
   // 付与はアサイン計画で行う（docs/github-integration-design.md 5-2）。
   githubPermission: "none",

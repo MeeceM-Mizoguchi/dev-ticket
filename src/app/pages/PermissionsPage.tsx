@@ -11,6 +11,7 @@ import type {
 } from "@/app/types";
 import { NO_GITHUB_PERMS, canViewGithub, githubPermsFrom, githubPermsToJson } from "@/app/lib/githubPerms";
 import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
+import { invalidateWbsAccessCache } from "@/app/hooks/useWbsAccess";
 import { Avatar } from "@/app/components/shared/Avatar";
 import { useToast } from "@/app/contexts/ToastContext";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -36,7 +37,7 @@ const DEFAULT_GROUP_PERMS: UserPermissions = {
   canAccessAdminSettings: false, canAccessWiki: false, canAccessBacklog: false,
   canAccessMinutes: false, canAccessOrganization: false,
   wikiPermission: "none", backlogPermission: "none", minutesPermission: "none",
-  whiteboardPermission: "none",
+  whiteboardPermission: "none", wbsPermission: "none",
   // GitHubは旧キーだけを既定に置く。
   // githubBranchPermission などの新キーをここに足してはいけない（BRU13-054）。
   // 既定値は保存済みの権限に先立って spread されるため、新キーを足すと
@@ -108,11 +109,13 @@ function githubBadgeLabel(p: GithubPerms): string | null {
   return writes.length ? writes.join("・") : "閲覧のみ";
 }
 
-const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission" | "whiteboardPermission"; label: string; color: string }[] = [
+const PAGE_ACCESS_FLAGS: { key: "wikiPermission" | "backlogPermission" | "minutesPermission" | "whiteboardPermission" | "wbsPermission"; label: string; color: string }[] = [
   { key: "backlogPermission", label: "バックログ", color: "#6D28D9" },
   { key: "wikiPermission", label: "Wiki", color: "#0284C7" },
   { key: "minutesPermission", label: "議事録", color: "#059669" },
   { key: "whiteboardPermission", label: "ホワイトボード", color: "#F59E0B" },
+  // ENHA2-053 WBS（作業分解表）。チケット番号の「WBS」とは別物
+  { key: "wbsPermission", label: "WBS", color: "#1E3989" },
 ];
 
 // Drag payload type identifier
@@ -629,6 +632,7 @@ export function PermissionsPage() {
     setSettingsGroupId(null);
     // 上でメンバーの個別権限まで書き換えているので、GitHubタブの判定キャッシュも捨てる
     invalidateGithubAccessCache();
+    invalidateWbsAccessCache();
     toast("グループ設定を保存しました");
   };
 
@@ -1729,6 +1733,7 @@ function IndividualMemberPermModal({ member, projectId, onClose }: {
     // GitHubタブの表示可否はスラッグ単位で60秒キャッシュしている。
     // 捨てないと、権限を変えた直後に反映されず「保存したのに変わらない」に見える
     invalidateGithubAccessCache();
+    invalidateWbsAccessCache();
     toast(`「${member.name}」のプロジェクト権限を保存しました`);
     setSaving(false);
     onClose();

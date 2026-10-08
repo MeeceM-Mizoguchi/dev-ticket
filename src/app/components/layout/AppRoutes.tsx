@@ -24,6 +24,7 @@ import { MinutesPage } from "@/app/pages/MinutesPage";
 import { FileBoxPage } from "@/app/pages/FileBoxPage";
 import { KnowledgePage } from "@/app/pages/KnowledgePage";
 import { WhiteboardPage } from "@/app/pages/WhiteboardPage";
+import { WbsPage } from "@/app/pages/WbsPage";
 import { GithubPage } from "@/app/pages/GithubPage";
 import { OrganizationPage } from "@/app/pages/OrganizationPage";
 import { AnnouncementSettingsPage } from "@/app/pages/AnnouncementSettingsPage";
@@ -82,6 +83,9 @@ export const PROTECTED_ROUTES: { path: string; element: ReactElement }[] = [
   { path: "/:projectSlug/github", element: <GithubPage /> },
   { path: "/:projectSlug/whiteboard", element: <WhiteboardPage /> },
   { path: "/:projectSlug/whiteboard/:boardId", element: <WhiteboardPage /> },
+  // ENHA2-053 WBS（静的セグメントなので /:projectSlug/:segment より優先される）
+  { path: "/:projectSlug/wbs", element: <WbsPage /> },
+  { path: "/:projectSlug/wbs/:wbsId", element: <WbsPage /> },
   // チケット一覧(スプリント詳細)画面は廃止した。配布済みのチケットURL(/PJ/BRU4-016)を
   // 生かすため、この経路もスプリント一覧が引き受ける。スプリント識別子だけのURLは
   // スプリント一覧へ寄せ、どちらでもないセグメントはその場で404を出す。

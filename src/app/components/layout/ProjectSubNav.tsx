@@ -1,15 +1,16 @@
 import { useState, type ElementType } from "react";
 import { useNavigate } from "react-router";
-import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone, Search } from "lucide-react";
+import { Layers, ClipboardList, BookOpen, FileText, PenTool, FolderOpen, Github, Megaphone, Search, GanttChartSquare } from "lucide-react";
 import type { AccessLevel, GithubAccessLevel } from "@/app/types";
 import { usePlan } from "@/app/contexts/PlanContext";
 import { useGithubAccess } from "@/app/hooks/useGithubAccess";
 import { TICKET_SEARCH_PATH } from "@/app/lib/ticketSearch";
+import { useWbsAccess } from "@/app/hooks/useWbsAccess";
 
-type ProjectSubPage = "sprints" | "ticket-search" | "release-notes" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "files" | "knowledge" | "github";
+type ProjectSubPage = "sprints" | "ticket-search" | "release-notes" | "backlog" | "tasks" | "wiki" | "minutes" | "whiteboard" | "wbs" | "files" | "knowledge" | "github";
 
 // ファイルボックスは権限設定を持たない（プロジェクトメンバー全員が利用できる）ため permKey なし
-const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" | "github" }[] = [
+const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: string; permKey?: "backlog" | "wiki" | "minutes" | "whiteboard" | "wbs" | "github" }[] = [
   { id: "sprints",    label: "スプリント管理", icon: Layers,       path: "" },
   // ENHA2-048 チケット一覧検索。スプリントをまたいでチケットを絞り込む画面。
   // スプリント一覧と同じく、プロジェクトメンバーなら誰でも見られる（個別の権限設定は持たない）
@@ -22,6 +23,8 @@ const ITEMS: { id: ProjectSubPage; label: string; icon: ElementType; path: strin
   { id: "minutes",    label: "議事録",         icon: FileText,      path: "/minutes",    permKey: "minutes" },
   { id: "files",      label: "ファイルボックス", icon: FolderOpen,  path: "/files" },
   { id: "whiteboard", label: "ホワイトボード", icon: PenTool,       path: "/whiteboard", permKey: "whiteboard" },
+  // ENHA2-053 WBS（作業分解表）。既定が「権限なし」なので、付与された人にだけタブが出る
+  { id: "wbs",        label: "WBS",            icon: GanttChartSquare, path: "/wbs",     permKey: "wbs" },
   // ナレッジノートはファイルボックスと同様に個別の権限設定を持たない（プロジェクトメンバー全員）。
   // 代わりにプラン（feature_knowledge_ai）で表示可否を切り替える。
   { id: "knowledge",  label: "ナレッジノート", icon: BookOpen,      path: "/knowledge" },
@@ -46,6 +49,8 @@ export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm
   // GitHubの権限だけは呼び出し側から渡さず、ここで解決する。
   // 8つある呼び出し側すべてに配線すると漏れが出て、タブが画面ごとに出たり消えたりするため。
   const github = useGithubAccess(projectSlug);
+  // WBSの権限も同じ理由でここで解決する（呼び出し側から渡さない）
+  const wbsLevel = useWbsAccess(projectSlug);
 
   const permMap: Record<string, AccessLevel | GithubAccessLevel | undefined> = {
     wiki: wikiPerm, backlog: backlogPerm, minutes: minutesPerm, whiteboard: whiteboardPerm,
@@ -61,6 +66,8 @@ export function ProjectSubNav({ projectSlug, active, marginBottom = 20, wikiPerm
       // リポジトリが紐付いていないプロジェクトでは出さない
       return github.linked;
     }
+    // 権限が無い／未取得（undefined）のうちは出さない（GitHubタブと同じ扱い）
+    if (item.id === "wbs") return !!wbsLevel && wbsLevel !== "none";
     if (!item.permKey) return true;
     const p = permMap[item.permKey];
     return p === undefined || p !== "none";
