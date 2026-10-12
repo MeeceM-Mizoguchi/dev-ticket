@@ -21,14 +21,18 @@ export const WBS_LEVEL_OPTIONS: { value: WbsLevels; label: string }[] = [
 
 /**
  * 新しいWBSに入れる既定のステータス。色は参考の Excel に合わせてある
- * （未着手=薄いグレー / 着手中=薄い青紫 / 完了=薄い緑 / 保留=薄い黄）。
- * 取下は Excel に無いので、未着手より一段濃いグレーにした。
+ * （未着手=薄いグレー / 着手中=青 / 完了=薄い緑 / 保留=薄い黄）。
+ * 取下は Excel に無いので、濃いグレー＋白文字にした。
+ *
+ * 「着手中」と「取下」は元は #DCE0FF / #D5D9E0 だったが、どちらも「未着手」(#EDECF4) と
+ * 見分けがつかず、行の背景に埋もれて読めなかったので濃くした。ここは新しく作るWBSの
+ * 既定値で、既に作られたWBSの色は「ステータス設定」から変える。
  */
 export const DEFAULT_WBS_STATUSES: { name: string; color: string }[] = [
   { name: "未着手", color: "#EDECF4" },
-  { name: "着手中", color: "#DCE0FF" },
+  { name: "着手中", color: "#9DBEFF" },
   { name: "完了", color: "#D1F9E4" },
-  { name: "取下", color: "#D5D9E0" },
+  { name: "取下", color: "#767E8E" },
   { name: "保留", color: "#FDF3C6" },
 ];
 

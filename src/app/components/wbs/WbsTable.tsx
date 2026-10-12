@@ -10,6 +10,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { GripVertical } from "lucide-react";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
+import { WbsCellSelect } from "./WbsCellSelect";
 import { submitOnEnter } from "@/app/lib/submitKey";
 import { businessDays, textColorOn, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
 import type { WbsItem, WbsStatus } from "@/app/types";
@@ -32,7 +33,8 @@ export const WBS_COLUMNS: { key: WbsColKey; label: string; width: number; align?
   { key: "days", label: "予定日数", width: 56, align: "center" },
   { key: "progress", label: "進捗率", width: 60, align: "center" },
   { key: "status", label: "ステータス", width: 84, align: "center" },
-  { key: "tickets", label: "チケット", width: 120 },
+  // チップ1つ＋「+n」＋「＋」が切れずに並ぶ幅（120 だと2件目で見切れていた）
+  { key: "tickets", label: "チケット", width: 150 },
   { key: "note", label: "備考", width: 140 },
 ];
 
@@ -187,11 +189,10 @@ function renderCell(key: WbsColKey, row: WbsRow, ctx: RowCtx): ReactNode {
       // プロジェクトから外れた人が担当のままでも、選択肢から消えて空に見えないようにする
       const options = item.assignee && !ctx.members.includes(item.assignee) ? [...ctx.members, item.assignee] : ctx.members;
       return (
-        <select value={item.assignee} onChange={e => ctx.onUpdate(item.id, { assignee: e.target.value })} title={item.assignee || undefined}
-          style={{ ...cellSelect, color: item.assignee ? WBS_COLORS.text : "#C9CED6" }}>
-          <option value="">—</option>
-          {options.map(m => <option key={m} value={m} style={{ color: WBS_COLORS.text }}>{m}</option>)}
-        </select>
+        <WbsCellSelect value={item.assignee} title={item.assignee || undefined}
+          options={[{ value: "", label: "—" }, ...options.map(m => ({ value: m, label: m }))]}
+          onChange={v => ctx.onUpdate(item.id, { assignee: v })}
+          style={{ ...cellSelect, color: item.assignee ? WBS_COLORS.text : "#C9CED6" }} />
       );
     }
     case "start":
@@ -223,13 +224,18 @@ function renderCell(key: WbsColKey, row: WbsRow, ctx: RowCtx): ReactNode {
       // status_id が空の行は、先頭のステータスとして扱う
       const current = ctx.statuses.find(s => s.id === item.statusId) ?? ctx.statuses[0];
       if (!current) return null;
-      const chip: CSSProperties = { background: current.color, color: textColorOn(current.color), fontSize: 11, fontWeight: 700, borderRadius: 4, height: 20 };
+      // 薄い色は行の背景（白／#F8F9FB）に埋もれるので、内側に細い枠を描いて輪郭を出す
+      const onDark = textColorOn(current.color) === "#FFFFFF";
+      const chip: CSSProperties = {
+        background: current.color, color: textColorOn(current.color), fontSize: 11, fontWeight: 700, borderRadius: 4, height: 20,
+        boxShadow: `inset 0 0 0 1px ${onDark ? "rgba(255,255,255,0.28)" : "rgba(30,41,58,0.16)"}`,
+      };
       if (!canEdit) return <TruncatedText as="div" text={current.name} style={{ ...chip, width: "100%", textAlign: "center", lineHeight: "20px", padding: "0 4px", boxSizing: "border-box" }} />;
       return (
-        <select value={current.id} onChange={e => ctx.onUpdate(item.id, { statusId: e.target.value })}
-          style={{ ...cellSelect, ...chip, textAlign: "center", padding: "0 2px" }}>
-          {ctx.statuses.map(s => <option key={s.id} value={s.id} style={{ background: "#FFFFFF", color: WBS_COLORS.text }}>{s.name}</option>)}
-        </select>
+        <WbsCellSelect value={current.id} align="center"
+          options={ctx.statuses.map(s => ({ value: s.id, label: s.name, color: s.color }))}
+          onChange={v => ctx.onUpdate(item.id, { statusId: v })}
+          style={{ ...cellSelect, ...chip, padding: "0 4px" }} />
       );
     }
     case "tickets":
