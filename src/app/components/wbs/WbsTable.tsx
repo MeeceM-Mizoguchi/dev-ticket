@@ -52,11 +52,33 @@ export const WBS_COLUMNS: { key: WbsColKey; label: string; width: number; min?: 
   { key: "end", label: "終了予定日", width: 108, min: 108, align: "center" },
   { key: "days", label: "予定日数", width: 56, align: "center" },
   { key: "progress", label: "進捗率", width: 60, align: "center" },
+  // 幅と下限は、ステータス名の長さから WbsTable で決め直す（statusColWidth）
   { key: "status", label: "ステータス", width: 84, align: "center" },
   // チップ1つ＋「+n」＋「＋」が切れずに並ぶ幅（120 だと2件目で見切れていた）
   { key: "tickets", label: "チケット", width: 150 },
   { key: "note", label: "備考", width: 140 },
 ];
+
+/** ステータス列の幅の下限（見出しの「ステータス」が切れない幅）と上限（広がりすぎないように） */
+const STATUS_COL_MIN = 84;
+const STATUS_COL_MAX = 200;
+/** チップの左右の余白 8＋▼印 13＋セルの左右の余白 12 */
+const STATUS_COL_PAD = 8 + 13 + 12;
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+/**
+ * ステータス列の幅。ステータス名のうち最も長いものを、チップと同じ字体（11px・太字）で測って決める。
+ * 固定の範囲（左の枠）では列が縮むので、同じ値を下限にもして名前が切れないようにする。
+ */
+function statusColWidth(names: string[]): number {
+  measureCtx ??= document.createElement("canvas").getContext("2d");
+  const ctx = measureCtx;
+  if (!ctx) return STATUS_COL_MIN;
+  ctx.font = `700 11px ${window.getComputedStyle(document.body).fontFamily}`;
+  const text = Math.max(0, ...names.map(n => ctx.measureText(n).width));
+  return Math.min(STATUS_COL_MAX, Math.max(STATUS_COL_MIN, Math.ceil(text + STATUS_COL_PAD)));
+}
 
 /** 画面に出す列（段数によらず同じ。段は「項目」の列の中の字下げで表す） */
 export function visibleWbsColumns() {
@@ -472,8 +494,13 @@ export function WbsTable({
   /** 左の枠の幅（＝固定の線の位置）。線のつまみを重ねる位置に使う */
   const [leftW, setLeftW] = useState(0);
 
-  // チェックボックスの列は、編集できる人にだけ出す
-  const cols = useMemo(() => (canEdit ? WBS_COLUMNS : WBS_COLUMNS.filter(c => c.key !== "check")), [canEdit]);
+  // チェックボックスの列は、編集できる人にだけ出す。
+  // ステータス列は、ステータス名の長さに合わせた幅と下限に置き換える（閲覧のみの人も同じ幅）
+  const cols = useMemo(() => {
+    const statusW = statusColWidth(statuses.map(s => s.name));
+    return (canEdit ? WBS_COLUMNS : WBS_COLUMNS.filter(c => c.key !== "check"))
+      .map(c => (c.key === "status" ? { ...c, width: statusW, min: statusW } : c));
+  }, [canEdit, statuses]);
   const freezeIdx = Math.max(0, cols.findIndex(c => c.key === freezeKey));
   // freezeKey の列が段数の変更で消えていたら（例：小項目まで固定 → 2段へ）、全列を固定に戻す
   const frozen = cols.some(c => c.key === freezeKey) ? cols.slice(0, freezeIdx + 1) : cols;
