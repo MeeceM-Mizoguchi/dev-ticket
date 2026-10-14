@@ -41,6 +41,8 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { fetchSprintOrder, applySprintOrder } from "@/app/lib/sprintOrder";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
 import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
 import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
@@ -330,7 +332,7 @@ export function TicketDetailPanel({
   onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean
 }) {
 
-  const { userName, userRole, userPermissions, userOrgId } = useAuth();
+  const { userName, userId, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
@@ -365,6 +367,9 @@ export function TicketDetailPanel({
   const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
+  // 移動ダイアログから開く新規スプリント作成（BRU20-003）。件数はプラン上限の判定用で、今いるスプリントも含めた全件
+  const [showNewSprintFromMove, setShowNewSprintFromMove] = useState(false);
+  const [projectSprintCount, setProjectSprintCount] = useState(0);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
 
   const [status, setStatus] = useState<TicketStatus>(ticket?.status ?? "todo");
@@ -2113,17 +2118,22 @@ export function TicketDetailPanel({
     onClose();
   };
 
-  const openMoveModal = async () => {
+  // 移動候補の取得。ダイアログを開くときと、ダイアログ内でスプリントを作成したあとに呼ぶ（BRU20-003）
+  const loadMoveCandidates = async () => {
     if (!ticket || !isSupabaseEnabled || !projectId) return;
 
     // 🌟 修正: sprints を先に取得し、その sprint_id のリストを使って sprint_tickets を取得する
     // （sprint_tickets テーブルには project_id カラムが存在しないため）
-    const [{ data: ticketRow }, { data: sprintsData }] = await Promise.all([
+    // 並び順はスプリント一覧と同じ（個人 > 共通 > 開始日順）。開始日が同じ／未設定でも順番が揺れないよう id を重ねる（BUG-01）
+    const [{ data: ticketRow }, { data: sprintsRaw }, sprintOrder] = await Promise.all([
       supabase!.from("sprint_tickets").select("sprint_id").eq("id", ticket.id).single(),
-      supabase!.from("sprints").select("*").eq("project_id", projectId).order("start_date")
+      supabase!.from("sprints").select("*").eq("project_id", projectId).order("start_date").order("id"),
+      fetchSprintOrder(projectId, userId || null),
     ]);
+    const sprintsData = applySprintOrder(sprintsRaw ?? [], sprintOrder);
+    setProjectSprintCount(sprintsData.length);
 
-    const sprintIds = sprintsData?.map(s => s.id) || [];
+    const sprintIds = sprintsData.map(s => s.id);
 
     const { data: allTicketsData } = sprintIds.length > 0
       ? await supabase!.from("sprint_tickets").select("*").in("sprint_id", sprintIds)
@@ -2132,7 +2142,7 @@ export function TicketDetailPanel({
     const currentSprintId = ticketRow?.sprint_id ?? null;
 
     setAvailableSprints(
-      (sprintsData ?? [])
+      sprintsData
         .filter(s => s.id !== currentSprintId)
         .map(s => {
           // 生のチケットデータをスプリントオブジェクトに結合（mappers.ts の mapSprint が要求する形）
@@ -2155,6 +2165,11 @@ export function TicketDetailPanel({
           };
         })
     );
+  };
+
+  const openMoveModal = async () => {
+    if (!ticket || !isSupabaseEnabled || !projectId) return;
+    await loadMoveCandidates();
     setMoveTargetSprintId(null);
     setShowMoveModal(true);
   };
@@ -2447,7 +2462,18 @@ export function TicketDetailPanel({
               {isMoveLoading ? "移動中..." : "移動する"}
             </button>
           </>}>
-          <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>移動先のスプリントを選択してください</p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>移動先のスプリントを選択してください</p>
+            {effectivePermissions.canCreateSprint && (
+              <button
+                type="button"
+                onClick={() => setShowNewSprintFromMove(true)}
+                disabled={isMoveLoading}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 7, cursor: isMoveLoading ? "not-allowed" : "pointer" }}>
+                <Plus style={{ width: 11, height: 11 }} />新規スプリント
+              </button>
+            )}
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {availableSprints.length === 0 ? (
               <p style={{ fontSize: 13, color: "#A09790", textAlign: "center", padding: "24px 0" }}>移動先のスプリントがありません</p>
@@ -2476,6 +2502,16 @@ export function TicketDetailPanel({
             })}
           </div>
         </DialogShell>
+      )}
+      {showMoveModal && showNewSprintFromMove && projectId && (
+        // 移動ダイアログ（zIndex 320）の手前に出す。作成したら候補を取り直し、そのスプリントを移動先として選ぶ（BRU20-003）
+        <NewSprintDialog
+          projectId={projectId}
+          zIndex={330}
+          currentSprintCount={projectSprintCount}
+          onClose={() => setShowNewSprintFromMove(false)}
+          onCreated={async (sid) => { await loadMoveCandidates(); if (sid) setMoveTargetSprintId(sid); }}
+        />
       )}
       {showCreateChild && ticket && !ticket.parentId && (
         <NewTicketDialog
