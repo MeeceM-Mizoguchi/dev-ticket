@@ -102,6 +102,11 @@ interface WbsTableProps {
   highlightIds: ReadonlySet<string>;
   /** この行まで表をスクロールする。同じ行へもう一度飛べるよう nonce を変えて渡す */
   scrollTo: { id: string; nonce: number } | null;
+  /**
+   * お知らせから移動した行（薄い黄色に塗る）。scrollTo と同じ行なら、その行が中央に来るよう
+   * なめらかにスクロールする。highlightIds（赤）とは別の値で、両方当たる行は赤を優先する
+   */
+  flashId?: string | null;
   onUpdate: (id: string, patch: Partial<WbsItem>) => void;
   onMove: (dragId: string, targetId: string, mode: WbsDropMode) => void;
   /**
@@ -355,8 +360,10 @@ const cellBase: CSSProperties = {
 /** 見出し行に敷く色。大項目は濃いめ、中項目は薄め */
 const HEADING_BG = ["#D9E2F6", "#EDF1FA"];
 
-function rowBackground(row: WbsRow, levels: number, selected: boolean, highlighted: boolean): string {
+function rowBackground(row: WbsRow, levels: number, selected: boolean, highlighted: boolean, flashed = false): string {
   if (highlighted) return WBS_COLORS.highlightBg;
+  // お知らせから移動した行。スプリント一覧の強調と同じ色
+  if (flashed) return "#FFFBEB";
   if (selected) return "#ECFDF5";
   if (row.item.level < levels) return HEADING_BG[row.item.level - 1] ?? HEADING_BG[1];
   if (row.delayed) return "#FFF5F6";
@@ -400,9 +407,9 @@ function InsertZone({ at, levels, onPick }: { at: "top" | "bottom"; levels: numb
 
 
 /** 1行。side=left は枠の幅に合わせて縮む格子、side=right は px 幅の並び */
-function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMode, ctx, onDragOverRow, onDropRow, tail, insertBelow, insertAbove, onInsert }: {
+function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed, dropMode, ctx, onDragOverRow, onDropRow, tail, insertBelow, insertAbove, onInsert }: {
   row: WbsRow; cols: Col[]; side: "left" | "right"; template: string;
-  selected: boolean; highlighted: boolean; dropMode: WbsDropMode | null; ctx: RowCtx;
+  selected: boolean; highlighted: boolean; flashed: boolean; dropMode: WbsDropMode | null; ctx: RowCtx;
   onDragOverRow?: (e: DragEvent, row: WbsRow) => void;
   onDropRow?: (e: DragEvent) => void;
   /** セルの後ろに続けて出すもの（右の枠のガントの帯） */
@@ -419,7 +426,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMod
   return (
     <div data-wbs-row={item.id}
       onDragOver={onDragOverRow ? e => onDragOverRow(e, row) : undefined} onDrop={onDropRow}
-      style={{ position: "relative", height: WBS_ROW_H, background: rowBackground(row, ctx.levels, selected, highlighted),
+      style={{ position: "relative", height: WBS_ROW_H, background: rowBackground(row, ctx.levels, selected, highlighted, flashed),
         ...(side === "left" ? { display: "grid", gridTemplateColumns: template } : { display: "flex" }) }}>
       {cols.map(c => {
         const blank = heading && c.key !== "check" && c.key !== "no" && c.key !== "name";
@@ -461,7 +468,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMod
 
 export function WbsTable({
   rows, levels, statuses, members, holidays, canEdit, freezeKey, checkedIds, onToggleCheck, onToggleAll, editing, onEditingChange,
-  highlightIds, scrollTo, onUpdate, onMove, gantt, renderTickets, onFreezeChange, onInsert, onAddNew, collapseKey,
+  highlightIds, scrollTo, flashId = null, onUpdate, onMove, gantt, renderTickets, onFreezeChange, onInsert, onAddNew, collapseKey,
 }: WbsTableProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
@@ -577,10 +584,11 @@ export function WbsTable({
 
   // ── 指定の行までスクロール ──
   // 閉じた見出し行の下にある行なら、先に上の見出し行を開く。開いた結果が画面に並んでから動かす
-  const pendingScrollRef = useRef<string | null>(null);
+  // smooth: お知らせから移動した行（flashId と同じ行）。見えていても中央へなめらかに動かす
+  const pendingScrollRef = useRef<{ id: string; smooth: boolean } | null>(null);
   useEffect(() => {
     if (!scrollTo) return;
-    pendingScrollRef.current = scrollTo.id;
+    pendingScrollRef.current = { id: scrollTo.id, smooth: flashId === scrollTo.id };
     const byId = new Map(rows.map(r => [r.item.id, r]));
     const next = new Set(collapsed);
     for (let p = byId.get(scrollTo.id)?.item.parentId; p; p = byId.get(p)?.item.parentId) next.delete(p);
@@ -588,15 +596,22 @@ export function WbsTable({
   }, [scrollTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const id = pendingScrollRef.current;
-    if (!id) return;
-    const idx = display.findIndex(d => d.kind === "row" && d.row.item.id === id);
+    const pending = pendingScrollRef.current;
+    if (!pending) return;
+    const idx = display.findIndex(d => d.kind === "row" && d.row.item.id === pending.id);
     const el = leftRef.current;
     if (idx < 0 || !el) return;
     pendingScrollRef.current = null;
     const top = idx * WBS_ROW_H;
-    // 見出しのぶんを除いた見えている範囲に入っていれば動かさない
     const visibleH = el.clientHeight - headH;
+    if (pending.smooth) {
+      // 左の枠だけをなめらかに動かし、右の枠は左の onScroll の同期でついてこさせる
+      // （両方を別々になめらかに動かすと、途中で左右の行がずれる）
+      activePaneRef.current = "left";
+      el.scrollTo({ top: Math.max(0, top - Math.max(0, (visibleH - WBS_ROW_H) / 2)), behavior: "smooth" });
+      return;
+    }
+    // 見出しのぶんを除いた見えている範囲に入っていれば動かさない
     if (top < el.scrollTop || top + WBS_ROW_H > el.scrollTop + visibleH) {
       el.scrollTop = Math.max(0, top - Math.max(0, (visibleH - WBS_ROW_H) / 2));
       // こちらで動かしたときは、右の枠も直接そろえる（右が「動かしている側」だと、左の通知は無視されるため）
@@ -778,7 +793,7 @@ export function WbsTable({
           <WbsTableRow key={d.row.item.id} row={d.row} cols={frozen} side="left" template={leftTemplate}
             // 行の境目の追加ボタンは、左の枠にだけ出す。先頭の行の上には、大項目を入れられる
             onInsert={canEdit ? onInsert : undefined} insertBelow={d.insertBelow} insertAbove={i === 0 ? [1] : undefined}
-            selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)}
+            selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)} flashed={flashId === d.row.item.id}
             dropMode={drop?.id === d.row.item.id ? drop.mode : null}
             ctx={ctx}
             onDragOverRow={canEdit ? handleDragOverRow : undefined} onDropRow={canEdit ? handleDropRow : undefined} />
@@ -799,11 +814,11 @@ export function WbsTable({
           </div>
           {display.map(d => (
             <WbsTableRow key={d.row.item.id} row={d.row} cols={scrolling} side="right" template=""
-              selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)}
+              selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)} flashed={flashId === d.row.item.id}
               dropMode={null} ctx={ctx}
               // 見出し行（大項目・中項目）は日付を持たせないので、ガントの側も行の色で塗りつぶす
               tail={d.row.item.level < levels
-                ? <WbsGanttStrip model={gantt} rowH={WBS_ROW_H} fill={rowBackground(d.row, levels, checkedIds.has(d.row.item.id), highlightIds.has(d.row.item.id))} />
+                ? <WbsGanttStrip model={gantt} rowH={WBS_ROW_H} fill={rowBackground(d.row, levels, checkedIds.has(d.row.item.id), highlightIds.has(d.row.item.id), flashId === d.row.item.id)} />
                 : <WbsGanttStrip model={gantt} row={d.row} statuses={statuses} rowH={WBS_ROW_H} />} />
           ))}
           {fillers("right", scrolling)}

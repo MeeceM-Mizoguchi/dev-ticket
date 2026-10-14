@@ -178,7 +178,7 @@ export interface WbsGanttModel {
 }
 
 /** a から b までの日数（b が後なら正）。UTC で引くので夏時間の影響を受けない */
-function dayDiff(a: Date, b: Date): number {
+export function dayDiff(a: Date, b: Date): number {
   return Math.round((Date.UTC(b.getFullYear(), b.getMonth(), b.getDate()) - Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())) / 86400000);
 }
 
