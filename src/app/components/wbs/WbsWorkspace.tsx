@@ -3,7 +3,7 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trash2, Tags, CalendarOff, Download, Upload } from "lucide-react";
+import { Trash2, Tags, CalendarOff, Download, Upload, FilterX } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -24,6 +24,7 @@ import { exportWbsXlsx } from "@/app/lib/wbsExcel";
 import { WbsTicketLinkDialog, type WbsTicketRef } from "./WbsTicketLinkDialog";
 import { WbsTicketCell } from "./WbsTicketCell";
 import { WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
+import { filterWbsRows, wbsFilterOptions, type WbsFilterCol, type WbsFilterCtx, type WbsFilters } from "./wbsFilter";
 import { wbsToolBtn, wbsToolBtnDisabled } from "./wbsStyles";
 
 /** 列固定の位置は、WBSごと・利用者ごとにブラウザへ保存する */
@@ -75,6 +76,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
+  // 列ごとの絞り込み。保存しない（WBSを切り替えると key で作り直されるので、そこで解除される）
+  const [filters, setFilters] = useState<WbsFilters>({});
 
   // 横スクロールを、ブラウザの「戻る／進む」に化けさせない。
   // 左の表は横に動かないので、その上で横に送ると操作がブラウザまで抜けて、
@@ -163,6 +166,18 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     setLinks(await loadWbsItemTickets(sheet.id));
     return okAdd && okRemove;
   };
+
+  // ── 列ごとの絞り込み ────────────────────────────────────────
+  // 集計とエクスポートは絞り込みに関係なく WBS 全体（rows）のまま
+  const filterCtx = useMemo<WbsFilterCtx>(() => ({
+    statuses, members: project.members, holidays: holidaySet,
+    ticketNumbersOf: id => linkedTicketsOf(id).map(t => t.ticket.wbs),
+  }), [statuses, project.members, holidaySet, linkedTicketsOf]);
+  const filterOptions = useMemo(() => wbsFilterOptions(rows, filterCtx), [rows, filterCtx]);
+  const shownIds = useMemo(() => filterWbsRows(rows, filters, filterCtx), [rows, filters, filterCtx]);
+  const changeFilter = useCallback((col: WbsFilterCol, selected: Set<string>) => {
+    setFilters(prev => ({ ...prev, [col]: selected }));
+  }, []);
 
   const renderTickets = useCallback((row: (typeof rows)[number]) => (
     <WbsTicketCell tickets={linkedTicketsOf(row.item.id)} canEdit={canEdit}
@@ -356,9 +371,21 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     });
   }, [items, descendantsOf]);
 
+  /**
+   * 見出しのチェックボックスで選ぶ行。絞り込み中は見えている行だけにする。
+   * 見えている見出し行でも、下に隠れた行があるものは選ばない
+   * （見出し行を消すと下の行も一緒に消えるので、隠れた行まで「行を削除」の対象になってしまう）。
+   */
+  const toggleAllTargets = useMemo(() => {
+    if (!shownIds) return items.map(i => i.id);
+    return items.filter(i => shownIds.has(i.id) && descendantsOf(i.id).every(d => shownIds.has(d))).map(i => i.id);
+  }, [items, shownIds, descendantsOf]);
+  const allCheckState = toggleAllTargets.length > 0 && toggleAllTargets.every(id => checkedIds.has(id)) ? "on"
+    : toggleAllTargets.some(id => checkedIds.has(id)) ? "some" : "off";
+
   const toggleAll = useCallback(() => {
-    setCheckedIds(prev => (items.length > 0 && items.every(i => prev.has(i.id)) ? new Set() : new Set(items.map(i => i.id))));
-  }, [items]);
+    setCheckedIds(prev => (toggleAllTargets.length > 0 && toggleAllTargets.every(id => prev.has(id)) ? new Set() : new Set(toggleAllTargets)));
+  }, [toggleAllTargets]);
 
   // 消えた行（削除・読み直し・置き換えインポート）のチェックは捨てる
   useEffect(() => {
@@ -407,6 +434,15 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
           </>
         )}
 
+        {shownIds && (
+          <>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#059669", whiteSpace: "nowrap" }}>絞り込み中：{shownIds.size} / {rows.length} 行</span>
+            <button type="button" onClick={() => setFilters({})} title="列ごとの絞り込みをすべて解除して、全部の行を表示します" style={wbsToolBtn}>
+              <FilterX style={{ width: 12, height: 12 }} />絞り込みを解除
+            </button>
+          </>
+        )}
+
         <div style={{ flex: 1 }} />
         {canEdit && (
           <button type="button" onClick={() => setImportOpen(true)} title="Excel・CSV で作った行を、このWBSにまとめて取り込みます（テンプレートもここから）" style={wbsToolBtn}>
@@ -432,7 +468,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
         <WbsTable
           rows={rows} levels={sheet.levels} statuses={statuses} members={project.members}
           holidays={holidaySet} canEdit={canEdit} freezeKey={freezeKey} onFreezeChange={changeFreeze}
-          checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll}
+          checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll} allCheckState={allCheckState}
+          filters={filters} filterOptions={filterOptions} onFilterChange={changeFilter} shownIds={shownIds}
           editing={editing} onEditingChange={setEditing}
           highlightIds={highlightSet} scrollTo={scrollTo}
           onUpdate={handleUpdate} onMove={handleMove}

@@ -20,8 +20,11 @@
 //     行が1つも無いとき用に、いちばん下の空の行にも大項目を入力できる。
 //     入力した場所と、結果が出る場所を必ず同じにすること（別の行に結果が出る作りは分かりにくい）。
 //   ・セルのプルダウンはブラウザ標準の <select> を使わず、行の高さに合わせた WbsCellSelect を使う。
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+//   ・列の見出しを押すと、その列の値で絞り込める（BRU20-008-2。判定は wbsFilter）。
+//     絞り込み中は、行の境目の追加ボタンとドラッグでの並べ替えを止める（隠れた行との位置関係が見えないため）。
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, GripVertical, Minus, Plus } from "lucide-react";
+import { ColumnFilter, type ColumnFilterOption } from "@/app/components/shared/ColumnFilter";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { WbsCellSelect } from "./WbsCellSelect";
@@ -30,6 +33,7 @@ import { businessDays, textColorOn, type WbsGanttModel, type WbsRow } from "@/ap
 import type { WbsItem, WbsStatus } from "@/app/types";
 import { WBS_COLORS } from "./wbsStyles";
 import { WBS_GANTT_HEAD_H, WbsGanttHeader, WbsGanttOverlay, WbsGanttStrip, ganttWidth } from "./WbsGantt";
+import { WBS_FILTER_COLS, type WbsFilterCol, type WbsFilters } from "./wbsFilter";
 
 export const WBS_ROW_H = 30;
 
@@ -50,8 +54,9 @@ export const WBS_COLUMNS: { key: WbsColKey; label: string; width: number; min?: 
   // 日付は「2026/10/21」（西暦4桁・月2桁・日2桁）とカレンダーの絵が切れずに入る幅。これより縮めない
   { key: "start", label: "開始予定日", width: 108, min: 108, align: "center" },
   { key: "end", label: "終了予定日", width: 108, min: 108, align: "center" },
-  { key: "days", label: "予定日数", width: 56, align: "center" },
-  { key: "progress", label: "進捗率", width: 60, align: "center" },
+  // 見出しに絞り込みの ▼ が付くぶん、見出しが切れない幅にする
+  { key: "days", label: "予定日数", width: 72, align: "center" },
+  { key: "progress", label: "進捗率", width: 68, align: "center" },
   // 幅と下限は、ステータス名の長さから WbsTable で決め直す（statusColWidth）
   { key: "status", label: "ステータス", width: 84, align: "center" },
   // チップ1つ＋「+n」＋「＋」が切れずに並ぶ幅（120 だと2件目で見切れていた）
@@ -85,6 +90,8 @@ export function visibleWbsColumns() {
   return WBS_COLUMNS;
 }
 
+const EMPTY_SET = new Set<string>();
+
 /** 1段ぶんの字下げ（px） */
 const INDENT = 18;
 
@@ -116,8 +123,16 @@ interface WbsTableProps {
   /** チェックを付けた行 */
   checkedIds: ReadonlySet<string>;
   onToggleCheck: (id: string) => void;
-  /** 見出しのチェックボックス。全部の行を選ぶ／外す */
+  /** 見出しのチェックボックス。全部の行（絞り込み中は見えている行）を選ぶ／外す */
   onToggleAll: () => void;
+  /** 見出しのチェックボックスの状態 */
+  allCheckState: "on" | "off" | "some";
+  /** 列ごとの絞り込み */
+  filters: WbsFilters;
+  filterOptions: Record<WbsFilterCol, ColumnFilterOption[]>;
+  onFilterChange: (col: WbsFilterCol, selected: Set<string>) => void;
+  /** 絞り込みで表に出す行。絞り込んでいないときは null */
+  shownIds: ReadonlySet<string> | null;
   editing: WbsEditing | null;
   onEditingChange: (e: WbsEditing | null) => void;
   /** 段数を減らせない理由になっている行（赤く塗る） */
@@ -223,6 +238,8 @@ interface RowCtx {
   members: string[];
   holidays: ReadonlySet<string>;
   canEdit: boolean;
+  /** No. の列をドラッグして並べ替えられるか（絞り込み中は止める） */
+  canDrag: boolean;
   editing: WbsEditing | null;
   onEditingChange: (e: WbsEditing | null) => void;
   onUpdate: (id: string, patch: Partial<WbsItem>) => void;
@@ -264,10 +281,10 @@ function renderCell(key: WbsColKey, row: WbsRow, ctx: RowCtx): ReactNode {
       );
     case "no":
       return (
-        <div draggable={canEdit} onDragStart={e => ctx.onDragStart(e, item.id)} onDragEnd={ctx.onDragEnd}
-          title={canEdit ? "ドラッグで並べ替え" : undefined}
-          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, width: "100%", cursor: canEdit ? "grab" : "default", color: WBS_COLORS.subText, fontSize: 11 }}>
-          {canEdit && <GripVertical style={{ width: 11, height: 11, color: "#C9CED6", flexShrink: 0 }} />}
+        <div draggable={ctx.canDrag} onDragStart={e => ctx.onDragStart(e, item.id)} onDragEnd={ctx.onDragEnd}
+          title={ctx.canDrag ? "ドラッグで並べ替え" : undefined}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, width: "100%", cursor: ctx.canDrag ? "grab" : "default", color: WBS_COLORS.subText, fontSize: 11 }}>
+          {ctx.canDrag && <GripVertical style={{ width: 11, height: 11, color: "#C9CED6", flexShrink: 0 }} />}
           {row.no}
         </div>
       );
@@ -482,9 +499,13 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, dropMod
 // ── 表の本体 ──────────────────────────────────────────────────
 
 export function WbsTable({
-  rows, levels, statuses, members, holidays, canEdit, freezeKey, checkedIds, onToggleCheck, onToggleAll, editing, onEditingChange,
+  rows, levels, statuses, members, holidays, canEdit, freezeKey, checkedIds, onToggleCheck, onToggleAll, allCheckState, editing, onEditingChange,
   highlightIds, scrollTo, onUpdate, onMove, gantt, renderTickets, onFreezeChange, onInsert, onAddNew, collapseKey,
+  filters, filterOptions, onFilterChange, shownIds,
 }: WbsTableProps) {
+  // 絞り込み中は、行の追加（境目のボタン）とドラッグでの並べ替えを止める
+  const filtering = shownIds !== null;
+  const canArrange = canEdit && !filtering;
   const rootRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
@@ -549,13 +570,14 @@ export function WbsTable({
     saveCollapsed(next);
   };
 
-  // 画面に並べる行。閉じている見出し行の下の行は並べない。
+  // 画面に並べる行。絞り込みで外れた行と、閉じている見出し行の下の行は並べない。
   // insertBelow は、その行の下の境目に入れられる段（境目のボタンに出す）。
   const display = useMemo(() => {
     const visible: WbsRow[] = [];
     // 閉じている見出し行の段。これより深い行は、次に同じ段以上の行が来るまで隠す
     let hiddenBelow = 0;
     for (const row of rows) {
+      if (shownIds && !shownIds.has(row.item.id)) continue;
       if (hiddenBelow && row.item.level > hiddenBelow) continue;
       hiddenBelow = 0;
       visible.push(row);
@@ -574,7 +596,7 @@ export function WbsTable({
       // 上の段を足したいときは、その段の行の下の境目から足す
       return { kind: "row" as const, row, insertBelow };
     });
-  }, [rows, levels, collapsed]);
+  }, [rows, levels, collapsed, shownIds]);
 
   // 編集できる人には、入力用の空の行を必ず1行は出す（行が画面いっぱいまで増えても足せるように）
   const fillerCount = Math.max(canEdit ? 1 : 0, Math.ceil((viewH - headH) / WBS_ROW_H) - display.length);
@@ -675,7 +697,7 @@ export function WbsTable({
   };
 
   const ctx: RowCtx = {
-    levels, statuses, members, holidays, canEdit, editing, onEditingChange, onUpdate, renderTickets,
+    levels, statuses, members, holidays, canEdit, canDrag: canArrange, editing, onEditingChange, onUpdate, renderTickets,
     collapsed, onToggle: toggleCollapsed, checkedIds, onToggleCheck,
     onDragStart: (e, id) => {
       e.dataTransfer.effectAllowed = "move";
@@ -730,6 +752,11 @@ export function WbsTable({
     setFreezeDrag(null);
   };
 
+  // 絞り込みの一覧を開いている列
+  const [openFilter, setOpenFilter] = useState<WbsFilterCol | "">("");
+  const closeFilter = useCallback(() => setOpenFilter(""), []);
+  const isFilterCol = (key: WbsColKey): key is WbsFilterCol => (WBS_FILTER_COLS as readonly string[]).includes(key);
+
   const headCell = (c: Col, side: "left" | "right"): ReactNode => (
     <div key={c.key} data-wbs-col={c.key} style={{
       display: "flex", alignItems: "center", justifyContent: "center", minWidth: 0, height: headH, padding: "0 4px", boxSizing: "border-box",
@@ -738,8 +765,14 @@ export function WbsTable({
       ...(side === "right" ? { flex: `0 0 ${c.width}px`, width: c.width } : null),
     }}>
       {c.key === "check" ? (
-        <CheckBox onDark label="すべての行を選ぶ／外す" onClick={onToggleAll}
-          state={rows.length > 0 && rows.every(r => checkedIds.has(r.item.id)) ? "on" : rows.some(r => checkedIds.has(r.item.id)) ? "some" : "off"} />
+        <CheckBox onDark label={filtering ? "見えている行を選ぶ／外す" : "すべての行を選ぶ／外す"} onClick={onToggleAll} state={allCheckState} />
+      ) : isFilterCol(c.key) ? (
+        // 並び替えは出さない（WBSの並びそのものに意味があるため）。
+        // 見出しのセルと左の枠は overflow で切るので、一覧は body へ出す
+        <ColumnFilter col={c.key} label={c.label} sortable={false} onDark portal
+          options={filterOptions[c.key]} selected={filters[c.key] ?? EMPTY_SET}
+          onFilterChange={sel => onFilterChange(c.key as WbsFilterCol, sel)}
+          open={openFilter === c.key} onToggle={() => setOpenFilter(o => (o === c.key ? "" : c.key as WbsFilterCol))} onClose={closeFilter} />
       ) : c.label}
     </div>
   );
@@ -804,11 +837,11 @@ export function WbsTable({
         {display.map((d, i) => (
           <WbsTableRow key={d.row.item.id} row={d.row} cols={frozen} side="left" template={leftTemplate}
             // 行の境目の追加ボタンは、左の枠にだけ出す。先頭の行の上には、大項目を入れられる
-            onInsert={canEdit ? onInsert : undefined} insertBelow={d.insertBelow} insertAbove={i === 0 ? [1] : undefined}
+            onInsert={canArrange ? onInsert : undefined} insertBelow={d.insertBelow} insertAbove={i === 0 ? [1] : undefined}
             selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)}
             dropMode={drop?.id === d.row.item.id ? drop.mode : null}
             ctx={ctx}
-            onDragOverRow={canEdit ? handleDragOverRow : undefined} onDropRow={canEdit ? handleDropRow : undefined} />
+            onDragOverRow={canArrange ? handleDragOverRow : undefined} onDropRow={canArrange ? handleDropRow : undefined} />
         ))}
         {fillers("left", frozen)}
         {hBarH > 0 && <div style={{ height: hBarH }} />}
