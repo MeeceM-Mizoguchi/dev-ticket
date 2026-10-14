@@ -138,6 +138,12 @@ export async function exportWbsXlsx(input: {
   input.rows.forEach((row, idx) => {
     const { item } = row;
     const r = ws.getRow(3 + idx);
+    // 大項目・中項目ごとのグループ化（Excel の開閉）。深さは 大項目＝0・中項目＝1・小項目＝2。
+    // 1段のWBSは全部の行が 0 なので、グループは付かない
+    r.outlineLevel = item.level - 1;
+    // ExcelJS は「深さが outlineLevelRow 以上の行」に、たたんだ印（collapsed）を付けて書き出す。
+    // 書き出したときはすべて開いた状態にしたいので、印は付けない
+    Object.defineProperty(r, "collapsed", { value: false });
     r.getCell(C.no).value = row.no;
     r.getCell(C.level).value = WBS_FILE_LEVEL_MARKS[item.level - 1] ?? null;
     r.getCell(C.name).value = item.name || null;
@@ -184,6 +190,11 @@ export async function exportWbsXlsx(input: {
       if (color) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: color } };
     });
   });
+
+  // 開閉のボタン（［－］）を、グループの上にある見出しの行の横に出す（何も指定しないと下に出る）
+  ws.properties.outlineProperties = { summaryBelow: false, summaryRight: true };
+  // 左上の「1」「2」「3」の数のもとになる、いちばん深い段
+  ws.properties.outlineLevelRow = Math.max(0, ...input.rows.map(r => r.item.level - 1));
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: XLSX_MIME });
