@@ -25,6 +25,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   backlogPermission: "none",
   minutesPermission: "none",
   whiteboardPermission: "none",
+  wbsPermission: "none",
   // GitHubは既定で「権限なし」。付与された人にだけ見せる（docs/github-integration-design.md 5-3）。
   //
   // 操作ごとの新キー（githubBranchPermission など）をここに足してはいけない（BRU13-054）。
@@ -65,7 +66,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canUpdateAnnouncement: true, canAccessReports: true,
       // githubPermission: "merge" は3軸すべて write に展開される（githubPermsFrom）
       wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
-      whiteboardPermission: "edit", githubPermission: "merge",
+      whiteboardPermission: "edit", wbsPermission: "edit", githubPermission: "merge",
     };
   }
   const { data } = await supabase!.from("roles").select("base_permissions").eq("name", role).maybeSingle();
@@ -78,7 +79,7 @@ async function fetchRoleBasePermissions(role: string): Promise<UserPermissions> 
       canAccessMembers: true, canAccessRoles: role === "admin", canAccessGroups: true, canAccessAdminSettings: role === "admin",
       canAccessWiki: true, canAccessBacklog: true, canAccessMinutes: true, canAccessReports: true,
       wikiPermission: "edit", backlogPermission: "edit", minutesPermission: "edit",
-      whiteboardPermission: "edit",
+      whiteboardPermission: "edit", wbsPermission: "edit",
       // GitHub だけは admin/PM でも既定 none。付与はアサイン計画でのみ行う（BRU13-034）
       githubPermission: "none",
     };
