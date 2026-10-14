@@ -188,8 +188,11 @@ export function exportGoogleToOffice(fileId: string): Promise<{ file: unknown; f
 }
 
 export interface ImportResult {
-  /** 追加できたもの。copied=true は保存先フォルダの外にあったためコピーして追加したもの */
-  imported: { fileName: string; copied: boolean }[];
+  /**
+   * 追加できたもの。copied=true は保存先フォルダの外にあったためコピーして追加したもの。
+   * linked=true はコピーせず元ファイルのまま追加したもの
+   */
+  imported: { fileName: string; copied: boolean; linked: boolean }[];
   /** 追加できなかったもの（コピー禁止・形式違い・閲覧権限なし・二重登録など） */
   failed: { name: string; reason: string }[];
   /** 追加はできたが、権限を配れなかったメンバー */
@@ -201,11 +204,13 @@ export interface ImportResult {
  * （Google形式・Office文書・PDF・画像など、Drive にあるものは全て追加できる）。
  * fileIds は pickGoogleFiles()（Picker）で選ばれたものに限る。
  * 保存先フォルダの外にあるものは、サーバー側で保存先へコピーしてから追加される。
+ * linkOnly を true にすると、コピーも権限の配布もせず元ファイルのまま追加する
+ * （開けるかどうかは Googleドライブ側の共有で決まる）。
  */
 export function importGoogleFiles(
-  projectId: string, fileIds: string[], parentId?: string | null,
+  projectId: string, fileIds: string[], parentId?: string | null, linkOnly = false,
 ): Promise<ImportResult> {
-  return postApi<ImportResult>("import-files", { projectId, fileIds, parentId: parentId ?? null });
+  return postApi<ImportResult>("import-files", { projectId, fileIds, parentId: parentId ?? null, linkOnly });
 }
 
 export interface SyncAclResult {

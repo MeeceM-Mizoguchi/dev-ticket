@@ -326,6 +326,8 @@ export interface ProjectFile {
   externalId?: string | null;        // Drive の fileId
   externalUrl?: string | null;       // 別タブで開くURL(webViewLink)
   linkShared?: boolean;              // リンクを知っている全員が編集できる状態か
+  /** コピーせず Googleドライブ上の元ファイルをそのまま参照している（開くだけ。権限・改名・削除は Drive 側で行う） */
+  externalLinked?: boolean;
   /** 所有者（最初にアップロードした人）の userId。公開範囲の変更と削除の判定に使う。不明なら null */
   ownerId?: string | null;
   /** 限定公開の単位の id。null = プロジェクト全員に公開。入っていれば所有者・共有先・オーナーだけが見られる */
