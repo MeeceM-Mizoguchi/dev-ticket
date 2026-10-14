@@ -6,11 +6,12 @@
 //   POST /api/v1/tickets        … チケットの登録（親子1階層まで／既存チケットへの子の追加も可）
 //   GET  /api/v1/ticket         … チケット1件の中身（本文・画像・添付・コメント・子チケット）
 //   POST /api/v1/ticket-status  … ステータスを前へ進める（進行中／レビュー中／対応完了）
+//   POST /api/v1/ticket-pull    … AI が作ったプルリクエストをチケットへ紐づける
 //
-// 下の2つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
+// 下の3つは「AIがチケットを読み取って実装する」ためのもの。キーの権限（scope）で使える範囲が変わる:
 //   write … 登録のみ（context / tickets）    ← これまでに発行されたキーはすべてこれ
 //   read  … 読み取りのみ（context / tickets の GET / ticket）
-//   full  … すべて
+//   full  … すべて（ticket-status / ticket-pull はこの権限のみ）
 //
 // 認証は Dev Ticket が発行する APIキー:
 //   Authorization: Bearer dvt_live_xxxxx
@@ -1070,6 +1071,82 @@ async function handleUpdateStatus(sb: SupabaseClient, key: ApiKeyRow, body: any,
   });
 }
 
+// ── POST /api/v1/ticket-pull ─────────────────────────────────
+//
+// 「AIで実装」で AI が gh pr create したPRを、その場でチケットへ紐づけるためのもの。
+// 画面から作ったPRや Webhook の経路（api/github/[resource].ts の autoLink）を通らないため、
+// これが無いと誰かがPR一覧を開くまで紐づかなかった（BRU20-004）。
+//
+// GitHub のヘルパー（installationToken 等）は api/github 側にしか無いので、GitHub へは問い合わせない。
+// 受け取った URL がプロジェクトのリポジトリのPRで、番号と一致することだけを確かめて保存する。
+// state は open で保存する。マージ済みなどへの更新は PR一覧・Webhook・マージ時の autoLink が行う。
+const PULL_URL_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)\/?$/i;
+
+async function handleLinkPull(sb: SupabaseClient, key: ApiKeyRow, body: any, res: any) {
+  const wbs = typeof body?.wbs === "string" ? body.wbs.trim() : "";
+  const id = typeof body?.id === "string" ? body.id.trim() : "";
+  const url = typeof body?.url === "string" ? body.url.trim() : "";
+  const title = typeof body?.title === "string" ? body.title.trim() : "";
+  const number = typeof body?.number === "number" ? body.number
+    : typeof body?.number === "string" && /^\d+$/.test(body.number.trim()) ? Number(body.number.trim()) : NaN;
+
+  if (!Number.isInteger(number) || number <= 0) {
+    return res.status(400).json({ error: "number（プルリクエストの番号）は正の整数で指定してください" });
+  }
+  if (!url) return res.status(400).json({ error: "url（プルリクエストのURL）は必須です" });
+  if (!title) return res.status(400).json({ error: "title（プルリクエストのタイトル）は必須です" });
+  if (title.length > MAX_TITLE_LENGTH) return res.status(400).json({ error: `title が長すぎます（${MAX_TITLE_LENGTH}文字まで）` });
+
+  const { data: project, error: projectError } = await sb
+    .from("projects").select("github_repo_full_name").eq("id", key.project_id).maybeSingle();
+  // GitHub連携の列（add_github_integration.sql）が無い環境もエラーになるので、未登録と同じ扱いにする
+  const repo = projectError ? "" : String(project?.github_repo_full_name ?? "");
+  if (!repo) {
+    return res.status(400).json({ error: "このプロジェクトには GitHub リポジトリが登録されていないため、PRを紐づけできません" });
+  }
+
+  const m = url.match(PULL_URL_RE);
+  if (!m || `${m[1]}/${m[2]}`.toLowerCase() !== repo.toLowerCase()) {
+    return res.status(400).json({
+      error: `url がこのプロジェクトのリポジトリ（${repo}）のプルリクエストではありません。https://github.com/${repo}/pull/<番号> の形で指定してください`,
+    });
+  }
+  if (Number(m[3]) !== number) {
+    return res.status(400).json({ error: `number（${number}）と url の番号（${m[3]}）が一致しません` });
+  }
+
+  const found = await lookupTicket(sb, key, { wbs, id }, "id, wbs");
+  if (!found.ok) return res.status(found.status).json({ error: found.error });
+  const row = found.row;
+
+  const { data: prev, error: prevError } = await sb
+    .from("ticket_github_links").select("id, auto_linked, state, title, url")
+    .eq("project_id", key.project_id).eq("ticket_id", row.id).eq("kind", "pull").eq("number", number)
+    .maybeSingle();
+  if (prevError) return res.status(500).json({ error: prevError.message });
+
+  const done = (message: string) => res.status(200).json({ ok: true, changed: false, wbs: row.wbs, number, url, message });
+  // 人が手で付けた紐づけ（auto_linked=false）は上書きしない（autoLink / linkByBranch と同じ扱い）
+  if (prev?.auto_linked === false) return done(`「${row.wbs}」には PR #${number} が手動で紐づけ済みのため、変更していません`);
+  if (prev && prev.title === title && prev.url === url) return done(`「${row.wbs}」には PR #${number} が紐づけ済みです`);
+
+  const { error: upsertError } = await sb.from("ticket_github_links").upsert({
+    project_id: key.project_id,
+    ticket_id: row.id,
+    kind: "pull",
+    number,
+    title,
+    // 既に紐づいていれば state はそのまま（マージ済みを open へ戻さない）
+    state: prev?.state ?? "open",
+    url,
+    auto_linked: true,
+    auto_reason: "AIで実装（APIから登録）",
+  }, { onConflict: "project_id,ticket_id,kind,number" });
+  if (upsertError) return res.status(500).json({ error: `PRの紐づけに失敗しました: ${upsertError.message}` });
+
+  return res.status(200).json({ ok: true, changed: true, wbs: row.wbs, number, url });
+}
+
 // ── 担当者への Slack 通知 ─────────────────────────────────────
 // 画面から作ったとき（/api/slack-notify）と同じ見た目で、プロジェクトのチャンネルへ投稿する。
 // 担当者ごとに1投稿にまとめ、チケット名はチケット詳細へのリンクにする。
@@ -1412,9 +1489,10 @@ export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const resource = String(req.query?.resource ?? "");
-  if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status") {
+  if (resource !== "tickets" && resource !== "context" && resource !== "ticket" && resource !== "ticket-status"
+    && resource !== "ticket-pull") {
     return res.status(404).json({
-      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status のいずれか）`,
+      error: `不明なエンドポイントです: /api/v1/${resource}（tickets / context / ticket / ticket-status / ticket-pull のいずれか）`,
     });
   }
 
@@ -1456,6 +1534,22 @@ export default async function handler(req: any, res: any) {
     }
     try {
       return await handleUpdateStatus(sb, auth.key, statusBody, res);
+    } catch (e: any) {
+      return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
+    }
+  }
+
+  if (resource === "ticket-pull") {
+    if (req.method !== "POST") return res.status(405).json({ error: "POST を使ってください" });
+    if (scope !== "full") return denied("PRを紐づけ", "権限が「すべて」");
+    let pullBody: any;
+    try {
+      pullBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body ?? {});
+    } catch {
+      return res.status(400).json({ error: "リクエストボディが JSON として読めません" });
+    }
+    try {
+      return await handleLinkPull(sb, auth.key, pullBody, res);
     } catch (e: any) {
       return res.status(500).json({ error: `処理中にエラーが発生しました: ${e?.message ?? String(e)}` });
     }
