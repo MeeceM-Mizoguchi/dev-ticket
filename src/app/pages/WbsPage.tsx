@@ -28,6 +28,7 @@ import {
 import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
 import { WbsVisibilityDialog } from "@/app/components/wbs/WbsVisibilityDialog";
+import { WbsManualDialog } from "@/app/components/wbs/WbsManualDialog";
 import { WbsWorkspace } from "@/app/components/wbs/WbsWorkspace";
 import type { WbsTicketRef } from "@/app/components/wbs/WbsTicketLinkDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
@@ -61,6 +62,7 @@ export function WbsPage() {
   const [nameDialog, setNameDialog] = useState<"create" | "rename" | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [visibilityOpen, setVisibilityOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [levelBlock, setLevelBlock] = useState<LevelBlock | null>(null);
   // 段数を減らせない理由になっている行。消すか「強調を消す」を押すまで残す
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
@@ -249,6 +251,8 @@ export function WbsPage() {
               <Plus style={{ width: 14, height: 14 }} />WBSを作成
             </button>
           )}
+          {/* WBSが1つも無いときは上の操作列が出ないので、マニュアルはここから開けるようにする */}
+          <button type="button" onClick={() => setManualOpen(true)} style={wbsToolBtn}>マニュアルを見る</button>
         </div>
       ) : (
         <>
@@ -261,6 +265,7 @@ export function WbsPage() {
               onDelete={() => setDeleteOpen(true)}
               onChangeLevels={handleChangeLevels}
               onOpenVisibility={() => setVisibilityOpen(true)}
+              onOpenManual={() => setManualOpen(true)}
             />
           </div>
 
@@ -302,6 +307,8 @@ export function WbsPage() {
         <WbsSheetNameDialog
           mode={nameDialog}
           initialName={nameDialog === "rename" ? current?.name ?? "" : ""}
+          // 名前変更のときは、変更するWBS自身の名前は重複に数えない（同じ名前のまま保存できるように）
+          existingNames={sheets.filter(s => nameDialog === "create" || s.id !== current?.id).map(s => s.name)}
           onSubmit={nameDialog === "create" ? handleCreate : handleRename}
           onClose={() => setNameDialog(null)}
         />
@@ -315,6 +322,8 @@ export function WbsPage() {
           onClose={() => setDeleteOpen(false)}
         />
       )}
+
+      {manualOpen && <WbsManualDialog canEdit={canEdit} onClose={() => setManualOpen(false)} />}
 
       {visibilityOpen && current && (
         <WbsVisibilityDialog sheet={current} orgId={userOrgId} onSaved={load} onClose={() => setVisibilityOpen(false)} />

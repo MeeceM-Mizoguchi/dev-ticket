@@ -1,28 +1,26 @@
 // ENHA2-053 WBSの表の「チケット」列の中身。
 //
 // その行に紐づいたチケットを、チケット番号のチップで並べる。チップを押すと詳細パネルが開く。
-// 行の高さは固定なので、セルに並べるのは2件まで。残りは「+n」を押すと一覧で出す。
+//
+// 列の幅が狭く、チップを並べると2件目で早々に見切れ、右端の「＋」まで押し出されて
+// 見えなくなっていた。そこで
+//   ・セルに出すチップは1件まで。2件以上は「+n」にまとめる
+//   ・「＋」と「+n」は決して縮めない（縮むのはチップの置き場だけ）
+// とした。全部を見るのは「+n」を押して出す一覧のほう。マウスを乗せただけでは何も出さない
+// （ガントや一覧に重なって邪魔になるため）。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Plus } from "lucide-react";
 import type { WbsTicketRef } from "./WbsTicketLinkDialog";
 
-const MAX_INLINE = 2;
+/** セルに直接チップで出す件数。これを超えた分は「+n」にまとめる */
+const MAX_INLINE = 1;
 
 const chipStyle = {
   display: "inline-flex", alignItems: "center", height: 20, padding: "0 6px", fontSize: 11, fontWeight: 700,
   color: "#047857", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 5, cursor: "pointer",
   whiteSpace: "nowrap", fontFamily: "var(--font-mono)", flexShrink: 0,
 } as const;
-
-function Chip({ t, onOpen }: { t: WbsTicketRef; onOpen: (id: string) => void }) {
-  return (
-    // マウスを乗せるとタイトルが分かる
-    <button type="button" title={t.ticket.title} onClick={() => onOpen(t.ticket.id)} style={chipStyle}>
-      {t.ticket.wbs}
-    </button>
-  );
-}
 
 export function WbsTicketCell({ tickets, canEdit, onOpen, onAdd }: {
   tickets: WbsTicketRef[];
@@ -58,7 +56,7 @@ export function WbsTicketCell({ tickets, canEdit, onOpen, onAdd }: {
   }, [pop]);
 
   const inline = tickets.slice(0, MAX_INLINE);
-  const rest = tickets.slice(MAX_INLINE);
+  const restCount = tickets.length - inline.length;
 
   const toggleMore = () => {
     if (pop) { setPop(null); return; }
@@ -67,14 +65,24 @@ export function WbsTicketCell({ tickets, canEdit, onOpen, onAdd }: {
   };
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", minWidth: 0, overflow: "hidden" }}>
-      {inline.map(t => <Chip key={t.ticket.id} t={t} onOpen={onOpen} />)}
-      {rest.length > 0 && (
-        <button ref={moreRef} type="button" onClick={toggleMore} title={`ほか ${rest.length} 件を表示`}
+    <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", minWidth: 0 }}>
+      {/* チップの置き場。足りなければここだけが縮み、「+n」と「＋」は押し出さない */}
+      <div style={{ flex: "0 1 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
+        {inline.map(t => (
+          <button key={t.ticket.id} type="button" onClick={() => onOpen(t.ticket.id)}
+            style={{ ...chipStyle, flexShrink: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "18px", boxSizing: "border-box" }}>
+            {t.ticket.wbs}
+          </button>
+        ))}
+      </div>
+
+      {restCount > 0 && (
+        <button ref={moreRef} type="button" onClick={toggleMore} aria-label={`ほか ${restCount} 件を表示`}
           style={{ ...chipStyle, color: "#4B5563", background: "#F3F4F6", border: "1px solid #E5E7EB", fontFamily: "inherit" }}>
-          +{rest.length}
+          +{restCount}
         </button>
       )}
+
       {canEdit && (
         <button type="button" onClick={onAdd} title="チケットを紐づける" aria-label="チケットを紐づける"
           style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, color: "#6B6458", background: "transparent", border: "1px dashed #C9CED6", borderRadius: 5, cursor: "pointer", flexShrink: 0 }}>

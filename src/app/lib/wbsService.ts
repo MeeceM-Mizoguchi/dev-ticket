@@ -5,6 +5,7 @@
 // ここに組織やメンバーの条件は要らない。「閲覧のみ／編集可」の出し分けは画面側で行う。
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { mapWbsHoliday, mapWbsItem, mapWbsSheet, mapWbsStatus } from "@/app/lib/mappers";
+import type { WbsImportItem } from "@/app/lib/wbsImport";
 import type { AccessLevel, UserPermissions, WbsHoliday, WbsItem, WbsLevels, WbsSheet, WbsStatus, WbsVisibility } from "@/app/types";
 
 /** 並びの初期間隔。追加は末尾に積み、並べ替えは前後の中点を採る（tasks.sort_order と同じ） */
@@ -21,14 +22,18 @@ export const WBS_LEVEL_OPTIONS: { value: WbsLevels; label: string }[] = [
 
 /**
  * 新しいWBSに入れる既定のステータス。色は参考の Excel に合わせてある
- * （未着手=薄いグレー / 着手中=薄い青紫 / 完了=薄い緑 / 保留=薄い黄）。
- * 取下は Excel に無いので、未着手より一段濃いグレーにした。
+ * （未着手=薄いグレー / 着手中=青 / 完了=薄い緑 / 保留=薄い黄）。
+ * 取下は Excel に無いので、濃いグレー＋白文字にした。
+ *
+ * 「着手中」と「取下」は元は #DCE0FF / #D5D9E0 だったが、どちらも「未着手」(#EDECF4) と
+ * 見分けがつかず、行の背景に埋もれて読めなかったので濃くした。ここは新しく作るWBSの
+ * 既定値で、既に作られたWBSの色は「ステータス設定」から変える。
  */
 export const DEFAULT_WBS_STATUSES: { name: string; color: string }[] = [
   { name: "未着手", color: "#EDECF4" },
-  { name: "着手中", color: "#DCE0FF" },
+  { name: "着手中", color: "#9DBEFF" },
   { name: "完了", color: "#D1F9E4" },
-  { name: "取下", color: "#D5D9E0" },
+  { name: "取下", color: "#767E8E" },
   { name: "保留", color: "#FDF3C6" },
 ];
 
@@ -270,13 +275,14 @@ export async function loadWbsItems(sheetId: string): Promise<WbsItem[]> {
 }
 
 export async function createWbsItem(input: {
-  sheetId: string; parentId: string | null; level: number; statusId: string | null; sortOrder: number;
+  sheetId: string; parentId: string | null; level: number; name: string; statusId: string | null; sortOrder: number;
 }): Promise<WbsItem | null> {
   if (!isSupabaseEnabled) return null;
   const { data, error } = await supabase!.from("wbs_items").insert({
     wbs_sheet_id: input.sheetId,
     parent_id: input.parentId,
     level: input.level,
+    name: input.name,
     status_id: input.statusId,
     sort_order: input.sortOrder,
   }).select().single();
@@ -311,6 +317,17 @@ export async function deleteWbsItem(id: string): Promise<boolean> {
   return true;
 }
 
+/** 行をまとめて消す。それぞれの下の行と紐づけは on delete cascade で一緒に消える */
+export async function deleteWbsItems(ids: string[]): Promise<boolean> {
+  if (!isSupabaseEnabled || ids.length === 0) return true;
+  // id を並べすぎるとURLが長くなりすぎるので、分けて送る
+  for (let i = 0; i < ids.length; i += 100) {
+    const { error } = await supabase!.from("wbs_items").delete().in("id", ids.slice(i, i + 100));
+    if (error) { console.error("[wbs] delete items failed:", error.message); return false; }
+  }
+  return true;
+}
+
 /** 中点が潰れたときの採番し直し。渡した順に間隔を空けて振り直す */
 export async function renumberWbsItems(orderedIds: string[]): Promise<boolean> {
   if (!isSupabaseEnabled) return true;
@@ -322,24 +339,33 @@ export async function renumberWbsItems(orderedIds: string[]): Promise<boolean> {
   return true;
 }
 
-// ── 祝日（プロジェクトごと） ──────────────────────────────────
+// ── 休日（土日のほかに休みにする日） ──────────────────────────
+// 範囲は2つ。wbs_sheet_id が null なら「そのプロジェクトの全WBS」、値があれば「そのWBSだけ」。
 
-export async function loadWbsHolidays(projectId: string): Promise<WbsHoliday[]> {
+/** そのWBSで有効な休日（全WBSに適用のものと、そのWBSだけのもの）を日付順で取る */
+export async function loadWbsHolidays(projectId: string, sheetId: string): Promise<WbsHoliday[]> {
   if (!isSupabaseEnabled || !projectId) return [];
   const { data, error } = await supabase!
     .from("wbs_holidays").select("*").eq("project_id", projectId)
+    .or(`wbs_sheet_id.is.null,wbs_sheet_id.eq.${sheetId}`)
     .order("holiday_date", { ascending: true })
     .order("id", { ascending: true });
   if (error) { console.error("[wbs] load holidays failed:", error.message); return []; }
   return (data ?? []).map(mapWbsHoliday);
 }
 
-export async function createWbsHoliday(input: { projectId: string; date: string; name: string }): Promise<WbsHoliday | null> {
-  if (!isSupabaseEnabled) return null;
-  const { data, error } = await supabase!.from("wbs_holidays")
-    .insert({ project_id: input.projectId, holiday_date: input.date, name: input.name }).select().single();
-  if (error || !data) { console.error("[wbs] insert holiday failed:", error?.message); return null; }
-  return mapWbsHoliday(data);
+/**
+ * 休日をまとめて足す（1件の追加も CSV の取り込みもここを通す）。
+ * sheetId が null なら全WBSに適用、値があればそのWBSだけ。
+ */
+export async function createWbsHolidays(
+  projectId: string, sheetId: string | null, rows: { date: string; name: string }[],
+): Promise<boolean> {
+  if (!isSupabaseEnabled || rows.length === 0) return true;
+  const { error } = await supabase!.from("wbs_holidays")
+    .insert(rows.map(r => ({ project_id: projectId, wbs_sheet_id: sheetId, holiday_date: r.date, name: r.name })));
+  if (error) { console.error("[wbs] insert holidays failed:", error.message); return false; }
+  return true;
 }
 
 export async function deleteWbsHoliday(id: string): Promise<boolean> {
@@ -386,5 +412,89 @@ export async function removeWbsItemTickets(itemId: string, ticketIds: string[]):
   if (!isSupabaseEnabled || ticketIds.length === 0) return true;
   const { error } = await supabase!.from("wbs_item_tickets").delete().eq("wbs_item_id", itemId).in("ticket_id", ticketIds);
   if (error) { console.error("[wbs] remove item tickets failed:", error.message); return false; }
+  return true;
+}
+
+// ── インポート（Excel / CSV から行をまとめて取り込む） ────────
+
+/** 1回の登録でまとめて送る行数。多すぎるとリクエストが大きくなりすぎる */
+const IMPORT_CHUNK = 300;
+/** インポートで追加するステータスの色（名前しか分からないので、あとから「ステータス設定」で変える） */
+const IMPORTED_STATUS_COLOR = "#E0F2FE";
+
+/**
+ * 読み取った行をまとめて登録する。
+ *   replace: true なら、いまある行（とチケットの紐づけ）を先にすべて消す
+ *   newStatuses: このWBSにまだ無いステータスの名前。先に追加してから行に付ける
+ * 行の id は読み取りの時点で採番してあるので、親子の関係ごと一度に登録できる。
+ * 上の段から順に送る（親が先に入っていないと、子の登録が外部キーで弾かれる）。
+ * 途中で失敗したら false を返す（そこまでに入った分は残る）。
+ */
+export async function importWbsItems(input: {
+  sheetId: string;
+  replace: boolean;
+  items: WbsImportItem[];
+  statuses: WbsStatus[];
+  newStatuses: string[];
+  /** 大項目を積み始める並び順（追加のときは、いまある大項目の末尾） */
+  baseSortOrder: number;
+  ticketIdByNumber: ReadonlyMap<string, string>;
+}): Promise<boolean> {
+  if (!isSupabaseEnabled) return false;
+  const { sheetId } = input;
+
+  if (input.replace) {
+    const { error } = await supabase!.from("wbs_items").delete().eq("wbs_sheet_id", sheetId);
+    if (error) { console.error("[wbs] import: clear items failed:", error.message); return false; }
+  }
+
+  // ステータスの名前 → id。足りないものは末尾に追加する
+  const statusIdByName = new Map(input.statuses.map(s => [s.name, s.id]));
+  if (input.newStatuses.length > 0) {
+    const last = input.statuses.length ? input.statuses[input.statuses.length - 1].sortOrder : -WBS_SORT_GAP;
+    const { data, error } = await supabase!.from("wbs_statuses")
+      .insert(input.newStatuses.map((name, i) => ({
+        wbs_sheet_id: sheetId, name, color: IMPORTED_STATUS_COLOR, sort_order: last + (i + 1) * WBS_SORT_GAP,
+      }))).select();
+    if (error) { console.error("[wbs] import: insert statuses failed:", error.message); return false; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const r of (data ?? []) as any[]) statusIdByName.set(r.name, r.id);
+  }
+  const firstStatusId = input.statuses[0]?.id ?? null;
+
+  // 並び順はファイルに出てきた順。大項目だけは、いまある行の後ろに積む
+  const rows = input.items.map((it, index) => ({
+    id: it.id,
+    wbs_sheet_id: sheetId,
+    parent_id: it.parentId,
+    level: it.level,
+    name: it.name,
+    assignee: it.assignee,
+    start_date: it.startDate || null,
+    end_date: it.endDate || null,
+    progress: it.progress,
+    status_id: (it.statusName ? statusIdByName.get(it.statusName) : undefined) ?? firstStatusId,
+    note: it.note,
+    sort_order: (it.level === 1 ? input.baseSortOrder : 0) + index * WBS_SORT_GAP,
+  }));
+  for (const level of [1, 2, 3]) {
+    const batch = rows.filter(r => r.level === level);
+    for (let i = 0; i < batch.length; i += IMPORT_CHUNK) {
+      const { error } = await supabase!.from("wbs_items").insert(batch.slice(i, i + IMPORT_CHUNK));
+      if (error) { console.error("[wbs] import: insert items failed:", error.message); return false; }
+    }
+  }
+
+  // チケットの紐づけ。このプロジェクトに無い番号は飛ばす
+  const links: { wbs_item_id: string; ticket_id: string }[] = [];
+  for (const it of input.items) {
+    const ids = new Set(it.ticketNumbers.map(n => input.ticketIdByNumber.get(n)).filter((v): v is string => !!v));
+    ids.forEach(ticket_id => links.push({ wbs_item_id: it.id, ticket_id }));
+  }
+  for (let i = 0; i < links.length; i += IMPORT_CHUNK) {
+    const { error } = await supabase!.from("wbs_item_tickets")
+      .upsert(links.slice(i, i + IMPORT_CHUNK), { onConflict: "wbs_item_id,ticket_id", ignoreDuplicates: true });
+    if (error) { console.error("[wbs] import: insert item tickets failed:", error.message); return false; }
+  }
   return true;
 }

@@ -1,12 +1,13 @@
 // ENHA2-053 WBS画面の上部の操作列。
 // WBSの切り替え・新規作成・名前変更・削除・段数・公開設定を並べる。
 import type { ReactNode } from "react";
-import { Plus, Pencil, Trash2, Globe, Lock } from "lucide-react";
+import { Plus, Pencil, Trash2, Globe, Lock, BookOpen } from "lucide-react";
 import { WBS_LEVEL_OPTIONS } from "@/app/lib/wbsService";
 import type { WbsLevels, WbsSheet } from "@/app/types";
-import { wbsToolBtn, wbsToolLabel, wbsToolSelect } from "./wbsStyles";
+import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
+import { wbsToolBtn, wbsToolLabel } from "./wbsStyles";
 
-export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onChangeLevels, onOpenVisibility, children }: {
+export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onChangeLevels, onOpenVisibility, onOpenManual, children }: {
   sheets: WbsSheet[];
   current: WbsSheet | null;
   /** WBSの権限が「編集可」か */
@@ -19,16 +20,18 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
   onDelete: () => void;
   onChangeLevels: (levels: WbsLevels) => void;
   onOpenVisibility: () => void;
+  /** 使い方（マニュアル）を開く。閲覧のみの人にも出す */
+  onOpenManual: () => void;
   /** 右側に足す操作（ステータス設定など） */
   children?: ReactNode;
 }) {
   const VisIcon = current?.visibility === "members" ? Lock : Globe;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-      <select value={current?.id ?? ""} onChange={e => onSelect(e.target.value)} title="WBSを切り替える"
-        style={{ ...wbsToolSelect, minWidth: 180, maxWidth: 320, fontWeight: 700 }}>
-        {sheets.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-      </select>
+      {/* プルダウンはブラウザ標準の <select> ではなく、タスク画面と同じ PickerCell を使う */}
+      <PickerCell variant="chip" value={current?.id ?? ""} onChange={onSelect} title="WBSを切り替える"
+        options={sheets.map(s => ({ value: s.id, label: s.name }))}
+        textStyle={{ minWidth: 180, maxWidth: 320, height: 30, padding: "0 10px", fontSize: 12, fontWeight: 700, color: "#1A1714" }} />
 
       {canEdit && current && (
         <button type="button" onClick={onRename} title="名前を変更" style={wbsToolBtn}>
@@ -45,11 +48,10 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
         <>
           <span style={{ ...wbsToolLabel, marginLeft: 6 }}>段数</span>
           {/* 選べるのは3段まで。4段以上の選択肢は置かない */}
-          <select value={current.levels} disabled={!canEdit} title="項目の段数"
-            onChange={e => onChangeLevels(Number(e.target.value) as WbsLevels)}
-            style={{ ...wbsToolSelect, cursor: canEdit ? "pointer" : "default" }}>
-            {WBS_LEVEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+          <PickerCell variant="chip" value={String(current.levels)} disabled={!canEdit} title="項目の段数"
+            onChange={v => onChangeLevels(Number(v) as WbsLevels)}
+            options={WBS_LEVEL_OPTIONS.map(o => ({ value: String(o.value), label: o.label }))}
+            textStyle={{ height: 30, padding: "0 10px", fontSize: 12, color: "#1A1714" }} />
 
           {canManage ? (
             <button type="button" onClick={onOpenVisibility} title="公開設定を変更" style={wbsToolBtn}>
@@ -69,6 +71,9 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
       {children}
 
       <div style={{ flex: 1 }} />
+      <button type="button" onClick={onOpenManual} title="WBS の使い方を見る" style={wbsToolBtn}>
+        <BookOpen style={{ width: 12, height: 12 }} />マニュアル
+      </button>
       {canEdit && (
         <button type="button" onClick={onCreate} style={{ ...wbsToolBtn, color: "#FFFFFF", background: "#059669", border: "1px solid #059669" }}>
           <Plus style={{ width: 13, height: 13 }} />新しいWBS

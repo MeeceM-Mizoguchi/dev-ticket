@@ -8,6 +8,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { submitOnEnter } from "@/app/lib/submitKey";
+import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import { WBS_SORT_GAP, createWbsStatus, deleteWbsStatus, reorderWbsStatuses, updateWbsStatus } from "@/app/lib/wbsService";
 import type { WbsItem, WbsStatus } from "@/app/types";
 
@@ -186,10 +187,11 @@ export function WbsStatusDialog({ sheetId, statuses, items, onChanged, onClose }
               <p style={{ fontSize: 13, color: "#1A1714", lineHeight: 1.7 }}>
                 「{deletingStatus.name}」は {deletingUsed} 行で使われています。該当する行を移すステータスを選んでください。
               </p>
-              <select value={deleting.moveToId} onChange={e => setDeleting({ id: deleting.id, moveToId: e.target.value })} aria-label="移し先のステータス"
-                style={{ marginTop: 8, height: 32, padding: "0 8px", fontSize: 13, border: "1px solid rgba(26,23,20,0.14)", borderRadius: 8, background: "#FFFFFF" }}>
-                {statuses.filter(s => s.id !== deleting.id).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+              <div style={{ marginTop: 8 }}>
+                <PickerCell variant="chip" value={deleting.moveToId} onChange={v => setDeleting({ id: deleting.id, moveToId: v })} title="移し先のステータス"
+                  options={statuses.filter(s => s.id !== deleting.id).map(s => ({ value: s.id, label: s.name, color: s.color }))}
+                  textStyle={{ minWidth: 160, fontSize: 13, color: "#1A1714" }} />
+              </div>
             </>
           ) : (
             <p style={{ fontSize: 13, color: "#1A1714", lineHeight: 1.7 }}>「{deletingStatus.name}」を削除しますか？</p>

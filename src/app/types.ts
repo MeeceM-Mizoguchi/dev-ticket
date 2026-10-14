@@ -1252,10 +1252,12 @@ export interface WbsItem {
   sortOrder: number;
 }
 
-/** プロジェクトごとの祝日。そのプロジェクトの全WBSで共通に使う */
+/** 休日（土日のほかに休みにする日。祝日・会社の休業日など） */
 export interface WbsHoliday {
   id: string;
   projectId: string;
+  /** 適用する範囲。null = そのプロジェクトの全WBS / 値あり = そのWBSだけ */
+  sheetId: string | null;
   /** YYYY-MM-DD */
   date: string;
   name: string;

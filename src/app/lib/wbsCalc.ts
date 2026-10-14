@@ -144,6 +144,8 @@ export function textColorOn(bg: string): string {
 
 /** 表示する日数の上限（約3年）。日付の打ち間違いで列が何千本にもならないようにする */
 const GANTT_MAX_DAYS = 1100;
+/** 表示する月数の下限 */
+const GANTT_MIN_MONTHS = 3;
 
 export interface WbsGanttDay {
   /** YYYY-MM-DD */
@@ -154,7 +156,9 @@ export interface WbsGanttDay {
   dow: number;
   /** 土日か、登録した祝日 */
   off: boolean;
-  /** 登録した祝日の名前（祝日でなければ ""） */
+  /** 休日設定で登録した日か（土日とは別。名前が空でも true） */
+  isHoliday: boolean;
+  /** 登録した休日の名前（登録していない日・名前を付けていない休日は ""） */
   holidayName: string;
   isToday: boolean;
   /** その日に期間がかかっている一番右の段の行の数。土日と祝日は 0 */
@@ -189,7 +193,12 @@ export function ganttIndexOf(model: WbsGanttModel, dateStr: string): number | nu
 
 /**
  * ガントに出す日付の並びと、日ごとの並行タスク数を作る。
- * 表示する期間は、行の開始予定日・終了予定日の最小〜最大。日付の入った行が無いときは今日を含む月。
+ * 表示する期間は、行の開始予定日・終了予定日の最小〜最大を含む月の、月初〜月末。
+ * 日付の入った行が無いときは今日を含む月から。どちらの場合も、最低3か月ぶんは出す。
+ *
+ * 日付の最小〜最大ぴったりにすると、日付が1つしか入っていないWBSではガントが1日ぶん
+ * （1列）しか出ず、壊れて見える。横にスクロールする余地も無くなる。月の単位に広げ、
+ * 最低の長さを決めておくことで、入力し始めの段階でもガントとして読める幅を保つ。
  * holidays は「日付 → 祝日名」。
  */
 export function buildWbsGantt(rows: WbsRow[], holidays: ReadonlyMap<string, string>, today: string): WbsGanttModel {
@@ -204,10 +213,12 @@ export function buildWbsGantt(rows: WbsRow[], holidays: ReadonlyMap<string, stri
     }
   }
   if (!min || !max) {
-    const t = parseDateStr(today) ?? new Date();
-    min = new Date(t.getFullYear(), t.getMonth(), 1);
-    max = new Date(t.getFullYear(), t.getMonth() + 1, 0);
+    min = max = parseDateStr(today) ?? new Date();
   }
+  // 月初〜月末に広げ、最低 GANTT_MIN_MONTHS か月ぶんになるまで後ろへ伸ばす
+  min = new Date(min.getFullYear(), min.getMonth(), 1);
+  const monthSpan = (max.getFullYear() - min.getFullYear()) * 12 + (max.getMonth() - min.getMonth()) + 1;
+  max = new Date(min.getFullYear(), min.getMonth() + Math.max(monthSpan, GANTT_MIN_MONTHS), 0);
   const length = Math.min(dayDiff(min, max) + 1, GANTT_MAX_DAYS);
 
   const days: WbsGanttDay[] = [];
@@ -217,7 +228,8 @@ export function buildWbsGantt(rows: WbsRow[], holidays: ReadonlyMap<string, stri
     const str = toDateStr(d);
     const dow = d.getDay();
     const holidayName = holidays.get(str) ?? "";
-    days.push({ str, day: d.getDate(), dow, off: dow === 0 || dow === 6 || holidays.has(str), holidayName, isToday: str === today, count: 0 });
+    const isHoliday = holidays.has(str);
+    days.push({ str, day: d.getDate(), dow, off: dow === 0 || dow === 6 || isHoliday, isHoliday, holidayName, isToday: str === today, count: 0 });
     const label = `${d.getFullYear()}年${d.getMonth() + 1}月`;
     const last = months[months.length - 1];
     if (last && last.label === label) last.span++; else months.push({ label, span: 1 });

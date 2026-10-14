@@ -3,14 +3,14 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, CornerDownRight, Tags, CalendarOff } from "lucide-react";
+import { Trash2, Tags, CalendarOff, Download, Upload } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
 import { PageLoader } from "@/app/components/shared/PageLoader";
 import { computeSortOrder } from "@/app/lib/taskService";
 import {
-  WBS_LEVEL_LABELS, WBS_SORT_GAP, addWbsItemTickets, createWbsItem, deleteWbsItem, loadWbsHolidays, loadWbsItemTickets, loadWbsItems,
+  WBS_SORT_GAP, addWbsItemTickets, createWbsItem, deleteWbsItems, loadWbsHolidays, loadWbsItemTickets, loadWbsItems,
   loadWbsStatuses, removeWbsItemTickets, renumberWbsItems, updateWbsItem,
 } from "@/app/lib/wbsService";
 import { buildWbsGantt, buildWbsRows, siblingsOf, todayStr } from "@/app/lib/wbsCalc";
@@ -18,10 +18,13 @@ import type { Project, WbsHoliday, WbsItem, WbsSheet, WbsStatus } from "@/app/ty
 import { WbsSummary } from "./WbsSummary";
 import { WbsStatusDialog } from "./WbsStatusDialog";
 import { WbsHolidayDialog } from "./WbsHolidayDialog";
+import { WbsImportDialog } from "./WbsImportDialog";
+import { downloadBlob, safeFileName } from "@/app/lib/articleExport/download";
+import { exportWbsXlsx } from "@/app/lib/wbsExcel";
 import { WbsTicketLinkDialog, type WbsTicketRef } from "./WbsTicketLinkDialog";
 import { WbsTicketCell } from "./WbsTicketCell";
-import { WbsTable, visibleWbsColumns, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
-import { wbsToolBtn, wbsToolBtnDisabled, wbsToolLabel, wbsToolSelect } from "./wbsStyles";
+import { WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
+import { wbsToolBtn, wbsToolBtnDisabled } from "./wbsStyles";
 
 /** 列固定の位置は、WBSごと・利用者ごとにブラウザへ保存する */
 function freezeStorageKey(userId: string, sheetId: string) { return `devticket:wbs:freeze:${userId}:${sheetId}`; }
@@ -58,20 +61,45 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   // 一度でもデータを読んだら、以後は再読み込みでスピナーに差し替えない（画面のちらつき防止）
   const initializedRef = useRef(false);
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // チェックを付けた行。行を選ぶ手段は、表の左端のチェックボックスだけ
+  const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(new Set());
   const [editing, setEditing] = useState<WbsEditing | null>(null);
   const [scrollTo, setScrollTo] = useState<{ id: string; nonce: number } | null>(null);
-  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [holidayOpen, setHolidayOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const exportingRef = useRef(false);
   const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
 
+  // 横スクロールを、ブラウザの「戻る／進む」に化けさせない。
+  // 左の表は横に動かないので、その上で横に送ると操作がブラウザまで抜けて、
+  // ページを戻る／進むジェスチャーになってしまう。この領域の横スクロールはここで受け止め、
+  // 代わりに右の枠（ガント）を横に送る。集計の件数の部分だけは、自分で横に動くので任せる。
+  const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!rootEl) return;
+    const onWheel = (e: WheelEvent) => {
+      // 縦が主の操作・拡大縮小（Ctrl+ホイール）には手を出さない
+      if (e.ctrlKey || Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+      if ((e.target as HTMLElement | null)?.closest?.("[data-wbs-hscroll]")) return;
+      e.preventDefault();
+      const pane = rootEl.querySelector<HTMLElement>("[data-wbs-hpane]");
+      // deltaMode 1 は「行」単位。px に直してから送る
+      if (pane) pane.scrollLeft += e.deltaMode === 1 ? e.deltaX * 40 : e.deltaX;
+    };
+    // preventDefault するので passive: false が必須（React の onWheel は passive で登録される）
+    rootEl.addEventListener("wheel", onWheel, { passive: false });
+    return () => rootEl.removeEventListener("wheel", onWheel);
+  }, [rootEl]);
+
   const load = useCallback(async () => {
     const [its, sts, hols, lks] = await Promise.all([
-      loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id), loadWbsItemTickets(sheet.id),
+      loadWbsItems(sheet.id), loadWbsStatuses(sheet.id), loadWbsHolidays(project.id, sheet.id), loadWbsItemTickets(sheet.id),
     ]);
     setItems(its);
     setStatuses(sts);
@@ -81,18 +109,16 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     setLoading(false);
   }, [sheet.id, project.id]);
 
-  const reloadHolidays = useCallback(async () => { setHolidays(await loadWbsHolidays(project.id)); }, [project.id]);
+  const reloadHolidays = useCallback(async () => { setHolidays(await loadWbsHolidays(project.id, sheet.id)); }, [project.id, sheet.id]);
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
 
   const today = todayStr();
   const rows = useMemo(() => buildWbsRows(items, sheet.levels, today), [items, sheet.levels, today]);
-  const cols = useMemo(() => visibleWbsColumns(sheet.levels), [sheet.levels]);
-  // 祝日は「日付 → 祝日名」。予定日数とガントの両方で、土日と同じく稼働日から除く
+  // 休日は「日付 → 休日名」。予定日数とガントの両方で、土日と同じく稼働日から除く
   const holidayNames = useMemo(() => new Map(holidays.map(h => [h.date, h.name])), [holidays]);
   const holidaySet = useMemo(() => new Set(holidays.map(h => h.date)), [holidays]);
   const gantt = useMemo(() => buildWbsGantt(rows, holidayNames, today), [rows, holidayNames, today]);
-  const selected = rows.find(r => r.item.id === selectedId) ?? null;
   const highlightSet = useMemo(() => new Set(highlightIds), [highlightIds]);
 
   // 強調している行が消えたら、強調の一覧からも外す（全部消えたら案内も消える）
@@ -143,6 +169,29 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
       onOpen={onOpenTicket} onAdd={() => setLinkTargetId(row.item.id)} />
   ), [linkedTicketsOf, canEdit, onOpenTicket]);
 
+  // ── エクスポート・インポート ────────────────────────────────
+  /** いま画面に出ているWBSを Excel にして保存する（左に表、右にガント） */
+  const handleExport = async () => {
+    if (exportingRef.current) return;
+    exportingRef.current = true;
+    setExporting(true);
+    try {
+      const blob = await exportWbsXlsx({
+        sheetName: sheet.name, rows, statuses, gantt, holidays: holidaySet,
+        ticketNumbersOf: id => linkedTicketsOf(id).map(t => t.ticket.wbs),
+      });
+      downloadBlob(blob, safeFileName(`WBS_${sheet.name}`, today.replace(/-/g, ""), "xlsx"));
+    } catch (e) {
+      console.error("[wbs] export failed:", e);
+      toast("エクスポートできませんでした", "error");
+    } finally {
+      exportingRef.current = false;
+      setExporting(false);
+    }
+  };
+
+  const ticketIdByNumber = useMemo(() => new Map(tickets.map(t => [t.ticket.wbs, t.ticket.id])), [tickets]);
+
   // ── 編集 ────────────────────────────────────────────────────
   const handleUpdate = useCallback((id: string, patch: Partial<WbsItem>) => {
     // 先に画面へ反映してから保存する。失敗したら読み直して元へ戻す
@@ -153,21 +202,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   }, [load, toast]);
 
   // ── 追加 ────────────────────────────────────────────────────
-  const addItem = async (parentId: string | null, level: number, sortOrder: number) => {
-    if (addingRef.current) return;
-    addingRef.current = true;
-    try {
-      // 新しい行の初期値は先頭のステータス（既定では「未着手」）
-      const created = await createWbsItem({ sheetId: sheet.id, parentId, level, statusId: statuses[0]?.id ?? null, sortOrder });
-      if (!created) { toast("行を追加できませんでした", "error"); return; }
-      setItems(prev => [...prev, created]);
-      setSelectedId(created.id);
-      setEditing({ id: created.id, field: "name" });
-      setScrollTo({ id: created.id, nonce: Date.now() });
-    } finally {
-      addingRef.current = false;
-    }
-  };
+  // 行の追加は、表の行の境目のボタン（handleInsert）か、いちばん下の空の行（handleAddNew）から来る。
 
   /** 同じ親の末尾に積むための値 */
   const tailOrder = (parentId: string | null) => {
@@ -175,32 +210,83 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     return sibs.length ? sibs[sibs.length - 1].sortOrder + WBS_SORT_GAP : 0;
   };
 
-  const addTop = () => addItem(null, 1, tailOrder(null));
-
-  /** 選んだ行のすぐ下に、同じ段の行を足す */
-  const addSibling = async () => {
-    if (!selected) return;
-    const it = selected.item;
-    const sibs = siblingsOf(items, it.parentId);
-    const idx = sibs.findIndex(s => s.id === it.id);
-    let order = computeSortOrder(it.sortOrder, sibs[idx + 1]?.sortOrder ?? null);
-    if (order === null) {
-      // 中点が潰れていたら、同じ親の行を振り直してから間に入れる
-      await renumberWbsItems(sibs.map(s => s.id));
-      setItems(prev => prev.map(p => {
-        const i = sibs.findIndex(s => s.id === p.id);
-        return i < 0 ? p : { ...p, sortOrder: i * WBS_SORT_GAP };
-      }));
-      order = idx * WBS_SORT_GAP + WBS_SORT_GAP / 2;
+  const addItem = async (parentId: string | null, level: number, name: string): Promise<boolean> => {
+    if (addingRef.current) return false;
+    addingRef.current = true;
+    try {
+      // 新しい行の初期値は先頭のステータス（既定では「未着手」）
+      const created = await createWbsItem({
+        sheetId: sheet.id, parentId, level, name, statusId: statuses[0]?.id ?? null, sortOrder: tailOrder(parentId),
+      });
+      if (!created) { toast("行を追加できませんでした", "error"); return false; }
+      setItems(prev => [...prev, created]);
+      // 足した行は選択しない。入力は空の行で続いているので、選択まで移すと
+      // 「行を削除」の対象が、いま打っている場所と食い違う
+      setScrollTo({ id: created.id, nonce: Date.now() });
+      return true;
+    } finally {
+      addingRef.current = false;
     }
-    await addItem(it.parentId, it.level, order);
   };
 
-  /** 選んだ行の下の段に足す（一番右の段の行には足せない） */
-  const addChild = () => {
-    if (!selected || selected.item.level >= sheet.levels) return;
-    return addItem(selected.item.id, selected.item.level + 1, tailOrder(selected.item.id));
+  /**
+   * 行の境目のボタンを押した。afterId の行のすぐ下（null なら先頭）に、level の段の行を足し、
+   * そのまま名前を入力できる状態にする。足した行が、押した境目の位置に現れるように親と並び順を決める:
+   *   ・1つ下の段   … afterId の行の最初の子にする
+   *   ・同じ段・上の段 … afterId の行が属している、その段の行のすぐ後ろに入れる
+   */
+  const handleInsert = async (afterId: string | null, level: number) => {
+    if (addingRef.current || level > sheet.levels) return;
+    let parentId: string | null = null;
+    let order: number | null;
+    const after = afterId ? items.find(i => i.id === afterId) : undefined;
+    if (!after) {
+      // 先頭に入れる（大項目）
+      const tops = siblingsOf(items, null);
+      order = tops.length ? tops[0].sortOrder - WBS_SORT_GAP : 0;
+    } else if (level === after.level + 1) {
+      parentId = after.id;
+      const kids = siblingsOf(items, after.id);
+      order = kids.length ? kids[0].sortOrder - WBS_SORT_GAP : 0;
+    } else {
+      // afterId の行から上へたどって、足す段と同じ段の行（anchor）を探す。その後ろに入れる
+      let anchor: WbsItem | undefined = after;
+      while (anchor && anchor.level > level) {
+        const pid: string | null = anchor.parentId;
+        anchor = pid ? items.find(i => i.id === pid) : undefined;
+      }
+      if (!anchor || anchor.level !== level) return;
+      parentId = anchor.parentId;
+      const sibs = siblingsOf(items, parentId);
+      const idx = sibs.findIndex(x => x.id === anchor!.id);
+      order = computeSortOrder(anchor.sortOrder, sibs[idx + 1]?.sortOrder ?? null);
+      if (order === null) {
+        // 中点が潰れていたら、同じ親の行を振り直してから間に入れる
+        await renumberWbsItems(sibs.map(x => x.id));
+        setItems(prev => prev.map(p => {
+          const i = sibs.findIndex(x => x.id === p.id);
+          return i < 0 ? p : { ...p, sortOrder: i * WBS_SORT_GAP };
+        }));
+        order = idx * WBS_SORT_GAP + WBS_SORT_GAP / 2;
+      }
+    }
+
+    addingRef.current = true;
+    try {
+      // 新しい行の初期値は先頭のステータス（既定では「未着手」）
+      const created = await createWbsItem({ sheetId: sheet.id, parentId, level, name: "", statusId: statuses[0]?.id ?? null, sortOrder: order });
+      if (!created) { toast("行を追加できませんでした", "error"); return; }
+      setItems(prev => [...prev, created]);
+      // 足した行で、そのまま名前を打てるようにする
+      setEditing({ id: created.id, field: "name" });
+      setScrollTo({ id: created.id, nonce: Date.now() });
+    } finally {
+      addingRef.current = false;
+    }
   };
+
+  /** いちばん下の空の行に入力した。新しい大項目を末尾に足す */
+  const handleAddNew = (name: string) => { addItem(null, 1, name); };
 
   // ── 並べ替え ────────────────────────────────────────────────
   const handleMove = useCallback(async (dragId: string, targetId: string, mode: WbsDropMode) => {
@@ -240,89 +326,118 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     handleUpdate(dragId, { parentId, sortOrder: order });
   }, [items, handleUpdate, load, toast]);
 
-  // ── 削除 ────────────────────────────────────────────────────
-  const deleteTarget = rows.find(r => r.item.id === deleteTargetId) ?? null;
+  // ── 行の選択（チェックボックス） ────────────────────────────
+  /** その行の下にある行すべて */
+  const descendantsOf = useCallback((id: string): string[] => {
+    const out: string[] = [];
+    const walk = (pid: string) => {
+      for (const i of items) if (i.parentId === pid) { out.push(i.id); walk(i.id); }
+    };
+    walk(id);
+    return out;
+  }, [items]);
 
-  const handleDelete = async () => {
-    if (!deleteTarget) return;
-    const id = deleteTarget.item.id;
-    const ok = await deleteWbsItem(id);
-    if (!ok) { toast("行を削除できませんでした", "error"); return; }
-    // 下の行は DB 側で一緒に消える。画面からも同じ範囲を外す
-    setItems(prev => {
-      const gone = new Set([id]);
-      let grew = true;
-      while (grew) {
-        grew = false;
-        for (const i of prev) {
-          if (i.parentId && gone.has(i.parentId) && !gone.has(i.id)) { gone.add(i.id); grew = true; }
-        }
+  /**
+   * チェックを付け外しする。
+   *   付ける … 下にある行にも付ける（見出し行を消すと下の行も一緒に消えるので、消える範囲がそのまま見える）
+   *   外す   … 下にある行と、上の見出し行からも外す（下の行を残したいのに、上の行のチェックで一緒に消えないように）
+   */
+  const toggleCheck = useCallback((id: string) => {
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      const family = [id, ...descendantsOf(id)];
+      if (prev.has(id)) {
+        family.forEach(x => next.delete(x));
+        for (let p = items.find(i => i.id === id)?.parentId; p; p = items.find(i => i.id === p)?.parentId) next.delete(p);
+      } else {
+        family.forEach(x => next.add(x));
       }
-      return prev.filter(i => !gone.has(i.id));
+      return next;
     });
-    if (selectedId === id) setSelectedId(null);
+  }, [items, descendantsOf]);
+
+  const toggleAll = useCallback(() => {
+    setCheckedIds(prev => (items.length > 0 && items.every(i => prev.has(i.id)) ? new Set() : new Set(items.map(i => i.id))));
+  }, [items]);
+
+  // 消えた行（削除・読み直し・置き換えインポート）のチェックは捨てる
+  useEffect(() => {
+    setCheckedIds(prev => {
+      if (prev.size === 0) return prev;
+      const alive = new Set(items.map(i => i.id));
+      const next = new Set([...prev].filter(id => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [items]);
+
+  // ── 削除 ────────────────────────────────────────────────────
+  /** チェックを付けた行をまとめて消す */
+  const handleDelete = async () => {
+    if (checkedIds.size === 0) return;
+    // 上の行にもチェックがある行は、上の行と一緒に消えるので送らない
+    const byId = new Map(items.map(i => [i.id, i]));
+    const tops = [...checkedIds].filter(id => {
+      const pid = byId.get(id)?.parentId;
+      return !pid || !checkedIds.has(pid);
+    });
+    const ok = await deleteWbsItems(tops);
+    if (!ok) { toast("行を削除できませんでした", "error"); load().catch(() => { }); return; }
+    // 下の行は DB 側で一緒に消える。画面からも同じ範囲を外す
+    const gone = new Set(tops.flatMap(id => [id, ...descendantsOf(id)]));
+    setItems(prev => prev.filter(i => !gone.has(i.id)));
+    setCheckedIds(new Set());
   };
 
   if (loading && !initializedRef.current) return <PageLoader label="WBSを読み込み中..." />;
 
-  const childLabel = selected && selected.item.level < sheet.levels ? WBS_LEVEL_LABELS[selected.item.level] : null;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <WbsSummary rows={rows} statuses={statuses} gantt={gantt} />
 
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #E2E6EC", flexWrap: "wrap" }}>
         {canEdit && (
           <>
-            <button type="button" onClick={addTop} style={wbsToolBtn}>
-              <Plus style={{ width: 12, height: 12 }} />大項目を追加
+            <button type="button" onClick={() => setDeleteOpen(true)} disabled={checkedIds.size === 0}
+              title={checkedIds.size > 0 ? "チェックを付けた行を削除します" : "削除したい行の左のチェックボックスにチェックを付けると使えます"}
+              style={checkedIds.size > 0 ? { ...wbsToolBtn, color: "#DC2626" } : wbsToolBtnDisabled}>
+              {/* 何行が消えるのかを、押す前にボタンの上で分かるようにする */}
+              <Trash2 style={{ width: 12, height: 12 }} />{checkedIds.size > 0 ? `選択した ${checkedIds.size} 行を削除` : "行を削除"}
             </button>
-            <button type="button" onClick={addSibling} disabled={!selected}
-              title={selected ? "選んだ行のすぐ下に、同じ段の行を追加します" : "行を選ぶと使えます"}
-              style={selected ? wbsToolBtn : wbsToolBtnDisabled}>
-              <Plus style={{ width: 12, height: 12 }} />
-              {selected ? `${WBS_LEVEL_LABELS[selected.item.level - 1]}を追加` : "同じ段に追加"}
-            </button>
-            <button type="button" onClick={addChild} disabled={!childLabel}
-              title={childLabel ? "選んだ行の下の段に追加します" : selected ? "一番右の段の行には、下の段を追加できません" : "行を選ぶと使えます"}
-              style={childLabel ? wbsToolBtn : wbsToolBtnDisabled}>
-              <CornerDownRight style={{ width: 12, height: 12 }} />
-              {childLabel ? `${childLabel}を追加` : "下の段に追加"}
-            </button>
-            <button type="button" onClick={() => selected && setDeleteTargetId(selected.item.id)} disabled={!selected}
-              title={selected ? "選んだ行を削除します" : "行を選ぶと使えます"}
-              style={selected ? { ...wbsToolBtn, color: "#DC2626" } : wbsToolBtnDisabled}>
-              <Trash2 style={{ width: 12, height: 12 }} />行を削除
-            </button>
+            <span style={{ fontSize: 11, color: "#A09790" }}>行と行の間にマウスを乗せると、その位置に行を追加できます。大項目・中項目の行は、左の三角で開閉できます</span>
           </>
         )}
 
         <div style={{ flex: 1 }} />
+        {canEdit && (
+          <button type="button" onClick={() => setImportOpen(true)} title="Excel・CSV で作った行を、このWBSにまとめて取り込みます（テンプレートもここから）" style={wbsToolBtn}>
+            <Upload style={{ width: 12, height: 12 }} />インポート
+          </button>
+        )}
+        <button type="button" onClick={handleExport} disabled={exporting} title="このWBSを Excel ファイルにして保存します" style={exporting ? wbsToolBtnDisabled : wbsToolBtn}>
+          <Download style={{ width: 12, height: 12 }} />{exporting ? "作成中..." : "エクスポート"}
+        </button>
         {canEdit && (
           <button type="button" onClick={() => setStatusOpen(true)} title="このWBSのステータスを追加・削除・変更します" style={wbsToolBtn}>
             <Tags style={{ width: 12, height: 12 }} />ステータス設定
           </button>
         )}
         {canEdit && (
-          <button type="button" onClick={() => setHolidayOpen(true)} title="このプロジェクトの祝日を登録します（全WBSで共通）" style={wbsToolBtn}>
-            <CalendarOff style={{ width: 12, height: 12 }} />祝日設定
+          <button type="button" onClick={() => setHolidayOpen(true)} title="土日のほかに休みにする日を登録します（全WBSに適用するか、このWBSだけかを選べます）" style={wbsToolBtn}>
+            <CalendarOff style={{ width: 12, height: 12 }} />休日設定
           </button>
         )}
-        <span style={wbsToolLabel}>列固定</span>
-        <select value={cols.some(c => c.key === freezeKey) ? freezeKey : "note"} onChange={e => changeFreeze(e.target.value as WbsColKey)}
-          title="どの列までを左に固定するか。固定していない列は横にスクロールします" style={wbsToolSelect}>
-          {cols.map(c => <option key={c.key} value={c.key}>{c.key === "note" ? "すべての列" : `「${c.label}」まで`}</option>)}
-        </select>
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
         <WbsTable
           rows={rows} levels={sheet.levels} statuses={statuses} members={project.members}
-          holidays={holidaySet} canEdit={canEdit} freezeKey={freezeKey}
-          selectedId={selectedId} onSelect={setSelectedId}
+          holidays={holidaySet} canEdit={canEdit} freezeKey={freezeKey} onFreezeChange={changeFreeze}
+          checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll}
           editing={editing} onEditingChange={setEditing}
           highlightIds={highlightSet} scrollTo={scrollTo}
           onUpdate={handleUpdate} onMove={handleMove}
+          onInsert={handleInsert} onAddNew={handleAddNew}
+          collapseKey={`devticket:wbs:collapsed:${userId}:${sheet.id}`}
           gantt={gantt} renderTickets={renderTickets}
         />
       </div>
@@ -332,7 +447,18 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
       )}
 
       {holidayOpen && (
-        <WbsHolidayDialog projectId={project.id} projectName={project.name} holidays={holidays} onChanged={reloadHolidays} onClose={() => setHolidayOpen(false)} />
+        <WbsHolidayDialog projectId={project.id} projectName={project.name} sheetId={sheet.id} sheetName={sheet.name} holidays={holidays} onChanged={reloadHolidays} onClose={() => setHolidayOpen(false)} />
+      )}
+
+      {importOpen && (
+        <WbsImportDialog
+          sheet={sheet} statuses={statuses}
+          existingRowCount={items.length}
+          tailSortOrder={tailOrder(null)}
+          ticketIdByNumber={ticketIdByNumber}
+          onImported={load}
+          onClose={() => setImportOpen(false)}
+        />
       )}
 
       {linkTarget && (
@@ -345,14 +471,12 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
         />
       )}
 
-      {deleteTarget && (
+      {deleteOpen && checkedIds.size > 0 && (
         <ConfirmDialog
           title="行の削除"
-          message={deleteTarget.descendantCount > 0
-            ? `「${deleteTarget.item.name || "（名前なし）"}」の下に ${deleteTarget.descendantCount} 行あります。\n下の行ごと削除しますか？`
-            : `「${deleteTarget.item.name || "（名前なし）"}」を削除しますか？`}
+          message={`選択した ${checkedIds.size} 行を削除しますか？`}
           onConfirm={handleDelete}
-          onClose={() => setDeleteTargetId(null)}
+          onClose={() => setDeleteOpen(false)}
         />
       )}
     </div>

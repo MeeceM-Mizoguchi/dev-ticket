@@ -7,7 +7,8 @@
 --   ・行(wbs_items)は 大項目→中項目→小項目 の最大3段。親を消すと下の行も消える
 --   ・ステータス(wbs_statuses)はWBSごとに自由に増減できる。チケットのステータスとは別物
 --   ・行とチケットは多対多(wbs_item_tickets)。紐づけは関連の表示だけに使う
---   ・祝日(wbs_holidays)はプロジェクトごとに持ち、そのプロジェクトの全WBSで共通に使う
+--   ・休日(wbs_holidays)は「プロジェクトの全WBSで共通」か「1つのWBSだけ」のどちらかで持つ
+--     （wbs_sheet_id が null なら全WBS、値があればそのWBSだけ）
 --   ・organization_id は持たない。スコープは project_id から決まる
 --     (organizations.id は環境により uuid/text が揺れるため、新テーブルでは触らない)
 --
@@ -98,14 +99,21 @@ create table if not exists wbs_item_tickets (
   primary key (wbs_item_id, ticket_id)
 );
 
--- ── 祝日（プロジェクトごと） ──────────────────────────────────
+-- ── 休日（土日のほかに休みにする日。祝日・会社の休業日など） ──
 create table if not exists wbs_holidays (
   id           uuid        primary key default gen_random_uuid(),
   project_id   text        not null references projects(id) on delete cascade,
+  -- 適用する範囲。null = そのプロジェクトの全WBS / 値あり = そのWBSだけ。
+  -- WBSを消したら、そのWBSだけの休日も消える
+  wbs_sheet_id uuid        references wbs_sheets(id) on delete cascade,
   holiday_date date        not null,
   name         text        not null default '',
   created_at   timestamptz not null default now()
 );
+
+-- 既に wbs_holidays を作ったあとで適用した場合のための後付け（初回は上の create で入っている）。
+-- それまでに登録された休日は wbs_sheet_id が null のまま＝全WBSに適用、として残る
+alter table wbs_holidays add column if not exists wbs_sheet_id uuid references wbs_sheets(id) on delete cascade;
 
 -- ── インデックス ──────────────────────────────────────────────
 create index if not exists idx_wbs_sheets_project        on wbs_sheets(project_id, sort_order);
@@ -115,9 +123,14 @@ create index if not exists idx_wbs_items_sheet           on wbs_items(wbs_sheet_
 create index if not exists idx_wbs_items_parent          on wbs_items(parent_id) where parent_id is not null;
 create index if not exists idx_wbs_items_status          on wbs_items(status_id) where status_id is not null;
 create index if not exists idx_wbs_item_tickets_ticket   on wbs_item_tickets(ticket_id);
--- 同じWBSの中で同じ名前のステータスは作れない / 同じプロジェクトで同じ日の祝日は1件
+create index if not exists idx_wbs_holidays_project      on wbs_holidays(project_id, holiday_date);
+-- 同じWBSの中で同じ名前のステータスは作れない
 create unique index if not exists uq_wbs_statuses_sheet_name on wbs_statuses(wbs_sheet_id, name);
-create unique index if not exists uq_wbs_holidays_project_date on wbs_holidays(project_id, holiday_date);
+-- 休日は、同じ範囲の中で同じ日を2件持たない（全WBSの中で1件 / そのWBSの中で1件）。
+-- 範囲を持つ前の「プロジェクトで同じ日は1件」の索引は、範囲ごとの2本に置き換える
+drop index if exists uq_wbs_holidays_project_date;
+create unique index if not exists uq_wbs_holidays_all_date   on wbs_holidays(project_id, holiday_date)   where wbs_sheet_id is null;
+create unique index if not exists uq_wbs_holidays_sheet_date on wbs_holidays(wbs_sheet_id, holiday_date) where wbs_sheet_id is not null;
 
 -- ── RLS の再帰よけ ────────────────────────────────────────────
 -- wbs_sheets のポリシーが wbs_sheet_members を見て、wbs_sheet_members のポリシーが
@@ -301,9 +314,16 @@ create policy "wbs_items_all" on wbs_items for all
 create policy "wbs_item_tickets_all" on wbs_item_tickets for all
   using (can_view_wbs_item(wbs_item_id)) with check (can_view_wbs_item(wbs_item_id));
 
--- 祝日: プロジェクトにアクセスできる人
+-- 休日: プロジェクトにアクセスできる人。1つのWBSだけの休日は、そのWBSを見られる人
 create policy "wbs_holidays_all" on wbs_holidays for all
-  using (can_access_project(project_id)) with check (can_access_project(project_id));
+  using (
+    can_access_project(project_id)
+    and (wbs_sheet_id is null or can_view_wbs_sheet(wbs_sheet_id))
+  )
+  with check (
+    can_access_project(project_id)
+    and (wbs_sheet_id is null or can_view_wbs_sheet(wbs_sheet_id))
+  );
 
 -- ── 権限キーの追加（roles.base_permissions / project_member_permissions は JSONB） ──
 -- ホワイトボードの追加時（add_whiteboard.sql）と同じ既定値。3段階（none / view / edit）。

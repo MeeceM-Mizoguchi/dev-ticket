@@ -5,9 +5,12 @@
 //
 // 列が多くなっても重くならないよう、行ごとにセルを日数ぶん並べない:
 //   ・縦の罫線は背景の繰り返しで引く
-//   ・期間は行ごとに帯を1本だけ置く
-//   ・土日・祝日は全行を貫く縦帯を列ごとに1本だけ重ね、帯の上から隠す（＝その日は塗らない）
-import { ganttIndexOf, textColorOn, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
+//   ・期間は、稼働日の続きごとに四角を1つずつ置く（土日・祝日をまたぐところで分かれる）
+//   ・土日・祝日は全行を貫く縦帯を列ごとに1本だけ重ねてグレーにする
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
+import { Tip, type TipAnchor } from "@/app/components/shared/HoverTip";
+import { ganttIndexOf, textColorOn, type WbsGanttDay, type WbsGanttModel, type WbsRow } from "@/app/lib/wbsCalc";
 import type { WbsStatus } from "@/app/types";
 import { WBS_COLORS } from "./wbsStyles";
 
@@ -34,8 +37,60 @@ const headCellBase = {
   borderRight: "1px solid rgba(255,255,255,0.14)",
 } as const;
 
+/** 休日の列に出す説明。1行目に日付、2行目に休日設定で付けた名前 */
+function holidayTipText(d: WbsGanttDay): string {
+  const [, m, day] = d.str.split("-").map(Number);
+  return `${m}/${day}（${DOW[d.dow]}）\n${d.holidayName || "休日"}`;
+}
+
+/**
+ * マウスを乗せたときの説明を、アプリのツールチップ（HoverTip の Tip）で出す。
+ * ブラウザ標準の title は使わない（文字のある要素では見切れているときしか出ず、見た目もOS任せになる）。
+ *
+ * at:
+ *   element … 乗せた要素のすぐ下に出す（見出しのセル）
+ *   pointer … マウスの位置に出す（表の下まで伸びる縦帯。要素の端に出すと画面の外になる）
+ */
+function useGanttTip() {
+  const [shown, setShown] = useState<{ anchor: TipAnchor; text: string } | null>(null);
+  const timer = useRef<number | null>(null);
+  const pointer = useRef({ x: 0, y: 0 });
+
+  const hide = () => {
+    if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+    setShown(null);
+  };
+  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+
+  const bind = (text: string, at: "element" | "pointer") => ({
+    onMouseEnter: (e: ReactMouseEvent<HTMLElement>) => {
+      hide();
+      pointer.current = { x: e.clientX, y: e.clientY };
+      const el = e.currentTarget;
+      // すぐ出すと、通り過ぎただけで点滅する
+      timer.current = window.setTimeout(() => {
+        const r = el.getBoundingClientRect();
+        const { x, y } = pointer.current;
+        setShown({
+          text,
+          anchor: at === "element"
+            ? { top: r.top, bottom: r.bottom, left: r.left }
+            : { top: y - 8, bottom: y + 12, left: x - 14 },
+        });
+      }, 200);
+    },
+    onMouseMove: (e: ReactMouseEvent<HTMLElement>) => { pointer.current = { x: e.clientX, y: e.clientY }; },
+    onMouseLeave: hide,
+  });
+
+  return { bind, node: shown ? createPortal(<Tip anchor={shown.anchor} text={shown.text} />, document.body) : null };
+}
+
 /** ガントの見出し（年月・日付・曜日・日ごとの並行タスク数） */
 export function WbsGanttHeader({ model }: { model: WbsGanttModel }) {
+  const tip = useGanttTip();
+  // 休日設定で登録した日は、見出しのどの段に乗せても休日の名前を出す
+  const holidayProps = (d: WbsGanttDay) => (d.isHoliday ? tip.bind(holidayTipText(d), "element") : null);
   return (
     <div style={{ flex: `0 0 ${ganttWidth(model)}px`, width: ganttWidth(model) }}>
       <div style={{ display: "flex", background: WBS_COLORS.ganttHeadBg }}>
@@ -48,7 +103,7 @@ export function WbsGanttHeader({ model }: { model: WbsGanttModel }) {
       </div>
       <div style={{ display: "flex", background: WBS_COLORS.ganttHeadBg }}>
         {model.days.map(d => (
-          <div key={d.str} title={d.isToday ? "今日" : undefined}
+          <div key={d.str} {...holidayProps(d)}
             style={{ ...headCellBase, color: WBS_COLORS.headText, ...(d.isToday ? { background: "#059669" } : null) }}>
             {d.day}
           </div>
@@ -56,10 +111,10 @@ export function WbsGanttHeader({ model }: { model: WbsGanttModel }) {
       </div>
       <div style={{ display: "flex", background: WBS_COLORS.ganttDowBg }}>
         {model.days.map(d => (
-          <div key={d.str} title={d.holidayName || undefined}
+          <div key={d.str} {...holidayProps(d)}
             style={{ ...headCellBase,
-              color: d.holidayName ? "#CC3333" : d.dow === 6 ? "#93C6FF" : d.dow === 0 ? "#FFA5A5" : WBS_COLORS.headText,
-              ...(d.holidayName ? { background: "#FFEAEA" } : null) }}>
+              color: d.isHoliday ? "#CC3333" : d.dow === 6 ? "#93C6FF" : d.dow === 0 ? "#FFA5A5" : WBS_COLORS.headText,
+              ...(d.isHoliday ? { background: "#FFEAEA" } : null) }}>
             {DOW[d.dow]}
           </div>
         ))}
@@ -68,13 +123,14 @@ export function WbsGanttHeader({ model }: { model: WbsGanttModel }) {
         {model.days.map(d => {
           const c = countColors(d.count);
           return (
-            <div key={d.str} title={`並行タスク数 ${d.count}`}
+            <div key={d.str} {...holidayProps(d)}
               style={{ ...headCellBase, background: c.bg, color: c.color, borderRight: `1px solid ${WBS_COLORS.border}`, borderBottom: `1px solid ${WBS_COLORS.border}` }}>
               {d.count}
             </div>
           );
         })}
       </div>
+      {tip.node}
     </div>
   );
 }
@@ -90,41 +146,74 @@ const stripBase = (model: WbsGanttModel, rowH: number) => ({
 /**
  * 1行ぶんの帯。その行自身の開始予定日〜終了予定日を、その行のステータスの色で塗る
  * （大項目・中項目の行も同じ）。row を渡さなければ罫線だけの空の行。
+ *
+ * 土日・祝日をまたぐときは、1本の帯を上から隠すのではなく、稼働日の続きごとに
+ * 四角を分けて描く（休みの手前で一度閉じ、休み明けからまた始める）。
+ * 1本の帯を隠すだけだと、休みの前後で角が切り落とされて、つなぎ目が不自然に見える。
+ * 区切りは曜日ではなく「その日が休みかどうか」で決めるので、祝日が平日に挟まっても、
+ * 連休で金曜より前に終わる／月曜より後に始まる場合でも、同じ規則で分かれる。
  */
-export function WbsGanttStrip({ model, row, statuses, rowH }: {
+export function WbsGanttStrip({ model, row, statuses, rowH, fill }: {
   model: WbsGanttModel; row?: WbsRow; statuses?: WbsStatus[]; rowH: number;
+  /**
+   * 見出し行（大項目・中項目）用。渡した色で帯全体を塗りつぶす。
+   * 日付の罫線も引かず、土日・休日の縦帯と今日の印より手前に重ねて隠す（行の色がひと続きに見えるように）。
+   */
+  fill?: string;
 }) {
-  let bar: { left: number; width: number; color: string } | null = null;
+  if (fill) {
+    return (
+      <div style={{ position: "relative", zIndex: 3, flex: `0 0 ${ganttWidth(model)}px`, width: ganttWidth(model), height: rowH, boxSizing: "border-box",
+        background: fill, borderBottom: `1px solid ${WBS_COLORS.border}` }} />
+    );
+  }
+  // 稼働日が続く範囲（列の番号で from〜to）
+  const segments: { from: number; to: number }[] = [];
+  let color = "#D6E2F9";
   if (row && row.item.startDate && row.item.endDate && row.item.endDate >= row.item.startDate) {
-    // 範囲は行の日付の最小〜最大から作っているので、通常は必ず中に入る。
+    // 範囲は行の日付を含む月から作っているので、通常は必ず中に入る。
     // 表示日数の上限で切られた先は、見えている端まで塗る
     const from = ganttIndexOf(model, row.item.startDate);
     const to = ganttIndexOf(model, row.item.endDate) ?? (from !== null ? model.days.length - 1 : null);
     if (from !== null && to !== null) {
-      const status = statuses?.find(s => s.id === row.item.statusId) ?? statuses?.[0];
-      bar = { left: from * WBS_DAY_W, width: (to - from + 1) * WBS_DAY_W - 1, color: status?.color ?? "#D6E2F9" };
+      color = (statuses?.find(s => s.id === row.item.statusId) ?? statuses?.[0])?.color ?? color;
+      let start: number | null = null;
+      for (let i = from; i <= to; i++) {
+        if (!model.days[i].off) {
+          if (start === null) start = i;
+        } else if (start !== null) {
+          segments.push({ from: start, to: i - 1 });
+          start = null;
+        }
+      }
+      if (start !== null) segments.push({ from: start, to });
     }
   }
+  const outline = `inset 0 0 0 1px ${textColorOn(color) === "#FFFFFF" ? "rgba(255,255,255,0.25)" : "rgba(30,41,58,0.14)"}`;
   return (
     <div style={stripBase(model, rowH)}>
-      {bar && (
-        <div title={row ? `${row.item.startDate} 〜 ${row.item.endDate}` : undefined}
-          style={{ position: "absolute", top: 5, left: bar.left, width: bar.width, height: rowH - 11, background: bar.color, borderRadius: 3,
-            boxShadow: `inset 0 0 0 1px ${textColorOn(bar.color) === "#FFFFFF" ? "rgba(255,255,255,0.25)" : "rgba(30,41,58,0.14)"}` }} />
-      )}
+      {segments.map(seg => (
+        // 左右に1pxずつ余白を取り、日付の罫線と四角の端が重ならないようにする
+        <div key={seg.from} title={row ? `${row.item.startDate} 〜 ${row.item.endDate}` : undefined}
+          style={{ position: "absolute", top: 5, left: seg.from * WBS_DAY_W + 1, width: (seg.to - seg.from + 1) * WBS_DAY_W - 3, height: rowH - 11,
+            background: color, borderRadius: 3, boxShadow: outline }} />
+      ))}
     </div>
   );
 }
 
 /**
- * 全行を貫く縦帯。土日・祝日の列をグレーで覆い（帯の上から隠す）、今日の列に印を付ける。
+ * 全行を貫く縦帯。土日・祝日の列をグレーにし、今日の列に印を付ける。
  * left はガントの左端の位置、top は見出しの高さ。右の枠の中身（position: relative）の中に置く。
  */
 export function WbsGanttOverlay({ model, left, top, rowH }: { model: WbsGanttModel; left: number; top: number; rowH: number }) {
+  const tip = useGanttTip();
   return (
     <div style={{ position: "absolute", top, bottom: 0, left, width: ganttWidth(model), pointerEvents: "none", zIndex: 2 }}>
       {model.days.map((d, i) => d.off ? (
-        <div key={d.str} style={{
+        // 休日設定で登録した日の列だけ、マウスを受けて休日の名前を出す（土日の列は素通しのまま）
+        <div key={d.str} {...(d.isHoliday ? tip.bind(holidayTipText(d), "pointer") : null)} style={{
+          pointerEvents: d.isHoliday ? "auto" : "none",
           position: "absolute", top: 0, bottom: 0, left: i * WBS_DAY_W, width: WBS_DAY_W, boxSizing: "border-box",
           backgroundColor: WBS_COLORS.offDayBg, borderRight: `1px solid ${WBS_COLORS.border}`,
           // 覆った列にも行の罫線を引き直す
@@ -138,6 +227,7 @@ export function WbsGanttOverlay({ model, left, top, rowH }: { model: WbsGanttMod
           borderLeft: "2px solid #059669", borderRight: "2px solid #059669", background: "rgba(5,150,105,0.06)",
         }} />
       ) : null)}
+      {tip.node}
     </div>
   );
 }

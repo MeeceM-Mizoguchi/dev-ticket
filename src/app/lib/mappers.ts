@@ -255,5 +255,5 @@ export function mapWbsItem(r: any): WbsItem {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapWbsHoliday(r: any): WbsHoliday {
-  return { id: r.id, projectId: r.project_id, date: r.holiday_date || "", name: r.name || "" };
+  return { id: r.id, projectId: r.project_id, sheetId: r.wbs_sheet_id ?? null, date: r.holiday_date || "", name: r.name || "" };
 }
