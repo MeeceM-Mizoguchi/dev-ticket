@@ -15,7 +15,8 @@ const ErrMsg = ({ msg }: { msg: string }) => (
   </p>
 );
 
-export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCount }: { onClose: () => void; projectId: string; onCreated?: (sprintId?: string) => void; currentSprintCount?: number }) {
+// zIndex: 別のダイアログの手前に重ねて開くとき用（チケット詳細の移動ダイアログは 320）。省略時は DialogShell の既定値（BRU20-003）
+export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCount, zIndex }: { onClose: () => void; projectId: string; onCreated?: (sprintId?: string) => void; currentSprintCount?: number; zIndex?: number }) {
   const { plan } = usePlan();
   const [name, setName] = useState("");
   const [goal, setGoal] = useState("");
@@ -88,7 +89,7 @@ export function NewSprintDialog({ onClose, projectId, onCreated, currentSprintCo
   };
 
   return (
-    <DialogShell title="新規スプリント作成" onClose={onClose}
+    <DialogShell title="新規スプリント作成" onClose={onClose} zIndex={zIndex}
       // 🌟 修正: disabled 条件に「!canSubmit」を適用し、未入力や重複時はボタンを非活性にする
       footer={<><BtnSecondary onClick={onClose}>キャンセル</BtnSecondary><BtnPrimary onClick={handleSave} disabled={saving || !canSubmit}>{saving ? "作成中..." : "作成する"}</BtnPrimary></>}>
       <div>

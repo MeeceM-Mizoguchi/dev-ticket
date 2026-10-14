@@ -1,4 +1,6 @@
 // API連携モーダル。「新規チケット」メニューの「API連携」から開く。
+// チケット詳細の 🔑 からも開ける。そのときは parentTicket を受け取り、
+// 「すべてこの親の子として登録する」プロンプトをコピーさせる。
 //
 // 2つのタブを持つ:
 //   ・使い方   … AIに貼り付けるプロンプトをコピーする（毎フェーズ使う）
@@ -10,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   KeyRound, Plus, Copy, Trash2, AlertTriangle, Sparkles, Loader2,
-  ChevronRight, ChevronDown, ShieldCheck, Ban, Terminal, Globe,
+  ChevronRight, ChevronDown, ShieldCheck, Ban, Terminal, Globe, GitBranch,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText as copyToClipboard } from "@/lib/clipboard";
@@ -62,12 +64,16 @@ function SectionNote({ children }: { children: React.ReactNode }) {
 }
 
 export function ApiIntegrationDialog({
-  sprintId, sprintName, projectId, projectName, onClose,
+  sprintId, sprintName, projectId, projectName, parentTicket, zIndexBase = 300, onClose,
 }: {
   sprintId: string;
   sprintName: string;
   projectId?: string;
   projectName: string;
+  /** チケット詳細から開いたときの登録先の親チケット。渡すとプロンプトが親指定の文面になる */
+  parentTicket?: { wbs: string; title: string };
+  /** チケット詳細（zIndex 300/301）の上に重ねるときに上げる */
+  zIndexBase?: number;
   onClose: () => void;
 }) {
   const { userRole } = useAuth();
@@ -216,10 +222,13 @@ export function ApiIntegrationDialog({
     }
   }, [toast]);
 
+  const parentWbs = parentTicket?.wbs;
+  const parentTitle = parentTicket?.title ?? "";
   const buildPrompt = useCallback((plainKey?: string) => buildApiSetupPrompt({
     baseUrl, projectName, sprintId, sprintName,
     memberNames, categoryNames, today, plainKey,
-  }), [baseUrl, projectName, sprintId, sprintName, memberNames, categoryNames, today]);
+    parentTicket: parentWbs ? { wbs: parentWbs, title: parentTitle } : undefined,
+  }), [baseUrl, projectName, sprintId, sprintName, memberNames, categoryNames, today, parentWbs, parentTitle]);
 
   // ── 発行 ──────────────────────────────────────────────────────
   const handleIssue = async () => {
@@ -354,7 +363,7 @@ export function ApiIntegrationDialog({
           </div>
           <p style={{ fontSize: 13.5, fontWeight: 700, color: "#1A1714" }}>使えるAPIキーがまだありません</p>
           <p style={{ fontSize: 11.5, color: "#9E9690", marginTop: 5, lineHeight: 1.8 }}>
-            APIキーを発行すると、AIやCIが「{sprintName}」に直接チケットを登録できるようになります。<br />
+            APIキーを発行すると、AIやCIが{parentTicket ? `「${parentTicket.wbs}」の子として` : `「${sprintName}」に`}直接チケットを登録できるようになります。<br />
             MDファイルを書き出して取り込む作業が不要になります。
           </p>
           <div style={{ marginTop: 16 }}>
@@ -373,7 +382,10 @@ export function ApiIntegrationDialog({
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <p style={{ fontSize: 12.5, color: "#4B4640", lineHeight: 1.8 }}>
-          下のプロンプトをAIに渡すと、<strong>{sprintName}</strong> に直接チケットを登録できます。
+          {parentTicket
+            ? <>下のプロンプトをAIに渡すと、<strong>{parentTicket.wbs}</strong> の子チケットとして直接登録できます。
+              親チケットをAIに別に伝える必要はありません。</>
+            : <>下のプロンプトをAIに渡すと、<strong>{sprintName}</strong> に直接チケットを登録できます。</>}
           MDファイルの書き出しと取り込みは不要です。
         </p>
 
@@ -533,6 +545,7 @@ export function ApiIntegrationDialog({
               { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
               { m: "GET", path: "/api/v1/ticket?wbs=…", desc: "チケット1件の本文・画像・コメント・子チケットを読み取る（権限: 読み取りのみ／すべて）" },
               { m: "POST", path: "/api/v1/ticket-status", desc: "ステータスを前へ進める（権限: すべて）" },
+              { m: "POST", path: "/api/v1/ticket-pull", desc: "作成したPRをチケットへ紐づける（権限: すべて）" },
             ].map(e => (
               <div key={`${e.m} ${e.path}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: e.m === "POST" ? GREEN : "#0284C7", minWidth: 34 }}>{e.m}</span>
@@ -858,12 +871,12 @@ export function ApiIntegrationDialog({
   // ── 描画 ──────────────────────────────────────────────────────
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 300, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
 
       <div style={{
         position: "fixed", top: "5vh", left: "50%", transform: "translateX(-50%)",
         width: "min(94vw, 640px)", maxHeight: "90vh",
-        background: "#FAFAF8", zIndex: 301, borderRadius: 16,
+        background: "#FAFAF8", zIndex: zIndexBase + 1, borderRadius: 16,
         boxShadow: "0 24px 80px rgba(0,0,0,0.22)",
         display: "flex", flexDirection: "column", overflow: "hidden",
       }}>
@@ -885,6 +898,18 @@ export function ApiIntegrationDialog({
           <button type="button" onClick={onClose}
             style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "#FFFFFF", cursor: "pointer", color: "#9E9690", flexShrink: 0, fontSize: 15, lineHeight: 1 }}>×</button>
         </div>
+
+        {/* 登録先の親チケット。チケット詳細から開いたときだけ出し、何をコピーするのかを先に見せる */}
+        {parentTicket && (
+          <div style={{ padding: "11px 24px", background: "#F5F3FF", borderBottom: "1px solid rgba(124,58,237,0.12)", flexShrink: 0, display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+            <GitBranch style={{ width: 14, height: 14, color: PURPLE, flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", flexShrink: 0 }}>登録先の親チケット</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: PURPLE, fontFamily: "var(--font-mono)", flexShrink: 0 }}>{parentTicket.wbs}</span>
+            <span title={parentTicket.title} style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {parentTicket.title}
+            </span>
+          </div>
+        )}
 
         {/* タブ（発行直後は隠す。キーのコピーに集中させるため） */}
         {!issuedKey && (
@@ -947,10 +972,10 @@ export function ApiIntegrationDialog({
       {/* 失効の確認 */}
       {revokeTarget && (
         <>
-          <div onClick={() => setRevokeTarget(null)} style={{ position: "fixed", inset: 0, zIndex: 320, background: "rgba(10,14,12,0.35)" }} />
+          <div onClick={() => setRevokeTarget(null)} style={{ position: "fixed", inset: 0, zIndex: zIndexBase + 20, background: "rgba(10,14,12,0.35)" }} />
           <div style={{
             position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
-            width: "min(92vw, 420px)", background: "#FFFFFF", zIndex: 321, borderRadius: 14,
+            width: "min(92vw, 420px)", background: "#FFFFFF", zIndex: zIndexBase + 21, borderRadius: 14,
             boxShadow: "0 24px 80px rgba(0,0,0,0.24)", padding: "20px 22px",
           }}>
             <p style={{ fontSize: 13.5, fontWeight: 800, color: "#1A1714", display: "flex", alignItems: "center", gap: 7 }}>

@@ -24,6 +24,11 @@ export interface ApiSetupContext {
    * 手順には「AI側に設定済みのキーを使う」旨のプレースホルダが入る。
    */
   plainKey?: string;
+  /**
+   * チケット詳細から開いたときの親チケット。
+   * 渡すと「すべてこの親の子として登録する」文面になり、sprintId と children の説明は載せない。
+   */
+  parentTicket?: { wbs: string; title: string };
 }
 
 const KEY_PLACEHOLDER = "<ここに Dev Ticket のAPIキーを貼る>";
@@ -87,9 +92,10 @@ description は **Markdown 文字列**で渡す。決まった項目構成で書
 - 手順と実施順序を「注意点」に書く
 - 影響範囲と、失敗したときの切り戻し手順を必ず書く
 
-上のどれにも当てはまらない分類のときは、共通の構成のまま書く。
+上のどれにも当てはまらない分類のときは、共通の構成のまま書く。`;
 
-## 親チケットと子チケット
+/** 新しい親と children の作り分け。親チケットが決まっている文面では載せない。 */
+const PARENT_CHILD_SPEC = `## 親チケットと子チケット
 
 - 1つの作業で完結するものは親チケットだけで書く（これが基本）。
 - 複数の作業に分かれるもの（機能単位・改修一式など）だけ \`children\` に子チケットを入れる。
@@ -98,38 +104,53 @@ description は **Markdown 文字列**で渡す。決まった項目構成で書
 - 迷ったら子を作らない。
 - **既に登録されているチケットに子を足す**場合は \`children\` ではなく \`parentWbs\` を使う（後述）。`;
 
-/**
- * AIに渡す手順書を組み立てる。
- * これ1つをAIのチャットに貼れば、追加の説明なしにチケットを登録できる状態にする。
- */
-export function buildApiSetupPrompt(ctx: ApiSetupContext): string {
-  const key = ctx.plainKey ?? KEY_PLACEHOLDER;
-  const members = ctx.memberNames.length > 0
-    ? ctx.memberNames.join(" / ")
-    : "（メンバー未設定。assignee は指定しないこと）";
-  const categories = ctx.categoryNames.length > 0
-    ? ctx.categoryNames.join(" / ")
-    : "（分類未設定。category は指定しないこと）";
-
-  return `# Dev Ticket へのチケット登録
-
-あなたはこれから、Dev Ticket（プロジェクト管理ツール）の API を呼んでチケットを登録します。
-以下の仕様に厳密に従ってください。
-
-## APIキー
+/** 「## APIキー」の項目。スプリント指定・親チケット指定のどちらの文面でも同じものを使う。 */
+function buildKeySection(plainKey?: string): string {
+  return `## APIキー
 
 \`\`\`
-${key}
+${plainKey ?? KEY_PLACEHOLDER}
 \`\`\`
 
-${ctx.plainKey
+${plainKey
   ? `- 上の1行が **Dev Ticket のAPIキー**（\`dvt_live_\` で始まる文字列）。
 - **この手順書にキーはもう含まれている。**利用者に「APIキーを教えてください」と聞き直さないこと。
 - すべてのリクエストで \`Authorization: Bearer <上のAPIキー>\` として送る。`
   : `- 上の行はプレースホルダ。控えてある実際のキー（\`dvt_live_\` で始まる文字列）に置き換えること。
 - 既に環境変数や設定ファイルへ登録済みであれば、そちらを使ってよい。
 - すべてのリクエストで \`Authorization: Bearer <上のAPIキー>\` として送る。`}
-- キーはパスワードと同じもの。**ソースコードに直接書かず、ログや出力にも書き出さないこと。**
+- キーはパスワードと同じもの。**ソースコードに直接書かず、ログや出力にも書き出さないこと。**`;
+}
+
+function memberCandidates(ctx: ApiSetupContext): string {
+  return ctx.memberNames.length > 0
+    ? ctx.memberNames.join(" / ")
+    : "（メンバー未設定。assignee は指定しないこと）";
+}
+
+function categoryCandidates(ctx: ApiSetupContext): string {
+  return ctx.categoryNames.length > 0
+    ? ctx.categoryNames.join(" / ")
+    : "（分類未設定。category は指定しないこと）";
+}
+
+/**
+ * AIに渡す手順書を組み立てる。
+ * これ1つをAIのチャットに貼れば、追加の説明なしにチケットを登録できる状態にする。
+ * parentTicket を渡したときは、その親の子チケットだけを登録する文面になる。
+ */
+export function buildApiSetupPrompt(ctx: ApiSetupContext): string {
+  if (ctx.parentTicket) return buildParentChildPrompt(ctx, ctx.parentTicket);
+
+  const members = memberCandidates(ctx);
+  const categories = categoryCandidates(ctx);
+
+  return `# Dev Ticket へのチケット登録
+
+あなたはこれから、Dev Ticket（プロジェクト管理ツール）の API を呼んでチケットを登録します。
+以下の仕様に厳密に従ってください。
+
+${buildKeySection(ctx.plainKey)}
 
 ## 接続情報
 
@@ -213,6 +234,8 @@ ${ctx.plainKey
 
 ${DESCRIPTION_SPEC}
 
+${PARENT_CHILD_SPEC}
+
 ## 応答
 
 成功すると \`201\` と以下が返る。
@@ -265,6 +288,124 @@ ${DESCRIPTION_SPEC}
 
 - \`parentWbs\` が \`null\` のものだけが親になれる。子チケット（\`T-012-1\` など）の下にさらに子は作れない。
 - **どの親に足すか確信が持てないときは、候補を利用者に示して確認する。**勝手に決めない。
+
+## 今日の日付
+
+${ctx.today}
+`;
+}
+
+/**
+ * チケット詳細から開いたときの手順書。親が決まっているので、
+ * sprintId・children の説明と、親を一覧から探す手順は載せない（AIが親を選び直す余地を残さない）。
+ */
+function buildParentChildPrompt(ctx: ApiSetupContext, parent: { wbs: string; title: string }): string {
+  const members = memberCandidates(ctx);
+  const categories = categoryCandidates(ctx);
+
+  return `# Dev Ticket へのチケット登録（${parent.wbs} の子チケット）
+
+あなたはこれから、Dev Ticket（プロジェクト管理ツール）の API を呼んで、
+既に登録されているチケット **${parent.wbs}** の子チケットを登録します。
+以下の仕様に厳密に従ってください。
+
+${buildKeySection(ctx.plainKey)}
+
+## 接続情報
+
+| 項目 | 値 |
+|---|---|
+| チケットを登録する | \`POST ${ctx.baseUrl}/api/v1/tickets\` |
+| 候補値（担当者・分類）を取る | \`GET ${ctx.baseUrl}/api/v1/context\` |
+| 認証ヘッダー | \`Authorization: Bearer <上のAPIキー>\` |
+| Content-Type | \`application/json\` |
+| 対象プロジェクト | ${ctx.projectName}（APIキーに紐づいているので指定不要） |
+| **親チケット** | **${parent.wbs} ${parent.title}** |
+| **parentWbs** | **\`${parent.wbs}\`** |
+
+⚠️ これから作るチケットは、**すべてこのチケット（${parent.wbs}）の子として登録する。**
+　 \`parentWbs\` は上の値を**そのまま使い、変えてはならない。**
+　 この手順は利用者が「${parent.wbs}」の詳細画面からコピーしたものであり、親はここで確定している。
+　 **自分で別の親を探したり、新しい親チケットを作ったりしないこと。**
+
+## リクエストの形
+
+\`\`\`json
+{
+  "tickets": [
+    {
+      "title": "ログイン画面のバリデーション追加",
+      "parentWbs": "${parent.wbs}",
+      "status": "未着手",
+      "priority": "高",
+      "category": "バグ",
+      "assignee": "山田太郎",
+      "startDate": "${ctx.today}",
+      "dueDate": "${ctx.today}",
+      "estimatedHours": 4,
+      "description": "**概要**\\nメールアドレス欄に入力チェックが無く…\\n\\n**対象画面**\\nログイン画面（/login）\\n"
+    }
+  ]
+}
+\`\`\`
+
+- 子チケットを複数作るときは、\`tickets\` に並べる。**どの要素にも \`"parentWbs": "${parent.wbs}"\` を書く。**
+- 枝番（\`${parent.wbs}-3\` など）は**既存の子の続きから自動で振られる**。自分で採番しない。
+- 登録先スプリントは**親チケットと同じ**になる。\`sprintId\` は書かない。
+- 子チケットの下にさらに子は作れない（階層は1段まで）。\`children\` は書かない。
+
+## 項目の仕様
+
+| キー | 必須 | 値 | 未指定のとき |
+|---|---|---|---|
+| title | ✅ | チケットのタイトル（500文字まで） | — |
+| parentWbs | ✅ | **必ず \`${parent.wbs}\`** | — |
+| status | | ${MD_STATUS_LABELS.join(" / ")} | 未着手 |
+| priority | | ${MD_PRIORITY_LABELS.join(" / ")} | 中 |
+| category | | ${categories} | 分類なし |
+| assignee | | ${members} | 空欄 |
+| startDate | | \`YYYY/MM/DD\` | 空欄 |
+| dueDate | | \`YYYY/MM/DD\` | 空欄 |
+| estimatedHours | | 時間数（整数） | 0 |
+| description | | 本文（Markdown 文字列） | 空欄 |
+
+- 上の項目は**できる限りすべて埋める**。ただし**根拠なく推測しない**。判断材料が無い項目は**キーごと省略**する（空文字や「未定」とは書かない）。
+- 表に無いキーは送らない（送っても無視される）。
+- assignee / category は上に挙げた名前のいずれかを書く。該当が無ければキーごと省略する。
+- 1回のリクエストで足せる子チケットは 50 件まで。超えるときはリクエストを分ける。
+
+${DESCRIPTION_SPEC}
+
+## 子チケットの書き方
+
+- **子チケットにも上の項目と本文を省略せずに書く**。子だからといって省略しない。
+
+## 応答
+
+成功すると \`201\` と以下が返る。
+
+\`\`\`json
+{
+  "ok": true,
+  "count": 2,
+  "created": [{ "wbs": "${parent.wbs}-3", "title": "…", "parentWbs": "${parent.wbs}" }],
+  "warnings": ["「…」: 担当者「佐藤」はプロジェクトのメンバーに見つからないため空欄にしました"]
+}
+\`\`\`
+
+\`created[].parentWbs\` が \`${parent.wbs}\` になっていることを確かめる。
+
+- \`warnings\` が空でなければ、**必ず利用者に読み上げて報告する**。登録自体は成功しているが、担当者や分類が空欄になっている可能性がある。
+- \`401\` はキーが無効・失効・期限切れ。\`403\` はプランの上限超過。\`429\` はリクエスト過多（1分あたり60回まで）。
+- **エラーが返ったときに、内容を変えて何度も再送しないこと。** 同じ内容で2回送るとチケットが二重に登録される。エラー内容を利用者に伝えて指示を仰ぐ。
+
+## 補足: 最新の候補値を取りたいとき
+
+\`GET ${ctx.baseUrl}/api/v1/context\`（同じ Authorization ヘッダー）で、
+このプロジェクトのメンバー名・分類名・使えるステータスを取得できる。
+
+**ここで返るスプリント一覧は使わない。親を \`${parent.wbs}\` から変えてはならない。**
+この呼び出しは担当者名や分類名の最新の候補を確かめるためのものである。
 
 ## 今日の日付
 

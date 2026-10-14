@@ -5,7 +5,7 @@ import type { SprintTicket, TicketCategory, TicketComment, TicketSourceFile, Tic
 // ENHA2-034 担当者レコメンド（自動アサイン）
 import { AssigneeRecommendModal, type RequiredSkill } from "@/app/components/tickets/TicketSkillFields";
 import { fetchSkills } from "@/app/lib/skillsApi";
-import { Sparkles } from "lucide-react";
+import { Sparkles, KeyRound } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
 import { buildCommentAnchor, buildCommentLink, parseCommentAnchor } from "@/app/lib/commentLink";
@@ -41,8 +41,11 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { BtnSpinner } from "@/app/components/shared/PageLoader";
 import { NewTicketDialog } from "@/app/components/tickets/NewTicketDialog";
+import { NewSprintDialog } from "@/app/components/sprints/NewSprintDialog";
+import { fetchSprintOrder, applySprintOrder } from "@/app/lib/sprintOrder";
 import { MdBulkCreateDialog } from "@/app/components/tickets/MdBulkCreateDialog";
 import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
+import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { TicketDetailLoadingOverlay } from "@/app/components/tickets/TicketDetailLoadingOverlay";
 import { ProjectMonitor } from "@/app/components/projects/ProjectMonitor";
@@ -330,10 +333,12 @@ export function TicketDetailPanel({
   onSelectTicket?: (t: SprintTicket) => void; projectPermissions?: import("@/app/types").UserPermissions; anchor?: string; showParentBackground?: boolean; forceNoAnim?: boolean
 }) {
 
-  const { userName, userRole, userPermissions, userOrgId } = useAuth();
+  const { userName, userId, userRole, userPermissions, userOrgId } = useAuth();
   const { showAlert } = useAlert();
   const { plan } = usePlan();
   const isAdminOrPM = userRole === "admin" || userRole === "project-manager";
+  // APIキーを扱えるのは管理者だけ（スプリント画面の「API連携」と同じ判定）
+  const canManageApiKeys = userRole === "admin" || userRole === "owner";
   const effectivePermissions = (userRole === "owner") ? userPermissions : (projectPermissions ?? userPermissions);
   const canEdit = userRole === "owner" || userRole === "admin" || userRole === "project-manager" || !!effectivePermissions?.canEditDelete || !!effectivePermissions?.canEdit;
   const hasReviewPermission = effectivePermissions.canReview;
@@ -365,6 +370,9 @@ export function TicketDetailPanel({
   const [isWithdrawLoading, setIsWithdrawLoading] = useState(false);
   const [moveTargetSprintId, setMoveTargetSprintId] = useState<string | null>(null);
   const [availableSprints, setAvailableSprints] = useState<{ id: string; name: string; status: string; startDate: string; endDate: string; identifier: string | null }[]>([]);
+  // 移動ダイアログから開く新規スプリント作成（BRU20-003）。件数はプラン上限の判定用で、今いるスプリントも含めた全件
+  const [showNewSprintFromMove, setShowNewSprintFromMove] = useState(false);
+  const [projectSprintCount, setProjectSprintCount] = useState(0);
   const [isMoveLoading, setIsMoveLoading] = useState(false);
 
   const [status, setStatus] = useState<TicketStatus>(ticket?.status ?? "todo");
@@ -490,6 +498,8 @@ export function TicketDetailPanel({
   const [showMdChildImport, setShowMdChildImport] = useState(false);
   // AIにこのチケットを読み取らせて実装させる手順をコピーする（子チケットからも開ける）
   const [showAiImplement, setShowAiImplement] = useState(false);
+  // AIに子チケットを登録させる手順（親チケット番号入り）をコピーする。スプリント画面の「API連携」と同じモーダル
+  const [showApiIntegration, setShowApiIntegration] = useState(false);
 
   // 🌟 追加(BRU11-046): 子チケットの実績工数の合計。
   // 一覧の各行に出しているバッジ（ChildHoursBadge）と同じ計算をそのまま足し上げる。
@@ -914,7 +924,7 @@ export function TicketDetailPanel({
   const arrowNavBlockedRef = useRef(false);
   arrowNavBlockedRef.current = isClosing || prGuardActive || showMonitor || !!pendingHandover || showRecommend
     || showDeleteConfirm || showWithdrawConfirm || showParentStartConfirm || showMoveModal
-    || showCreateChild || showMdChildImport || showAiImplement || showPrLeaveConfirm || showUndecidedConfirm
+    || showCreateChild || showMdChildImport || showAiImplement || showApiIntegration || showPrLeaveConfirm || showUndecidedConfirm
     || showChangeDatePicker || showCompletionOverlay || assigneeOpen || reviewerOpen;
 
   useEffect(() => {
@@ -2113,17 +2123,22 @@ export function TicketDetailPanel({
     onClose();
   };
 
-  const openMoveModal = async () => {
+  // 移動候補の取得。ダイアログを開くときと、ダイアログ内でスプリントを作成したあとに呼ぶ（BRU20-003）
+  const loadMoveCandidates = async () => {
     if (!ticket || !isSupabaseEnabled || !projectId) return;
 
     // 🌟 修正: sprints を先に取得し、その sprint_id のリストを使って sprint_tickets を取得する
     // （sprint_tickets テーブルには project_id カラムが存在しないため）
-    const [{ data: ticketRow }, { data: sprintsData }] = await Promise.all([
+    // 並び順はスプリント一覧と同じ（個人 > 共通 > 開始日順）。開始日が同じ／未設定でも順番が揺れないよう id を重ねる（BUG-01）
+    const [{ data: ticketRow }, { data: sprintsRaw }, sprintOrder] = await Promise.all([
       supabase!.from("sprint_tickets").select("sprint_id").eq("id", ticket.id).single(),
-      supabase!.from("sprints").select("*").eq("project_id", projectId).order("start_date")
+      supabase!.from("sprints").select("*").eq("project_id", projectId).order("start_date").order("id"),
+      fetchSprintOrder(projectId, userId || null),
     ]);
+    const sprintsData = applySprintOrder(sprintsRaw ?? [], sprintOrder);
+    setProjectSprintCount(sprintsData.length);
 
-    const sprintIds = sprintsData?.map(s => s.id) || [];
+    const sprintIds = sprintsData.map(s => s.id);
 
     const { data: allTicketsData } = sprintIds.length > 0
       ? await supabase!.from("sprint_tickets").select("*").in("sprint_id", sprintIds)
@@ -2132,7 +2147,7 @@ export function TicketDetailPanel({
     const currentSprintId = ticketRow?.sprint_id ?? null;
 
     setAvailableSprints(
-      (sprintsData ?? [])
+      sprintsData
         .filter(s => s.id !== currentSprintId)
         .map(s => {
           // 生のチケットデータをスプリントオブジェクトに結合（mappers.ts の mapSprint が要求する形）
@@ -2155,6 +2170,11 @@ export function TicketDetailPanel({
           };
         })
     );
+  };
+
+  const openMoveModal = async () => {
+    if (!ticket || !isSupabaseEnabled || !projectId) return;
+    await loadMoveCandidates();
     setMoveTargetSprintId(null);
     setShowMoveModal(true);
   };
@@ -2447,7 +2467,18 @@ export function TicketDetailPanel({
               {isMoveLoading ? "移動中..." : "移動する"}
             </button>
           </>}>
-          <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>移動先のスプリントを選択してください</p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>移動先のスプリントを選択してください</p>
+            {effectivePermissions.canCreateSprint && (
+              <button
+                type="button"
+                onClick={() => setShowNewSprintFromMove(true)}
+                disabled={isMoveLoading}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: "#059669", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 7, cursor: isMoveLoading ? "not-allowed" : "pointer" }}>
+                <Plus style={{ width: 11, height: 11 }} />新規スプリント
+              </button>
+            )}
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {availableSprints.length === 0 ? (
               <p style={{ fontSize: 13, color: "#A09790", textAlign: "center", padding: "24px 0" }}>移動先のスプリントがありません</p>
@@ -2476,6 +2507,16 @@ export function TicketDetailPanel({
             })}
           </div>
         </DialogShell>
+      )}
+      {showMoveModal && showNewSprintFromMove && projectId && (
+        // 移動ダイアログ（zIndex 320）の手前に出す。作成したら候補を取り直し、そのスプリントを移動先として選ぶ（BRU20-003）
+        <NewSprintDialog
+          projectId={projectId}
+          zIndex={330}
+          currentSprintCount={projectSprintCount}
+          onClose={() => setShowNewSprintFromMove(false)}
+          onCreated={async (sid) => { await loadMoveCandidates(); if (sid) setMoveTargetSprintId(sid); }}
+        />
       )}
       {showCreateChild && ticket && !ticket.parentId && (
         <NewTicketDialog
@@ -2507,6 +2548,17 @@ export function TicketDetailPanel({
           projectId={projectId}
           projectName={breadcrumbProjName}
           onClose={() => setShowAiImplement(false)}
+        />
+      )}
+      {showApiIntegration && ticket && !ticket.parentId && projectId && (
+        <ApiIntegrationDialog
+          sprintId={sprintId ?? ""}
+          sprintName={breadcrumbSprintName}
+          projectId={projectId}
+          projectName={breadcrumbProjName}
+          parentTicket={{ wbs: ticket.wbs, title: ticket.title }}
+          zIndexBase={310}
+          onClose={() => setShowApiIntegration(false)}
         />
       )}
       <style>{`@keyframes slideInPanel{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanel2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideInPanelChild2{from{transform:translateX(102%)}to{transform:translateX(0)}}@keyframes slideOutPanel{from{transform:translateX(0)}to{transform:translateX(102%)}}@keyframes commentRingPulse{0%{box-shadow:0 0 0 0 rgba(249,115,22,0)}22%{box-shadow:0 0 0 4px rgba(249,115,22,0.55),0 0 18px 3px rgba(249,115,22,0.35)}50%{box-shadow:0 0 0 2px rgba(249,115,22,0.28),0 0 9px 2px rgba(249,115,22,0.18)}74%{box-shadow:0 0 0 4px rgba(249,115,22,0.50),0 0 18px 3px rgba(249,115,22,0.32)}100%{box-shadow:0 0 0 0 rgba(249,115,22,0)}}.comment-ring-pulse{animation:commentRingPulse 2s ease-out; border-radius:8px;}.reply-comment-wrapper blockquote{cursor:pointer !important; transition:background-color 0.15s, border-color 0.15s;}.reply-comment-wrapper blockquote:hover{background-color:#FFFBEB !important; border-color:#FDE68A !important;}`}</style>
@@ -2955,6 +3007,22 @@ export function TicketDetailPanel({
                 <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
                   <button style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "not-allowed", color: "#D1CEC9", opacity: 0.5 }}>
                     <FileText style={{ width: 15, height: 15 }} />
+                  </button>
+                </PlanTooltip>
+              )}
+              {/* 表示条件はスプリント画面の「API連携」と同じ（buildCreateTicketDisabled）。管理者以外には出さない */}
+              {canEdit && canManageApiKeys && !ticket.parentId && projectId && plan.featureBulkCreate && (
+                <button onClick={() => setShowApiIntegration(true)} title="API連携で子チケットを作成（AIに渡す手順をコピー）"
+                  style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "pointer", color: "#B0A9A4" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; (e.currentTarget as HTMLElement).style.color = "#059669"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "#B0A9A4"; }}>
+                  <KeyRound style={{ width: 15, height: 15 }} />
+                </button>
+              )}
+              {canEdit && canManageApiKeys && !ticket.parentId && projectId && !plan.featureBulkCreate && (
+                <PlanTooltip text="現在のプランではご利用できません" active={true} placement="bottom-left">
+                  <button style={{ padding: 7, borderRadius: 9, border: "none", background: "transparent", cursor: "not-allowed", color: "#D1CEC9", opacity: 0.5 }}>
+                    <KeyRound style={{ width: 15, height: 15 }} />
                   </button>
                 </PlanTooltip>
               )}

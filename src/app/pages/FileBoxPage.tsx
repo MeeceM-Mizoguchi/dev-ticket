@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   FolderKanban, ChevronRight, Search, X, Trash2, Upload, Download, Link2,
   File as FileIcon, FileText, FileSpreadsheet, FileImage, Presentation, Loader2,
-  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow, Lock, HardDrive,
+  Folder, FolderPlus, FolderUp, Plus, Pencil, Globe, Workflow, Lock, HardDrive, ExternalLink,
 } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -35,7 +35,7 @@ import {
   fetchFileBoxUsage, type FileBoxUsage,
 } from "@/app/lib/projectFiles";
 import {
-  openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
+  openGoogleFile, openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
   convertExistingFile, exportGoogleToOffice, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
   syncGoogleFileAcl,
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
@@ -432,6 +432,11 @@ export function FileBoxPage() {
       //   同じタブの移動なので、確認の「紐づけずに開く」から送ってもブロックされない。
       if (newest.externalUrl) {
         const url = newest.externalUrl;
+        // 元ファイルのまま追加したもの（BRU20-002）は権限を付けずにそのまま送る。開けるかは Drive 側の共有で決まる
+        if (newest.externalLinked) {
+          window.location.replace(url);
+          return;
+        }
         if (googleLinked) {
           // 紐づけたGoogleアカウントに権限が無ければ、付けてから送る（同じタブの移動なので await の後でもブロックされない）。
           // 付けられなくても送る（共有ドライブのメンバーなど、付与しなくても開ける人がいるため）
@@ -823,18 +828,22 @@ export function FileBoxPage() {
       return;
     }
     if (!file.externalUrl) { toast("このファイルのURLが見つかりません", "error"); return; }
+    const opened = (r: { opened: boolean; warning?: string }) => {
+      if (!r.opened) { toast("別タブを開けませんでした。ブラウザのポップアップの設定を確認してください", "error"); return; }
+      if (r.warning) toast(r.warning, "error");
+      // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
+      if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
+      // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
+      const office = googleConvertKind(file.fileName);
+      if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
+    };
+    // 元ファイルのまま追加したもの（BRU20-002）は、権限を付けずにそのまま開く。
+    // 開けるかどうかは Googleドライブ側の共有で決まる（共有されていない人は Google の「アクセス権が必要です」になる）
+    if (file.externalLinked) { opened({ opened: openGoogleFile(file) }); return; }
     // 未紐づけなら先に紐づけるかを尋ねる（BRU17-028）。「紐づけずに開く」を選んだときもここから開く
     guardGoogleOpen(() => {
       // 紐づけたGoogleアカウントに権限が無ければ、付けてから開く（後から紐づけた・後から参加した人向け）
-      void openGoogleFileEnsuringAccess(file, googleLinked).then(r => {
-        if (!r.opened) { toast("別タブを開けませんでした。ブラウザのポップアップの設定を確認してください", "error"); return; }
-        if (r.warning) toast(r.warning, "error");
-        // draw.io の図は Googleドライブのファイル画面が開くので、そこからの操作を案内する
-        if (getFileKind(file.fileName, file.fileType) === "drawio") { toast(DRAWIO_OPEN_HINT, "info"); return; }
-        // Office文書も同じくプレビュー画面が開く。編集したい人向けに、その先を案内する
-        const office = googleConvertKind(file.fileName);
-        if (office) toast(officeOnDriveHint(GOOGLE_APP_LABEL[office]), "info");
-      });
+      void openGoogleFileEnsuringAccess(file, googleLinked).then(opened);
     });
   }, [toast, guardGoogleOpen, googleLinked]);
 
@@ -961,7 +970,8 @@ export function FileBoxPage() {
     sharingRef.current = true;
     try {
       await change();
-      if (isGoogleFile(file)) {
+      // 元ファイルのまま追加したもの（BRU20-002）は一覧で隠すだけ。Googleドライブ側の権限は変えない
+      if (isGoogleFile(file) && !file.externalLinked) {
         try {
           const r = await syncGoogleFileAcl(file.id);
           if (r.failed.length > 0) {
@@ -1026,7 +1036,7 @@ export function FileBoxPage() {
         return;
       }
 
-      toast(!alsoDrive && googleCount > 0
+      toast(!alsoDrive && (googleCount > 0 || file.externalLinked)
         ? `「${file.fileName}」をファイルボックスから削除しました。Googleドライブ上のファイルは残っています`
         : `「${file.fileName}」を削除しました`);
 
@@ -1388,6 +1398,13 @@ export function FileBoxPage() {
                           <Globe style={{ width: 9, height: 9 }} />リンク公開中
                         </span>
                       )}
+                      {/* コピーせず元ファイルのまま追加したもの（BRU20-002）。開けるかどうかは Drive 側の共有で決まる */}
+                      {f.externalLinked && (
+                        <span title="Googleドライブ上の元のファイルをそのまま開きます。開けるかどうかは Googleドライブ側の共有設定で決まります"
+                          style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "#EFF6FF", color: "#1D4ED8", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                          <ExternalLink style={{ width: 9, height: 9 }} />元ファイル
+                        </span>
+                      )}
                       {/* Drive 側で消された行。DevTicket 側は消さずに、開けないことだけ伝える */}
                       {isMissing && (
                         <span title="Googleドライブ上で削除されているため開けません"
@@ -1420,7 +1437,8 @@ export function FileBoxPage() {
                       <Lock style={{ width: 13, height: 13 }} />
                     </button>
                   )}
-                  {isGoogle && (
+                  {/* 元ファイルのまま追加したものの共有は、Googleドライブ側の持ち主が決める */}
+                  {isGoogle && !f.externalLinked && (
                     <button onClick={e => { e.stopPropagation(); handleToggleLinkShare(f); }}
                       title={f.linkShared ? "リンク共有を解除する" : "リンクを知っている全員が編集できるようにする"}
                       style={{ background: "none", border: "none", cursor: "pointer", color: f.linkShared ? "#D97706" : "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
@@ -1441,8 +1459,8 @@ export function FileBoxPage() {
                     );
                   })()}
                   {/* 上の逆向き。スプレッドシート / ドキュメント / スライドを Excel / Word / PowerPoint に変換する。
-                      Drive で削除済みのものは中身を読めないので出さない */}
-                  {isGoogle && !isMissing && googleDrive && OFFICE_EXPORT_KIND[kind] && (() => {
+                      Drive で削除済みのものは中身を読めないので出さない。元ファイルのまま追加したものにも出さない */}
+                  {isGoogle && !isMissing && !f.externalLinked && googleDrive && OFFICE_EXPORT_KIND[kind] && (() => {
                     const ok = OFFICE_EXPORT_KIND[kind]!;
                     const label = `${OFFICE_APP_LABEL[ok]}に変換（コピーを作成）`;
                     return (
@@ -1461,10 +1479,13 @@ export function FileBoxPage() {
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
                     <Download style={{ width: 13, height: 13 }} />
                   </button>
-                  <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
-                    <Pencil style={{ width: 13, height: 13 }} />
-                  </button>
+                  {/* 元ファイルのまま追加したものの名前は Googleドライブ側で変える（変更は一覧に取り込まれる） */}
+                  {!f.externalLinked && (
+                    <button onClick={e => { e.stopPropagation(); openRename(f); }} title="名前を変更"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#C9C4BB", padding: 5, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                      <Pencil style={{ width: 13, height: 13 }} />
+                    </button>
+                  )}
                   {/* 削除できるのは 所有者 / オーナー / 「ファイルの削除」権限を持つ人 */}
                   {(canDeleteAny || isMine) && (
                     <button onClick={e => { e.stopPropagation(); setDeleteTarget(f); }} title="削除"
@@ -1522,9 +1543,11 @@ export function FileBoxPage() {
         // Googleドライブ上のファイルの実体は Drive 側にある。どちらにするかは毎回選んでもらう。
         // フォルダは配下（入れ子のフォルダの中まで）をまとめて数え、
         // 「中身もすべて Drive から消す／Drive 上はすべて残す」を1つのチェックで選ばせる。
+        // 元ファイルのまま追加したもの（BRU20-002）は一覧から外すだけなので、ゴミ箱へ移す対象に数えない
+        const trashable = (f: ProjectFile) => isGoogleFile(f) && !f.externalLinked;
         const googleCount = deleteTarget.isFolder
-          ? collectDescendants(files, deleteTarget.id).filter(f => !f.isFolder && isGoogleFile(f)).length
-          : (isGoogleFile(deleteTarget) ? 1 : 0);
+          ? collectDescendants(files, deleteTarget.id).filter(f => !f.isFolder && trashable(f)).length
+          : (trashable(deleteTarget) ? 1 : 0);
         // チェックが付いていても、Googleドライブ上のファイルが無ければ Drive へは行かない
         const alsoDrive = deleteFromDrive && googleCount > 0;
 
@@ -1533,7 +1556,9 @@ export function FileBoxPage() {
             + (googleCount > 0 ? `\nこのフォルダには Googleドライブ上のファイルが ${googleCount} 件あります。` : "")
           : deleteTarget.version > 1 && !isGoogleFile(deleteTarget)
             ? `「${deleteTarget.fileName}」を削除します。過去バージョン（v1〜v${deleteTarget.version}）もすべて削除されます。`
-            : `「${deleteTarget.fileName}」を削除します。`;
+            : deleteTarget.externalLinked
+              ? `「${deleteTarget.fileName}」をファイルボックスの一覧から外します。Googleドライブ上の元のファイルは残ります。`
+              : `「${deleteTarget.fileName}」を削除します。`;
 
         return (
           <ConfirmDialog

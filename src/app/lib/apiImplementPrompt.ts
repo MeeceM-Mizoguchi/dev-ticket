@@ -10,13 +10,15 @@
 // 載せないだけでなく禁止として書くのが要点。
 //
 // ブランチ・コミット・PR・マージは AI が手元の git / gh で行う（Dev Ticket のAPIは通さない）。
-// Dev Ticket 側のAPIを使うのは「読み取り」と「ステータス更新」の2つだけ。
+// Dev Ticket 側のAPIを使うのは「読み取り」「ステータス更新」「PRの紐づけ」の3つだけ。
+// PRの紐づけは、AI が gh pr create で作ったPRが画面・Webhook の自動紐づけを通らないため（BRU20-004）。
 //
 // AI が進めてよいステータスは、レビュー前の「進行中」（子チケットは「対応完了」）まで。
 // 「レビュー中」はレビュアーを人が画面で指定して進めるものなので、手順書には載せない（BRU20-005）。
 //
 // ⚠️ ここに書く仕様は api/v1/[resource].ts の実装と一致していなければならない
-//    （GET /api/v1/ticket の応答の形・POST /api/v1/ticket-status が受けるステータス）。
+//    （GET /api/v1/ticket の応答の形・POST /api/v1/ticket-status が受けるステータス・
+//      POST /api/v1/ticket-pull が受ける内容とエラー）。
 
 /** チェックボックス1つぶん */
 export type ImplementStep = "implement" | "status" | "branch" | "commit" | "pr" | "merge";
@@ -156,6 +158,7 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
   const base = ctx.defaultBranch ? c(ctx.defaultBranch) : "リポジトリの既定ブランチ";
   const detailUrl = `${ctx.baseUrl}/api/v1/ticket?wbs=${encodeURIComponent(ctx.wbs)}`;
   const statusUrl = `${ctx.baseUrl}/api/v1/ticket-status`;
+  const pullUrl = `${ctx.baseUrl}/api/v1/ticket-pull`;
 
   const out: string[] = [];
   const add = (...lines: string[]) => out.push(...lines);
@@ -205,7 +208,8 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     "",
     ctx.plainKey
       ? "- 上の1行が **Dev Ticket のAPIキー**（" + c("dvt_live_") + " で始まる文字列）。**この手順書にキーはもう含まれている。**利用者に聞き直さないこと。"
-      : "- 上の行はプレースホルダ。控えてある実際のキー（" + c("dvt_live_") + " で始まる文字列）に置き換えること。環境変数などに登録済みであれば、そちらを使ってよい。",
+      : "- 上の行はプレースホルダ。控えてある実際のキー（" + c("dvt_live_") + " で始まる文字列）に置き換えること。環境変数などに登録済みであれば、そちらを使ってよい。"
+        + (sel.pr ? "**PRをチケットに紐づけるため、権限が「すべて」のキーに置き換えること。**" : ""),
     "- すべてのリクエストで " + c("Authorization: Bearer <上のAPIキー>") + " として送る。",
     "- キーはパスワードと同じもの。**ソースコード・コミット・PRの本文・ログに書き出さないこと。**",
     "",
@@ -275,7 +279,10 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
   if (sel.branch) {
     step("ブランチを作る",
       `- ベースブランチ（${base}）を最新にする: ${c("git fetch origin")} → ベースブランチへ切り替え → ${c("git pull --ff-only")}。`,
-      `- そこから新しいブランチを作る。**ブランチ名には必ずチケット番号 ${c(ctx.wbs)} を含める**（例: ${c(`feature/${ctx.wbs}`)}）。Dev Ticket はブランチ名の番号を手がかりに PR とチケットを自動で紐づける。`,
+      `- そこから新しいブランチを作る。**ブランチ名には必ずチケット番号 ${c(ctx.wbs)} を含める**（例: ${c(`feature/${ctx.wbs}`)}）。`
+        + (sel.pr
+          ? "PRとチケットの紐づけは PR を作ったあとに API で行うが、それが届かなかったときは、GitHub からの通知（Webhook）でブランチ名の番号を手がかりに紐づく。"
+          : "あとで PR を作ったとき、GitHub からの通知（Webhook）でブランチ名の番号を手がかりにチケットへ紐づく。"),
       "- 同じ名前のブランチが既にあるときは、上書きも使い回しもせず、止まって利用者に確認する。",
     );
   } else {
@@ -326,6 +333,8 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
       `- **タイトルの先頭にチケット番号を書く**（例: ${c(`${ctx.wbs} ${ctx.title}`)}）。`,
       "- 本文には、概要・変更点・確認した内容（実行した検証コマンドと結果）・Dev Ticket のチケットURL（応答の " + c("ticket.url") + "）を書く。",
       "- 同じブランチのプルリクエストが既にあるときは作り直さず、その URL を使う。",
+      `- **作成できたら（既にあった場合も）、すぐに ${c(ctx.wbs)} へプルリクエストを紐づける。**` + c("gh pr view --json number,url,title") + " で番号・URL・タイトルを取り、下の「PRの紐づけの仕様」のとおりに送る。",
+      "- 紐づけに失敗しても、プルリクエストは消さずにそのまま次へ進む。最後の報告に「PRは作成したが紐づけできなかった」こと・PRのURL・エラー文を書く。",
     );
   } else {
     add("> **push しない・プルリクエストを作らない。**", "");
@@ -352,12 +361,33 @@ export function buildImplementPrompt(ctx: ImplementPromptContext): string {
     "- 実行した検証コマンドと結果",
     ...(sel.branch ? ["- 作ったブランチ名"] : []),
     ...(sel.commit ? ["- 作ったコミット"] : []),
-    ...(sel.pr ? ["- プルリクエストの URL"] : []),
+    ...(sel.pr ? ["- プルリクエストの URL", "- プルリクエストのチケットへの紐づけの結果（紐づけた／できなかった場合はその旨とエラー文）"] : []),
     ...(sel.merge ? ["- マージの結果（マージした／止めた理由）"] : []),
     ...(sel.status ? ["- 変更したステータス（どのチケットを、何から何へ）と、応答の " + c("warnings")] : []),
     "- **行っていない作業**（上の表で ❌ のもの）",
     "- 判断に迷った点、本文とコメントの食い違い、確認してほしい点",
   );
+
+  // ── PRの紐づけの仕様 ──
+  if (sel.pr) {
+    add(
+      "## PRの紐づけの仕様",
+      "",
+      FENCE,
+      `POST ${pullUrl}`,
+      "Authorization: Bearer <APIキー>",
+      "Content-Type: application/json",
+      "",
+      `{ "wbs": "${ctx.wbs}", "number": 123, "url": "https://github.com/${ctx.repo ?? "<owner>/<repo>"}/pull/123", "title": "<プルリクエストのタイトル>" }`,
+      FENCE,
+      "",
+      `- ${c("wbs")} は ${c(ctx.wbs)} のまま送る${hasChildren ? "（子チケットごとではなく、親チケットに1回だけ紐づける）" : ""}。`,
+      "- " + c("number") + "・" + c("url") + "・" + c("title") + " は、作ったプルリクエストの値をそのまま使う。" + c("url") + " は Dev Ticket に登録されたリポジトリのPRで、" + c("number") + " と番号が一致している必要がある。",
+      "- 応答の " + c("changed") + " が " + c("false") + " なら、すでに紐づいているという意味で、正常。",
+      "- " + c("400") + "（リポジトリ・番号の不一致など）・" + c("403") + "（キーの権限不足）・" + c("404") + "（チケットが無い）が返ったら、**内容を変えて再送しない。**エラー文を報告に書く。",
+      "",
+    );
+  }
 
   // ── ステータス更新の仕様 ──
   if (sel.status) {
