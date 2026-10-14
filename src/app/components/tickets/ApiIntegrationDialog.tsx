@@ -533,6 +533,7 @@ export function ApiIntegrationDialog({
               { m: "GET", path: "/api/v1/context", desc: "スプリント・担当者・分類の候補を取得する" },
               { m: "GET", path: "/api/v1/ticket?wbs=…", desc: "チケット1件の本文・画像・コメント・子チケットを読み取る（権限: 読み取りのみ／すべて）" },
               { m: "POST", path: "/api/v1/ticket-status", desc: "ステータスを前へ進める（権限: すべて）" },
+              { m: "POST", path: "/api/v1/ticket-pull", desc: "作成したPRをチケットへ紐づける（権限: すべて）" },
             ].map(e => (
               <div key={`${e.m} ${e.path}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 11px", background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.07)", borderRadius: 8 }}>
                 <span style={{ fontSize: 10, fontWeight: 800, color: e.m === "POST" ? GREEN : "#0284C7", minWidth: 34 }}>{e.m}</span>

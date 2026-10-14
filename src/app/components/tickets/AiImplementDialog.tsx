@@ -30,7 +30,7 @@ import {
 const GREEN = "#059669";
 const PURPLE = "#7C3AED";
 
-/** この画面から発行するキーの名前と期限。権限は「すべて」固定（読み取りとステータス更新の両方に要る） */
+/** この画面から発行するキーの名前と期限。権限は「すべて」固定（読み取り・ステータス更新・PRの紐づけに要る） */
 const QUICK_KEY_NAME = "AIで実装用";
 const QUICK_KEY_DAYS = 90;
 
@@ -156,6 +156,10 @@ export function AiImplementDialog({
     if (selection.status && !canUpdateStatus(selectedKey)) {
       return "このキーは「読み取りのみ」のため、ステータスを更新できません。権限が「すべて」のキーを選ぶか、「チケットのステータスの更新」を外してください。";
     }
+    // 作ったPRは AI が POST /api/v1/ticket-pull で紐づける。これも「すべて」のキーだけに許している
+    if (selection.pr && !canUpdateStatus(selectedKey)) {
+      return "このキーは「読み取りのみ」のため、PRをチケットに紐づけられません。権限が「すべて」のキーを選ぶか、「PR作成」を外してください。";
+    }
     return null;
   })();
 
@@ -245,7 +249,9 @@ export function AiImplementDialog({
           <p style={{ fontSize: 11.5, color: "#6B6458", marginTop: 5, lineHeight: 1.8 }}>
             {canManage
               ? "これまでのキーは「登録のみ」です。AIがチケットを読み取るには、権限が「読み取りのみ」または「すべて」のキーが必要です。"
-              : "キーの欄を空にした手順がコピーされます。AIに貼り付けたあと、管理者から受け取ったキー（権限が「すべて」または「読み取りのみ」のもの）に置き換えてください。"}
+              : selection.pr
+                ? "キーの欄を空にした手順がコピーされます。AIに貼り付けたあと、管理者から受け取った権限が「すべて」のキーに置き換えてください（PRをチケットに紐づけるのに必要です）。"
+                : "キーの欄を空にした手順がコピーされます。AIに貼り付けたあと、管理者から受け取ったキー（権限が「すべて」または「読み取りのみ」のもの）に置き換えてください。"}
           </p>
           {canManage && <div style={{ marginTop: 10 }}>{issueButton}</div>}
           {issueError && <p style={{ fontSize: 11.5, color: "#DC2626", marginTop: 8, lineHeight: 1.7 }}>{issueError}</p>}
@@ -276,7 +282,7 @@ export function AiImplementDialog({
                 : keyEmbedded ? "✅ 選択中のキーを埋め込んだ状態でコピーされます。APIキーを別に貼る必要はありません。"
                   : "キーを読み込めませんでした。"}
         </p>
-        {/* ステータス更新を選んだのに「すべて」のキーが無いときは、その場で発行できるようにする */}
+        {/* ステータス更新・PR作成を選んだのに「すべて」のキーが無いときは、その場で発行できるようにする */}
         {keyProblem && canManage && !keys.some(canUpdateStatus) && (
           <div style={{ marginTop: 8 }}>
             {issueButton}
