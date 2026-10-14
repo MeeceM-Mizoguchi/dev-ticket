@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
-import { Check, Copy, GitBranch, GitPullRequest, Github, Link2, Loader2, Plus, X } from "lucide-react";
+import { Check, Copy, GitBranch, GitPullRequest, Github, Loader2, Plus, X } from "lucide-react";
 import { copyText } from "@/lib/clipboard";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -37,6 +37,7 @@ import { NO_GITHUB_PERMS } from "@/app/lib/githubPerms";
 import { CreatePullDialog } from "@/app/components/github/CreatePullDialog";
 import { CreateBranchDialog, suggestBranchName } from "@/app/components/github/CreateBranchDialog";
 import { CreatePullPrepDialog, type PrepState } from "@/app/components/github/CreatePullPrepDialog";
+import { LinkPullDialog } from "@/app/components/github/LinkPullDialog";
 import { MergeConfirmDialog } from "@/app/components/github/MergeConfirmDialog";
 import { BulkMergeDialog } from "@/app/components/github/BulkMergeDialog";
 import { BulkMergePromptDialog } from "@/app/components/github/BulkMergePromptDialog";
@@ -755,61 +756,6 @@ export function TicketPrSection({
         </label>
       )}
 
-      {picking && (
-        <div style={{ marginTop: 10, border: "1px solid rgba(26,23,20,0.10)", borderRadius: 9, overflow: "hidden" }}>
-          {/* 一覧を下までスクロールしていて押した行が見えていなくても分かるよう、見出しにも進捗を出す */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", background: linking !== null ? "#EFF6FF" : "#F4F5F6" }}>
-            {linking !== null ? (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#0284C7" }}>
-                <Loader2 style={{ width: 11, height: 11, animation: "tpr-spin 1s linear infinite" }} />
-                #{linking} を紐付けています...
-              </span>
-            ) : (
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#6B6458" }}>
-                紐付け候補（オープンなPR）{wbsKey && "・このチケットの番号を含むものが上"}
-              </span>
-            )}
-            <button onClick={() => setPicking(false)} disabled={linking !== null}
-              style={{ background: "none", border: "none", cursor: linking !== null ? "default" : "pointer", color: "#B0A9A4", display: "flex", opacity: linking !== null ? 0.4 : 1 }}>
-              <X style={{ width: 12, height: 12 }} />
-            </button>
-          </div>
-          <div style={{ maxHeight: 200, overflowY: "auto" }}>
-            {!available ? (
-              <p style={{ fontSize: 11, color: "#B0A9A4", padding: "12px 10px" }}>読み込み中...</p>
-            ) : available.length === 0 ? (
-              <p style={{ fontSize: 11, color: "#B0A9A4", padding: "12px 10px" }}>オープンなプルリクエストはありません。</p>
-            ) : (
-              available.map(p => {
-                const already = links.some(l => l.kind === "pull" && l.number === p.number);
-                // 押した行だけ進捗を出し、他の行は薄くして「今はこれを処理中」と分かるようにする
-                const linkingThis = linking === p.number;
-                return (
-                  <button key={p.number} onClick={() => !already && handleLink(p.number)} disabled={already || busy}
-                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", border: "none", borderBottom: "1px solid rgba(26,23,20,0.05)", background: linkingThis ? "#EFF6FF" : already ? "#F9FAFB" : "#FFF", cursor: already || busy ? "default" : "pointer", textAlign: "left" as const, opacity: linking !== null && !linkingThis ? 0.45 : 1, transition: "opacity .15s, background .15s" }}>
-                    {linkingThis
-                      ? <Loader2 style={{ width: 11, height: 11, color: "#0284C7", flexShrink: 0, animation: "tpr-spin 1s linear infinite" }} />
-                      : <Link2 style={{ width: 11, height: 11, color: "#0284C7", flexShrink: 0 }} />}
-                    <span style={{ fontSize: 11, fontWeight: 700, color: "#8A837B", fontFamily: "var(--font-mono)", flexShrink: 0 }}>#{p.number}</span>
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#1A1714", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{p.title}</span>
-                    {linkingThis ? (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#0284C7", flexShrink: 0 }}>紐付け中...</span>
-                    ) : (
-                      <>
-                        {wbsKey && p.detectedWbs.includes(wbsKey) && (
-                          <span style={{ fontSize: 10, fontWeight: 700, color: "#059669", flexShrink: 0 }}>一致</span>
-                        )}
-                        {already && <span style={{ fontSize: 10, color: "#B0A9A4", flexShrink: 0 }}>紐付け済み</span>}
-                      </>
-                    )}
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
-
       {/*
         チケット詳細パネルはスライドインのアニメーションで transform が乗るため、
         その内側に置いた position:fixed のダイアログはパネル基準に閉じ込められることがある。
@@ -822,6 +768,20 @@ export function TicketPrSection({
       {preparingMerge !== null && createPortal(
         <div style={{ position: "relative", zIndex: 340 }}>
           <MergePrepDialog number={preparingMerge} waitNote={mergeWaitNote} onCancel={cancelMerge} />
+        </div>, document.body)}
+
+      {/* 紐付け候補の選択（BRU20-006）。以前は枠の一番下に一覧を出していて、押しても変化が見えなかった */}
+      {picking && createPortal(
+        <div style={{ position: "relative", zIndex: 340 }}>
+          <LinkPullDialog
+            pulls={available}
+            wbsKey={wbsKey}
+            isLinked={n => links.some(l => l.kind === "pull" && l.number === n)}
+            linking={linking}
+            busy={busy}
+            onLink={n => void handleLink(n)}
+            onClose={() => setPicking(false)}
+          />
         </div>, document.body)}
 
       {prep && createPortal(
