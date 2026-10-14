@@ -11,6 +11,8 @@ import { FolderKanban, ChevronRight, GanttChartSquare, Plus } from "lucide-react
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { copyText } from "@/lib/clipboard";
+import { appOrigin } from "@/app/lib/appOrigin";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { AccessLevel, Project, Sprint, UserPermissions, WbsLevels, WbsSheet } from "@/app/types";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
@@ -146,6 +148,14 @@ export function WbsPage() {
   // ── WBS本体の操作 ───────────────────────────────────────────
   const selectSheet = (id: string) => { if (projectSlug && id) navigate(`/${projectSlug}/wbs/${id}`); };
 
+  /** いま開いているWBSのURL（/{プロジェクト}/wbs/{WBSのID} の完全なURL）をコピーする */
+  const handleCopyUrl = async () => {
+    if (!projectSlug || !current) return;
+    // 共有できる形で出す。ネイティブの capacitor:// は appOrigin() が弾く（NotFoundView と同じ）
+    if (await copyText(`${appOrigin()}/${projectSlug}/wbs/${current.id}`)) toast("URLをコピーしました");
+    else toast("URLのコピーに失敗しました", "error");
+  };
+
   const handleCreate = async (name: string): Promise<boolean> => {
     if (!project) return false;
     const maxSortOrder = sheets.length ? Math.max(...sheets.map(s => s.sortOrder)) : null;
@@ -266,6 +276,7 @@ export function WbsPage() {
               onChangeLevels={handleChangeLevels}
               onOpenVisibility={() => setVisibilityOpen(true)}
               onOpenManual={() => setManualOpen(true)}
+              onCopyUrl={handleCopyUrl}
             />
           </div>
 
