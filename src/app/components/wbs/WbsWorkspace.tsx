@@ -3,7 +3,7 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trash2, Tags, CalendarOff, Download, Upload, FilterX } from "lucide-react";
+import { Trash2, Tags, CalendarOff, Download, Upload, FilterX, Maximize2, Minimize2 } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -99,6 +99,43 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     rootEl.addEventListener("wheel", onWheel, { passive: false });
     return () => rootEl.removeEventListener("wheel", onWheel);
   }, [rootEl]);
+
+  // ── 全画面 ──────────────────────────────────────────────────
+  // ブラウザの全画面はページ全体（document.documentElement）にかけ、WBSの部分はアプリの中で
+  // 画面いっぱいに広げる（position:fixed）。WBSの要素そのものを全画面にすると、その外（document.body）へ
+  // 出しているプルダウン・日付の選択・ダイアログが表示されなくなるため。
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenRef = useRef(false);
+  const enterFullscreen = () => {
+    fullscreenRef.current = true;
+    setFullscreen(true);
+    // ブラウザが全画面を許さないときも、画面いっぱいの表示だけは行う
+    document.documentElement.requestFullscreen?.().catch(() => { });
+  };
+  const exitFullscreen = useCallback(() => {
+    fullscreenRef.current = false;
+    setFullscreen(false);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => { });
+  }, []);
+  useEffect(() => {
+    if (!fullscreen) return;
+    // Esc などでブラウザの全画面が終わったら、画面いっぱいの表示も戻す
+    const onChange = () => { if (!document.fullscreenElement) exitFullscreen(); };
+    // ブラウザの全画面になれなかったときは Esc がブラウザに使われないので、ここで受ける
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !document.fullscreenElement) exitFullscreen();
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [fullscreen, exitFullscreen]);
+  // 全画面のまま画面を離れたら、ブラウザの全画面も終える
+  useEffect(() => () => {
+    if (fullscreenRef.current && document.fullscreenElement) document.exitFullscreen().catch(() => { });
+  }, []);
 
   const load = useCallback(async () => {
     const [its, sts, hols, lks] = await Promise.all([
@@ -418,7 +455,9 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   if (loading && !initializedRef.current) return <PageLoader label="WBSを読み込み中..." />;
 
   return (
-    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
+      // 全画面中は画面いっぱいに広げる。重なり順はダイアログとチケット詳細のパネル（300）より下
+      ...(fullscreen ? { position: "fixed", inset: 0, zIndex: 250, background: "#FFFFFF" } : null) }}>
       <WbsSummary rows={rows} statuses={statuses} gantt={gantt} />
 
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #E2E6EC", flexWrap: "wrap" }}>
@@ -462,6 +501,13 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
             <CalendarOff style={{ width: 12, height: 12 }} />休日設定
           </button>
         )}
+        {/* 閲覧のみの人にも出す */}
+        <button type="button" onClick={fullscreen ? exitFullscreen : enterFullscreen}
+          title={fullscreen ? "全画面表示を終了します（Esc でも戻ります）" : "WBSを画面いっぱいに表示します"} style={wbsToolBtn}>
+          {fullscreen
+            ? <><Minimize2 style={{ width: 12, height: 12 }} />全画面を終了</>
+            : <><Maximize2 style={{ width: 12, height: 12 }} />全画面</>}
+        </button>
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
