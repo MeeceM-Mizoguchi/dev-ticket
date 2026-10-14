@@ -375,7 +375,7 @@ export function AiImplementDialog({
                 {statusPlan(selection, target).map(line => <li key={line}>{line}</li>)}
               </ul>
               <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
-                ステータスは前にしか進みません。レビュアーの指定とレビュー依頼の通知は行われません。
+                ステータスは前にしか進みません。レビュー中へは進めません。レビューは画面からレビュアーを指定して依頼してください。
               </p>
             </div>
           )}
