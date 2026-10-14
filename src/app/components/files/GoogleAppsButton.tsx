@@ -73,6 +73,10 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   const [urlOpen, setUrlOpen] = useState(false);
   const [urlText, setUrlText] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
+  // Picker で選んだあと、追加のしかたを選ぶダイアログ（BRU20-002）。選ばれたファイルの ID を持つ
+  const [chooseFor, setChooseFor] = useState<string[] | null>(null);
+  // false = コピーして追加（既定・従来どおり） / true = 元のファイルのまま追加（コピーしない）
+  const [linkOnly, setLinkOnly] = useState(false);
 
   // BUG-05 送信ガード。state はボタンの見た目用で、二重起動を止めるのはこの ref。
   // 作成も追加も同じ ref で守る（どちらかが走っている間は、もう片方も始めさせない）。
@@ -140,7 +144,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
   }, [projectId, parentId, onCreated, toast, handleError]);
 
   /**
-   * 既存の Driveファイルを追加する（種別は問わない）。
+   * 既存の Driveファイルを選ぶ（種別は問わない）。選んだら、追加のしかたを選ぶダイアログを出す。
    * @param fileIds URL から取り出したID。指定するとそのファイルだけを Picker に出す
    */
   const runImport = useCallback(async (fileIds?: string[]) => {
@@ -150,15 +154,32 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     try {
       const picked = await pickGoogleFiles(fileIds);
       if (picked.length === 0) return; // Picker を閉じた
+      setLinkOnly(false);
+      setChooseFor(picked);
+    } catch (e) {
+      await handleError(e, "追加に失敗しました");
+    } finally {
+      busyRef.current = false;
+      setImporting(false);
+    }
+  }, [handleError]);
 
-      setSavingImport(true);
-      const res = await importGoogleFiles(projectId, picked, parentId);
+  /** 追加のしかたを選んだあと、選ばれたファイルを追加する */
+  const runSave = useCallback(async (picked: string[], asLink: boolean) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setChooseFor(null);
+    setSavingImport(true);
+    try {
+      const res = await importGoogleFiles(projectId, picked, parentId, asLink);
 
       if (res.imported.length > 0) {
         const copied = res.imported.filter(i => i.copied).length;
-        toast(copied > 0
-          ? `${res.imported.length} 件を追加しました。うち ${copied} 件は保存先の外にあったためコピーして追加しました。元のファイルは残っているので、今後は DevTicket 側のファイルを編集してください`
-          : `${res.imported.length} 件を追加しました`);
+        toast(asLink
+          ? `${res.imported.length} 件を元のファイルのまま追加しました。開けるかどうかは Googleドライブ側の共有設定で決まります`
+          : copied > 0
+            ? `${res.imported.length} 件を追加しました。うち ${copied} 件は保存先の外にあったためコピーして追加しました。元のファイルは残っているので、今後は DevTicket 側のファイルを編集してください`
+            : `${res.imported.length} 件を追加しました`);
         onCreated();
       }
       if (res.failed.length > 0) {
@@ -171,10 +192,11 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
       await handleError(e, "追加に失敗しました");
     } finally {
       busyRef.current = false;
-      setImporting(false);
       setSavingImport(false);
     }
   }, [projectId, parentId, onCreated, toast, handleError]);
+
+  const closeChoose = useCallback(() => setChooseFor(null), []);
 
   const runAction = useCallback((a: Action) => {
     if (a.type === "create") void runCreate(a.kind);
@@ -224,7 +246,7 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
     request({ type: "url", fileId: id });
   }, [urlText, request]);
 
-  const busy = creating !== null || importing;
+  const busy = creating !== null || importing || savingImport;
 
   const menuItemStyle = {
     display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "8px 10px",
@@ -285,7 +307,8 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             {drive.mode === "shared_drive"
               ? `${drive.folderName ?? "共有ドライブ"} の中に保存されます。`
               : "あなたのGoogleドライブに保存されます。"}
-            <br />保存先の外にあるファイルは、保存先へコピーして追加します。
+            <br />既存のファイルは、保存先へコピーして追加するか、
+            <br />コピーせず元のファイルのまま追加するかを選べます。
             <br />Excel・PDF なども追加できます（開くときはGoogleドライブが開きます）。
           </p>
         </div>
@@ -329,6 +352,51 @@ export function GoogleAppsButton({ projectId, parentId, drive, userId, onCreated
             「次へ」を押すとGoogleの画面にそのファイルが表示されるので、「Select」を押してください。
             DevTicketがそのファイルを扱うための確認です。
           </p>
+        </DialogShell>,
+        document.body,
+      )}
+
+      {/* 追加のしかたを選ぶ（BRU20-002）。上の URL ダイアログと同じ理由で document.body へ描く */}
+      {chooseFor && createPortal(
+        <DialogShell title="追加のしかたを選ぶ" size="sm" minHeight={0} onClose={closeChoose}
+          footer={<>
+            <button type="button" onClick={closeChoose}
+              style={{ padding: "8px 16px", background: "#F4F5F6", color: "#1A1714", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer" }}>
+              キャンセル
+            </button>
+            <button type="button" onClick={() => void runSave(chooseFor, linkOnly)}
+              style={{ padding: "8px 16px", background: "#059669", color: "#fff", fontSize: 12, fontWeight: 700, borderRadius: 8, border: "none", cursor: "pointer" }}>
+              追加する
+            </button>
+          </>}>
+          <p style={{ margin: "0 0 10px", fontSize: 12.5, color: "#1A1714", lineHeight: 1.7 }}>
+            選んだ {chooseFor.length} 件のファイルを、どのように追加しますか？
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {([
+              {
+                value: false, label: "コピーして追加",
+                note: "保存先へコピーを作り、プロジェクトのメンバーが開けるよう共有します。元のファイルとは別のファイルになります（保存先の中にあるファイルはコピーしません）。",
+              },
+              {
+                value: true, label: "元のファイルのまま追加（コピーしない）",
+                note: "元のファイルをそのまま開きます。DevTicket からは共有しないため、開けるか・編集できるかは Googleドライブ側の共有設定で決まります。DevTicket に参加していない人と共有しているファイル向けです。",
+              },
+            ] as const).map(o => {
+              const selected = linkOnly === o.value;
+              return (
+                <label key={String(o.value)}
+                  style={{ display: "flex", gap: 9, padding: "10px 12px", borderRadius: 8, cursor: "pointer", border: `1px solid ${selected ? "#059669" : "rgba(26,23,20,0.12)"}`, background: selected ? "#ECFDF5" : "#FFFFFF" }}>
+                  <input type="radio" name="google-import-mode" checked={selected} onChange={() => setLinkOnly(o.value)}
+                    style={{ width: 14, height: 14, marginTop: 2, accentColor: "#059669", cursor: "pointer", flexShrink: 0 }} />
+                  <span>
+                    <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "#1A1714" }}>{o.label}</span>
+                    <span style={{ display: "block", marginTop: 3, fontSize: 11, color: "#6B6458", lineHeight: 1.6 }}>{o.note}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         </DialogShell>,
         document.body,
       )}

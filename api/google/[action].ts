@@ -758,11 +758,14 @@ async function collectDriveDescendants(
   // 1回で全件引いてメモリ上で辿る。階層ごとに問い合わせると深さの分だけ往復が増える。
   // BUG-01 途中で止まっても結果が再現するよう順序を固定する。
   const { data: rows } = await sb.from("project_files")
-    .select("id, file_name, parent_id, external_id, external_provider")
+    .select("id, file_name, parent_id, external_id, external_provider, external_linked")
     .eq("project_id", projectId)
     .order("created_at", { ascending: true }).order("id", { ascending: true });
 
-  type Row = { id: string; file_name: string; parent_id: string | null; external_id: string | null; external_provider: string | null };
+  type Row = {
+    id: string; file_name: string; parent_id: string | null;
+    external_id: string | null; external_provider: string | null; external_linked: boolean | null;
+  };
   const byParent = new Map<string, Row[]>();
   for (const r of (rows ?? []) as Row[]) {
     const key = String(r.parent_id ?? "");
@@ -779,7 +782,8 @@ async function collectDriveDescendants(
     if (visited.has(current)) continue;
     visited.add(current);
     for (const child of byParent.get(current) ?? []) {
-      if (child.external_provider === "google" && child.external_id) {
+      // 元ファイルのまま追加したもの（BRU20-002）は他の人のファイルなので、ゴミ箱へ入れる対象から外す
+      if (child.external_provider === "google" && child.external_id && !child.external_linked) {
         out.push({ id: String(child.id), file_name: String(child.file_name), external_id: String(child.external_id) });
       }
       stack.push(String(child.id));
@@ -1631,8 +1635,15 @@ export default async function handler(req: any, res: any) {
     //   （Google形式は容量を消費しない）。
     //   保存先が本人のトークンから見えない共有ドライブ運用では、files.copy の代わりに
     //   中身を中継して複製する（relayCopy。Google形式は Office形式を経由するので一部の書式が変わりうる）。
+    //
+    // ★ linkOnly が指定されたら、場所を問わずコピーせず元ファイルのまま登録する（BRU20-002）。
+    //   DevTicket に参加していない人（他社など）と共有しているファイルは、コピーすると内容が分かれて
+    //   やり取りに使えないため。上に挙げた問題は、その行（external_linked = true）を
+    //   「開くだけ」に絞って避ける：権限は配らない・改名やゴミ箱への移動はしない・
+    //   sync-names は追加した人のトークンで1件ずつ見る。開けるかどうかは Googleドライブ側の共有で決まる。
     if (action === "import-files") {
       const projectId = String(body.projectId ?? "");
+      const linkOnly = body.linkOnly === true;
       const fileIds: string[] = Array.isArray(body.fileIds)
         ? [...new Set(body.fileIds.map((x: unknown) => String(x)).filter(Boolean))] as string[]
         : [];
@@ -1675,7 +1686,7 @@ export default async function handler(req: any, res: any) {
       const taken = await namesInFolder(sb, projectId, parentId);
       const already = new Set((existing ?? []).map(r => String(r.external_id ?? "")).filter(Boolean));
 
-      const imported: { fileName: string; copied: boolean }[] = [];
+      const imported: { fileName: string; copied: boolean; linked: boolean }[] = [];
       const failed: { name: string; reason: string }[] = [];
       const shareFailed: { name: string; reason: string }[] = [];
 
@@ -1729,9 +1740,11 @@ export default async function handler(req: any, res: any) {
           // MIME だけで draw.io と判定したファイルは拡張子が無いことがあるので付ける
           // （コピーの名前にもなるので、Drive 上でも draw.io の図だと分かるようになる）
           const name = nextFreeName(drawio ? withDrawioExt(named) : named, taken);
+          // コピーを作るか。元ファイルのまま追加するときと、保存先フォルダの中にあるときは作らない
+          const copy = !linkOnly && !inFolder;
 
-          if (inFolder) {
-            // 保存先フォルダの中にあるものはそのまま使う。二重登録だけ防ぐ
+          if (!copy) {
+            // 元ファイルをそのまま使う。二重登録だけ防ぐ
             if (already.has(fileId)) throw new Error("既にファイルボックスに追加されています");
           } else {
             // 持ち主が「閲覧者のコピーを禁止」にしていると、コピーできない
@@ -1759,9 +1772,12 @@ export default async function handler(req: any, res: any) {
           // 配るのは、そのファイルが見えるトークン。コピー・中継で作ったものは保存先側（dest）、
           // 保存先にもともとあったものは本人が Picker で選んだので本人のトークンで見える。
           // 作った人は既に権限を持つので配布から外す（中継なら管理者が外れ、本人には配られる）
-          const owner = inFolder ? self : dest;
-          const share = await grantMembers(owner.accessToken, fileId, people, owner.email);
-          for (const x of share.failed) shareFailed.push({ name: `${name} / ${x.name}`, reason: x.reason });
+          // 元ファイルのまま追加したものには配らない（元ファイルの共有相手を DevTicket から増やさない）
+          if (!linkOnly) {
+            const owner = inFolder ? self : dest;
+            const share = await grantMembers(owner.accessToken, fileId, people, owner.email);
+            for (const x of share.failed) shareFailed.push({ name: `${name} / ${x.name}`, reason: x.reason });
+          }
 
           const { error } = await sb.from("project_files").insert({
             project_id: projectId,
@@ -1780,11 +1796,13 @@ export default async function handler(req: any, res: any) {
             external_provider: "google",
             external_id: fileId,
             external_url: webViewLink,
+            // 未適用の環境でも「コピーして追加」は通るよう、元ファイルのまま追加したときだけ書く
+            ...(linkOnly ? { external_linked: true } : {}),
             ...(parentId ? { parent_id: parentId } : {}),
           });
           if (error) {
             // こちらで作ったコピーだけ片付ける。そのまま追加しようとした元ファイルには触らない
-            if (!inFolder) {
+            if (copy) {
               await drive(dest.accessToken, `/files/${encodeURIComponent(fileId)}?supportsAllDrives=true`, { method: "DELETE" })
                 .catch(() => undefined);
             }
@@ -1793,7 +1811,7 @@ export default async function handler(req: any, res: any) {
 
           taken.add(name);
           already.add(fileId);
-          imported.push({ fileName: name, copied: !inFolder });
+          imported.push({ fileName: name, copied: copy, linked: linkOnly });
         } catch (e) {
           failed.push({ name: label, reason: e instanceof Error ? e.message : "追加できませんでした" });
         }
@@ -1817,11 +1835,13 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まっても結果が再現する）
       const { data: rows } = await sb.from("project_files")
-        .select("id, file_name, file_type, parent_id, external_id, owner_id, acl_id")
+        .select("id, file_name, file_type, parent_id, external_id, owner_id, acl_id, external_linked")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
       const targets = (rows ?? []).filter(r => !!r.external_id);
       if (targets.length === 0) return res.json({ renamed: [], missing: [], skipped: false });
+      // 元ファイルのまま追加した行（BRU20-002）。保存先フォルダの外にあるので、フォルダの一覧では判定しない
+      const linkedRows = targets.filter(r => !!r.external_linked);
 
       const { data: project } = await sb.from("projects")
         .select("id, name, organization_id").eq("id", projectId).maybeSingle();
@@ -1840,7 +1860,7 @@ export default async function handler(req: any, res: any) {
       // 打ち切ると「消された」と誤判定するので必ず最後まで辿る）
       // 保存先フォルダが本人から見えないときは管理者のトークンで見る（driveActors 参照）
       const run = await driveActors(sb, profile, cfg, project.organization_id ? String(project.organization_id) : null);
-      const live = await run(async ({ accessToken }) => {
+      const live = linkedRows.length === targets.length ? new Map<string, string>() : await run(async ({ accessToken }) => {
         const folderId = await resolveTargetFolder(sb, accessToken, cfg, project, profile.id);
         const found = new Map<string, string>(); // fileId → name
         let pageToken = "";
@@ -1863,6 +1883,32 @@ export default async function handler(req: any, res: any) {
         }
         return found;
       });
+
+      // 元ファイルのまま追加した行は、追加した人のトークンで1件ずつ見る。
+      // drive.file スコープでは Picker で選んだ本人にしか見えず、他の人のトークンでは 404 になる。
+      // ★ 見えなかっただけでは「削除済み」にしない（追加した人が共有から外された・連携を切ったなどでも 404 になる）。
+      //   ゴミ箱に入っていると分かったときだけ削除済みにする。
+      const trashedLinked = new Set<string>();
+      const ownerTokens = new Map<string, Promise<string | null>>();
+      for (const row of linkedRows) {
+        const ownerId = String(row.owner_id ?? "");
+        if (!ownerId) continue;
+        let token = ownerTokens.get(ownerId);
+        if (!token) {
+          token = getAccessToken(sb, ownerId).catch(() => null);
+          ownerTokens.set(ownerId, token);
+        }
+        const accessToken = await token;
+        if (!accessToken) continue;
+        const gid = String(row.external_id);
+        try {
+          const f = await drive(accessToken,
+            `/files/${encodeURIComponent(gid)}?supportsAllDrives=true&fields=id,name,trashed`);
+          if (f?.trashed) { live.delete(gid); trashedLinked.add(gid); } else live.set(gid, String(f?.name ?? ""));
+        } catch {
+          live.delete(gid); // 確かめられなかった。名前は今のまま、削除済みにもしない
+        }
+      }
 
       // 名前の重複を避けるため、Googleファイル以外も含めた現在の名前をフォルダごとに押さえておく
       // （重複を避けるのは同じフォルダの中だけ。別フォルダの同名は別ファイル）
@@ -1890,9 +1936,11 @@ export default async function handler(req: any, res: any) {
       for (const row of targets) {
         const liveName = live.get(String(row.external_id));
         if (liveName === undefined) {
-          if (seesFileRow(profile, row, shared)) missing.push(String(row.id));
+          const gone = !row.external_linked || trashedLinked.has(String(row.external_id));
+          if (gone && seesFileRow(profile, row, shared)) missing.push(String(row.id));
           continue;
         }
+        if (!liveName) continue;
         // draw.io の図は DevTicket 側では必ず .drawio を付けて持つ（Drive 側で外されても付け直す）
         const current = row.file_type === DRAWIO_MIME ? withDrawioExt(liveName) : liveName;
         if (current === row.file_name) continue;
@@ -1931,12 +1979,16 @@ export default async function handler(req: any, res: any) {
       if (!fileId || !newName) return res.status(400).json({ error: "fileId と newName が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("project_id, external_id, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
+        .select("project_id, external_id, external_provider, owner_id, acl_id, external_linked").eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
       if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
       if (file.external_provider !== "google" || !file.external_id) {
         return res.status(400).json({ error: "Googleファイルではありません" });
+      }
+      // 元ファイルのまま追加したものは他の人のファイル。DevTicket から名前を書き換えない（BRU20-002）
+      if (file.external_linked) {
+        return res.status(400).json({ error: "元のファイルのまま追加したファイルは、Googleドライブ側で名前を変更してください" });
       }
 
       const run = await driveActorsForProject(sb, profile, String(file.project_id));
@@ -2084,10 +2136,14 @@ export default async function handler(req: any, res: any) {
       if (!fileId && !folderId) return res.status(400).json({ error: "fileId または folderId が必要です" });
 
       const { data: origin } = await sb.from("project_files")
-        .select("id, project_id, file_name, is_folder, external_id, external_provider, owner_id, acl_id")
+        .select("id, project_id, file_name, is_folder, external_id, external_provider, owner_id, acl_id, external_linked")
         .eq("id", folderId || fileId).maybeSingle();
       if (!origin) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, origin.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
+      // 元ファイルのまま追加したものは他の人のファイル。ファイルボックスから外すだけで、Drive 側には触らない（BRU20-002）
+      if (!folderId && origin.external_linked) {
+        return res.status(400).json({ error: "元のファイルのまま追加したファイルは、Googleドライブのゴミ箱へ移動できません" });
+      }
       // この後に呼ばれる api/project-files/delete と同じ規則で止める。
       // こちらだけ通ると、DevTicket 上では消せないファイルを Drive のゴミ箱へ入れられてしまう。
       const blocker = await fileDeleteBlocker(sb, profile, origin);
@@ -2138,12 +2194,16 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("project_id, external_id, external_provider, owner_id, acl_id").eq("id", fileId).maybeSingle();
+        .select("project_id, external_id, external_provider, owner_id, acl_id, external_linked").eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, file.project_id, profile))) return res.status(403).json({ error: "Forbidden" });
       if (!(await canSeeFile(sb, profile, file))) return res.status(404).json({ error: "File not found" });
       if (file.external_provider !== "google" || !file.external_id) {
         return res.status(400).json({ error: "Googleファイルではありません" });
+      }
+      // 元ファイルのまま追加したものの共有範囲は、Googleドライブ側の持ち主が決める（BRU20-002）
+      if (file.external_linked) {
+        return res.status(400).json({ error: "元のファイルのまま追加したファイルは、Googleドライブ側で共有を設定してください" });
       }
       // リンク共有は「URLを知っていれば誰でも編集できる」状態。限定公開と両立しない
       if (enabled && file.acl_id) {
@@ -2191,13 +2251,14 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まったとき、どこまで終わったかが再現する）
       const { data: files } = await sb.from("project_files")
-        .select("id, file_name, external_id, acl_id")
+        .select("id, file_name, external_id, acl_id, external_linked")
         .eq("project_id", projectId).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
 
       // 限定公開のファイルは配り直さない（全員に配ると限定公開でなくなる）。
       // 共有先への権限は sync-acl が付ける。
-      const targets = (files ?? []).filter(f => !!f.external_id && !f.acl_id);
+      // 元ファイルのまま追加したもの（BRU20-002）にも配らない。共有相手は Googleドライブ側で決める
+      const targets = (files ?? []).filter(f => !!f.external_id && !f.acl_id && !f.external_linked);
       if (targets.length === 0) return res.json({ granted: 0, failed: [] });
 
       const orgId = project.organization_id ? String(project.organization_id) : null;
@@ -2252,12 +2313,13 @@ export default async function handler(req: any, res: any) {
 
       // BUG-01 同じ順序で処理する（途中で止まったとき、どこまで終わったかが再現する）
       const { data: files } = await sb.from("project_files")
-        .select("id, file_name, external_id, uploaded_by, owner_id, acl_id")
+        .select("id, file_name, external_id, uploaded_by, owner_id, acl_id, external_linked")
         .in("project_id", projectIds).eq("external_provider", "google")
         .order("created_at", { ascending: true }).order("id", { ascending: true });
-      // 本人から見えない限定公開のファイルには権限を付けない
+      // 本人から見えない限定公開のファイルには権限を付けない。
+      // 元ファイルのまま追加したもの（BRU20-002）にも付けない。共有相手は Googleドライブ側で決める
       const shared = await sharedAclIds(sb, profile);
-      const targets = (files ?? []).filter(f => !!f.external_id && seesFileRow(profile, f, shared));
+      const targets = (files ?? []).filter(f => !!f.external_id && !f.external_linked && seesFileRow(profile, f, shared));
       if (targets.length === 0) return res.json({ granted: 0, failed: [] });
 
       const ctx = await grantContext(sb, orgId, cfg, profile.id);
@@ -2293,7 +2355,7 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("id, project_id, file_name, external_id, external_provider, uploaded_by, owner_id, acl_id")
+        .select("id, project_id, file_name, external_id, external_provider, uploaded_by, owner_id, acl_id, external_linked")
         .eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, String(file.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
@@ -2302,6 +2364,8 @@ export default async function handler(req: any, res: any) {
       if (file.external_provider !== "google" || !file.external_id) {
         return res.status(400).json({ error: "Googleファイルではありません" });
       }
+      // 元ファイルのまま追加したもの（BRU20-002）には付けない。開けるかどうかは Googleドライブ側の共有で決まる
+      if (file.external_linked) return res.json({ ok: false, skipped: "linked" });
 
       const googleEmail = String(profile.google_email ?? "").trim();
       if (!googleEmail) return res.json({ ok: false, skipped: "not-linked" });
@@ -2344,7 +2408,7 @@ export default async function handler(req: any, res: any) {
       if (!fileId) return res.status(400).json({ error: "fileId が必要です" });
 
       const { data: file } = await sb.from("project_files")
-        .select("id, project_id, file_name, external_id, external_provider, link_shared, owner_id, acl_id")
+        .select("id, project_id, file_name, external_id, external_provider, link_shared, owner_id, acl_id, external_linked")
         .eq("id", fileId).maybeSingle();
       if (!file) return res.status(404).json({ error: "File not found" });
       if (!(await isMember(sb, String(file.project_id), profile))) return res.status(403).json({ error: "Forbidden" });
@@ -2355,6 +2419,8 @@ export default async function handler(req: any, res: any) {
       if (!isFileOwner(profile, file)) {
         return res.status(403).json({ error: "公開範囲を変更できるのは、このファイルを追加した人だけです" });
       }
+      // 元ファイルのまま追加したもの（BRU20-002）は、ファイルボックスの一覧で隠すだけ。Drive 側の権限は変えない
+      if (file.external_linked) return res.json({ removed: 0, granted: 0, failed: [], skipped: true });
 
       const { data: project } = await sb.from("projects")
         .select("id, organization_id, members").eq("id", String(file.project_id)).maybeSingle();
