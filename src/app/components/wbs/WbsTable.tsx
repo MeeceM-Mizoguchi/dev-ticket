@@ -188,11 +188,17 @@ function InlineText({ value, editing, canEdit, placeholder, textStyle, title, ke
         style={{ width: "100%", height: 22, padding: "0 4px", fontSize: 12, color: WBS_COLORS.text, background: "#FFFFFF", border: "1px solid #059669", borderRadius: 4, outline: "none", boxSizing: "border-box" }} />
     );
   }
+  // 「…」で切る要素そのものを TruncatedText にする（内側でさらに切ると、外から見て収まっている扱いになり
+  // 全文のツールチップが出なかった）。押すと入力欄になる動きは、外側の div で受ける
   return (
-    <TruncatedText as="div" text={value || (canEdit ? placeholder : "")}
-      style={{ width: "100%", cursor: canEdit ? "text" : "default", ...textStyle, ...(value ? null : { color: "#C9CED6", fontWeight: 400 }) }}>
-      <span onClick={canEdit ? onStart : undefined} title={title} style={{ display: "block", minHeight: 18, overflow: "hidden", textOverflow: "ellipsis" }}>{value || (canEdit ? placeholder : "")}</span>
-    </TruncatedText>
+    <div onClick={canEdit ? onStart : undefined} title={title}
+      style={{ width: "100%", minWidth: 0, cursor: canEdit ? "text" : "default" }}>
+      {/* ツールチップは入っている文字だけ。空の行の案内（placeholder）は出さない */}
+      <TruncatedText as="div" text={value}
+        style={{ minHeight: 18, ...textStyle, ...(value ? null : { color: "#C9CED6", fontWeight: 400 }) }}>
+        {value || (canEdit ? placeholder : "")}
+      </TruncatedText>
+    </div>
   );
 }
 
@@ -321,7 +327,7 @@ function renderCell(key: WbsColKey, row: WbsRow, ctx: RowCtx): ReactNode {
       // プロジェクトから外れた人が担当のままでも、選択肢から消えて空に見えないようにする
       const options = item.assignee && !ctx.members.includes(item.assignee) ? [...ctx.members, item.assignee] : ctx.members;
       return (
-        <WbsCellSelect value={item.assignee} title={item.assignee || undefined}
+        <WbsCellSelect value={item.assignee}
           options={[{ value: "", label: "—" }, ...options.map(m => ({ value: m, label: m }))]}
           onChange={v => ctx.onUpdate(item.id, { assignee: v })}
           style={{ ...cellSelect, color: item.assignee ? WBS_COLORS.text : "#C9CED6" }} />
