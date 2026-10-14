@@ -361,6 +361,9 @@ export function AiImplementDialog({
                         )}
                       </p>
                       <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2, lineHeight: 1.65 }}>{s.description}</p>
+                      {s.id === "pr" && (
+                        <p style={{ fontSize: 11, color: "#9E9690", lineHeight: 1.65 }}>他のPRと衝突するときは、その上に積んで作ります</p>
+                      )}
                       {locked && (
                         <p style={{ fontSize: 10.5, color: "#6B6458", marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
                           <Lock style={{ width: 10, height: 10, flexShrink: 0 }} />{locked}
