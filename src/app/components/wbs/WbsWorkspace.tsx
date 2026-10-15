@@ -23,7 +23,7 @@ import { downloadBlob, safeFileName } from "@/app/lib/articleExport/download";
 import { exportWbsXlsx } from "@/app/lib/wbsExcel";
 import { WbsTicketLinkDialog, type WbsTicketRef } from "./WbsTicketLinkDialog";
 import { WbsTicketCell } from "./WbsTicketCell";
-import { WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
+import { FOCUS_PULSE_MS, WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
 import { filterWbsRows, wbsFilterOptions, type WbsFilterCol, type WbsFilterCtx, type WbsFilters } from "./wbsFilter";
 import { WbsAttentionDialog, collectWbsAttention, isWbsAttentionDismissed } from "./WbsAttentionDialog";
 import { wbsToolBtn, wbsToolBtnDisabled } from "./wbsStyles";
@@ -39,7 +39,7 @@ function readFreeze(userId: string, sheetId: string): WbsColKey {
   return "note";
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone }: {
   sheet: WbsSheet;
   project: Project;
   canEdit: boolean;
@@ -50,6 +50,10 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   /** 段数を減らせない理由になっている行 */
   highlightIds: string[];
   onHighlightChange: (ids: string[]) => void;
+  /** マスタースケジュールの行を押して来たときの行。最初の読み込みのあと、その行へ移動して強調する */
+  focusItemId?: string | null;
+  /** focusItemId の行を強調し終えたとき */
+  onFocusDone?: () => void;
 }) {
   const { userId } = useAuth();
   const { toast } = useToast();
@@ -193,6 +197,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   useEffect(() => {
     if (!initializedRef.current || attentionCheckedRef.current) return;
     attentionCheckedRef.current = true;
+    // マスタースケジュールから行を指定して来たときは出さない（強調した行がお知らせに隠れるので）
+    if (focusItemId) return;
     if (attention.delayed.length + attention.notStarted.length === 0) return;
     if (isWbsAttentionDismissed(userId, sheet.id, today)) return;
     setAttentionOpen(true);
@@ -205,6 +211,23 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
     flashTimerRef.current = window.setTimeout(() => { flashTimerRef.current = null; setFlashId(null); }, 6000);
   };
+
+  // マスタースケジュールの行を押して来たとき。最初の読み込みのあと1回だけ、その大項目まで表を送り、
+  // 大項目から下の行のまとまり全体を黄色く光らせる（約3秒で消える）。消された行なら何もしない
+  const [focusGroupId, setFocusGroupId] = useState<string | null>(null);
+  const focusDoneRef = useRef(false);
+  const focusTimerRef = useRef<number | null>(null);
+  useEffect(() => () => { if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current); }, []);
+  useEffect(() => {
+    if (!initializedRef.current || focusDoneRef.current || !focusItemId) return;
+    focusDoneRef.current = true;
+    if (items.some(i => i.id === focusItemId)) {
+      setFocusGroupId(focusItemId);
+      setScrollTo({ id: focusItemId, nonce: Date.now() });
+      focusTimerRef.current = window.setTimeout(() => { focusTimerRef.current = null; setFocusGroupId(null); }, FOCUS_PULSE_MS);
+    }
+    onFocusDone?.();
+  }, [items, focusItemId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const changeFreeze = (key: WbsColKey) => {
     setFreezeKey(key);
@@ -547,6 +570,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
           filters={filters} filterOptions={filterOptions} onFilterChange={changeFilter} shownIds={shownIds}
           editing={editing} onEditingChange={setEditing}
           highlightIds={highlightSet} scrollTo={scrollTo} flashId={flashId}
+          focusGroupId={focusGroupId}
           onUpdate={handleUpdate} onMove={handleMove}
           onInsert={handleInsert} onAddNew={handleAddNew}
           collapseKey={`devticket:wbs:collapsed:${userId}:${sheet.id}`}
