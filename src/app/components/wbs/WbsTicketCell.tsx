@@ -6,11 +6,12 @@
 // 見えなくなっていた。そこで
 //   ・セルに出すチップは1件まで。2件以上は「+n」にまとめる
 //   ・「＋」と「+n」は決して縮めない（縮むのはチップの置き場だけ）
-// とした。全部を見るのは「+n」を押して出す一覧のほう。マウスを乗せただけでは何も出さない
-// （ガントや一覧に重なって邪魔になるため）。
+// とした。全部を見るのは「+n」を押して出す一覧のほう。マウスを乗せただけでは一覧を出さない
+// （ガントや一覧に重なって邪魔になるため）。チップの番号が「…」で切れているときだけ、全文のツールチップを出す。
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Plus } from "lucide-react";
+import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import type { WbsTicketRef } from "./WbsTicketLinkDialog";
 
 /** セルに直接チップで出す件数。これを超えた分は「+n」にまとめる */
@@ -21,6 +22,21 @@ const chipStyle = {
   color: "#047857", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 5, cursor: "pointer",
   whiteSpace: "nowrap", fontFamily: "var(--font-mono)", flexShrink: 0,
 } as const;
+
+/** セルに出すチップ。チケット番号が「…」で切れているときだけ、マウスを乗せると全文を出す */
+function TicketChip({ ticket, onOpen }: { ticket: WbsTicketRef["ticket"]; onOpen: (ticketId: string) => void }) {
+  const tip = useTruncatedTip<HTMLButtonElement>(ticket.wbs);
+  return (
+    <>
+      <button ref={tip.ref} type="button" onClick={() => { tip.close(); onOpen(ticket.id); }}
+        onMouseEnter={tip.onMouseEnter} onMouseLeave={tip.close}
+        style={{ ...chipStyle, flexShrink: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "18px", boxSizing: "border-box" }}>
+        {ticket.wbs}
+      </button>
+      {tip.tip}
+    </>
+  );
+}
 
 export function WbsTicketCell({ tickets, canEdit, onOpen, onAdd }: {
   tickets: WbsTicketRef[];
@@ -68,12 +84,7 @@ export function WbsTicketCell({ tickets, canEdit, onOpen, onAdd }: {
     <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", minWidth: 0 }}>
       {/* チップの置き場。足りなければここだけが縮み、「+n」と「＋」は押し出さない */}
       <div style={{ flex: "0 1 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
-        {inline.map(t => (
-          <button key={t.ticket.id} type="button" onClick={() => onOpen(t.ticket.id)}
-            style={{ ...chipStyle, flexShrink: 1, minWidth: 0, display: "block", overflow: "hidden", textOverflow: "ellipsis", lineHeight: "18px", boxSizing: "border-box" }}>
-            {t.ticket.wbs}
-          </button>
-        ))}
+        {inline.map(t => <TicketChip key={t.ticket.id} ticket={t.ticket} onOpen={onOpen} />)}
       </div>
 
       {restCount > 0 && (

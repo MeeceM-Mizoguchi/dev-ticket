@@ -1,13 +1,13 @@
 // ENHA2-053 WBS画面の上部の操作列。
 // WBSの切り替え・新規作成・名前変更・削除・段数・公開設定を並べる。
 import type { ReactNode } from "react";
-import { Plus, Pencil, Trash2, Globe, Lock, BookOpen } from "lucide-react";
+import { Plus, Pencil, Trash2, Globe, Lock, BookOpen, Link2 } from "lucide-react";
 import { WBS_LEVEL_OPTIONS } from "@/app/lib/wbsService";
 import type { WbsLevels, WbsSheet } from "@/app/types";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import { wbsToolBtn, wbsToolLabel } from "./wbsStyles";
 
-export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onChangeLevels, onOpenVisibility, onOpenManual, children }: {
+export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onCreate, onRename, onDelete, onChangeLevels, onOpenVisibility, onOpenManual, onCopyUrl, children }: {
   sheets: WbsSheet[];
   current: WbsSheet | null;
   /** WBSの権限が「編集可」か */
@@ -22,6 +22,8 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
   onOpenVisibility: () => void;
   /** 使い方（マニュアル）を開く。閲覧のみの人にも出す */
   onOpenManual: () => void;
+  /** いま開いているWBSのURLをコピーする。閲覧のみの人にも出す */
+  onCopyUrl: () => void;
   /** 右側に足す操作（ステータス設定など） */
   children?: ReactNode;
 }) {
@@ -71,6 +73,11 @@ export function WbsSheetBar({ sheets, current, canEdit, canManage, onSelect, onC
       {children}
 
       <div style={{ flex: 1 }} />
+      {current && (
+        <button type="button" onClick={onCopyUrl} title="このWBSのURLをコピーして、メンバーに共有できます" style={wbsToolBtn}>
+          <Link2 style={{ width: 12, height: 12 }} />URLをコピー
+        </button>
+      )}
       <button type="button" onClick={onOpenManual} title="WBS の使い方を見る" style={wbsToolBtn}>
         <BookOpen style={{ width: 12, height: 12 }} />マニュアル
       </button>

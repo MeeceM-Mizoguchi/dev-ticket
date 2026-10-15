@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
 import { isPlainEnter } from "@/app/lib/submitKey";
+import { useTruncatedTip } from "@/app/components/shared/TruncatedText";
 import { textColorOn } from "@/app/lib/wbsCalc";
 
 export type WbsCellOption = { value: string; label: string; color?: string };
@@ -57,6 +58,9 @@ export function WbsCellSelect({ value, options, onChange, style, align = "left",
   const selected = options[selectedIdx];
 
   const close = () => setPos(null);
+
+  // 文字が「…」で切れているときだけ、マウスを乗せると全文を出す。一覧を開いている間は出さない
+  const tip = useTruncatedTip<HTMLSpanElement>(selected?.label ?? "", { disabled: open });
 
   const place = () => {
     const rect = btnRef.current?.getBoundingClientRect();
@@ -145,7 +149,8 @@ export function WbsCellSelect({ value, options, onChange, style, align = "left",
           background: "transparent", cursor: disabled ? "default" : "pointer", boxSizing: "border-box",
           ...style,
         }}>
-        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(align === "center" ? null : { flex: 1, textAlign: "left" }) }}>
+        <span ref={tip.ref} onMouseEnter={tip.onMouseEnter} onMouseLeave={tip.close}
+          style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(align === "center" ? null : { flex: 1, textAlign: "left" }) }}>
           {selected?.label ?? ""}
         </span>
         {!disabled && <ChevronDown style={{ width: 11, height: 11, flexShrink: 0, opacity: 0.55 }} />}
@@ -178,6 +183,7 @@ export function WbsCellSelect({ value, options, onChange, style, align = "left",
         </div>,
         document.body,
       )}
+      {tip.tip}
     </>
   );
 }
