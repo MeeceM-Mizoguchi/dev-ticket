@@ -8,6 +8,7 @@ import {
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { useUploads, isPendingUpload, MAX_UPLOAD_FILE_SIZE } from "@/app/contexts/UploadContext";
 import { mapProject, mapProjectFile } from "@/app/lib/mappers";
 import type { Project, ProjectFile, AccessLevel, UserPermissions, FileShareMember } from "@/app/types";
 import { emitLinkItemsChanged } from "@/app/lib/linkSuggestSync";
@@ -24,18 +25,19 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { FileViewerModal } from "@/app/components/files/FileViewerModal";
 import { FileShareDialog } from "@/app/components/files/FileShareDialog";
+import { uploadPercent, isConvertingUpload } from "@/app/components/files/UploadPanel";
 import { PRIVATE_BG, PRIVATE_BORDER, PRIVATE_COLOR } from "@/app/components/whiteboard/PrivateBadge";
 import {
-  fetchSignedUrl, fetchDavUrl, uploadProjectFile, deleteProjectFile,
+  fetchSignedUrl, fetchDavUrl, deleteProjectFile,
   officeProtocolUrl, getFileKind, formatFileSize, KIND_COLOR, createProjectFolder,
-  downloadProjectFile, renameProjectFile, splitFileName, ensureFolderPath,
+  downloadProjectFile, renameProjectFile, splitFileName,
   isGoogleFile, googleFileLabel, googleConvertKind, googleExportUrl,
   isEditableInBrowser, GOOGLE_APP_LABEL, OFFICE_APP_LABEL, type GoogleAppKind, type FileKind,
   moveProjectFile, setFileVisibility, addFileShares, removeFileShare, loadFileShareMap, loadFileShareCandidates,
   fetchFileBoxUsage, type FileBoxUsage,
 } from "@/app/lib/projectFiles";
 import {
-  openGoogleFile, openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, uploadAsGoogleFile, syncGoogleNames,
+  openGoogleFile, openGoogleFileEnsuringAccess, ensureGoogleAccess, renameGoogleFile, setGoogleLinkShare, syncGoogleNames,
   convertExistingFile, exportGoogleToOffice, startGoogleOAuth, DRAWIO_OPEN_HINT, officeOnDriveHint, trashGoogleFiles,
   syncGoogleFileAcl,
   type GoogleDriveProjectConfig, type GoogleDriveMode, type TrashResult,
@@ -48,11 +50,10 @@ import { GoogleGLogo } from "@/app/components/files/GoogleGLogo";
 import { OfficeLetterIcon } from "@/app/components/files/OfficeLetterIcon";
 import { openPendingTab } from "@/app/lib/pendingTab";
 import {
-  collectDropEntries, collectInputEntries, looksLikeFolder,
+  collectDropEntries, collectInputEntries,
   MAX_UPLOAD_ENTRIES, type UploadEntry,
 } from "@/app/lib/folderUpload";
 
-const MAX_FILE_SIZE = 52428800; // 50MB（バケットの file_size_limit と揃える）
 // Office文書に変換できる Googleファイルの種別と、変換先（スプレッドシート → Excel 等）
 const OFFICE_EXPORT_KIND: Partial<Record<FileKind, GoogleAppKind>> = {
   gsheet: "spreadsheet",
@@ -213,13 +214,8 @@ export function FileBoxPage() {
   const [aliasCanonicalSlug, setAliasCanonicalSlug] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  // Google形式に変換してアップロードしている間だけ true（画面中央のぐるぐる用）
-  const [convertingUpload, setConvertingUpload] = useState(false);
-  // BUG-05 送信ガード。state はボタンの見た目用で、二重起動を止めるのはこの ref
-  const uploadingRef = useRef(false);
-  // フォルダを丸ごと上げると時間がかかるので、何件目かを出す
-  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  // アップロードはアプリ全体の UploadContext が受け持つ（画面を移っても続く。BRU20-010）
+  const uploads = useUploads();
   const [deleteTarget, setDeleteTarget] = useState<ProjectFile | null>(null);
   // 削除のとき Googleドライブ上の実体もゴミ箱へ入れるか。
   // 既定は false（＝Drive には残す）。取り込んだファイルが利用者の原本のことがあり、
@@ -519,107 +515,33 @@ export function FileBoxPage() {
   // フォルダをドロップされたら、同じ階層をファイルボックス側にも作ってから入れる。
   // フォルダ自身を File として送ると net::ERR_ACCESS_DENIED になるため、
   // 展開は必ず folderUpload.ts 側で済ませておくこと。
+  //
+  // 送信そのもの（フォルダ作成・同名改名・Google形式への変換・結果の集計）は UploadContext が行う。
+  // 画面からは送る一覧を渡すだけ。送信中に渡されたものはキューの最後に足される。
   // @param convert Office文書をGoogle形式へ変換して取り込む（アップロード前に選ばせる）。
   //   変換すると元の .xlsx 等は DevTicket に残らないため、既定では false。
-  const uploadEntries = useCallback(async (
+  const { enqueue: enqueueUploads, onFinished: onUploadsFinished } = uploads;
+  const uploadEntries = useCallback((
     entries: UploadEntry[], targetFolderId?: string | null, convert = false,
   ) => {
     if (!project || entries.length === 0) return;
-    // BUG-05 連続でドロップされても2本同時に走らせない。
-    // フォルダは1回が長いので、state だけだと確実にすり抜ける。
-    if (uploadingRef.current) {
-      toast("アップロード中です。完了してからもう一度お試しください", "error");
-      return;
-    }
-    uploadingRef.current = true;
-
     const folderId = targetFolderId !== undefined ? targetFolderId : currentFolderId;
+    enqueueUploads({ projectId: project.id, folderId, entries, convert, userName });
+  }, [project, currentFolderId, userName, enqueueUploads]);
 
-    setUploading(true);
-    setUploadProgress({ done: 0, total: entries.length });
-    // Google形式への変換は Drive との往復があり数秒以上かかるので、大きなぐるぐるを出す
-    setConvertingUpload(convert && entries.some(e => googleConvertKind(e.file.name)));
-    // 同じ階層を何度も引き直さないよう、1回のアップロード内で使い回す
-    const folderCache = new Map<string, string>();
-    let ok = 0;
-    const renamed: string[] = [];
-    const failed: string[] = [];
-    // Google形式で取り込んだときに、権限を配れなかったメンバー
-    const shareFailed: string[] = [];
-    // Google形式への変換に失敗し、「そのまま保存」に切り替えたファイル
-    const fellBack: string[] = [];
-    try {
-      for (let i = 0; i < entries.length; i++) {
-        const { file: f, dirPath } = entries[i];
-        setUploadProgress({ done: i, total: entries.length });
-        if (f.size > MAX_FILE_SIZE) {
-          failed.push(`「${f.name}」は上限(${formatFileSize(MAX_FILE_SIZE)})を超えています`);
-          continue;
-        }
-        try {
-          const parentId = dirPath.length > 0
-            ? await ensureFolderPath(project.id, dirPath, folderId, userName, folderCache)
-            : folderId;
+  // 送信が終わったら、このプロジェクトの分なら一覧を読み直す（別の画面にいる間に終わったものは、開いたときの load で拾う）
+  const projectId = project?.id;
+  useEffect(() => onUploadsFinished(id => {
+    if (id === projectId) load();
+  }), [onUploadsFinished, projectId, load]);
 
-          // Google形式へ変換して取り込む。対象外の拡張子はそのまま storage へ入れる
-          // （画像やPDFを混ぜてドロップされても、そちらは従来どおり動く）。
-          const convertKind = convert ? googleConvertKind(f.name) : null;
-          if (convertKind) {
-            const g = await uploadAsGoogleFile(project.id, f, convertKind, parentId);
-            if (!g.converted) {
-              // 変換できなかったが、ファイル自体は「そのまま」で保存できている
-              fellBack.push(`「${f.name}」（${g.reason}）`);
-              if (g.fileName !== f.name) renamed.push(`「${f.name}」→「${g.fileName}」`);
-              ok++;
-              continue;
-            }
-            if (g.fileName !== splitFileName(f.name).base) {
-              renamed.push(`「${f.name}」→「${g.fileName}」`);
-            }
-            for (const x of g.failed) shareFailed.push(`${g.fileName} / ${x.name}`);
-            ok++;
-            continue;
-          }
-
-          // 同名でも上書き（新バージョン）にせず、別ファイルとして残す
-          const stored = await uploadProjectFile(project.id, f, { uniqueName: true, parentId });
-          if (stored !== f.name) renamed.push(`「${f.name}」→「${stored}」`);
-          ok++;
-        } catch (e) {
-          console.error("[FileBox] upload error:", e);
-          const reason = e instanceof Error ? e.message : "";
-          // 展開に対応していないブラウザでフォルダ自身を拾ってしまったときの説明
-          const hint = looksLikeFolder(f)
-            ? "（フォルダの中身を読み取れませんでした。中のファイルを選んでください）" : "";
-          failed.push(`「${f.name}」${reason ? `：${reason}` : ""}${hint}`);
-        }
-      }
-    } finally {
-      uploadingRef.current = false;
-      setUploading(false);
-      setUploadProgress(null);
-      setConvertingUpload(false);
-    }
-
-    // 件数が多いフォルダでもトーストが溢れないよう、結果はまとめて出す
-    if (renamed.length > 0) {
-      toast(`同名のファイルがあるため名前を変更しました：${summarize(renamed)}`);
-    }
-    if (failed.length > 0) {
-      toast(`${failed.length} 件のアップロードに失敗しました：${summarize(failed)}`, "error");
-    }
-    if (shareFailed.length > 0) {
-      toast(`Googleファイルを共有できなかった相手がいます：${summarize(shareFailed)}。Googleアカウントをお持ちか確認してください`, "error");
-    }
-    if (fellBack.length > 0) {
-      toast(`Google形式に変換できなかったため、そのまま保存しました：${summarize(fellBack)}`, "error");
-    }
-    if (ok > 0) {
-      toast(`${ok} 件のファイルをアップロードしました`);
-      emitLinkItemsChanged(project.id, "file"); // 他タブの %サジェストへ即時反映
-      load();
-    }
-  }, [project, toast, load, currentFolderId, userName]);
+  // 点線枠の表示。右下のパネルと同じキューから、このプロジェクトの分だけを出す
+  const myUploads = uploads.items.filter(it => it.projectId === projectId);
+  const uploading = myUploads.some(isPendingUpload);
+  const currentUpload = myUploads.find(it => it.status === "uploading");
+  const uploadFinished = myUploads.filter(it => !isPendingUpload(it)).length;
+  // Google形式への変換は Drive との往復があり数秒以上かかるので、大きなぐるぐるを出す
+  const convertingUpload = !!currentUpload && currentUpload.convert && !!googleConvertKind(currentUpload.file.name);
 
   /**
    * 取り込み方を選ばせてからアップロードする。
@@ -1210,9 +1132,10 @@ export function FileBoxPage() {
             )}
             {/* フォルダをそのまま上げる。ドラッグ&ドロップでも同じことができるが、
                 クリックからも選べるようにしておく（ドロップできない環境向け） */}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#FFFBEB", color: "#D97706", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: uploading ? "wait" : "pointer" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#FFFBEB", color: "#D97706", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
               <FolderUp style={{ width: 14, height: 14 }} /> フォルダをアップロード
-              <input type="file" disabled={uploading} style={{ display: "none" }}
+              {/* 送信中に選ばれたものは、断らずにキューの最後に足す */}
+              <input type="file" style={{ display: "none" }}
                 // React の型に無い属性。フォルダ選択ダイアログにするために必要。
                 {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
                 onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
@@ -1257,17 +1180,23 @@ export function FileBoxPage() {
           onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
           onDrop={e => { e.preventDefault(); setDragOver(false); handleDropUpload(e); }}
           style={{ marginBottom: 0 }}>
-          <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, cursor: uploading ? "wait" : "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
-            {uploading
-              ? <Loader2 style={{ width: 14, height: 14, color: "#059669", animation: "spin 1s linear infinite" }} />
-              : <Upload style={{ width: 14, height: 14, color: dragOver ? "#059669" : "#B0A9A4" }} />}
-            <span style={{ fontSize: 12, color: dragOver || uploading ? "#059669" : "#B0A9A4" }}>
-              {uploading
-                ? `アップロード中...${uploadProgress && uploadProgress.total > 1 ? `（${uploadProgress.done + 1} / ${uploadProgress.total}）` : ""}`
-                : dragOver ? "ドロップして追加"
-                : `クリックしてファイルを追加、またはドラッグ&ドロップ（フォルダごと可・1ファイル ${formatFileSize(MAX_FILE_SIZE)} まで）`}
+          <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px 12px", border: `1.5px dashed ${dragOver ? "rgba(5,150,105,0.5)" : "rgba(26,23,20,0.12)"}`, borderRadius: 10, cursor: "pointer", background: dragOver ? "rgba(5,150,105,0.04)" : "#FAFAF8", transition: "border-color 0.15s, background 0.15s" }}>
+            {uploading && !dragOver
+              ? <Loader2 style={{ width: 14, height: 14, color: "#059669", animation: "spin 1s linear infinite", flexShrink: 0 }} />
+              : <Upload style={{ width: 14, height: 14, color: dragOver ? "#059669" : "#B0A9A4", flexShrink: 0 }} />}
+            <span style={{ fontSize: 12, color: dragOver || uploading ? "#059669" : "#B0A9A4", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {dragOver ? (uploading ? "ドロップしてアップロード待ちに追加" : "ドロップして追加")
+                : uploading
+                ? `アップロード中...${myUploads.length > 1 ? `（${Math.min(uploadFinished + 1, myUploads.length)} / ${myUploads.length}）` : ""}`
+                  + (currentUpload
+                    ? isConvertingUpload(currentUpload)
+                      ? `「${currentUpload.file.name}」Google形式に変換中`
+                      : `「${currentUpload.file.name}」${uploadPercent(currentUpload)}%（${formatFileSize(currentUpload.loaded)} / ${formatFileSize(currentUpload.file.size)}）`
+                    : "")
+                : `クリックしてファイルを追加、またはドラッグ&ドロップ（フォルダごと可・1ファイル ${formatFileSize(MAX_UPLOAD_FILE_SIZE)} まで）`}
             </span>
-            <input type="file" multiple disabled={uploading} style={{ display: "none" }}
+            {/* 送信中に選ばれたものは、断らずにキューの最後に足す */}
+            <input type="file" multiple style={{ display: "none" }}
               onChange={e => { uploadFiles(e.target.files || []); e.target.value = ""; }} />
           </label>
         </div>

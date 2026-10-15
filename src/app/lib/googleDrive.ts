@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import type { ProjectFile } from "@/app/types";
-import { stageProjectFile, registerStagedFile, type GoogleAppKind, type GoogleCreateKind } from "@/app/lib/projectFiles";
+import { stageProjectFile, registerStagedFile, type GoogleAppKind, type GoogleCreateKind, type SendOptions } from "@/app/lib/projectFiles";
 import { openPendingTab } from "@/app/lib/pendingTab";
 
 // Googleドライブ連携のクライアント側入口（設計: docs/google-drive-integration-design.md）
@@ -146,11 +146,11 @@ export type GoogleUploadResult =
  *   変換できなかったからといって、利用者がアップロードしたファイルを失わせない。
  */
 export async function uploadAsGoogleFile(
-  projectId: string, file: File, kind: GoogleAppKind, parentId?: string | null,
+  projectId: string, file: File, kind: GoogleAppKind, parentId?: string | null, send?: SendOptions,
 ): Promise<GoogleUploadResult> {
   // 変換できれば実体は Drive 側へ移り、ファイルボックスの容量は使わない。
   // 変換に失敗して「そのまま保存」になったときは、下の registerStagedFile が容量を確かめる。
-  const path = await stageProjectFile(projectId, file, { skipQuotaCheck: true });
+  const path = await stageProjectFile(projectId, file, { skipQuotaCheck: true, ...send });
 
   try {
     const res = await postApi<CreateResult>("convert-staged", {

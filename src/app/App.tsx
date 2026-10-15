@@ -3,6 +3,8 @@ import { Routes, Route, Navigate, useNavigate } from "react-router";
 import { Capacitor } from "@capacitor/core";
 import { setWebNavigate } from "@/app/contexts/TabContext";
 import { ToastProvider } from "@/app/contexts/ToastContext";
+import { UploadProvider } from "@/app/contexts/UploadContext";
+import { UploadPanel } from "@/app/components/files/UploadPanel";
 import { AlertProvider } from "@/app/contexts/AlertContext";
 import { AuthProvider } from "@/app/contexts/AuthContext";
 import { PreviewPanelProvider } from "@/app/contexts/PreviewPanelContext";
@@ -63,6 +65,9 @@ function RootRoute() {
 export default function App() {
   return (
     <ToastProvider>
+      {/* ファイルボックスのアップロード。画面を移っても送信と右下の表示が切れないよう最上位に置く（BRU20-010） */}
+      <UploadProvider>
+      <UploadPanel />
       <VersionWatcher />
       {/* title 属性のツールチップを、全画面でブラウザ標準からアプリの見た目へ置き換える */}
       <NativeTitleTips />
@@ -98,6 +103,7 @@ export default function App() {
           </PreviewPanelProvider>
         </AuthProvider>
       </AlertProvider>
+      </UploadProvider>
     </ToastProvider>
   );
 }
