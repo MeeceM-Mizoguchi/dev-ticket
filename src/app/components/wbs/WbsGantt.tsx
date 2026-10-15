@@ -51,7 +51,7 @@ function holidayTipText(d: WbsGanttDay): string {
  *   element … 乗せた要素のすぐ下に出す（見出しのセル）
  *   pointer … マウスの位置に出す（表の下まで伸びる縦帯。要素の端に出すと画面の外になる）
  */
-function useGanttTip() {
+export function useGanttTip() {
   const [shown, setShown] = useState<{ anchor: TipAnchor; text: string } | null>(null);
   const timer = useRef<number | null>(null);
   const pointer = useRef({ x: 0, y: 0 });

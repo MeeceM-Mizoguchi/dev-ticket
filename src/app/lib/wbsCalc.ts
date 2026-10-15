@@ -2,7 +2,7 @@
 //
 // 進捗率の自動計算・予定日数・遅延の判定は DB に保存せず、ここで行のデータから計算する。
 // ステータスの名前は利用者が自由に変えられるので、判定をステータスの名前に頼らないこと。
-import type { WbsItem } from "@/app/types";
+import type { WbsItem, WbsStatus } from "@/app/types";
 
 // ── 日付 ──────────────────────────────────────────────────────
 
@@ -253,5 +253,177 @@ export function buildWbsGantt(rows: WbsRow[], holidays: ReadonlyMap<string, stri
     days, months, maxConcurrent,
     loadLabel: maxConcurrent >= 3 ? "要調整（高負荷）" : maxConcurrent === 2 ? "適正（並行作業あり）" : "標準（単独作業）",
     workingDays: days.filter(d => d.count >= 1).length,
+  };
+}
+
+// ── マスタースケジュール ──────────────────────────────────────
+
+export interface WbsMasterRow {
+  /** 大項目の行 */
+  item: WbsItem;
+  /** 大項目だけで数えた連番 */
+  no: number;
+  /** 下にある一番右の段の行の、最も早い開始予定日（YYYY-MM-DD）。1つも無ければ "" */
+  start: string;
+  /** 同じく、最も遅い終了予定日。1つも無ければ "" */
+  end: string;
+  /** 大項目のステータス。一番右の段の行が1つも無ければ null（「—」） */
+  status: WbsMasterStatus | null;
+  /** 下にある中項目の名前（WBS画面と同じ順）。矢羽根のツールチップに出す */
+  children: string[];
+}
+
+/** マスタースケジュールに出す大項目のステータス */
+export type WbsMasterStatus = "未着手" | "着手中" | "完了" | "完了（一部保留あり）" | "保留";
+
+/**
+ * 一番右の段の行のステータスを、判定用の4種類に分ける。
+ * ステータスは名前を自由に変えられるので、はじめに作られる5つの名前で見分ける。
+ * それ以外の名前（「レビュー中」など、利用者が足したもの）は、作業中とみなして「着手中」に数える。
+ */
+function leafStatusKind(name: string): "notStarted" | "inProgress" | "done" | "hold" {
+  if (name === "未着手") return "notStarted";
+  if (name === "完了" || name === "取下") return "done";
+  if (name === "保留") return "hold";
+  return "inProgress";
+}
+
+/**
+ * 一番右の段の行のステータスから、大項目のステータスを決める。
+ *   ・1つでも着手中があれば「着手中」
+ *   ・保留を除いて全部が完了（取下を含む）なら「完了」。保留が混ざっていれば「完了（一部保留あり）」
+ *   ・保留を除いて全部が未着手なら「未着手」
+ *   ・完了と未着手が混ざっていれば、作業は始まっているので「着手中」
+ *   ・全部が保留なら「保留」
+ */
+function masterStatusOf(kinds: ReturnType<typeof leafStatusKind>[]): WbsMasterStatus | null {
+  if (kinds.length === 0) return null;
+  if (kinds.includes("inProgress")) return "着手中";
+  const active = kinds.filter(k => k !== "hold");
+  if (active.length === 0) return "保留";
+  if (active.every(k => k === "done")) return active.length < kinds.length ? "完了（一部保留あり）" : "完了";
+  if (active.every(k => k === "notStarted")) return "未着手";
+  return "着手中";
+}
+
+/**
+ * 大項目ごとの期間・ステータス・中項目の一覧を出す。
+ * 期間とステータスに使うのは一番右の段の行（3段なら小項目、2段なら中項目、1段なら大項目自身）。
+ * 開始予定日と終了予定日は別々に集めるので、片方しか入っていない行も、入っている方の日付は使う。
+ * rows は buildWbsRows の結果（大項目のまとまりごとに group が振られている）。
+ * statuses はそのWBSのステータス（並び順）。ステータスを選んでいない行は、WBS画面と同じく先頭のステータスとして数える。
+ */
+export function buildWbsMasterRows(rows: WbsRow[], statuses: WbsStatus[]): WbsMasterRow[] {
+  const nameOf = new Map(statuses.map(s => [s.id, s.name]));
+  const fallback = statuses[0]?.name ?? "未着手";
+  const result: WbsMasterRow[] = [];
+  const kinds: ReturnType<typeof leafStatusKind>[][] = [];
+  let current: WbsMasterRow | null = null;
+  let group = -1;
+  for (const r of rows) {
+    if (r.group !== group) {
+      group = r.group;
+      current = { item: r.item, no: result.length + 1, start: "", end: "", status: null, children: [] };
+      result.push(current);
+      kinds.push([]);
+    }
+    if (!current) continue;
+    if (r.item.level === 2 && r.item !== current.item) current.children.push(r.item.name);
+    if (!r.isLeafLevel) continue;
+    const { startDate, endDate } = r.item;
+    if (startDate && (!current.start || startDate < current.start)) current.start = startDate;
+    if (endDate && (!current.end || endDate > current.end)) current.end = endDate;
+    kinds[kinds.length - 1].push(leafStatusKind((r.item.statusId && nameOf.get(r.item.statusId)) || fallback));
+  }
+  result.forEach((m, i) => { m.status = masterStatusOf(kinds[i]); });
+  return result;
+}
+
+export type WbsMasterScale = "day" | "week" | "month";
+
+/** 1日あたりの幅（px）。日＝WBS画面のガントと同じ / 週＝1週 56px / 月＝1か月 約90px */
+export const WBS_MASTER_PX_PER_DAY: Record<WbsMasterScale, number> = { day: 24, week: 8, month: 3 };
+
+/** 表示する日数の上限。日は WBS画面と同じ約3年、週と月は全体を見渡すため約10年まで */
+const MASTER_MAX_DAYS: Record<WbsMasterScale, number> = { day: GANTT_MAX_DAYS, week: 3660, month: 3660 };
+
+/** 見出しの1マス。from と span は日数（先頭の日からの列の番号と、その長さ） */
+export interface WbsMasterSpan { label: string; from: number; span: number }
+
+export interface WbsMasterTimeline {
+  scale: WbsMasterScale;
+  /** 先頭の日（YYYY-MM-DD） */
+  start: string;
+  /** 表示する日数 */
+  length: number;
+  pxPerDay: number;
+  /** 見出しの上の段（日・週＝年月 / 月＝年） */
+  top: WbsMasterSpan[];
+  /** 見出しの下の段（日＝日付 / 週＝週の初めの月/日 / 月＝何月） */
+  units: WbsMasterSpan[];
+  /** 土日・祝日の列の番号。月の目盛りでは細かすぎて縞になるので出さない */
+  offDays: number[];
+  /** 今日の列の番号。範囲の外なら null */
+  todayIndex: number | null;
+}
+
+/**
+ * マスタースケジュールの目盛りを作る。
+ * 表示する期間は、矢羽根の日付の最小〜最大を含む月の、月初〜月末（WBS画面のガントと同じ考え方で、最低3か月）。
+ * 週の目盛りでは、週の区切り（月曜はじまり）にそろうよう前後を広げる。
+ */
+export function buildWbsMasterTimeline(
+  rows: WbsMasterRow[], scale: WbsMasterScale, holidays: ReadonlySet<string>, today: string,
+): WbsMasterTimeline {
+  let min: Date | null = null;
+  let max: Date | null = null;
+  for (const r of rows) {
+    for (const s of [r.start, r.end]) {
+      const d = parseDateStr(s);
+      if (!d) continue;
+      if (!min || d < min) min = d;
+      if (!max || d > max) max = d;
+    }
+  }
+  if (!min || !max) min = max = parseDateStr(today) ?? new Date();
+  min = new Date(min.getFullYear(), min.getMonth(), 1);
+  const monthSpan = (max.getFullYear() - min.getFullYear()) * 12 + (max.getMonth() - min.getMonth()) + 1;
+  max = new Date(min.getFullYear(), min.getMonth() + Math.max(monthSpan, GANTT_MIN_MONTHS), 0);
+  if (scale === "week") {
+    min = addDays(min, -((min.getDay() + 6) % 7));
+    max = addDays(max, (7 - max.getDay()) % 7);
+  }
+  const length = Math.min(dayDiff(min, max) + 1, MASTER_MAX_DAYS[scale]);
+
+  const top: WbsMasterSpan[] = [];
+  const units: WbsMasterSpan[] = [];
+  const offDays: number[] = [];
+  const push = (list: WbsMasterSpan[], label: string, i: number) => {
+    const last = list[list.length - 1];
+    if (last && last.label === label) last.span++; else list.push({ label, from: i, span: 1 });
+  };
+  for (let i = 0; i < length; i++) {
+    const d = addDays(min, i);
+    const ym = `${d.getFullYear()}年${d.getMonth() + 1}月`;
+    if (scale === "day") {
+      push(top, ym, i);
+      units.push({ label: String(d.getDate()), from: i, span: 1 });
+    } else if (scale === "week") {
+      push(top, ym, i);
+      if (i % 7 === 0) units.push({ label: `${d.getMonth() + 1}/${d.getDate()}`, from: i, span: Math.min(7, length - i) });
+    } else {
+      push(top, `${d.getFullYear()}年`, i);
+      push(units, ym, i);
+    }
+    if (scale !== "month" && isOffDay(d, holidays)) offDays.push(i);
+  }
+  // 月の目盛りの下の段は「何月」だけにする（年は上の段に出ている）
+  if (scale === "month") for (const u of units) u.label = u.label.replace(/^\d+年/, "");
+
+  const t = parseDateStr(today);
+  const ti = t ? dayDiff(min, t) : -1;
+  return {
+    scale, start: toDateStr(min), length, pxPerDay: WBS_MASTER_PX_PER_DAY[scale],
+    top, units, offDays, todayIndex: ti >= 0 && ti < length ? ti : null,
   };
 }

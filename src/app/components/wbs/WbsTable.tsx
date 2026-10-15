@@ -36,6 +36,11 @@ import { WBS_GANTT_HEAD_H, WbsGanttHeader, WbsGanttOverlay, WbsGanttStrip, gantt
 import { WBS_FILTER_COLS, type WbsFilterCol, type WbsFilters } from "./wbsFilter";
 
 export const WBS_ROW_H = 30;
+/** マスタースケジュールから移動した大項目のまとまりを光らせる時間。WbsWorkspace はこのあとに focusGroupId を外す */
+export const FOCUS_PULSE_MS = 3000;
+/** 光らせるときの色（黄色系）。枠線と外側のにじみ（中は塗らない） */
+const FOCUS_EDGE = "#F59E0B";
+const FOCUS_GLOW = "rgba(245,158,11,0.22)";
 
 export type WbsColKey = "check" | "no" | "name" | "assignee" | "start" | "end" | "days" | "progress" | "status" | "tickets" | "note";
 
@@ -144,6 +149,12 @@ interface WbsTableProps {
    * なめらかにスクロールする。highlightIds（赤）とは別の値で、両方当たる行は赤を優先する
    */
   flashId?: string | null;
+  /**
+   * マスタースケジュールから移動した大項目。その大項目から下の行のまとまり全体を黄色く光らせる
+   * （2回ふくらんで消える。消す時間は呼び出し側が決め、null に戻す）。
+   * scrollTo と同じ行なら、まとまりが見えるようなめらかにスクロールする
+   */
+  focusGroupId?: string | null;
   onUpdate: (id: string, patch: Partial<WbsItem>) => void;
   onMove: (dragId: string, targetId: string, mode: WbsDropMode) => void;
   /**
@@ -513,7 +524,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed
 
 export function WbsTable({
   rows, levels, statuses, members, holidays, canEdit, freezeKey, checkedIds, onToggleCheck, onToggleAll, allCheckState, editing, onEditingChange,
-  highlightIds, scrollTo, flashId = null, onUpdate, onMove, gantt, renderTickets, onFreezeChange, onInsert, onAddNew, collapseKey,
+  highlightIds, scrollTo, flashId = null, focusGroupId = null, onUpdate, onMove, gantt, renderTickets, onFreezeChange, onInsert, onAddNew, collapseKey,
   filters, filterOptions, onFilterChange, shownIds,
 }: WbsTableProps) {
   // 絞り込み中は、行の追加（境目のボタン）とドラッグでの並べ替えを止める
@@ -527,6 +538,8 @@ export function WbsTable({
   const [hBarH, setHBarH] = useState(0);
   /** 左の枠の幅（＝固定の線の位置）。線のつまみを重ねる位置に使う */
   const [leftW, setLeftW] = useState(0);
+  /** 右の枠の縦スクロールバーの幅。まとまりの枠の右端を、スクロールバーの手前で止めるのに使う */
+  const [vBarW, setVBarW] = useState(0);
 
   // チェックボックスの列は、編集できる人にだけ出す。
   // ステータス列は、ステータス名の長さに合わせた幅と下限に置き換える（閲覧のみの人も同じ幅）
@@ -556,6 +569,7 @@ export function WbsTable({
       setLeftW(el.offsetWidth);
       const r = rightRef.current;
       setHBarH(r ? r.offsetHeight - r.clientHeight : 0);
+      setVBarW(r ? r.offsetWidth - r.clientWidth : 0);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -611,6 +625,23 @@ export function WbsTable({
     });
   }, [rows, levels, collapsed, shownIds]);
 
+  // 光らせる、大項目のまとまり（表に並んでいる行の、何行目から何行ぶんか）。
+  // まとまりは buildWbsRows の group（大項目ごとの番号）が同じ行。閉じた見出し行の下の行は並んでいないので数えない
+  const focusSpan = useMemo(() => {
+    if (!focusGroupId) return null;
+    const start = display.findIndex(d => d.row.item.id === focusGroupId);
+    if (start < 0) return null;
+    const group = display[start].row.group;
+    let count = 1;
+    while (start + count < display.length && display[start + count].row.group === group) count++;
+    return { start, count };
+  }, [display, focusGroupId]);
+
+  const focusFrameRef = useRef<HTMLDivElement>(null);
+  const moveFocusFrame = () => {
+    if (focusFrameRef.current && leftRef.current) focusFrameRef.current.style.transform = `translateY(${-leftRef.current.scrollTop}px)`;
+  };
+
   // 編集できる人には、入力用の空の行を必ず1行は出す（行が画面いっぱいまで増えても足せるように）
   const fillerCount = Math.max(canEdit ? 1 : 0, Math.ceil((viewH - headH) / WBS_ROW_H) - display.length);
 
@@ -643,7 +674,7 @@ export function WbsTable({
   const pendingScrollRef = useRef<{ id: string; smooth: boolean } | null>(null);
   useEffect(() => {
     if (!scrollTo) return;
-    pendingScrollRef.current = { id: scrollTo.id, smooth: flashId === scrollTo.id };
+    pendingScrollRef.current = { id: scrollTo.id, smooth: flashId === scrollTo.id || focusGroupId === scrollTo.id };
     const byId = new Map(rows.map(r => [r.item.id, r]));
     const next = new Set(collapsed);
     for (let p = byId.get(scrollTo.id)?.item.parentId; p; p = byId.get(p)?.item.parentId) next.delete(p);
@@ -659,6 +690,14 @@ export function WbsTable({
     pendingScrollRef.current = null;
     const top = idx * WBS_ROW_H;
     const visibleH = el.clientHeight - headH;
+    if (pending.id === focusGroupId && focusSpan) {
+      // まとまり全体が収まるなら、まとまりを中央に。収まらないなら、大項目の行を上端の少し下に置く
+      const spanH = focusSpan.count * WBS_ROW_H;
+      const target = spanH <= visibleH - WBS_ROW_H ? top - (visibleH - spanH) / 2 : top - WBS_ROW_H / 2;
+      activePaneRef.current = "left";
+      el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+      return;
+    }
     if (pending.smooth) {
       // 左の枠だけをなめらかに動かし、右の枠は左の onScroll の同期でついてこさせる
       // （両方を別々になめらかに動かすと、途中で左右の行がずれる）
@@ -831,7 +870,23 @@ export function WbsTable({
 
   return (
     <div ref={rootRef} style={{ position: "relative", display: "flex", height: "100%", minHeight: 0 }}>
-      <style>{`.wbs-vscroll-hide{scrollbar-width:none}.wbs-vscroll-hide::-webkit-scrollbar{display:none}`}</style>
+      <style>{`.wbs-vscroll-hide{scrollbar-width:none}.wbs-vscroll-hide::-webkit-scrollbar{display:none}`
+        // まとまりの光り方。2回ふくらんで（濃く→薄く→濃く）、最後に消える
+        + `@keyframes wbs-focus-pulse{0%{opacity:0}15%{opacity:1}35%{opacity:.3}55%{opacity:1}100%{opacity:0}}`}</style>
+
+      {/* マスタースケジュールから移動した大項目のまとまりを光らせる。左右の枠をまたいで1つに見せるため、
+          表の外側に重ねる。見出しと横スクロールバーには掛からないよう、その内側で切り取る。
+          縦の位置は、スクロールのたびに再描画せず、左の枠のスクロールに合わせて直接ずらす（moveFocusFrame） */}
+      {focusSpan && (
+        <div style={{ position: "absolute", top: headH, left: 0, right: vBarW, bottom: hBarH, overflow: "hidden", pointerEvents: "none", zIndex: 5 }}>
+          <div ref={focusFrameRef} style={{ position: "absolute", left: 0, right: 0, top: 0, transform: `translateY(${-(leftRef.current?.scrollTop ?? 0)}px)` }}>
+            <div style={{ position: "absolute", left: 2, right: 2, top: focusSpan.start * WBS_ROW_H, height: focusSpan.count * WBS_ROW_H,
+              boxSizing: "border-box", borderRadius: 6, border: `3px solid ${FOCUS_EDGE}`,
+              boxShadow: `0 0 0 5px ${FOCUS_GLOW}`, opacity: 0,
+              animation: `wbs-focus-pulse ${FOCUS_PULSE_MS}ms ease-in-out forwards` }} />
+          </div>
+        </div>
+      )}
 
       {/* 固定の線のつまみ。線の上に重ねてあり、左右にドラッグすると固定する列の位置が変わる */}
       <div role="separator" aria-orientation="vertical" aria-label="固定する列の位置"
@@ -848,7 +903,7 @@ export function WbsTable({
       )}
 
       {/* 左の枠：固定した列。横スクロールなしで枠の幅に収める */}
-      <div ref={leftRef} onScroll={() => syncScroll("left")} {...paneHandlers("left")}
+      <div ref={leftRef} onScroll={() => { syncScroll("left"); moveFocusFrame(); }} {...paneHandlers("left")}
         className="wbs-vscroll-hide"
         style={{ position: "relative", overflowX: "hidden", overflowY: "auto", minWidth: 0,
           flex: `0 1 ${leftBasis}px`, maxWidth: "70%", borderRight: `2px solid ${WBS_COLORS.headBg}` }}>
