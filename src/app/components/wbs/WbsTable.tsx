@@ -439,6 +439,16 @@ const cellBase: CSSProperties = {
 /** 見出し行に敷く色。大項目は濃いめ、中項目は薄め */
 const HEADING_BG = ["#D9E2F6", "#EDF1FA"];
 
+// 重なる順番（下から）：ガントの縦帯 2 → 固定した中項目の行 3 → 固定した大項目の行 4
+//   → 追加ボタンを開いている境目 5 → 列名の行 6 → 固定の線のつまみ 7
+// 大項目を中項目より上にするのは、中項目が押し出されるとき、大項目の行の下へ潜らせるため
+/** 固定した見出し行の重なる順番。添字は段−1（大項目・中項目） */
+const Z_PINNED = [4, 3];
+/** 追加ボタンを開いている境目。固定した見出し行と重なっても、ボタンが隠れないようにする */
+const Z_INSERT_OPEN = 5;
+/** 列名の行（左右の枠で揃える） */
+const Z_COL_HEAD = 6;
+
 function rowBackground(row: WbsRow, levels: number, selected: boolean, highlighted: boolean, flashed = false): string {
   if (highlighted) return WBS_COLORS.highlightBg;
   // お知らせから移動した行。スプリント一覧の強調と同じ色
@@ -455,8 +465,13 @@ type Col = (typeof WBS_COLUMNS)[number];
  * 行の境目に重ねる、行を追加するための帯。マウスを乗せると、境目に緑の線と追加ボタンが出る。
  * at=bottom はその行の下の境目、at=top は上の境目（先頭の行の上にだけ使う）。
  */
-function InsertZone({ at, levels, onPick }: { at: "top" | "bottom"; levels: number[]; onPick: (level: number) => void }) {
-  const [open, setOpen] = useState(false);
+function InsertZone({ at, levels, onPick, onOpenChange }: {
+  at: "top" | "bottom"; levels: number[]; onPick: (level: number) => void;
+  /** 線とボタンを出した／消したときに呼ぶ。固定した見出し行は、開いている間だけ重なる順番を上げる */
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [open, setOpenState] = useState(false);
+  const setOpen = (v: boolean) => { setOpenState(v); onOpenChange?.(v); };
   const timer = useRef<number | null>(null);
   const clear = () => { if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; } };
   useEffect(() => clear, []);
@@ -465,7 +480,8 @@ function InsertZone({ at, levels, onPick }: { at: "top" | "bottom"; levels: numb
       // すぐ出すと、行の上をマウスが通り過ぎただけで線とボタンが点滅する
       onMouseEnter={() => { clear(); timer.current = window.setTimeout(() => setOpen(true), 180); }}
       onMouseLeave={() => { clear(); setOpen(false); }}
-      style={{ position: "absolute", left: 0, right: 0, height: 10, [at]: -5, zIndex: 2 }}>
+      // 開いている間は、すぐ下の見出し行（固定するので上に重なる）にボタンが隠れないよう順番を上げる
+      style={{ position: "absolute", left: 0, right: 0, height: 10, [at]: -5, zIndex: open ? Z_INSERT_OPEN : 2 }}>
       {open && (
         <>
           <div style={{ position: "absolute", left: 0, right: 0, top: 4, height: 2, background: "#059669", pointerEvents: "none" }} />
@@ -486,9 +502,14 @@ function InsertZone({ at, levels, onPick }: { at: "top" | "bottom"; levels: numb
 
 
 /** 1行。side=left は枠の幅に合わせて縮む格子、side=right は px 幅の並び */
-function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed, dropMode, ctx, onDragOverRow, onDropRow, tail, insertBelow, insertAbove, onInsert }: {
+function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed, dropMode, ctx, onDragOverRow, onDropRow, tail, insertBelow, insertAbove, onInsert, pinTop }: {
   row: WbsRow; cols: Col[]; side: "left" | "right"; template: string;
   selected: boolean; highlighted: boolean; flashed: boolean; dropMode: WbsDropMode | null; ctx: RowCtx;
+  /**
+   * 見出し行（大項目・中項目）だけに渡す。スクロールしたとき、枠の上からこの位置に固定する。
+   * 行はその見出しのまとまりの枠に入っているので、まとまりの終わりで押し出され、次の見出し行に入れ替わる
+   */
+  pinTop?: number;
   onDragOverRow?: (e: DragEvent, row: WbsRow) => void;
   onDropRow?: (e: DragEvent) => void;
   /** セルの後ろに続けて出すもの（右の枠のガントの帯） */
@@ -502,10 +523,13 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed
   const { item } = row;
   // 見出し行（大項目・中項目）は No. と項目だけを出し、ほかの欄は色で塗りつぶす
   const heading = item.level < ctx.levels;
+  const [zoneOpen, setZoneOpen] = useState(false);
   return (
     <div data-wbs-row={item.id}
       onDragOver={onDragOverRow ? e => onDragOverRow(e, row) : undefined} onDrop={onDropRow}
       style={{ position: "relative", height: WBS_ROW_H, background: rowBackground(row, ctx.levels, selected, highlighted, flashed),
+        // 固定した行は、それ自体が重なりの単位になる。中の追加ボタンが次の見出し行に隠れないよう、開いている間は順番を上げる
+        ...(pinTop !== undefined ? { position: "sticky", top: pinTop, zIndex: zoneOpen ? Z_INSERT_OPEN : Z_PINNED[item.level - 1] ?? Z_PINNED[1] } : null),
         ...(side === "left" ? { display: "grid", gridTemplateColumns: template } : { display: "flex" }) }}>
       {cols.map(c => {
         const blank = heading && c.key !== "check" && c.key !== "no" && c.key !== "name";
@@ -527,10 +551,10 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed
       })}
       {tail}
       {onInsert && insertAbove && insertAbove.length > 0 && (
-        <InsertZone at="top" levels={insertAbove} onPick={lv => onInsert(null, lv)} />
+        <InsertZone at="top" levels={insertAbove} onPick={lv => onInsert(null, lv)} onOpenChange={setZoneOpen} />
       )}
       {onInsert && insertBelow && insertBelow.length > 0 && (
-        <InsertZone at="bottom" levels={insertBelow} onPick={lv => onInsert(item.id, lv)} />
+        <InsertZone at="bottom" levels={insertBelow} onPick={lv => onInsert(item.id, lv)} onOpenChange={setZoneOpen} />
       )}
       {dropMode && (
         // 落とす先の目印。before/after は線、into（下の段として入れる）は枠
@@ -666,6 +690,35 @@ export function WbsTable({
     if (focusFrameRef.current && leftRef.current) focusFrameRef.current.style.transform = `translateY(${-leftRef.current.scrollTop}px)`;
   };
 
+  // 画面に並べる行を「大項目の枠 > 中項目の枠 > 行」の入れ子にしたもの。左右の枠で同じ形に描く。
+  // 見出し行を固定（sticky）すると、行はその枠の中でだけ止まるので、枠の終わりで押し出されて次の見出し行に入れ替わる。
+  // 枠は見た目を持たないので、行の高さと位置は平らに並べたときと変わらない（display の番号で位置を計算してよい）
+  type DisplayNode = { d: (typeof display)[number]; index: number; children: DisplayNode[] };
+  const tree = useMemo(() => {
+    const roots: DisplayNode[] = [];
+    const stack: DisplayNode[] = [];
+    display.forEach((d, index) => {
+      const node: DisplayNode = { d, index, children: [] };
+      while (stack.length && stack[stack.length - 1].d.row.item.level >= d.row.item.level) stack.pop();
+      (stack.length ? stack[stack.length - 1].children : roots).push(node);
+      if (d.row.item.level < levels) stack.push(node);
+    });
+    return roots;
+  }, [display, levels]);
+
+  /** 入れ子の形で行を描く。見出し行には、固定する位置（列名の行の下から、段ごとに1行ずつ下）を渡す */
+  const renderTree = (nodes: DisplayNode[], renderRow: (d: (typeof display)[number], index: number, pinTop: number | undefined) => ReactNode): ReactNode =>
+    nodes.map(n => {
+      const lv = n.d.row.item.level;
+      if (lv >= levels) return renderRow(n.d, n.index, undefined);
+      return (
+        <div key={`g-${n.d.row.item.id}`}>
+          {renderRow(n.d, n.index, headH + (lv - 1) * WBS_ROW_H)}
+          {renderTree(n.children, renderRow)}
+        </div>
+      );
+    });
+
   // 編集できる人には、入力用の空の行を必ず1行は出す（行が画面いっぱいまで増えても足せるように）
   const fillerCount = Math.max(canEdit ? 1 : 0, Math.ceil((viewH - headH) / WBS_ROW_H) - display.length);
 
@@ -729,9 +782,10 @@ export function WbsTable({
       el.scrollTo({ top: Math.max(0, top - Math.max(0, (visibleH - WBS_ROW_H) / 2)), behavior: "smooth" });
       return;
     }
-    // 見出しのぶんを除いた見えている範囲に入っていれば動かさない
-    if (top < el.scrollTop || top + WBS_ROW_H > el.scrollTop + visibleH) {
-      el.scrollTop = Math.max(0, top - Math.max(0, (visibleH - WBS_ROW_H) / 2));
+    // 見出しと、その下に固定した大項目・中項目の行（最大2行）のぶんを除いた、見えている範囲に入っていれば動かさない
+    const pinnedH = Math.max(0, Math.min(levels - 1, 2)) * WBS_ROW_H;
+    if (top < el.scrollTop + pinnedH || top + WBS_ROW_H > el.scrollTop + visibleH) {
+      el.scrollTop = Math.max(0, top - pinnedH - Math.max(0, (visibleH - pinnedH - WBS_ROW_H) / 2));
       // こちらで動かしたときは、右の枠も直接そろえる（右が「動かしている側」だと、左の通知は無視されるため）
       if (rightRef.current) rightRef.current.scrollTop = el.scrollTop;
     }
@@ -1017,20 +1071,20 @@ export function WbsTable({
         title="左右にドラッグして、固定する列の位置を変える"
         onPointerDown={handleFreezeDown} onPointerMove={handleFreezeMove} onPointerUp={handleFreezeUp} onPointerCancel={() => setFreezeDrag(null)}
         onMouseEnter={() => setFreezeHover(true)} onMouseLeave={() => setFreezeHover(false)}
-        style={{ position: "absolute", top: 0, bottom: 0, left: leftW - 6, width: 10, zIndex: 6, cursor: "col-resize", touchAction: "none",
+        style={{ position: "absolute", top: 0, bottom: 0, left: leftW - 6, width: 10, zIndex: Z_COL_HEAD + 1, cursor: "col-resize", touchAction: "none",
           display: "flex", justifyContent: "center" }}>
         <div style={{ width: 4, height: "100%", borderRadius: 2, background: "#059669", opacity: freezeHover && !freezeDrag ? 0.9 : 0, transition: "opacity 0.12s" }} />
       </div>
       {/* ドラッグ中の落とし先。離すとここが新しい固定の線になる */}
       {freezeDrag && (
-        <div style={{ position: "absolute", top: 0, bottom: 0, left: freezeDrag.left - 2, width: 4, zIndex: 7, background: "#059669", borderRadius: 2, pointerEvents: "none", boxShadow: "0 0 0 3px rgba(5,150,105,0.18)" }} />
+        <div style={{ position: "absolute", top: 0, bottom: 0, left: freezeDrag.left - 2, width: 4, zIndex: Z_COL_HEAD + 2, background: "#059669", borderRadius: 2, pointerEvents: "none", boxShadow: "0 0 0 3px rgba(5,150,105,0.18)" }} />
       )}
       {/* 列の見出しのドラッグ中：落とす先の境目（固定の線のドラッグと同じ見た目）と、ポインタに追従する見出し */}
       {colDrag && colDrag.lineLeft !== null && (
-        <div style={{ position: "absolute", top: 0, bottom: 0, left: colDrag.lineLeft - 2, width: 4, zIndex: 7, background: "#059669", borderRadius: 2, pointerEvents: "none", boxShadow: "0 0 0 3px rgba(5,150,105,0.18)" }} />
+        <div style={{ position: "absolute", top: 0, bottom: 0, left: colDrag.lineLeft - 2, width: 4, zIndex: Z_COL_HEAD + 2, background: "#059669", borderRadius: 2, pointerEvents: "none", boxShadow: "0 0 0 3px rgba(5,150,105,0.18)" }} />
       )}
       {colDrag && (
-        <div style={{ position: "absolute", top: 0, left: colDrag.ghostLeft, width: colDrag.width, height: headH, zIndex: 8, pointerEvents: "none",
+        <div style={{ position: "absolute", top: 0, left: colDrag.ghostLeft, width: colDrag.width, height: headH, zIndex: Z_COL_HEAD + 3, pointerEvents: "none",
           display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", boxSizing: "border-box",
           fontSize: 11, fontWeight: 700, color: WBS_COLORS.headText, background: WBS_COLORS.headBg, opacity: 0.7,
           borderRadius: 4, boxShadow: "0 4px 12px rgba(15,23,42,0.25)", whiteSpace: "nowrap", overflow: "hidden" }}>
@@ -1043,11 +1097,11 @@ export function WbsTable({
         className="wbs-vscroll-hide"
         style={{ position: "relative", overflowX: "hidden", overflowY: "auto", minWidth: 0,
           flex: `0 1 ${leftBasis}px`, maxWidth: "70%", borderRight: `2px solid ${WBS_COLORS.headBg}` }}>
-        <div style={{ position: "sticky", top: 0, zIndex: 3, display: "grid", gridTemplateColumns: leftTemplate, background: WBS_COLORS.headBg }}>
+        <div style={{ position: "sticky", top: 0, zIndex: Z_COL_HEAD, display: "grid", gridTemplateColumns: leftTemplate, background: WBS_COLORS.headBg }}>
           {frozen.map(c => headCell(c, "left"))}
         </div>
-        {display.map((d, i) => (
-          <WbsTableRow key={d.row.item.id} row={d.row} cols={frozen} side="left" template={leftTemplate}
+        {renderTree(tree, (d, i, pinTop) => (
+          <WbsTableRow key={d.row.item.id} row={d.row} cols={frozen} side="left" template={leftTemplate} pinTop={pinTop}
             // 行の境目の追加ボタンは、左の枠にだけ出す。先頭の行の上には、大項目を入れられる
             onInsert={canArrange ? onInsert : undefined} insertBelow={d.insertBelow} insertAbove={i === 0 ? [1] : undefined}
             selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)} flashed={flashId === d.row.item.id}
@@ -1064,13 +1118,14 @@ export function WbsTable({
         // 端まで送ったあとの横スクロールを、ブラウザの「戻る／進む」へ渡さない
         style={{ position: "relative", flex: 1, minWidth: 0, overflow: "auto", overscrollBehaviorX: "contain" }}>
         <div style={{ position: "relative", width: rightWidth, minHeight: "100%" }}>
-          {/* 塗りつぶした見出し行（zIndex 3）が、スクロールしたときにこの見出しの上へ出ないよう 4 にする */}
-          <div style={{ position: "sticky", top: 0, zIndex: 4, display: "flex", background: WBS_COLORS.headBg }}>
+          {/* 固定した見出し行が、スクロールしたときにこの見出しの上へ出ないよう、それより上に重ねる */}
+          <div style={{ position: "sticky", top: 0, zIndex: Z_COL_HEAD, display: "flex", background: WBS_COLORS.headBg }}>
             {scrolling.map(c => headCell(c, "right"))}
             <WbsGanttHeader model={gantt} />
           </div>
-          {display.map(d => (
-            <WbsTableRow key={d.row.item.id} row={d.row} cols={scrolling} side="right" template=""
+          {/* 左の枠と同じ入れ子の形にする（形が違うと、固定と入れ替わりの位置が左右でずれる） */}
+          {renderTree(tree, (d, _i, pinTop) => (
+            <WbsTableRow key={d.row.item.id} row={d.row} cols={scrolling} side="right" template="" pinTop={pinTop}
               selected={checkedIds.has(d.row.item.id)} highlighted={highlightIds.has(d.row.item.id)} flashed={flashId === d.row.item.id}
               dropMode={null} ctx={ctx}
               // 見出し行（大項目・中項目）は日付を持たせないので、ガントの側も行の色で塗りつぶす
