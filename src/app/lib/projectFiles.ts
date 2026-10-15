@@ -324,11 +324,24 @@ export async function fetchFileBoxUsage(projectId: string): Promise<FileBoxUsage
  * @returns 実際に登録されたファイル名（改名された場合はその名前）
  */
 export async function uploadProjectFile(
-  projectId: string, file: File, opts?: { uniqueName?: boolean; parentId?: string | null; fileId?: string },
+  projectId: string, file: File,
+  opts?: { uniqueName?: boolean; parentId?: string | null; fileId?: string } & SendOptions,
 ): Promise<string> {
-  const path = await stageProjectFile(projectId, file);
+  const path = await stageProjectFile(projectId, file, { onProgress: opts?.onProgress, signal: opts?.signal });
   return registerStagedFile(projectId, path, file, opts);
 }
+
+/** ストレージへの送信の進み具合と中止（ファイルボックスのアップロードパネル用。BRU20-010） */
+export type SendOptions = {
+  /** 送れたバイト数（ファイルの大きさに換算した値）と全体 */
+  onProgress?: (loaded: number, total: number) => void;
+  signal?: AbortSignal;
+};
+
+/** この時間まったく送れなければ、通信が止まったとみなして失敗にする（経過時間の上限は設けない） */
+export const UPLOAD_STALL_MS = 30_000;
+export const UPLOAD_STALLED_MSG = "通信が止まりました";
+export const UPLOAD_ABORTED_MSG = "中止しました";
 
 /**
  * ストレージへ実体だけを置く（DBにはまだ登録しない）。
@@ -337,17 +350,96 @@ export async function uploadProjectFile(
  * @returns ストレージ上の保存キー
  */
 export async function stageProjectFile(
-  projectId: string, file: File, opts?: { skipQuotaCheck?: boolean },
+  projectId: string, file: File, opts?: { skipQuotaCheck?: boolean } & SendOptions,
 ): Promise<string> {
   // fileSize を付けると、サーバーが容量の上限を超えるものを送る前に止める。
   // Google形式への変換の一時置きは storage に残らないので付けない（skipQuotaCheck）。
   const { path, token } = await postApi<{ path: string; token: string }>(
     "upload-url", { projectId, fileName: file.name, ...(opts?.skipQuotaCheck ? {} : { fileSize: file.size }) });
 
-  const { error } = await supabase!.storage.from("project-files")
-    .uploadToSignedUrl(path, token, file, { contentType: file.type || "application/octet-stream" });
-  if (error) throw new Error(error.message);
+  await sendToSignedUrl(path, token, file, opts);
   return path;
+}
+
+/**
+ * 署名付きアップロードURLへ実体を送る。
+ * supabase-js の uploadToSignedUrl は進み具合が取れず、時間切れも無いので、
+ * 同じURL・同じヘッダー・同じ本文（FormData）を XMLHttpRequest で送る。
+ * ★ 形式を変えると、登録（register）のときにサーバーが実体を見つけられない。
+ *   uploadToSignedUrl（storage-js）の Blob のときの組み立てと揃えること。
+ */
+function sendToSignedUrl(path: string, token: string, file: File, opts?: SendOptions): Promise<void> {
+  const api = supabase!.storage.from("project-files") as unknown as {
+    url: string; headers: Record<string, string>;
+    _getFinalPath(p: string): string; _removeEmptyFolders(p: string): string;
+  };
+  const url = new URL(`${api.url}/object/upload/sign/${api._getFinalPath(api._removeEmptyFolders(path))}`);
+  url.searchParams.set("token", token);
+
+  const body = new FormData();
+  body.append("cacheControl", "3600");
+  body.append("", file);
+
+  return new Promise<void>((resolve, reject) => {
+    if (opts?.signal?.aborted) { reject(new Error(UPLOAD_ABORTED_MSG)); return; }
+    let settled = false;
+    let lastProgressAt = Date.now();
+    const xhr = new XMLHttpRequest();
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(stallTimer);
+      opts?.signal?.removeEventListener("abort", onAbort);
+      if (err) reject(err); else resolve();
+    };
+    // 30秒まったく進まなければ止める。全部送り終えた後の応答待ちも同じ扱い
+    const stallTimer = setInterval(() => {
+      if (Date.now() - lastProgressAt < UPLOAD_STALL_MS) return;
+      xhr.abort();
+      finish(new Error(UPLOAD_STALLED_MSG));
+    }, 1000);
+    const onAbort = () => { xhr.abort(); finish(new Error(UPLOAD_ABORTED_MSG)); };
+    opts?.signal?.addEventListener("abort", onAbort);
+
+    xhr.upload.onprogress = e => {
+      lastProgressAt = Date.now();
+      // e.total は FormData 全体の大きさなので、ファイルの大きさに換算して渡す
+      if (e.lengthComputable && e.total > 0) {
+        opts?.onProgress?.(Math.min(file.size, Math.round(file.size * e.loaded / e.total)), file.size);
+      }
+    };
+    xhr.upload.onload = () => { lastProgressAt = Date.now(); };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        opts?.onProgress?.(file.size, file.size);
+        finish();
+        return;
+      }
+      let msg = `アップロードに失敗しました（${xhr.status}）`;
+      try {
+        const res = JSON.parse(xhr.responseText);
+        if (res?.message) msg = res.message;
+        else if (res?.error) msg = res.error;
+      } catch { /* JSON でなければ既定の文言 */ }
+      finish(new Error(msg));
+    };
+    // 回線が切れたときもブラウザが諦めた時点でここへ来る
+    xhr.onerror = () => finish(new Error(UPLOAD_STALLED_MSG));
+
+    void supabase!.auth.getSession().then(({ data: { session } }) => {
+      if (settled) return;
+      xhr.open("PUT", url.toString());
+      // supabase-js の fetchWithAuth と同じく、apikey とログイン中のトークンを付ける
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+      const headers: Record<string, string> = { ...api.headers, "x-upsert": "false" };
+      const has = (k: string) => Object.keys(headers).some(h => h.toLowerCase() === k.toLowerCase());
+      if (!has("apikey")) headers.apikey = anonKey;
+      if (!has("authorization")) headers.Authorization = `Bearer ${session?.access_token ?? anonKey}`;
+      for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+      lastProgressAt = Date.now();
+      xhr.send(body);
+    }, e => finish(e instanceof Error ? e : new Error("アップロードに失敗しました")));
+  });
 }
 
 /**
