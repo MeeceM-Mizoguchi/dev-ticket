@@ -25,6 +25,7 @@ import { WbsTicketLinkDialog, type WbsTicketRef } from "./WbsTicketLinkDialog";
 import { WbsTicketCell } from "./WbsTicketCell";
 import { WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
 import { filterWbsRows, wbsFilterOptions, type WbsFilterCol, type WbsFilterCtx, type WbsFilters } from "./wbsFilter";
+import { WbsAttentionDialog, collectWbsAttention, isWbsAttentionDismissed } from "./WbsAttentionDialog";
 import { wbsToolBtn, wbsToolBtnDisabled } from "./wbsStyles";
 
 /** 列固定の位置は、WBSごと・利用者ごとにブラウザへ保存する */
@@ -78,6 +79,13 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const addingRef = useRef(false);
   // 列ごとの絞り込み。保存しない（WBSを切り替えると key で作り直されるので、そこで解除される）
   const [filters, setFilters] = useState<WbsFilters>({});
+  // 開いたときのお知らせ（遅延・未着手）。出すかの判定は最初の読み込みのあと1回だけ
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const attentionCheckedRef = useRef(false);
+  // お知らせから移動した行（薄い黄色）。6秒で消す
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+  useEffect(() => () => { if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current); }, []);
 
   // 横スクロールを、ブラウザの「戻る／進む」に化けさせない。
   // 左の表は横に動かないので、その上で横に送ると操作がブラウザまで抜けて、
@@ -176,6 +184,27 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     const first = rows.find(r => highlightSet.has(r.item.id));
     if (first) setScrollTo({ id: first.item.id, nonce: Date.now() });
   }, [highlightKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 開いたときのお知らせ ────────────────────────────────────
+  const attention = useMemo(() => collectWbsAttention(rows, today), [rows, today]);
+
+  // 最初の読み込みが終わったら1回だけ判定する。編集後の読み直しでは出さない。
+  // WBSを切り替えたときは key で作り直されるので、そのWBSで判定し直しになる
+  useEffect(() => {
+    if (!initializedRef.current || attentionCheckedRef.current) return;
+    attentionCheckedRef.current = true;
+    if (attention.delayed.length + attention.notStarted.length === 0) return;
+    if (isWbsAttentionDismissed(userId, sheet.id, today)) return;
+    setAttentionOpen(true);
+  }, [attention]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** お知らせの行を押した。その行へスクロールし、6秒だけ黄色にする */
+  const handleJump = (itemId: string) => {
+    setFlashId(itemId);
+    setScrollTo({ id: itemId, nonce: Date.now() });
+    if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = window.setTimeout(() => { flashTimerRef.current = null; setFlashId(null); }, 6000);
+  };
 
   const changeFreeze = (key: WbsColKey) => {
     setFreezeKey(key);
@@ -517,7 +546,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
           checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll} allCheckState={allCheckState}
           filters={filters} filterOptions={filterOptions} onFilterChange={changeFilter} shownIds={shownIds}
           editing={editing} onEditingChange={setEditing}
-          highlightIds={highlightSet} scrollTo={scrollTo}
+          highlightIds={highlightSet} scrollTo={scrollTo} flashId={flashId}
           onUpdate={handleUpdate} onMove={handleMove}
           onInsert={handleInsert} onAddNew={handleAddNew}
           collapseKey={`devticket:wbs:collapsed:${userId}:${sheet.id}`}
@@ -552,6 +581,11 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
           onSubmit={handleLinkSubmit}
           onClose={() => setLinkTargetId(null)}
         />
+      )}
+
+      {attentionOpen && (
+        <WbsAttentionDialog attention={attention} userId={userId} sheetId={sheet.id} today={today}
+          onJump={handleJump} onClose={() => setAttentionOpen(false)} />
       )}
 
       {deleteOpen && checkedIds.size > 0 && (
