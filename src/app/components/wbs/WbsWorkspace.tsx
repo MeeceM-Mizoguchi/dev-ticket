@@ -283,7 +283,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     statuses, members: project.members, holidays: holidaySet,
     ticketNumbersOf: id => linkedTicketsOf(id).map(t => t.ticket.wbs),
   }), [statuses, project.members, holidaySet, linkedTicketsOf]);
-  const filterOptions = useMemo(() => wbsFilterOptions(rows, filterCtx), [rows, filterCtx]);
+  const filterOptions = useMemo(() => wbsFilterOptions(rows, filterCtx, sheet.levels), [rows, filterCtx, sheet.levels]);
   const shownIds = useMemo(() => filterWbsRows(rows, filters, filterCtx), [rows, filters, filterCtx]);
   const changeFilter = useCallback((col: WbsFilterCol, selected: Set<string>) => {
     setFilters(prev => ({ ...prev, [col]: selected }));

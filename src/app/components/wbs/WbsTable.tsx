@@ -26,7 +26,7 @@
 //     並びは WbsWorkspace がWBSごと・利用者ごとにブラウザへ保存する。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, GripVertical, Minus, Plus } from "lucide-react";
-import { ColumnFilter, type ColumnFilterOption } from "@/app/components/shared/ColumnFilter";
+import { ColumnFilter } from "@/app/components/shared/ColumnFilter";
 import { DatePicker } from "@/app/components/shared/DatePicker";
 import { TruncatedText } from "@/app/components/shared/TruncatedText";
 import { WbsCellSelect } from "./WbsCellSelect";
@@ -35,7 +35,7 @@ import { businessDays, textColorOn, type WbsGanttModel, type WbsRow } from "@/ap
 import type { WbsItem, WbsStatus } from "@/app/types";
 import { WBS_COLORS } from "./wbsStyles";
 import { WBS_GANTT_HEAD_H, WbsGanttHeader, WbsGanttOverlay, WbsGanttStrip, ganttWidth } from "./WbsGantt";
-import { WBS_FILTER_COLS, type WbsFilterCol, type WbsFilters } from "./wbsFilter";
+import { WBS_FILTER_COLS, type WbsFilterCol, type WbsFilterOptions, type WbsFilters } from "./wbsFilter";
 
 export const WBS_ROW_H = 30;
 /** マスタースケジュールから移動した大項目のまとまりを光らせる時間。WbsWorkspace はこのあとに focusGroupId を外す */
@@ -157,7 +157,7 @@ interface WbsTableProps {
   allCheckState: "on" | "off" | "some";
   /** 列ごとの絞り込み */
   filters: WbsFilters;
-  filterOptions: Record<WbsFilterCol, ColumnFilterOption[]>;
+  filterOptions: WbsFilterOptions;
   onFilterChange: (col: WbsFilterCol, selected: Set<string>) => void;
   /** 絞り込みで表に出す行。絞り込んでいないときは null */
   shownIds: ReadonlySet<string> | null;
@@ -1009,6 +1009,8 @@ export function WbsTable({
         // 見出しのセルと左の枠は overflow で切るので、一覧は body へ出す
         <ColumnFilter col={c.key} label={c.label} sortable={false} onDark portal
           options={filterOptions[c.key]} selected={filters[c.key] ?? EMPTY_SET}
+          // 「項目」だけは大項目・中項目・小項目の段ごとのメニューにする（BRU20-016）
+          groups={c.key === "name" ? filterOptions.nameGroups : undefined}
           onFilterChange={sel => onFilterChange(c.key as WbsFilterCol, sel)}
           open={openFilter === c.key} onToggle={() => setOpenFilter(o => (o === c.key ? "" : c.key as WbsFilterCol))} onClose={closeFilter} />
       ) : c.label}
