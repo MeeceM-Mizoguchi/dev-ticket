@@ -6,11 +6,13 @@
 //
 // ページ全体は縦にスクロールさせない。画面の残りの高さいっぱいを表とガントの領域にする。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { FolderKanban, ChevronRight, GanttChartSquare, Plus } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
+import { copyText } from "@/lib/clipboard";
+import { appOrigin } from "@/app/lib/appOrigin";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
 import type { AccessLevel, Project, Sprint, UserPermissions, WbsLevels, WbsSheet } from "@/app/types";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
@@ -23,7 +25,7 @@ import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnPrimary } from "@/app/components/shared/BtnPrimary";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import {
-  WBS_LEVEL_LABELS, createWbsSheet, deleteWbsSheet, loadWbsItemsBelowLevel, loadWbsPermission, loadWbsSheets, updateWbsSheet,
+  WBS_FOCUS_STATE_KEY, WBS_LEVEL_LABELS, createWbsSheet, deleteWbsSheet, loadWbsItemsBelowLevel, loadWbsPermission, loadWbsSheets, updateWbsSheet,
 } from "@/app/lib/wbsService";
 import { WbsSheetBar } from "@/app/components/wbs/WbsSheetBar";
 import { WbsSheetNameDialog } from "@/app/components/wbs/WbsSheetNameDialog";
@@ -40,7 +42,10 @@ interface LevelBlock { message: string; itemIds: string[] }
 export function WbsPage() {
   const { projectSlug, wbsId } = useParams<{ projectSlug: string; wbsId?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { userId, userName, userRole, userOrgId } = useAuth();
+  // マスタースケジュールの行を押して来たときの、強調する行（大項目）
+  const focusItemId = ((location.state as Record<string, unknown> | null)?.[WBS_FOCUS_STATE_KEY] as string | undefined) ?? null;
   const { toast } = useToast();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -145,6 +150,14 @@ export function WbsPage() {
 
   // ── WBS本体の操作 ───────────────────────────────────────────
   const selectSheet = (id: string) => { if (projectSlug && id) navigate(`/${projectSlug}/wbs/${id}`); };
+
+  /** いま開いているWBSのURL（/{プロジェクト}/wbs/{WBSのID} の完全なURL）をコピーする */
+  const handleCopyUrl = async () => {
+    if (!projectSlug || !current) return;
+    // 共有できる形で出す。ネイティブの capacitor:// は appOrigin() が弾く（NotFoundView と同じ）
+    if (await copyText(`${appOrigin()}/${projectSlug}/wbs/${current.id}`)) toast("URLをコピーしました");
+    else toast("URLのコピーに失敗しました", "error");
+  };
 
   const handleCreate = async (name: string): Promise<boolean> => {
     if (!project) return false;
@@ -266,6 +279,8 @@ export function WbsPage() {
               onChangeLevels={handleChangeLevels}
               onOpenVisibility={() => setVisibilityOpen(true)}
               onOpenManual={() => setManualOpen(true)}
+              onCopyUrl={handleCopyUrl}
+              onOpenMaster={() => { if (current) navigate(`/${projectSlug}/wbs/${current.id}/master`); }}
             />
           </div>
 
@@ -281,7 +296,10 @@ export function WbsPage() {
             {current && project && (
               <WbsWorkspace key={current.id} sheet={current} project={project} canEdit={canEdit}
                 tickets={tickets} onOpenTicket={handleOpenTicket}
-                highlightIds={highlightIds} onHighlightChange={setHighlightIds} />
+                highlightIds={highlightIds} onHighlightChange={setHighlightIds}
+                focusItemId={focusItemId}
+                // 強調したら履歴から外す（ブラウザの再読み込みで、もう一度強調し直さないように）
+                onFocusDone={() => navigate(`${location.pathname}${location.search}`, { replace: true, state: null })} />
             )}
           </div>
         </>

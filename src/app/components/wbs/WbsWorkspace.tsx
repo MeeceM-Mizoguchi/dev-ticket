@@ -3,7 +3,7 @@
 // WbsPage がWBSの切り替えと枠を受け持ち、ここは選ばれた1つのWBSの中身を受け持つ。
 // WBSを切り替えたら key で作り直すので、前のWBSの行や選択を持ち越さない。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trash2, Tags, CalendarOff, Download, Upload } from "lucide-react";
+import { Trash2, Tags, CalendarOff, Download, Upload, FilterX, Maximize2, Minimize2 } from "lucide-react";
 import { useAuth } from "@/app/contexts/AuthContext";
 import { useToast } from "@/app/contexts/ToastContext";
 import { ConfirmDialog } from "@/app/components/shared/ConfirmDialog";
@@ -23,7 +23,9 @@ import { downloadBlob, safeFileName } from "@/app/lib/articleExport/download";
 import { exportWbsXlsx } from "@/app/lib/wbsExcel";
 import { WbsTicketLinkDialog, type WbsTicketRef } from "./WbsTicketLinkDialog";
 import { WbsTicketCell } from "./WbsTicketCell";
-import { WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
+import { FOCUS_PULSE_MS, WbsTable, type WbsColKey, type WbsDropMode, type WbsEditing } from "./WbsTable";
+import { filterWbsRows, wbsFilterOptions, type WbsFilterCol, type WbsFilterCtx, type WbsFilters } from "./wbsFilter";
+import { WbsAttentionDialog, collectWbsAttention, isWbsAttentionDismissed } from "./WbsAttentionDialog";
 import { wbsToolBtn, wbsToolBtnDisabled } from "./wbsStyles";
 
 /** 列固定の位置は、WBSごと・利用者ごとにブラウザへ保存する */
@@ -37,7 +39,7 @@ function readFreeze(userId: string, sheetId: string): WbsColKey {
   return "note";
 }
 
-export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange }: {
+export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone }: {
   sheet: WbsSheet;
   project: Project;
   canEdit: boolean;
@@ -48,6 +50,10 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   /** 段数を減らせない理由になっている行 */
   highlightIds: string[];
   onHighlightChange: (ids: string[]) => void;
+  /** マスタースケジュールの行を押して来たときの行。最初の読み込みのあと、その行へ移動して強調する */
+  focusItemId?: string | null;
+  /** focusItemId の行を強調し終えたとき */
+  onFocusDone?: () => void;
 }) {
   const { userId } = useAuth();
   const { toast } = useToast();
@@ -75,6 +81,15 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
+  // 列ごとの絞り込み。保存しない（WBSを切り替えると key で作り直されるので、そこで解除される）
+  const [filters, setFilters] = useState<WbsFilters>({});
+  // 開いたときのお知らせ（遅延・未着手）。出すかの判定は最初の読み込みのあと1回だけ
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const attentionCheckedRef = useRef(false);
+  // お知らせから移動した行（薄い黄色）。6秒で消す
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+  useEffect(() => () => { if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current); }, []);
 
   // 横スクロールを、ブラウザの「戻る／進む」に化けさせない。
   // 左の表は横に動かないので、その上で横に送ると操作がブラウザまで抜けて、
@@ -96,6 +111,43 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     rootEl.addEventListener("wheel", onWheel, { passive: false });
     return () => rootEl.removeEventListener("wheel", onWheel);
   }, [rootEl]);
+
+  // ── 全画面 ──────────────────────────────────────────────────
+  // ブラウザの全画面はページ全体（document.documentElement）にかけ、WBSの部分はアプリの中で
+  // 画面いっぱいに広げる（position:fixed）。WBSの要素そのものを全画面にすると、その外（document.body）へ
+  // 出しているプルダウン・日付の選択・ダイアログが表示されなくなるため。
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenRef = useRef(false);
+  const enterFullscreen = () => {
+    fullscreenRef.current = true;
+    setFullscreen(true);
+    // ブラウザが全画面を許さないときも、画面いっぱいの表示だけは行う
+    document.documentElement.requestFullscreen?.().catch(() => { });
+  };
+  const exitFullscreen = useCallback(() => {
+    fullscreenRef.current = false;
+    setFullscreen(false);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => { });
+  }, []);
+  useEffect(() => {
+    if (!fullscreen) return;
+    // Esc などでブラウザの全画面が終わったら、画面いっぱいの表示も戻す
+    const onChange = () => { if (!document.fullscreenElement) exitFullscreen(); };
+    // ブラウザの全画面になれなかったときは Esc がブラウザに使われないので、ここで受ける
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !document.fullscreenElement) exitFullscreen();
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [fullscreen, exitFullscreen]);
+  // 全画面のまま画面を離れたら、ブラウザの全画面も終える
+  useEffect(() => () => {
+    if (fullscreenRef.current && document.fullscreenElement) document.exitFullscreen().catch(() => { });
+  }, []);
 
   const load = useCallback(async () => {
     const [its, sts, hols, lks] = await Promise.all([
@@ -137,6 +189,46 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     if (first) setScrollTo({ id: first.item.id, nonce: Date.now() });
   }, [highlightKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── 開いたときのお知らせ ────────────────────────────────────
+  const attention = useMemo(() => collectWbsAttention(rows, today), [rows, today]);
+
+  // 最初の読み込みが終わったら1回だけ判定する。編集後の読み直しでは出さない。
+  // WBSを切り替えたときは key で作り直されるので、そのWBSで判定し直しになる
+  useEffect(() => {
+    if (!initializedRef.current || attentionCheckedRef.current) return;
+    attentionCheckedRef.current = true;
+    // マスタースケジュールから行を指定して来たときは出さない（強調した行がお知らせに隠れるので）
+    if (focusItemId) return;
+    if (attention.delayed.length + attention.notStarted.length === 0) return;
+    if (isWbsAttentionDismissed(userId, sheet.id, today)) return;
+    setAttentionOpen(true);
+  }, [attention]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** お知らせの行を押した。その行へスクロールし、6秒だけ黄色にする */
+  const handleJump = (itemId: string) => {
+    setFlashId(itemId);
+    setScrollTo({ id: itemId, nonce: Date.now() });
+    if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = window.setTimeout(() => { flashTimerRef.current = null; setFlashId(null); }, 6000);
+  };
+
+  // マスタースケジュールの行を押して来たとき。最初の読み込みのあと1回だけ、その大項目まで表を送り、
+  // 大項目から下の行のまとまり全体を黄色く光らせる（約3秒で消える）。消された行なら何もしない
+  const [focusGroupId, setFocusGroupId] = useState<string | null>(null);
+  const focusDoneRef = useRef(false);
+  const focusTimerRef = useRef<number | null>(null);
+  useEffect(() => () => { if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current); }, []);
+  useEffect(() => {
+    if (!initializedRef.current || focusDoneRef.current || !focusItemId) return;
+    focusDoneRef.current = true;
+    if (items.some(i => i.id === focusItemId)) {
+      setFocusGroupId(focusItemId);
+      setScrollTo({ id: focusItemId, nonce: Date.now() });
+      focusTimerRef.current = window.setTimeout(() => { focusTimerRef.current = null; setFocusGroupId(null); }, FOCUS_PULSE_MS);
+    }
+    onFocusDone?.();
+  }, [items, focusItemId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const changeFreeze = (key: WbsColKey) => {
     setFreezeKey(key);
     try { localStorage.setItem(freezeStorageKey(userId, sheet.id), key); } catch { /* 保存できなくても表示は切り替える */ }
@@ -163,6 +255,18 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     setLinks(await loadWbsItemTickets(sheet.id));
     return okAdd && okRemove;
   };
+
+  // ── 列ごとの絞り込み ────────────────────────────────────────
+  // 集計とエクスポートは絞り込みに関係なく WBS 全体（rows）のまま
+  const filterCtx = useMemo<WbsFilterCtx>(() => ({
+    statuses, members: project.members, holidays: holidaySet,
+    ticketNumbersOf: id => linkedTicketsOf(id).map(t => t.ticket.wbs),
+  }), [statuses, project.members, holidaySet, linkedTicketsOf]);
+  const filterOptions = useMemo(() => wbsFilterOptions(rows, filterCtx), [rows, filterCtx]);
+  const shownIds = useMemo(() => filterWbsRows(rows, filters, filterCtx), [rows, filters, filterCtx]);
+  const changeFilter = useCallback((col: WbsFilterCol, selected: Set<string>) => {
+    setFilters(prev => ({ ...prev, [col]: selected }));
+  }, []);
 
   const renderTickets = useCallback((row: (typeof rows)[number]) => (
     <WbsTicketCell tickets={linkedTicketsOf(row.item.id)} canEdit={canEdit}
@@ -356,9 +460,21 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
     });
   }, [items, descendantsOf]);
 
+  /**
+   * 見出しのチェックボックスで選ぶ行。絞り込み中は見えている行だけにする。
+   * 見えている見出し行でも、下に隠れた行があるものは選ばない
+   * （見出し行を消すと下の行も一緒に消えるので、隠れた行まで「行を削除」の対象になってしまう）。
+   */
+  const toggleAllTargets = useMemo(() => {
+    if (!shownIds) return items.map(i => i.id);
+    return items.filter(i => shownIds.has(i.id) && descendantsOf(i.id).every(d => shownIds.has(d))).map(i => i.id);
+  }, [items, shownIds, descendantsOf]);
+  const allCheckState = toggleAllTargets.length > 0 && toggleAllTargets.every(id => checkedIds.has(id)) ? "on"
+    : toggleAllTargets.some(id => checkedIds.has(id)) ? "some" : "off";
+
   const toggleAll = useCallback(() => {
-    setCheckedIds(prev => (items.length > 0 && items.every(i => prev.has(i.id)) ? new Set() : new Set(items.map(i => i.id))));
-  }, [items]);
+    setCheckedIds(prev => (toggleAllTargets.length > 0 && toggleAllTargets.every(id => prev.has(id)) ? new Set() : new Set(toggleAllTargets)));
+  }, [toggleAllTargets]);
 
   // 消えた行（削除・読み直し・置き換えインポート）のチェックは捨てる
   useEffect(() => {
@@ -391,7 +507,9 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   if (loading && !initializedRef.current) return <PageLoader label="WBSを読み込み中..." />;
 
   return (
-    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div ref={setRootEl} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
+      // 全画面中は画面いっぱいに広げる。重なり順はダイアログとチケット詳細のパネル（300）より下
+      ...(fullscreen ? { position: "fixed", inset: 0, zIndex: 250, background: "#FFFFFF" } : null) }}>
       <WbsSummary rows={rows} statuses={statuses} gantt={gantt} />
 
       <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid #E2E6EC", flexWrap: "wrap" }}>
@@ -404,6 +522,15 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
               <Trash2 style={{ width: 12, height: 12 }} />{checkedIds.size > 0 ? `選択した ${checkedIds.size} 行を削除` : "行を削除"}
             </button>
             <span style={{ fontSize: 11, color: "#A09790" }}>行と行の間にマウスを乗せると、その位置に行を追加できます。大項目・中項目の行は、左の三角で開閉できます</span>
+          </>
+        )}
+
+        {shownIds && (
+          <>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#059669", whiteSpace: "nowrap" }}>絞り込み中：{shownIds.size} / {rows.length} 行</span>
+            <button type="button" onClick={() => setFilters({})} title="列ごとの絞り込みをすべて解除して、全部の行を表示します" style={wbsToolBtn}>
+              <FilterX style={{ width: 12, height: 12 }} />絞り込みを解除
+            </button>
           </>
         )}
 
@@ -426,15 +553,24 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
             <CalendarOff style={{ width: 12, height: 12 }} />休日設定
           </button>
         )}
+        {/* 閲覧のみの人にも出す */}
+        <button type="button" onClick={fullscreen ? exitFullscreen : enterFullscreen}
+          title={fullscreen ? "全画面表示を終了します（Esc でも戻ります）" : "WBSを画面いっぱいに表示します"} style={wbsToolBtn}>
+          {fullscreen
+            ? <><Minimize2 style={{ width: 12, height: 12 }} />全画面を終了</>
+            : <><Maximize2 style={{ width: 12, height: 12 }} />全画面</>}
+        </button>
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
         <WbsTable
           rows={rows} levels={sheet.levels} statuses={statuses} members={project.members}
           holidays={holidaySet} canEdit={canEdit} freezeKey={freezeKey} onFreezeChange={changeFreeze}
-          checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll}
+          checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll} allCheckState={allCheckState}
+          filters={filters} filterOptions={filterOptions} onFilterChange={changeFilter} shownIds={shownIds}
           editing={editing} onEditingChange={setEditing}
-          highlightIds={highlightSet} scrollTo={scrollTo}
+          highlightIds={highlightSet} scrollTo={scrollTo} flashId={flashId}
+          focusGroupId={focusGroupId}
           onUpdate={handleUpdate} onMove={handleMove}
           onInsert={handleInsert} onAddNew={handleAddNew}
           collapseKey={`devticket:wbs:collapsed:${userId}:${sheet.id}`}
@@ -469,6 +605,11 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
           onSubmit={handleLinkSubmit}
           onClose={() => setLinkTargetId(null)}
         />
+      )}
+
+      {attentionOpen && (
+        <WbsAttentionDialog attention={attention} userId={userId} sheetId={sheet.id} today={today}
+          onJump={handleJump} onClose={() => setAttentionOpen(false)} />
       )}
 
       {deleteOpen && checkedIds.size > 0 && (

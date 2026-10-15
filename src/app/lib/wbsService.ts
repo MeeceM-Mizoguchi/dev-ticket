@@ -14,6 +14,12 @@ export const WBS_SORT_GAP = 1024;
 /** 段の名前。添字は level - 1 */
 export const WBS_LEVEL_LABELS = ["大項目", "中項目", "小項目"] as const;
 
+/**
+ * WBS画面へ移るときに、強調する行の id を載せる履歴の state のキー（マスタースケジュールの行を押したとき）。
+ * URL には載せないので、共有したURLや再読み込みで強調が出直すことはない。
+ */
+export const WBS_FOCUS_STATE_KEY = "wbsFocusItemId";
+
 export const WBS_LEVEL_OPTIONS: { value: WbsLevels; label: string }[] = [
   { value: 3, label: "3段（大・中・小）" },
   { value: 2, label: "2段（大・中）" },
