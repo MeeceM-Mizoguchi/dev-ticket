@@ -39,6 +39,18 @@ function readFreeze(userId: string, sheetId: string): WbsColKey {
   return "note";
 }
 
+/** 列の並びも、WBSごと・利用者ごとにブラウザへ保存する（BRU20-011） */
+function colOrderStorageKey(userId: string, sheetId: string) { return `devticket:wbs:colorder:${userId}:${sheetId}`; }
+
+function readColOrder(userId: string, sheetId: string): WbsColKey[] {
+  try {
+    const raw = localStorage.getItem(colOrderStorageKey(userId, sheetId));
+    const v: unknown = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(v)) return v.filter((k): k is WbsColKey => typeof k === "string");
+  } catch { /* 保存領域が使えない・壊れているときは、定義どおりの並びで動かす */ }
+  return [];
+}
+
 export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, highlightIds, onHighlightChange, focusItemId = null, onFocusDone }: {
   sheet: WbsSheet;
   project: Project;
@@ -79,6 +91,8 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const exportingRef = useRef(false);
   const [linkTargetId, setLinkTargetId] = useState<string | null>(null);
   const [freezeKey, setFreezeKey] = useState<WbsColKey>(() => readFreeze(userId, sheet.id));
+  // 列の並び（チェックボックスの列を除く）。空なら定義順。無い列・増えた列の扱いは orderWbsColumns
+  const [colOrder, setColOrder] = useState<WbsColKey[]>(() => readColOrder(userId, sheet.id));
   // 追加の連打で同じ行を2つ作らないためのガード
   const addingRef = useRef(false);
   // 列ごとの絞り込み。保存しない（WBSを切り替えると key で作り直されるので、そこで解除される）
@@ -232,6 +246,13 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   const changeFreeze = (key: WbsColKey) => {
     setFreezeKey(key);
     try { localStorage.setItem(freezeStorageKey(userId, sheet.id), key); } catch { /* 保存できなくても表示は切り替える */ }
+  };
+
+  const changeColOrder = (order: WbsColKey[], freeze: WbsColKey) => {
+    setColOrder(order);
+    try { localStorage.setItem(colOrderStorageKey(userId, sheet.id), JSON.stringify(order)); } catch { /* 保存できなくても表示は切り替える */ }
+    // 固定の線は「左から何列目まで」を保つ。並べ替えでその位置に来た列を、固定の線の列に付け直す
+    if (freeze !== freezeKey) changeFreeze(freeze);
   };
 
   // ── チケットの紐づけ ────────────────────────────────────────
@@ -566,6 +587,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
         <WbsTable
           rows={rows} levels={sheet.levels} statuses={statuses} members={project.members}
           holidays={holidaySet} canEdit={canEdit} freezeKey={freezeKey} onFreezeChange={changeFreeze}
+          colOrder={colOrder} onColOrderChange={changeColOrder}
           checkedIds={checkedIds} onToggleCheck={toggleCheck} onToggleAll={toggleAll} allCheckState={allCheckState}
           filters={filters} filterOptions={filterOptions} onFilterChange={changeFilter} shownIds={shownIds}
           editing={editing} onEditingChange={setEditing}

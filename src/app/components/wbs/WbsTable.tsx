@@ -22,6 +22,8 @@
 //   ・セルのプルダウンはブラウザ標準の <select> を使わず、行の高さに合わせた WbsCellSelect を使う。
 //   ・列の見出しを押すと、その列の値で絞り込める（BRU20-008-2。判定は wbsFilter）。
 //     絞り込み中は、行の境目の追加ボタンとドラッグでの並べ替えを止める（隠れた行との位置関係が見えないため）。
+//   ・列の見出しをドラッグすると、列の順番を入れ替えられる（BRU20-011。チェックボックスの列は動かさない）。
+//     並びは WbsWorkspace がWBSごと・利用者ごとにブラウザへ保存する。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, GripVertical, Minus, Plus } from "lucide-react";
 import { ColumnFilter, type ColumnFilterOption } from "@/app/components/shared/ColumnFilter";
@@ -95,6 +97,20 @@ export function visibleWbsColumns() {
   return WBS_COLUMNS;
 }
 
+/**
+ * 利用者が並べた順の列（BRU20-011）。チェックボックスの列は常に先頭。
+ * 保存された並びに無い列（後から足した列）は末尾に足し、いまは無い列は無視する。
+ */
+export function orderWbsColumns(order: readonly string[]) {
+  const byKey = new Map(WBS_COLUMNS.map(c => [c.key as string, c]));
+  const picked = [...new Set(order)].filter(k => k !== "check" && byKey.has(k)).map(k => byKey.get(k)!);
+  const rest = WBS_COLUMNS.filter(c => c.key !== "check" && !picked.includes(c));
+  return [...WBS_COLUMNS.filter(c => c.key === "check"), ...picked, ...rest];
+}
+
+/** 見出しを押してから、この距離（px）を動かしたらドラッグとして扱う。これ未満はクリック（フィルタを開く） */
+const COL_DRAG_THRESHOLD = 5;
+
 const EMPTY_SET = new Set<string>();
 
 /** 1段ぶんの字下げ（px） */
@@ -125,6 +141,13 @@ interface WbsTableProps {
   freezeKey: WbsColKey;
   /** 固定の線をドラッグで動かしたとき。新しく「ここまで固定」にする列を渡す */
   onFreezeChange: (key: WbsColKey) => void;
+  /** 列の並び（チェックボックスの列を除く）。空なら定義順 */
+  colOrder: readonly WbsColKey[];
+  /**
+   * 見出しをドラッグして列を並べ替えたとき。新しい並びと、固定の線を同じ列数の位置に残すための
+   * 「ここまで固定」にする列を渡す
+   */
+  onColOrderChange: (order: WbsColKey[], freezeKey: WbsColKey) => void;
   /** チェックを付けた行 */
   checkedIds: ReadonlySet<string>;
   onToggleCheck: (id: string) => void;
@@ -549,7 +572,7 @@ function WbsTableRow({ row, cols, side, template, selected, highlighted, flashed
 export function WbsTable({
   rows, levels, statuses, members, holidays, canEdit, freezeKey, checkedIds, onToggleCheck, onToggleAll, allCheckState, editing, onEditingChange,
   highlightIds, scrollTo, flashId = null, focusGroupId = null, onUpdate, onMove, gantt, renderTickets, onFreezeChange, onInsert, onAddNew, collapseKey,
-  filters, filterOptions, onFilterChange, shownIds,
+  filters, filterOptions, onFilterChange, shownIds, colOrder, onColOrderChange,
 }: WbsTableProps) {
   // 絞り込み中は、行の追加（境目のボタン）とドラッグでの並べ替えを止める
   const filtering = shownIds !== null;
@@ -565,13 +588,14 @@ export function WbsTable({
   /** 右の枠の縦スクロールバーの幅。まとまりの枠の右端を、スクロールバーの手前で止めるのに使う */
   const [vBarW, setVBarW] = useState(0);
 
-  // チェックボックスの列は、編集できる人にだけ出す。
+  // 列は利用者が並べた順。チェックボックスの列は、編集できる人にだけ出す。
   // ステータス列は、ステータス名の長さに合わせた幅と下限に置き換える（閲覧のみの人も同じ幅）
   const cols = useMemo(() => {
     const statusW = statusColWidth(statuses.map(s => s.name));
-    return (canEdit ? WBS_COLUMNS : WBS_COLUMNS.filter(c => c.key !== "check"))
+    return orderWbsColumns(colOrder)
+      .filter(c => canEdit || c.key !== "check")
       .map(c => (c.key === "status" ? { ...c, width: statusW, min: statusW } : c));
-  }, [canEdit, statuses]);
+  }, [canEdit, statuses, colOrder]);
   const freezeIdx = Math.max(0, cols.findIndex(c => c.key === freezeKey));
   // freezeKey の列が段数の変更で消えていたら（例：小項目まで固定 → 2段へ）、全列を固定に戻す
   const frozen = cols.some(c => c.key === freezeKey) ? cols.slice(0, freezeIdx + 1) : cols;
@@ -866,16 +890,116 @@ export function WbsTable({
     setFreezeDrag(null);
   };
 
+  // ── 列の見出しをドラッグで並べ替える（BRU20-011） ──
+  // 押して5px以上動かしたらドラッグにする（それ未満はクリックで、フィルタの一覧が開く）。
+  // ドラッグ中は、つかんだ見出しを半透明でポインタに追従させ、落とす先の列の境目に緑の線を出す。
+  // 落とし先の候補は、固定の線と同じく「いま画面に見えている列の境目」だけ。
+  // クリックの判定を残すため、ポインタは捕まえず window で受ける（捕まえるとフィルタのボタンに click が届かない）。
+  const [colDrag, setColDrag] = useState<{ key: WbsColKey; label: string; width: number; ghostLeft: number; lineLeft: number | null } | null>(null);
+  // ドラッグを離した直後の click を、フィルタの一覧を開くクリックとして扱わないための印
+  const suppressClickRef = useRef(false);
+  const colDragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => colDragCleanupRef.current?.(), []);
+
+  /** 落とせる列の境目。idx は「その位置に入れる」cols の添字 */
+  const colDropTargets = (): { idx: number; x: number }[] => {
+    const root = rootRef.current, left = leftRef.current, right = rightRef.current;
+    if (!root || !left || !right) return [];
+    const lr = left.getBoundingClientRect(), rr = right.getBoundingClientRect();
+    // チェックボックスの列より左には入れられない
+    const minIdx = cols[0]?.key === "check" ? 1 : 0;
+    const out: { idx: number; x: number }[] = [];
+    cols.forEach((c, i) => {
+      const r = root.querySelector<HTMLElement>(`[data-wbs-col="${c.key}"]`)?.getBoundingClientRect();
+      if (!r) return;
+      // 横スクロールで枠の外へ出ている境目は候補にしない（見えない場所へは落とせない）
+      const pane = i < frozen.length ? lr : rr;
+      const within = (x: number) => x >= pane.left - 1 && x <= pane.right + 1;
+      // 左端。右の枠の先頭の列の左端は固定の線と同じ位置なので、固定側の右端（下）で代表させる
+      if (i >= minIdx && i !== frozen.length && within(r.left)) out.push({ idx: i, x: r.left });
+      // 右端は、固定の線の位置（固定側の最後の列）と、いちばん右の列だけ
+      if ((i === frozen.length - 1 || i === cols.length - 1) && within(r.right)) out.push({ idx: i + 1, x: r.right });
+    });
+    return out;
+  };
+
+  /** from の列を to の位置へ移す。固定の線は「左から何列目まで」を保つ */
+  const moveColumn = (from: number, to: number) => {
+    if (to === from || to === from + 1) return;
+    const keys = cols.map(c => c.key);
+    const [key] = keys.splice(from, 1);
+    keys.splice(to > from ? to - 1 : to, 0, key);
+    onColOrderChange(keys.filter(k => k !== "check"), keys[frozen.length - 1]);
+  };
+
+  const handleColDown = (e: ReactPointerEvent<HTMLDivElement>, c: Col) => {
+    const root = rootRef.current;
+    if (!root || e.button !== 0 || c.key === "check") return;
+    const pointerId = e.pointerId;
+    const startX = e.clientX, startY = e.clientY;
+    const cellRect = e.currentTarget.getBoundingClientRect();
+    const grabOffset = startX - cellRect.left;
+    const from = cols.findIndex(x => x.key === c.key);
+    // ドラッグを始めたら候補を測る。null のあいだはまだクリックの扱い
+    let targets: { idx: number; x: number }[] | null = null;
+    let to: number | null = null;
+
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      if (!targets) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < COL_DRAG_THRESHOLD) return;
+        targets = colDropTargets();
+        document.body.style.cursor = "grabbing";
+      }
+      let hit: { idx: number; x: number } | null = null;
+      for (const t of targets) if (!hit || Math.abs(t.x - ev.clientX) < Math.abs(hit.x - ev.clientX)) hit = t;
+      to = hit?.idx ?? null;
+      const rootLeft = root.getBoundingClientRect().left;
+      setColDrag({ key: c.key, label: c.label, width: cellRect.width, ghostLeft: ev.clientX - rootLeft - grabOffset, lineLeft: hit ? hit.x - rootLeft : null });
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      colDragCleanupRef.current = null;
+      if (targets) document.body.style.cursor = "";
+    };
+    const end = (ev: PointerEvent, commit: boolean) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup();
+      if (!targets) return;
+      // 離した直後の click は捨てる。click が来ない（別の要素の上で離した）ときに備えて、すぐ印を外す
+      suppressClickRef.current = true;
+      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+      setColDrag(null);
+      if (commit && to !== null) moveColumn(from, to);
+    };
+    const up = (ev: PointerEvent) => end(ev, true);
+    const cancel = (ev: PointerEvent) => end(ev, false);
+    colDragCleanupRef.current?.();
+    colDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  };
+
   // 絞り込みの一覧を開いている列
   const [openFilter, setOpenFilter] = useState<WbsFilterCol | "">("");
   const closeFilter = useCallback(() => setOpenFilter(""), []);
   const isFilterCol = (key: WbsColKey): key is WbsFilterCol => (WBS_FILTER_COLS as readonly string[]).includes(key);
 
   const headCell = (c: Col, side: "left" | "right"): ReactNode => (
-    <div key={c.key} data-wbs-col={c.key} style={{
+    <div key={c.key} data-wbs-col={c.key}
+      onPointerDown={c.key === "check" ? undefined : e => handleColDown(e, c)}
+      onClickCapture={e => { if (suppressClickRef.current) { suppressClickRef.current = false; e.stopPropagation(); e.preventDefault(); } }}
+      style={{
       display: "flex", alignItems: "center", justifyContent: "center", minWidth: 0, height: headH, padding: "0 4px", boxSizing: "border-box",
       fontSize: 11, fontWeight: 700, color: WBS_COLORS.headText, borderRight: "1px solid rgba(255,255,255,0.18)",
       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+      // ドラッグで見出しの文字が選択されないようにする
+      userSelect: "none", cursor: c.key === "check" ? undefined : "grab",
+      // ドラッグ中の列は、元の位置を薄くする
+      opacity: colDrag?.key === c.key ? 0.35 : 1,
       ...(side === "right" ? { flex: `0 0 ${c.width}px`, width: c.width } : null),
     }}>
       {c.key === "check" ? (
@@ -954,6 +1078,18 @@ export function WbsTable({
       {/* ドラッグ中の落とし先。離すとここが新しい固定の線になる */}
       {freezeDrag && (
         <div style={{ position: "absolute", top: 0, bottom: 0, left: freezeDrag.left - 2, width: 4, zIndex: Z_COL_HEAD + 2, background: "#059669", borderRadius: 2, pointerEvents: "none", boxShadow: "0 0 0 3px rgba(5,150,105,0.18)" }} />
+      )}
+      {/* 列の見出しのドラッグ中：落とす先の境目（固定の線のドラッグと同じ見た目）と、ポインタに追従する見出し */}
+      {colDrag && colDrag.lineLeft !== null && (
+        <div style={{ position: "absolute", top: 0, bottom: 0, left: colDrag.lineLeft - 2, width: 4, zIndex: Z_COL_HEAD + 2, background: "#059669", borderRadius: 2, pointerEvents: "none", boxShadow: "0 0 0 3px rgba(5,150,105,0.18)" }} />
+      )}
+      {colDrag && (
+        <div style={{ position: "absolute", top: 0, left: colDrag.ghostLeft, width: colDrag.width, height: headH, zIndex: Z_COL_HEAD + 3, pointerEvents: "none",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", boxSizing: "border-box",
+          fontSize: 11, fontWeight: 700, color: WBS_COLORS.headText, background: WBS_COLORS.headBg, opacity: 0.7,
+          borderRadius: 4, boxShadow: "0 4px 12px rgba(15,23,42,0.25)", whiteSpace: "nowrap", overflow: "hidden" }}>
+          {colDrag.label}
+        </div>
       )}
 
       {/* 左の枠：固定した列。横スクロールなしで枠の幅に収める */}
