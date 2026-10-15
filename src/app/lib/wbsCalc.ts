@@ -1,8 +1,27 @@
 // ENHA2-053 WBS（作業分解表）の画面側の計算。
 //
 // 進捗率の自動計算・予定日数・遅延の判定は DB に保存せず、ここで行のデータから計算する。
-// ステータスの名前は利用者が自由に変えられるので、判定をステータスの名前に頼らないこと。
+// BRU20-015 既定のステータス（WBS_DEFAULT_STATUS_NAMES の6つ）は名前を変更できないので、
+// その名前で判定してよい。利用者が後から足したステータスは名前が変わりうるので、名前で判定しないこと。
 import type { WbsItem, WbsStatus } from "@/app/types";
+
+// ── 既定のステータス ──────────────────────────────────────────
+
+/**
+ * 既定のステータスの名前。ステータス設定で名前を変更できない（色・並べ替え・削除はできる）。
+ * 新しいWBSの既定ステータス（wbsService.DEFAULT_WBS_STATUSES）もこの6つ。
+ */
+export const WBS_DEFAULT_STATUS_NAMES = ["未着手", "着手中", "進行中", "完了", "取下", "保留"] as const;
+
+/** 名前を変更できない既定のステータスか */
+export function isWbsDefaultStatusName(name: string): boolean {
+  return (WBS_DEFAULT_STATUS_NAMES as readonly string[]).includes(name);
+}
+
+/** 遅延として扱わないステータスか（取下） */
+export function isWbsDelayExemptStatus(name: string): boolean {
+  return name === "取下";
+}
 
 // ── 日付 ──────────────────────────────────────────────────────
 
@@ -66,15 +85,22 @@ export interface WbsRow {
    * 一番右の段の行すべての平均（中項目の平均の平均にはしない）。下に行が無ければ null（「—」）。
    */
   progress: number | null;
-  /** 終了予定日を過ぎていて進捗率が100%でない */
+  /** 終了予定日を過ぎていて進捗率が100%でない。取下の行（見出し行は配下の一番右の段がすべて取下）は除く */
   delayed: boolean;
+  /** 取下の行か。見出し行は、配下に一番右の段の行が1つ以上あり、すべて取下のとき true */
+  withdrawn: boolean;
 }
 
 /**
  * 行を親と段の情報から木の形に組み立て、上から順に並べる。
  * levels はそのWBSの段数（1〜3）。一番右の段＝ level === levels の行。
+ * statuses はそのWBSのステータス（並び順）。取下の行を遅延から外すのに使う。
+ * ステータスを選んでいない行は、表の表示と同じく先頭のステータスとして扱う。
  */
-export function buildWbsRows(items: WbsItem[], levels: number, today: string): WbsRow[] {
+export function buildWbsRows(items: WbsItem[], levels: number, today: string, statuses: WbsStatus[]): WbsRow[] {
+  const nameOf = new Map(statuses.map(s => [s.id, s.name]));
+  const fallback = statuses[0]?.name ?? "";
+  const isWithdrawn = (it: WbsItem) => isWbsDelayExemptStatus((it.statusId && nameOf.get(it.statusId)) || fallback);
   const byParent = new Map<string | null, WbsItem[]>();
   const ids = new Set(items.map(i => i.id));
   for (const it of items) {
@@ -90,8 +116,8 @@ export function buildWbsRows(items: WbsItem[], levels: number, today: string): W
   const rows: WbsRow[] = [];
   let group = -1;
 
-  // 戻り値: その行から下にある「一番右の段の行」の進捗率の一覧と、下の行の数
-  const walk = (it: WbsItem, ancestors: string[]): { leaves: number[]; count: number } => {
+  // 戻り値: その行から下にある「一番右の段の行」の進捗率の一覧と、そのうち取下でない行の数、下の行の数
+  const walk = (it: WbsItem, ancestors: string[]): { leaves: number[]; active: number; count: number } => {
     if (ancestors.length === 0) group++;
     const names: (string | null)[] = [null, null, null];
     ancestors.forEach((n, i) => { names[i] = n; });
@@ -100,22 +126,25 @@ export function buildWbsRows(items: WbsItem[], levels: number, today: string): W
     const isLeafLevel = it.level >= levels;
     const row: WbsRow = {
       item: it, no: rows.length + 1, names, group,
-      descendantCount: 0, isLeafLevel, progress: null, delayed: false,
+      descendantCount: 0, isLeafLevel, progress: null, delayed: false, withdrawn: false,
     };
     rows.push(row);
 
     const leaves: number[] = isLeafLevel ? [it.progress] : [];
+    let active = isLeafLevel && !isWithdrawn(it) ? 1 : 0;
     let count = 0;
     for (const child of byParent.get(it.id) ?? []) {
       const r = walk(child, [...ancestors, it.name]);
       count += 1 + r.count;
-      if (!isLeafLevel) leaves.push(...r.leaves);
+      if (!isLeafLevel) { leaves.push(...r.leaves); active += r.active; }
     }
     row.descendantCount = count;
+    // 進捗率は取下の行も含めて出す（集計と同じ）。外すのは遅延の判定だけ
     row.progress = leaves.length ? Math.round(leaves.reduce((a, b) => a + b, 0) / leaves.length) : null;
+    row.withdrawn = leaves.length > 0 && active === 0;
     // 進捗率が出せない行（下に行が無い左の段）は、遅延の判定をしない
-    row.delayed = !!it.endDate && it.endDate < today && row.progress !== null && row.progress < 100;
-    return { leaves, count };
+    row.delayed = !row.withdrawn && !!it.endDate && it.endDate < today && row.progress !== null && row.progress < 100;
+    return { leaves, active, count };
   };
 
   for (const top of byParent.get(null) ?? []) walk(top, []);
@@ -278,8 +307,8 @@ export type WbsMasterStatus = "未着手" | "着手中" | "完了" | "完了（�
 
 /**
  * 一番右の段の行のステータスを、判定用の4種類に分ける。
- * ステータスは名前を自由に変えられるので、はじめに作られる5つの名前で見分ける。
- * それ以外の名前（「レビュー中」など、利用者が足したもの）は、作業中とみなして「着手中」に数える。
+ * 名前を変更できない既定のステータス（WBS_DEFAULT_STATUS_NAMES）の名前で見分ける。
+ * 「着手中」「進行中」と、それ以外の名前（「レビュー中」など、利用者が足したもの）は、作業中とみなして「着手中」に数える。
  */
 function leafStatusKind(name: string): "notStarted" | "inProgress" | "done" | "hold" {
   if (name === "未着手") return "notStarted";

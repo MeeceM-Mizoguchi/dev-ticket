@@ -82,7 +82,7 @@ export function WbsMasterSchedulePage() {
 
   const today = todayStr();
   const rows = useMemo(
-    () => (sheet ? buildWbsMasterRows(buildWbsRows(items, sheet.levels, today), statuses) : []),
+    () => (sheet ? buildWbsMasterRows(buildWbsRows(items, sheet.levels, today, statuses), statuses) : []),
     [items, sheet, today, statuses],
   );
   const statusColors = useMemo(() => new Map(statuses.map(s => [s.name, s.color])), [statuses]);
