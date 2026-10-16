@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 // 表の列見出し。押すと「昇順／降順／並び替えをクリア」と、その列の値のチェックボックス一覧が出る。
 // スプリント一覧(SprintListView)とチケット一覧検索(TicketSearchResults)とWBSの表で同じものを使う。
@@ -11,14 +11,25 @@ import { ChevronDown } from "lucide-react";
 //   onDark           … 紺色の見出しの上に置くので、見出しの文字を白にする
 //   portal           … 一覧を document.body に出す（見出しのセルが overflow で切る作りでも見えるように）。
 //                      外を押す・一覧の外でスクロールする・画面の大きさが変わると閉じる
+//   groups           … 値を段のまとまりで出す（WBSの「項目」の大項目・中項目・小項目。BRU20-016）。
+//                      一覧には段だけが並び、段にマウスを乗せる（押す）とその段の候補がサブメニューで開く。
+//                      検索欄と「すべて」はサブメニューの中に出す。portal と一緒に使う
+//                      （サブメニューも document.body へ出す）。渡さなければ今までどおりの平たい一覧
 
 export interface ColumnFilterOption { value: string; label: string }
+/** 段のまとまり。value は全部の段を通して重ならないこと（selected は1つの Set で持つため） */
+export interface ColumnFilterGroup { key: string; label: string; options: ColumnFilterOption[] }
+
+/** 段とサブメニューの間をマウスが通るあいだ、閉じる・切り替えるのを待つ時間 */
+const SUBMENU_DELAY = 150;
+/** 一覧（サブメニュー）の最大幅 */
+const PANEL_MAX_W = 360;
 
 export function ColumnFilter<C extends string>({
   col, label, sortCol = "", sortDir = "asc", onSort, onClearSort,
   options, selected, onFilterChange,
   open, onToggle, onClose, alignRight,
-  sortable = true, onDark = false, portal = false,
+  sortable = true, onDark = false, portal = false, groups,
 }: {
   col: C;
   label: string;
@@ -36,6 +47,7 @@ export function ColumnFilter<C extends string>({
   sortable?: boolean;
   onDark?: boolean;
   portal?: boolean;
+  groups?: ColumnFilterGroup[];
 }) {
   const [search, setSearch] = useState("");
   useEffect(() => { if (!open) setSearch(""); }, [open]);
@@ -45,12 +57,43 @@ export function ColumnFilter<C extends string>({
   /** portal のときの一覧の位置（見出しの下端に合わせる） */
   const [portalPos, setPortalPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
 
+  // ── 段のメニュー（groups を渡したときだけ） ──
+  /** サブメニューを開いている段 */
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const groupRowRefs = useRef(new Map<string, HTMLElement>());
+  const subRef = useRef<HTMLDivElement>(null);
+  const [subPos, setSubPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
+  const hoverTimerRef = useRef<number | undefined>(undefined);
+  const clearHoverTimer = () => { window.clearTimeout(hoverTimerRef.current); hoverTimerRef.current = undefined; };
+  /** 少し待ってから開く段を変える。待つあいだに段かサブメニューへ入れば取り消す */
+  const switchGroupLater = (key: string | null) => {
+    clearHoverTimer();
+    hoverTimerRef.current = window.setTimeout(() => setOpenGroup(key), SUBMENU_DELAY);
+  };
+  useEffect(() => { if (!open) { clearHoverTimer(); setOpenGroup(null); } }, [open]);
+  useEffect(() => () => clearHoverTimer(), []);
+  // 段を移ったら、検索欄は空からにする
+  useEffect(() => { setSearch(""); }, [openGroup]);
+
+  // サブメニューは段の行の右に出す。画面の右端に入らないときは一覧の左側へ出す
+  useLayoutEffect(() => {
+    const row = openGroup ? groupRowRefs.current.get(openGroup) : undefined;
+    const pr = panelRef.current?.getBoundingClientRect();
+    if (!row || !pr) { setSubPos(null); return; }
+    const rr = row.getBoundingClientRect();
+    // 下にはみ出さないよう、サブメニューの高さ（おおよそ 300px）ぶん上へ寄せる
+    const top = Math.max(8, Math.min(rr.top - 7, window.innerHeight - 300));
+    setSubPos(pr.right + 4 + PANEL_MAX_W > window.innerWidth - 8
+      ? { top, right: Math.max(8, window.innerWidth - pr.left + 4) }
+      : { top, left: pr.right + 4 });
+  }, [openGroup, portalPos]);
+
   useLayoutEffect(() => {
     if (!portal || !open) { setPortalPos(null); return; }
     const r = rootRef.current?.getBoundingClientRect();
     if (!r) return;
     // 右に入りきらないとき（一覧の最大幅 360px）は、見出しの右端に揃える
-    const toRight = alignRight || r.left + 360 > window.innerWidth - 8;
+    const toRight = alignRight || r.left + PANEL_MAX_W > window.innerWidth - 8;
     setPortalPos(toRight ? { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) } : { top: r.bottom + 6, left: Math.max(8, r.left) });
   }, [portal, open, alignRight]);
 
@@ -58,10 +101,12 @@ export function ColumnFilter<C extends string>({
   useEffect(() => {
     if (!portal || !open) return;
     const inside = (t: EventTarget | null) =>
-      t instanceof Node && (!!panelRef.current?.contains(t) || !!rootRef.current?.contains(t));
+      t instanceof Node && (!!panelRef.current?.contains(t) || !!rootRef.current?.contains(t) || !!subRef.current?.contains(t));
     const onDown = (e: MouseEvent) => { if (!inside(e.target)) onClose(); };
     // 一覧の中のスクロールでは閉じない
-    const onScroll = (e: Event) => { if (!(e.target instanceof Node && panelRef.current?.contains(e.target))) onClose(); };
+    const onScroll = (e: Event) => {
+      if (!(e.target instanceof Node && (panelRef.current?.contains(e.target) || subRef.current?.contains(e.target)))) onClose();
+    };
     document.addEventListener("mousedown", onDown);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onClose);
@@ -80,7 +125,9 @@ export function ColumnFilter<C extends string>({
   const markColor = onDark ? "#6EE7B7" : "#059669";
   const chevronColor = onDark ? (active ? "#6EE7B7" : "rgba(255,255,255,0.7)") : active ? "#059669" : "#C9C4BB";
 
-  const filteredOptions = options.filter(opt =>
+  // 段のメニューでは、いま開いている段の候補だけを検索・「すべて」の対象にする
+  const listOptions = groups ? (groups.find(g => g.key === openGroup)?.options ?? []) : options;
+  const filteredOptions = listOptions.filter(opt =>
     search === "" || opt.label.toLowerCase().includes(search.toLowerCase())
   );
   const allFilteredChecked = filteredOptions.length > 0 && filteredOptions.every(o => selected.has(o.value));
@@ -105,43 +152,16 @@ export function ColumnFilter<C extends string>({
     ? { position: "fixed", top: portalPos?.top ?? 0, left: portalPos?.left ?? "auto", right: portalPos?.right ?? "auto", zIndex: 9999 }
     : { position: "absolute", top: "calc(100% + 6px)", left: alignRight ? "auto" : 0, right: alignRight ? 0 : "auto", zIndex: 200 };
 
-  const panel = (
-    <div ref={panelRef}
-      onClick={e => e.stopPropagation()}
-      onWheel={e => e.stopPropagation()}
-      style={{
-        ...panelPlace,
-        background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", minWidth: 190, maxWidth: 360,
-        // 見出しのセルの文字の設定（太字・中央寄せ・nowrap）を、body へ出した一覧に持ち込まない
-        ...(portal ? { fontWeight: 400, textAlign: "left", whiteSpace: "normal" } : null),
-      }}>
-      {sortable && (
-        <>
-          <button onClick={() => { onSort?.(col, "asc"); onClose(); }} style={{
-            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
-            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
-            background: isSorted && sortDir === "asc" ? "#ECFDF5" : "transparent",
-            color: isSorted && sortDir === "asc" ? "#059669" : "#1A1714", transition: "background 0.1s",
-          }}>↑ 昇順</button>
-          <button onClick={() => { onSort?.(col, "desc"); onClose(); }} style={{
-            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
-            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
-            background: isSorted && sortDir === "desc" ? "#ECFDF5" : "transparent",
-            color: isSorted && sortDir === "desc" ? "#059669" : "#1A1714", transition: "background 0.1s",
-          }}>↓ 降順</button>
-          {isSorted && (
-            <button onClick={() => { onClearSort?.(); onClose(); }} style={{
-              display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
-              borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11,
-              background: "transparent", color: "#B0A9A4", textAlign: "left" as const,
-            }}>並び替えをクリア</button>
-          )}
+  const panelBox: CSSProperties = {
+    background: "#fff", borderRadius: 10, border: "1px solid rgba(26,23,20,0.10)",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "6px", minWidth: 190, maxWidth: PANEL_MAX_W,
+  };
+  // 見出しのセルの文字の設定（太字・中央寄せ・nowrap）を、body へ出した一覧に持ち込まない
+  const resetHeadText: CSSProperties = { fontWeight: 400, textAlign: "left", whiteSpace: "normal" };
 
-          <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
-        </>
-      )}
-
+  /** 検索欄・「すべて」・候補のチェックボックス一覧。段のメニューではサブメニューの中に出す */
+  const optionList = (
+    <>
       <div style={{ padding: "2px 4px 4px" }}>
         <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
           onClick={e => e.stopPropagation()} placeholder="検索..."
@@ -181,6 +201,93 @@ export function ColumnFilter<C extends string>({
           );
         })}
       </div>
+    </>
+  );
+
+  /** 段の行。マウスを乗せる（押す）とその段のサブメニューが開く。選んでいる段には件数を出す */
+  const groupRows = groups && groups.map(g => {
+    const count = g.options.reduce((n, o) => n + (selected.has(o.value) ? 1 : 0), 0);
+    const isOpen = openGroup === g.key;
+    return (
+      <button key={g.key}
+        ref={el => { if (el) groupRowRefs.current.set(g.key, el); else groupRowRefs.current.delete(g.key); }}
+        onMouseEnter={() => {
+          // 何も開いていなければすぐ開く。別の段が開いているときは、サブメニューへ向かう途中で
+          // この段を横切っただけかもしれないので、少し待ってから切り替える
+          if (openGroup === null) { clearHoverTimer(); setOpenGroup(g.key); }
+          else if (isOpen) clearHoverTimer();
+          else switchGroupLater(g.key);
+        }}
+        onMouseLeave={() => switchGroupLater(null)}
+        // マウスを乗せられない Mac/iPad アプリでは、押して開く
+        onClick={() => { clearHoverTimer(); setOpenGroup(g.key); }}
+        style={{
+          display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+          borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+          background: isOpen ? "#F3F4F6" : "transparent",
+          color: count > 0 ? "#059669" : "#1A1714", fontWeight: count > 0 ? 600 : 400, transition: "background 0.1s",
+        }}>
+        <span style={{ flex: 1 }}>{g.label}</span>
+        {count > 0 && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: "#059669", borderRadius: 999, padding: "1px 6px", lineHeight: 1.4 }}>{count}件</span>
+        )}
+        <ChevronRight style={{ width: 12, height: 12, color: isOpen ? "#1A1714" : "#B0A9A4", flexShrink: 0 }} />
+      </button>
+    );
+  });
+
+  /** 段のサブメニュー。親の一覧と同じく body へ出す */
+  const submenu = groups && openGroup && subPos && createPortal(
+    <div ref={subRef}
+      onClick={e => e.stopPropagation()}
+      onWheel={e => e.stopPropagation()}
+      onMouseEnter={clearHoverTimer}
+      onMouseLeave={() => switchGroupLater(null)}
+      style={{
+        position: "fixed", top: subPos.top, left: subPos.left ?? "auto", right: subPos.right ?? "auto", zIndex: 10000,
+        ...panelBox, ...resetHeadText,
+      }}>
+      {optionList}
+    </div>,
+    document.body,
+  );
+
+  const panel = (
+    <div ref={panelRef}
+      onClick={e => e.stopPropagation()}
+      onWheel={e => e.stopPropagation()}
+      style={{
+        ...panelPlace,
+        ...panelBox,
+        ...(portal ? resetHeadText : null),
+      }}>
+      {sortable && (
+        <>
+          <button onClick={() => { onSort?.(col, "asc"); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+            background: isSorted && sortDir === "asc" ? "#ECFDF5" : "transparent",
+            color: isSorted && sortDir === "asc" ? "#059669" : "#1A1714", transition: "background 0.1s",
+          }}>↑ 昇順</button>
+          <button onClick={() => { onSort?.(col, "desc"); onClose(); }} style={{
+            display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 8px",
+            borderRadius: 7, border: "none", cursor: "pointer", fontSize: 12, textAlign: "left" as const,
+            background: isSorted && sortDir === "desc" ? "#ECFDF5" : "transparent",
+            color: isSorted && sortDir === "desc" ? "#059669" : "#1A1714", transition: "background 0.1s",
+          }}>↓ 降順</button>
+          {isSorted && (
+            <button onClick={() => { onClearSort?.(); onClose(); }} style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "5px 8px",
+              borderRadius: 7, border: "none", cursor: "pointer", fontSize: 11,
+              background: "transparent", color: "#B0A9A4", textAlign: "left" as const,
+            }}>並び替えをクリア</button>
+          )}
+
+          <div style={{ borderTop: "1px solid rgba(26,23,20,0.06)", margin: "4px 0" }} />
+        </>
+      )}
+
+      {groups ? groupRows : optionList}
 
       {isFiltered && (
         <>
@@ -190,6 +297,7 @@ export function ColumnFilter<C extends string>({
           </button>
         </>
       )}
+      {submenu}
     </div>
   );
 
