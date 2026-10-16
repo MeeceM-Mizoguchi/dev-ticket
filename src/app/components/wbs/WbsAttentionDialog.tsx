@@ -24,13 +24,14 @@ export interface WbsAttention {
 /**
  * お知らせに出す行を集める。対象は一番右の段の行だけ（集計の件数と同じ範囲）。
  * 遅延の判定は buildWbsRows の delayed をそのまま使う（表の赤い行と食い違わないように）。
- * 着手したかは、着手日の欄が無く、ステータスの名前も自由に変えられるので、進捗率で見る。
+ * 着手したかは、着手日の欄が無く、利用者が足したステータスは名前が変わりうるので、進捗率で見る。
+ * 取下の行は、遅延にも未着手にも出さない（BRU20-015）。
  */
 export function collectWbsAttention(rows: WbsRow[], today: string): WbsAttention {
   const delayed: WbsAttentionRow[] = [];
   const notStarted: WbsAttentionRow[] = [];
   for (const row of rows) {
-    if (!row.isLeafLevel) continue;
+    if (!row.isLeafLevel || row.withdrawn) continue;
     const ns = !!row.item.startDate && row.item.startDate <= today && row.item.progress === 0;
     if (row.delayed) delayed.push({ row, notStarted: ns });
     else if (ns) notStarted.push({ row, notStarted: true });

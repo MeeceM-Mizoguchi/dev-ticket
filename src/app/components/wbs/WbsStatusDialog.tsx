@@ -3,13 +3,16 @@
 // WBSごとのステータスを追加・削除・名前変更・色変更・並べ替えする。
 // 変更は1件ずつその場で保存し、表のプルダウンと色にすぐ反映する。
 // チケットのステータス（未着手・進行中・レビュー中など）とは別のもので、互いに影響しない。
+// BRU20-015 既定のステータス（未着手・着手中・進行中・完了・取下・保留）は遅延などの判定に名前を使うので、
+// 名前だけ変更できない（色・並べ替え・削除はできる）。
 import { useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Lock, Plus, Trash2 } from "lucide-react";
 import { DialogShell } from "@/app/components/shared/DialogShell";
 import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { submitOnEnter } from "@/app/lib/submitKey";
 import { PickerCell } from "@/app/components/tasks/TaskPickerCell";
 import { WBS_SORT_GAP, createWbsStatus, deleteWbsStatus, reorderWbsStatuses, updateWbsStatus } from "@/app/lib/wbsService";
+import { isWbsDefaultStatusName } from "@/app/lib/wbsCalc";
 import type { WbsItem, WbsStatus } from "@/app/types";
 
 const NEW_STATUS_COLOR = "#E0F2FE";
@@ -33,8 +36,11 @@ function StatusRow({ status, usedCount, isFirst, isLast, isOnly, busy, onRename,
   const [name, setName] = useState(status.name);
   const [color, setColor] = useState(status.color);
   const [error, setError] = useState<string | null>(null);
+  // 既定のステータスは名前で判定に使うので、名前を変えさせない
+  const locked = isWbsDefaultStatusName(status.name);
 
   const commitName = async () => {
+    if (locked) return;
     const trimmed = name.trim();
     if (trimmed === status.name) { setName(trimmed); setError(null); return; }
     const err = await onRename(trimmed);
@@ -56,11 +62,19 @@ function StatusRow({ status, usedCount, isFirst, isLast, isOnly, busy, onRename,
           onChange={e => setColor(e.target.value)}
           onBlur={() => { if (color !== status.color) onRecolor(color); }}
           style={colorInput} />
-        <input value={name} onChange={e => { setName(e.target.value); setError(null); }} maxLength={30} aria-label="ステータスの名前"
-          onBlur={commitName}
-          // Enter は欄から抜けるだけ。保存は blur 側の1か所で行う（二重に保存しないため）
-          onKeyDown={submitOnEnter(() => (document.activeElement as HTMLElement | null)?.blur())}
-          style={{ ...nameInput, borderColor: error ? "#DC2626" : "rgba(26,23,20,0.14)" }} />
+        {locked ? (
+          <div title="既定のステータスは、遅延などの判定に名前を使うため変更できません（色・並べ替え・削除はできます）"
+            style={{ ...nameInput, display: "flex", alignItems: "center", gap: 6, color: "#6B6458", background: "#F7F5F2", cursor: "default" }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status.name}</span>
+            <Lock aria-label="名前は変更できません" style={{ width: 12, height: 12, color: "#A09790", flexShrink: 0 }} />
+          </div>
+        ) : (
+          <input value={name} onChange={e => { setName(e.target.value); setError(null); }} maxLength={30} aria-label="ステータスの名前"
+            onBlur={commitName}
+            // Enter は欄から抜けるだけ。保存は blur 側の1か所で行う（二重に保存しないため）
+            onKeyDown={submitOnEnter(() => (document.activeElement as HTMLElement | null)?.blur())}
+            style={{ ...nameInput, borderColor: error ? "#DC2626" : "rgba(26,23,20,0.14)" }} />
+        )}
         <span style={{ width: 56, textAlign: "right", fontSize: 11, color: "#A09790", flexShrink: 0 }}>{usedCount}行</span>
         <button type="button" onClick={onAskDelete} disabled={isOnly || busy}
           title={isOnly ? "最後の1つは削除できません" : "削除"}
@@ -129,6 +143,7 @@ export function WbsStatusDialog({ sheetId, statuses, items, onChanged, onClose }
   };
 
   const handleRename = async (status: WbsStatus, name: string): Promise<string | null> => {
+    if (isWbsDefaultStatusName(status.name)) return "既定のステータスは名前を変更できません。";
     const err = validateName(name, status.id);
     if (err) return err;
     const ok = await run(() => updateWbsStatus(status.id, { name }), "名前を変更できませんでした。");
@@ -167,6 +182,10 @@ export function WbsStatusDialog({ sheetId, statuses, items, onChanged, onClose }
       footer={<BtnSecondary onClick={onClose} disabled={busy}>閉じる</BtnSecondary>}>
       <p style={{ fontSize: 12, color: "#6B6458", lineHeight: 1.7 }}>
         このWBSで使うステータスです。変更はすぐに表へ反映されます。チケットのステータスとは別のもので、互いに影響しません。
+      </p>
+      <p style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#A09790", lineHeight: 1.6 }}>
+        <Lock style={{ width: 11, height: 11, flexShrink: 0 }} />
+        既定のステータス（未着手・着手中・進行中・完了・取下・保留）は、遅延などの判定に名前を使うため名前を変更できません。色・並べ替え・削除はできます。
       </p>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

@@ -180,7 +180,7 @@ export function WbsWorkspace({ sheet, project, canEdit, tickets, onOpenTicket, h
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
 
   const today = todayStr();
-  const rows = useMemo(() => buildWbsRows(items, sheet.levels, today), [items, sheet.levels, today]);
+  const rows = useMemo(() => buildWbsRows(items, sheet.levels, today, statuses), [items, sheet.levels, today, statuses]);
   // 休日は「日付 → 休日名」。予定日数とガントの両方で、土日と同じく稼働日から除く
   const holidayNames = useMemo(() => new Map(holidays.map(h => [h.date, h.name])), [holidays]);
   const holidaySet = useMemo(() => new Set(holidays.map(h => h.date)), [holidays]);
