@@ -580,6 +580,7 @@ export function WbsTable({
   const rootRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
+  const rightInnerRef = useRef<HTMLDivElement>(null);
   const [viewH, setViewH] = useState(0);
   /** 右の枠の横スクロールバーの高さ。左の枠の下に同じだけ余白を足して、縦の移動量を揃える */
   const [hBarH, setHBarH] = useState(0);
@@ -623,6 +624,9 @@ export function WbsTable({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     if (rightRef.current) ro.observe(rightRef.current);
+    // 右の枠の中身の幅・高さが変わると、枠の大きさは同じでも横スクロールバーが出たり消えたりする。
+    // その高さぶんを左の枠の下に足しているので、中身が変わったときも測り直す（古いままだと下端でずれる）
+    if (rightInnerRef.current) ro.observe(rightInnerRef.current);
     return () => ro.disconnect();
   }, []);
 
@@ -723,27 +727,48 @@ export function WbsTable({
   const fillerCount = Math.max(canEdit ? 1 : 0, Math.ceil((viewH - headH) / WBS_ROW_H) - display.length);
 
   // ── 縦スクロールの同期 ──
-  // 相手の枠を合わせるのは、「いま利用者が動かしている側」の枠から届いた通知のときだけにする。
+  // 片方の枠が動いたら、もう片方へ同じ位置を書き込む。書き込んだ側から返ってくる通知（こだま）は、
+  // 「直前にこちらが書き込んだ値と同じ」ときだけ無視する。値が違えば、その枠が自分で動いた
+  // （ホイール・なめらかなスクロールの続き・行数が減って戻された 等）ということなので、必ず相手へ伝える。
   //
   // 以前は、左右どちらの通知でも「ずれていたら相手に合わせる」をしていた。すると、
   //   左をホイールで動かす → 右を合わせる → 右の通知が少し遅れて届く →
   //   その間に左は先へ進んでいるので「ずれている」と判定 → 左を古い位置へ引き戻す
   // となり、位置を書き換えた時点でブラウザのなめらかなスクロールも打ち切られて、
   // ホイール1回ぶんが数pxしか進まなかった（たくさん回さないとスクロールしない）。
-  // 動かしている側を決めておけば、合わせられた側の通知は無視できるので、引き戻しが起きない。
-  const activePaneRef = useRef<"left" | "right" | null>(null);
-  /** ホイール・押下・タッチ・フォーカスが来た枠を「動かしている側」にする */
-  const paneHandlers = (pane: "left" | "right") => {
-    const activate = () => { activePaneRef.current = pane; };
-    return { onWheel: activate, onPointerDown: activate, onTouchStart: activate, onFocus: activate };
+  // こだまは値で見分けて捨てるので、この引き戻しは起きない。
+  // その次に入れた「動かしている側を覚える」方式は、覚えた側が戻らないため、反対側が自分で動いたぶんが
+  // 伝わらず、左右がずれたまま残っていた（BRU20-017）。
+  /** 各枠へ最後に書き込んだ位置。書き込み後に読み直した値（相手の上限で丸められた値）を控える */
+  const echoRef = useRef<{ left: number | null; right: number | null }>({ left: null, right: null });
+  const syncFrameRef = useRef<{ id: number; from: "left" | "right" } | null>(null);
+  const paneOf = (side: "left" | "right") => (side === "left" ? leftRef.current : rightRef.current);
+  /** 枠に位置を書き込み、こだまとして無視する値を控える。実際に動かなかったときは控えない（こだまが来ないため） */
+  const writePane = (side: "left" | "right", top: number) => {
+    const el = paneOf(side);
+    if (!el || Math.abs(el.scrollTop - top) < 1) return;
+    const before = el.scrollTop;
+    el.scrollTop = top;
+    echoRef.current[side] = el.scrollTop === before ? null : el.scrollTop;
   };
   const syncScroll = (from: "left" | "right") => {
-    // 動かしている側ではない枠の通知は、こちらが合わせた結果なので何もしない
-    if (activePaneRef.current && activePaneRef.current !== from) return;
-    const a = from === "left" ? leftRef.current : rightRef.current;
-    const b = from === "left" ? rightRef.current : leftRef.current;
-    if (a && b && b.scrollTop !== a.scrollTop) b.scrollTop = a.scrollTop;
+    const el = paneOf(from);
+    if (!el) return;
+    const echo = echoRef.current[from];
+    echoRef.current[from] = null;
+    // こちらが書き込んだ結果の通知なので、相手へ返さない
+    if (echo !== null && Math.abs(el.scrollTop - echo) < 1) return;
+    // 書き込みは1フレームに1回へまとめる。同じフレームで両方が動いたら、後から動いた側に合わせる
+    if (syncFrameRef.current) { syncFrameRef.current.from = from; return; }
+    const frame = { id: 0, from };
+    frame.id = requestAnimationFrame(() => {
+      syncFrameRef.current = null;
+      const src = paneOf(frame.from);
+      if (src) writePane(frame.from === "left" ? "right" : "left", src.scrollTop);
+    });
+    syncFrameRef.current = frame;
   };
+  useEffect(() => () => { if (syncFrameRef.current) cancelAnimationFrame(syncFrameRef.current.id); }, []);
 
   // ── 指定の行までスクロール ──
   // 閉じた見出し行の下にある行なら、先に上の見出し行を開く。開いた結果が画面に並んでから動かす
@@ -771,14 +796,12 @@ export function WbsTable({
       // まとまり全体が収まるなら、まとまりを中央に。収まらないなら、大項目の行を上端の少し下に置く
       const spanH = focusSpan.count * WBS_ROW_H;
       const target = spanH <= visibleH - WBS_ROW_H ? top - (visibleH - spanH) / 2 : top - WBS_ROW_H / 2;
-      activePaneRef.current = "left";
       el.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
       return;
     }
     if (pending.smooth) {
       // 左の枠だけをなめらかに動かし、右の枠は左の onScroll の同期でついてこさせる
       // （両方を別々になめらかに動かすと、途中で左右の行がずれる）
-      activePaneRef.current = "left";
       el.scrollTo({ top: Math.max(0, top - Math.max(0, (visibleH - WBS_ROW_H) / 2)), behavior: "smooth" });
       return;
     }
@@ -786,10 +809,22 @@ export function WbsTable({
     const pinnedH = Math.max(0, Math.min(levels - 1, 2)) * WBS_ROW_H;
     if (top < el.scrollTop + pinnedH || top + WBS_ROW_H > el.scrollTop + visibleH) {
       el.scrollTop = Math.max(0, top - pinnedH - Math.max(0, (visibleH - pinnedH - WBS_ROW_H) / 2));
-      // こちらで動かしたときは、右の枠も直接そろえる（右が「動かしている側」だと、左の通知は無視されるため）
-      if (rightRef.current) rightRef.current.scrollTop = el.scrollTop;
+      // 右の枠も同じフレームでそろえる（左の通知を待つと1フレームだけ左右がずれて見える）
+      writePane("right", el.scrollTop);
     }
   }, [display, scrollTo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 並びや大きさが変わったあとの、左右のそろえ直し ──
+  // 行数が減って下端を越えると、ブラウザは左右それぞれを自分の上限まで戻す。戻し方が左右で違うと
+  // 通知の届き方しだいでずれが残るので、描き終えたあとに、低いほう（＝両方が届く位置）へ両方をそろえる
+  useLayoutEffect(() => {
+    const l = leftRef.current, r = rightRef.current;
+    if (!l || !r || Math.abs(l.scrollTop - r.scrollTop) < 1) return;
+    const top = Math.min(l.scrollTop, r.scrollTop);
+    writePane("left", top);
+    writePane("right", top);
+    moveFocusFrame();
+  }, [display, cols, freezeIdx, gantt, viewH, hBarH]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── ドラッグで並べ替え ──
   const [dragId, setDragId] = useState<string | null>(null);
@@ -1095,9 +1130,10 @@ export function WbsTable({
       )}
 
       {/* 左の枠：固定した列。横スクロールなしで枠の幅に収める */}
-      <div ref={leftRef} onScroll={() => { syncScroll("left"); moveFocusFrame(); }} {...paneHandlers("left")}
+      <div ref={leftRef} onScroll={() => { syncScroll("left"); moveFocusFrame(); }}
         className="wbs-vscroll-hide"
-        style={{ position: "relative", overflowX: "hidden", overflowY: "auto", minWidth: 0,
+        // 上端・下端を越えたときの弾みを止める（片側だけ弾むと左右の行が分かれて見える。contain では止まらない）
+        style={{ position: "relative", overflowX: "hidden", overflowY: "auto", overscrollBehaviorY: "none", minWidth: 0,
           flex: `0 1 ${leftBasis}px`, maxWidth: "70%", borderRight: `2px solid ${WBS_COLORS.headBg}` }}>
         <div style={{ position: "sticky", top: 0, zIndex: Z_COL_HEAD, display: "grid", gridTemplateColumns: leftTemplate, background: WBS_COLORS.headBg }}>
           {frozen.map(c => headCell(c, "left"))}
@@ -1116,10 +1152,11 @@ export function WbsTable({
       </div>
 
       {/* 右の枠：固定していない列とガント。ここだけが横にスクロールする */}
-      <div ref={rightRef} onScroll={() => syncScroll("right")} {...paneHandlers("right")} data-wbs-hpane=""
-        // 端まで送ったあとの横スクロールを、ブラウザの「戻る／進む」へ渡さない
-        style={{ position: "relative", flex: 1, minWidth: 0, overflow: "auto", overscrollBehaviorX: "contain" }}>
-        <div style={{ position: "relative", width: rightWidth, minHeight: "100%" }}>
+      <div ref={rightRef} onScroll={() => syncScroll("right")} data-wbs-hpane=""
+        // 端まで送ったあとの横スクロールを、ブラウザの「戻る／進む」へ渡さない。
+        // 縦は左の枠と同じく、端を越えたときの弾みを止める
+        style={{ position: "relative", flex: 1, minWidth: 0, overflow: "auto", overscrollBehaviorX: "contain", overscrollBehaviorY: "none" }}>
+        <div ref={rightInnerRef} style={{ position: "relative", width: rightWidth, minHeight: "100%" }}>
           {/* 固定した見出し行が、スクロールしたときにこの見出しの上へ出ないよう、それより上に重ねる */}
           <div style={{ position: "sticky", top: 0, zIndex: Z_COL_HEAD, display: "flex", background: WBS_COLORS.headBg }}>
             {scrolling.map(c => headCell(c, "right"))}
