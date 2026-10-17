@@ -226,8 +226,10 @@ export function FileViewerModal({ file, onClose, onDownload, onOpenInApp, onSave
       case "excel": return <ExcelViewer url={url} />;
       case "word": return <WordViewer url={url} />;
       case "image":
-        return <div style={{ height: "100%", overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "#F4F5F6" }}>
-          <img src={url} alt={file.fileName} style={{ maxWidth: "100%", objectFit: "contain" }} />
+        // 縦横とも表示エリアに収める（大きな構成図も全体が見える）。中央寄せは margin:auto で行う。
+        // flex の center だと、はみ出した上側がスクロールで戻れず切れてしまうため。
+        return <div style={{ height: "100%", overflow: "auto", display: "flex", padding: 16, boxSizing: "border-box", background: "#F4F5F6" }}>
+          <img src={url} alt={file.fileName} style={{ margin: "auto", maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
         </div>;
       case "text": return <TextViewer url={url} />;
       default: return <ErrorBox message="この形式はブラウザで表示できません。ダウンロードして開いてください。" />;
