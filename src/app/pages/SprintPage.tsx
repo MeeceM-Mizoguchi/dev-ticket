@@ -7,7 +7,7 @@ import { usePlan } from "@/app/contexts/PlanContext";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { PROJECTS, SPRINTS } from "@/app/data/mock";
 import { mapProject, mapSprint } from "@/app/lib/mappers";
-import type { Project, Sprint, SprintTicket, SprintView, AccessLevel, EnvMemo } from "@/app/types";
+import type { Project, Sprint, SprintTicket, SprintView, AccessLevel } from "@/app/types";
 import { SprintListView } from "@/app/components/sprints/SprintListView";
 import { usePrLinkedTickets } from "@/app/lib/prLinkAlert";
 import SprintBoardView from "@/app/components/sprints/SprintBoardView";
@@ -24,6 +24,7 @@ import type { BulkCreateMode } from "@/app/components/sprints/CreateTicketMenu";
 import { ApiIntegrationDialog } from "@/app/components/tickets/ApiIntegrationDialog";
 import { TicketDetailPanel } from "@/app/components/tickets/TicketDetailPanel";
 import { ProjectSettingsDialog } from "@/app/components/projects/ProjectSettingsDialog";
+import { EnvMemoButton, EnvMemoDialog } from "@/app/components/projects/EnvMemoDialog";
 import { ProjectSubNav } from "@/app/components/layout/ProjectSubNav";
 import { NotFoundView, projectAccessView } from "@/app/components/shared/NotFoundView";
 import { SprintSettingsMenu } from "@/app/components/sprints/SprintSettingsMenu";
@@ -32,38 +33,6 @@ import { fetchSprintOrder, applySprintOrder, saveSprintOrder, type SprintOrderSc
 import { useScrollRestore } from "@/app/hooks/useScrollRestore";
 import { findProjectBySlug } from "@/app/lib/projectResolve";
 import { useCanonicalSlugRedirect } from "@/app/hooks/useCanonicalSlugRedirect";
-
-function EnvMemoTag({ m }: { m: EnvMemo }) {
-  const [open, setOpen] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const show = () => { if (timer.current) clearTimeout(timer.current); setOpen(true); };
-  const hide = () => { timer.current = setTimeout(() => setOpen(false), 120); };
-
-  const chipStyle = { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#0284C7", background: open ? "#E0F2FE" : "#F0F9FF", border: "1px solid rgba(2,132,199,0.2)", borderRadius: 6, padding: "2px 8px", textDecoration: "none", cursor: m.url ? "pointer" : "default" } as const;
-  const icon = m.url
-    ? <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
-    : <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>;
-  const label = m.name || m.url || "メモ";
-
-  return (
-    <div style={{ position: "relative", display: "inline-flex" }} onMouseEnter={show} onMouseLeave={hide}>
-      {m.url ? (
-        <a href={m.url} target="_blank" rel="noopener noreferrer" style={chipStyle}>
-          {icon}{label}
-        </a>
-      ) : (
-        <span style={chipStyle}>{icon}{label}</span>
-      )}
-      {open && m.memo && (
-        <div onMouseEnter={show} onMouseLeave={hide}
-          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 9999, background: "#1A1714", color: "#F9FAFB", borderRadius: 9, padding: "8px 12px", fontSize: 11, lineHeight: 1.6, whiteSpace: "pre-wrap", minWidth: 160, maxWidth: 300, maxHeight: "calc(1.6em * 4 + 16px)", overflowY: "auto", boxShadow: "0 4px 16px rgba(0,0,0,0.28)", userSelect: "text", cursor: "text" }}>
-          {m.name && <div style={{ fontWeight: 700, marginBottom: 4, color: "#D1FAE5", fontSize: 10 }}>{m.name}</div>}
-          {m.memo}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // URLの2セグメント目(例: /PJ/BRU4-016)を「スプリント識別子」と「チケットWBS」に切り分ける。
 // チケット一覧(スプリント詳細)画面を廃止したあとも、配布済みのチケットURLを開けるようにするため
@@ -139,6 +108,7 @@ export function SprintPage() {
   // 並び順の保存中フラグ。連打で「消す→書く」が交錯しないようにする
   const savingOrderRef = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<Sprint | null>(null);
+  const [showEnvMemos, setShowEnvMemos] = useState(false);
   const [editTarget, setEditTarget] = useState<Sprint | null>(null);
   const [myFilterSprintId, setMyFilterSprintId] = useState<string | null>(null);
   const [loading, setLoading] = useState(isSupabaseEnabled);
@@ -412,7 +382,10 @@ export function SprintPage() {
     { mode: "gantt", label: "ガントチャート", Icon: BarChart2 },
   ];
 
-  const ticketSprint = selectedTicket ? sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
+  // 環境メモはモーダルで追加・編集するので、名前だけの行も含めて全件を出す
+  const envMemos = project?.envMemos ?? [];
+
+  const ticketSprint = selectedTicket ?sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
 
   return (
     <div ref={scrollRestoreRef} style={{ minWidth: 1100 }}>
@@ -444,9 +417,8 @@ export function SprintPage() {
             </div>
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
               <p style={{ fontSize: 12, color: "#A09790", margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
-              {project?.envMemos?.filter(m => m.url || m.memo).map((m, i) => (
-                <EnvMemoTag key={i} m={m} />
-              ))}
+              {/* 追加の入口がここだけなので、0件でも出す */}
+              {project && <EnvMemoButton count={envMemos.length} onClick={() => setShowEnvMemos(true)} />}
             </div>
           </div>
           <ProjectSubNav
@@ -580,6 +552,12 @@ export function SprintPage() {
                 refreshSprints();
               }
             }} />
+        )}
+
+        {/* 固定ヘッダー(z-index 200)の中に描くとアプリ上部のバーの下に潜るため、ここに置く */}
+        {showEnvMemos && project && (
+          <EnvMemoDialog projectId={project.id} memos={envMemos}
+            onClose={() => setShowEnvMemos(false)} onSaved={refreshSprints} />
         )}
 
         {deleteTarget && (
