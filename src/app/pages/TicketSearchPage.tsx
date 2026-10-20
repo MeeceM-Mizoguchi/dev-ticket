@@ -45,7 +45,7 @@ const UNASSIGNED_LABEL = "（未割当）";
 export function TicketSearchPage() {
   const { projectSlug } = useParams<{ projectSlug: string }>();
   const navigate = useNavigate();
-  const { userId, userName, userRole, userOrgId } = useAuth();
+  const { userId, userName, userRole, userOrgId, userPermissions } = useAuth();
   const { plan } = usePlan();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -72,6 +72,9 @@ export function TicketSearchPage() {
   const movedAwayRef = useRef<string | null>(null);
 
   const isAdmin = userRole === "owner" || userRole === "admin";
+  // 一括操作の「AIで実装」を使えるか。チケット詳細（TicketDetailPanel）の canEdit と同じ判定にそろえる
+  const ticketDetailPermissions = userRole === "owner" ? userPermissions : (projectPermissions ?? userPermissions);
+  const canAiImplement = isAdmin || userRole === "project-manager" || !!ticketDetailPermissions?.canEditDelete;
 
   const scrollRestoreRef = useScrollRestore(
     projectSlug ? `ticket-search:${projectSlug}` : null,
@@ -212,6 +215,7 @@ export function TicketSearchPage() {
       // 画面に出ている並び（条件・列フィルタ・並び替え適用後）のままで書き出す
       order: visibleRows.map(r => r.ticket),
     },
+    aiImplement: canAiImplement ? { projectName: project?.name || projectSlug || "" } : undefined,
   });
 
   // ── 絞り込みの候補 ──────────────────────────────────────────

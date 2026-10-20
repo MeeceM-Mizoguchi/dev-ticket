@@ -119,7 +119,7 @@ function SkeletonSprintCard({ index }: { index: number }) {
   );
 }
 
-export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, projectName, prLinkedTicketIds = null }: {
+export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint, onSelectTicket, onCreateTicket, onBulkCreate, onApiIntegration, targetTicketWbs, targetSprintId, highlightWbsList, onMoved, stickyTop, onUpdated, projectMembers, projectSlug, projectName, prLinkedTicketIds = null, canAiImplement = false }: {
   sprints: Sprint[];
   loading?: boolean;
   onDeleteSprint?: (s: Sprint) => void;
@@ -146,6 +146,8 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
    * null（未取得・リポジトリ未紐付け）のときはアラートを出さない
    */
   prLinkedTicketIds?: Set<string> | null;
+  /** 一括操作の「AIで実装」を出すか（チケット詳細の「AIで実装」と同じく、編集権限のある人だけ） */
+  canAiImplement?: boolean;
 }) {
   const { userId, userOrgId, userRole } = useAuth();
   const { plan } = usePlan();
@@ -557,6 +559,7 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
       getSprintName: t => sprintNameByTicketId.get(t.id) ?? "",
       getCategoryLabel,
     },
+    aiImplement: canAiImplement ? { projectName: projectName || projectSlug || "" } : undefined,
   });
   const selectedTicketIds = bulk.selectedIds;
 

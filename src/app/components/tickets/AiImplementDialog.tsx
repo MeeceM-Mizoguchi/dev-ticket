@@ -1,5 +1,6 @@
 // 「AIで実装」の本体。チケット詳細の「API連携」（ApiIntegrationDialog）の1つのタブとして出す。
 // モーダル枠（AiImplementDialog）は、本体を単独で開くときのためのもの。
+// 一覧の一括操作のバーからは、選んだ複数のチケット（tickets）を渡して枠ごと開く。
 //
 // ApiIntegrationDialog（AI にチケットを登録させる）の逆向きで、
 // AI にチケットを読み取らせて実装させるための手順書をコピーする。
@@ -26,7 +27,8 @@ import {
 } from "@/app/lib/apiKeys";
 import {
   IMPLEMENT_STEPS, EMPTY_SELECTION, toggleStep, lockedReason, statusPlan, buildImplementPrompt,
-  type ImplementSelection, type ImplementStep,
+  bulkStatusPlan, buildBulkImplementPrompt,
+  type ImplementSelection, type ImplementStep, type BulkImplementTicket,
 } from "@/app/lib/apiImplementPrompt";
 
 const GREEN = "#059669";
@@ -37,9 +39,12 @@ const QUICK_KEY_NAME = "AIで実装用";
 const QUICK_KEY_DAYS = 90;
 
 export interface AiImplementPanelProps {
-  ticket: { wbs: string; title: string; parentId?: string | null };
+  /** 1件のチケットを実装させるとき（チケット詳細から開いたとき） */
+  ticket?: { wbs: string; title: string; parentId?: string | null };
   /** 開いているチケットの子の数（子チケットなら 0） */
-  childCount: number;
+  childCount?: number;
+  /** 複数のチケットを実装させるとき（一覧で選んだとき）。渡すと複数件用の手順書になる */
+  tickets?: BulkImplementTicket[];
   projectId: string;
   projectName: string;
   /** マージの確認を重ねる高さの基準（モーダル枠と同じ値を渡す） */
@@ -55,8 +60,9 @@ export interface AiImplementPanelProps {
  * マージの確認だけは body 直下へ出す。枠が transform を持つため、中に fixed で置くと枠に引きずられる。
  */
 export function AiImplementPanel({
-  ticket, childCount, projectId, projectName, zIndexBase = 310, keysRevision = 0, onKeyIssued,
+  ticket, childCount = 0, tickets, projectId, projectName, zIndexBase = 310, keysRevision = 0, onKeyIssued,
 }: AiImplementPanelProps) {
+  const bulk = tickets && tickets.length > 0 ? tickets : null;
   const { userRole } = useAuth();
   const { toast } = useToast();
   const canManage = userRole === "admin" || userRole === "owner";
@@ -94,8 +100,8 @@ export function AiImplementPanel({
 
   const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
   const target = useMemo(
-    () => ({ isChild: !!ticket.parentId, childCount: ticket.parentId ? 0 : childCount }),
-    [ticket.parentId, childCount],
+    () => ({ isChild: !!ticket?.parentId, childCount: ticket?.parentId ? 0 : childCount }),
+    [ticket?.parentId, childCount],
   );
 
   // ── 読み込み ──────────────────────────────────────────────────
@@ -202,11 +208,16 @@ export function AiImplementPanel({
   };
 
   // ── 手順書 ────────────────────────────────────────────────────
-  const prompt = useMemo(() => buildImplementPrompt({
-    baseUrl, projectName, wbs: ticket.wbs, title: ticket.title,
-    target, selection, repo, defaultBranch,
-    plainKey: revealedKey ?? undefined,
-  }), [baseUrl, projectName, ticket.wbs, ticket.title, target, selection, repo, defaultBranch, revealedKey]);
+  const prompt = useMemo(() => bulk
+    ? buildBulkImplementPrompt({
+      baseUrl, projectName, tickets: bulk, selection, repo, defaultBranch,
+      plainKey: revealedKey ?? undefined,
+    })
+    : buildImplementPrompt({
+      baseUrl, projectName, wbs: ticket?.wbs ?? "", title: ticket?.title ?? "",
+      target, selection, repo, defaultBranch,
+      plainKey: revealedKey ?? undefined,
+    }), [bulk, baseUrl, projectName, ticket?.wbs, ticket?.title, target, selection, repo, defaultBranch, revealedKey]);
 
   const keyEmbedded = !!revealedKey && !keyProblem;
   /**
@@ -313,9 +324,30 @@ export function AiImplementPanel({
       <div style={{ display: "flex", flexDirection: "column", gap: 17 }}>
         <p style={{ fontSize: 12.5, color: "#4B4640", lineHeight: 1.8 }}>
           どこまでやるかを選んで手順をコピーし、AIに貼り付けてください。
-          チケットの本文・画像・コメント{target.childCount > 0 ? <>・<strong>子チケット {target.childCount} 件</strong></> : ""}は、AIが自分で読み取ります。
+          {bulk
+            ? <>選んだ <strong>{bulk.length} 件のチケット</strong>を、AIが上から1件ずつ読み取って実装します（ブランチ・PRを作るときは、チケットごとに分かれます）。本文・画像・コメント・子チケットは、AIが自分で読み取ります。</>
+            : <>チケットの本文・画像・コメント{target.childCount > 0 ? <>・<strong>子チケット {target.childCount} 件</strong></> : ""}は、AIが自分で読み取ります。</>}
           <strong>コピーして貼り直す必要はありません。</strong>
         </p>
+
+        {/* 実装するチケット（複数選んだときだけ）。この順に実装させる */}
+        {bulk && (
+          <div>
+            <p style={sectionTitle}>実装するチケット（上から順に）</p>
+            <div style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 11, background: "#FFFFFF", maxHeight: 180, overflowY: "auto" }}>
+              {bulk.map((t, i) => (
+                <div key={t.wbs} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 14px", borderTop: i === 0 ? "none" : "1px solid rgba(26,23,20,0.06)", minWidth: 0 }}>
+                  <span style={{ fontSize: 10.5, color: "#B0A9A4", width: 16, flexShrink: 0, textAlign: "right" }}>{i + 1}</span>
+                  <span style={{ fontSize: 11.5, fontWeight: 800, color: PURPLE, fontFamily: "var(--font-mono)", flexShrink: 0 }}>{t.wbs}</span>
+                  <span title={t.title} style={{ fontSize: 12, color: "#1A1714", minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
+                  {t.childCount > 0 && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#6B6458", background: "#F3F4F6", padding: "1px 7px", borderRadius: 5, flexShrink: 0 }}>子 {t.childCount} 件を含む</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* どこまでやるか */}
         <div>
@@ -367,7 +399,7 @@ export function AiImplementPanel({
           <div style={{ padding: "12px 14px", background: "#F5F3FF", border: `1px solid ${PURPLE}22`, borderRadius: 10 }}>
             <p style={{ fontSize: 11.5, fontWeight: 800, color: "#1A1714", marginBottom: 5 }}>この範囲でのステータスの進み方</p>
             <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
-              {statusPlan(selection, target).map(line => <li key={line}>{line}</li>)}
+              {(bulk ? bulkStatusPlan(selection, bulk) : statusPlan(selection, target)).map(line => <li key={line}>{line}</li>)}
             </ul>
             <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
               ステータスは前にしか進みません。レビュー中へは進めません。レビューは画面からレビュアーを指定して依頼してください。
@@ -485,7 +517,10 @@ export function AiImplementPanel({
   );
 }
 
-/** 「AIで実装」を単独のモーダルとして開くときの枠。チケット詳細からは ApiIntegrationDialog のタブとして開く */
+/**
+ * 「AIで実装」を単独のモーダルとして開くときの枠。一覧の一括操作のバーから開く。
+ * チケット詳細からは ApiIntegrationDialog のタブとして開く。
+ */
 export function AiImplementDialog({
   onClose, ...panel
 }: AiImplementPanelProps & { onClose: () => void }) {
@@ -512,7 +547,9 @@ export function AiImplementDialog({
             <div style={{ minWidth: 0 }}>
               <p style={{ fontSize: 14, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.01em" }}>AIで実装</p>
               <p style={{ fontSize: 11, color: "#9E9690", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {panel.ticket.wbs} ／ {panel.ticket.title}
+                {panel.tickets && panel.tickets.length > 0
+                  ? `選択中のチケット ${panel.tickets.length} 件`
+                  : `${panel.ticket?.wbs ?? ""} ／ ${panel.ticket?.title ?? ""}`}
               </p>
             </div>
           </div>
