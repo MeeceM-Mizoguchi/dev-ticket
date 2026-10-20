@@ -3,9 +3,10 @@
 // チケットを1件以上選択している間だけ出現。選択件数と一括アクションを提供する。
 // 「エクスポート」(CSV / Word / Markdown)は選択したチケットを書き出す。バーは画面下端に貼り付いて
 // いるので、メニューは上向きに開く。
+// 「AIで実装」は、選んだチケットをAIに1件ずつ読み取らせて実装させる手順書をコピーする（BRU20-022）。
 
 import { useEffect, useRef, useState } from "react";
-import { Trash2, ArrowRightLeft, Sparkles, Link2, Download, X } from "lucide-react";
+import { Trash2, ArrowRightLeft, Sparkles, Link2, Download, X, Bot } from "lucide-react";
 import { TICKET_EXPORT_LABEL, type TicketExportFormat } from "@/app/lib/ticketExport";
 
 const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
@@ -18,13 +19,15 @@ const EXPORT_FORMATS: TicketExportFormat[] = ["csv", "docx", "md"];
 export const BULK_ACTION_BAR_CLEARANCE = 96;
 
 export function BulkActionBar({
-  count, onDelete, onMove, onAssign, onCopyLinks, onExport, exportEnabled = true, onClear, disabled,
+  count, onDelete, onMove, onAssign, onCopyLinks, onAiImplement, onExport, exportEnabled = true, onClear, disabled,
 }: {
   count: number;
   onDelete: () => void;
   onMove: () => void;
   onAssign: () => void;
   onCopyLinks: () => void;
+  /** 選んだチケットを「AIで実装」する手順書の画面を開く。未指定ならボタンを出さない */
+  onAiImplement?: () => void;
   /** 選択したチケットを書き出す。未指定ならエクスポートボタンを出さない */
   onExport?: (format: TicketExportFormat) => void;
   /** プランの都合で使えないときは false（ボタンは出すが押せない） */
@@ -91,6 +94,16 @@ export function BulkActionBar({
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.10)"; }}>
         <Link2 style={{ width: 14, height: 14 }} />リンクをコピー
       </button>
+
+      {onAiImplement && (
+        <button type="button" disabled={disabled} onClick={onAiImplement}
+          title="選んだチケットをAIに読み取らせて実装させる手順をコピー"
+          style={{ ...btnBase, background: "rgba(124,58,237,0.22)", color: "#EDE9FE", border: "1px solid rgba(167,139,250,0.40)" }}
+          onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "rgba(124,58,237,0.38)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(124,58,237,0.22)"; }}>
+          <Bot style={{ width: 14, height: 14 }} />AIで実装
+        </button>
+      )}
 
       {onExport && (
         <div ref={exportRef} style={{ position: "relative", flexShrink: 0 }}>

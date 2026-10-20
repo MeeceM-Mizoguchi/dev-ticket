@@ -1,12 +1,12 @@
 // BRU6-002 一括操作の共通ロジック
 //
 // チケットの複数選択と、それに対する一括アクション（自動アサイン / スプリント移動 /
-// リンクコピー / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
+// リンクコピー / AIで実装 / エクスポート / 削除）をまとめたフック。もともと SprintListView にだけ実装されていたが、
 // スプリント詳細のチケット一覧でも同じ機能を使うため共通化した。
 // 選択状態・確認ダイアログ・進捗モーダルはすべてこのフックが持ち、呼び出し側は
 // 返り値の ui を描画してチェックボックスを置くだけでよい。
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Sprint, SprintTicket, DevScale } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText } from "@/lib/clipboard";
@@ -23,6 +23,8 @@ import { exportTicketList, type TicketExportFormat } from "@/app/lib/ticketExpor
 import { fetchSkills, fetchBulkRecommendations, logRecommendationAccepted } from "@/app/lib/skillsApi";
 import { detectSkillKeywords, ticketSearchText } from "@/app/lib/skills";
 import { fireSlackNotify, slackTicketLink } from "@/app/utils/slackNotify";
+import { AiImplementDialog } from "@/app/components/tickets/AiImplementDialog";
+import type { BulkImplementTicket } from "@/app/lib/apiImplementPrompt";
 
 function estimateScale(hours: number): DevScale | null {
   if (!hours || hours <= 0) return null;
@@ -46,7 +48,7 @@ export interface BulkExportOptions {
 
 export function useBulkTicketActions({
   tickets, moveTargets, projectId, projectSlug, projectMembers, onUpdated, onFlash, onMoved, onBeforeMove,
-  exportOptions,
+  exportOptions, aiImplement,
 }: {
   /** 選択対象になりうるチケット（親・子を含む全件） */
   tickets: SprintTicket[];
@@ -69,6 +71,11 @@ export function useBulkTicketActions({
   onBeforeMove?: () => void | Promise<void>;
   /** 選択したチケットのエクスポート（CSV/Word/Markdown）。省略するとボタンを出さない */
   exportOptions?: BulkExportOptions;
+  /**
+   * 選んだチケットを「AIで実装」する手順書のコピー。省略するとボタンを出さない。
+   * チケット詳細の「AIで実装」と同じく、編集権限のある人にだけ渡す（プランの制限なし）。
+   */
+  aiImplement?: { projectName: string };
 }) {
   const { userOrgId, userName } = useAuth();
   const { showAlert } = useAlert();
@@ -121,6 +128,27 @@ export function useBulkTicketActions({
     } else {
       showAlert("リンクのコピーに失敗しました。", "エラー");
     }
+  };
+
+  // 「AIで実装」の対象。開いた時点の選択で固定する（開いている間に一覧が更新されても手順書が変わらないように）
+  const [aiImplementTickets, setAiImplementTickets] = useState<BulkImplementTicket[] | null>(null);
+  const closeAiImplement = useCallback(() => setAiImplementTickets(null), []);
+
+  const openBulkAiImplement = () => {
+    // 画面に並んでいる順で実装させる（order が無ければ tickets の順）。
+    // 親と一緒に選ばれた子は、親の中で実装されるので外す（同じ子を2回実装させない）
+    const source = exportOptions?.order ?? tickets;
+    const seen = new Set<string>();
+    const list = source
+      .filter(t => selectedIds.has(t.id) && !seen.has(t.id) && (seen.add(t.id), true))
+      .filter(t => !(t.parentId && selectedIds.has(t.parentId)))
+      .map(t => ({
+        wbs: t.wbs,
+        title: t.title,
+        isChild: !!t.parentId,
+        childCount: t.parentId ? 0 : tickets.filter(c => c.parentId === t.id).length,
+      }));
+    if (list.length > 0) setAiImplementTickets(list);
   };
 
   const runBulkExport = async (format: TicketExportFormat) => {
@@ -309,6 +337,7 @@ export function useBulkTicketActions({
         onAssign={runBulkAssign}
         onMove={async () => { await onBeforeMove?.(); setBulkAction("move"); }}
         onCopyLinks={runBulkCopyLinks}
+        onAiImplement={aiImplement && projectId && isSupabaseEnabled ? openBulkAiImplement : undefined}
         onExport={exportOptions ? runBulkExport : undefined}
         exportEnabled={exportOptions?.enabled ?? true}
         onDelete={() => setBulkAction("delete")}
@@ -323,6 +352,15 @@ export function useBulkTicketActions({
           confirmLabel="削除する"
           onConfirm={runBulkDelete}
           onClose={() => setBulkAction(null)}
+        />
+      )}
+
+      {aiImplementTickets && aiImplement && projectId && (
+        <AiImplementDialog
+          tickets={aiImplementTickets}
+          projectId={projectId}
+          projectName={aiImplement.projectName}
+          onClose={closeAiImplement}
         />
       )}
 
