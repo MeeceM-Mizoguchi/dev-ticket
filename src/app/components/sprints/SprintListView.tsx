@@ -232,10 +232,16 @@ export function SprintListView({ sprints, loading, onDeleteSprint, onEditSprint,
     });
   }, [sprints.map(s => s.id).join(",")]);
 
+  // BRU20-020 開くのは「強調対象が変わったとき」の1回だけ。
+  // 詳細を閉じたあとの強調は次の操作まで残るため、毎回開くと、スプリントの削除や
+  // 定期更新で一覧が変わるたびに、利用者が閉じたスプリントまで開き直してしまう。
+  const expandedForWbs = useRef<string | null>(null);
   useEffect(() => {
-    if (!targetTicketWbs) return;
+    if (!targetTicketWbs) { expandedForWbs.current = null; return; }
+    if (expandedForWbs.current === targetTicketWbs) return;
     const sprint = sprints.find(s => s.tickets.some(t => t.wbs === targetTicketWbs));
     if (sprint) {
+      expandedForWbs.current = targetTicketWbs;
       setExpanded(prev => {
         const n = new Set(prev);
         if (!n.has(sprint.id)) {
