@@ -1,4 +1,5 @@
-// 「AIで実装」モーダル。チケット詳細のヘッダーから開く。
+// 「AIで実装」の本体。チケット詳細の「API連携」（ApiIntegrationDialog）の1つのタブとして出す。
+// モーダル枠（AiImplementDialog）は、本体を単独で開くときのためのもの。
 //
 // ApiIntegrationDialog（AI にチケットを登録させる）の逆向きで、
 // AI にチケットを読み取らせて実装させるための手順書をコピーする。
@@ -11,6 +12,7 @@
 //   ・「マージ」は取り消せないので、ON にするときに確認を1回挟む
 // 依存関係と手順書の中身は src/app/lib/apiImplementPrompt.ts が持つ。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Sparkles, Copy, AlertTriangle, Loader2, ChevronRight, ChevronDown, Terminal, KeyRound, Lock } from "lucide-react";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { copyText as copyToClipboard } from "@/lib/clipboard";
@@ -34,17 +36,27 @@ const PURPLE = "#7C3AED";
 const QUICK_KEY_NAME = "AIで実装用";
 const QUICK_KEY_DAYS = 90;
 
-export function AiImplementDialog({
-  ticket, childCount, projectId, projectName, zIndexBase = 310, onClose,
-}: {
+export interface AiImplementPanelProps {
   ticket: { wbs: string; title: string; parentId?: string | null };
   /** 開いているチケットの子の数（子チケットなら 0） */
   childCount: number;
   projectId: string;
   projectName: string;
+  /** マージの確認を重ねる高さの基準（モーダル枠と同じ値を渡す） */
   zIndexBase?: number;
-  onClose: () => void;
-}) {
+  /** 変わったらキーの一覧を読み直す（同じ画面の「APIキー」タブで発行・失効したとき） */
+  keysRevision?: number;
+  /** この画面からキーを発行したとき。同じ画面の「APIキー」タブの一覧へ足すために使う */
+  onKeyIssued?: (row: ApiKeyRow) => void;
+}
+
+/**
+ * 「AIで実装」の本体（どこまでやるか・キー・コピー）。ESC で閉じる処理はモーダル枠の側が持つ。
+ * マージの確認だけは body 直下へ出す。枠が transform を持つため、中に fixed で置くと枠に引きずられる。
+ */
+export function AiImplementPanel({
+  ticket, childCount, projectId, projectName, zIndexBase = 310, keysRevision = 0, onKeyIssued,
+}: AiImplementPanelProps) {
   const { userRole } = useAuth();
   const { toast } = useToast();
   const canManage = userRole === "admin" || userRole === "owner";
@@ -72,8 +84,7 @@ export function AiImplementDialog({
   const [promptOpen, setPromptOpen] = useState(false);
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
 
-  // 確認ダイアログが開いている間の ESC は、確認だけを閉じる
-  useEffect(() => { escStack.push(onClose); return () => escStack.pop(onClose); }, [onClose]);
+  // 確認ダイアログが開いている間の ESC は、確認だけを閉じる（枠の ESC より後に積まれるので先に効く）
   useEffect(() => {
     if (!mergeConfirm) return;
     const close = () => setMergeConfirm(false);
@@ -101,15 +112,16 @@ export function AiImplementDialog({
       if (cancelled) return;
       const active = rows.filter(isActiveKey);
       setKeys(active);
-      // 既定は「すべて」のキー。無ければ読み取れるキー（一覧は作成日の降順）
+      // 既定は「すべて」のキー。無ければ読み取れるキー（一覧は作成日の降順）。
+      // 読み直したときは、選んでいたキーがまだ使えるならそのままにする
       const first = active.find(canUpdateStatus) ?? active.find(canReadTickets);
-      setSelectedKeyId(first?.id ?? "");
+      setSelectedKeyId(prev => (prev && active.some(k => k.id === prev && canReadTickets(k)) ? prev : (first?.id ?? "")));
       setRepo((project?.github_repo_full_name as string | null) || null);
       setDefaultBranch((project?.github_default_branch as string | null) || null);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [projectId]);
+  }, [projectId, keysRevision]);
 
   // 選ばれたキーの平文をサーバーで復号して取り出す（ApiIntegrationDialog と同じ仕組み）
   useEffect(() => {
@@ -181,6 +193,7 @@ export function AiImplementDialog({
       setRevealError(null);
       setKeys(prev => [result.result.row, ...prev]);
       setSelectedKeyId(result.result.row.id);
+      onKeyIssued?.(result.result.row);
       toast(`APIキー「${QUICK_KEY_NAME}」を発行しました`);
     } finally {
       issuingRef.current = false;
@@ -297,181 +310,145 @@ export function AiImplementDialog({
 
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 17 }}>
+        <p style={{ fontSize: 12.5, color: "#4B4640", lineHeight: 1.8 }}>
+          どこまでやるかを選んで手順をコピーし、AIに貼り付けてください。
+          チケットの本文・画像・コメント{target.childCount > 0 ? <>・<strong>子チケット {target.childCount} 件</strong></> : ""}は、AIが自分で読み取ります。
+          <strong>コピーして貼り直す必要はありません。</strong>
+        </p>
 
-      <div style={{
-        position: "fixed", top: "5vh", left: "50%", transform: "translateX(-50%)",
-        width: "min(94vw, 620px)", maxHeight: "90vh",
-        background: "#FAFAF8", zIndex: zIndexBase + 1, borderRadius: 16,
-        boxShadow: "0 24px 80px rgba(0,0,0,0.22)",
-        display: "flex", flexDirection: "column", overflow: "hidden",
-      }}>
-        {/* ヘッダー */}
-        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 9, background: "#F5F3FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <Sparkles style={{ width: 16, height: 16, color: PURPLE }} />
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <p style={{ fontSize: 14, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.01em" }}>AIで実装</p>
-              <p style={{ fontSize: 11, color: "#9E9690", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {ticket.wbs} ／ {ticket.title}
-              </p>
-            </div>
+        {/* どこまでやるか */}
+        <div>
+          <p style={sectionTitle}>どこまでやりますか（選んだものだけを実行します）</p>
+          <div style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 11, overflow: "hidden", background: "#FFFFFF" }}>
+            {IMPLEMENT_STEPS.map((s, i) => {
+              const checked = selection[s.id];
+              const locked = !checked ? lockedReason(s.id, selection) : null;
+              return (
+                <label key={s.id} style={{
+                  display: "flex", alignItems: "flex-start", gap: 11, padding: "11px 14px",
+                  borderTop: i === 0 ? "none" : "1px solid rgba(26,23,20,0.06)",
+                  cursor: locked ? "not-allowed" : "pointer",
+                  background: checked ? "#F0FDF4" : "#FFFFFF",
+                  opacity: locked ? 0.55 : 1,
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={!!locked}
+                    onChange={e => handleToggle(s.id, e.target.checked)}
+                    style={{ width: 16, height: 16, marginTop: 1, accentColor: GREEN, flexShrink: 0, cursor: locked ? "not-allowed" : "pointer" }}
+                  />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
+                      {s.label}
+                      {s.id === "merge" && (
+                        <span style={{ fontSize: 10, fontWeight: 700, color: "#B45309", background: "#FFFBEB", padding: "1px 7px", borderRadius: 5 }}>取り消せません</span>
+                      )}
+                    </p>
+                    <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2, lineHeight: 1.65 }}>{s.description}</p>
+                    {s.id === "pr" && (
+                      <p style={{ fontSize: 11, color: "#9E9690", lineHeight: 1.65 }}>他のPRと衝突するときは、PRの本文にそのことを書きます</p>
+                    )}
+                    {locked && (
+                      <p style={{ fontSize: 10.5, color: "#6B6458", marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
+                        <Lock style={{ width: 10, height: 10, flexShrink: 0 }} />{locked}
+                      </p>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
           </div>
-          <button type="button" onClick={onClose}
-            style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "#FFFFFF", cursor: "pointer", color: "#9E9690", flexShrink: 0, fontSize: 15, lineHeight: 1 }}>×</button>
         </div>
 
-        {/* 本文 */}
-        <div style={{ padding: "18px 24px 20px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 17 }}>
-          <p style={{ fontSize: 12.5, color: "#4B4640", lineHeight: 1.8 }}>
-            どこまでやるかを選んで手順をコピーし、AIに貼り付けてください。
-            チケットの本文・画像・コメント{target.childCount > 0 ? <>・<strong>子チケット {target.childCount} 件</strong></> : ""}は、AIが自分で読み取ります。
-            <strong>コピーして貼り直す必要はありません。</strong>
-          </p>
-
-          {/* どこまでやるか */}
-          <div>
-            <p style={sectionTitle}>どこまでやりますか（選んだものだけを実行します）</p>
-            <div style={{ border: "1px solid rgba(26,23,20,0.10)", borderRadius: 11, overflow: "hidden", background: "#FFFFFF" }}>
-              {IMPLEMENT_STEPS.map((s, i) => {
-                const checked = selection[s.id];
-                const locked = !checked ? lockedReason(s.id, selection) : null;
-                return (
-                  <label key={s.id} style={{
-                    display: "flex", alignItems: "flex-start", gap: 11, padding: "11px 14px",
-                    borderTop: i === 0 ? "none" : "1px solid rgba(26,23,20,0.06)",
-                    cursor: locked ? "not-allowed" : "pointer",
-                    background: checked ? "#F0FDF4" : "#FFFFFF",
-                    opacity: locked ? 0.55 : 1,
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={!!locked}
-                      onChange={e => handleToggle(s.id, e.target.checked)}
-                      style={{ width: 16, height: 16, marginTop: 1, accentColor: GREEN, flexShrink: 0, cursor: locked ? "not-allowed" : "pointer" }}
-                    />
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <p style={{ fontSize: 12.5, fontWeight: 700, color: "#1A1714", display: "flex", alignItems: "center", gap: 6 }}>
-                        {s.label}
-                        {s.id === "merge" && (
-                          <span style={{ fontSize: 10, fontWeight: 700, color: "#B45309", background: "#FFFBEB", padding: "1px 7px", borderRadius: 5 }}>取り消せません</span>
-                        )}
-                      </p>
-                      <p style={{ fontSize: 11, color: "#9E9690", marginTop: 2, lineHeight: 1.65 }}>{s.description}</p>
-                      {s.id === "pr" && (
-                        <p style={{ fontSize: 11, color: "#9E9690", lineHeight: 1.65 }}>他のPRと衝突するときは、PRの本文にそのことを書きます</p>
-                      )}
-                      {locked && (
-                        <p style={{ fontSize: 10.5, color: "#6B6458", marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
-                          <Lock style={{ width: 10, height: 10, flexShrink: 0 }} />{locked}
-                        </p>
-                      )}
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ステータスがどこまで進むか。選んだ範囲で変わるので、コピーの前に見せる */}
-          {selection.status && (
-            <div style={{ padding: "12px 14px", background: "#F5F3FF", border: `1px solid ${PURPLE}22`, borderRadius: 10 }}>
-              <p style={{ fontSize: 11.5, fontWeight: 800, color: "#1A1714", marginBottom: 5 }}>この範囲でのステータスの進み方</p>
-              <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
-                {statusPlan(selection, target).map(line => <li key={line}>{line}</li>)}
-              </ul>
-              <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
-                ステータスは前にしか進みません。レビュー中へは進めません。レビューは画面からレビュアーを指定して依頼してください。
-              </p>
-            </div>
-          )}
-
-          {/* 使用するキー */}
-          <div>
-            <p style={sectionTitle}>使用するAPIキー</p>
-            {renderKeySection()}
-          </div>
-
-          {/* コピー */}
-          <div>
-            <button type="button" onClick={() => void handleCopy()} disabled={!!blockedReason}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 18px",
-                fontSize: 12.5, fontWeight: 700, color: "#FFFFFF", background: GREEN, border: "none", borderRadius: 9,
-                cursor: blockedReason ? "not-allowed" : "pointer", opacity: blockedReason ? 0.45 : 1, whiteSpace: "nowrap",
-              }}>
-              <Copy style={{ width: 13, height: 13 }} />
-              {keyEmbedded ? "手順をコピー（APIキー入り）" : "手順をコピー"}
-            </button>
-            {blockedReason && !keyProblem && (
-              <p style={{ fontSize: 11, color: "#9E9690", marginTop: 7, lineHeight: 1.7 }}>{blockedReason}</p>
-            )}
-          </div>
-
-          {/* 貼り付け先 */}
-          <div style={{ padding: "12px 14px", background: "#F0FDF4", border: `1px solid ${GREEN}22`, borderRadius: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-              <Terminal style={{ width: 14, height: 14, color: GREEN, flexShrink: 0 }} />
-              <p style={{ fontSize: 12, fontWeight: 800, color: "#1A1714" }}>貼り付け先：対象のリポジトリを開いた、コマンドを実行できるAI</p>
-            </div>
-            <p style={{ fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
-              <strong>Claude Code</strong>・<strong>Cursor</strong>・<strong>Gemini CLI</strong> などで、
-              {repo ? <>リポジトリ <code style={{ fontFamily: "var(--font-mono)", color: "#1A1714" }}>{repo}</code> </> : "実装するリポジトリ"}を開いた状態で貼り付けてください。
-              ブランチ・コミット・PR・マージは、AIが手元の <code style={{ fontFamily: "var(--font-mono)" }}>git</code> と <code style={{ fontFamily: "var(--font-mono)" }}>gh</code> で行います。
-              ブラウザ版のAI（Claude.ai・ChatGPT など）では動きません。
+        {/* ステータスがどこまで進むか。選んだ範囲で変わるので、コピーの前に見せる */}
+        {selection.status && (
+          <div style={{ padding: "12px 14px", background: "#F5F3FF", border: `1px solid ${PURPLE}22`, borderRadius: 10 }}>
+            <p style={{ fontSize: 11.5, fontWeight: 800, color: "#1A1714", marginBottom: 5 }}>この範囲でのステータスの進み方</p>
+            <ul style={{ margin: 0, paddingLeft: 17, fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
+              {statusPlan(selection, target).map(line => <li key={line}>{line}</li>)}
+            </ul>
+            <p style={{ fontSize: 10.5, color: "#9E9690", marginTop: 6, lineHeight: 1.7 }}>
+              ステータスは前にしか進みません。レビュー中へは進めません。レビューは画面からレビュアーを指定して依頼してください。
             </p>
           </div>
+        )}
 
-          <div>
-            <button type="button" onClick={() => setPromptOpen(v => !v)}
-              style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, fontWeight: 600, color: GREEN }}>
-              {promptOpen ? <ChevronDown style={{ width: 13, height: 13 }} /> : <ChevronRight style={{ width: 13, height: 13 }} />}
-              手順の中身を表示
-            </button>
-            {promptOpen && (
-              <pre style={{
-                marginTop: 8, padding: "12px 14px", maxHeight: 280, overflow: "auto",
-                background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9,
-                fontSize: 10.5, lineHeight: 1.65, fontFamily: "var(--font-mono)",
-                color: "#4B4640", whiteSpace: "pre-wrap", wordBreak: "break-word",
-              }}>{revealedKey ? prompt.split(revealedKey).join(`${maskedKey(selectedKey?.keyPrefix ?? "")}（コピー時は実際のキーが入ります）`) : prompt}</pre>
-            )}
-          </div>
+        {/* 使用するキー */}
+        <div>
+          <p style={sectionTitle}>使用するAPIキー</p>
+          {renderKeySection()}
+        </div>
 
-          {manualCopyText && (
-            <div>
-              <p style={{ fontSize: 11, fontWeight: 700, color: "#D97706", marginBottom: 5 }}>
-                下のテキストを選択してコピーしてください
-              </p>
-              <textarea
-                readOnly
-                value={manualCopyText}
-                onFocus={e => e.currentTarget.select()}
-                autoFocus
-                style={{
-                  width: "100%", height: 140, padding: "10px 12px", fontSize: 11,
-                  fontFamily: "var(--font-mono)", border: "1px solid rgba(26,23,20,0.14)",
-                  borderRadius: 9, color: "#4B4640", resize: "vertical",
-                }}
-              />
-            </div>
+        {/* コピー */}
+        <div>
+          <button type="button" onClick={() => void handleCopy()} disabled={!!blockedReason}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 18px",
+              fontSize: 12.5, fontWeight: 700, color: "#FFFFFF", background: GREEN, border: "none", borderRadius: 9,
+              cursor: blockedReason ? "not-allowed" : "pointer", opacity: blockedReason ? 0.45 : 1, whiteSpace: "nowrap",
+            }}>
+            <Copy style={{ width: 13, height: 13 }} />
+            {keyEmbedded ? "手順をコピー（APIキー入り）" : "手順をコピー"}
+          </button>
+          {blockedReason && !keyProblem && (
+            <p style={{ fontSize: 11, color: "#9E9690", marginTop: 7, lineHeight: 1.7 }}>{blockedReason}</p>
           )}
         </div>
 
-        {/* フッター */}
-        <div style={{ padding: "13px 24px", borderTop: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
-          <button type="button" onClick={onClose}
-            style={{ padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#6B6458", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 9, cursor: "pointer" }}>
-            閉じる
-          </button>
+        {/* 貼り付け先 */}
+        <div style={{ padding: "12px 14px", background: "#F0FDF4", border: `1px solid ${GREEN}22`, borderRadius: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+            <Terminal style={{ width: 14, height: 14, color: GREEN, flexShrink: 0 }} />
+            <p style={{ fontSize: 12, fontWeight: 800, color: "#1A1714" }}>貼り付け先：対象のリポジトリを開いた、コマンドを実行できるAI</p>
+          </div>
+          <p style={{ fontSize: 11.5, color: "#4B4640", lineHeight: 1.85 }}>
+            <strong>Claude Code</strong>・<strong>Cursor</strong>・<strong>Gemini CLI</strong> などで、
+            {repo ? <>リポジトリ <code style={{ fontFamily: "var(--font-mono)", color: "#1A1714" }}>{repo}</code> </> : "実装するリポジトリ"}を開いた状態で貼り付けてください。
+            ブランチ・コミット・PR・マージは、AIが手元の <code style={{ fontFamily: "var(--font-mono)" }}>git</code> と <code style={{ fontFamily: "var(--font-mono)" }}>gh</code> で行います。
+            ブラウザ版のAI（Claude.ai・ChatGPT など）では動きません。
+          </p>
         </div>
+
+        <div>
+          <button type="button" onClick={() => setPromptOpen(v => !v)}
+            style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11.5, fontWeight: 600, color: GREEN }}>
+            {promptOpen ? <ChevronDown style={{ width: 13, height: 13 }} /> : <ChevronRight style={{ width: 13, height: 13 }} />}
+            手順の中身を表示
+          </button>
+          {promptOpen && (
+            <pre style={{
+              marginTop: 8, padding: "12px 14px", maxHeight: 280, overflow: "auto",
+              background: "#F7F6F4", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 9,
+              fontSize: 10.5, lineHeight: 1.65, fontFamily: "var(--font-mono)",
+              color: "#4B4640", whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}>{revealedKey ? prompt.split(revealedKey).join(`${maskedKey(selectedKey?.keyPrefix ?? "")}（コピー時は実際のキーが入ります）`) : prompt}</pre>
+          )}
+        </div>
+
+        {manualCopyText && (
+          <div>
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#D97706", marginBottom: 5 }}>
+              下のテキストを選択してコピーしてください
+            </p>
+            <textarea
+              readOnly
+              value={manualCopyText}
+              onFocus={e => e.currentTarget.select()}
+              autoFocus
+              style={{
+                width: "100%", height: 140, padding: "10px 12px", fontSize: 11,
+                fontFamily: "var(--font-mono)", border: "1px solid rgba(26,23,20,0.14)",
+                borderRadius: 9, color: "#4B4640", resize: "vertical",
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* マージの確認 */}
-      {mergeConfirm && (
+      {mergeConfirm && createPortal(
         <>
           <div onClick={() => setMergeConfirm(false)} style={{ position: "fixed", inset: 0, zIndex: zIndexBase + 10, background: "rgba(10,14,12,0.35)" }} />
           <div style={{
@@ -501,8 +478,61 @@ export function AiImplementDialog({
               </button>
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
+    </>
+  );
+}
+
+/** 「AIで実装」を単独のモーダルとして開くときの枠。チケット詳細からは ApiIntegrationDialog のタブとして開く */
+export function AiImplementDialog({
+  onClose, ...panel
+}: AiImplementPanelProps & { onClose: () => void }) {
+  const zIndexBase = panel.zIndexBase ?? 310;
+  useEffect(() => { escStack.push(onClose); return () => escStack.pop(onClose); }, [onClose]);
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: zIndexBase, background: "rgba(10,14,12,0.35)", backdropFilter: "blur(3px)" }} />
+
+      <div style={{
+        position: "fixed", top: "5vh", left: "50%", transform: "translateX(-50%)",
+        width: "min(94vw, 620px)", maxHeight: "90vh",
+        background: "#FAFAF8", zIndex: zIndexBase + 1, borderRadius: 16,
+        boxShadow: "0 24px 80px rgba(0,0,0,0.22)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}>
+        {/* ヘッダー */}
+        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <div style={{ width: 32, height: 32, borderRadius: 9, background: "#F5F3FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Sparkles style={{ width: 16, height: 16, color: PURPLE }} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: 14, fontWeight: 800, color: "#1A1714", letterSpacing: "-0.01em" }}>AIで実装</p>
+              <p style={{ fontSize: 11, color: "#9E9690", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {panel.ticket.wbs} ／ {panel.ticket.title}
+              </p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose}
+            style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(26,23,20,0.10)", background: "#FFFFFF", cursor: "pointer", color: "#9E9690", flexShrink: 0, fontSize: 15, lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* 本文 */}
+        <div style={{ padding: "18px 24px 20px", overflowY: "auto", flex: 1 }}>
+          <AiImplementPanel {...panel} zIndexBase={zIndexBase} />
+        </div>
+
+        {/* フッター */}
+        <div style={{ padding: "13px 24px", borderTop: "1px solid rgba(26,23,20,0.07)", background: "#FFFFFF", display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+          <button type="button" onClick={onClose}
+            style={{ padding: "9px 16px", fontSize: 12.5, fontWeight: 700, color: "#6B6458", background: "#FFFFFF", border: "1px solid rgba(26,23,20,0.12)", borderRadius: 9, cursor: "pointer" }}>
+            閉じる
+          </button>
+        </div>
+      </div>
     </>
   );
 }

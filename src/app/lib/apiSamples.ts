@@ -1,11 +1,14 @@
 // 「他システムに組み込む」ときのサンプルコード。
 //
 // 画面（ApiIntegrationDialog の「組み込み」タブ）にそのまま貼れる形で返す。
-// AI に渡す手順書（apiKeyPrompt.ts）とは読者が違う。あちらは AI 向けの仕様書、
+// AI に渡す手順書（apiKeyPrompt.ts / apiImplementPrompt.ts）とは読者が違う。あちらは AI 向けの仕様書、
 // こちらは人間が自分のコードへ写すためのもの。
 //
+// サンプルは4種類（登録・読み取り・ステータス更新・PR紐づけ）。読み取り以降は、
+// AI を通さずに外部のシステムからも同じ API を使えることを見せるためのもの。
+//
 // ⚠️ ここのサンプルは api/v1/[resource].ts の実装と一致していなければならない。
-//    エンドポイント・ヘッダー・上限値を変えたら、こちらも直すこと。
+//    エンドポイント・ヘッダー・上限値・受けるステータス・エラーの条件を変えたら、こちらも直すこと。
 
 /** サンプルを出せる言語 */
 export type SampleLang = "curl" | "js" | "python";
@@ -16,12 +19,55 @@ export const SAMPLE_LANGS: { id: SampleLang; label: string }[] = [
   { id: "python", label: "Python" },
 ];
 
+/** サンプルの種類（どの API を叩くか） */
+export type SampleKind = "create" | "read" | "status" | "pull";
+
+/**
+ * 種類ごとの説明。画面ではサンプルの上に「必要な権限」と注意を出す。
+ * 権限は api/v1/[resource].ts の scope の判定と揃えること。
+ */
+export const SAMPLE_KINDS: { id: SampleKind; label: string; endpoint: string; permission: string; notes: string[] }[] = [
+  {
+    id: "create", label: "登録", endpoint: "POST /api/v1/tickets",
+    permission: "登録のみ／すべて",
+    notes: [],
+  },
+  {
+    id: "read", label: "読み取り", endpoint: "GET /api/v1/ticket",
+    permission: "読み取りのみ／すべて",
+    notes: [
+      "チケット1件の本文・画像・添付・コメントを返します。親を指定すると子チケット全部、子を指定すると親も一緒に返ります",
+      "画像と添付の URL は認証なしで取得できます",
+    ],
+  },
+  {
+    id: "status", label: "ステータス更新", endpoint: "POST /api/v1/ticket-status",
+    permission: "すべて",
+    notes: [
+      "変更できる先は「進行中」「レビュー中（親チケットのみ）」「対応完了（子チケットのみ）」の3つだけです",
+      "前にしか進みません。すでに同じか先のステータスなら何もせず、changed: false が返ります",
+      "保留中・取下のチケットと、子チケットが対応完了していない親をレビュー中にしようとしたときは 409 になります",
+      "APIでレビュー中にしても、レビュアーの指定・レビュー依頼の通知は行われません。レビューは画面からレビュアーを指定して依頼してください",
+    ],
+  },
+  {
+    id: "pull", label: "PR紐づけ", endpoint: "POST /api/v1/ticket-pull",
+    permission: "すべて",
+    notes: [
+      "url はプロジェクトに登録した GitHub リポジトリのプルリクエストで、number と url の番号が一致している必要があります（違うと 400）",
+      "すでに紐づいていれば changed: false が返ります。画面から手動で紐づけたPRは上書きしません",
+    ],
+  },
+];
+
 export interface SampleContext {
   /** 例: "https://dv-ticket.com"。末尾のスラッシュは含めない */
   baseUrl: string;
   sprintId: string;
   /** 発行直後・復号できた場合のみ平文キー。無ければプレースホルダを出す */
   plainKey?: string;
+  /** 読み取り・ステータス更新・PR紐づけの例に使う WBS。チケット詳細から開いたときはそのチケット */
+  wbs?: string;
 }
 
 const KEY_PLACEHOLDER = "dvt_live_ここにAPIキー";
@@ -242,8 +288,330 @@ add_child_tickets(parent["wbs"], [
 ])`;
 }
 
-export function buildApiSample(lang: SampleLang, ctx: SampleContext): string {
+// ── 読み取り（GET /api/v1/ticket） ──────────────────────────────
+
+function readCurlSample(c: SampleContext, key: string, wbs: string): string {
+  return `# 権限: 読み取りのみ／すべて（「登録のみ」のキーでは 403）
+#
+# チケット1件の本文・画像・添付・コメントを返す。
+# 親を指定すると子チケット全部（children）、子を指定すると親（parent）も一緒に返る
+curl "${c.baseUrl}/api/v1/ticket?wbs=${wbs}" \\
+  -H "Authorization: Bearer ${key}"
+
+# 応答の例
+# {
+#   "project": { "name": "…", "slug": "…" },
+#   "ticket": {
+#     "wbs": "${wbs}", "title": "…", "status": "進行中", "priority": "高", "assignee": "…",
+#     "url": "…（Dev Ticket 上のチケットのURL）",
+#     "description": "本文（Markdown 風のテキスト）",
+#     "images": ["https://…"], "attachments": [], "comments": []
+#   },
+#   "parent": null,
+#   "children": [ { "wbs": "${wbs}-1", "…": "ticket と同じ形" } ]
+# }
+# 404: チケットがこのキーのプロジェクトに無い`;
+}
+
+function readJsSample(c: SampleContext, wbs: string): string {
+  return `// 権限: 読み取りのみ／すべて（「登録のみ」のキーでは 403）
+// キーはソースに書かず環境変数から読む（Gitに入れないため）
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function getTicket(wbs) {
+  const res = await fetch(\`${c.baseUrl}/api/v1/ticket?\${new URLSearchParams({ wbs })}\`, {
+    headers: { "Authorization": \`Bearer \${API_KEY}\` },
+  });
+
+  const json = await res.json();
+  if (!res.ok) {
+    // 401:キーが無効 403:キーの権限不足 404:チケットが無い 429:リクエスト過多
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+  // ticket … 指定したチケット / parent … 子を指定したときの親 / children … 親を指定したときの子（WBS 順）
+  return json;
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 自社の進捗ボードに、チケットと子チケットの進み具合を出す
+const { ticket, children } = await getTicket("${wbs}");
+
+console.log(\`\${ticket.wbs} \${ticket.status} \${ticket.title}\`);
+for (const child of children) {
+  console.log(\`  \${child.wbs} \${child.status} \${child.title}\`);
+}`;
+}
+
+function readPythonSample(c: SampleContext, wbs: string): string {
+  return `# 権限: 読み取りのみ／すべて（「登録のみ」のキーでは 403）
+import os
+import requests
+
+# キーはソースに書かず環境変数から読む（Gitに入れないため）
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def get_ticket(wbs):
+    res = requests.get(
+        f"{BASE_URL}/api/v1/ticket",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        params={"wbs": wbs},
+        timeout=30,
+    )
+
+    body = res.json()
+    if not res.ok:
+        # 401:キーが無効 403:キーの権限不足 404:チケットが無い 429:リクエスト過多
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+
+    # ticket … 指定したチケット / parent … 子を指定したときの親 / children … 親を指定したときの子（WBS 順）
+    return body
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 自社の進捗ボードに、チケットと子チケットの進み具合を出す
+data = get_ticket("${wbs}")
+ticket = data["ticket"]
+
+print(ticket["wbs"], ticket["status"], ticket["title"])
+for child in data["children"]:
+    print("  ", child["wbs"], child["status"], child["title"])`;
+}
+
+// ── ステータス更新（POST /api/v1/ticket-status） ──────────────────
+
+const STATUS_RULES = [
+  "変更できる先: 進行中（親・子）／レビュー中（親チケットのみ）／対応完了（子チケットのみ）",
+  "・前にしか進まない。すでに同じか先のステータスなら何もせず changed: false が返る",
+  "・409: 保留中・取下のチケット／子チケットが対応完了していない親をレビュー中にしようとしたとき",
+  "       （読んでから書くまでに、画面でステータスが変えられたときも 409）",
+  "・APIでレビュー中にしても、レビュアーの指定・レビュー依頼の通知は行われない（レビューは画面から依頼する）",
+  "・子を進行中にしたとき、親が未着手なら親も進行中になる（応答の parentStarted に親の WBS が入る）",
+];
+
+/** 説明の行をコメントにする（# か //） */
+const commentLines = (prefix: string, lines: string[]) => lines.map(l => `${prefix} ${l}`).join("\n");
+
+function statusCurlSample(c: SampleContext, key: string, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", STATUS_RULES)}
+curl -X POST ${c.baseUrl}/api/v1/ticket-status \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "wbs": "${wbs}", "status": "進行中" }'
+
+# 応答の例
+# { "ok": true, "changed": true, "wbs": "${wbs}", "from": "未着手", "status": "進行中", "parentStarted": null, "warnings": [] }
+# すでに同じか先のステータスのとき
+# { "ok": true, "changed": false, "wbs": "${wbs}", "status": "進行中", "parentStarted": null, "message": "すでに「進行中」のため変更していません" }
+#
+# Windows で日本語の status が化けて 400 になるときは、本文を UTF-8 のファイルに保存して
+# -d の代わりに --data-binary @body.json で送る`;
+}
+
+function statusJsSample(c: SampleContext, wbs: string): string {
+  return `// 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+//
+${commentLines("//", STATUS_RULES)}
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function updateStatus(wbs, status) {
+  const res = await fetch("${c.baseUrl}/api/v1/ticket-status", {
+    method: "POST",
+    headers: {
+      "Authorization": \`Bearer \${API_KEY}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ wbs, status }),
+  });
+
+  const json = await res.json();
+  if (res.status === 409) {
+    // 保留中・取下／子が終わっていない親をレビュー中にしようとした／直前に画面で変更された。
+    // 送り直しても通らないので、理由を残して人に任せる
+    console.warn(json.error);
+    return null;
+  }
+  if (!res.ok) {
+    // 400:指定できないステータス 401:キーが無効 403:キーの権限不足 404:チケットが無い 429:リクエスト過多
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+
+  // changed: false … すでに同じか先のステータスだったので、何もしていない（正常）
+  if (json.warnings?.length) console.warn(json.warnings);
+  return json; // { ok, changed, wbs, from, status, parentStarted, warnings }
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 自社の作業管理で着手・完了を記録したら、Dev Ticket の子チケットも進める
+await updateStatus("${wbs}-1", "進行中");
+await updateStatus("${wbs}-1", "対応完了");
+
+// 子がすべて対応完了したら、親をレビュー中にする（レビュアーの指定と通知は画面から）
+await updateStatus("${wbs}", "レビュー中");`;
+}
+
+function statusPythonSample(c: SampleContext, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", STATUS_RULES)}
+import os
+import requests
+
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def update_status(wbs, status):
+    res = requests.post(
+        f"{BASE_URL}/api/v1/ticket-status",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"wbs": wbs, "status": status},
+        timeout=30,
+    )
+
+    body = res.json()
+    if res.status_code == 409:
+        # 保留中・取下／子が終わっていない親をレビュー中にしようとした／直前に画面で変更された。
+        # 送り直しても通らないので、理由を残して人に任せる
+        print("変更できません:", body.get("error"))
+        return None
+    if not res.ok:
+        # 400:指定できないステータス 401:キーが無効 403:キーの権限不足 404:チケットが無い 429:リクエスト過多
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+
+    # changed が False … すでに同じか先のステータスだったので、何もしていない（正常）
+    for w in body.get("warnings", []):
+        print("警告:", w)
+    return body  # {"ok", "changed", "wbs", "from", "status", "parentStarted", "warnings"}
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 自社の作業管理で着手・完了を記録したら、Dev Ticket の子チケットも進める
+update_status("${wbs}-1", "進行中")
+update_status("${wbs}-1", "対応完了")
+
+# 子がすべて対応完了したら、親をレビュー中にする（レビュアーの指定と通知は画面から）
+update_status("${wbs}", "レビュー中")`;
+}
+
+// ── PR紐づけ（POST /api/v1/ticket-pull） ─────────────────────────
+
+const PULL_RULES = [
+  "url はプロジェクトに登録した GitHub リポジトリのプルリクエストであること",
+  "number と url の番号が一致していないと 400（リポジトリが違う・未登録のときも 400）",
+  "すでに紐づいていれば changed: false。画面から手動で紐づけたPRは上書きしない",
+];
+
+const PULL_URL_EXAMPLE = "https://github.com/your-org/your-repo/pull/123";
+
+function pullCurlSample(c: SampleContext, key: string, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", PULL_RULES)}
+curl -X POST ${c.baseUrl}/api/v1/ticket-pull \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "wbs": "${wbs}",
+    "number": 123,
+    "url": "${PULL_URL_EXAMPLE}",
+    "title": "${wbs} ログイン画面のバリデーション追加"
+  }'
+
+# 応答の例
+# { "ok": true, "changed": true, "wbs": "${wbs}", "number": 123, "url": "${PULL_URL_EXAMPLE}" }`;
+}
+
+function pullJsSample(c: SampleContext, wbs: string): string {
+  return `// 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+//
+${commentLines("//", PULL_RULES)}
+const API_KEY = process.env.DEV_TICKET_API_KEY;
+
+async function linkPullRequest(wbs, pr) {
+  const res = await fetch("${c.baseUrl}/api/v1/ticket-pull", {
+    method: "POST",
+    headers: {
+      "Authorization": \`Bearer \${API_KEY}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ wbs, number: pr.number, url: pr.url, title: pr.title }),
+  });
+
+  const json = await res.json();
+  if (!res.ok) {
+    // 400:リポジトリ・番号の不一致 401:キーが無効 403:キーの権限不足 404:チケットが無い
+    throw new Error(\`\${res.status}: \${json.error}\`);
+  }
+  return json; // { ok, changed, wbs, number, url }
+}
+
+// ── ここから下が「自分のシステム」で使う部分 ──
+// 例: 自社のリリースツールが作ったプルリクエストを、チケットに紐づける
+await linkPullRequest("${wbs}", {
+  number: 123,
+  url: "${PULL_URL_EXAMPLE}",
+  title: "${wbs} ログイン画面のバリデーション追加",
+});`;
+}
+
+function pullPythonSample(c: SampleContext, wbs: string): string {
+  return `# 権限: すべて（「登録のみ」「読み取りのみ」のキーでは 403）
+#
+${commentLines("#", PULL_RULES)}
+import os
+import requests
+
+API_KEY = os.environ["DEV_TICKET_API_KEY"]
+BASE_URL = "${c.baseUrl}"
+
+
+def link_pull_request(wbs, number, url, title):
+    res = requests.post(
+        f"{BASE_URL}/api/v1/ticket-pull",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"wbs": wbs, "number": number, "url": url, "title": title},
+        timeout=30,
+    )
+
+    body = res.json()
+    if not res.ok:
+        # 400:リポジトリ・番号の不一致 401:キーが無効 403:キーの権限不足 404:チケットが無い
+        raise RuntimeError(f"{res.status_code}: {body.get('error')}")
+    return body  # {"ok", "changed", "wbs", "number", "url"}
+
+
+# ── ここから下が「自分のシステム」で使う部分 ──
+# 例: 自社のリリースツールが作ったプルリクエストを、チケットに紐づける
+link_pull_request(
+    "${wbs}",
+    number=123,
+    url="${PULL_URL_EXAMPLE}",
+    title="${wbs} ログイン画面のバリデーション追加",
+)`;
+}
+
+export function buildApiSample(lang: SampleLang, ctx: SampleContext, kind: SampleKind = "create"): string {
   const key = ctx.plainKey ?? KEY_PLACEHOLDER;
+  const wbs = ctx.wbs ?? "T-012";
+  if (kind === "read") {
+    return lang === "js" ? readJsSample(ctx, wbs) : lang === "python" ? readPythonSample(ctx, wbs) : readCurlSample(ctx, key, wbs);
+  }
+  if (kind === "status") {
+    return lang === "js" ? statusJsSample(ctx, wbs) : lang === "python" ? statusPythonSample(ctx, wbs) : statusCurlSample(ctx, key, wbs);
+  }
+  if (kind === "pull") {
+    return lang === "js" ? pullJsSample(ctx, wbs) : lang === "python" ? pullPythonSample(ctx, wbs) : pullCurlSample(ctx, key, wbs);
+  }
   if (lang === "js") return jsSample(ctx);
   if (lang === "python") return pythonSample(ctx);
   return curlSample(ctx, key);
