@@ -382,8 +382,8 @@ export function SprintPage() {
     { mode: "gantt", label: "ガントチャート", Icon: BarChart2 },
   ];
 
-  // 名前だけで URL もメモも空の行は、開いても見るものが無いので数えない
-  const envMemos = project?.envMemos?.filter(m => m.url || m.memo) ?? [];
+  // 環境メモはモーダルで追加・編集するので、名前だけの行も含めて全件を出す
+  const envMemos = project?.envMemos ?? [];
 
   const ticketSprint = selectedTicket ?sprints.find(s => s.tickets.some(t => t.id === selectedTicket.id)) : undefined;
 
@@ -417,7 +417,8 @@ export function SprintPage() {
             </div>
             <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 3 }}>
               <p style={{ fontSize: 12, color: "#A09790", margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{project ? `${project.name} · ${sprints.length} スプリント` : "..."}</p>
-              {envMemos.length > 0 && <EnvMemoButton count={envMemos.length} onClick={() => setShowEnvMemos(true)} />}
+              {/* 追加の入口がここだけなので、0件でも出す */}
+              {project && <EnvMemoButton count={envMemos.length} onClick={() => setShowEnvMemos(true)} />}
             </div>
           </div>
           <ProjectSubNav
@@ -554,8 +555,9 @@ export function SprintPage() {
         )}
 
         {/* 固定ヘッダー(z-index 200)の中に描くとアプリ上部のバーの下に潜るため、ここに置く */}
-        {showEnvMemos && envMemos.length > 0 && (
-          <EnvMemoDialog memos={envMemos} onClose={() => setShowEnvMemos(false)} />
+        {showEnvMemos && project && (
+          <EnvMemoDialog projectId={project.id} memos={envMemos}
+            onClose={() => setShowEnvMemos(false)} onSaved={refreshSprints} />
         )}
 
         {deleteTarget && (

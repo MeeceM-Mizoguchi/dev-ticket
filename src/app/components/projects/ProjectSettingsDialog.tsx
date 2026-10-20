@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { Plus, Minus, Globe, Github } from "lucide-react";
+import { Github } from "lucide-react";
 import type {
-  Project, EnvMemo, GithubRepo, GithubDeployCheckMode, GithubRequireChecksMode,
+  Project, GithubRepo, GithubDeployCheckMode, GithubRequireChecksMode,
 } from "@/app/types";
 import { supabase, isSupabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -13,7 +13,6 @@ import { BtnSecondary } from "@/app/components/shared/BtnSecondary";
 import { FieldInput } from "@/app/components/shared/FieldInput";
 import { CustomSelect } from "@/app/components/shared/CustomSelect";
 import { inputCls, labelCls } from "@/app/lib/helpers";
-import { submitOnModEnter } from "@/app/lib/submitKey";
 import {
   fetchGithubStatus, fetchGithubRepos, backfillGithubLinks,
   DEPLOY_MODE_LABELS, REQUIRE_CHECKS_LABELS,
@@ -22,7 +21,6 @@ import { invalidateGithubAccessCache } from "@/app/hooks/useGithubAccess";
 import { findSlugConflict, SLUG_CONFLICT_MESSAGE } from "@/app/lib/projectResolve";
 
 const RESERVED_SLUGS = new Set(["login", "dashboard", "projects", "clients", "members", "permissions", "roles", "settings", "accept-invite"]);
-const MAX_ENV_MEMOS = 10;
 
 function sanitizeSlug(v: string) { return v.replace(/[^A-Z0-9]/g, ""); }
 
@@ -38,9 +36,6 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
   const [slug, setSlug] = useState(project.slug);
   const [slugError, setSlugError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [envMemos, setEnvMemos] = useState<EnvMemo[]>(
-    project.envMemos?.length ? project.envMemos : []
-  );
 
   // ── GitHubリポジトリ（docs/github-integration-design.md 8-6） ──
   // 書き込み先は「外部連携」画面の紐付け表と同じ projects.github_repo_full_name。
@@ -82,19 +77,6 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
     setGhBranch(v ? (v === project.githubRepoFullName ? (project.githubDefaultBranch ?? "") : (ghRepos.find(r => r.fullName === v)?.defaultBranch ?? "")) : "");
   };
 
-  const addMemo = () => {
-    if (envMemos.length >= MAX_ENV_MEMOS) return;
-    setEnvMemos(prev => [...prev, { name: "", url: "" }]);
-  };
-
-  const removeMemo = (idx: number) => {
-    setEnvMemos(prev => prev.filter((_, i) => i !== idx));
-  };
-
-  const updateMemo = (idx: number, field: keyof EnvMemo, value: string) => {
-    setEnvMemos(prev => prev.map((m, i) => i === idx ? { ...m, [field]: value } : m));
-  };
-
   const handleSave = async () => {
     const finalSlug = sanitizeSlug(slug.trim().toUpperCase());
 
@@ -118,8 +100,6 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
     }
     setDeployError("");
 
-    const cleanedMemos = envMemos.filter(m => m.name.trim() || m.url.trim() || (m.memo ?? "").trim());
-
     if (isSupabaseEnabled) {
       setSaving(true);
       if (finalSlug !== project.slug) {
@@ -128,7 +108,7 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
       }
       const { data, error } = await supabase!.from("projects").update({
         slug: finalSlug,
-        env_memos: cleanedMemos,
+        // env_memos は送らない。環境メモのモーダルで足したメモを、ここで古い内容に戻さないため
         github_repo_full_name: ghRepo || null,
         github_default_branch: ghRepo ? (ghBranch || null) : null,
         github_enabled: !!ghRepo,
@@ -318,77 +298,7 @@ export function ProjectSettingsDialog({ project, onClose, onUpdated }: {
           </>
         )}
 
-        {/* 環境メモセクション */}
-        <div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <Globe style={{ width: 13, height: 13, color: "#059669" }} />
-              <p style={{ fontSize: 11, fontWeight: 700, color: "#6B6458", textTransform: "uppercase", letterSpacing: "0.08em" }}>環境メモ</p>
-              <span style={{ fontSize: 10, color: "#9CA3AF" }}>（最大{MAX_ENV_MEMOS}件）</span>
-            </div>
-            {envMemos.length < MAX_ENV_MEMOS && (
-              <button
-                onClick={addMemo}
-                style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", background: "#ECFDF5", border: "1px solid rgba(5,150,105,0.2)", borderRadius: 7, cursor: "pointer", color: "#059669", fontSize: 11, fontWeight: 600, transition: "background 0.15s" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#D1FAE5"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#ECFDF5"; }}>
-                <Plus style={{ width: 11, height: 11 }} />追加
-              </button>
-            )}
-          </div>
-
-          {envMemos.length === 0 ? (
-            <div style={{ padding: "20px 16px", background: "#F9FAFB", borderRadius: 10, border: "1px dashed rgba(26,23,20,0.12)", textAlign: "center" }}>
-              <p style={{ fontSize: 12, color: "#B0A9A4" }}>環境URLを追加できます（本番・テスト・ステージングなど）</p>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {envMemos.map((memo, idx) => (
-                <div key={idx} style={{ background: "#F9FAFB", border: "1px solid rgba(26,23,20,0.08)", borderRadius: 10, padding: "10px 10px 8px" }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                    <div style={{ flex: "0 0 120px" }}>
-                      <label className={labelCls}>項目名</label>
-                      <input
-                        className={inputCls}
-                        placeholder="例: 本番環境"
-                        value={memo.name}
-                        onChange={e => updateMemo(idx, "name", e.target.value)}
-                      />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <label className={labelCls}>URL</label>
-                      <input
-                        className={inputCls}
-                        placeholder="https://example.com"
-                        value={memo.url}
-                        onChange={e => updateMemo(idx, "url", e.target.value)}
-                      />
-                    </div>
-                    <button
-                      onClick={() => removeMemo(idx)}
-                      style={{ marginTop: 22, flexShrink: 0, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", background: "#FEF2F2", border: "1px solid rgba(220,38,38,0.15)", borderRadius: 7, cursor: "pointer", color: "#DC2626", transition: "background 0.15s" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#FEE2E2"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#FEF2F2"; }}>
-                      <Minus style={{ width: 11, height: 11 }} />
-                    </button>
-                  </div>
-                  <div style={{ marginTop: 6 }}>
-                    <label className={labelCls}>メモ（ログイン情報・注意点など）</label>
-                    <textarea
-                      className={inputCls}
-                      placeholder="例: admin / password123&#10;本番DBに直接接続しているので注意"
-                      value={memo.memo ?? ""}
-                      onChange={e => updateMemo(idx, "memo", e.target.value)}
-                      onKeyDown={submitOnModEnter(() => { if (!saving) void handleSave(); })}
-                      rows={2}
-                      style={{ resize: "vertical", minHeight: 48, fontFamily: "inherit" }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* 環境メモはスプリント管理の「環境メモ」ボタンから編集する（BRU20-021） */}
       </div>
     </DialogShell>
   );
